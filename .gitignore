@@ -120,3 +120,16 @@ agents/*/agent.yaml.backup
 # CWDs (sub-agents start with cwd=agents/<id>).
 .claude/claudex/
 agents/*/.claude/claudex/
+
+# LandOS — deal data, training material, and media files
+data/
+transcripts/
+training/
+deals/
+notes/
+*.csv
+*.xlsx
+*.pdf
+*.mp3
+*.wav
+*.ogg
