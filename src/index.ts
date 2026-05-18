@@ -47,15 +47,22 @@ if (AGENT_ID !== 'main') {
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {
-  // For main bot: read CLAUDE.md from CLAUDECLAW_CONFIG and inject it as
-  // systemPrompt — the same pattern used by sub-agents. Never copy the file
-  // into the repo; that defeats the purpose of CLAUDECLAW_CONFIG and risks
-  // accidentally committing personal config.
-  const externalClaudeMd = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
-  if (fs.existsSync(externalClaudeMd)) {
+  // For main bot: resolve CLAUDE.md using the same priority as sub-agents:
+  //   1. ~/.claudeclaw/agents/main/CLAUDE.md  (per-agent external config)
+  //   2. ~/.claudeclaw/CLAUDE.md              (legacy flat location)
+  //   3. PROJECT_ROOT/CLAUDE.md               (loaded by SDK via cwd — no action needed)
+  const claudeMdPath = resolveAgentClaudeMd('main')
+    ?? (fs.existsSync(path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md')) ? path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md') : null);
+
+  // Read optional model override from .env (e.g. MAIN_AGENT_MODEL=claude-sonnet-4-6)
+  const { readEnvFile } = await import('./env.js');
+  const mainEnv = readEnvFile(['MAIN_AGENT_MODEL']);
+  const mainModel = process.env.MAIN_AGENT_MODEL || mainEnv.MAIN_AGENT_MODEL || undefined;
+
+  if (claudeMdPath) {
     let systemPrompt: string | undefined;
     try {
-      systemPrompt = fs.readFileSync(externalClaudeMd, 'utf-8');
+      systemPrompt = fs.readFileSync(claudeMdPath, 'utf-8');
     } catch { /* unreadable */ }
     if (systemPrompt) {
       setAgentOverrides({
@@ -63,14 +70,20 @@ if (AGENT_ID !== 'main') {
         botToken: activeBotToken,
         cwd: PROJECT_ROOT,
         systemPrompt,
+        model: mainModel,
       });
-      logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
+      logger.info({ source: claudeMdPath, model: mainModel ?? 'default' }, 'Loaded CLAUDE.md for main agent');
     }
-  } else if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
-    logger.warn(
-      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/CLAUDE.md and customize it.',
-      CLAUDECLAW_CONFIG,
-    );
+  } else {
+    if (mainModel) {
+      setAgentOverrides({ agentId: 'main', botToken: activeBotToken, cwd: PROJECT_ROOT, model: mainModel });
+    }
+    if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
+      logger.warn(
+        'No CLAUDE.md found. Copy CLAUDE.md.example to %s/CLAUDE.md and customize it.',
+        CLAUDECLAW_CONFIG,
+      );
+    }
   }
 }
 

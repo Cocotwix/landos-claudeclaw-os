@@ -1710,38 +1710,6 @@ async function processDashboardMessage(
       });
     }
 
-    // Relay to Telegram so the user sees it there too. Wrap the relay
-    // in its own try/catch so a bad bot token (401 Unauthorized) does
-    // NOT bubble Telegram's raw error description into the chat feed.
-    // The dashboard already received the assistant message via SSE
-    // above; the Telegram leg is best-effort.
-    if (responseText) {
-      try {
-        for (const part of splitMessage(formatForTelegram(responseText))) {
-          await botApi.sendMessage(parseInt(chatIdStr), part, { parse_mode: 'HTML' });
-        }
-      } catch (relayErr: any) {
-        const code = relayErr?.error_code ?? relayErr?.status ?? null;
-        const desc = String(relayErr?.description ?? relayErr?.message ?? '').toLowerCase();
-        const looksAuth = code === 401 || desc.includes('unauthorized') || desc.includes('not authenticated');
-        if (looksAuth) {
-          logger.warn({ err: relayErr }, 'Telegram relay failed: bot token not authorized');
-          emitChatEvent({
-            type: 'error',
-            chatId: chatIdStr,
-            content: 'Telegram relay skipped: this bot token is not authorized. Update TELEGRAM_BOT_TOKEN in Settings or re-issue with @BotFather.',
-          });
-        } else {
-          logger.warn({ err: relayErr }, 'Telegram relay failed (non-auth)');
-          emitChatEvent({
-            type: 'error',
-            chatId: chatIdStr,
-            content: 'Could not relay reply to Telegram. The dashboard reply above is current.',
-          });
-        }
-      }
-    }
-
     // Log token usage
     if (result.usage) {
       const activeSessionId = result.newSessionId ?? sessionId;

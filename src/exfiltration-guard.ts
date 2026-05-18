@@ -31,11 +31,12 @@ const PATTERNS: Array<{ type: string; regex: RegExp }> = [
   // AWS access keys: AKIA followed by exactly 16 alphanumeric chars
   { type: 'aws_key', regex: /AKIA[A-Za-z0-9]{16}/g },
 
-  // Long hex strings: 40+ hex chars that are NOT git commit SHAs.
+  // Long hex strings: 40+ hex chars that are NOT git commit SHAs or URL components.
   // Git SHAs are exactly 40 hex chars typically preceded by "commit "
   // or similar git patterns. We match 41+ unconditionally, and for
   // exactly 40 chars we only match if NOT preceded by a git pattern.
-  { type: 'hex_key', regex: /(?<![A-Za-z0-9])[0-9a-fA-F]{41,}(?![A-Za-z0-9])/g },
+  // Exclude hex values in URL context (after = / # which are query params or path segments).
+  { type: 'hex_key', regex: /(?<![A-Za-z0-9=/])[0-9a-fA-F]{41,}(?![A-Za-z0-9])/g },
 ];
 
 // Git patterns that precede a 40-char hex SHA
@@ -72,7 +73,7 @@ export function scanForSecrets(text: string, protectedValues?: string[]): Secret
   }
 
   // Check for exactly-40-char hex strings that are NOT git SHAs
-  const hex40Regex = /(?<![A-Za-z0-9])[0-9a-fA-F]{40}(?![A-Za-z0-9])/g;
+  const hex40Regex = /(?<![A-Za-z0-9=/])[0-9a-fA-F]{40}(?![A-Za-z0-9])/g;
   let m40: RegExpExecArray | null;
   while ((m40 = hex40Regex.exec(text)) !== null) {
     // Skip if it's exactly 40 chars (could be a git SHA)

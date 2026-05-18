@@ -76,6 +76,14 @@ export function Chat() {
     }
   }, [turns, processing, atBottom]);
 
+  // Auto-resize textarea as content grows
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, [draft]);
+
   // Watch the message list scroll position so the "scroll to latest"
   // button shows up the moment the user scrolls away from the bottom.
   useEffect(() => {
@@ -238,8 +246,7 @@ export function Chat() {
                 }
               }}
               placeholder="Type a message. Shift+Enter for newline."
-              rows={1}
-              class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[13px] outline-none focus:border-[var(--color-accent)] resize-none max-h-32"
+              class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[13px] outline-none focus:border-[var(--color-accent)] resize-none max-h-32 overflow-y-auto"
             />
             {processing ? (
               <button
