@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 
-import { CLAUDECLAW_CONFIG, PROJECT_ROOT } from './config.js';
+import { CLAUDECLAW_CONFIG, LANDOS_AGENTS_DIR, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
 // Shared roster path. Written by Node on startup and any time the agent
@@ -59,26 +59,46 @@ export interface AgentConfig {
 }
 
 /**
- * Resolve the directory for a given agent, checking CLAUDECLAW_CONFIG first,
- * then falling back to PROJECT_ROOT/agents/<id>.
+ * Resolve the directory for a given agent.
+ * Priority:
+ *   1. LANDOS_AGENTS_DIR/<id>   (repo-backed, version-controlled — e.g. landos-agents/)
+ *   2. CLAUDECLAW_CONFIG/agents/<id>   (~/.claudeclaw/agents/<id>, legacy fallback)
+ *   3. PROJECT_ROOT/agents/<id>  (in-repo fallback)
  */
 export function resolveAgentDir(agentId: string): string {
+  // 1. Repo-backed LandOS agents dir
+  const landosDir = path.join(LANDOS_AGENTS_DIR, agentId);
+  if (fs.existsSync(path.join(landosDir, 'agent.yaml'))) {
+    return landosDir;
+  }
+  // 2. Legacy ~/.claudeclaw/agents
   const externalDir = path.join(CLAUDECLAW_CONFIG, 'agents', agentId);
   if (fs.existsSync(path.join(externalDir, 'agent.yaml'))) {
     return externalDir;
   }
+  // 3. In-repo agents/ fallback
   return path.join(PROJECT_ROOT, 'agents', agentId);
 }
 
 /**
- * Resolve the CLAUDE.md path for a given agent, checking CLAUDECLAW_CONFIG first,
- * then falling back to PROJECT_ROOT/agents/<id>/CLAUDE.md.
+ * Resolve the CLAUDE.md path for a given agent.
+ * Priority mirrors resolveAgentDir:
+ *   1. LANDOS_AGENTS_DIR/<id>/CLAUDE.md   (repo-backed)
+ *   2. CLAUDECLAW_CONFIG/agents/<id>/CLAUDE.md   (~/.claudeclaw, legacy)
+ *   3. PROJECT_ROOT/agents/<id>/CLAUDE.md  (in-repo fallback)
  */
 export function resolveAgentClaudeMd(agentId: string): string | null {
+  // 1. Repo-backed LandOS agents dir
+  const landosPath = path.join(LANDOS_AGENTS_DIR, agentId, 'CLAUDE.md');
+  if (fs.existsSync(landosPath)) {
+    return landosPath;
+  }
+  // 2. Legacy ~/.claudeclaw/agents
   const externalPath = path.join(CLAUDECLAW_CONFIG, 'agents', agentId, 'CLAUDE.md');
   if (fs.existsSync(externalPath)) {
     return externalPath;
   }
+  // 3. In-repo agents/ fallback
   const repoPath = path.join(PROJECT_ROOT, 'agents', agentId, 'CLAUDE.md');
   if (fs.existsSync(repoPath)) {
     return repoPath;
@@ -162,12 +182,14 @@ export function setAgentModel(agentId: string, model: string): void {
 }
 
 /** List all configured agent IDs (directories under agents/ with agent.yaml).
- *  Scans both CLAUDECLAW_CONFIG/agents/ and PROJECT_ROOT/agents/, deduplicating.
+ *  Scans LANDOS_AGENTS_DIR first, then CLAUDECLAW_CONFIG/agents/, then
+ *  PROJECT_ROOT/agents/, deduplicating so the highest-priority source wins.
  */
 export function listAgentIds(): string[] {
   const ids = new Set<string>();
 
   for (const baseDir of [
+    LANDOS_AGENTS_DIR,
     path.join(CLAUDECLAW_CONFIG, 'agents'),
     path.join(PROJECT_ROOT, 'agents'),
   ]) {

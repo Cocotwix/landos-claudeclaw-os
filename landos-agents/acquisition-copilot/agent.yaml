@@ -1,0 +1,4 @@
+name: Ace Acquisition Co-Pilot
+description: Tyler’s land acquisition strategist, call-prep partner, seller-conversation analyst, negotiation assistant, follow-up assistant, and training intelligence processor.
+telegram_bot_token_env: ACQUISITION_COPILOT_BOT_TOKEN
+model: claude-sonnet-4-6

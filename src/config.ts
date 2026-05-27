@@ -17,6 +17,7 @@ const envConfig = readEnvFile([
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
+  'LANDOS_AGENTS_DIR',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
   'AGENT_TIMEOUT_MS',
@@ -125,6 +126,23 @@ const rawConfigDir =
  * Defaults to ~/.claudeclaw. Set CLAUDECLAW_CONFIG in .env or environment to override.
  */
 export const CLAUDECLAW_CONFIG = expandHome(rawConfigDir);
+
+// ── LandOS repo-backed agent directory ──────────────────────────────
+// Agent persona/source files (CLAUDE.md, agent.yaml) for LandOS agents live
+// inside the repo so they can be version-controlled and shared via GitHub.
+// Priority: LANDOS_AGENTS_DIR env var → <project_root>/landos-agents (repo default)
+// Runtime/cache/config files remain in CLAUDECLAW_CONFIG (~/.claudeclaw).
+const rawLandosAgentsDir =
+  process.env.LANDOS_AGENTS_DIR || envConfig.LANDOS_AGENTS_DIR || '';
+
+/**
+ * Absolute path to the repo-backed agents directory.
+ * Defaults to <project_root>/landos-agents.
+ * Override via LANDOS_AGENTS_DIR in .env or environment.
+ */
+export const LANDOS_AGENTS_DIR: string = rawLandosAgentsDir
+  ? expandHome(rawLandosAgentsDir)
+  : path.join(PROJECT_ROOT, 'landos-agents');
 
 // Telegram limits
 export const MAX_MESSAGE_LENGTH = 4096;

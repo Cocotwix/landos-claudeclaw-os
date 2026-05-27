@@ -110,6 +110,10 @@ agents/*/.no-avatar
 agents/*/CLAUDE.md.backup
 agents/*/agent.yaml.backup
 
+# Repo-backed LandOS agents — these ARE version-controlled (override the CLAUDE.md rule above)
+!landos-agents/*/CLAUDE.md
+!landos-agents/*/agent.yaml
+
 # Local Claude Code skills — these are user-specific workflow configs
 # (absolute paths, private repo refs). Keep them out of the shared repo.
 .claude/skills/
