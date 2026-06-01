@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "landportal": {
+      "command": "node",
+      "args": [
+        "C:/Users/tbutt/claudeclaw-os/landos-agents/duke-due-diligence/mcp-landportal/index.js"
+      ]
+    }
+  }
+}
