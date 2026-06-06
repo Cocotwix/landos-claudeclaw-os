@@ -2771,7 +2771,7 @@ async function sendChatMessage() {
     await fetch(BASE + '/api/chat/send?token=' + TOKEN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, ...(activeAgentTab !== 'all' ? { agentId: activeAgentTab } : {}) }),
     });
   } catch(e) {
     console.error('Send error', e);

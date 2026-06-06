@@ -2921,7 +2921,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // Send message from dashboard
   app.post('/api/chat/send', async (c) => {
     if (!botApi) return c.json({ error: 'Bot API not available' }, 503);
-    const body = await c.req.json<{ message?: string }>();
+    const body = await c.req.json<{ message?: string; agentId?: string }>();
     const message = body?.message?.trim();
     if (!message) return c.json({ error: 'message required' }, 400);
 
@@ -2933,7 +2933,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
 
     // Fire-and-forget: response comes via SSE
-    void processMessageFromDashboard(botApi, message);
+    const agentId = body?.agentId?.trim() || undefined;
+    void processMessageFromDashboard(botApi, message, agentId);
     return c.json({ ok: true });
   });
 

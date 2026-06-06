@@ -41,6 +41,7 @@ import { buildCostFooter } from './cost-footer.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
+import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import {
   isLocked,
@@ -1598,6 +1599,7 @@ export function createBot(): Bot {
 export async function processMessageFromDashboard(
   botApi: Api<RawApi>,
   text: string,
+  targetAgentId?: string,
 ): Promise<void> {
   if (!ALLOWED_CHAT_ID) return;
 
@@ -1607,26 +1609,48 @@ export async function processMessageFromDashboard(
 
   // Route through the message queue so dashboard messages wait for any
   // in-flight Telegram message or scheduled task to finish first.
-  messageQueue.enqueue(chatIdStr, () => processDashboardMessage(botApi, text, chatIdStr));
+  messageQueue.enqueue(chatIdStr, () => processDashboardMessage(botApi, text, chatIdStr, targetAgentId));
 }
 
 async function processDashboardMessage(
   botApi: Api<RawApi>,
   text: string,
   chatIdStr: string,
+  targetAgentId?: string,
 ): Promise<void> {
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'dashboard' });
   setProcessing(chatIdStr, true);
 
   try {
-    const sessionId = getSession(chatIdStr, AGENT_ID);
+    // Resolve agent-specific config when a non-main agent tab is selected in the dashboard
+    let effectiveSystemPrompt = agentSystemPrompt;
+    let effectiveMcpAllowlist = agentMcpAllowlist;
+    let effectiveModel = agentDefaultModel;
+    let effectiveMcpCwd: string | undefined;
+    const effectiveAgentId = (targetAgentId && targetAgentId !== 'main') ? targetAgentId : AGENT_ID;
 
-    const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, AGENT_ID);
+    if (targetAgentId && targetAgentId !== 'main') {
+      try {
+        const cfg = loadAgentConfig(targetAgentId);
+        const claudeMdPath = resolveAgentClaudeMd(targetAgentId);
+        if (claudeMdPath) effectiveSystemPrompt = fs.readFileSync(claudeMdPath, 'utf-8');
+        effectiveMcpAllowlist = cfg.mcpServers;
+        effectiveMcpCwd = resolveAgentDir(targetAgentId);
+        if (cfg.model) effectiveModel = cfg.model;
+        logger.info({ targetAgentId, mcpServers: cfg.mcpServers, hasClaude: !!claudeMdPath }, 'Dashboard chat using agent config');
+      } catch (err) {
+        logger.warn({ targetAgentId, err }, 'Failed to load agent config for dashboard chat — falling back to main');
+      }
+    }
+
+    const sessionId = getSession(chatIdStr, effectiveAgentId);
+
+    const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, effectiveAgentId);
     const dashParts: string[] = [];
-    if (agentSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+    if (effectiveSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${effectiveSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
 
-    const recentDashTasks = getRecentTaskOutputs(AGENT_ID, 30);
+    const recentDashTasks = getRecentTaskOutputs(effectiveAgentId, 30);
     if (recentDashTasks.length > 0) {
       const taskLines = recentDashTasks.map((t) => {
         const ago = Math.round((Date.now() / 1000 - t.last_run) / 60);
@@ -1654,10 +1678,11 @@ async function processDashboardMessage(
       sessionId,
       () => {}, // no typing action for dashboard
       onProgress,
-      agentDefaultModel,
+      effectiveModel,
       abortCtrl,
       undefined, // no streaming for dashboard
-      agentMcpAllowlist,
+      effectiveMcpAllowlist,
+      effectiveMcpCwd,
     );
 
     clearTimeout(dashTimeout);
@@ -1673,13 +1698,13 @@ async function processDashboardMessage(
     }
 
     if (result.newSessionId) {
-      setSession(chatIdStr, result.newSessionId, AGENT_ID);
+      setSession(chatIdStr, result.newSessionId, effectiveAgentId);
     }
 
     const rawResponse = result.text?.trim() || 'Done.';
 
     // Save conversation turn
-    saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
+    saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, effectiveAgentId);
     if (dashSurfacedIds.length > 0) {
       void evaluateMemoryRelevance(dashSurfacedIds, dashSummaries, text, rawResponse).catch(() => {});
     }
@@ -1723,7 +1748,7 @@ async function processDashboardMessage(
           result.usage.lastCallCacheRead + result.usage.lastCallInputTokens,
           result.usage.totalCostUsd,
           result.usage.didCompact,
-          AGENT_ID,
+          effectiveAgentId,
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');
