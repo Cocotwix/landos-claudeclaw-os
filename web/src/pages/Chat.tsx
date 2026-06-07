@@ -139,7 +139,10 @@ export function Chat() {
     if (!message) return;
     setSending(true); setError(null);
     try {
-      const res = await apiPost<{ ok?: boolean; error?: string }>('/api/chat/send', { message });
+      const res = await apiPost<{ ok?: boolean; error?: string }>('/api/chat/send', {
+        message,
+        ...(activeAgent !== 'all' ? { agentId: activeAgent } : {}),
+      });
       if (!res.ok && res.error) {
         setError(res.error === 'busy' ? 'A turn is already in flight. Wait for it to finish.' : res.error);
       } else if (!textOverride) {
