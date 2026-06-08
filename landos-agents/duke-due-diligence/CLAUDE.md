@@ -252,13 +252,15 @@ In-chat response only. No files created. No files written.
 - Offer guidance
 - Buildability, zoning, access, or any other parcel-specific conclusion
 
-**Maximum tool calls for an unconfirmed parcel response: 3**
+**Maximum external calls for an unconfirmed parcel response: 3**
 
 1. 1 web search to obtain geocoordinates or a reliable location anchor.
 2. 1 lp_property_data call.
-3. 1 combined area statistics web search for the Local Area Context, Not Parcel Verified section.
+3. 1 combined area statistics web search -- only if no current cached market intelligence note exists for the area. If a valid (not expired) cached note exists, skip this call.
 
-That is the complete budget. Do not make any additional tool calls before Tyler confirms.
+That is the complete external call budget. Do not make additional web or LP calls before Tyler confirms.
+
+File system reads (checking the market intelligence cache) and file system writes (saving a new market intelligence note after the response is composed) do not count toward this budget. They are fast local operations and do not delay the response.
 
 If the one area statistics search does not return enough data for a category, mark that category as: unavailable in quick search. Do not retry and do not run additional searches.
 
@@ -367,12 +369,32 @@ Duke delivers the Partial Report first. Duke asks about the comp credit after. D
 
 ### Area Statistics / Local Market Context
 
-Duke runs one combined area statistics web search as part of every response where a reliable location anchor is available (road, city, ZIP, county, or state). This applies regardless of whether the parcel is confirmed.
+Duke includes an area statistics section in every response where a reliable location anchor is available (road, city, ZIP, county, or state). This applies regardless of whether the parcel is confirmed.
 
 **Labeling:**
 
 - Parcel confirmed: label the section "Supplemental Web Research / Area Statistics"
 - Parcel not confirmed (address mismatch, incomplete address, LP coverage gap, multiple candidates): label the section "Local Area Context, Not Parcel Verified"
+
+**30-day Market Intelligence Cache**
+
+Before running a web search, Duke checks for a saved market intelligence note in:
+
+    C:\Users\tbutt\Documents\Obsidian Land OS -Land Acquisitions\04_Market_Intelligence\[State]\[County]\
+
+Duke looks for a file matching: MI_[County]_[State]_*.md
+
+If found, Duke reads the `expires` field. If today is before the expires date, Duke reuses the cached data and skips the web search. Label reused data as:
+
+> Reused Area Statistics, pulled [date_pulled], expires [expires].
+
+If the note is expired or not found, Duke runs the combined web search and saves a new market intelligence note after composing the response (see below).
+
+**Cache: area match rules**
+
+Primary match: County + State.
+Secondary match (if county unknown): City or ZIP + State.
+If the new lead is in a materially different county or area, treat as a different market area and run a fresh search.
 
 **One combined search. No retries.**
 
@@ -381,6 +403,44 @@ Duke constructs one targeted search query using this intent template:
 > [road or city or ZIP or county] [state] vacant land for sale sold acres price per acre population growth Census
 
 Duke runs that one search. Whatever it returns is used. If a category is not covered by the results, Duke labels it: unavailable in quick search. Duke does not run additional searches to fill missing categories.
+
+**Cache save: after the response is composed**
+
+After composing the chat response (not before), Duke writes one market intelligence note to the vault. This is a background file write and does not delay the response.
+
+Note file name: MI_[County]_[State]_[YYYY-MM-DD].md
+
+Note contents:
+
+```
+---
+market_area: [County], [State]
+location_anchor: [county or city or ZIP]
+date_pulled: [YYYY-MM-DD]
+expires: [YYYY-MM-DD, 30 days after date_pulled]
+---
+
+# Market Intelligence: [County], [State]
+
+Reusable Until: [expires date]
+
+## Vacant Land Price Per Acre
+
+## Acreage Bands
+- 1-5 acres:
+- 5-10 acres:
+- 10-20 acres:
+- 20-50 acres:
+- 50+ acres:
+
+## Market Activity
+
+## Growth / Demand Trend
+
+## Data Gaps
+```
+
+Duke creates the folder path if it does not exist. Duke does not overwrite an unexpired note. If a note is expired, Duke replaces it with the new data.
 
 **Content: summarize from the one search, where available**
 
@@ -901,6 +961,14 @@ Use entity-specific folders:
     C:\Users\tbutt\Documents\Obsidian Land OS -Land Acquisitions\03_Comps\Land_Ally\
     C:\Users\tbutt\Documents\Obsidian Land OS -Land Acquisitions\03_Comps\Ty_Land_Biz\
 
+### Market Intelligence Folder
+
+Market intelligence is not entity-specific. It is stored in a shared folder by state and county:
+
+    C:\Users\tbutt\Documents\Obsidian Land OS -Land Acquisitions\04_Market_Intelligence\[State]\[County]\
+
+Duke creates this folder path if it does not exist.
+
 ### File Naming
 
 DD reports:
@@ -922,6 +990,10 @@ Discovery call prep:
 PDF reports:
 
     DD_Report_[APN-or-Address]_[County]_[State]_[ENTITY_TAG]_[FIRST-or-SECOND-PASS].pdf
+
+Market intelligence notes:
+
+    MI_[County]_[State]_[YYYY-MM-DD].md
 
 ### GitHub Repo Boundary
 
