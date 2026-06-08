@@ -92,6 +92,110 @@ async function lpFetch(endpoint, options = {}) {
   return body;
 }
 
+// ── lp_property_data response shaper ──────────────────────────────────────
+// Reduces a 100-128K raw LP response to ~1-2K by:
+//   - Extracting only the fields Duke uses
+//   - Converting every numeric field to string (eliminates type-concat errors)
+//   - Collapsing the embedded `similars` JSON blob to a short statistical summary
+
+function median(arr) {
+  if (!arr.length) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function buildPropertySummary(body) {
+  const meta = body?.meta ?? {};
+  const p = body?.data?.property;
+
+  if (!p) {
+    return {
+      success: false,
+      coverage_gap: true,
+      requests_left: String(meta.requests_left ?? ''),
+      message: 'No property data returned. Possible LP coverage gap for this location.',
+    };
+  }
+
+  // Collapse similars (an embedded JSON string) to a statistical summary
+  let simCount = 0;
+  let simPpaMin = '';
+  let simPpaMax = '';
+  let simPpaMedian = '';
+  let simRecentYear = '';
+  let priceAcreCounty = '';
+
+  if (p.similars) {
+    try {
+      const sims = JSON.parse(p.similars);
+      if (Array.isArray(sims) && sims.length > 0) {
+        simCount = sims.length;
+        const ppas = sims
+          .map(s => s.price_acres ?? s.mls_priceperacre)
+          .filter(v => typeof v === 'number' && v > 0);
+        if (ppas.length) {
+          simPpaMin    = Math.min(...ppas).toFixed(0);
+          simPpaMax    = Math.max(...ppas).toFixed(0);
+          simPpaMedian = median(ppas).toFixed(0);
+        }
+        const years = sims.map(s => s.sold_year).filter(y => typeof y === 'number' && y > 0);
+        if (years.length) simRecentYear = String(Math.max(...years));
+        priceAcreCounty = String(sims[0]?.price_acre_county ?? '');
+      }
+    } catch { /* ignore parse errors in similars blob */ }
+  }
+
+  const str = v => (v == null ? '' : String(v));
+
+  return {
+    success: true,
+    requests_left: str(meta.requests_left),
+    property: {
+      propertyid:                str(p.propertyid),
+      apn:                       str(p.apn),
+      situs_address:             str(p.situsfullstreetaddress),
+      city:                      str(p.situscity),
+      state:                     str(p.situsstate),
+      zip:                       str(p.situszip5),
+      county:                    str(p.situscounty),
+      owner:                     str(p.ownername1full),
+      land_use:                  str(p.landusecodedescription),
+      lot_size_acres:            str(p.lotsizeacres),
+      calc_acres:                str(p.calc_acres),
+      lot_size_sqft:             str(p.lotsizesqft),
+      road_frontage_ft:          str(p.road_frontage),
+      land_locked:               str(p.land_locked),
+      near_water:                str(p.wf_is_near_water),
+      wetlands_pct:              str(p.wetlands_cover_percentage),
+      fema_pct:                  str(p.fema_cover_percentage),
+      buildability_pct:          str(p.buildability_total_perc),
+      buildability_acres:        str(p.buildability_area),
+      slope_avg_deg:             str(p.slope_average),
+      elevation_avg_ft:          str(p.elevation_average),
+      building_area_sqft:        str(p.buildingarea || p.sumbuildingsqft || 0),
+      assessed_total:            str(p.assdtotalvalue),
+      assessed_land:             str(p.assdlandvalue),
+      market_total:              str(p.markettotalvalue),
+      market_land:               str(p.marketvalueland),
+      tlp_estimate:              str(p.tlp_estimate),
+      tlp_ppa:                   str(p.tlp_ppa),
+      price_acre_county:         priceAcreCounty,
+      lat:                       str(p.situslatitude),
+      lng:                       str(p.situslongitude),
+      municipality:              str(p.municipality),
+      mailing_address:           str(p.mailingfullstreetaddress),
+      mailing_city:              str(p.mailingcity),
+      mailing_state:             str(p.mailingstate),
+      similars_count:            str(simCount),
+      similars_ppa_min:          simPpaMin,
+      similars_ppa_max:          simPpaMax,
+      similars_ppa_median:       simPpaMedian,
+      similars_most_recent_year: simRecentYear,
+    },
+  };
+}
+
 const TOOLS = [
   {
     name: 'lp_search',
@@ -212,7 +316,8 @@ async function callTool(name, args = {}) {
     if (args.lat != null) params.set('lat', String(args.lat));
     if (args.lng != null) params.set('lng', String(args.lng));
 
-    return lpFetch(`/property-data?${params}`);
+    const raw = await lpFetch(`/property-data?${params}`);
+    return buildPropertySummary(raw);
   }
 
   if (name === 'lp_comp_report_create') {
