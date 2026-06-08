@@ -242,3 +242,132 @@ print('Checkpoint saved.')
 "
 ```
 5. Confirm: "Checkpoint saved. Safe to /newchat."
+
+---
+
+# LandOS Build Operating Rules
+
+These rules apply to all LandOS build work in this repo, including Duke, Ace, Cal, Finn, Rex, Drew, Mia, Lou, and any future agents.
+
+## Operating style
+
+You are the build operator, not a command by command assistant.
+
+Manage work by outcome.
+
+Do not turn simple scoped tasks into dozens of approvals.
+
+For each build task:
+
+1. State the objective.
+2. State expected files changed.
+3. State risk gates.
+4. Ask once before edits if edits are needed.
+5. Make only approved edits.
+6. Use native read only tools for inspection whenever possible.
+7. Batch safe verification checks.
+8. Show the result clearly.
+9. Ask before risky actions unless already explicitly approved.
+
+## Read only work
+
+Tyler does not need to approve harmless read only inspection work.
+
+For basic file inspection, prefer Claude Code native tools:
+Read for reading known files.
+Grep or Search for finding text.
+Glob for locating files.
+
+Do not use PowerShell, Bash, or shell commands for simple read only source checks unless actually necessary.
+
+Avoid shell commands for:
+Select-String
+Get-Content
+cat
+grep
+findstr
+custom PowerShell filtering
+custom Bash filtering
+script blocks
+large folder scans when a specific file is known
+
+Use shell commands only when they are actually needed, such as:
+git status
+git diff before final verification
+node --check
+npm test
+npm run build
+server start or stop
+commit and push
+
+If Claude Code's permission system still forces approval for a read only command, say:
+Permission system requires approval, but this is read only and scoped.
+
+Then keep the command as narrow as possible.
+
+## Actions that always require Tyler approval
+
+Always stop and ask before:
+editing files unless Tyler already approved the edit scope
+creating files unless Tyler already approved the file
+deleting files
+overwriting files
+staging files
+committing
+pushing
+restarting servers
+running live agent tests
+touching .env
+printing secrets or tokens
+calling LandPortal live
+calling lp_comp_report_create
+calling lp_comp_report_get
+using any comp credit
+creating Obsidian files
+writing property specific work product into the repo
+using git add .
+running destructive commands
+adding dependencies
+running npm install
+running migrations
+
+## Git rules
+
+Never use git add .
+
+Only stage exact approved files.
+
+Before commit, confirm the staged file list is limited to the approved files.
+
+Use clear commit messages.
+
+Do not stage unrelated files.
+
+Do not commit logs, .env files, Obsidian property work product, temporary files, or unrelated changes.
+
+## LandPortal and comp credit rules
+
+Never call:
+lp_comp_report_create
+lp_comp_report_get
+
+unless Tyler explicitly approves using 1 LandPortal comp credit.
+
+Do not use paid tools silently.
+
+Do not run live LandPortal tests unless Tyler explicitly approves the live test.
+
+## Local and repo safety
+
+Do not print .env values.
+Do not print tokens.
+Do not expose secrets.
+Do not write property specific due diligence work product into the GitHub repo.
+Do not create property specific Obsidian reports unless Tyler explicitly asks.
+Do not modify Land Ally systems, documents, workflows, or records unless Tyler explicitly authorizes it.
+
+## Agent build rule
+
+These rules apply to every current and future LandOS agent.
+
+Do not require Tyler to repeat these rules when creating or modifying a new agent.
