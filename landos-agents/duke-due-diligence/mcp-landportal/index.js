@@ -92,6 +92,102 @@ async function lpFetch(endpoint, options = {}) {
   return body;
 }
 
+// ── lp_resolve_property helpers ───────────────────────────────────────────
+// TODO: Add reliable local county/state or city/state to FIPS resolver from
+// official public data (e.g. Census FIPS table). Do not use geocoding.
+
+// Split "731 Filter Plant Rd" into { number, streetBody }.
+// streetBody is uppercased and trailing street-type suffix stripped so LP's
+// "contains" comparison isn't blocked by how LP stores the suffix.
+function parseStreetAddress(address) {
+  const trimmed = (address ?? '').trim();
+  const m = trimmed.match(/^(\d+[A-Za-z]?)\s+(.+)$/);
+  if (!m) return { number: '', streetBody: trimmed.toUpperCase() };
+
+  const number = m[1];
+  let street = m[2].trim().toUpperCase();
+  street = street.replace(
+    /\s+(RD|ST|AVE|BLVD|DR|LN|CT|WAY|PL|TER|TERR|HWY|PKWY|CIR|LOOP|TRAIL|TRL|PIKE|ROUTE|RT)\.?$/,
+    ''
+  ).trim();
+
+  return { number, streetBody: street };
+}
+
+// Extract propertyid + fips from a LandPortal URL.
+// Supports ?propertyid=...&fips=... query form and path patterns with
+// a 5-digit FIPS followed by a longer numeric propertyid.
+function parseLpUrl(url) {
+  try {
+    const u = new URL(url);
+
+    const propertyid = u.searchParams.get('propertyid');
+    const fips = u.searchParams.get('fips');
+    if (propertyid && fips) return { propertyid, fips };
+
+    // Path form: find adjacent 5-digit FIPS then longer numeric propertyid
+    const parts = u.pathname.split('/').filter(Boolean);
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (/^\d{5}$/.test(parts[i]) && /^\d{6,}$/.test(parts[i + 1])) {
+        return { fips: parts[i], propertyid: parts[i + 1] };
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Build normalized resolver result from a raw /property-data response.
+// context: { source, submitted_address, fips }
+function buildResolverResult(raw, context = {}) {
+  const summary = buildPropertySummary(raw);
+
+  if (!summary.success) {
+    return {
+      verified: false,
+      status: 'not_verified',
+      propertyid: null,
+      fips: context.fips ?? null,
+      apn: null,
+      situs_address: null,
+      owner: null,
+      match_notes: summary.message ?? 'No property data returned.',
+      candidates: [],
+    };
+  }
+
+  const p = summary.property;
+  let verified = true;
+  let match_notes = `Parcel resolved via ${context.source ?? 'direct lookup'}.`;
+
+  if (context.submitted_address) {
+    const { number, streetBody } = parseStreetAddress(context.submitted_address);
+    const returned = (p.situs_address ?? '').toUpperCase();
+    if (!returned.includes(streetBody) || !returned.includes(number)) {
+      verified = false;
+      match_notes = `Address mismatch -- submitted "${context.submitted_address}", LP returned "${p.situs_address}". Different road or number. Parcel not verified.`;
+    }
+  }
+
+  return {
+    verified,
+    status: verified ? 'verified' : 'not_verified',
+    propertyid: p.propertyid,
+    fips: context.fips ?? null,
+    apn: p.apn,
+    situs_address: p.situs_address,
+    city: p.city,
+    state: p.state,
+    owner: p.owner,
+    match_notes,
+    candidates: [],
+    property_summary: p,
+    requests_left: summary.requests_left,
+  };
+}
+
 // ── lp_property_data response shaper ──────────────────────────────────────
 // Reduces a 100-128K raw LP response to ~1-2K by:
 //   - Extracting only the fields Duke uses
@@ -198,6 +294,53 @@ function buildPropertySummary(body) {
 
 const TOOLS = [
   {
+    name: 'lp_resolve_property',
+    description:
+      'Resolve any supported property identifier to a verified parcel record. ' +
+      'Handles address+city+state+fips, APN+state, owner+state, propertyid+fips, and LandPortal URL inputs. ' +
+      'Never uses geocoding, coordinates, or nearest-parcel lookup. ' +
+      'Always returns verified:true/false so Duke can confirm the correct parcel before proceeding. ' +
+      'Address lookups require fips (5-digit county code). ' +
+      'If fips is unknown, Duke must stop and ask Tyler for the county/FIPS. County-to-FIPS resolution is not yet implemented.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        address: {
+          type: 'string',
+          description: 'Street address without city/state (e.g. "731 Filter Plant Rd")',
+        },
+        city: {
+          type: 'string',
+          description: 'City name',
+        },
+        state: {
+          type: 'string',
+          description: 'Two-letter state code (e.g. "NC")',
+        },
+        fips: {
+          type: 'string',
+          description: 'FIPS county code (5 digits). Required for address lookup.',
+        },
+        apn: {
+          type: 'string',
+          description: 'APN / parcel number',
+        },
+        owner: {
+          type: 'string',
+          description: 'Owner name for owner search',
+        },
+        propertyid: {
+          type: 'string',
+          description: 'LandPortal property ID',
+        },
+        lp_url: {
+          type: 'string',
+          description: 'LandPortal property URL',
+        },
+      },
+    },
+  },
+  {
     name: 'lp_search',
     description:
       'Search LandPortal by parcel number (parcelnumb) or owner name (owner). Returns matching properties with propertyid and fips.',
@@ -228,7 +371,10 @@ const TOOLS = [
   {
     name: 'lp_property_data',
     description:
-      'Retrieve detailed parcel data from LandPortal. Use propertyid and fips when available, or lat and lng as an alternative lookup.',
+      'Retrieve detailed parcel data from LandPortal using propertyid and fips. ' +
+      'Requires propertyid + fips. No other lookup inputs are accepted. ' +
+      'lat and lng are included in the returned data for reference only -- ' +
+      'they must never be used as lookup inputs for parcel identification.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -240,15 +386,8 @@ const TOOLS = [
           type: 'string',
           description: 'FIPS county code',
         },
-        lat: {
-          type: 'number',
-          description: 'Latitude for alternative lookup',
-        },
-        lng: {
-          type: 'number',
-          description: 'Longitude for alternative lookup',
-        },
       },
+      required: ['propertyid', 'fips'],
     },
   },
   {
@@ -296,6 +435,159 @@ const TOOLS = [
 ];
 
 async function callTool(name, args = {}) {
+  if (name === 'lp_resolve_property') {
+    // Path 1: LandPortal URL
+    if (args.lp_url) {
+      const extracted = parseLpUrl(args.lp_url);
+      if (!extracted) {
+        return {
+          verified: false,
+          status: 'not_verified',
+          match_notes: 'Could not parse propertyid or fips from the provided LandPortal URL. Provide propertyid + fips directly.',
+          candidates: [],
+        };
+      }
+      const raw = await lpFetch(`/property-data?propertyid=${extracted.propertyid}&fips=${extracted.fips}`);
+      return buildResolverResult(raw, { source: 'lp_url', fips: extracted.fips });
+    }
+
+    // Path 2: Direct propertyid + fips
+    if (args.propertyid && args.fips) {
+      const raw = await lpFetch(`/property-data?propertyid=${args.propertyid}&fips=${args.fips}`);
+      return buildResolverResult(raw, { source: 'propertyid_fips', fips: args.fips });
+    }
+
+    // Path 3: APN search
+    if (args.apn) {
+      const params = new URLSearchParams({ type: 'parcelnumb', query: args.apn });
+      if (args.fips) params.set('fips', args.fips);
+      if (args.state) params.set('state', args.state);
+      const searchResult = await lpFetch(`/search?${params}`);
+
+      if (searchResult.error) {
+        return { verified: false, status: 'not_verified', match_notes: `APN search failed: ${searchResult.body?.message ?? searchResult.http_status}`, candidates: [] };
+      }
+
+      const items = extractSearchItems(searchResult);
+      if (items.length === 0) {
+        return { verified: false, status: 'not_verified', match_notes: 'No results found for this APN.', candidates: [] };
+      }
+      if (items.length > 1) {
+        return {
+          verified: false,
+          status: 'multiple_candidates',
+          match_notes: `${items.length} parcels matched this APN. Ask Tyler to select the correct one.`,
+          candidates: items.slice(0, 5).map(formatCandidate),
+        };
+      }
+
+      const match = items[0];
+      if (!match.propertyid || !match.fips) {
+        return { verified: false, status: 'not_verified', match_notes: 'APN search returned a result without propertyid or fips.', candidates: [] };
+      }
+      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`);
+      return buildResolverResult(raw, { source: 'apn_search', fips: match.fips });
+    }
+
+    // Path 4: Owner search
+    if (args.owner) {
+      const params = new URLSearchParams({ type: 'owner', query: args.owner });
+      if (args.state) params.set('state', args.state);
+      const searchResult = await lpFetch(`/search?${params}`);
+
+      if (searchResult.error) {
+        return { verified: false, status: 'not_verified', match_notes: `Owner search failed: ${searchResult.body?.message ?? searchResult.http_status}`, candidates: [] };
+      }
+
+      const items = extractSearchItems(searchResult);
+      if (items.length === 0) {
+        return { verified: false, status: 'not_verified', match_notes: 'No results found for this owner name.', candidates: [] };
+      }
+      if (items.length > 1) {
+        return {
+          verified: false,
+          status: 'multiple_candidates',
+          match_notes: `${items.length} parcels matched this owner. Ask Tyler to select the correct one.`,
+          candidates: items.slice(0, 5).map(formatCandidate),
+        };
+      }
+
+      const match = items[0];
+      if (!match.propertyid || !match.fips) {
+        return { verified: false, status: 'not_verified', match_notes: 'Owner search returned a result without propertyid or fips.', candidates: [] };
+      }
+      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`);
+      return buildResolverResult(raw, { source: 'owner_search', fips: match.fips });
+    }
+
+    // Path 5: Address + city + state
+    if (args.address && args.city && args.state) {
+      if (!args.fips) {
+        return {
+          verified: false,
+          status: 'ambiguous_fips',
+          match_notes: `County or FIPS required for address lookup. Cannot resolve "${args.address}, ${args.city}, ${args.state}" without county scoping. Ask Tyler for county name or 5-digit FIPS code.`,
+          candidates: [],
+        };
+      }
+
+      const { number, streetBody } = parseStreetAddress(args.address);
+
+      const filterResult = await lpFetch('/filter-data/filter', {
+        method: 'POST',
+        body: JSON.stringify({
+          filters: {
+            fips:         { operator: 'condition', comparison: 'is',       value: [args.fips] },
+            situshousenbr:{ operator: 'condition', comparison: 'is',       value: number },
+            situsstreet:  { operator: 'condition', comparison: 'contains', value: streetBody },
+            situscity:    { operator: 'condition', comparison: 'is',       value: args.city.toUpperCase() },
+          },
+        }),
+      });
+
+      if (filterResult.error || !filterResult.success) {
+        return {
+          verified: false,
+          status: 'not_verified',
+          match_notes: `Address filter search failed: ${filterResult.body?.message ?? filterResult.http_status ?? 'unknown error'}`,
+          candidates: [],
+        };
+      }
+
+      const properties = filterResult.data?.properties ?? [];
+      const count = filterResult.data?.count ?? properties.length;
+
+      if (count === 0 || properties.length === 0) {
+        return {
+          verified: false,
+          status: 'not_verified',
+          match_notes: `No parcel found in LP for "${args.address}, ${args.city}, ${args.state}" (FIPS ${args.fips}). Parcel may not exist in LP database or address format differs.`,
+          candidates: [],
+        };
+      }
+
+      if (properties.length > 1) {
+        return {
+          verified: false,
+          status: 'multiple_candidates',
+          match_notes: `${count} parcels matched this address. Ask Tyler to confirm the correct one.`,
+          candidates: properties.slice(0, 5).map(formatCandidate),
+        };
+      }
+
+      const match = properties[0];
+      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`);
+      return buildResolverResult(raw, { source: 'address_filter', fips: match.fips, submitted_address: args.address });
+    }
+
+    return {
+      verified: false,
+      status: 'not_verified',
+      match_notes: 'No usable identifier provided. Supply one of: address+city+state+fips, apn+state, owner+state, propertyid+fips, or lp_url.',
+      candidates: [],
+    };
+  }
+
   if (name === 'lp_search') {
     const params = new URLSearchParams({
       type: args.type,
@@ -313,8 +605,6 @@ async function callTool(name, args = {}) {
 
     if (args.propertyid) params.set('propertyid', args.propertyid);
     if (args.fips) params.set('fips', args.fips);
-    if (args.lat != null) params.set('lat', String(args.lat));
-    if (args.lng != null) params.set('lng', String(args.lng));
 
     const raw = await lpFetch(`/property-data?${params}`);
     return buildPropertySummary(raw);
@@ -344,6 +634,25 @@ async function callTool(name, args = {}) {
   return {
     error: true,
     message: `Unknown tool: ${name}`,
+  };
+}
+
+// Extract the items array from an lp_search response regardless of shape.
+function extractSearchItems(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.data)) return result.data;
+  if (Array.isArray(result?.results)) return result.results;
+  if (Array.isArray(result?.data?.properties)) return result.data.properties;
+  return [];
+}
+
+function formatCandidate(p) {
+  return {
+    propertyid: p.propertyid ?? p.id ?? null,
+    fips: p.fips ?? null,
+    apn: p.apn ?? p.parcelnumb ?? null,
+    situs_address: p.situs_address ?? p.address ?? p.situsfullstreetaddress ?? null,
+    owner: p.owner ?? p.ownername1full ?? null,
   };
 }
 
