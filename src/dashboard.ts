@@ -26,6 +26,7 @@ import {
   getDashboardRecentTokenUsage,
   getSession,
   clearSession,
+  clearConversationHistory,
   getSessionTokenUsage,
   getHiveMindEntries,
   getAgentTokenStats,
@@ -2954,6 +2955,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!chatIdStr) return c.json({ error: 'no chat configured' }, 503);
     const agentId = body?.agentId?.trim() || AGENT_ID;
     clearSession(chatIdStr, agentId);
+    clearConversationHistory(chatIdStr, agentId);
     return c.json({ ok: true });
   });
 

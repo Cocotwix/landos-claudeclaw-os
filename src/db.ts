@@ -772,6 +772,10 @@ export function clearSession(chatId: string, agentId = 'main'): void {
   db.prepare('DELETE FROM sessions WHERE chat_id = ? AND agent_id = ?').run(chatId, agentId);
 }
 
+export function clearConversationHistory(chatId: string, agentId = 'main'): void {
+  db.prepare('DELETE FROM conversation_log WHERE chat_id = ? AND agent_id = ?').run(chatId, agentId);
+}
+
 // ── Memory (V2: structured with LLM extraction) ────────────────────
 
 export interface Memory {

@@ -58,14 +58,16 @@ export function Chat() {
 
   // Load conversation history when active agent changes.
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     const path = activeAgent === 'all'
       ? `/api/chat/history?chatId=${encodeURIComponent(chatId)}&limit=50`
       : `/api/agents/${activeAgent}/conversation?chatId=${encodeURIComponent(chatId)}&limit=50`;
     apiGet<{ turns: Turn[] }>(path)
-      .then((d) => setTurns(d.turns || []))
-      .catch((e) => setError(e?.message || String(e)))
-      .finally(() => setLoading(false));
+      .then((d) => { if (!cancelled) setTurns(d.turns || []); })
+      .catch((e) => { if (!cancelled) setError(e?.message || String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [activeAgent]);
 
   // Auto-scroll only when the user is already near the bottom. New
@@ -160,6 +162,8 @@ export function Chat() {
 
   async function newChat() {
     if (activeAgent === 'all') return;
+    setProcessing(false);
+    setProgressLabel(null);
     setClearingSession(true);
     setError(null);
     try {
@@ -254,7 +258,7 @@ export function Chat() {
             <button
               type="button"
               onClick={() => void newChat()}
-              disabled={activeAgent === 'all' || processing || sending || clearingSession}
+              disabled={activeAgent === 'all' || sending || clearingSession}
               title={activeAgent === 'all' ? 'Select an agent to start a new chat' : 'Clear session and start fresh'}
               class="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
