@@ -304,13 +304,13 @@ export function Chat() {
               type="button"
               onClick={startVoiceInput}
               title="Voice input — audio is processed by your browser, not stored by this app"
-              class={`inline-flex items-center justify-center w-9 h-9 rounded-lg border transition-colors flex-shrink-0 ${
+              class={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0 ${
                 listening
-                  ? 'border-red-400 text-red-400 bg-red-400/10'
-                  : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)] bg-transparent'
+                  ? 'bg-[var(--color-status-failed)] text-white hover:opacity-90'
+                  : 'bg-[var(--color-elevated)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]'
               }`}
             >
-              <Mic size={14} />
+              <Mic size={13} /> {listening ? 'Stop' : 'Mic'}
             </button>
             {processing ? (
               <button
