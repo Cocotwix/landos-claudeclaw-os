@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { Send, Square, Sparkles, ArrowDown, RotateCcw } from 'lucide-preact';
+import { Send, Square, Sparkles, ArrowDown, RotateCcw, Mic } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { StatusDot } from '@/components/Pill';
@@ -30,6 +30,8 @@ export function Chat() {
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
   const [clearingSession, setClearingSession] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [progressLabel, setProgressLabel] = useState<string | null>(null);
@@ -176,6 +178,24 @@ export function Chat() {
     }
   }
 
+  function startVoiceInput() {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { alert('Voice input is not supported in this browser.'); return; }
+    if (listening) { recognitionRef.current?.stop(); return; }
+    const r = new SR();
+    r.continuous = false;
+    r.interimResults = false;
+    recognitionRef.current = r;
+    r.onstart = () => setListening(true);
+    r.onresult = (e: any) => {
+      const transcript = (e.results[0][0].transcript as string) || '';
+      setDraft((prev) => (prev ? prev + ' ' + transcript : transcript));
+    };
+    r.onerror = (e: any) => { if (e.error !== 'no-speech') console.warn('Voice input error:', e.error); };
+    r.onend = () => setListening(false);
+    r.start();
+  }
+
   function quick(prompt: string) {
     void send(prompt);
     inputRef.current?.focus();
@@ -280,6 +300,18 @@ export function Chat() {
               placeholder="Type a message. Shift+Enter for newline."
               class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[13px] outline-none focus:border-[var(--color-accent)] resize-none max-h-32 overflow-y-auto"
             />
+            <button
+              type="button"
+              onClick={startVoiceInput}
+              title="Voice input — audio is processed by your browser, not stored by this app"
+              class={`inline-flex items-center justify-center w-9 h-9 rounded-lg border transition-colors flex-shrink-0 ${
+                listening
+                  ? 'border-red-400 text-red-400 bg-red-400/10'
+                  : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)] bg-transparent'
+              }`}
+            >
+              <Mic size={14} />
+            </button>
             {processing ? (
               <button
                 type="button"
