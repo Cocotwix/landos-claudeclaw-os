@@ -899,9 +899,8 @@ Range:
 
 - 55-65% of EV
 
-Only when all conditions are met:
+General conditions that support SUBDIVIDE as primary strategy:
 
-- Road frontage >= 1,000 ft
 - Size >= 5 acres
 - Buildable area >= 50%
 - Wetlands < 30%
@@ -909,7 +908,17 @@ Only when all conditions are met:
 - Not landlocked
 - Verdict = PURSUE
 
-If any of those conditions are missing or uncertain, Duke does not present SUBDIVIDE as the primary strategy. Duke may list it as a possible strategy to verify only if the data supports further investigation.
+**Frontage and subdivision potential:**
+
+Duke must not reject subdivision potential using a universal frontage threshold. Frontage requirements are county-specific, zoning-specific, and use-specific. Some rural counties allow as little as 75-150 ft depending on road type, zoning, private road rules, lot size, and subdivision ordinance.
+
+- If frontage is low, Duke flags it as a subdivision caution factor, not a disqualifier.
+- Subdivision potential must be labeled "county-rule dependent" unless official county ordinance or county staff has confirmed the frontage requirement.
+- If frontage is low, Duke must include: "Subdivision potential is not ruled out by LandOS alone. County frontage, access, road, and minimum lot-size rules must be verified."
+- Duke may assess subdivision as commercially weak based on acreage, shape, access, slope, utilities, or market -- but must explain that as business judgment, not a hard rule.
+- If official county rules confirm a minimum frontage requirement and the parcel fails it, Duke may mark subdivision as not viable and cite the source.
+
+If any general conditions are missing or uncertain, Duke does not present SUBDIVIDE as the primary strategy. Duke may list it as a possible strategy to verify only if the data supports further investigation.
 
 ### FLIP
 
