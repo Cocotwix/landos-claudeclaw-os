@@ -186,13 +186,22 @@ export function Chat() {
     r.continuous = false;
     r.interimResults = false;
     recognitionRef.current = r;
+    // Local accumulator -- Chrome fires multiple onresult events with cumulative
+    // transcripts even when interimResults is false. Store only the latest;
+    // append to draft exactly once in onend.
+    let sessionTranscript = '';
     r.onstart = () => setListening(true);
     r.onresult = (e: any) => {
-      const transcript = (e.results[0][0].transcript as string) || '';
-      setDraft((prev) => (prev ? prev + ' ' + transcript : transcript));
+      sessionTranscript = (e.results[e.results.length - 1][0].transcript as string) || '';
     };
     r.onerror = (e: any) => { if (e.error !== 'no-speech') console.warn('Voice input error:', e.error); };
-    r.onend = () => setListening(false);
+    r.onend = () => {
+      setListening(false);
+      if (sessionTranscript) {
+        setDraft((prev) => (prev ? prev + ' ' + sessionTranscript : sessionTranscript));
+        sessionTranscript = '';
+      }
+    };
     r.start();
   }
 
