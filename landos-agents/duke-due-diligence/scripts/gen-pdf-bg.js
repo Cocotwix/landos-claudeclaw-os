@@ -99,6 +99,7 @@ const html = `<!DOCTYPE html>
   li { margin-bottom: 0.2em; }
   hr { border: none; border-top: 1px solid #ccc; margin: 1.2em 0; }
   a { color: #1a5276; }
+  img { max-width: 100%; height: auto; page-break-inside: avoid; }
   @media print {
     h1, h2, h3 { page-break-after: avoid; }
     table, pre, blockquote { page-break-inside: avoid; }

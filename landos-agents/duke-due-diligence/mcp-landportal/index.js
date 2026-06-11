@@ -96,6 +96,21 @@ async function lpFetch(endpoint, options = {}) {
 // TODO: Add reliable local county/state or city/state to FIPS resolver from
 // official public data (e.g. Census FIPS table). Do not use geocoding.
 
+// USPS standard suffix abbreviations (Publication 28, Appendix C).
+// Maps full-word street type inputs to the abbreviated form LP stores on disk.
+// e.g. "Circle" -> "CIR" so the filter-data contains check finds "WILL JONES CIR".
+const FULL_TO_ABBREV = {
+  ALLEY: 'ALY', AVENUE: 'AVE', BOULEVARD: 'BLVD', CIRCLE: 'CIR',
+  CIRCLES: 'CIRS', COURT: 'CT', COURTS: 'CTS', COVE: 'CV',
+  CROSSING: 'XING', DRIVE: 'DR', DRIVES: 'DRS', EXPRESSWAY: 'EXPY',
+  FREEWAY: 'FWY', HIGHWAY: 'HWY', LANE: 'LN', LANES: 'LNS',
+  LOOP: 'LOOP', PARKWAY: 'PKWY', PARKWAYS: 'PKWYS',
+  PIKE: 'PIKE', PLACE: 'PL', PLACES: 'PLS', ROAD: 'RD',
+  ROADS: 'RDS', ROUTE: 'RT', ROUTES: 'RTS', SQUARE: 'SQ',
+  STREET: 'ST', STREETS: 'STS', TERRACE: 'TER', TRAIL: 'TRL',
+  TRAILS: 'TRLS', WAY: 'WAY', WAYS: 'WAYS',
+};
+
 // Split "731 Filter Plant Rd" into { number, streetBody }.
 // streetBody is uppercased and trailing street-type suffix stripped so LP's
 // "contains" comparison isn't blocked by how LP stores the suffix.
@@ -106,6 +121,16 @@ function parseStreetAddress(address) {
 
   const number = m[1];
   let street = m[2].trim().toUpperCase();
+
+  // Normalize full-word suffix to its USPS abbreviation before the strip regex.
+  // Prevents false negatives when the user types "Circle" but LP stores "CIR".
+  const parts = street.split(/\s+/);
+  const lastWord = parts[parts.length - 1];
+  if (parts.length > 1 && FULL_TO_ABBREV[lastWord]) {
+    parts[parts.length - 1] = FULL_TO_ABBREV[lastWord];
+    street = parts.join(' ');
+  }
+
   street = street.replace(
     /\s+(RD|ST|AVE|BLVD|DR|LN|CT|WAY|PL|TER|TERR|HWY|PKWY|CIR|LOOP|TRAIL|TRL|PIKE|ROUTE|RT)\.?$/,
     ''
