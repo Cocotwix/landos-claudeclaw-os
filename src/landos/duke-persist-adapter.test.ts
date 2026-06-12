@@ -152,6 +152,14 @@ describe('persistDukeRunPostDelivery', () => {
         additionalRiskScreens: [
           { screen: 'septic_soil', result: 'LP soil data present; Web Soil Survey skipped (budget)', source: 'lp_property_data' },
         ],
+        improvementStatus: 'mobile_or_manufactured_home_present',
+        improvementTypeConfidence: 'listing_signal_needs_verification',
+        visualImprovementSignal: 'mobile/manufactured home appears present',
+        visualConditionSignal: 'dated_repair_needed_signal',
+        yardDebrisSignal: 'visible_debris_signal',
+        occupancySignal: null,
+        manufacturedHomeYearBuilt: '1980',
+        manufacturedHomeFinancingSignal: 'practical_financing_caution_1976_to_1984',
         parcel: {
           address: '100 Test Rd',
           city: 'Testville',
@@ -169,6 +177,11 @@ describe('persistDukeRunPostDelivery', () => {
           { fact: 'owner_name_note', value: 'Last name matches record owner. Possible spouse, family member, or related party. Confirm seller authority during discovery/title.', label: 'Needs verification' },
           { fact: 'record_owner_name', value: 'John Smith', label: 'Verified', source: 'LandPortal property data (ownername1full)' },
           { fact: 'risk_screen: septic_soil', value: 'LP soil data present; Web Soil Survey skipped (budget)', label: 'Needs verification', source: 'lp_property_data' },
+          { fact: 'improvement_status', value: 'mobile_or_manufactured_home_present', label: 'Needs verification', source: 'Zillow/listing visual signal' },
+          { fact: 'visual_condition_signal', value: 'dated_repair_needed_signal', label: 'Needs verification', source: 'listing/photo visual signal' },
+          { fact: 'yard_debris_signal', value: 'visible_debris_signal', label: 'Needs verification', source: 'listing/photo visual signal' },
+          { fact: 'manufactured_home_year_built', value: '1980', label: 'Verified', source: 'county assessor' },
+          { fact: 'manufactured_home_financing_signal', value: 'practical_financing_caution_1976_to_1984', label: 'Needs verification', source: 'Duke strategy rule based on reported manufactured home year' },
         ],
         fileRefs: [
           { kind: 'lp_property_url', pathOrRef: 'https://landportal.com/property?propertyid=999999&fips=48001', note: 'Exact LandPortal property URL' },
@@ -181,12 +194,21 @@ describe('persistDukeRunPostDelivery', () => {
       responseText: FAKE_REPORT + '\n\n' + fullBlock,
     }));
     expect(result).not.toBeNull();
-    expect(result!.factIds).toHaveLength(4);
+    expect(result!.factIds).toHaveLength(9);
 
     const db = getLandosDb();
     const parcel = db.prepare('SELECT * FROM landos_parcel WHERE id = ?').get(result!.parcelId) as Record<string, unknown>;
     expect(parcel.verified).toBe(1);
     expect(parcel.lp_property_id).toBe('999999');
+    const improvementFact = db.prepare(`SELECT value, label FROM landos_fact WHERE fact = 'improvement_status'`).get() as Record<string, unknown>;
+    expect(improvementFact.value).toBe('mobile_or_manufactured_home_present');
+    expect(improvementFact.label).toBe('Needs verification');
+    const mhYearFact = db.prepare(`SELECT value, label, source FROM landos_fact WHERE fact = 'manufactured_home_year_built'`).get() as Record<string, unknown>;
+    expect(mhYearFact.value).toBe('1980');
+    expect(mhYearFact.label).toBe('Verified');
+    expect(mhYearFact.source).toBe('county assessor');
+    const financingFact = db.prepare(`SELECT value FROM landos_fact WHERE fact = 'manufactured_home_financing_signal'`).get() as Record<string, unknown>;
+    expect(financingFact.value).toBe('practical_financing_caution_1976_to_1984');
     const ownerFact = db.prepare(`SELECT value, label FROM landos_fact WHERE fact = 'owner_name_note'`).get() as Record<string, unknown>;
     expect(ownerFact.label).toBe('Needs verification');
     expect(String(ownerFact.value)).toContain('Last name matches record owner');
