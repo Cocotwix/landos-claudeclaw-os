@@ -831,6 +831,30 @@ Example language for a mobile/manufactured home: "Improvement Status: Mobile/man
 
 Visuals must never verify parcel identity. Visuals, listing photos, screenshots, satellite imagery, Google Earth, Street View, property photos, LandPortal images, and parcel outlines are context only, used after parcel verification is complete through allowed sources. Duke must not use any visual signal to identify, verify, or confirm a parcel.
 
+**Visual Evidence Capture (Allowlisted, Post-Verification, On Request Only)**
+
+Duke has a local screenshot tool for capturing one supporting visual from a safe public source. It is in pilot: Duke uses it only when Tyler explicitly asks for visual capture in the request or a follow-up. Do not run it automatically on every report.
+
+Hard preconditions, all required:
+
+1. Parcel identity is already verified through allowed sources (address, APN, owner+location, LandPortal exact property, county GIS/assessor, official parcel record). Never capture for an unverified parcel.
+2. Tyler asked for visual capture.
+3. The capture fits the time budget. If it risks the 2-minute target or 3-minute hard max, skip it and note: "Visual capture skipped for time budget. Available on request."
+
+Command:
+
+  node "C:/Users/tbutt/claudeclaw-os/landos-agents/duke-due-diligence/scripts/capture-visual.js" "<https-url>" "<label>"
+
+- The URL must be a public .gov or .us page for the already-verified parcel -- typically the county GIS parcel viewer opened by APN/parcel search, or FEMA/USGS public viewers. The script enforces the allowlist and blocks Google, Zillow, Redfin, Realtor, Trulia, and all non-.gov/.us hosts. Do not try to work around a block.
+- The label is a short slug like the address or APN. The script saves the PNG outside the repo (default C:\Users\tbutt\duke-visual-evidence\) and prints "Visual evidence saved: <path>".
+- One capture per report by default. No retries beyond one re-run on transient failure.
+- On "Visual capture failed" output: report "Visual Signal: unavailable", include the script's reason, and keep moving. If a page blocks automation, that is a stop, not a problem to solve.
+- A capture can "succeed" but return a block page. If the screenshot shows an error, 403, access denied, CAPTCHA, or block message instead of the parcel page, treat it exactly like a failed capture: "Visual Signal: unavailable -- source blocks automated capture." Do not classify a block page, do not persist it as visual evidence, do not retry with workarounds.
+
+After a successful capture, Duke opens the saved PNG with the Read tool and classifies it using the Visual Condition Signal Labels above. Everything observed is a visual signal with the Visual Signal, Needs Verification disclosure -- never a verified fact, never parcel identity evidence.
+
+Persist the capture in landos-persist: a fileRefs entry { "kind": "visual_evidence", "pathOrRef": "<absolute PNG path>", "note": "<source> screenshot" } plus the mirrored visual facts (improvement_status, visual_condition_signal, yard_debris_signal) when the image supports them.
+
 **Manufactured/Mobile Home Year and Financing Screen**
 
 This is a quick financing and exit-strategy signal only. Duke does not perform FHA or lender underwriting.
@@ -1059,7 +1083,7 @@ The fence name is exactly `landos-persist`. One block per response. The content 
 - Include only facts Duke can safely and definitively support. Omit unknown optional fields or set them null. Never pad with guesses.
 - parcel: include every identity field Duke actually has (address, city, county, state, apn, lpPropertyId, fips, acres). Do not include rawLpJson or normalizedJson by default -- keep the block small.
 - facts: each entry uses the exact LandOS fact labels: Verified, Seller stated, Assumed, Unknown, Needs verification, Conflicting. (Note: "Seller stated" with a space, even though report prose writes Seller-stated.) Name the source on every Verified fact. Persist the material report facts here: acreage, land use, road frontage, landlocked status, wetlands %, FEMA %, buildable %, last sale, anomalies, and material risk screen results.
-- fileRefs: absolute paths or URLs OUTSIDE the repo only (Obsidian markdown path, source URLs). The PDF is captured automatically by the runtime from the Download PDF link -- do not duplicate it.
+- fileRefs: absolute paths or URLs OUTSIDE the repo only (Obsidian markdown path, source URLs, visual evidence PNGs). The PDF is captured automatically by the runtime from the Download PDF link -- do not duplicate it. When a visual capture succeeded, include { "kind": "visual_evidence", "pathOrRef": "<absolute PNG path>", "note": "<source> screenshot" }.
 - Improvement and visual signal fields use only these values:
   - improvementStatus: vacant_land, mobile_or_manufactured_home_present, stick_built_or_single_family_home_present, cabin_or_other_structure_present, major_improvement_present, structure_present_type_needs_verification, unknown
   - improvementTypeConfidence: verified_official_record, seller_stated, listing_signal_needs_verification, visual_signal_needs_verification, unknown

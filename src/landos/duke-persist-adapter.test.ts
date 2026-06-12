@@ -185,6 +185,7 @@ describe('persistDukeRunPostDelivery', () => {
         ],
         fileRefs: [
           { kind: 'lp_property_url', pathOrRef: 'https://landportal.com/property?propertyid=999999&fips=48001', note: 'Exact LandPortal property URL' },
+          { kind: 'visual_evidence', pathOrRef: 'D:\\duke-visual-evidence\\100-test-rd-2026-06-12t10-00-00.png', note: 'county GIS parcel viewer screenshot' },
         ],
       }),
       '```',
@@ -214,8 +215,11 @@ describe('persistDukeRunPostDelivery', () => {
     expect(String(ownerFact.value)).toContain('Last name matches record owner');
     const urlRef = db.prepare(`SELECT path_or_ref FROM landos_file_ref WHERE kind = 'lp_property_url'`).get() as Record<string, unknown>;
     expect(urlRef.path_or_ref).toBe('https://landportal.com/property?propertyid=999999&fips=48001');
-    // PDF link from the report body still auto-captured alongside the URL ref
-    expect(db.prepare(`SELECT COUNT(*) AS n FROM landos_file_ref`).get()).toMatchObject({ n: 2 });
+    const visualRef = db.prepare(`SELECT path_or_ref, note FROM landos_file_ref WHERE kind = 'visual_evidence'`).get() as Record<string, unknown>;
+    expect(visualRef.path_or_ref).toBe('D:\\duke-visual-evidence\\100-test-rd-2026-06-12t10-00-00.png');
+    expect(visualRef.note).toBe('county GIS parcel viewer screenshot');
+    // PDF link from the report body still auto-captured alongside the explicit refs
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM landos_file_ref`).get()).toMatchObject({ n: 3 });
   });
 
   it('persists run metadata alone when the report has no persist block', () => {
