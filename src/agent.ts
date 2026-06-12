@@ -182,6 +182,7 @@ export async function runAgent(
   onStreamText?: (accumulatedText: string) => void,
   mcpAllowlist?: string[],
   mcpCwd?: string,
+  maxTurns?: number,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -245,7 +246,7 @@ export async function runAgent(
 
         // Cap agentic turns to prevent runaway tool-use loops (e.g. retrying
         // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
-        ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
+        ...((() => { const effectiveTurns = maxTurns ?? AGENT_MAX_TURNS; return effectiveTurns > 0 ? { maxTurns: effectiveTurns } : {}; })()),
 
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,

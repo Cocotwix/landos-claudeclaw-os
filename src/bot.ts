@@ -43,6 +43,7 @@ import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
+import { persistDukeRunPostDelivery } from './landos/duke-persist-adapter.js';
 import {
   isLocked,
   lock,
@@ -1662,16 +1663,27 @@ async function processDashboardMessage(
     dashParts.push(text);
     const fullMessage = dashParts.join('\n\n');
 
+    const agentTimeoutMs = effectiveAgentId === 'duke-due-diligence' ? 165_000 : AGENT_TIMEOUT_MS;
+    const effectiveMaxTurns = effectiveAgentId === 'duke-due-diligence' ? 20 : undefined;
+    const runStart = Date.now();
+    logger.info({ agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, maxTurns: effectiveMaxTurns }, 'Dashboard agent run start');
+
+    let toolCallCount = 0;
     const onProgress = (event: AgentProgressEvent) => {
+      if (event.type === 'tool_active') {
+        toolCallCount++;
+        logger.info({ agentId: effectiveAgentId, tool: event.description, elapsedMs: Date.now() - runStart }, 'Dashboard agent tool');
+      }
       emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
     };
 
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
     const dashTimeout = setTimeout(() => {
-      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Dashboard agent query timed out, aborting');
+      const elapsedMs = Date.now() - runStart;
+      logger.warn({ chatId: chatIdStr, agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, elapsedMs }, 'Dashboard agent query timed out, aborting');
       abortCtrl.abort();
-    }, AGENT_TIMEOUT_MS);
+    }, agentTimeoutMs);
 
     const result = await runAgent(
       fullMessage,
@@ -1683,17 +1695,30 @@ async function processDashboardMessage(
       undefined, // no streaming for dashboard
       effectiveMcpAllowlist,
       effectiveMcpCwd,
+      effectiveMaxTurns,
     );
 
     clearTimeout(dashTimeout);
     setActiveAbort(chatIdStr, null);
+    const elapsedMs = Date.now() - runStart;
+    logger.info({ agentId: effectiveAgentId, elapsedMs }, 'Dashboard agent run end');
 
     // Handle abort
     if (result.aborted) {
       const msg = result.text === null
-        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
+        ? `Timed out after ${Math.round(agentTimeoutMs / 1000)}s. Try breaking the task into smaller steps.`
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
+      if (effectiveAgentId === 'duke-due-diligence') {
+        persistDukeRunPostDelivery({
+          agentId: effectiveAgentId,
+          status: 'timeout',
+          elapsedMs,
+          toolCalls: toolCallCount,
+          responseText: result.text,
+          error: result.text === null ? `aborted after ${elapsedMs}ms (timeout ${agentTimeoutMs}ms)` : 'stopped by user',
+        }, (message, err) => logger.warn({ err }, message));
+      }
       return;
     }
 
@@ -1719,6 +1744,19 @@ async function processDashboardMessage(
     // Emit assistant response to SSE clients
     if (cleanedForChat) {
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: cleanedForChat, source: 'dashboard' });
+    }
+
+    // Duke runs become LandOS system-of-record rows. Strictly after the
+    // report is emitted, and nonfatal — a persistence failure never undoes
+    // or delays delivery.
+    if (effectiveAgentId === 'duke-due-diligence') {
+      persistDukeRunPostDelivery({
+        agentId: effectiveAgentId,
+        status: 'success',
+        elapsedMs,
+        toolCalls: toolCallCount,
+        responseText: rawResponse,
+      }, (message, err) => logger.warn({ err }, message));
     }
     // Emit one assistant_photo per http(s) photo URL the agent referenced.
     // Filesystem paths (the standard for Telegram-bound files) are skipped
