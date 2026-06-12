@@ -1410,7 +1410,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
 - Don't wrap your answer in a full plan — just your piece of it.
 - TOOL HONESTY: If you say you'll do something that requires a tool (create a calendar event, send an email, write a file, post a message), you MUST invoke that tool in this turn. If the tool is unavailable or fails, say so plainly ("I don't have the calendar tool wired up here, you'd need to do this manually"). Never claim a side effect you didn't actually perform — the user sees a strip of every tool call you make under your reply, so unbacked claims will be obvious.
 - ALWAYS FINALIZE WITH TEXT: Your last action of the turn must be a plain-text reply, not another tool call. Even if the work isn't fully done, end with one short paragraph saying what landed, what didn't, and what's still needed. Empty bubbles with only a tool strip are a failure case — the user can see the tools but doesn't know if you finished. Budget your tool calls so you have room to summarize before the turn closes.`;
-  const hintToUse = agentId === 'main' ? mainHint : specialistHint;
+  // Duke runs full DD reports — skip the short-answer war-room hint entirely.
+  const hintToUse = agentId === 'main' ? mainHint : agentId === 'duke-due-diligence' ? '' : specialistHint;
 
   const transcriptBlock = buildMeetingContextBlock(meetingId, agentId);
 
@@ -1542,7 +1543,10 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   // whole-meeting watchdog still exists as a hard backstop — these
   // per-agent budgets are the friendly limit that lets ONE slow agent
   // fail without poisoning the rest of the turn.
-  const agentBudgetMs = args.roleBudgetMs ?? (role === 'primary' ? 75_000 : 45_000);
+  // Duke needs more room for full DD: parcel verify + LP calls + web comps + write + PDF.
+  const agentBudgetMs = args.roleBudgetMs ??
+    (agentId === 'duke-due-diligence' ? 180_000 :
+     role === 'primary' ? 75_000 : 45_000);
   let timedOut = false;
   const budgetTimer = setTimeout(() => {
     if (!abortCtrl.signal.aborted) {
@@ -1590,7 +1594,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         // skill flow can complete without being cliff-edged. Cost is
         // bounded by the per-agent budget timer (45-75s) so a runaway
         // tool loop still gets killed at the wall-clock layer.
-        maxTurns: agentId === 'main' ? 10 : 8,
+        maxTurns: agentId === 'main' ? 10 : agentId === 'duke-due-diligence' ? 20 : 8,
         env: sdkEnvStripped(),
         ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         includePartialMessages: true,
