@@ -1,0 +1,743 @@
+// LandOS data layer — OS Spine v1.
+//
+// Dedicated business database opened alongside the ClaudeClaw framework DB.
+// Lives in store/landos.db (gitignored via *.db). All tables are namespaced
+// landos_* so they can never collide with framework tables, and the file is
+// separate so upstream ClaudeClaw schema migrations can never touch business
+// data. Same conventions as src/db.ts: WAL, busy_timeout, idempotent
+// CREATE TABLE IF NOT EXISTS, chmod 0600.
+//
+// Entity separation: every business record carries an entity tag constrained
+// to LAND_ALLY | TY_LAND_BIZ. Records never mix across entities.
+
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+
+import { STORE_DIR } from '../config.js';
+
+export type LandosEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';
+export const LANDOS_ENTITIES: readonly LandosEntity[] = ['LAND_ALLY', 'TY_LAND_BIZ'];
+
+export const FACT_LABELS = [
+  'Verified',
+  'Seller stated',
+  'Assumed',
+  'Unknown',
+  'Needs verification',
+  'Conflicting',
+] as const;
+
+export const RULE_STATUSES = ['draft', 'approved', 'deprecated', 'experimental'] as const;
+
+export const PLAYBOOK_STAGES = [
+  'raw_training',
+  'transcript',
+  'cleaned',
+  'summary',
+  'extracted_lessons',
+  'candidate_playbook',
+  'reviewed_playbook',
+  'approved_rule',
+  'agent_instruction_update',
+] as const;
+
+export const LEAD_STATUSES = [
+  'lead_received',
+  'contact_attempted',
+  'contacted',
+  'discovery_call',
+  'due_diligence',
+  'offer_made',
+  'under_contract',
+  'closing',
+  'sold',
+  'dead',
+  'follow_up_later',
+  'disqualified',
+] as const;
+
+/** Action types that always require a Tyler-approved landos_approval row. */
+export const GATED_ACTION_TYPES = [
+  'seller_message',
+  'crm_change',
+  'paid_credit',
+  'offer_price',
+  'file_deletion',
+  'package_install',
+  'config_security_change',
+  'data_export',
+  'external_connection',
+  'ad_change',
+  'contract_edit',
+] as const;
+
+let landosDb: Database.Database | null = null;
+
+const inList = (vals: readonly string[]): string => vals.map((v) => `'${v}'`).join(',');
+
+function createLandosSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS landos_business_entity (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'active',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS landos_contact (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity          TEXT NOT NULL REFERENCES landos_business_entity(id),
+      name            TEXT NOT NULL,
+      role            TEXT NOT NULL DEFAULT '',
+      phone           TEXT NOT NULL DEFAULT '',
+      email           TEXT NOT NULL DEFAULT '',
+      mailing_address TEXT NOT NULL DEFAULT '',
+      opt_in_source   TEXT NOT NULL DEFAULT '',
+      opt_out         INTEGER NOT NULL DEFAULT 0,
+      dnc_flag        INTEGER NOT NULL DEFAULT 0,
+      notes           TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_contact_entity ON landos_contact(entity, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_seller (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity            TEXT NOT NULL REFERENCES landos_business_entity(id),
+      contact_id        INTEGER REFERENCES landos_contact(id),
+      name              TEXT NOT NULL,
+      authority_status  TEXT NOT NULL DEFAULT 'unverified',
+      notes             TEXT NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_seller_entity ON landos_seller(entity, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_lead (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT NOT NULL REFERENCES landos_business_entity(id),
+      source      TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'lead_received'
+                  CHECK (status IN (${inList(LEAD_STATUSES)})),
+      seller_id   INTEGER REFERENCES landos_seller(id),
+      property_id INTEGER,
+      raw_input   TEXT NOT NULL DEFAULT '',
+      county      TEXT NOT NULL DEFAULT '',
+      state       TEXT NOT NULL DEFAULT '',
+      notes       TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_lead_entity ON landos_lead(entity, status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_property (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT NOT NULL REFERENCES landos_business_entity(id),
+      address     TEXT NOT NULL DEFAULT '',
+      city        TEXT NOT NULL DEFAULT '',
+      state       TEXT NOT NULL DEFAULT '',
+      county      TEXT NOT NULL DEFAULT '',
+      fips        TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'active',
+      notes       TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_property_entity ON landos_property(entity, created_at DESC);
+
+    -- Parcel identity + LandPortal persistence (Duke workflow route point).
+    -- raw_lp_json holds the shaped lp_resolve_property / lp_property_data
+    -- response; normalized_json holds the extracted DD field object.
+    CREATE TABLE IF NOT EXISTS landos_parcel (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity              TEXT NOT NULL REFERENCES landos_business_entity(id),
+      property_id         INTEGER REFERENCES landos_property(id),
+      apn                 TEXT NOT NULL DEFAULT '',
+      lp_property_id      TEXT NOT NULL DEFAULT '',
+      fips                TEXT NOT NULL DEFAULT '',
+      county              TEXT NOT NULL DEFAULT '',
+      state               TEXT NOT NULL DEFAULT '',
+      acres               REAL,
+      verified            INTEGER NOT NULL DEFAULT 0,
+      verification_source TEXT NOT NULL DEFAULT '',
+      verified_at         INTEGER,
+      raw_lp_json         TEXT NOT NULL DEFAULT '',
+      normalized_json     TEXT NOT NULL DEFAULT '',
+      created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_parcel_entity ON landos_parcel(entity, verified, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_parcel_lpid ON landos_parcel(lp_property_id, fips);
+
+    CREATE TABLE IF NOT EXISTS landos_deal (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity        TEXT NOT NULL REFERENCES landos_business_entity(id),
+      lead_id       INTEGER REFERENCES landos_lead(id),
+      property_id   INTEGER REFERENCES landos_property(id),
+      status        TEXT NOT NULL DEFAULT 'evaluating',
+      strategy      TEXT NOT NULL DEFAULT '',
+      target_offer  REAL,
+      max_offer     REAL,
+      walk_away     REAL,
+      notes         TEXT NOT NULL DEFAULT '',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_entity ON landos_deal(entity, status, created_at DESC);
+
+    -- Fact registry with confidence labels and source tracking.
+    CREATE TABLE IF NOT EXISTS landos_fact (
+      id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity                          TEXT NOT NULL REFERENCES landos_business_entity(id),
+      deal_id                         INTEGER REFERENCES landos_deal(id),
+      parcel_id                       INTEGER REFERENCES landos_parcel(id),
+      fact                            TEXT NOT NULL,
+      value                           TEXT NOT NULL DEFAULT '',
+      label                           TEXT NOT NULL
+                                      CHECK (label IN (${inList(FACT_LABELS)})),
+      source                          TEXT NOT NULL DEFAULT '',
+      source_type                     TEXT NOT NULL DEFAULT '',
+      source_ref                      TEXT NOT NULL DEFAULT '',
+      date_checked                    TEXT NOT NULL DEFAULT '',
+      checked_by                      TEXT NOT NULL DEFAULT '',
+      seller_facing_safe              INTEGER NOT NULL DEFAULT 0,
+      requires_official_verification  INTEGER NOT NULL DEFAULT 0,
+      affects                         TEXT NOT NULL DEFAULT '',
+      created_at                      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_fact_parcel ON landos_fact(parcel_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_fact_deal ON landos_fact(deal_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_task (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT NOT NULL REFERENCES landos_business_entity(id),
+      deal_id     INTEGER REFERENCES landos_deal(id),
+      title       TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'open',
+      assignee    TEXT NOT NULL DEFAULT '',
+      due_at      INTEGER,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_task_entity ON landos_task(entity, status, created_at DESC);
+
+    -- Pointers to files that live OUTSIDE the repo (Obsidian vault, PDF
+    -- output). Paths only; never file contents and never repo paths.
+    CREATE TABLE IF NOT EXISTS landos_file_ref (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity       TEXT NOT NULL REFERENCES landos_business_entity(id),
+      deal_id      INTEGER REFERENCES landos_deal(id),
+      kind         TEXT NOT NULL DEFAULT '',
+      path_or_ref  TEXT NOT NULL,
+      note         TEXT NOT NULL DEFAULT '',
+      created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_file_ref_deal ON landos_file_ref(deal_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_note (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT NOT NULL REFERENCES landos_business_entity(id),
+      deal_id     INTEGER REFERENCES landos_deal(id),
+      body        TEXT NOT NULL,
+      author      TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_note_deal ON landos_note(deal_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_agent_run (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id    TEXT NOT NULL,
+      entity      TEXT,
+      workflow    TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'running',
+      started_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      finished_at INTEGER,
+      duration_ms INTEGER,
+      summary     TEXT NOT NULL DEFAULT '',
+      error       TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_agent_run_agent ON landos_agent_run(agent_id, created_at DESC);
+
+    -- Approval spine. Gated actions block until a pending row is approved.
+    -- Approvals are single-use: consumed_at is set when the gated action runs.
+    CREATE TABLE IF NOT EXISTS landos_approval (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity        TEXT,
+      action_type   TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      payload       TEXT NOT NULL DEFAULT '',
+      requested_by  TEXT NOT NULL DEFAULT '',
+      status        TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','approved','rejected')),
+      decided_at    INTEGER,
+      decided_by    TEXT NOT NULL DEFAULT '',
+      decision_note TEXT NOT NULL DEFAULT '',
+      consumed_at   INTEGER,
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_approval_status ON landos_approval(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_audit_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT,
+      actor       TEXT NOT NULL DEFAULT '',
+      action      TEXT NOT NULL,
+      detail      TEXT NOT NULL DEFAULT '',
+      ref_table   TEXT NOT NULL DEFAULT '',
+      ref_id      INTEGER,
+      blocked     INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_audit_time ON landos_audit_log(created_at DESC);
+
+    -- Rules registry. Raw training never auto-becomes an approved rule.
+    CREATE TABLE IF NOT EXISTS landos_rule (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT,
+      scope       TEXT NOT NULL DEFAULT 'global'
+                  CHECK (scope IN ('global','entity','strategy','deal')),
+      name        TEXT NOT NULL,
+      body        TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'draft'
+                  CHECK (status IN (${inList(RULE_STATUSES)})),
+      source      TEXT NOT NULL DEFAULT '',
+      version     INTEGER NOT NULL DEFAULT 1,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_rule_status ON landos_rule(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_playbook (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT,
+      name        TEXT NOT NULL,
+      stage       TEXT NOT NULL DEFAULT 'raw_training'
+                  CHECK (stage IN (${inList(PLAYBOOK_STAGES)})),
+      body        TEXT NOT NULL DEFAULT '',
+      source_ref  TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_playbook_stage ON landos_playbook(stage, created_at DESC);
+
+    -- Model usage tracking foundation. No providers wired in OS Spine v1;
+    -- the schema exists so usage is trackable when routing lands.
+    CREATE TABLE IF NOT EXISTS landos_model_call (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id      TEXT NOT NULL DEFAULT '',
+      provider      TEXT NOT NULL DEFAULT '',
+      model         TEXT NOT NULL DEFAULT '',
+      task_class    TEXT NOT NULL DEFAULT '',
+      sensitivity   TEXT NOT NULL DEFAULT '',
+      input_tokens  INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      est_cost_usd  REAL NOT NULL DEFAULT 0,
+      workflow      TEXT NOT NULL DEFAULT '',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_model_call_time ON landos_model_call(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_cost_record (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT,
+      category    TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      amount_usd  REAL NOT NULL DEFAULT 0,
+      ref_table   TEXT NOT NULL DEFAULT '',
+      ref_id      INTEGER,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_cost_time ON landos_cost_record(created_at DESC);
+
+    -- Security review records: repo / package / MCP review checklist.
+    CREATE TABLE IF NOT EXISTS landos_security_review (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject_type    TEXT NOT NULL DEFAULT '',
+      subject         TEXT NOT NULL,
+      maintainer      TEXT NOT NULL DEFAULT '',
+      last_commit     TEXT NOT NULL DEFAULT '',
+      install_scripts TEXT NOT NULL DEFAULT '',
+      network_access  TEXT NOT NULL DEFAULT '',
+      file_access     TEXT NOT NULL DEFAULT '',
+      env_access      TEXT NOT NULL DEFAULT '',
+      telemetry       TEXT NOT NULL DEFAULT '',
+      cves            TEXT NOT NULL DEFAULT '',
+      license         TEXT NOT NULL DEFAULT '',
+      sandbox_tested  INTEGER NOT NULL DEFAULT 0,
+      verdict         TEXT NOT NULL DEFAULT 'pending',
+      notes           TEXT NOT NULL DEFAULT '',
+      reviewer        TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_secreview_time ON landos_security_review(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_research_item (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind        TEXT NOT NULL
+                  CHECK (kind IN ('market','industry','ai_change')),
+      entity      TEXT,
+      title       TEXT NOT NULL,
+      body        TEXT NOT NULL DEFAULT '',
+      score       REAL,
+      status      TEXT NOT NULL DEFAULT 'new',
+      route_to    TEXT NOT NULL DEFAULT '',
+      source_url  TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_research_kind ON landos_research_item(kind, status, created_at DESC);
+  `);
+
+  db.prepare(
+    `INSERT OR IGNORE INTO landos_business_entity (id, name) VALUES (?, ?)`,
+  ).run('LAND_ALLY', 'Land Ally');
+  db.prepare(
+    `INSERT OR IGNORE INTO landos_business_entity (id, name) VALUES (?, ?)`,
+  ).run('TY_LAND_BIZ', "Ty's Land Biz");
+}
+
+/** Open (or return) the LandOS database. Lazy so processes that never touch
+ *  LandOS data never create the file. */
+export function getLandosDb(): Database.Database {
+  if (landosDb) return landosDb;
+  fs.mkdirSync(STORE_DIR, { recursive: true });
+  const dbPath = path.join(STORE_DIR, 'landos.db');
+  landosDb = new Database(dbPath);
+  landosDb.pragma('journal_mode = WAL');
+  landosDb.pragma('busy_timeout = 5000');
+  createLandosSchema(landosDb);
+  try {
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = dbPath + suffix;
+      if (fs.existsSync(f)) fs.chmodSync(f, 0o600);
+    }
+  } catch { /* non-fatal on platforms without chmod */ }
+  return landosDb;
+}
+
+/** @internal — tests only. Fresh in-memory LandOS database. */
+export function _initTestLandosDb(): void {
+  landosDb = new Database(':memory:');
+  createLandosSchema(landosDb);
+}
+
+// ── Audit ────────────────────────────────────────────────────────────
+
+export function landosAudit(
+  actor: string,
+  action: string,
+  detail = '',
+  opts: { entity?: string | null; refTable?: string; refId?: number; blocked?: boolean } = {},
+): number {
+  const db = getLandosDb();
+  const result = db.prepare(
+    `INSERT INTO landos_audit_log (entity, actor, action, detail, ref_table, ref_id, blocked)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.entity ?? null,
+    actor,
+    action,
+    detail,
+    opts.refTable ?? '',
+    opts.refId ?? null,
+    opts.blocked ? 1 : 0,
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function listLandosAudit(limit = 100): unknown[] {
+  return getLandosDb()
+    .prepare('SELECT * FROM landos_audit_log ORDER BY created_at DESC, id DESC LIMIT ?')
+    .all(limit);
+}
+
+// ── Approval spine ───────────────────────────────────────────────────
+
+export interface LandosApproval {
+  id: number;
+  entity: string | null;
+  action_type: string;
+  title: string;
+  payload: string;
+  requested_by: string;
+  status: 'pending' | 'approved' | 'rejected';
+  decided_at: number | null;
+  decided_by: string;
+  decision_note: string;
+  consumed_at: number | null;
+  created_at: number;
+}
+
+export function createApproval(opts: {
+  actionType: string;
+  title: string;
+  payload?: unknown;
+  requestedBy: string;
+  entity?: LandosEntity | null;
+}): number {
+  const db = getLandosDb();
+  const result = db.prepare(
+    `INSERT INTO landos_approval (entity, action_type, title, payload, requested_by)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    opts.entity ?? null,
+    opts.actionType,
+    opts.title,
+    opts.payload === undefined ? '' : JSON.stringify(opts.payload),
+    opts.requestedBy,
+  );
+  const id = result.lastInsertRowid as number;
+  landosAudit(opts.requestedBy, 'approval_requested', `${opts.actionType}: ${opts.title}`, {
+    entity: opts.entity ?? null,
+    refTable: 'landos_approval',
+    refId: id,
+  });
+  return id;
+}
+
+export function getApproval(id: number): LandosApproval | undefined {
+  return getLandosDb()
+    .prepare('SELECT * FROM landos_approval WHERE id = ?')
+    .get(id) as LandosApproval | undefined;
+}
+
+export function listApprovals(status?: string, limit = 100): LandosApproval[] {
+  const db = getLandosDb();
+  if (status) {
+    return db
+      .prepare('SELECT * FROM landos_approval WHERE status = ? ORDER BY created_at DESC, id DESC LIMIT ?')
+      .all(status, limit) as LandosApproval[];
+  }
+  return db
+    .prepare('SELECT * FROM landos_approval ORDER BY created_at DESC, id DESC LIMIT ?')
+    .all(limit) as LandosApproval[];
+}
+
+export function decideApproval(
+  id: number,
+  decision: 'approved' | 'rejected',
+  decidedBy: string,
+  note = '',
+): LandosApproval | undefined {
+  const db = getLandosDb();
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE landos_approval SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?
+     WHERE id = ? AND status = 'pending'`,
+  ).run(decision, now, decidedBy, note, id);
+  if (result.changes === 0) return undefined;
+  const row = getApproval(id);
+  landosAudit(decidedBy, `approval_${decision}`, `${row?.action_type ?? ''}: ${row?.title ?? ''}${note ? ` — ${note}` : ''}`, {
+    entity: row?.entity ?? null,
+    refTable: 'landos_approval',
+    refId: id,
+  });
+  return row;
+}
+
+export interface GateResult {
+  allowed: boolean;
+  approvalId: number;
+  status: string;
+}
+
+/**
+ * Approval gate for gated actions. Behavior:
+ *  - No approvalId: creates a pending approval, audits as blocked, returns
+ *    allowed:false. The caller must surface the approval id and stop.
+ *  - approvalId for an approved, unconsumed approval of the same action type:
+ *    consumes it (single-use), audits as allowed, returns allowed:true.
+ *  - Anything else (pending, rejected, already consumed, wrong type):
+ *    audits as blocked, returns allowed:false.
+ */
+export function gateAction(opts: {
+  actionType: string;
+  title: string;
+  payload?: unknown;
+  requestedBy: string;
+  entity?: LandosEntity | null;
+  approvalId?: number;
+}): GateResult {
+  const db = getLandosDb();
+
+  if (opts.approvalId !== undefined) {
+    const row = getApproval(opts.approvalId);
+    if (
+      row &&
+      row.status === 'approved' &&
+      row.consumed_at === null &&
+      row.action_type === opts.actionType
+    ) {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare('UPDATE landos_approval SET consumed_at = ? WHERE id = ?').run(now, row.id);
+      landosAudit(opts.requestedBy, 'gated_action_executed', `${opts.actionType}: ${opts.title}`, {
+        entity: opts.entity ?? null,
+        refTable: 'landos_approval',
+        refId: row.id,
+      });
+      return { allowed: true, approvalId: row.id, status: 'approved' };
+    }
+    landosAudit(opts.requestedBy, 'gated_action_blocked', `${opts.actionType}: ${opts.title} (approval ${opts.approvalId} not usable: ${row?.status ?? 'missing'}${row?.consumed_at ? ', consumed' : ''})`, {
+      entity: opts.entity ?? null,
+      refTable: 'landos_approval',
+      refId: opts.approvalId,
+      blocked: true,
+    });
+    return { allowed: false, approvalId: opts.approvalId, status: row?.status ?? 'missing' };
+  }
+
+  const approvalId = createApproval(opts);
+  landosAudit(opts.requestedBy, 'gated_action_blocked', `${opts.actionType}: ${opts.title} (approval required)`, {
+    entity: opts.entity ?? null,
+    refTable: 'landos_approval',
+    refId: approvalId,
+    blocked: true,
+  });
+  return { allowed: false, approvalId, status: 'pending' };
+}
+
+// ── Agent runs ───────────────────────────────────────────────────────
+
+export function startAgentRun(agentId: string, workflow: string, entity?: LandosEntity | null): number {
+  const result = getLandosDb().prepare(
+    `INSERT INTO landos_agent_run (agent_id, entity, workflow, status) VALUES (?, ?, ?, 'running')`,
+  ).run(agentId, entity ?? null, workflow);
+  const id = result.lastInsertRowid as number;
+  landosAudit(agentId, 'agent_run_started', workflow, { entity: entity ?? null, refTable: 'landos_agent_run', refId: id });
+  return id;
+}
+
+export function finishAgentRun(
+  id: number,
+  status: 'success' | 'failed' | 'timeout',
+  summary = '',
+  error = '',
+): void {
+  const db = getLandosDb();
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT agent_id, started_at, workflow FROM landos_agent_run WHERE id = ?').get(id) as
+    | { agent_id: string; started_at: number; workflow: string }
+    | undefined;
+  db.prepare(
+    `UPDATE landos_agent_run SET status = ?, finished_at = ?, duration_ms = ?, summary = ?, error = ? WHERE id = ?`,
+  ).run(status, now, row ? (now - row.started_at) * 1000 : null, summary, error, id);
+  landosAudit(row?.agent_id ?? '', 'agent_run_finished', `${row?.workflow ?? ''}: ${status}`, {
+    refTable: 'landos_agent_run',
+    refId: id,
+  });
+}
+
+// ── Model calls and costs (foundation only — no providers wired) ────
+
+export function logModelCall(opts: {
+  agentId: string;
+  provider: string;
+  model: string;
+  taskClass: string;
+  sensitivity?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  estCostUsd?: number;
+  workflow?: string;
+}): number {
+  const result = getLandosDb().prepare(
+    `INSERT INTO landos_model_call
+       (agent_id, provider, model, task_class, sensitivity, input_tokens, output_tokens, est_cost_usd, workflow)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.agentId,
+    opts.provider,
+    opts.model,
+    opts.taskClass,
+    opts.sensitivity ?? '',
+    opts.inputTokens ?? 0,
+    opts.outputTokens ?? 0,
+    opts.estCostUsd ?? 0,
+    opts.workflow ?? '',
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function logCostRecord(opts: {
+  entity?: LandosEntity | null;
+  category: string;
+  description?: string;
+  amountUsd: number;
+  refTable?: string;
+  refId?: number;
+}): number {
+  const result = getLandosDb().prepare(
+    `INSERT INTO landos_cost_record (entity, category, description, amount_usd, ref_table, ref_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(opts.entity ?? null, opts.category, opts.description ?? '', opts.amountUsd, opts.refTable ?? '', opts.refId ?? null);
+  return result.lastInsertRowid as number;
+}
+
+// ── Generic list/count helpers for the dashboard ─────────────────────
+
+const ENTITY_TABLES = [
+  'landos_contact', 'landos_seller', 'landos_lead', 'landos_property',
+  'landos_parcel', 'landos_deal', 'landos_fact', 'landos_task',
+  'landos_file_ref', 'landos_note',
+] as const;
+
+const NO_ENTITY_TABLES = [
+  'landos_agent_run', 'landos_approval', 'landos_audit_log', 'landos_rule',
+  'landos_playbook', 'landos_model_call', 'landos_cost_record',
+  'landos_security_review', 'landos_research_item',
+] as const;
+
+type LandosTable = (typeof ENTITY_TABLES)[number] | (typeof NO_ENTITY_TABLES)[number];
+
+function isEntityTable(table: LandosTable): boolean {
+  return (ENTITY_TABLES as readonly string[]).includes(table);
+}
+
+export function countRows(table: LandosTable, entity?: string): number {
+  const db = getLandosDb();
+  if (entity && isEntityTable(table)) {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE entity = ?`).get(entity) as { n: number };
+    return row.n;
+  }
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+  return row.n;
+}
+
+export function listRows(table: LandosTable, opts: { entity?: string; limit?: number } = {}): unknown[] {
+  const db = getLandosDb();
+  const limit = Math.min(opts.limit ?? 100, 500);
+  if (opts.entity && isEntityTable(table)) {
+    return db
+      .prepare(`SELECT * FROM ${table} WHERE entity = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .all(opts.entity, limit);
+  }
+  return db.prepare(`SELECT * FROM ${table} ORDER BY created_at DESC, id DESC LIMIT ?`).all(limit);
+}
+
+export interface LandosOverview {
+  entity: string | null;
+  counts: Record<string, number>;
+  pendingApprovals: number;
+  modelCostUsd: number;
+  costRecordsUsd: number;
+}
+
+export function getOverview(entity?: string): LandosOverview {
+  const db = getLandosDb();
+  const counts: Record<string, number> = {};
+  for (const table of [...ENTITY_TABLES, ...NO_ENTITY_TABLES]) {
+    counts[table.replace('landos_', '')] = countRows(table, entity);
+  }
+  const pending = db.prepare(`SELECT COUNT(*) AS n FROM landos_approval WHERE status = 'pending'`).get() as { n: number };
+  const modelCost = db.prepare(`SELECT COALESCE(SUM(est_cost_usd), 0) AS s FROM landos_model_call`).get() as { s: number };
+  const costSum = db.prepare(`SELECT COALESCE(SUM(amount_usd), 0) AS s FROM landos_cost_record`).get() as { s: number };
+  return {
+    entity: entity ?? null,
+    counts,
+    pendingApprovals: pending.n,
+    modelCostUsd: modelCost.s,
+    costRecordsUsd: costSum.s,
+  };
+}

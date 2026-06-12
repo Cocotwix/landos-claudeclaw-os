@@ -107,6 +107,7 @@ import {
   getOpenTextMeetingIds,
   getTextMeetings,
 } from './db.js';
+import { registerLandosRoutes } from './landos/routes.js';
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
@@ -3004,6 +3005,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       },
     });
   });
+
+  // LandOS OS Spine v1 module routes (src/landos/). Registered behind the
+  // token middleware like every other /api route.
+  registerLandosRoutes(app);
 
   // SPA catch-all — any unmatched GET to a non-/api/* path falls through
   // to here and serves the v2 SPA index.html. Wouter (the SPA's router)

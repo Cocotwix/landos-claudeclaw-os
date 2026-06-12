@@ -17,6 +17,7 @@ import { Voices } from '@/pages/Voices';
 import { Chat } from '@/pages/Chat';
 import { WarRoom } from '@/pages/WarRoom';
 import { AgentFiles } from '@/pages/AgentFiles';
+import { LandOS } from '@/pages/LandOS';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -46,6 +47,7 @@ export function App() {
       <main class="flex-1 min-w-0 overflow-hidden pl-12 md:pl-0">
         <Switch>
           <Route path="/mission"><MissionControl /></Route>
+          <Route path="/landos"><LandOS /></Route>
           <Route path="/scheduled"><Scheduled /></Route>
           <Route path="/agents"><Agents /></Route>
           <Route path="/agents/:id/files"><AgentFiles /></Route>
