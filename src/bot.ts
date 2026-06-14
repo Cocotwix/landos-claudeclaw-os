@@ -1692,7 +1692,7 @@ async function processDashboardMessage(
     dashParts.push(text);
     const fullMessage = dashParts.join('\n\n');
 
-    const agentTimeoutMs = effectiveAgentId === 'duke-due-diligence' ? 180_000 : AGENT_TIMEOUT_MS;
+    const agentTimeoutMs = effectiveAgentId === 'duke-due-diligence' ? 120_000 : AGENT_TIMEOUT_MS;
     const effectiveMaxTurns = effectiveAgentId === 'duke-due-diligence' ? 20 : undefined;
     const runStart = Date.now();
     logger.info({ event: 'dashboard_agent_run_start', agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, maxTurns: effectiveMaxTurns }, 'dashboard_agent_run_start');
@@ -1742,7 +1742,9 @@ async function processDashboardMessage(
         ? ' Memory consolidation is currently paused due to Gemini quota/rate limits.'
         : '';
       const msg = result.text === null
-        ? `Timed out after ${Math.round(agentTimeoutMs / 1000)}s [${effectiveAgentId}].${quotaNote} Check logs for details or try a shorter prompt.`
+        ? (effectiveAgentId === 'duke-due-diligence'
+            ? 'LandPortal lookup did not respond in time. Parcel not verified -- no scoring, valuation, or offer. Retry the address, or provide APN + county for direct lookup.'
+            : `Timed out after ${Math.round(agentTimeoutMs / 1000)}s [${effectiveAgentId}].${quotaNote} Check logs for details or try a shorter prompt.`)
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
       if (effectiveAgentId === 'duke-due-diligence') {

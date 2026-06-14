@@ -61,9 +61,10 @@ if (!TOKEN) {
 
 const BASE_URL = 'https://landportal.com/wp-json/lp-rest-api/v1';
 
-async function lpFetch(endpoint, options = {}) {
+async function lpFetch(endpoint, options = {}, signal = null) {
   const response = await fetch(`${BASE_URL}${endpoint}`, {
     ...options,
+    ...(signal ? { signal } : {}),
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       'Content-Type': 'application/json',
@@ -459,7 +460,7 @@ const TOOLS = [
   },
 ];
 
-async function callTool(name, args = {}) {
+async function callTool(name, args = {}, signal = null) {
   if (name === 'lp_resolve_property') {
     // Path 1: LandPortal URL
     if (args.lp_url) {
@@ -472,13 +473,13 @@ async function callTool(name, args = {}) {
           candidates: [],
         };
       }
-      const raw = await lpFetch(`/property-data?propertyid=${extracted.propertyid}&fips=${extracted.fips}`);
+      const raw = await lpFetch(`/property-data?propertyid=${extracted.propertyid}&fips=${extracted.fips}`, {}, signal);
       return buildResolverResult(raw, { source: 'lp_url', fips: extracted.fips });
     }
 
     // Path 2: Direct propertyid + fips
     if (args.propertyid && args.fips) {
-      const raw = await lpFetch(`/property-data?propertyid=${args.propertyid}&fips=${args.fips}`);
+      const raw = await lpFetch(`/property-data?propertyid=${args.propertyid}&fips=${args.fips}`, {}, signal);
       return buildResolverResult(raw, { source: 'propertyid_fips', fips: args.fips });
     }
 
@@ -487,7 +488,7 @@ async function callTool(name, args = {}) {
       const params = new URLSearchParams({ type: 'parcelnumb', query: args.apn });
       if (args.fips) params.set('fips', args.fips);
       if (args.state) params.set('state', args.state);
-      const searchResult = await lpFetch(`/search?${params}`);
+      const searchResult = await lpFetch(`/search?${params}`, {}, signal);
 
       if (searchResult.error) {
         return { verified: false, status: 'not_verified', match_notes: `APN search failed: ${searchResult.body?.message ?? searchResult.http_status}`, candidates: [] };
@@ -510,7 +511,7 @@ async function callTool(name, args = {}) {
       if (!match.propertyid || !match.fips) {
         return { verified: false, status: 'not_verified', match_notes: 'APN search returned a result without propertyid or fips.', candidates: [] };
       }
-      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`);
+      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`, {}, signal);
       return buildResolverResult(raw, { source: 'apn_search', fips: match.fips });
     }
 
@@ -518,7 +519,7 @@ async function callTool(name, args = {}) {
     if (args.owner) {
       const params = new URLSearchParams({ type: 'owner', query: args.owner });
       if (args.state) params.set('state', args.state);
-      const searchResult = await lpFetch(`/search?${params}`);
+      const searchResult = await lpFetch(`/search?${params}`, {}, signal);
 
       if (searchResult.error) {
         return { verified: false, status: 'not_verified', match_notes: `Owner search failed: ${searchResult.body?.message ?? searchResult.http_status}`, candidates: [] };
@@ -541,7 +542,7 @@ async function callTool(name, args = {}) {
       if (!match.propertyid || !match.fips) {
         return { verified: false, status: 'not_verified', match_notes: 'Owner search returned a result without propertyid or fips.', candidates: [] };
       }
-      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`);
+      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`, {}, signal);
       return buildResolverResult(raw, { source: 'owner_search', fips: match.fips });
     }
 
@@ -568,7 +569,7 @@ async function callTool(name, args = {}) {
             situscity:    { operator: 'condition', comparison: 'is',       value: args.city.toUpperCase() },
           },
         }),
-      });
+      }, signal);
 
       if (filterResult.error || !filterResult.success) {
         return {
@@ -601,7 +602,7 @@ async function callTool(name, args = {}) {
       }
 
       const match = properties[0];
-      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`);
+      const raw = await lpFetch(`/property-data?propertyid=${match.propertyid}&fips=${match.fips}`, {}, signal);
       return buildResolverResult(raw, { source: 'address_filter', fips: match.fips, submitted_address: args.address });
     }
 
@@ -622,7 +623,7 @@ async function callTool(name, args = {}) {
     if (args.fips) params.set('fips', args.fips);
     if (args.state) params.set('state', args.state);
 
-    return lpFetch(`/search?${params}`);
+    return lpFetch(`/search?${params}`, {}, signal);
   }
 
   if (name === 'lp_property_data') {
@@ -631,7 +632,7 @@ async function callTool(name, args = {}) {
     if (args.propertyid) params.set('propertyid', args.propertyid);
     if (args.fips) params.set('fips', args.fips);
 
-    const raw = await lpFetch(`/property-data?${params}`);
+    const raw = await lpFetch(`/property-data?${params}`, {}, signal);
     return buildPropertySummary(raw);
   }
 
@@ -719,27 +720,15 @@ function sendToolResult(id, text, isError = false) {
   sendOk(id, result);
 }
 
-// Per-tool call timeouts (ms). Lookup tools that make one or more LP HTTP
-// requests can hang indefinitely if the LP API stalls. These limits ensure
-// Duke receives a controlled timeout result with time left to respond before
-// the dashboard's 180-second agent timeout fires.
-const TOOL_TIMEOUTS_MS = {
-  lp_resolve_property: 45_000,
-  lp_property_data:    45_000,
-  lp_search:           30_000,
+// Per-fetch AbortController timeout. Each individual lpFetch call aborts at
+// this limit via AbortSignal passed through callTool → lpFetch → fetch().
+// lp_resolve_property makes at most 2 serial fetches (max 70s total),
+// leaving Duke enough time to respond before the dashboard's 120s timeout.
+const TOOL_TIMEOUT_MS = {
+  lp_resolve_property: 35_000,
+  lp_property_data:    35_000,
+  lp_search:           25_000,
 };
-
-function withToolTimeout(promise, toolName) {
-  const ms = TOOL_TIMEOUTS_MS[toolName];
-  if (!ms) return promise;
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      reject(Object.assign(new Error('LP_TIMEOUT'), { isLpTimeout: true, toolName, timeoutMs: ms }));
-    }, ms);
-  });
-  return Promise.race([promise.finally(() => clearTimeout(timer)), timeout]);
-}
 
 async function handle(req) {
   const { id, method, params } = req;
@@ -774,19 +763,24 @@ async function handle(req) {
       return sendErr(id, -32602, 'Missing tool name');
     }
 
+    const timeoutMs = TOOL_TIMEOUT_MS[name];
+    const ac = timeoutMs ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), timeoutMs) : null;
     try {
-      const data = await withToolTimeout(callTool(name, args ?? {}), name);
+      const data = await callTool(name, args ?? {}, ac?.signal ?? null);
+      if (timer) clearTimeout(timer);
       sendToolResult(id, JSON.stringify(data, null, 2));
     } catch (err) {
-      if (err.isLpTimeout) {
-        const seconds = Math.round(err.timeoutMs / 1000);
-        process.stderr.write(`[landportal-mcp] ${err.toolName} timed out after ${seconds}s\n`);
+      if (timer) clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        const seconds = Math.round(timeoutMs / 1000);
+        process.stderr.write(`[landportal-mcp] ${name} fetch aborted after ${seconds}s\n`);
         sendToolResult(id, JSON.stringify({
           verified: false,
           status: 'lookup_timeout',
           timed_out: true,
           timeout_seconds: seconds,
-          match_notes: `LandPortal ${err.toolName} did not respond within ${seconds}s. Parcel not verified. Do not score, value, or offer. Report lookup timed out.`,
+          match_notes: `LandPortal ${name} fetch aborted after ${seconds}s. Parcel not verified. Do not score, value, or offer. Report lookup timed out.`,
         }, null, 2), true);
       } else {
         sendToolResult(id, `Tool error: ${err.message}`, true);
