@@ -76,11 +76,16 @@ export async function buildMemoryContext(
   const summaryMap = new Map<number, string>();
   const memLines: string[] = [];
 
-  // Embed the query for vector search (async, adds ~200ms but gives semantic results)
+  // Embed the query for vector search (async, adds ~200ms but gives semantic results).
+  // Hard 3s timeout so a stalled Gemini call can't delay the agent's own timer.
   let queryEmbedding: number[] | undefined;
   if (GOOGLE_API_KEY) {
     try {
-      queryEmbedding = await embedText(userMessage);
+      const embedding = await Promise.race([
+        embedText(userMessage),
+        new Promise<number[]>((resolve) => setTimeout(() => resolve([]), 3_000)),
+      ]);
+      if (embedding.length > 0) queryEmbedding = embedding;
     } catch {
       // Embedding failure is non-fatal; falls back to keyword search
     }

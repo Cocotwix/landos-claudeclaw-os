@@ -38,7 +38,7 @@ import { classifyMessageComplexity } from './message-classifier.js';
 import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
-import { setHighImportanceCallback } from './memory-ingest.js';
+import { setHighImportanceCallback, getIngestionQuotaStatus } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
@@ -1724,8 +1724,12 @@ async function processDashboardMessage(
 
     // Handle abort
     if (result.aborted) {
+      const quotaStatus = getIngestionQuotaStatus();
+      const quotaNote = quotaStatus.suspended
+        ? ' Memory consolidation is currently paused due to Gemini quota/rate limits.'
+        : '';
       const msg = result.text === null
-        ? `Timed out after ${Math.round(agentTimeoutMs / 1000)}s. Try breaking the task into smaller steps.`
+        ? `Timed out after ${Math.round(agentTimeoutMs / 1000)}s [${effectiveAgentId}].${quotaNote} Check logs for details or try a shorter prompt.`
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
       if (effectiveAgentId === 'duke-due-diligence') {

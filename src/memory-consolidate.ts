@@ -51,12 +51,28 @@ If memories are unrelated, still summarize but note they cover different topics.
 // Guard against overlapping consolidation runs (keyed by chatId)
 const consolidatingChats = new Set<string>();
 
+// Quota backoff: when Gemini returns 429 / RESOURCE_EXHAUSTED, pause
+// consolidation for 10 minutes rather than retrying every 30-minute tick.
+const CONSOLIDATION_QUOTA_BACKOFF_MS = 10 * 60 * 1000;
+let _consolidationSuspendedUntil = 0;
+
+function isQuotaError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|RESOURCE_EXHAUSTED|quota/i.test(msg);
+}
+
 /**
  * Run consolidation for a given chat. Finds patterns across unconsolidated
  * memories and creates synthesis records. Safe to call frequently; it's
- * a no-op if fewer than 2 memories are pending or if already running.
+ * a no-op if fewer than 2 memories are pending, already running, or quota
+ * is suspended after a recent Gemini 429.
  */
 export async function runConsolidation(chatId: string): Promise<void> {
+  if (Date.now() < _consolidationSuspendedUntil) {
+    logger.debug({ chatId, resumesAt: new Date(_consolidationSuspendedUntil).toISOString() }, 'Consolidation skipped: Gemini quota suspended');
+    return;
+  }
+
   if (consolidatingChats.has(chatId)) {
     logger.debug({ chatId }, 'Consolidation already running for this chat, skipping');
     return;
@@ -165,7 +181,15 @@ export async function runConsolidation(chatId: string): Promise<void> {
       'Consolidation complete',
     );
   } catch (err) {
-    logger.error({ err }, 'Consolidation failed');
+    if (isQuotaError(err)) {
+      _consolidationSuspendedUntil = Date.now() + CONSOLIDATION_QUOTA_BACKOFF_MS;
+      logger.warn(
+        { backoffMs: CONSOLIDATION_QUOTA_BACKOFF_MS, resumesAt: new Date(_consolidationSuspendedUntil).toISOString() },
+        'Memory consolidation quota exceeded (Gemini 429/RESOURCE_EXHAUSTED). Consolidation paused for 10 minutes.',
+      );
+    } else {
+      logger.error({ err }, 'Consolidation failed');
+    }
   } finally {
     consolidatingChats.delete(chatId);
   }
