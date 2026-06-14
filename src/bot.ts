@@ -1638,6 +1638,10 @@ async function processDashboardMessage(
     let effectiveModel = agentDefaultModel;
     let effectiveMcpCwd: string | undefined;
     const effectiveAgentId = (targetAgentId && targetAgentId !== 'main') ? targetAgentId : AGENT_ID;
+    logger.info(
+      { event: 'dashboard_agent_run_received', chatId: chatIdStr, effectiveAgentId, messageLength: text.length },
+      'dashboard_agent_run_received',
+    );
 
     if (targetAgentId && targetAgentId !== 'main') {
       try {
@@ -1655,7 +1659,13 @@ async function processDashboardMessage(
 
     const sessionId = getSession(chatIdStr, effectiveAgentId);
 
+    logger.info({ event: 'dashboard_memory_context_start', effectiveAgentId }, 'dashboard_memory_context_start');
+    const _memCtxStart = Date.now();
     const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, effectiveAgentId);
+    logger.info(
+      { event: 'dashboard_memory_context_done', effectiveAgentId, elapsedMs: Date.now() - _memCtxStart, memoryContextLength: memCtx?.length ?? 0 },
+      'dashboard_memory_context_done',
+    );
     const dashParts: string[] = [];
     if (effectiveSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${effectiveSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
@@ -1685,13 +1695,13 @@ async function processDashboardMessage(
     const agentTimeoutMs = effectiveAgentId === 'duke-due-diligence' ? 180_000 : AGENT_TIMEOUT_MS;
     const effectiveMaxTurns = effectiveAgentId === 'duke-due-diligence' ? 20 : undefined;
     const runStart = Date.now();
-    logger.info({ agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, maxTurns: effectiveMaxTurns }, 'Dashboard agent run start');
+    logger.info({ event: 'dashboard_agent_run_start', agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, maxTurns: effectiveMaxTurns }, 'dashboard_agent_run_start');
 
     let toolCallCount = 0;
     const onProgress = (event: AgentProgressEvent) => {
       if (event.type === 'tool_active') {
         toolCallCount++;
-        logger.info({ agentId: effectiveAgentId, tool: event.description, elapsedMs: Date.now() - runStart }, 'Dashboard agent tool');
+        logger.info({ event: 'dashboard_agent_tool_start', agentId: effectiveAgentId, toolName: event.description, elapsedMs: Date.now() - runStart }, 'dashboard_agent_tool_start');
       }
       emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
     };
@@ -1700,7 +1710,7 @@ async function processDashboardMessage(
     setActiveAbort(chatIdStr, abortCtrl);
     const dashTimeout = setTimeout(() => {
       const elapsedMs = Date.now() - runStart;
-      logger.warn({ chatId: chatIdStr, agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, elapsedMs }, 'Dashboard agent query timed out, aborting');
+      logger.warn({ event: 'dashboard_agent_run_timeout', chatId: chatIdStr, agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, elapsedMs }, 'dashboard_agent_run_timeout');
       abortCtrl.abort();
     }, agentTimeoutMs);
 
@@ -1720,7 +1730,10 @@ async function processDashboardMessage(
     clearTimeout(dashTimeout);
     setActiveAbort(chatIdStr, null);
     const elapsedMs = Date.now() - runStart;
-    logger.info({ agentId: effectiveAgentId, elapsedMs }, 'Dashboard agent run end');
+    logger.info(
+      { event: 'dashboard_agent_run_done', agentId: effectiveAgentId, elapsedMs, aborted: result.aborted ?? false, responseLength: result.text?.length ?? 0 },
+      'dashboard_agent_run_done',
+    );
 
     // Handle abort
     if (result.aborted) {
