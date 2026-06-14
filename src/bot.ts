@@ -44,6 +44,7 @@ import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestr
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import { persistDukeRunPostDelivery } from './landos/duke-persist-adapter.js';
+import { runDukePreflight } from './landos/duke-preflight.js';
 import {
   isLocked,
   lock,
@@ -59,6 +60,10 @@ import {
 // ── Streaming rate limiter ───────────────────────────────────────────
 const globalStreamLastEdit = new Map<string, number>();
 const GLOBAL_STREAM_INTERVAL_MS = 2500;
+
+// Hard LandOS-controlled timeout for Duke preflight LP lookup. Must fire well
+// before the 120s dashboard timeout so a hung LP call never consumes the run.
+const DUKE_PREFLIGHT_TIMEOUT_MS = 10_000;
 
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
@@ -1657,6 +1662,41 @@ async function processDashboardMessage(
       }
     }
 
+    // runStart covers preflight + agent run so elapsed is accurate for both paths
+    const runStart = Date.now();
+
+    // ── Duke preflight gate ────────────────────────────────────────────────
+    // Resolve the parcel identity directly (not via Claude/MCP) before launching
+    // the agent loop. A hung LP fetch cannot consume the full dashboard timeout.
+    let dukePreflightParcelBlock: string | null = null;
+    if (effectiveAgentId === 'duke-due-diligence') {
+      const preflight = await runDukePreflight(text, effectiveMcpAllowlist, DUKE_PREFLIGHT_TIMEOUT_MS);
+
+      if (preflight.type === 'blocked') {
+        const elapsedMs = Date.now() - runStart;
+        logger.warn(
+          { event: 'duke_preflight_blocked', agentId: effectiveAgentId, elapsedMs, reason: preflight.reason },
+          'duke_preflight_blocked',
+        );
+        emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: preflight.message, source: 'dashboard' });
+        persistDukeRunPostDelivery({
+          agentId: effectiveAgentId,
+          status: preflight.reason === 'lp_timeout' || preflight.reason === 'preflight_timeout' ? 'timeout' : 'failed',
+          elapsedMs,
+          toolCalls: 0,
+          responseText: null,
+          error: preflight.reason,
+        }, (msg, err) => logger.warn({ err }, msg));
+        return;
+      }
+
+      if (preflight.type === 'verified') {
+        effectiveMcpAllowlist = preflight.filteredMcpAllowlist;
+        dukePreflightParcelBlock = preflight.parcelBlock;
+      }
+      // type === 'skip': no identifier found, proceed normally with LP MCP available
+    }
+
     const sessionId = getSession(chatIdStr, effectiveAgentId);
 
     logger.info({ event: 'dashboard_memory_context_start', effectiveAgentId }, 'dashboard_memory_context_start');
@@ -1679,6 +1719,12 @@ async function processDashboardMessage(
       dashParts.push(`[Recent scheduled task context — the user may be replying to this]\n${taskLines.join('\n\n')}\n[End task context]`);
     }
 
+    // For verified preflight runs: inject resolved parcel before DUKE FAST MODE so
+    // Duke uses the pre-resolved data directly. LP MCP has already been excluded.
+    if (dukePreflightParcelBlock) {
+      dashParts.push(dukePreflightParcelBlock);
+    }
+
     if (effectiveAgentId === 'duke-due-diligence') {
       dashParts.push(
         '[DUKE DASHBOARD FAST MODE]\n' +
@@ -1694,8 +1740,7 @@ async function processDashboardMessage(
 
     const agentTimeoutMs = effectiveAgentId === 'duke-due-diligence' ? 120_000 : AGENT_TIMEOUT_MS;
     const effectiveMaxTurns = effectiveAgentId === 'duke-due-diligence' ? 20 : undefined;
-    const runStart = Date.now();
-    logger.info({ event: 'dashboard_agent_run_start', agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, maxTurns: effectiveMaxTurns }, 'dashboard_agent_run_start');
+    logger.info({ event: 'dashboard_agent_run_start', agentId: effectiveAgentId, timeoutMs: agentTimeoutMs, maxTurns: effectiveMaxTurns, preflightVerified: !!dukePreflightParcelBlock }, 'dashboard_agent_run_start');
 
     let toolCallCount = 0;
     const onProgress = (event: AgentProgressEvent) => {
