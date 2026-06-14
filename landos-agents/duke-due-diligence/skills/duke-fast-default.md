@@ -279,7 +279,18 @@ For the Fast Default Report: maximum 3 strategies with name, viability, and offe
 
 **LAND-HOME PACKAGE:** Label as "Needs verification" unless area data already returned manufactured/mobile home resale comps in the $200k+ range. If qualifying: formula = projected land-home resale minus manufactured home cost, utility tie-ins, permits/site work, holding/closing/selling costs, minimum $10k profit. Label numeric output "Unavailable -- missing inputs" if key figures are not available.
 
-**Sub-1-acre infill lot discipline:** When the parcel is under 1 acre and the preliminary EV is low, explicitly compare the offer range against Tyler's minimum $10,000 net profit baseline. Factor in closing, holding, resale, cleanup, title, and marketing costs. When the margin is tight, add this line: "At this EV, offer discipline is tight. The offer must leave room for Tyler's minimum $10,000 net target after all transaction and resale costs, or the deal should be passed or renegotiated lower."
+**Profit-Rule Note (required when margin is tight):** Always show the mechanical/preliminary offer range first. Never hide it, replace it with only a lower number, or suppress it because it is tight.
+
+If the offer range or its upper end may not protect Tyler's $10,000 minimum net profit target after acquisition, closing, title, holding, resale, cleanup, and risk costs, add this note immediately below the range:
+
+Offer range: $X to $Y.
+
+Profit-rule note:
+This is the mechanical/preliminary range based on EV. However, at this EV, the upper part of the range, or the entire range if applicable, may not protect Tyler's $10,000 minimum net profit target after closing, holding, title, resale, cleanup, and risk costs. Treat the top end as aggressive unless EV is verified higher, the parcel/use status is confirmed, and resale friction is low.
+
+**Sub-1-acre and low-EV discipline:** The profit-rule note above applies especially to sub-1-acre infill lots or any low-EV parcel. Always include both the mechanical offer range and the $10,000 net-profit warning.
+
+Apply the same logic to the Strategy Snapshot offer range. The strategy table keeps the range, but add the profit-rule note below the table or inside Preliminary Offer Guidance when the math is tight.
 
 Label all offer guidance: PRELIMINARY -- comp report not run.
 
@@ -344,9 +355,9 @@ Sections in order:
 5. **Major anomaly flags:** 1 line per flag. Maximum 5.
 6. **Green flags:** 1 line per flag. Maximum 3.
 7. **Data gaps:** 1 line per item. Maximum 5.
-8. **Strategy snapshot:** Maximum 3 strategies. For each: name, viability, offer range in dollars. No prose.
+8. **Strategy snapshot:** Maximum 3 strategies. For each: name, viability, offer range in dollars. No prose. If the profit-rule condition applies (see Step 7), add the profit-rule note below the strategy table.
 9. **Most viable strategy:** 2-3 sentences. Why it leads. What to verify first.
-10. **Preliminary offer guidance:** 1 short paragraph. Include only if parcel is verified and LP valuation data exists. Skip if not.
+10. **Preliminary offer guidance:** 1 short paragraph. Include only if parcel is verified and LP valuation data exists. Skip if not. Show the mechanical offer range first. If the profit-rule condition applies (Step 7), add the profit-rule note immediately below the range — do not hide or replace the range.
 11. **Credit usage:** 1 line. (e.g., "0 comp credits used.")
 12. **Deferred:** 1 line listing what is available on request: Full Exit Strategy Matrix, county call checklist, Ace discovery handoff, web comps, area stats.
 13. **landos-persist block:** Always required as the very last item.

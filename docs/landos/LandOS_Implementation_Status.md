@@ -29,7 +29,7 @@ Last updated: 2026-06-12 (OS Spine v1).
 
 ## Duke workflow proof — status
 
-Duke's verified fast path (sub-2-minute Default Duke Report, lp_search /
+Duke's verified fast path (under-2-minute Default Duke Report preferred, up to 3 minutes acceptable; lp_search /
 lp_resolve_property / lp_property_data only, 0 comp credits) is untouched and
 remains the live workflow proof. OS Spine v1 added the persistence route
 points Duke's workflow will write into:

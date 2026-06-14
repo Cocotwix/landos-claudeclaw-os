@@ -57,6 +57,9 @@ const CONSOLIDATION_QUOTA_BACKOFF_MS = 10 * 60 * 1000;
 let _consolidationSuspendedUntil = 0;
 
 function isQuotaError(err: unknown): boolean {
+  // ApiError from @google/genai may not satisfy instanceof Error across ESM/CJS
+  // boundaries — check .status directly as the most reliable signal.
+  if ((err as Record<string, unknown>)?.status === 429) return true;
   const msg = err instanceof Error ? err.message : String(err);
   return /429|RESOURCE_EXHAUSTED|quota/i.test(msg);
 }

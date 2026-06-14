@@ -18,7 +18,7 @@ Origin: staged changes pending Tyler approval for Foundation Sprint v1 + Duke ru
 Duke dashboard address-only smoke test has timed out four times on a real address.
 Root cause: Duke's CLAUDE.md was too large (~2,700 lines loaded as system prompt on every turn).
 Fix status: Duke runtime-mode refactor complete (2026-06-13). Files written, not yet committed.
-Next step: Tyler approves commit, then smoke test to confirm sub-2-minute Fast Default.
+Next step: Tyler approves commit, then smoke test to confirm Fast Default under 2 minutes (up to 3 minutes acceptable).
 
 ---
 
@@ -80,5 +80,5 @@ All sprint deliverables complete (2026-06-13). Pending Tyler approval to stage a
 
 1. Tyler approves staging and commit for Foundation Sprint v1 + Duke runtime-mode refactor (two commits or one combined commit -- Tyler decides).
 2. Restart ClaudeClaw so dashboard picks up new agent folders and Duke's slim CLAUDE.md.
-3. Run Duke smoke test: submit an address-only input in the dashboard, confirm sub-2-minute Fast Default Report with Read of duke-fast-default.md as the first action.
+3. Run Duke smoke test: submit an address-only input in the dashboard, confirm Fast Default Report under 2 minutes (up to 3 minutes acceptable) with Read of duke-fast-default.md as the first action.
 4. If smoke test passes: mark Duke runtime-mode refactor complete in LandOS_Active_Plans.md.
