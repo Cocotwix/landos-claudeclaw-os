@@ -242,6 +242,18 @@ Total capped at 100. No scoring bonus may push Land Score above 100.
 
 **Tier-Downgrade Override:** If 2 or more factors land in the lowest tier, drop verdict by one level regardless of total score.
 
+**Hard Override -- Landlocked + Zero Buildability:** When BOTH of the following conditions are present simultaneously:
+- Landlocked = true OR road frontage = 0 ft (Access score = 0)
+- Buildability = 0% OR buildable area not confirmed from any source accessed
+
+Replace the standard verdict tier with:
+
+  PASS / LEGAL ACCESS NOT VERIFIED
+
+This override takes priority over the Tier-Downgrade Override and all standard verdict tiers. Add this note directly below the verdict:
+
+> No confirmed road access and no confirmed buildable area. Standard scoring produces PASS regardless of other factors. No verdict upgrade is possible until legal access is verified through county land records, easement documentation, or official survey. Mechanical offer range is shown below as a non-actionable reference only. Required first step: county land records and easement/right-of-way verification before any offer or acquisition decision.
+
 Never reverse a verdict because of pushback. Walk through the rubric instead.
 
 ---
@@ -301,6 +313,14 @@ This is the mechanical/preliminary range based on EV. However, at this EV, the u
 Apply the same logic to the Strategy Snapshot offer range. The strategy table keeps the range, but add the profit-rule note below the table or inside Preliminary Offer Guidance when the math is tight.
 
 Label all offer guidance: PRELIMINARY -- comp report not run.
+
+**Access Override (apply when the Hard Override from Step 5 is active):** Do not present any strategy or offer range as actionable. For each strategy in the snapshot, replace the viability rating with: NOT VIABLE -- legal access not verified. Prepend all offer range output with:
+
+  PRELIMINARY -- DO NOT USE FOR OFFER UNTIL LEGAL ACCESS IS VERIFIED
+
+Standard flip is not viable until legal access is confirmed. The first item under Most Viable Strategy and Preliminary Offer Guidance must be:
+
+  Recommended action: county land records search and easement/right-of-way verification before any offer. No acquisition decision until access is confirmed.
 
 Show dollar amounts, not just percentages.
 
@@ -365,7 +385,7 @@ Sections in order:
 7. **Data gaps:** 1 line per item. Maximum 5.
 8. **Strategy snapshot:** Maximum 3 strategies. For each: name, viability, offer range in dollars. No prose. If the profit-rule condition applies (see Step 7), add the profit-rule note below the strategy table.
 9. **Most viable strategy:** 2-3 sentences. Why it leads. What to verify first.
-10. **Preliminary offer guidance:** 1 short paragraph. Include only if parcel is verified and LP valuation data exists. Skip if not. Show the mechanical offer range first. If the profit-rule condition applies (Step 7), add the profit-rule note immediately below the range — do not hide or replace the range.
+10. **Preliminary offer guidance:** 1 short paragraph. Include only if parcel is verified and LP valuation data exists. Skip if not. Show the mechanical offer range first. If the profit-rule condition applies (Step 7), add the profit-rule note immediately below the range — do not hide or replace the range. If the Hard Override (Step 5 landlocked + zero buildability) is active: prepend the paragraph with "PRELIMINARY -- DO NOT USE FOR OFFER UNTIL LEGAL ACCESS IS VERIFIED." All dollar figures are non-actionable references only.
 11. **Credit usage:** 1 line. (e.g., "0 comp credits used.")
 12. **Deferred:** 1 line listing what is available on request: Full Exit Strategy Matrix, county call checklist, Ace discovery handoff, web comps, area stats, comp report. When listing the comp report, always phrase it as: "comp report (available only with Tyler's explicit approval to use 1 LandPortal comp credit)." Never phrase the comp report as casually available or omit the approval requirement.
 13. **landos-persist block:** Always required as the very last item.
