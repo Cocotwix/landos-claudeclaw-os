@@ -48,10 +48,13 @@ if (-not (Test-Port)) {
     $indexJs = Join-Path $repoPath "dist\index.js"
     $errFile = Join-Path $repoPath "logs\main-err.log"
 
+    # stdout is not redirected here — pino's file transport writes JSON to
+    # logs/main.log directly, so the log is captured regardless of how the
+    # process is started. Redirecting stdout to the same file would cause
+    # two writers (OS redirect + pino worker) to interleave writes.
     Start-Process -FilePath $nodeExe `
                   -ArgumentList $indexJs `
                   -WorkingDirectory $repoPath `
-                  -RedirectStandardOutput $logFile `
                   -RedirectStandardError  $errFile `
                   -WindowStyle Hidden
 

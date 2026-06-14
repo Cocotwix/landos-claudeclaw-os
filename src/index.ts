@@ -4,11 +4,11 @@ import path from 'path';
 import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, refreshWarRoomRoster } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT, DASHBOARD_PORT } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
-import { logger } from './logger.js';
+import { logger, LOG_FILE } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
@@ -118,8 +118,13 @@ function releaseLock(): void {
 }
 
 async function main(): Promise<void> {
-  
+
   checkPendingMigrations(PROJECT_ROOT);
+
+  logger.info(
+    { event: 'server_startup', pid: process.pid, agentId: AGENT_ID, cwd: process.cwd(), logFile: LOG_FILE, port: DASHBOARD_PORT },
+    'server_startup',
+  );
 
   if (AGENT_ID === 'main') {
     showBanner();
