@@ -719,6 +719,28 @@ function sendToolResult(id, text, isError = false) {
   sendOk(id, result);
 }
 
+// Per-tool call timeouts (ms). Lookup tools that make one or more LP HTTP
+// requests can hang indefinitely if the LP API stalls. These limits ensure
+// Duke receives a controlled timeout result with time left to respond before
+// the dashboard's 180-second agent timeout fires.
+const TOOL_TIMEOUTS_MS = {
+  lp_resolve_property: 45_000,
+  lp_property_data:    45_000,
+  lp_search:           30_000,
+};
+
+function withToolTimeout(promise, toolName) {
+  const ms = TOOL_TIMEOUTS_MS[toolName];
+  if (!ms) return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(Object.assign(new Error('LP_TIMEOUT'), { isLpTimeout: true, toolName, timeoutMs: ms }));
+    }, ms);
+  });
+  return Promise.race([promise.finally(() => clearTimeout(timer)), timeout]);
+}
+
 async function handle(req) {
   const { id, method, params } = req;
 
@@ -753,10 +775,22 @@ async function handle(req) {
     }
 
     try {
-      const data = await callTool(name, args ?? {});
+      const data = await withToolTimeout(callTool(name, args ?? {}), name);
       sendToolResult(id, JSON.stringify(data, null, 2));
     } catch (err) {
-      sendToolResult(id, `Tool error: ${err.message}`, true);
+      if (err.isLpTimeout) {
+        const seconds = Math.round(err.timeoutMs / 1000);
+        process.stderr.write(`[landportal-mcp] ${err.toolName} timed out after ${seconds}s\n`);
+        sendToolResult(id, JSON.stringify({
+          verified: false,
+          status: 'lookup_timeout',
+          timed_out: true,
+          timeout_seconds: seconds,
+          match_notes: `LandPortal ${err.toolName} did not respond within ${seconds}s. Parcel not verified. Do not score, value, or offer. Report lookup timed out.`,
+        }, null, 2), true);
+      } else {
+        sendToolResult(id, `Tool error: ${err.message}`, true);
+      }
     }
 
     return;
