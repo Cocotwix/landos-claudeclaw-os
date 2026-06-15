@@ -93,6 +93,49 @@ interface StoredScaffold {
   notes: string;
 }
 
+// Existing-agent retrofit lifecycle. Inspection + upgrade artifacts only; never
+// modifies the inspected agent.
+const RETROFIT_STATUSES = [
+  'inspected',
+  'review_ready',
+  'needs_revision',
+  'approved_for_upgrade',
+  'held',
+  'rejected',
+  'upgrade_scaffolded',
+] as const;
+type RetrofitStatus = (typeof RETROFIT_STATUSES)[number];
+
+interface ExistingAgentCandidate {
+  slug: string;
+  displayName: string;
+  folderPath: string;
+  detectedFiles: string[];
+  detectedPrimaryFile?: string;
+  safeToInspect: boolean;
+  warnings: string[];
+}
+
+interface RetrofitGapView {
+  field: string;
+  present: boolean;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+}
+
+interface StoredRetrofit {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  agentSlug: string;
+  relativeFolderPath: string;
+  displayName: string;
+  status: RetrofitStatus;
+  ownerDecision: OwnerDecision;
+  readinessScore: number;
+  gapAnalysis: RetrofitGapView[];
+  reviewPacket: string;
+}
+
 interface ForgeHit {
   category: string;
   label: string;
@@ -187,6 +230,9 @@ export function Forge() {
   const [currentProfile, setCurrentProfile] = useState<StoredProfile | null>(null);
   const [savedScaffolds, setSavedScaffolds] = useState<StoredScaffold[]>([]);
   const [currentScaffold, setCurrentScaffold] = useState<StoredScaffold | null>(null);
+  const [existingAgents, setExistingAgents] = useState<ExistingAgentCandidate[]>([]);
+  const [savedRetrofits, setSavedRetrofits] = useState<StoredRetrofit[]>([]);
+  const [currentRetrofit, setCurrentRetrofit] = useState<StoredRetrofit | null>(null);
 
   async function loadHistory() {
     try {
@@ -215,10 +261,30 @@ export function Forge() {
     }
   }
 
+  async function loadExistingAgents() {
+    try {
+      const res = await apiGet<{ agents: ExistingAgentCandidate[] }>('/api/forge/existing-agents');
+      setExistingAgents(res.agents);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  async function loadRetrofits() {
+    try {
+      const res = await apiGet<{ retrofits: StoredRetrofit[] }>('/api/forge/agent-retrofits');
+      setSavedRetrofits(res.retrofits);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   useEffect(() => {
     loadHistory();
     loadProfiles();
     loadScaffolds();
+    loadExistingAgents();
+    loadRetrofits();
   }, []);
 
   async function generate() {
@@ -633,6 +699,98 @@ export function Forge() {
     }
   }
 
+  // Existing Agent Retrofit. Inspect an already-started agent (read-only),
+  // reconstruct its profile, compare against the standard, and produce a safe
+  // upgrade plan. This never writes into, overwrites, activates, or registers
+  // the existing agent.
+  async function inspectAgent(slug: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ retrofit: StoredRetrofit }>('/api/forge/existing-agents/inspect', { slug });
+      setCurrentRetrofit(resp.retrofit);
+      setOutput({ kind: 'Retrofit review packet', text: resp.retrofit.reviewPacket });
+      await loadRetrofits();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function reopenRetrofit(r: StoredRetrofit) {
+    setCurrentRetrofit(r);
+    setOutput({ kind: 'Retrofit review packet', text: r.reviewPacket });
+    setError(null);
+  }
+
+  async function patchRetrofit(patch: { status?: RetrofitStatus; ownerDecision?: OwnerDecision }) {
+    if (!currentRetrofit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPatch<{ retrofit: StoredRetrofit }>(
+        `/api/forge/agent-retrofits/${currentRetrofit.id}`,
+        patch,
+      );
+      setCurrentRetrofit(resp.retrofit);
+      await loadRetrofits();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retrofitUpgradePlan() {
+    if (!currentRetrofit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ plan: { summary: string; nextSafeStep: string; blockedActions: string[]; recommendedProfilePatches: string[] } }>(
+        `/api/forge/agent-retrofits/${currentRetrofit.id}/upgrade-plan`,
+        {},
+      );
+      const p = resp.plan;
+      const lines = [
+        `# Retrofit upgrade plan — ${currentRetrofit.displayName}`,
+        '',
+        p.summary,
+        '',
+        '## Recommended profile patches',
+        ...p.recommendedProfilePatches.map((x) => `- ${x}`),
+        '',
+        '## Blocked actions',
+        ...p.blockedActions.map((x) => `- ${x}`),
+        '',
+        '## Next safe step',
+        p.nextSafeStep,
+      ];
+      setOutput({ kind: 'Retrofit upgrade plan', text: lines.join('\n') });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retrofitReviewPacket() {
+    if (!currentRetrofit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ packet: string }>(
+        `/api/forge/agent-retrofits/${currentRetrofit.id}/review-packet`,
+        {},
+      );
+      setOutput({ kind: 'Retrofit review packet', text: resp.packet });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const btn =
     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const btnAccent = `${btn} bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]`;
@@ -748,6 +906,115 @@ export function Forge() {
             </button>
           </div>
         </section>
+
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <Hammer size={14} class="text-[var(--color-accent)]" />
+              <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Existing Agent Retrofit</h3>
+            </div>
+            <button type="button" onClick={loadExistingAgents} class={btnGhost} aria-label="Refresh existing agents">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          <p class="text-[11.5px] text-[var(--color-text-muted)] leading-relaxed">
+            Inspect an already-started agent, reconstruct its profile, compare it against the standard, and get a safe
+            upgrade plan. Read-only: nothing here writes into, overwrites, activates, or registers the existing agent.
+          </p>
+          {existingAgents.length === 0 ? (
+            <p class="text-[11.5px] text-[var(--color-text-muted)]">No existing agent candidates found.</p>
+          ) : (
+            <ul class="divide-y divide-[var(--color-border)]">
+              {existingAgents.map((a) => (
+                <li class="py-2 flex items-center gap-2">
+                  <span class="flex-1 min-w-0">
+                    <span class="text-[12.5px] text-[var(--color-text)]">{a.displayName}</span>
+                    <span class="text-[10px] text-[var(--color-text-faint)]"> · {a.folderPath}</span>
+                    {a.warnings.length > 0 && (
+                      <span class="text-[10px] text-[var(--color-status-failed)]"> · {a.warnings.length} warning(s)</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => inspectAgent(a.slug)}
+                    disabled={busy || !a.safeToInspect}
+                    class={btnGhost}
+                  >
+                    Inspect
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {currentRetrofit && (
+          <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+            <div class="flex items-center gap-2 flex-wrap">
+              <Pill tone={currentRetrofit.readinessScore >= 70 ? 'done' : currentRetrofit.readinessScore >= 40 ? 'neutral' : 'failed'}>
+                readiness {currentRetrofit.readinessScore}/100
+              </Pill>
+              <span class="text-[12.5px] text-[var(--color-text)] font-medium truncate">
+                {currentRetrofit.displayName}
+              </span>
+              <span class="text-[10px] text-[var(--color-text-faint)]">
+                retrofit · {currentRetrofit.id} · {currentRetrofit.relativeFolderPath}
+              </span>
+            </div>
+            <div class="space-y-1">
+              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Gap analysis</div>
+              <div class="flex flex-wrap gap-1.5">
+                {currentRetrofit.gapAnalysis.filter((g) => !g.present).map((g) => (
+                  <Pill tone={g.severity === 'critical' || g.severity === 'high' ? 'failed' : 'neutral'}>
+                    {g.field} ({g.severity})
+                  </Pill>
+                ))}
+                {currentRetrofit.gapAnalysis.every((g) => g.present) && (
+                  <span class="text-[11.5px] text-[var(--color-text-muted)]">No gaps — all standard fields present.</span>
+                )}
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2 pt-1">
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Status
+                <select
+                  value={currentRetrofit.status}
+                  disabled={busy}
+                  onChange={(e) => patchRetrofit({ status: (e.target as HTMLSelectElement).value as RetrofitStatus })}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {RETROFIT_STATUSES.map((s) => (
+                    <option value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Owner decision
+                <select
+                  value={currentRetrofit.ownerDecision}
+                  disabled={busy}
+                  onChange={(e) => patchRetrofit({ ownerDecision: (e.target as HTMLSelectElement).value as OwnerDecision })}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {OWNER_DECISIONS.map((d) => (
+                    <option value={d}>{d}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={retrofitReviewPacket} disabled={busy} class={btnGhost}>
+                Review packet
+              </button>
+              <button type="button" onClick={retrofitUpgradePlan} disabled={busy} class={btnGhost}>
+                Upgrade plan
+              </button>
+            </div>
+            <p class="text-[10.5px] text-[var(--color-text-faint)]">
+              Read-only inspection. Does not modify, activate, or register the existing agent. Any writeback is a
+              separate, gated, owner-approved step.
+            </p>
+          </section>
+        )}
 
         {currentProfile && (
           <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
@@ -1094,6 +1361,44 @@ export function Forge() {
                       </Pill>
                     )}
                     <span class="text-[10px] text-[var(--color-text-faint)]">{s.status}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Agent retrofits</h3>
+            <button type="button" onClick={loadRetrofits} class={btnGhost} aria-label="Refresh retrofits">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          {savedRetrofits.length === 0 ? (
+            <p class="text-[11.5px] text-[var(--color-text-muted)]">No retrofits yet.</p>
+          ) : (
+            <ul class="divide-y divide-[var(--color-border)]">
+              {savedRetrofits.map((r) => (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => reopenRetrofit(r)}
+                    class="w-full text-left py-2 flex items-center gap-2 hover:bg-[var(--color-elevated)] rounded-md px-1.5 transition-colors"
+                  >
+                    <Pill tone={r.readinessScore >= 70 ? 'done' : r.readinessScore >= 40 ? 'neutral' : 'failed'}>
+                      {r.readinessScore}/100
+                    </Pill>
+                    <span class="flex-1 min-w-0 text-[12.5px] text-[var(--color-text)] truncate">
+                      {r.displayName}
+                      <span class="text-[var(--color-text-faint)]"> · {r.agentSlug}</span>
+                    </span>
+                    {r.ownerDecision && r.ownerDecision !== 'pending' && (
+                      <Pill tone={r.ownerDecision === 'approved' ? 'done' : r.ownerDecision === 'rejected' ? 'failed' : 'neutral'}>
+                        {r.ownerDecision}
+                      </Pill>
+                    )}
+                    <span class="text-[10px] text-[var(--color-text-faint)]">{r.status}</span>
                   </button>
                 </li>
               ))}

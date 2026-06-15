@@ -17,14 +17,21 @@ import {
   listPromotionScaffolds,
   getPromotionScaffold,
   updatePromotionScaffold,
+  saveAgentRetrofit,
+  listAgentRetrofits,
+  getAgentRetrofit,
+  updateAgentRetrofit,
   FORGE_STATUSES,
   FORGE_PROFILE_STATUSES,
   FORGE_PROFILE_SCHEMA_VERSION,
   FORGE_SCAFFOLD_STATUSES,
   FORGE_SCAFFOLD_SCHEMA_VERSION,
+  FORGE_RETROFIT_STATUSES,
+  FORGE_RETROFIT_SCHEMA_VERSION,
   type SaveForgeEngagementInput,
   type SaveAgentProfileInput,
   type SavePromotionScaffoldInput,
+  type SaveAgentRetrofitInput,
 } from './host-store.js';
 import {
   buildAgentProfile,
@@ -35,6 +42,14 @@ import {
   generatePromotionScaffold,
   renderPromotionScaffoldMarkdown,
 } from './promotion-scaffold.js';
+import {
+  buildSnapshotFromFiles,
+  reconstructAgentProfile,
+  analyzeRetrofitGaps,
+  assessRetrofitReadiness,
+  generateRetrofitUpgradePlan,
+  renderRetrofitReviewPacketMarkdown,
+} from './agent-retrofit.js';
 
 beforeEach(() => {
   _initTestForgeDb();
@@ -316,5 +331,97 @@ describe('Forge draft promotion scaffolds', () => {
     expect(FORGE_SCAFFOLD_STATUSES).toContain('held');
     expect(FORGE_SCAFFOLD_STATUSES).toContain('rejected');
     expect(FORGE_SCAFFOLD_STATUSES).toContain('generated_draft_files');
+  });
+});
+
+function sampleRetrofit(
+  overrides: Partial<SaveAgentRetrofitInput> = {},
+): SaveAgentRetrofitInput {
+  const snapshot = buildSnapshotFromFiles({
+    agentSlug: 'reporter',
+    relativeFolderPath: 'agents/reporter',
+    files: [
+      { path: 'agent.yaml', content: 'name: Reporter Agent\ndescription: Drafts status updates.\n' },
+      { path: 'CLAUDE.md', content: '# Reporter Agent\n\nDrafts status updates. Uses the Read tool. Stops for owner approval.' },
+    ],
+  });
+  const reconstruction = reconstructAgentProfile(snapshot);
+  const gaps = analyzeRetrofitGaps(reconstruction);
+  const readiness = assessRetrofitReadiness(gaps);
+  const plan = generateRetrofitUpgradePlan({ snapshot, reconstruction, gaps, readiness });
+  const reviewPacket = renderRetrofitReviewPacketMarkdown({ snapshot, reconstruction, gaps, readiness, plan });
+  return {
+    agentSlug: 'reporter',
+    relativeFolderPath: 'agents/reporter',
+    displayName: reconstruction.profile.displayName,
+    readinessScore: readiness.score,
+    snapshot,
+    reconstructedProfile: reconstruction,
+    gapAnalysis: gaps,
+    upgradePlan: plan,
+    reviewPacket,
+    ...overrides,
+  };
+}
+
+describe('Forge existing-agent retrofits', () => {
+  it('saves and reads back a retrofit with parsed JSON', () => {
+    const saved = saveAgentRetrofit(sampleRetrofit());
+    expect(saved.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(saved.status).toBe('inspected');
+    expect(saved.ownerDecision).toBe('pending');
+    expect(saved.schemaVersion).toBe(FORGE_RETROFIT_SCHEMA_VERSION);
+    expect(saved.agentSlug).toBe('reporter');
+    expect(Array.isArray(saved.gapAnalysis)).toBe(true);
+    expect(saved.gapAnalysis.length).toBeGreaterThan(0);
+    expect(saved.reconstructedProfile.profile.displayName).toBe('Reporter Agent');
+
+    const fetched = getAgentRetrofit(saved.id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.snapshot.agentSlug).toBe('reporter');
+    expect(fetched!.upgradePlan.blockedActions.length).toBeGreaterThan(0);
+  });
+
+  it('lists retrofits newest-first and filters by status and slug', () => {
+    saveAgentRetrofit(sampleRetrofit({ agentSlug: 'a1' }));
+    const second = saveAgentRetrofit(sampleRetrofit({ agentSlug: 'a2', status: 'review_ready' }));
+    const all = listAgentRetrofits();
+    expect(all.length).toBe(2);
+    expect(all[0].id).toBe(second.id);
+    expect(listAgentRetrofits({ status: 'review_ready' }).length).toBe(1);
+    expect(listAgentRetrofits({ agentSlug: 'a1' }).length).toBe(1);
+  });
+
+  it('updates status, owner decision, and notes', () => {
+    const saved = saveAgentRetrofit(sampleRetrofit());
+    const updated = updateAgentRetrofit(saved.id, {
+      status: 'approved_for_upgrade',
+      ownerDecision: 'approved',
+      notes: 'go',
+    });
+    expect(updated!.status).toBe('approved_for_upgrade');
+    expect(updated!.ownerDecision).toBe('approved');
+    expect(updated!.notes).toBe('go');
+  });
+
+  it('ignores invalid status/decision and returns undefined for unknown id', () => {
+    const saved = saveAgentRetrofit(sampleRetrofit());
+    const updated = updateAgentRetrofit(saved.id, {
+      status: 'nope' as never,
+      ownerDecision: 'bogus' as never,
+    });
+    expect(updated!.status).toBe('inspected');
+    expect(updated!.ownerDecision).toBe('pending');
+    expect(updateAgentRetrofit('deadbeef', { status: 'held' })).toBeUndefined();
+  });
+
+  it('exposes the full retrofit status vocabulary', () => {
+    expect(FORGE_RETROFIT_STATUSES).toContain('inspected');
+    expect(FORGE_RETROFIT_STATUSES).toContain('review_ready');
+    expect(FORGE_RETROFIT_STATUSES).toContain('needs_revision');
+    expect(FORGE_RETROFIT_STATUSES).toContain('approved_for_upgrade');
+    expect(FORGE_RETROFIT_STATUSES).toContain('held');
+    expect(FORGE_RETROFIT_STATUSES).toContain('rejected');
+    expect(FORGE_RETROFIT_STATUSES).toContain('upgrade_scaffolded');
   });
 });

@@ -845,6 +845,89 @@ describe('Forge draft promotion scaffold endpoints', () => {
   });
 });
 
+describe('Forge existing agent retrofit endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+  function patch(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('lists existing agent candidates from the repo agents directory', async () => {
+    const res = await get('/api/forge/existing-agents');
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(Array.isArray(body.agents)).toBe(true);
+    // The repo ships landos-agents/forge, so it must appear as a candidate.
+    const slugs = body.agents.map((a: { slug: string }) => a.slug);
+    expect(slugs).toContain('forge');
+    const forge = body.agents.find((a: { slug: string }) => a.slug === 'forge');
+    expect(forge.safeToInspect).toBe(true);
+    expect(forge.detectedFiles).toContain('CLAUDE.md');
+  });
+
+  it('inspects an existing agent and saves a retrofit', async () => {
+    const res = await post('/api/forge/existing-agents/inspect', { slug: 'forge' });
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.retrofit.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(body.retrofit.agentSlug).toBe('forge');
+    expect(body.retrofit.status).toBe('inspected');
+    expect(Array.isArray(body.retrofit.gapAnalysis)).toBe(true);
+    expect(typeof body.retrofit.readinessScore).toBe('number');
+    expect(body.retrofit.reviewPacket).toContain('# Existing Agent Retrofit');
+  });
+
+  it('404s inspecting an unknown agent and 400s on a bad slug', async () => {
+    expect((await post('/api/forge/existing-agents/inspect', { slug: 'no-such-agent-xyz' })).status).toBe(404);
+    expect((await post('/api/forge/existing-agents/inspect', { slug: '' })).status).toBe(400);
+    expect((await post('/api/forge/existing-agents/inspect', { slug: '../etc' })).status).toBe(404);
+  });
+
+  it('lists, reopens, updates, and regenerates artifacts for a retrofit', async () => {
+    const made = await jsonOf(await post('/api/forge/existing-agents/inspect', { slug: 'forge' }));
+    const id = made.retrofit.id;
+
+    const listRes = await get('/api/forge/agent-retrofits');
+    expect((await jsonOf(listRes)).retrofits.length).toBeGreaterThanOrEqual(1);
+
+    const getRes = await get(`/api/forge/agent-retrofits/${id}`);
+    expect(getRes.status).toBe(200);
+    expect((await jsonOf(getRes)).retrofit.id).toBe(id);
+
+    const patchRes = await patch(`/api/forge/agent-retrofits/${id}`, {
+      status: 'review_ready',
+      ownerDecision: 'approved',
+    });
+    expect(patchRes.status).toBe(200);
+    expect((await jsonOf(patchRes)).retrofit.status).toBe('review_ready');
+
+    const reviewRes = await post(`/api/forge/agent-retrofits/${id}/review-packet`, {});
+    expect(reviewRes.status).toBe(200);
+    expect((await jsonOf(reviewRes)).packet).toContain('# Existing Agent Retrofit');
+
+    const planRes = await post(`/api/forge/agent-retrofits/${id}/upgrade-plan`, {});
+    expect(planRes.status).toBe(200);
+    const planBody = await jsonOf(planRes);
+    expect(planBody.plan.blockedActions.length).toBeGreaterThan(0);
+    expect(Array.isArray(planBody.gaps)).toBe(true);
+  });
+
+  it('rejects an invalid retrofit status on update and 404s unknown id', async () => {
+    const made = await jsonOf(await post('/api/forge/existing-agents/inspect', { slug: 'forge' }));
+    expect((await patch(`/api/forge/agent-retrofits/${made.retrofit.id}`, { status: 'bogus' })).status).toBe(400);
+    expect((await get('/api/forge/agent-retrofits/deadbeef')).status).toBe(404);
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.

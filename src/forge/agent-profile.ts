@@ -635,17 +635,20 @@ accounts, send communications, or read secrets on the agent's behalf.
 // helpers tell a filled field from a placeholder so the readiness checklist
 // and review packet can flag what the owner still has to provide.
 
-function isOperatorHint(value: string): boolean {
+export function isOperatorHint(value: string): boolean {
   return /^\(operator:/i.test(value.trim());
 }
 
-function fieldDefined(value: string): boolean {
-  const v = value.trim();
+/** True when a string profile field carries a real operator-supplied value
+ *  (non-empty and not a placeholder hint). */
+export function fieldDefined(value: string): boolean {
+  const v = (value ?? '').trim();
   return v.length > 0 && !isOperatorHint(v);
 }
 
-function listDefined(items: string[]): boolean {
-  return items.some((i) => fieldDefined(i));
+/** True when a list profile field has at least one real (non-placeholder) item. */
+export function listDefined(items: string[]): boolean {
+  return (items ?? []).some((i) => fieldDefined(i));
 }
 
 // ── Promotion readiness checklist ────────────────────────────────────────

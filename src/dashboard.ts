@@ -98,6 +98,18 @@ import {
   renderPromotionScaffoldMarkdown,
 } from './forge/promotion-scaffold.js';
 import {
+  buildSnapshotFromFiles,
+  reconstructAgentProfile,
+  analyzeRetrofitGaps,
+  assessRetrofitReadiness,
+  generateRetrofitUpgradePlan,
+  renderRetrofitReviewPacketMarkdown,
+} from './forge/agent-retrofit.js';
+import {
+  listExistingAgentCandidates,
+  inspectAgentFiles,
+} from './forge/agent-inspector.js';
+import {
   saveEngagement,
   listEngagements,
   getEngagement,
@@ -110,14 +122,20 @@ import {
   listPromotionScaffolds,
   getPromotionScaffold,
   updatePromotionScaffold,
+  saveAgentRetrofit,
+  listAgentRetrofits,
+  getAgentRetrofit,
+  updateAgentRetrofit,
   isForgeStatus,
   isForgeOwnerDecision,
   isForgeProfileStatus,
   isForgeScaffoldStatus,
+  isForgeRetrofitStatus,
   type ForgeStatus,
   type ForgeOwnerDecision,
   type ForgeProfileStatus,
   type ForgeScaffoldStatus,
+  type ForgeRetrofitStatus,
 } from './forge/host-store.js';
 import {
   resolveAgentAvatar,
@@ -2523,6 +2541,152 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
     if (!updated) return c.json({ error: 'not found' }, 404);
     return c.json({ scaffold: updated });
+  });
+
+  // ── Existing agent retrofit layer ─────────────────────────────────────
+  // Retrofit Mode: inspect an already-started agent (read-only), reconstruct
+  // its profile, compare against the standard, score readiness, and produce a
+  // safe upgrade plan + review packet. Inspection and proposal only: it never
+  // writes into, overwrites, activates, or registers the existing agent, and it
+  // never reads secrets.
+
+  // Helper: rebuild the retrofit analysis pieces from a stored record's
+  // snapshot + reconstruction so the review/upgrade endpoints stay pure.
+  const retrofitAnalysis = (r: {
+    snapshot: ReturnType<typeof buildSnapshotFromFiles>;
+    reconstructedProfile: ReturnType<typeof reconstructAgentProfile>;
+  }) => {
+    const gaps = analyzeRetrofitGaps(r.reconstructedProfile);
+    const readiness = assessRetrofitReadiness(gaps);
+    const plan = generateRetrofitUpgradePlan({
+      snapshot: r.snapshot,
+      reconstruction: r.reconstructedProfile,
+      gaps,
+      readiness,
+    });
+    return { gaps, readiness, plan };
+  };
+
+  // List candidate existing agents in the allowlisted agents directory.
+  app.get('/api/forge/existing-agents', (c) => {
+    return c.json({ agents: listExistingAgentCandidates() });
+  });
+
+  // Inspect one existing agent: reconstruct, gap-analyze, score, and save a
+  // retrofit record. Read-only on the agent; persists a Forge artifact.
+  app.post('/api/forge/existing-agents/inspect', async (c) => {
+    let body: { slug?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body?.slug !== 'string' || !body.slug.trim()) {
+      return c.json({ error: 'slug must be a non-empty string' }, 400);
+    }
+    const slug = body.slug.trim();
+    const read = inspectAgentFiles(slug);
+    if (!read) return c.json({ error: 'agent not found or not inspectable' }, 404);
+
+    const snapshot = buildSnapshotFromFiles({
+      agentSlug: slug,
+      relativeFolderPath: read.relativeFolderPath,
+      files: read.files,
+    });
+    const reconstruction = reconstructAgentProfile(snapshot);
+    const { gaps, readiness, plan } = retrofitAnalysis({
+      snapshot,
+      reconstructedProfile: reconstruction,
+    });
+    const reviewPacket = renderRetrofitReviewPacketMarkdown({
+      snapshot,
+      reconstruction,
+      gaps,
+      readiness,
+      plan,
+    });
+
+    const saved = saveAgentRetrofit({
+      agentSlug: slug,
+      relativeFolderPath: read.relativeFolderPath,
+      displayName: reconstruction.profile.displayName,
+      readinessScore: readiness.score,
+      snapshot,
+      reconstructedProfile: reconstruction,
+      gapAnalysis: gaps,
+      upgradePlan: plan,
+      reviewPacket,
+      source: 'dashboard',
+    });
+    return c.json({ retrofit: saved }, 201);
+  });
+
+  // List saved retrofits (newest first), optional ?status= / ?slug= filters.
+  app.get('/api/forge/agent-retrofits', (c) => {
+    const statusParam = c.req.query('status');
+    const status = statusParam && isForgeRetrofitStatus(statusParam) ? statusParam : undefined;
+    const agentSlug = c.req.query('slug') || undefined;
+    return c.json({ retrofits: listAgentRetrofits({ status, agentSlug }) });
+  });
+
+  // Reopen one saved retrofit.
+  app.get('/api/forge/agent-retrofits/:id', (c) => {
+    const retrofit = getAgentRetrofit(c.req.param('id'));
+    if (!retrofit) return c.json({ error: 'not found' }, 404);
+    return c.json({ retrofit });
+  });
+
+  // Update status / ownerDecision / notes on a saved retrofit. Record update
+  // only: never writes into or activates the inspected agent.
+  app.patch('/api/forge/agent-retrofits/:id', async (c) => {
+    let body: { status?: unknown; ownerDecision?: unknown; notes?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeRetrofitStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    if (body?.ownerDecision !== undefined && !isForgeOwnerDecision(body.ownerDecision)) {
+      return c.json({ error: 'invalid ownerDecision' }, 400);
+    }
+    if (body?.notes !== undefined && typeof body.notes !== 'string') {
+      return c.json({ error: 'notes must be a string' }, 400);
+    }
+    const updated = updateAgentRetrofit(c.req.param('id'), {
+      status: body.status as ForgeRetrofitStatus | undefined,
+      ownerDecision: body.ownerDecision as ForgeOwnerDecision | undefined,
+      notes: body.notes as string | undefined,
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ retrofit: updated });
+  });
+
+  // Regenerate the review packet for a SAVED retrofit. Text only.
+  app.post('/api/forge/agent-retrofits/:id/review-packet', (c) => {
+    const saved = getAgentRetrofit(c.req.param('id'));
+    if (!saved) return c.json({ error: 'not found' }, 404);
+    const { gaps, readiness, plan } = retrofitAnalysis(saved);
+    const packet = renderRetrofitReviewPacketMarkdown({
+      snapshot: saved.snapshot,
+      reconstruction: saved.reconstructedProfile,
+      gaps,
+      readiness,
+      plan,
+      status: saved.status,
+      ownerDecision: saved.ownerDecision,
+      notes: saved.notes,
+    });
+    return c.json({ packet });
+  });
+
+  // Regenerate the upgrade plan for a SAVED retrofit. Text/JSON only.
+  app.post('/api/forge/agent-retrofits/:id/upgrade-plan', (c) => {
+    const saved = getAgentRetrofit(c.req.param('id'));
+    if (!saved) return c.json({ error: 'not found' }, 404);
+    const { gaps, readiness, plan } = retrofitAnalysis(saved);
+    return c.json({ plan, gaps, readiness });
   });
 
   // ── Agent endpoints ──────────────────────────────────────────────────

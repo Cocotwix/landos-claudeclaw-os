@@ -17,6 +17,12 @@ import { STORE_DIR } from '../config.js';
 import type { RedLaneHit } from './engagement.js';
 import type { ActivationMode, DepartmentAgentProfile } from './agent-profile.js';
 import type { PromotionScaffold } from './promotion-scaffold.js';
+import type {
+  ExistingAgentSnapshot,
+  ReconstructedAgentProfile,
+  RetrofitGap,
+  RetrofitUpgradePlan,
+} from './agent-retrofit.js';
 
 export const FORGE_STATUSES = [
   'draft',
@@ -124,6 +130,62 @@ export function isForgeScaffoldStatus(v: unknown): v is ForgeScaffoldStatus {
 
 /** Current schema marker for a saved scaffold record. */
 export const FORGE_SCAFFOLD_SCHEMA_VERSION = 1;
+
+// Existing-agent retrofits. A retrofit is an inspection + reconstruction +
+// upgrade plan for an already-started agent. It never modifies that agent.
+export const FORGE_RETROFIT_STATUSES = [
+  'inspected',
+  'review_ready',
+  'needs_revision',
+  'approved_for_upgrade',
+  'held',
+  'rejected',
+  'upgrade_scaffolded',
+] as const;
+export type ForgeRetrofitStatus = (typeof FORGE_RETROFIT_STATUSES)[number];
+
+export function isForgeRetrofitStatus(v: unknown): v is ForgeRetrofitStatus {
+  return typeof v === 'string' && (FORGE_RETROFIT_STATUSES as readonly string[]).includes(v);
+}
+
+/** Current schema marker for a saved retrofit record. */
+export const FORGE_RETROFIT_SCHEMA_VERSION = 1;
+
+export interface StoredAgentRetrofit {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  agentSlug: string;
+  relativeFolderPath: string;
+  displayName: string;
+  status: ForgeRetrofitStatus;
+  ownerDecision: ForgeOwnerDecision;
+  readinessScore: number;
+  snapshot: ExistingAgentSnapshot;
+  reconstructedProfile: ReconstructedAgentProfile;
+  gapAnalysis: RetrofitGap[];
+  upgradePlan: RetrofitUpgradePlan;
+  reviewPacket: string;
+  notes: string;
+  schemaVersion: number;
+  source: string;
+}
+
+export interface SaveAgentRetrofitInput {
+  agentSlug: string;
+  relativeFolderPath: string;
+  displayName: string;
+  readinessScore: number;
+  snapshot: ExistingAgentSnapshot;
+  reconstructedProfile: ReconstructedAgentProfile;
+  gapAnalysis: RetrofitGap[];
+  upgradePlan: RetrofitUpgradePlan;
+  reviewPacket: string;
+  status?: ForgeRetrofitStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+  source?: string;
+}
 
 export interface StoredPromotionScaffold {
   id: string;
@@ -243,6 +305,30 @@ function createForgeSchema(db: Database.Database): void {
       notes             TEXT NOT NULL DEFAULT '',
       schema_version    INTEGER NOT NULL DEFAULT 1,
       source            TEXT NOT NULL DEFAULT 'dashboard'
+    );
+  `);
+
+  // Existing-agent retrofits. Same forge.db, separate table. Inspection +
+  // upgrade artifacts only: never modifies the inspected agent.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS forge_agent_retrofit (
+      id                    TEXT PRIMARY KEY,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      agent_slug            TEXT NOT NULL DEFAULT '',
+      relative_folder_path  TEXT NOT NULL DEFAULT '',
+      display_name          TEXT NOT NULL DEFAULT '',
+      status                TEXT NOT NULL DEFAULT 'inspected',
+      owner_decision        TEXT NOT NULL DEFAULT 'pending',
+      readiness_score       INTEGER NOT NULL DEFAULT 0,
+      snapshot_json         TEXT NOT NULL DEFAULT '{}',
+      reconstructed_json    TEXT NOT NULL DEFAULT '{}',
+      gap_analysis_json     TEXT NOT NULL DEFAULT '[]',
+      upgrade_plan_json     TEXT NOT NULL DEFAULT '{}',
+      review_packet         TEXT NOT NULL DEFAULT '',
+      notes                 TEXT NOT NULL DEFAULT '',
+      schema_version        INTEGER NOT NULL DEFAULT 1,
+      source                TEXT NOT NULL DEFAULT 'dashboard'
     );
   `);
 
@@ -723,4 +809,153 @@ export function updatePromotionScaffold(
     'UPDATE forge_promotion_scaffold SET status = ?, owner_decision = ?, notes = ?, updated_at = ? WHERE id = ?',
   ).run(status, ownerDecision, notes, now, id);
   return getPromotionScaffold(id);
+}
+
+// ── Existing-agent retrofits ─────────────────────────────────────────────
+
+interface RetrofitRow {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  agent_slug: string;
+  relative_folder_path: string;
+  display_name: string;
+  status: string;
+  owner_decision: string;
+  readiness_score: number;
+  snapshot_json: string;
+  reconstructed_json: string;
+  gap_analysis_json: string;
+  upgrade_plan_json: string;
+  review_packet: string;
+  notes: string;
+  schema_version: number;
+  source: string;
+}
+
+function parseObj<T>(json: string, fallback: T): T {
+  try {
+    const v = JSON.parse(json);
+    if (v && typeof v === 'object') return v as T;
+  } catch { /* fall through */ }
+  return fallback;
+}
+
+function rowToRetrofit(row: RetrofitRow): StoredAgentRetrofit {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    agentSlug: row.agent_slug,
+    relativeFolderPath: row.relative_folder_path,
+    displayName: row.display_name,
+    status: isForgeRetrofitStatus(row.status) ? row.status : 'inspected',
+    ownerDecision: isForgeOwnerDecision(row.owner_decision) ? row.owner_decision : 'pending',
+    readinessScore: row.readiness_score,
+    snapshot: parseObj<ExistingAgentSnapshot>(row.snapshot_json, {} as ExistingAgentSnapshot),
+    reconstructedProfile: parseObj<ReconstructedAgentProfile>(
+      row.reconstructed_json,
+      {} as ReconstructedAgentProfile,
+    ),
+    gapAnalysis: parseArray<RetrofitGap>(row.gap_analysis_json),
+    upgradePlan: parseObj<RetrofitUpgradePlan>(row.upgrade_plan_json, {} as RetrofitUpgradePlan),
+    reviewPacket: row.review_packet,
+    notes: row.notes,
+    schemaVersion: row.schema_version,
+    source: row.source,
+  };
+}
+
+export function saveAgentRetrofit(input: SaveAgentRetrofitInput): StoredAgentRetrofit {
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const id = genId();
+  const status: ForgeRetrofitStatus =
+    input.status && isForgeRetrofitStatus(input.status) ? input.status : 'inspected';
+  const ownerDecision: ForgeOwnerDecision =
+    input.ownerDecision && isForgeOwnerDecision(input.ownerDecision) ? input.ownerDecision : 'pending';
+  db.prepare(
+    `INSERT INTO forge_agent_retrofit
+       (id, created_at, updated_at, agent_slug, relative_folder_path, display_name,
+        status, owner_decision, readiness_score, snapshot_json, reconstructed_json,
+        gap_analysis_json, upgrade_plan_json, review_packet, notes, schema_version, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    now,
+    now,
+    input.agentSlug,
+    input.relativeFolderPath,
+    input.displayName,
+    status,
+    ownerDecision,
+    Math.round(input.readinessScore) || 0,
+    JSON.stringify(input.snapshot ?? {}),
+    JSON.stringify(input.reconstructedProfile ?? {}),
+    JSON.stringify(input.gapAnalysis ?? []),
+    JSON.stringify(input.upgradePlan ?? {}),
+    input.reviewPacket,
+    input.notes ?? '',
+    FORGE_RETROFIT_SCHEMA_VERSION,
+    input.source ?? 'dashboard',
+  );
+  return getAgentRetrofit(id)!;
+}
+
+export function listAgentRetrofits(
+  opts: { status?: ForgeRetrofitStatus; agentSlug?: string; limit?: number } = {},
+): StoredAgentRetrofit[] {
+  const db = getForgeDb();
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (opts.status) {
+    where.push('status = ?');
+    args.push(opts.status);
+  }
+  if (opts.agentSlug) {
+    where.push('agent_slug = ?');
+    args.push(opts.agentSlug);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
+  const rows = db
+    .prepare(
+      `SELECT * FROM forge_agent_retrofit ${clause}ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+    )
+    .all(...args, limit) as RetrofitRow[];
+  return rows.map(rowToRetrofit);
+}
+
+export function getAgentRetrofit(id: string): StoredAgentRetrofit | undefined {
+  const row = getForgeDb()
+    .prepare('SELECT * FROM forge_agent_retrofit WHERE id = ?')
+    .get(id) as RetrofitRow | undefined;
+  return row ? rowToRetrofit(row) : undefined;
+}
+
+export interface UpdateAgentRetrofitPatch {
+  status?: ForgeRetrofitStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+}
+
+export function updateAgentRetrofit(
+  id: string,
+  patch: UpdateAgentRetrofitPatch,
+): StoredAgentRetrofit | undefined {
+  const existing = getAgentRetrofit(id);
+  if (!existing) return undefined;
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const status =
+    patch.status && isForgeRetrofitStatus(patch.status) ? patch.status : existing.status;
+  const ownerDecision =
+    patch.ownerDecision && isForgeOwnerDecision(patch.ownerDecision)
+      ? patch.ownerDecision
+      : existing.ownerDecision;
+  const notes = patch.notes !== undefined ? patch.notes : existing.notes;
+  db.prepare(
+    'UPDATE forge_agent_retrofit SET status = ?, owner_decision = ?, notes = ?, updated_at = ? WHERE id = ?',
+  ).run(status, ownerDecision, notes, now, id);
+  return getAgentRetrofit(id);
 }

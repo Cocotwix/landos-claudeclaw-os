@@ -192,3 +192,41 @@ The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_r
 | `PATCH /api/forge/promotion-scaffolds/:id` | Update status, owner decision, or notes. |
 
 Generating a scaffold activates nothing, registers nothing, authorizes no live action, connects nothing, and writes no agent files. Generation and activation remain separate owner-owned gates.
+
+---
+
+## 12. Existing agent retrofit layer
+
+Forge supports two modes. New Build Mode creates a department agent from scratch (sections 1-11). Retrofit Mode inspects an already-started agent, reconstructs what exists, compares it against this standard, scores readiness, and produces a safe upgrade plan. Retrofit Mode never modifies the inspected agent.
+
+The pure core lives in `src/forge/agent-retrofit.ts`: it works only on file text supplied to it and defines `ExistingAgentSnapshot`, `ReconstructedAgentProfile`, `RetrofitGap`, `RetrofitReadiness`, `RetrofitUpgradePlan`, and `RetrofitScaffold`. The read-only filesystem inspector is a host adapter, `src/forge/agent-inspector.ts`: it lists candidate agent folders and reads a narrow allowlist of text files, never descending into excluded directories (`node_modules`, `.git`, `store`, `logs`, `dist`, `build`) and never reading `.env` or secret-looking files. Persistence stays in `src/forge/host-store.ts` (the existing `store/forge.db`, a dedicated `forge_agent_retrofit` table). No second database, and no files are written into the inspected agent.
+
+The flow: discover candidates → inspect (read-only) → reconstruct a best-effort profile → gap-analyze against the 21 standard fields with severity (`critical`, `high`, `medium`, `low`) → score readiness (0-100; ready when no critical or high gaps remain) → generate a safe upgrade plan and a draft retrofit scaffold → produce a review packet for owner/Codex/QA review.
+
+### Retrofit status
+
+| Status | Meaning |
+|---|---|
+| `inspected` | Inspected and analyzed. The default. |
+| `review_ready` | Ready to send for review. |
+| `needs_revision` | Sent back for changes. |
+| `approved_for_upgrade` | The owner approved the upgrade plan. |
+| `held` | Paused pending an owner decision. |
+| `rejected` | The owner declined this retrofit. |
+| `upgrade_scaffolded` | A draft upgrade scaffold was generated. |
+
+The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_requested`, `rejected`, `hold`.
+
+### Retrofit endpoints
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/forge/existing-agents` | List candidate existing agents in the allowlisted agents directory. |
+| `POST /api/forge/existing-agents/inspect` | Inspect one agent (by slug), reconstruct, gap-analyze, score, and save a retrofit. |
+| `GET /api/forge/agent-retrofits` | List saved retrofits newest first; optional `?status=` / `?slug=` filters. |
+| `GET /api/forge/agent-retrofits/:id` | Reopen one saved retrofit. |
+| `PATCH /api/forge/agent-retrofits/:id` | Update status, owner decision, or notes. |
+| `POST /api/forge/agent-retrofits/:id/review-packet` | Regenerate the review packet. |
+| `POST /api/forge/agent-retrofits/:id/upgrade-plan` | Regenerate the upgrade plan. |
+
+Retrofit reads existing agent files only. It never writes into, overwrites, moves, renames, deletes, activates, or registers the inspected agent, and it never reads secrets. Any future writeback is a separate, gated, owner-approved step.
