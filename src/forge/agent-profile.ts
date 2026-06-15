@@ -627,3 +627,299 @@ setup, and approves activation. Forge will not push, deploy, subscribe, connect
 accounts, send communications, or read secrets on the agent's behalf.
 `;
 }
+
+// ── Profile completeness helpers ─────────────────────────────────────────
+// A profile field is "defined" when the operator actually supplied it. Unset
+// fields carry an operator hint of the form "(operator: ...)", and identity
+// falls back to the generic "Department Agent" / "department-agent". These
+// helpers tell a filled field from a placeholder so the readiness checklist
+// and review packet can flag what the owner still has to provide.
+
+function isOperatorHint(value: string): boolean {
+  return /^\(operator:/i.test(value.trim());
+}
+
+function fieldDefined(value: string): boolean {
+  const v = value.trim();
+  return v.length > 0 && !isOperatorHint(v);
+}
+
+function listDefined(items: string[]): boolean {
+  return items.some((i) => fieldDefined(i));
+}
+
+// ── Promotion readiness checklist ────────────────────────────────────────
+
+export interface ReadinessItem {
+  /** Short label for the readiness aspect. */
+  label: string;
+  /** True when this aspect is filled in enough to promote. */
+  ready: boolean;
+  /** Plain-language note on what passed or what is missing. */
+  detail: string;
+}
+
+export interface PromotionReadiness {
+  /** True only when every readiness item passed. */
+  ready: boolean;
+  /** Count of items that passed. */
+  readyCount: number;
+  /** Total items checked. */
+  totalCount: number;
+  items: ReadinessItem[];
+  /** Plain-language summary for the owner. */
+  summary: string;
+}
+
+/**
+ * Assess whether a saved profile is ready to promote into a real
+ * department-agent folder. This is a readiness artifact only: it inspects the
+ * profile for completeness and does NOT promote, activate, or run anything.
+ * Pure and deterministic.
+ */
+export function assessPromotionReadiness(profile: DepartmentAgentProfile): PromotionReadiness {
+  const p = profile;
+  const live = p.liveActionAuthority;
+
+  const authorityReady =
+    p.activationMode === 'sandbox' || (live.authorized && live.approvedActions.length > 0);
+
+  const items: ReadinessItem[] = [
+    {
+      label: 'Profile complete',
+      ready: fieldDefined(p.displayName) && p.displayName !== 'Department Agent' && p.agentName !== 'department-agent',
+      detail:
+        p.displayName !== 'Department Agent'
+          ? `Identity set: ${p.displayName} (\`${p.agentName}\`).`
+          : 'Give the agent a real display name and identity.',
+    },
+    {
+      label: 'Department clear',
+      ready: fieldDefined(p.department),
+      detail: fieldDefined(p.department) ? p.department : 'Name the department this agent owns.',
+    },
+    {
+      label: 'Mission clear',
+      ready: fieldDefined(p.primaryMission),
+      detail: fieldDefined(p.primaryMission) ? 'Primary mission stated.' : 'State the one-line primary mission.',
+    },
+    {
+      label: 'Permissions defined',
+      ready: listDefined(p.automaticActions) && listDefined(p.hardStops),
+      detail: listDefined(p.automaticActions)
+        ? 'Automatic actions and hard stops are listed.'
+        : 'List what may run automatically inside the safe lane.',
+    },
+    {
+      label: 'Authority mode defined',
+      ready: authorityReady,
+      detail: authorityReady
+        ? `Activation mode ${p.activationMode}; live actions ${live.authorized ? 'authorized' : 'gated to sandbox'}.`
+        : 'A live mode was requested without scoped, approved live actions.',
+    },
+    {
+      label: 'Memory rules defined',
+      ready: listDefined(p.memoryBoundaries),
+      detail: listDefined(p.memoryBoundaries) ? 'Memory boundaries set.' : 'Define what the agent may remember.',
+    },
+    {
+      label: 'Tools defined',
+      ready: listDefined(p.allowedTools),
+      detail: listDefined(p.allowedTools) ? 'Allowed tools listed.' : 'List the exact tools this agent may use.',
+    },
+    {
+      label: 'Output rules defined',
+      ready: listDefined(p.outputFormat),
+      detail: listDefined(p.outputFormat) ? 'Output format set.' : 'Define how the agent formats its output.',
+    },
+    {
+      label: 'Storage behavior defined',
+      ready: listDefined(p.storageBehavior),
+      detail: listDefined(p.storageBehavior) ? 'Storage behavior set.' : 'Define where the agent may write.',
+    },
+    {
+      label: 'Verification rules defined',
+      ready: listDefined(p.verificationRules),
+      detail: listDefined(p.verificationRules) ? 'Verification rules set.' : 'Define how the agent proves its work.',
+    },
+    {
+      label: 'Handoff rules defined',
+      ready: listDefined(p.handoffRules),
+      detail: listDefined(p.handoffRules) ? 'Handoff rules set.' : 'Define how the agent hands work off.',
+    },
+    {
+      label: 'Dashboard behavior defined',
+      ready: listDefined(p.dashboardBehavior),
+      detail: listDefined(p.dashboardBehavior) ? 'Dashboard behavior set.' : 'Define how the agent appears on the dashboard.',
+    },
+    {
+      label: 'Pass/fail test defined',
+      ready: listDefined(p.passFailTest),
+      detail: listDefined(p.passFailTest) ? 'Pass/fail test defined.' : 'Define one concrete check that proves it works.',
+    },
+    {
+      label: 'Owner approval state clear',
+      ready: listDefined(p.ownerApprovalLoop),
+      detail: listDefined(p.ownerApprovalLoop) ? 'Owner approval loop defined.' : 'Define the approve/tweak/reject/hold loop.',
+    },
+    {
+      label: 'Activation path clear',
+      ready: fieldDefined(live.untilAuthorized),
+      detail: fieldDefined(live.untilAuthorized) ? 'Activation path stated.' : 'State the path from sandbox to live.',
+    },
+    {
+      label: 'Security/cost gates identified',
+      ready: listDefined(p.hardStops) && listDefined(p.costRules),
+      detail: listDefined(p.hardStops) && listDefined(p.costRules)
+        ? 'Hard stops and cost rules are identified.'
+        : 'Identify the hard stops and cost rules.',
+    },
+  ];
+
+  const readyCount = items.filter((i) => i.ready).length;
+  const totalCount = items.length;
+  const ready = readyCount === totalCount;
+  const summary = ready
+    ? `Ready: all ${totalCount} readiness checks pass. This is a readiness artifact only; the owner still authorizes the actual promotion.`
+    : `Not ready: ${readyCount}/${totalCount} checks pass. Fill the items marked not ready before promotion. This is a readiness artifact only; nothing is promoted or activated here.`;
+
+  return { ready, readyCount, totalCount, items, summary };
+}
+
+/** Render the promotion readiness checklist as Markdown. */
+export function renderPromotionReadinessMarkdown(
+  readiness: PromotionReadiness,
+  displayName: string,
+): string {
+  const lines = readiness.items
+    .map((i) => `- [${i.ready ? 'x' : ' '}] **${i.label}** — ${i.detail}`)
+    .join('\n');
+  return `# Promotion Readiness — ${displayName}
+
+${readiness.summary}
+
+**Score:** ${readiness.readyCount}/${readiness.totalCount} checks pass.
+
+${lines}
+
+This checklist verifies completeness only. It does not promote the profile into
+a runnable agent, activate anything, connect accounts, or read secrets. Actual
+promotion stays an owner-owned decision.
+`;
+}
+
+// ── Profile review packet ────────────────────────────────────────────────
+
+export interface ProfileReviewInput {
+  profile: DepartmentAgentProfile;
+  /** The original request that produced the profile, if available. */
+  request?: string;
+  /** Saved profile status, if any. */
+  status?: string;
+  /** Saved owner decision, if any. */
+  ownerDecision?: string;
+  /** Owner/reviewer notes, if any. */
+  notes?: string;
+}
+
+/**
+ * Generate a copy-ready review packet for owner / Codex / QA review of a
+ * department-agent profile. Pure text. Surfaces the profile summary, authority
+ * model, permissions, rules, risks/open questions, owner decision, and a
+ * recommended next step. It runs nothing and reviews no live system.
+ */
+export function generateProfileReviewPacket(input: ProfileReviewInput): string {
+  const p = input.profile;
+  const auth = deriveAuthorityModel(p);
+  const readiness = assessPromotionReadiness(p);
+
+  // Open questions: every field the operator left as a placeholder, plus an
+  // authority caveat when a live mode was requested without authorization.
+  const openItems = readiness.items.filter((i) => !i.ready).map((i) => `${i.label}: ${i.detail}`);
+  if (!p.liveActionAuthority.authorized) {
+    openItems.push('Live actions are not authorized yet; the agent stays in sandbox until the owner scopes them.');
+  }
+
+  const status = input.status?.trim() || 'draft';
+  const ownerDecision = input.ownerDecision?.trim() || 'pending';
+
+  const recommendedNext = readiness.ready
+    ? ownerDecision === 'approved'
+      ? 'Profile is complete and approved. Prepare promotion into a department-agent folder as a draft-only artifact for owner sign-off.'
+      : 'Profile is complete. Send for owner decision (approve / tweak / reject / hold).'
+    : 'Fill the open questions below, then regenerate the profile and rerun this review.';
+
+  const openQuestions = openItems.length
+    ? openItems.map((o) => `- ${o}`).join('\n')
+    : '- None. Every readiness check passed.';
+
+  return `# Profile Review Packet — ${p.displayName}
+
+Generated for owner / Codex / QA review. Text only: it runs nothing, connects
+nothing, and reads no secrets.
+
+## Profile summary
+- **Agent name:** \`${p.agentName}\`
+- **Display name:** ${p.displayName}
+- **Status:** ${status}
+- **Owner decision:** ${ownerDecision}
+- **Readiness:** ${readiness.readyCount}/${readiness.totalCount} checks pass${readiness.ready ? ' (ready)' : ''}
+${input.request?.trim() ? `- **Request:** ${condense(input.request, 200)}` : ''}
+
+## Department
+${p.department}
+
+## Mission
+${p.primaryMission}
+
+## Authority model
+- **Requested mode:** ${auth.requestedMode}
+- **Effective mode now:** ${auth.effectiveMode}
+- **Live actions authorized:** ${auth.authorized ? 'yes' : 'no'}
+- **Approved live actions:** ${auth.approvedLiveActions.length ? auth.approvedLiveActions.join('; ') : 'none'}
+
+${auth.summary}
+
+## Permissions / tool plan
+**May do automatically (safe lane):**
+${mdList(p.automaticActions)}
+
+**Always needs an owner decision:**
+${mdList(p.hardStops)}
+
+**Allowed tools:**
+${mdList(p.allowedTools)}
+
+**Cost rules:**
+${mdList(p.costRules)}
+
+## Memory / storage rules
+**Memory boundaries:**
+${mdList(p.memoryBoundaries)}
+
+**Storage behavior:**
+${mdList(p.storageBehavior)}
+
+## Outputs
+${mdList(p.outputFormat)}
+
+## Verification / pass-fail test
+**Verification rules:**
+${mdList(p.verificationRules)}
+
+**Pass / fail test:**
+${mdList(p.passFailTest)}
+
+## Activation mode
+${p.activationMode} (effective: ${auth.effectiveMode})
+
+## Risks / open questions
+${openQuestions}
+
+## Owner decision
+${ownerDecision}${input.notes?.trim() ? `\n\nNotes: ${input.notes.trim()}` : ''}
+
+## Recommended next step
+${recommendedNext}
+`;
+}

@@ -117,3 +117,41 @@ Forge core, generated output, and this standard stay universal and industry-neut
 ## 9. Host adapter boundary
 
 The pure core lives in `src/forge/agent-profile.ts` and `src/forge/neutrality.ts`: deterministic, dependency-free, host-neutral, text and JSON only. Persistence, routing, and UI stay in the host adapter (`src/dashboard.ts`, `web/`). The dashboard exposes generate endpoints for the interview, the profile, and the build packet, and the `/forge` page lets the owner generate them from a request. Generation only: nothing here runs, connects, deploys, subscribes, pushes, sends, or reads secrets.
+
+---
+
+## 10. Saved profile layer
+
+Generated profiles can be saved, listed, reopened, status-tracked, and prepared for later promotion. A saved profile is a Forge configuration/build artifact, not a live business record, so it is safe to keep in the Forge host store.
+
+Persistence stays in the host adapter (`src/forge/host-store.ts`, in the existing `store/forge.db`, in a dedicated `forge_agent_profile` table). No second database. The pure core gains two new generators that operate on a profile:
+
+- `assessPromotionReadiness` / `renderPromotionReadinessMarkdown` — a readiness checklist that verifies a saved profile is complete enough to promote. It is a readiness artifact only: it inspects completeness and promotes nothing, activates nothing, and runs nothing.
+- `generateProfileReviewPacket` — a copy-ready review packet for owner / reviewer / QA review, covering the profile summary, authority model, permissions and tool plan, memory and storage rules, outputs, verification and pass/fail test, activation mode, risks and open questions, the owner decision, and the recommended next step.
+
+### Saved profile status
+
+| Status | Meaning |
+|---|---|
+| `draft` | Saved, still being shaped. The default. |
+| `review_ready` | Complete enough to send for review. |
+| `approved` | The owner approved the profile. |
+| `needs_revision` | Sent back for changes. |
+| `held` | Paused pending an owner decision. |
+| `rejected` | The owner declined this profile. |
+| `promoted` | The owner promoted the profile into a department-agent folder. |
+
+The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_requested`, `rejected`, `hold`.
+
+### Saved profile endpoints
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /api/forge/agent-profiles` | Build and save a profile + build packet from a request. |
+| `GET /api/forge/agent-profiles` | List saved profiles newest first; optional `?status=` filter. |
+| `GET /api/forge/agent-profiles/:id` | Reopen one saved profile. |
+| `PATCH /api/forge/agent-profiles/:id` | Update status, owner decision, notes, or display name. |
+| `POST /api/forge/agent-profiles/:id/review-packet` | Generate the review packet for a saved profile. |
+| `POST /api/forge/agent-profiles/:id/promotion-checklist` | Generate the promotion readiness checklist for a saved profile. |
+
+Promotion readiness is a readiness artifact. It does not promote a profile into a runnable agent, activate anything, connect accounts, or read secrets. Actual promotion stays an owner-owned decision.

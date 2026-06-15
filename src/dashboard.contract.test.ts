@@ -646,6 +646,116 @@ describe('Forge department-agent profile endpoints', () => {
   });
 });
 
+describe('Forge saved department-agent profile endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+  function patch(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function saveOne(over: Record<string, unknown> = {}) {
+    const res = await post('/api/forge/agent-profiles', {
+      request: 'an agent that drafts and organizes status updates',
+      displayName: 'Reporter',
+      department: 'Reporting',
+      ...over,
+    });
+    expect(res.status).toBe(201);
+    return (await jsonOf(res)).profile;
+  }
+
+  it('saves a generated profile and reads it back', async () => {
+    const saved = await saveOne();
+    expect(saved.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(saved.status).toBe('draft');
+    expect(saved.ownerDecision).toBe('pending');
+    expect(saved.activationMode).toBe('sandbox');
+    expect(saved.profile.displayName).toBe('Reporter');
+    expect(saved.buildPacket).toContain('# Forge Agent Build Packet');
+
+    const getRes = await get(`/api/forge/agent-profiles/${saved.id}`);
+    expect(getRes.status).toBe(200);
+    const body = await jsonOf(getRes);
+    expect(body.profile.id).toBe(saved.id);
+    expect(body.profile.department).toBe('Reporting');
+  });
+
+  it('lists saved profiles newest first and filters by status', async () => {
+    await saveOne();
+    const second = await saveOne({ status: 'review_ready' });
+    const listRes = await get('/api/forge/agent-profiles');
+    const list = await jsonOf(listRes);
+    expect(list.profiles.length).toBeGreaterThanOrEqual(2);
+    expect(list.profiles[0].id).toBe(second.id);
+
+    const filteredRes = await get('/api/forge/agent-profiles?status=review_ready');
+    const filtered = await jsonOf(filteredRes);
+    expect(filtered.profiles.every((p: { status: string }) => p.status === 'review_ready')).toBe(true);
+  });
+
+  it('updates status and owner decision', async () => {
+    const saved = await saveOne();
+    const res = await patch(`/api/forge/agent-profiles/${saved.id}`, {
+      status: 'approved',
+      ownerDecision: 'approved',
+      notes: 'good',
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.profile.status).toBe('approved');
+    expect(body.profile.ownerDecision).toBe('approved');
+    expect(body.profile.notes).toBe('good');
+  });
+
+  it('rejects an invalid status on update', async () => {
+    const saved = await saveOne();
+    const res = await patch(`/api/forge/agent-profiles/${saved.id}`, { status: 'bogus' });
+    expect(res.status).toBe(400);
+  });
+
+  it('generates a review packet for a saved profile', async () => {
+    const saved = await saveOne();
+    const res = await post(`/api/forge/agent-profiles/${saved.id}/review-packet`, {});
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.packet).toContain('# Profile Review Packet');
+    expect(body.packet).toContain('## Recommended next step');
+  });
+
+  it('generates a promotion readiness checklist for a saved profile', async () => {
+    const saved = await saveOne();
+    const res = await post(`/api/forge/agent-profiles/${saved.id}/promotion-checklist`, {});
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(typeof body.readiness.ready).toBe('boolean');
+    expect(body.readiness.items.length).toBeGreaterThan(0);
+    expect(body.markdown).toContain('# Promotion Readiness');
+  });
+
+  it('404s for an unknown profile id', async () => {
+    const res = await get('/api/forge/agent-profiles/deadbeef');
+    expect(res.status).toBe(404);
+  });
+
+  it('400s on invalid JSON', async () => {
+    const res = await app.request('/api/forge/agent-profiles' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ not json',
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.

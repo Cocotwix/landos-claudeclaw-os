@@ -14,10 +14,27 @@ import {
   generateAgentBuildPacket,
   renderAgentProfileMarkdown,
   renderInterviewMarkdown,
+  assessPromotionReadiness,
+  renderPromotionReadinessMarkdown,
+  generateProfileReviewPacket,
   slugifyAgentName,
   type AgentProfileDraft,
 } from './agent-profile.js';
 import { scanForNeutralityIssues } from './neutrality.js';
+
+// A fully-specified draft so readiness can reach "ready" in tests.
+const completeDraft = (over: Partial<AgentProfileDraft> = {}): AgentProfileDraft => ({
+  rawRequest: 'an agent that drafts and organizes status updates',
+  displayName: 'Reporter',
+  department: 'Reporting',
+  primaryMission: 'Draft and organize status updates for the owner.',
+  normalOwnerInput: ['Draft a weekly status update.'],
+  automaticActions: ['Assemble a draft from provided notes.'],
+  allowedTools: ['Read', 'Write'],
+  passFailTest: ['Given notes, it returns a complete draft for owner review.'],
+  createdAt: '2026-06-15T00:00:00.000Z',
+  ...over,
+});
 
 const baseDraft = (over: Partial<AgentProfileDraft> = {}): AgentProfileDraft => ({
   rawRequest: 'Build an agent that drafts and organizes status updates.',
@@ -160,5 +177,74 @@ describe('generateAgentBuildPacket', () => {
       generateAgentInterview({ rawRequest: 'an agent', displayName: 'Agent' }),
     );
     expect(scanForNeutralityIssues(interviewMd)).toEqual([]);
+  });
+});
+
+describe('assessPromotionReadiness', () => {
+  it('flags a bare profile as not ready and names the gaps', () => {
+    const r = assessPromotionReadiness(buildAgentProfile(baseDraft({ displayName: undefined })));
+    expect(r.ready).toBe(false);
+    expect(r.readyCount).toBeLessThan(r.totalCount);
+    const notReady = r.items.filter((i) => !i.ready).map((i) => i.label);
+    expect(notReady).toEqual(
+      expect.arrayContaining(['Profile complete', 'Department clear', 'Tools defined', 'Pass/fail test defined']),
+    );
+  });
+
+  it('reports ready when every aspect is supplied', () => {
+    const r = assessPromotionReadiness(buildAgentProfile(completeDraft()));
+    expect(r.ready).toBe(true);
+    expect(r.readyCount).toBe(r.totalCount);
+    expect(r.summary).toContain('Ready');
+  });
+
+  it('flags a live mode requested without authorization', () => {
+    const r = assessPromotionReadiness(
+      buildAgentProfile(completeDraft({ activationMode: 'live' })),
+    );
+    // Forced to sandbox by the builder, so authority stays coherent and ready.
+    const authItem = r.items.find((i) => i.label === 'Authority mode defined');
+    expect(authItem?.ready).toBe(true);
+  });
+
+  it('renders a deterministic checklist markdown', () => {
+    const r = assessPromotionReadiness(buildAgentProfile(completeDraft()));
+    const md = renderPromotionReadinessMarkdown(r, 'Reporter');
+    expect(md).toContain('# Promotion Readiness — Reporter');
+    expect(md).toContain('- [x]');
+    expect(scanForNeutralityIssues(md)).toEqual([]);
+  });
+});
+
+describe('generateProfileReviewPacket', () => {
+  it('renders every review section', () => {
+    const profile = buildAgentProfile(completeDraft());
+    const packet = generateProfileReviewPacket({
+      profile,
+      request: 'an agent that drafts status updates',
+      status: 'review_ready',
+      ownerDecision: 'pending',
+    });
+    expect(packet).toContain('# Profile Review Packet — Reporter');
+    expect(packet).toContain('## Profile summary');
+    expect(packet).toContain('## Authority model');
+    expect(packet).toContain('## Permissions / tool plan');
+    expect(packet).toContain('## Memory / storage rules');
+    expect(packet).toContain('## Verification / pass-fail test');
+    expect(packet).toContain('## Risks / open questions');
+    expect(packet).toContain('## Recommended next step');
+  });
+
+  it('lists open questions for an incomplete profile', () => {
+    const profile = buildAgentProfile(baseDraft({ displayName: undefined }));
+    const packet = generateProfileReviewPacket({ profile });
+    expect(packet).toContain('Tools defined:');
+    expect(packet).toContain('not authorized yet');
+  });
+
+  it('stays universal and industry-neutral', () => {
+    const profile = buildAgentProfile(completeDraft());
+    const packet = generateProfileReviewPacket({ profile, request: 'an agent', status: 'draft' });
+    expect(scanForNeutralityIssues(packet)).toEqual([]);
   });
 });

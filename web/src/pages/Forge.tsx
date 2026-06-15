@@ -25,6 +25,35 @@ type ForgeStatus = (typeof FORGE_STATUSES)[number];
 const OWNER_DECISIONS = ['pending', 'approved', 'tweak_requested', 'rejected', 'hold'] as const;
 type OwnerDecision = (typeof OWNER_DECISIONS)[number];
 
+// Saved department-agent profile lifecycle. Distinct from engagement statuses.
+const PROFILE_STATUSES = [
+  'draft',
+  'review_ready',
+  'approved',
+  'needs_revision',
+  'held',
+  'rejected',
+  'promoted',
+] as const;
+type ProfileStatus = (typeof PROFILE_STATUSES)[number];
+
+interface StoredProfile {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  displayName: string;
+  department: string;
+  request: string;
+  status: ProfileStatus;
+  ownerDecision: OwnerDecision;
+  profile: { displayName: string; agentName: string; activationMode: string };
+  buildPacket: string;
+  interview: string;
+  authoritySummary: string;
+  activationMode: string;
+  notes: string;
+}
+
 interface ForgeHit {
   category: string;
   label: string;
@@ -115,6 +144,8 @@ export function Forge() {
   const [agentRequest, setAgentRequest] = useState('');
   const [agentDisplayName, setAgentDisplayName] = useState('');
   const [agentDepartment, setAgentDepartment] = useState('');
+  const [savedProfiles, setSavedProfiles] = useState<StoredProfile[]>([]);
+  const [currentProfile, setCurrentProfile] = useState<StoredProfile | null>(null);
 
   async function loadHistory() {
     try {
@@ -125,8 +156,18 @@ export function Forge() {
     }
   }
 
+  async function loadProfiles() {
+    try {
+      const res = await apiGet<{ profiles: StoredProfile[] }>('/api/forge/agent-profiles');
+      setSavedProfiles(res.profiles);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   useEffect(() => {
     loadHistory();
+    loadProfiles();
   }, []);
 
   async function generate() {
@@ -397,6 +438,104 @@ export function Forge() {
     }
   }
 
+  // Save the generated profile + build packet to durable history. The server
+  // rebuilds the canonical profile from the request, so this never promotes,
+  // activates, connects, or touches secrets.
+  async function saveProfile() {
+    if (!agentRequest.trim()) {
+      setError('Describe the department agent first.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ profile: StoredProfile }>('/api/forge/agent-profiles', agentBody());
+      setCurrentProfile(resp.profile);
+      setOutput({ kind: 'Agent build packet', text: resp.profile.buildPacket });
+      await loadProfiles();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function reopenProfile(p: StoredProfile) {
+    setCurrentProfile(p);
+    setOutput({ kind: 'Agent build packet', text: p.buildPacket });
+    setError(null);
+  }
+
+  async function changeProfileStatus(status: ProfileStatus) {
+    if (!currentProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPatch<{ profile: StoredProfile }>(
+        `/api/forge/agent-profiles/${currentProfile.id}`,
+        { status },
+      );
+      setCurrentProfile(resp.profile);
+      await loadProfiles();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeProfileDecision(ownerDecision: OwnerDecision) {
+    if (!currentProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPatch<{ profile: StoredProfile }>(
+        `/api/forge/agent-profiles/${currentProfile.id}`,
+        { ownerDecision },
+      );
+      setCurrentProfile(resp.profile);
+      await loadProfiles();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function profileReviewPacket() {
+    if (!currentProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ packet: string }>(
+        `/api/forge/agent-profiles/${currentProfile.id}/review-packet`,
+        {},
+      );
+      setOutput({ kind: 'Profile review packet', text: resp.packet });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function profilePromotionChecklist() {
+    if (!currentProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ markdown: string }>(
+        `/api/forge/agent-profiles/${currentProfile.id}/promotion-checklist`,
+        {},
+      );
+      setOutput({ kind: 'Promotion readiness', text: resp.markdown });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const btn =
     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const btnAccent = `${btn} bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]`;
@@ -507,8 +646,69 @@ export function Forge() {
             <button type="button" onClick={agentInterview} disabled={busy || !agentRequest.trim()} class={btnGhost}>
               Interview questions
             </button>
+            <button type="button" onClick={saveProfile} disabled={busy || !agentRequest.trim()} class={btnGhost}>
+              Save profile
+            </button>
           </div>
         </section>
+
+        {currentProfile && (
+          <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+            <div class="flex items-center gap-2 flex-wrap">
+              <Pill tone="neutral">{currentProfile.activationMode}</Pill>
+              <span class="text-[12.5px] text-[var(--color-text)] font-medium truncate">
+                {currentProfile.displayName}
+              </span>
+              <span class="text-[10px] text-[var(--color-text-faint)]">
+                saved · {currentProfile.id} · {currentProfile.department}
+              </span>
+            </div>
+            <p class="text-[11.5px] text-[var(--color-text-muted)] leading-relaxed">
+              {currentProfile.authoritySummary}
+            </p>
+
+            <div class="flex flex-wrap items-center gap-2 pt-1">
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Status
+                <select
+                  value={currentProfile.status}
+                  disabled={busy}
+                  onChange={(e) => changeProfileStatus((e.target as HTMLSelectElement).value as ProfileStatus)}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {PROFILE_STATUSES.map((s) => (
+                    <option value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Owner decision
+                <select
+                  value={currentProfile.ownerDecision}
+                  disabled={busy}
+                  onChange={(e) => changeProfileDecision((e.target as HTMLSelectElement).value as OwnerDecision)}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {OWNER_DECISIONS.map((d) => (
+                    <option value={d}>{d}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setOutput({ kind: 'Agent build packet', text: currentProfile.buildPacket })} disabled={busy} class={btnGhost}>
+                Build packet
+              </button>
+              <button type="button" onClick={profileReviewPacket} disabled={busy} class={btnGhost}>
+                Review packet
+              </button>
+              <button type="button" onClick={profilePromotionChecklist} disabled={busy} class={btnGhost}>
+                Promotion readiness
+              </button>
+            </div>
+          </section>
+        )}
 
         {current && (
           <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
@@ -650,6 +850,42 @@ export function Forge() {
                       </Pill>
                     )}
                     <span class="text-[10px] text-[var(--color-text-faint)]">{h.status}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Saved department-agent profiles</h3>
+            <button type="button" onClick={loadProfiles} class={btnGhost} aria-label="Refresh saved profiles">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          {savedProfiles.length === 0 ? (
+            <p class="text-[11.5px] text-[var(--color-text-muted)]">No saved profiles yet.</p>
+          ) : (
+            <ul class="divide-y divide-[var(--color-border)]">
+              {savedProfiles.map((p) => (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => reopenProfile(p)}
+                    class="w-full text-left py-2 flex items-center gap-2 hover:bg-[var(--color-elevated)] rounded-md px-1.5 transition-colors"
+                  >
+                    <Pill tone="neutral">{p.activationMode}</Pill>
+                    <span class="flex-1 min-w-0 text-[12.5px] text-[var(--color-text)] truncate">
+                      {p.displayName}
+                      {p.department ? <span class="text-[var(--color-text-faint)]"> · {p.department}</span> : null}
+                    </span>
+                    {p.ownerDecision && p.ownerDecision !== 'pending' && (
+                      <Pill tone={p.ownerDecision === 'approved' ? 'done' : p.ownerDecision === 'rejected' ? 'failed' : 'neutral'}>
+                        {p.ownerDecision}
+                      </Pill>
+                    )}
+                    <span class="text-[10px] text-[var(--color-text-faint)]">{p.status}</span>
                   </button>
                 </li>
               ))}

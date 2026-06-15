@@ -15,6 +15,7 @@ import path from 'path';
 
 import { STORE_DIR } from '../config.js';
 import type { RedLaneHit } from './engagement.js';
+import type { ActivationMode, DepartmentAgentProfile } from './agent-profile.js';
 
 export const FORGE_STATUSES = [
   'draft',
@@ -81,6 +82,65 @@ export interface SaveForgeEngagementInput {
 
 let forgeDb: Database.Database | null = null;
 
+// Saved department-agent profiles have their own lifecycle, distinct from the
+// engagement lifecycle above. These are Forge configuration/build artifacts,
+// not live business records.
+export const FORGE_PROFILE_STATUSES = [
+  'draft',
+  'review_ready',
+  'approved',
+  'needs_revision',
+  'held',
+  'rejected',
+  'promoted',
+] as const;
+export type ForgeProfileStatus = (typeof FORGE_PROFILE_STATUSES)[number];
+
+export function isForgeProfileStatus(v: unknown): v is ForgeProfileStatus {
+  return typeof v === 'string' && (FORGE_PROFILE_STATUSES as readonly string[]).includes(v);
+}
+
+/** Current schema marker for a saved profile record. */
+export const FORGE_PROFILE_SCHEMA_VERSION = 1;
+
+export interface StoredAgentProfile {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  displayName: string;
+  department: string;
+  request: string;
+  status: ForgeProfileStatus;
+  ownerDecision: ForgeOwnerDecision;
+  /** The normalized department-agent profile (parsed JSON). */
+  profile: DepartmentAgentProfile;
+  /** The owner-reviewable build packet (markdown). */
+  buildPacket: string;
+  /** The interview questionnaire (markdown), or '' if none was supplied. */
+  interview: string;
+  /** Plain-language authority summary at save time. */
+  authoritySummary: string;
+  activationMode: ActivationMode;
+  notes: string;
+  schemaVersion: number;
+  source: string;
+}
+
+export interface SaveAgentProfileInput {
+  displayName: string;
+  department: string;
+  request: string;
+  profile: DepartmentAgentProfile;
+  buildPacket: string;
+  interview?: string;
+  authoritySummary: string;
+  activationMode: ActivationMode;
+  status?: ForgeProfileStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+  source?: string;
+}
+
 function createForgeSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS forge_engagement (
@@ -108,6 +168,29 @@ function createForgeSchema(db: Database.Database): void {
   if (!cols.some((c) => c.name === 'owner_decision')) {
     db.exec(`ALTER TABLE forge_engagement ADD COLUMN owner_decision TEXT NOT NULL DEFAULT 'pending'`);
   }
+
+  // Saved department-agent profiles. Same forge.db, separate table: no second
+  // database, and Forge build artifacts stay out of the host's other stores.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS forge_agent_profile (
+      id                TEXT PRIMARY KEY,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      display_name      TEXT NOT NULL DEFAULT '',
+      department        TEXT NOT NULL DEFAULT '',
+      request           TEXT NOT NULL DEFAULT '',
+      status            TEXT NOT NULL DEFAULT 'draft',
+      owner_decision    TEXT NOT NULL DEFAULT 'pending',
+      profile_json      TEXT NOT NULL DEFAULT '{}',
+      build_packet      TEXT NOT NULL DEFAULT '',
+      interview         TEXT NOT NULL DEFAULT '',
+      authority_summary TEXT NOT NULL DEFAULT '',
+      activation_mode   TEXT NOT NULL DEFAULT 'sandbox',
+      notes             TEXT NOT NULL DEFAULT '',
+      schema_version    INTEGER NOT NULL DEFAULT 1,
+      source            TEXT NOT NULL DEFAULT 'dashboard'
+    );
+  `);
 }
 
 /** Open (or return) the Forge host store. Lazy so processes that never touch
@@ -277,4 +360,153 @@ export function updateEngagement(
     'UPDATE forge_engagement SET status = ?, owner_decision = ?, notes = ?, title = ?, updated_at = ? WHERE id = ?',
   ).run(status, ownerDecision, notes, title, now, id);
   return getEngagement(id);
+}
+
+// ── Saved department-agent profiles ──────────────────────────────────────
+
+interface ProfileRow {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  display_name: string;
+  department: string;
+  request: string;
+  status: string;
+  owner_decision: string;
+  profile_json: string;
+  build_packet: string;
+  interview: string;
+  authority_summary: string;
+  activation_mode: string;
+  notes: string;
+  schema_version: number;
+  source: string;
+}
+
+function parseProfileJson(json: string): DepartmentAgentProfile {
+  try {
+    const v = JSON.parse(json);
+    if (v && typeof v === 'object') return v as DepartmentAgentProfile;
+  } catch { /* fall through to empty */ }
+  // Corrupted/empty row: return a deterministic empty shell so the record is
+  // still listable. The generators tolerate empty fields.
+  return {} as DepartmentAgentProfile;
+}
+
+function isActivationModeValue(v: string): v is ActivationMode {
+  return v === 'sandbox' || v === 'assisted_live' || v === 'live';
+}
+
+function rowToProfile(row: ProfileRow): StoredAgentProfile {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    displayName: row.display_name,
+    department: row.department,
+    request: row.request,
+    status: isForgeProfileStatus(row.status) ? row.status : 'draft',
+    ownerDecision: isForgeOwnerDecision(row.owner_decision) ? row.owner_decision : 'pending',
+    profile: parseProfileJson(row.profile_json),
+    buildPacket: row.build_packet,
+    interview: row.interview,
+    authoritySummary: row.authority_summary,
+    activationMode: isActivationModeValue(row.activation_mode) ? row.activation_mode : 'sandbox',
+    notes: row.notes,
+    schemaVersion: row.schema_version,
+    source: row.source,
+  };
+}
+
+export function saveAgentProfile(input: SaveAgentProfileInput): StoredAgentProfile {
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const id = genId();
+  const status: ForgeProfileStatus =
+    input.status && isForgeProfileStatus(input.status) ? input.status : 'draft';
+  const ownerDecision: ForgeOwnerDecision =
+    input.ownerDecision && isForgeOwnerDecision(input.ownerDecision) ? input.ownerDecision : 'pending';
+  const activationMode: ActivationMode = isActivationModeValue(input.activationMode)
+    ? input.activationMode
+    : 'sandbox';
+  db.prepare(
+    `INSERT INTO forge_agent_profile
+       (id, created_at, updated_at, display_name, department, request, status,
+        owner_decision, profile_json, build_packet, interview, authority_summary,
+        activation_mode, notes, schema_version, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    now,
+    now,
+    input.displayName,
+    input.department,
+    input.request,
+    status,
+    ownerDecision,
+    JSON.stringify(input.profile ?? {}),
+    input.buildPacket,
+    input.interview ?? '',
+    input.authoritySummary,
+    activationMode,
+    input.notes ?? '',
+    FORGE_PROFILE_SCHEMA_VERSION,
+    input.source ?? 'dashboard',
+  );
+  return getAgentProfile(id)!;
+}
+
+export function listAgentProfiles(
+  opts: { status?: ForgeProfileStatus; limit?: number } = {},
+): StoredAgentProfile[] {
+  const db = getForgeDb();
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+  const rows = (
+    opts.status
+      ? db
+          .prepare(
+            'SELECT * FROM forge_agent_profile WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+          )
+          .all(opts.status, limit)
+      : db
+          .prepare('SELECT * FROM forge_agent_profile ORDER BY created_at DESC, rowid DESC LIMIT ?')
+          .all(limit)
+  ) as ProfileRow[];
+  return rows.map(rowToProfile);
+}
+
+export function getAgentProfile(id: string): StoredAgentProfile | undefined {
+  const row = getForgeDb().prepare('SELECT * FROM forge_agent_profile WHERE id = ?').get(id) as
+    | ProfileRow
+    | undefined;
+  return row ? rowToProfile(row) : undefined;
+}
+
+export interface UpdateAgentProfilePatch {
+  status?: ForgeProfileStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+  displayName?: string;
+}
+
+export function updateAgentProfile(
+  id: string,
+  patch: UpdateAgentProfilePatch,
+): StoredAgentProfile | undefined {
+  const existing = getAgentProfile(id);
+  if (!existing) return undefined;
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const status =
+    patch.status && isForgeProfileStatus(patch.status) ? patch.status : existing.status;
+  const ownerDecision =
+    patch.ownerDecision && isForgeOwnerDecision(patch.ownerDecision)
+      ? patch.ownerDecision
+      : existing.ownerDecision;
+  const notes = patch.notes !== undefined ? patch.notes : existing.notes;
+  const displayName = patch.displayName !== undefined ? patch.displayName : existing.displayName;
+  db.prepare(
+    'UPDATE forge_agent_profile SET status = ?, owner_decision = ?, notes = ?, display_name = ?, updated_at = ? WHERE id = ?',
+  ).run(status, ownerDecision, notes, displayName, now, id);
+  return getAgentProfile(id);
 }

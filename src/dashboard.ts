@@ -87,6 +87,9 @@ import {
   generateAgentBuildPacket,
   renderInterviewMarkdown,
   renderAgentProfileMarkdown,
+  assessPromotionReadiness,
+  renderPromotionReadinessMarkdown,
+  generateProfileReviewPacket,
   type ActivationMode,
   type AgentProfileDraft,
 } from './forge/agent-profile.js';
@@ -95,10 +98,16 @@ import {
   listEngagements,
   getEngagement,
   updateEngagement,
+  saveAgentProfile,
+  listAgentProfiles,
+  getAgentProfile,
+  updateAgentProfile,
   isForgeStatus,
   isForgeOwnerDecision,
+  isForgeProfileStatus,
   type ForgeStatus,
   type ForgeOwnerDecision,
+  type ForgeProfileStatus,
 } from './forge/host-store.js';
 import {
   resolveAgentAvatar,
@@ -2310,6 +2319,130 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       profile,
       authority: deriveAuthorityModel(profile),
       packet: generateAgentBuildPacket(profile),
+    });
+  });
+
+  // ── Saved department-agent profiles ───────────────────────────────────
+  // Durable save/history for generated profiles. Persistence and record
+  // updates only: nothing here activates an agent, promotes it into a runnable
+  // folder, connects, deploys, pushes, or reads secrets. Live actions stay
+  // gated in sandbox until the owner scopes and authorizes them.
+
+  // Save a generated profile + build packet. The server rebuilds the profile
+  // from the draft so the stored record is canonical.
+  app.post('/api/forge/agent-profiles', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeProfileStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    if (body?.ownerDecision !== undefined && !isForgeOwnerDecision(body.ownerDecision)) {
+      return c.json({ error: 'invalid ownerDecision' }, 400);
+    }
+    const request = typeof body?.request === 'string' ? body.request.trim() : '';
+    if (request.length > 10000) return c.json({ error: 'request too long (max 10000 chars)' }, 400);
+
+    const draft = draftFromBody(body);
+    const profile = buildAgentProfile(draft);
+    const authority = deriveAuthorityModel(profile);
+    const buildPacket = generateAgentBuildPacket(profile);
+    const interview = renderInterviewMarkdown(
+      generateAgentInterview({
+        rawRequest: request || undefined,
+        department: profile.department,
+        displayName: profile.displayName,
+      }),
+    );
+
+    const saved = saveAgentProfile({
+      displayName: profile.displayName,
+      department: profile.department,
+      request,
+      profile,
+      buildPacket,
+      interview,
+      authoritySummary: authority.summary,
+      activationMode: profile.activationMode,
+      status: body.status as ForgeProfileStatus | undefined,
+      ownerDecision: body.ownerDecision as ForgeOwnerDecision | undefined,
+      notes: typeof body?.notes === 'string' ? body.notes : undefined,
+      source: 'dashboard',
+    });
+    return c.json({ profile: saved }, 201);
+  });
+
+  // List saved profiles (newest first), optional ?status= filter.
+  app.get('/api/forge/agent-profiles', (c) => {
+    const statusParam = c.req.query('status');
+    const status = statusParam && isForgeProfileStatus(statusParam) ? statusParam : undefined;
+    return c.json({ profiles: listAgentProfiles({ status }) });
+  });
+
+  // Reopen one saved profile.
+  app.get('/api/forge/agent-profiles/:id', (c) => {
+    const profile = getAgentProfile(c.req.param('id'));
+    if (!profile) return c.json({ error: 'not found' }, 404);
+    return c.json({ profile });
+  });
+
+  // Update status / ownerDecision / notes / displayName on a saved profile.
+  app.patch('/api/forge/agent-profiles/:id', async (c) => {
+    let body: { status?: unknown; ownerDecision?: unknown; notes?: unknown; displayName?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeProfileStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    if (body?.ownerDecision !== undefined && !isForgeOwnerDecision(body.ownerDecision)) {
+      return c.json({ error: 'invalid ownerDecision' }, 400);
+    }
+    if (body?.notes !== undefined && typeof body.notes !== 'string') {
+      return c.json({ error: 'notes must be a string' }, 400);
+    }
+    if (body?.displayName !== undefined && typeof body.displayName !== 'string') {
+      return c.json({ error: 'displayName must be a string' }, 400);
+    }
+    const updated = updateAgentProfile(c.req.param('id'), {
+      status: body.status as ForgeProfileStatus | undefined,
+      ownerDecision: body.ownerDecision as ForgeOwnerDecision | undefined,
+      notes: body.notes as string | undefined,
+      displayName: body.displayName as string | undefined,
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ profile: updated });
+  });
+
+  // Generate a review packet for a SAVED profile (owner / Codex / QA). Text
+  // only: it runs nothing and reviews no live system.
+  app.post('/api/forge/agent-profiles/:id/review-packet', (c) => {
+    const saved = getAgentProfile(c.req.param('id'));
+    if (!saved) return c.json({ error: 'not found' }, 404);
+    const packet = generateProfileReviewPacket({
+      profile: saved.profile,
+      request: saved.request,
+      status: saved.status,
+      ownerDecision: saved.ownerDecision,
+      notes: saved.notes,
+    });
+    return c.json({ packet });
+  });
+
+  // Generate a promotion readiness checklist for a SAVED profile. Readiness
+  // artifact only: it does not promote, activate, or run anything.
+  app.post('/api/forge/agent-profiles/:id/promotion-checklist', (c) => {
+    const saved = getAgentProfile(c.req.param('id'));
+    if (!saved) return c.json({ error: 'not found' }, 404);
+    const readiness = assessPromotionReadiness(saved.profile);
+    return c.json({
+      readiness,
+      markdown: renderPromotionReadinessMarkdown(readiness, saved.displayName),
     });
   });
 

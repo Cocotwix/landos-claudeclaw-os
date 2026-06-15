@@ -9,9 +9,21 @@ import {
   listEngagements,
   getEngagement,
   updateEngagement,
+  saveAgentProfile,
+  listAgentProfiles,
+  getAgentProfile,
+  updateAgentProfile,
   FORGE_STATUSES,
+  FORGE_PROFILE_STATUSES,
+  FORGE_PROFILE_SCHEMA_VERSION,
   type SaveForgeEngagementInput,
+  type SaveAgentProfileInput,
 } from './host-store.js';
+import {
+  buildAgentProfile,
+  deriveAuthorityModel,
+  generateAgentBuildPacket,
+} from './agent-profile.js';
 
 beforeEach(() => {
   _initTestForgeDb();
@@ -115,5 +127,96 @@ describe('Forge host store', () => {
     const saved = saveEngagement(sample());
     const updated = updateEngagement(saved.id, { ownerDecision: 'bogus' as never });
     expect(updated!.ownerDecision).toBe('pending');
+  });
+});
+
+function sampleProfile(
+  overrides: Partial<SaveAgentProfileInput> = {},
+): SaveAgentProfileInput {
+  const profile = buildAgentProfile({
+    rawRequest: 'an agent that drafts and organizes status updates',
+    displayName: 'Reporter',
+    department: 'Reporting',
+    createdAt: '2026-06-15T00:00:00.000Z',
+  });
+  return {
+    displayName: profile.displayName,
+    department: profile.department,
+    request: 'an agent that drafts and organizes status updates',
+    profile,
+    buildPacket: generateAgentBuildPacket(profile),
+    interview: '# Define a department agent: Reporter\n',
+    authoritySummary: deriveAuthorityModel(profile).summary,
+    activationMode: profile.activationMode,
+    ...overrides,
+  };
+}
+
+describe('Forge saved department-agent profiles', () => {
+  it('saves and reads back a profile with parsed JSON', () => {
+    const saved = saveAgentProfile(sampleProfile());
+    expect(saved.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(saved.status).toBe('draft');
+    expect(saved.ownerDecision).toBe('pending');
+    expect(saved.activationMode).toBe('sandbox');
+    expect(saved.schemaVersion).toBe(FORGE_PROFILE_SCHEMA_VERSION);
+    expect(saved.profile.displayName).toBe('Reporter');
+    expect(saved.profile.hardStops.length).toBeGreaterThan(0);
+    expect(saved.buildPacket).toContain('# Forge Agent Build Packet');
+
+    const fetched = getAgentProfile(saved.id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.department).toBe('Reporting');
+    expect(fetched!.profile.agentName).toBe('reporter');
+  });
+
+  it('lists profiles newest-first and filters by status', () => {
+    saveAgentProfile(sampleProfile());
+    const second = saveAgentProfile(sampleProfile({ status: 'review_ready' }));
+
+    const all = listAgentProfiles();
+    expect(all.length).toBe(2);
+    expect(all[0].id).toBe(second.id);
+
+    const filtered = listAgentProfiles({ status: 'review_ready' });
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].id).toBe(second.id);
+  });
+
+  it('updates status, owner decision, notes, and display name', () => {
+    const saved = saveAgentProfile(sampleProfile());
+    const updated = updateAgentProfile(saved.id, {
+      status: 'approved',
+      ownerDecision: 'approved',
+      notes: 'looks good',
+      displayName: 'Status Reporter',
+    });
+    expect(updated).toBeDefined();
+    expect(updated!.status).toBe('approved');
+    expect(updated!.ownerDecision).toBe('approved');
+    expect(updated!.notes).toBe('looks good');
+    expect(updated!.displayName).toBe('Status Reporter');
+    expect(updated!.updatedAt).toBeGreaterThanOrEqual(saved.createdAt);
+  });
+
+  it('ignores an invalid status/decision on update and returns undefined for unknown id', () => {
+    const saved = saveAgentProfile(sampleProfile());
+    const updated = updateAgentProfile(saved.id, {
+      status: 'not_a_status' as never,
+      ownerDecision: 'bogus' as never,
+    });
+    expect(updated!.status).toBe('draft'); // unchanged
+    expect(updated!.ownerDecision).toBe('pending'); // unchanged
+    expect(updateAgentProfile('deadbeef', { status: 'promoted' })).toBeUndefined();
+  });
+
+  it('exposes the full profile status vocabulary', () => {
+    expect(FORGE_PROFILE_STATUSES).toContain('draft');
+    expect(FORGE_PROFILE_STATUSES).toContain('review_ready');
+    expect(FORGE_PROFILE_STATUSES).toContain('approved');
+    expect(FORGE_PROFILE_STATUSES).toContain('needs_revision');
+    expect(FORGE_PROFILE_STATUSES).toContain('held');
+    expect(FORGE_PROFILE_STATUSES).toContain('rejected');
+    expect(FORGE_PROFILE_STATUSES).toContain('promoted');
   });
 });
