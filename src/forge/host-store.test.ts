@@ -21,6 +21,10 @@ import {
   listAgentRetrofits,
   getAgentRetrofit,
   updateAgentRetrofit,
+  saveWritebackProposal,
+  listWritebackProposals,
+  getWritebackProposal,
+  updateWritebackProposal,
   FORGE_STATUSES,
   FORGE_PROFILE_STATUSES,
   FORGE_PROFILE_SCHEMA_VERSION,
@@ -28,10 +32,13 @@ import {
   FORGE_SCAFFOLD_SCHEMA_VERSION,
   FORGE_RETROFIT_STATUSES,
   FORGE_RETROFIT_SCHEMA_VERSION,
+  FORGE_WRITEBACK_STATUSES,
+  FORGE_WRITEBACK_SCHEMA_VERSION,
   type SaveForgeEngagementInput,
   type SaveAgentProfileInput,
   type SavePromotionScaffoldInput,
   type SaveAgentRetrofitInput,
+  type SaveWritebackProposalInput,
 } from './host-store.js';
 import {
   buildAgentProfile,
@@ -50,6 +57,10 @@ import {
   generateRetrofitUpgradePlan,
   renderRetrofitReviewPacketMarkdown,
 } from './agent-retrofit.js';
+import {
+  generateWritebackProposal,
+  renderWritebackProposalMarkdown,
+} from './writeback-proposal.js';
 
 beforeEach(() => {
   _initTestForgeDb();
@@ -423,5 +434,96 @@ describe('Forge existing-agent retrofits', () => {
     expect(FORGE_RETROFIT_STATUSES).toContain('held');
     expect(FORGE_RETROFIT_STATUSES).toContain('rejected');
     expect(FORGE_RETROFIT_STATUSES).toContain('upgrade_scaffolded');
+  });
+});
+
+function sampleWriteback(
+  overrides: Partial<SaveWritebackProposalInput> = {},
+): SaveWritebackProposalInput {
+  const snapshot = buildSnapshotFromFiles({
+    agentSlug: 'reporter',
+    relativeFolderPath: 'agents/reporter',
+    files: [
+      { path: 'agent.yaml', content: 'name: Reporter Agent\ndescription: Drafts status updates.\n' },
+      { path: 'CLAUDE.md', content: '# Reporter Agent\n\nDrafts status updates. Uses the Read tool.' },
+    ],
+  });
+  const reconstruction = reconstructAgentProfile(snapshot);
+  const gaps = analyzeRetrofitGaps(reconstruction);
+  const proposal = generateWritebackProposal({
+    agentSlug: 'reporter',
+    relativeFolderPath: 'agents/reporter',
+    reconstruction,
+    gaps,
+    metas: [{ relativeTargetPath: 'agent-profile.json', exists: false, safeToWriteLater: true }],
+  });
+  return {
+    retrofitId: 'ret12345',
+    agentSlug: 'reporter',
+    relativeFolderPath: 'agents/reporter',
+    proposal,
+    markdown: renderWritebackProposalMarkdown(proposal),
+    ...overrides,
+  };
+}
+
+describe('Forge owner-gated writeback proposals', () => {
+  it('saves and reads back a proposal with parsed JSON', () => {
+    const saved = saveWritebackProposal(sampleWriteback());
+    expect(saved.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(saved.status).toBe('draft');
+    expect(saved.ownerDecision).toBe('pending');
+    expect(saved.schemaVersion).toBe(FORGE_WRITEBACK_SCHEMA_VERSION);
+    expect(saved.retrofitId).toBe('ret12345');
+    expect(saved.proposal.targetFiles.length).toBeGreaterThan(0);
+    expect(saved.proposal.notApplied.join(' ')).toContain('Not applied');
+
+    const fetched = getWritebackProposal(saved.id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.agentSlug).toBe('reporter');
+    expect(fetched!.proposal.blockedActions.length).toBeGreaterThan(0);
+  });
+
+  it('lists proposals newest-first and filters by status and retrofit id', () => {
+    saveWritebackProposal(sampleWriteback({ retrofitId: 'r1' }));
+    const second = saveWritebackProposal(sampleWriteback({ retrofitId: 'r2', status: 'review_ready' }));
+    const all = listWritebackProposals();
+    expect(all.length).toBe(2);
+    expect(all[0].id).toBe(second.id);
+    expect(listWritebackProposals({ status: 'review_ready' }).length).toBe(1);
+    expect(listWritebackProposals({ retrofitId: 'r1' }).length).toBe(1);
+  });
+
+  it('updates status, owner decision, and notes', () => {
+    const saved = saveWritebackProposal(sampleWriteback());
+    const updated = updateWritebackProposal(saved.id, {
+      status: 'approved_for_writeback',
+      ownerDecision: 'approved',
+      notes: 'ok',
+    });
+    expect(updated!.status).toBe('approved_for_writeback');
+    expect(updated!.ownerDecision).toBe('approved');
+    expect(updated!.notes).toBe('ok');
+  });
+
+  it('ignores invalid status/decision and returns undefined for unknown id', () => {
+    const saved = saveWritebackProposal(sampleWriteback());
+    const updated = updateWritebackProposal(saved.id, {
+      status: 'nope' as never,
+      ownerDecision: 'bogus' as never,
+    });
+    expect(updated!.status).toBe('draft');
+    expect(updated!.ownerDecision).toBe('pending');
+    expect(updateWritebackProposal('deadbeef', { status: 'held' })).toBeUndefined();
+  });
+
+  it('exposes the full writeback status vocabulary', () => {
+    expect(FORGE_WRITEBACK_STATUSES).toContain('draft');
+    expect(FORGE_WRITEBACK_STATUSES).toContain('review_ready');
+    expect(FORGE_WRITEBACK_STATUSES).toContain('needs_revision');
+    expect(FORGE_WRITEBACK_STATUSES).toContain('approved_for_writeback');
+    expect(FORGE_WRITEBACK_STATUSES).toContain('held');
+    expect(FORGE_WRITEBACK_STATUSES).toContain('rejected');
+    expect(FORGE_WRITEBACK_STATUSES).toContain('superseded');
   });
 });

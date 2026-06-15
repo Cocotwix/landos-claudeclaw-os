@@ -230,3 +230,39 @@ The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_r
 | `POST /api/forge/agent-retrofits/:id/upgrade-plan` | Regenerate the upgrade plan. |
 
 Retrofit reads existing agent files only. It never writes into, overwrites, moves, renames, deletes, activates, or registers the inspected agent, and it never reads secrets. Any future writeback is a separate, gated, owner-approved step.
+
+---
+
+## 13. Owner-gated writeback proposal layer
+
+A retrofit can produce a writeback proposal: a reviewable artifact that previews exactly what a future writeback would change in an existing agent folder before anything is written. It is proposal-only.
+
+The pure core lives in `src/forge/writeback-proposal.ts`: it plans target files, matches them to host-supplied path metadata, computes create/update/skip actions, builds diff-like previews, and renders the packet. The read-only path checker is a host adapter, `inspectTargetPath` in `src/forge/agent-inspector.ts`: it confirms a target path stays inside the agent folder (no traversal, no excluded dirs, no dotfiles, allowlisted extensions, never secret-named) and reads current text for preview only. Persistence stays in `src/forge/host-store.ts` (the existing `store/forge.db`, a dedicated `forge_writeback_proposal` table). No second database, and nothing is written into the agent folder.
+
+A proposal lists exact target paths; each target's action (create/update/skip), current existence, before/after summaries, a diff-like preview, reason, and risk flags; plus a backup plan, rollback plan, validation/test plan, owner approval gate, Codex/QA gate, blocked actions, and a clear not-applied state.
+
+### Writeback status
+
+| Status | Meaning |
+|---|---|
+| `draft` | Generated, under review. The default. |
+| `review_ready` | Ready to send for review. |
+| `needs_revision` | Sent back for changes. |
+| `approved_for_writeback` | The owner approved (apply still gated). |
+| `held` | Paused pending an owner decision. |
+| `rejected` | The owner declined this proposal. |
+| `superseded` | Replaced by a newer proposal. |
+
+The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_requested`, `rejected`, `hold`.
+
+### Writeback endpoints
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /api/forge/agent-retrofits/:id/writeback-proposal` | Generate and save a writeback proposal for a retrofit. |
+| `GET /api/forge/writeback-proposals` | List saved proposals newest first; optional `?status=` / `?retrofitId=` filters. |
+| `GET /api/forge/writeback-proposals/:id` | Reopen one saved proposal. |
+| `PATCH /api/forge/writeback-proposals/:id` | Update status, owner decision, or notes. |
+| `POST /api/forge/writeback-proposals/:id/apply` | Intentionally returns `501 not implemented`: apply is blocked. |
+
+This layer is proposal-only. It writes nothing into the agent folder, overwrites nothing, creates no backups, applies nothing, and activates or registers nothing. There is no working apply endpoint; applying remains a separate, gated, owner-approved and Codex/QA-reviewed step for a later sprint.

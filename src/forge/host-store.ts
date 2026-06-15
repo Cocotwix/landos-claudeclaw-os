@@ -23,6 +23,7 @@ import type {
   RetrofitGap,
   RetrofitUpgradePlan,
 } from './agent-retrofit.js';
+import type { WritebackProposal } from './writeback-proposal.js';
 
 export const FORGE_STATUSES = [
   'draft',
@@ -150,6 +151,57 @@ export function isForgeRetrofitStatus(v: unknown): v is ForgeRetrofitStatus {
 
 /** Current schema marker for a saved retrofit record. */
 export const FORGE_RETROFIT_SCHEMA_VERSION = 1;
+
+// Owner-gated writeback proposals. A proposal previews exactly what a future
+// writeback would change in an existing agent folder. It is proposal-only and
+// never applied.
+export const FORGE_WRITEBACK_STATUSES = [
+  'draft',
+  'review_ready',
+  'needs_revision',
+  'approved_for_writeback',
+  'held',
+  'rejected',
+  'superseded',
+] as const;
+export type ForgeWritebackStatus = (typeof FORGE_WRITEBACK_STATUSES)[number];
+
+export function isForgeWritebackStatus(v: unknown): v is ForgeWritebackStatus {
+  return typeof v === 'string' && (FORGE_WRITEBACK_STATUSES as readonly string[]).includes(v);
+}
+
+/** Current schema marker for a saved writeback proposal record. */
+export const FORGE_WRITEBACK_SCHEMA_VERSION = 1;
+
+export interface StoredWritebackProposal {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  retrofitId: string;
+  agentSlug: string;
+  relativeFolderPath: string;
+  status: ForgeWritebackStatus;
+  ownerDecision: ForgeOwnerDecision;
+  /** The full proposal object (parsed JSON). */
+  proposal: WritebackProposal;
+  /** The copy-ready proposal packet (markdown). */
+  markdown: string;
+  notes: string;
+  schemaVersion: number;
+  source: string;
+}
+
+export interface SaveWritebackProposalInput {
+  retrofitId: string;
+  agentSlug: string;
+  relativeFolderPath: string;
+  proposal: WritebackProposal;
+  markdown: string;
+  status?: ForgeWritebackStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+  source?: string;
+}
 
 export interface StoredAgentRetrofit {
   id: string;
@@ -326,6 +378,26 @@ function createForgeSchema(db: Database.Database): void {
       gap_analysis_json     TEXT NOT NULL DEFAULT '[]',
       upgrade_plan_json     TEXT NOT NULL DEFAULT '{}',
       review_packet         TEXT NOT NULL DEFAULT '',
+      notes                 TEXT NOT NULL DEFAULT '',
+      schema_version        INTEGER NOT NULL DEFAULT 1,
+      source                TEXT NOT NULL DEFAULT 'dashboard'
+    );
+  `);
+
+  // Owner-gated writeback proposals. Same forge.db, separate table. Preview
+  // artifacts only: never applied, never written into an agent folder.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS forge_writeback_proposal (
+      id                    TEXT PRIMARY KEY,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      retrofit_id           TEXT NOT NULL DEFAULT '',
+      agent_slug            TEXT NOT NULL DEFAULT '',
+      relative_folder_path  TEXT NOT NULL DEFAULT '',
+      status                TEXT NOT NULL DEFAULT 'draft',
+      owner_decision        TEXT NOT NULL DEFAULT 'pending',
+      proposal_json         TEXT NOT NULL DEFAULT '{}',
+      markdown              TEXT NOT NULL DEFAULT '',
       notes                 TEXT NOT NULL DEFAULT '',
       schema_version        INTEGER NOT NULL DEFAULT 1,
       source                TEXT NOT NULL DEFAULT 'dashboard'
@@ -958,4 +1030,131 @@ export function updateAgentRetrofit(
     'UPDATE forge_agent_retrofit SET status = ?, owner_decision = ?, notes = ?, updated_at = ? WHERE id = ?',
   ).run(status, ownerDecision, notes, now, id);
   return getAgentRetrofit(id);
+}
+
+// ── Owner-gated writeback proposals ──────────────────────────────────────
+
+interface WritebackRow {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  retrofit_id: string;
+  agent_slug: string;
+  relative_folder_path: string;
+  status: string;
+  owner_decision: string;
+  proposal_json: string;
+  markdown: string;
+  notes: string;
+  schema_version: number;
+  source: string;
+}
+
+function rowToWriteback(row: WritebackRow): StoredWritebackProposal {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    retrofitId: row.retrofit_id,
+    agentSlug: row.agent_slug,
+    relativeFolderPath: row.relative_folder_path,
+    status: isForgeWritebackStatus(row.status) ? row.status : 'draft',
+    ownerDecision: isForgeOwnerDecision(row.owner_decision) ? row.owner_decision : 'pending',
+    proposal: parseObj<WritebackProposal>(row.proposal_json, {} as WritebackProposal),
+    markdown: row.markdown,
+    notes: row.notes,
+    schemaVersion: row.schema_version,
+    source: row.source,
+  };
+}
+
+export function saveWritebackProposal(
+  input: SaveWritebackProposalInput,
+): StoredWritebackProposal {
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const id = genId();
+  const status: ForgeWritebackStatus =
+    input.status && isForgeWritebackStatus(input.status) ? input.status : 'draft';
+  const ownerDecision: ForgeOwnerDecision =
+    input.ownerDecision && isForgeOwnerDecision(input.ownerDecision) ? input.ownerDecision : 'pending';
+  db.prepare(
+    `INSERT INTO forge_writeback_proposal
+       (id, created_at, updated_at, retrofit_id, agent_slug, relative_folder_path,
+        status, owner_decision, proposal_json, markdown, notes, schema_version, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    now,
+    now,
+    input.retrofitId,
+    input.agentSlug,
+    input.relativeFolderPath,
+    status,
+    ownerDecision,
+    JSON.stringify(input.proposal ?? {}),
+    input.markdown,
+    input.notes ?? '',
+    FORGE_WRITEBACK_SCHEMA_VERSION,
+    input.source ?? 'dashboard',
+  );
+  return getWritebackProposal(id)!;
+}
+
+export function listWritebackProposals(
+  opts: { status?: ForgeWritebackStatus; retrofitId?: string; limit?: number } = {},
+): StoredWritebackProposal[] {
+  const db = getForgeDb();
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (opts.status) {
+    where.push('status = ?');
+    args.push(opts.status);
+  }
+  if (opts.retrofitId) {
+    where.push('retrofit_id = ?');
+    args.push(opts.retrofitId);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
+  const rows = db
+    .prepare(
+      `SELECT * FROM forge_writeback_proposal ${clause}ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+    )
+    .all(...args, limit) as WritebackRow[];
+  return rows.map(rowToWriteback);
+}
+
+export function getWritebackProposal(id: string): StoredWritebackProposal | undefined {
+  const row = getForgeDb()
+    .prepare('SELECT * FROM forge_writeback_proposal WHERE id = ?')
+    .get(id) as WritebackRow | undefined;
+  return row ? rowToWriteback(row) : undefined;
+}
+
+export interface UpdateWritebackProposalPatch {
+  status?: ForgeWritebackStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+}
+
+export function updateWritebackProposal(
+  id: string,
+  patch: UpdateWritebackProposalPatch,
+): StoredWritebackProposal | undefined {
+  const existing = getWritebackProposal(id);
+  if (!existing) return undefined;
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const status =
+    patch.status && isForgeWritebackStatus(patch.status) ? patch.status : existing.status;
+  const ownerDecision =
+    patch.ownerDecision && isForgeOwnerDecision(patch.ownerDecision)
+      ? patch.ownerDecision
+      : existing.ownerDecision;
+  const notes = patch.notes !== undefined ? patch.notes : existing.notes;
+  db.prepare(
+    'UPDATE forge_writeback_proposal SET status = ?, owner_decision = ?, notes = ?, updated_at = ? WHERE id = ?',
+  ).run(status, ownerDecision, notes, now, id);
+  return getWritebackProposal(id);
 }

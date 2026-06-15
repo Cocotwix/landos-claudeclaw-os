@@ -136,6 +136,38 @@ interface StoredRetrofit {
   reviewPacket: string;
 }
 
+// Owner-gated writeback proposal lifecycle. Preview-only; never applied.
+const WRITEBACK_STATUSES = [
+  'draft',
+  'review_ready',
+  'needs_revision',
+  'approved_for_writeback',
+  'held',
+  'rejected',
+  'superseded',
+] as const;
+type WritebackStatus = (typeof WRITEBACK_STATUSES)[number];
+
+interface TargetFileView {
+  relativeTargetPath: string;
+  action: 'create' | 'update' | 'skip';
+  exists: boolean;
+  safeToWriteLater: boolean;
+}
+
+interface StoredWriteback {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  retrofitId: string;
+  agentSlug: string;
+  relativeFolderPath: string;
+  status: WritebackStatus;
+  ownerDecision: OwnerDecision;
+  proposal: { targetFiles: TargetFileView[]; notApplied: string[] };
+  markdown: string;
+}
+
 interface ForgeHit {
   category: string;
   label: string;
@@ -233,6 +265,8 @@ export function Forge() {
   const [existingAgents, setExistingAgents] = useState<ExistingAgentCandidate[]>([]);
   const [savedRetrofits, setSavedRetrofits] = useState<StoredRetrofit[]>([]);
   const [currentRetrofit, setCurrentRetrofit] = useState<StoredRetrofit | null>(null);
+  const [savedWritebacks, setSavedWritebacks] = useState<StoredWriteback[]>([]);
+  const [currentWriteback, setCurrentWriteback] = useState<StoredWriteback | null>(null);
 
   async function loadHistory() {
     try {
@@ -279,12 +313,22 @@ export function Forge() {
     }
   }
 
+  async function loadWritebacks() {
+    try {
+      const res = await apiGet<{ proposals: StoredWriteback[] }>('/api/forge/writeback-proposals');
+      setSavedWritebacks(res.proposals);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   useEffect(() => {
     loadHistory();
     loadProfiles();
     loadScaffolds();
     loadExistingAgents();
     loadRetrofits();
+    loadWritebacks();
   }, []);
 
   async function generate() {
@@ -791,6 +835,52 @@ export function Forge() {
     }
   }
 
+  // Owner-gated writeback proposal. Previews exactly what a future writeback
+  // would change. This applies nothing, writes nothing into the agent folder,
+  // and creates no backups.
+  async function createWriteback() {
+    if (!currentRetrofit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ proposal: StoredWriteback }>(
+        `/api/forge/agent-retrofits/${currentRetrofit.id}/writeback-proposal`,
+        {},
+      );
+      setCurrentWriteback(resp.proposal);
+      setOutput({ kind: 'Writeback proposal', text: resp.proposal.markdown });
+      await loadWritebacks();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function reopenWriteback(p: StoredWriteback) {
+    setCurrentWriteback(p);
+    setOutput({ kind: 'Writeback proposal', text: p.markdown });
+    setError(null);
+  }
+
+  async function patchWriteback(patch: { status?: WritebackStatus; ownerDecision?: OwnerDecision }) {
+    if (!currentWriteback) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPatch<{ proposal: StoredWriteback }>(
+        `/api/forge/writeback-proposals/${currentWriteback.id}`,
+        patch,
+      );
+      setCurrentWriteback(resp.proposal);
+      await loadWritebacks();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const btn =
     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const btnAccent = `${btn} bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]`;
@@ -1008,10 +1098,81 @@ export function Forge() {
               <button type="button" onClick={retrofitUpgradePlan} disabled={busy} class={btnGhost}>
                 Upgrade plan
               </button>
+              <button type="button" onClick={createWriteback} disabled={busy} class={btnGhost}>
+                Create writeback proposal
+              </button>
             </div>
             <p class="text-[10.5px] text-[var(--color-text-faint)]">
               Read-only inspection. Does not modify, activate, or register the existing agent. Any writeback is a
               separate, gated, owner-approved step.
+            </p>
+          </section>
+        )}
+
+        {currentWriteback && (
+          <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+            <div class="flex items-center gap-2 flex-wrap">
+              <Pill tone="neutral">not applied</Pill>
+              <span class="text-[12.5px] text-[var(--color-text)] font-medium truncate">
+                Writeback proposal · {currentWriteback.agentSlug}
+              </span>
+              <span class="text-[10px] text-[var(--color-text-faint)]">
+                {currentWriteback.id} · {currentWriteback.relativeFolderPath}
+              </span>
+            </div>
+            <div class="space-y-1">
+              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Target files</div>
+              <ul class="list-disc pl-5 text-[11.5px] text-[var(--color-text-muted)] space-y-0.5">
+                {currentWriteback.proposal.targetFiles.map((t) => (
+                  <li>
+                    <code class="text-[var(--color-text)]">{t.relativeTargetPath}</code>
+                    {' '}
+                    <Pill tone={t.action === 'skip' ? 'failed' : t.action === 'create' ? 'done' : 'neutral'}>
+                      {t.action}
+                    </Pill>
+                    {' '}
+                    <span class="text-[10px] text-[var(--color-text-faint)]">
+                      {t.exists ? 'exists' : 'new'} · {t.safeToWriteLater ? 'safe later' : 'unsafe'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2 pt-1">
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Status
+                <select
+                  value={currentWriteback.status}
+                  disabled={busy}
+                  onChange={(e) => patchWriteback({ status: (e.target as HTMLSelectElement).value as WritebackStatus })}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {WRITEBACK_STATUSES.map((s) => (
+                    <option value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Owner decision
+                <select
+                  value={currentWriteback.ownerDecision}
+                  disabled={busy}
+                  onChange={(e) => patchWriteback({ ownerDecision: (e.target as HTMLSelectElement).value as OwnerDecision })}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {OWNER_DECISIONS.map((d) => (
+                    <option value={d}>{d}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={() => copyText(currentWriteback.markdown)} class={btnGhost}>
+                <Copy size={12} /> {copied ? 'Copied' : 'Copy packet'}
+              </button>
+            </div>
+            <p class="text-[10.5px] text-[var(--color-text-faint)]">
+              Not applied. Preview only. No file is written or overwritten, no backups are created, and nothing is
+              activated or registered. Apply is blocked behind owner + Codex/QA gates.
             </p>
           </section>
         )}
@@ -1399,6 +1560,42 @@ export function Forge() {
                       </Pill>
                     )}
                     <span class="text-[10px] text-[var(--color-text-faint)]">{r.status}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Writeback proposals</h3>
+            <button type="button" onClick={loadWritebacks} class={btnGhost} aria-label="Refresh writeback proposals">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          {savedWritebacks.length === 0 ? (
+            <p class="text-[11.5px] text-[var(--color-text-muted)]">No writeback proposals yet.</p>
+          ) : (
+            <ul class="divide-y divide-[var(--color-border)]">
+              {savedWritebacks.map((p) => (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => reopenWriteback(p)}
+                    class="w-full text-left py-2 flex items-center gap-2 hover:bg-[var(--color-elevated)] rounded-md px-1.5 transition-colors"
+                  >
+                    <Pill tone="neutral">{p.proposal.targetFiles.length} file(s)</Pill>
+                    <span class="flex-1 min-w-0 text-[12.5px] text-[var(--color-text)] truncate">
+                      {p.agentSlug}
+                      <span class="text-[var(--color-text-faint)]"> · {p.relativeFolderPath}</span>
+                    </span>
+                    {p.ownerDecision && p.ownerDecision !== 'pending' && (
+                      <Pill tone={p.ownerDecision === 'approved' ? 'done' : p.ownerDecision === 'rejected' ? 'failed' : 'neutral'}>
+                        {p.ownerDecision}
+                      </Pill>
+                    )}
+                    <span class="text-[10px] text-[var(--color-text-faint)]">{p.status}</span>
                   </button>
                 </li>
               ))}

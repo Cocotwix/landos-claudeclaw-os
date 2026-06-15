@@ -108,7 +108,13 @@ import {
 import {
   listExistingAgentCandidates,
   inspectAgentFiles,
+  inspectTargetPath,
 } from './forge/agent-inspector.js';
+import {
+  planWritebackTargets,
+  generateWritebackProposal,
+  renderWritebackProposalMarkdown,
+} from './forge/writeback-proposal.js';
 import {
   saveEngagement,
   listEngagements,
@@ -126,16 +132,22 @@ import {
   listAgentRetrofits,
   getAgentRetrofit,
   updateAgentRetrofit,
+  saveWritebackProposal,
+  listWritebackProposals,
+  getWritebackProposal,
+  updateWritebackProposal,
   isForgeStatus,
   isForgeOwnerDecision,
   isForgeProfileStatus,
   isForgeScaffoldStatus,
   isForgeRetrofitStatus,
+  isForgeWritebackStatus,
   type ForgeStatus,
   type ForgeOwnerDecision,
   type ForgeProfileStatus,
   type ForgeScaffoldStatus,
   type ForgeRetrofitStatus,
+  type ForgeWritebackStatus,
 } from './forge/host-store.js';
 import {
   resolveAgentAvatar,
@@ -2687,6 +2699,99 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!saved) return c.json({ error: 'not found' }, 404);
     const { gaps, readiness, plan } = retrofitAnalysis(saved);
     return c.json({ plan, gaps, readiness });
+  });
+
+  // ── Owner-gated writeback proposals ───────────────────────────────────
+  // Preview-only. Generating a proposal checks target paths read-only and shows
+  // exactly what a future writeback would change. It writes nothing, overwrites
+  // nothing, creates no backups, applies nothing, and registers/activates
+  // nothing. There is intentionally no apply endpoint.
+
+  // Generate + save a writeback proposal for a SAVED retrofit.
+  app.post('/api/forge/agent-retrofits/:id/writeback-proposal', (c) => {
+    const saved = getAgentRetrofit(c.req.param('id'));
+    if (!saved) return c.json({ error: 'not found' }, 404);
+
+    const proposedTargets = planWritebackTargets({
+      reconstruction: saved.reconstructedProfile,
+      gaps: saved.gapAnalysis,
+    });
+    // Read-only path checks via the inspector (same safety as inspection).
+    const metas = proposedTargets.map((t) =>
+      inspectTargetPath(saved.agentSlug, t.relativeTargetPath),
+    );
+    const proposal = generateWritebackProposal({
+      agentSlug: saved.agentSlug,
+      relativeFolderPath: saved.relativeFolderPath,
+      reconstruction: saved.reconstructedProfile,
+      gaps: saved.gapAnalysis,
+      metas,
+      proposedTargets,
+    });
+    const stored = saveWritebackProposal({
+      retrofitId: saved.id,
+      agentSlug: saved.agentSlug,
+      relativeFolderPath: saved.relativeFolderPath,
+      proposal,
+      markdown: renderWritebackProposalMarkdown(proposal),
+      source: 'dashboard',
+    });
+    return c.json({ proposal: stored }, 201);
+  });
+
+  // List saved writeback proposals, optional ?status= / ?retrofitId= filters.
+  app.get('/api/forge/writeback-proposals', (c) => {
+    const statusParam = c.req.query('status');
+    const status = statusParam && isForgeWritebackStatus(statusParam) ? statusParam : undefined;
+    const retrofitId = c.req.query('retrofitId') || undefined;
+    return c.json({ proposals: listWritebackProposals({ status, retrofitId }) });
+  });
+
+  // Reopen one saved writeback proposal.
+  app.get('/api/forge/writeback-proposals/:id', (c) => {
+    const proposal = getWritebackProposal(c.req.param('id'));
+    if (!proposal) return c.json({ error: 'not found' }, 404);
+    return c.json({ proposal });
+  });
+
+  // Update status / ownerDecision / notes on a saved proposal. Record update
+  // only: never applies the proposal or writes into an agent folder.
+  app.patch('/api/forge/writeback-proposals/:id', async (c) => {
+    let body: { status?: unknown; ownerDecision?: unknown; notes?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeWritebackStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    if (body?.ownerDecision !== undefined && !isForgeOwnerDecision(body.ownerDecision)) {
+      return c.json({ error: 'invalid ownerDecision' }, 400);
+    }
+    if (body?.notes !== undefined && typeof body.notes !== 'string') {
+      return c.json({ error: 'notes must be a string' }, 400);
+    }
+    const updated = updateWritebackProposal(c.req.param('id'), {
+      status: body.status as ForgeWritebackStatus | undefined,
+      ownerDecision: body.ownerDecision as ForgeOwnerDecision | undefined,
+      notes: body.notes as string | undefined,
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ proposal: updated });
+  });
+
+  // Apply is intentionally not implemented this sprint. The route exists so the
+  // contract is explicit: writeback is blocked behind owner + Codex/QA gates.
+  app.post('/api/forge/writeback-proposals/:id/apply', (c) => {
+    return c.json(
+      {
+        error: 'not implemented',
+        message:
+          'Applying a writeback is not available. Proposals are preview-only; apply is blocked behind a separate owner-approved, Codex/QA-reviewed gate.',
+      },
+      501,
+    );
   });
 
   // ── Agent endpoints ──────────────────────────────────────────────────

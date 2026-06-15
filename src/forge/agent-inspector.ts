@@ -11,6 +11,7 @@ import path from 'path';
 
 import { LANDOS_AGENTS_DIR } from '../config.js';
 import type { ExistingAgentFile } from './agent-retrofit.js';
+import type { TargetFileMeta } from './writeback-proposal.js';
 
 // Directories never inspected, even if present inside an agent folder.
 const EXCLUDED_DIRS = new Set([
@@ -24,13 +25,20 @@ const ALLOWED_EXT = new Set(['.md', '.yaml', '.yml', '.json', '.txt']);
 // Files whose name looks secret-bearing are never read, regardless of extension.
 function isSecretLikeName(name: string): boolean {
   const n = name.toLowerCase();
+  // Split the name into tokens on common separators so "key" is matched as its
+  // own token (key.json, api-key.json, private-key.txt, api_key.yaml) without
+  // over-blocking ordinary words that merely contain "key" (monkey.json,
+  // keyword.md). Plural "keys" is treated the same as "key".
+  const tokens = n.split(/[-_.\s]+/).filter(Boolean);
+  const hasKeyToken = tokens.some((t) => t === 'key' || t === 'keys');
   return (
     n.startsWith('.env') ||
     n.includes('secret') ||
     n.includes('token') ||
     n.includes('credential') ||
     n.includes('.pem') ||
-    n.includes('.key')
+    n.includes('.key') ||
+    hasKeyToken
   );
 }
 
@@ -195,4 +203,74 @@ export function inspectAgentFiles(
   } catch { /* no docs */ }
 
   return { relativeFolderPath: path.posix.join(path.basename(agentsDir), slug), files };
+}
+
+/**
+ * Read-only check of a future writeback target path inside an agent folder.
+ * Returns metadata only: whether it exists, its current text (for preview), and
+ * whether it would be safe to write to later. Writes nothing. Enforces the same
+ * restrictions as inspection: inside the agent folder, no traversal, no excluded
+ * dirs, no dotfiles, allowlisted extensions, never secret-named files.
+ */
+export function inspectTargetPath(
+  slug: string,
+  relativeTargetPath: string,
+  agentsDir: string = LANDOS_AGENTS_DIR,
+): TargetFileMeta {
+  const rel = relativeTargetPath.replace(/\\/g, '/');
+  const base: TargetFileMeta = {
+    relativeTargetPath: rel,
+    exists: false,
+    safeToWriteLater: false,
+    riskFlags: [],
+  };
+
+  if (!isValidSlug(slug)) {
+    base.riskFlags = ['Invalid agent slug.'];
+    return base;
+  }
+  const fileName = rel.split('/').pop() ?? '';
+  const segments = rel.split('/').filter(Boolean);
+  const risk: string[] = [];
+
+  if (!rel || rel.includes('..') || path.isAbsolute(relativeTargetPath)) {
+    risk.push('Path escapes the agent folder.');
+  }
+  if (segments.some((s) => EXCLUDED_DIRS.has(s) || s.startsWith('.'))) {
+    risk.push('Path touches an excluded or hidden directory.');
+  }
+  if (!isAllowedFile(fileName)) {
+    risk.push('Not an allowlisted, non-secret text file.');
+  }
+
+  // Resolve and confirm containment inside the agent folder.
+  const agentRoot = path.resolve(agentsDir, slug);
+  const resolved = path.resolve(agentRoot, rel);
+  const inside = resolved === agentRoot
+    ? false
+    : resolved.startsWith(agentRoot + path.sep);
+  if (!inside) risk.push('Resolved path is outside the agent folder.');
+
+  const safeToWriteLater = risk.length === 0;
+  let exists = false;
+  let currentText: string | undefined;
+  if (safeToWriteLater) {
+    try {
+      const s = fs.statSync(resolved);
+      if (s.isFile()) {
+        exists = true;
+        if (s.size <= MAX_FILE_BYTES) currentText = fs.readFileSync(resolved, 'utf-8');
+      } else if (s.isDirectory()) {
+        risk.push('Target path is a directory.');
+      }
+    } catch { /* does not exist: fine for a create */ }
+  }
+
+  return {
+    relativeTargetPath: rel,
+    exists,
+    currentText,
+    safeToWriteLater: risk.length === 0,
+    riskFlags: risk,
+  };
 }

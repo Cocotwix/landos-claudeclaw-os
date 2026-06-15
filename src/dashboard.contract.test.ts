@@ -928,6 +928,86 @@ describe('Forge existing agent retrofit endpoints', () => {
   });
 });
 
+describe('Forge writeback proposal endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+  function patch(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function retrofitId() {
+    const made = await jsonOf(await post('/api/forge/existing-agents/inspect', { slug: 'forge' }));
+    return made.retrofit.id as string;
+  }
+
+  it('generates and saves a writeback proposal for a retrofit', async () => {
+    const id = await retrofitId();
+    const res = await post(`/api/forge/agent-retrofits/${id}/writeback-proposal`, {});
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.proposal.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(body.proposal.retrofitId).toBe(id);
+    expect(body.proposal.agentSlug).toBe('forge');
+    expect(body.proposal.status).toBe('draft');
+    expect(Array.isArray(body.proposal.proposal.targetFiles)).toBe(true);
+    expect(body.proposal.proposal.targetFiles.length).toBeGreaterThan(0);
+    expect(body.proposal.markdown).toContain('# Writeback Proposal');
+    // Every target must stay inside the agent folder.
+    for (const t of body.proposal.proposal.targetFiles) {
+      expect(t.relativeTargetPath.includes('..')).toBe(false);
+    }
+  });
+
+  it('404s generating a proposal for an unknown retrofit', async () => {
+    const res = await post('/api/forge/agent-retrofits/deadbeef/writeback-proposal', {});
+    expect(res.status).toBe(404);
+  });
+
+  it('lists, reopens, and updates a proposal', async () => {
+    const id = await retrofitId();
+    const made = await jsonOf(await post(`/api/forge/agent-retrofits/${id}/writeback-proposal`, {}));
+    const pid = made.proposal.id;
+
+    const listRes = await get('/api/forge/writeback-proposals');
+    expect((await jsonOf(listRes)).proposals.length).toBeGreaterThanOrEqual(1);
+
+    const getRes = await get(`/api/forge/writeback-proposals/${pid}`);
+    expect(getRes.status).toBe(200);
+    expect((await jsonOf(getRes)).proposal.id).toBe(pid);
+
+    const patchRes = await patch(`/api/forge/writeback-proposals/${pid}`, {
+      status: 'approved_for_writeback',
+      ownerDecision: 'approved',
+    });
+    expect(patchRes.status).toBe(200);
+    expect((await jsonOf(patchRes)).proposal.status).toBe('approved_for_writeback');
+  });
+
+  it('rejects an invalid status and 404s an unknown proposal id', async () => {
+    const id = await retrofitId();
+    const made = await jsonOf(await post(`/api/forge/agent-retrofits/${id}/writeback-proposal`, {}));
+    expect((await patch(`/api/forge/writeback-proposals/${made.proposal.id}`, { status: 'bogus' })).status).toBe(400);
+    expect((await get('/api/forge/writeback-proposals/deadbeef')).status).toBe(404);
+  });
+
+  it('blocks apply with 501 not implemented', async () => {
+    const id = await retrofitId();
+    const made = await jsonOf(await post(`/api/forge/agent-retrofits/${id}/writeback-proposal`, {}));
+    const res = await post(`/api/forge/writeback-proposals/${made.proposal.id}/apply`, {});
+    expect(res.status).toBe(501);
+    expect((await jsonOf(res)).error).toBe('not implemented');
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.
