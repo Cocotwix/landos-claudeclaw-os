@@ -155,6 +155,7 @@ Keep Forge Core clean: universal persona and workflow in Forge's docs, host-spec
 |---|---|
 | `docs/Forge_Core_Policy.md` | The universal operating policy for Forge. |
 | `docs/Forge_Workflow.md` | The full Interview-to-Next-Milestone rhythm. |
+| `docs/Forge_Engagement_Workflow.md` | Operator guide: run a Forge engagement (CLI), the lane gate, and the artifact formats. Engine: `src/forge/engagement.ts`. |
 | `docs/Forge_Interview_Template.md` | Structured intent extraction. |
 | `docs/Forge_Assumption_Summary_Template.md` | Assumptions stated back before building. |
 | `docs/Forge_Milestone_Review_Template.md` | Standard milestone report format. |
