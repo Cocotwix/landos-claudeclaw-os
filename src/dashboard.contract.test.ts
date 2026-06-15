@@ -15,6 +15,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { _initTestDatabase } from './db.js';
+import { _initTestForgeDb } from './forge/host-store.js';
 import { buildDashboardApp } from './dashboard.js';
 import type { Hono } from 'hono';
 
@@ -29,6 +30,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   _initTestDatabase();
+  // Forge endpoints persist to a dedicated store; use a fresh in-memory DB
+  // per test so the contract suite never writes a real store/forge.db.
+  _initTestForgeDb();
 });
 
 async function get(path: string) {
@@ -376,6 +380,109 @@ describe('POST /api/forge/engagement', () => {
     const res = await forge({ request: 'a'.repeat(10001) });
     expect(res.status).toBe(400);
     expect(await jsonOf(res)).toMatchObject({ error: 'request too long (max 10000 chars)' });
+  });
+});
+
+describe('Forge engagement persistence + helpers', () => {
+  async function save(payload: unknown) {
+    return app.request('/api/forge/engagements' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('saves a generated engagement and returns the stored record', async () => {
+    const res = await save({ request: 'Add a date helper to src/utils with a test.', title: 'Date utils' });
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.engagement.id).toEqual(expect.any(String));
+    expect(body.engagement.verdict).toBe('SAFE');
+    expect(body.engagement.status).toBe('draft');
+    expect(body.engagement.markdown).toContain('# Forge Engagement');
+  });
+
+  it('rejects save with a non-string request (400)', async () => {
+    const res = await save({ request: 123 });
+    expect(res.status).toBe(400);
+  });
+
+  it('lists saved engagements newest-first', async () => {
+    await save({ request: 'First safe build.' });
+    await save({ request: 'Second safe build.' });
+    const res = await app.request('/api/forge/engagements' + Q);
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.engagements.length).toBe(2);
+  });
+
+  it('gets a saved engagement by id and 404s for unknown id', async () => {
+    const saved = await jsonOf(await save({ request: 'Add a util.' }));
+    const id = saved.engagement.id;
+    const ok = await app.request(`/api/forge/engagements/${id}` + Q);
+    expect(ok.status).toBe(200);
+    const miss = await app.request('/api/forge/engagements/deadbeef' + Q);
+    expect(miss.status).toBe(404);
+  });
+
+  it('patches status and notes on a saved engagement', async () => {
+    const saved = await jsonOf(await save({ request: 'Add a util.' }));
+    const id = saved.engagement.id;
+    const res = await app.request(`/api/forge/engagements/${id}` + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'needs_review', notes: 'ready for codex' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.engagement.status).toBe('needs_review');
+    expect(body.engagement.notes).toBe('ready for codex');
+  });
+
+  it('rejects an invalid status on patch (400)', async () => {
+    const saved = await jsonOf(await save({ request: 'Add a util.' }));
+    const res = await app.request(`/api/forge/engagements/${saved.engagement.id}` + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'not_a_status' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('generates a review packet for a saved engagement', async () => {
+    const saved = await jsonOf(await save({ request: 'Add a util.', title: 'Util' }));
+    const res = await app.request(`/api/forge/engagements/${saved.engagement.id}/review-packet` + Q, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.packet).toContain('# Codex Review Packet');
+    expect(body.packet).toContain('Safe to push: Yes or No');
+  });
+
+  it('generates an ad-hoc review packet', async () => {
+    const res = await app.request('/api/forge/review-packet' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'ad hoc', currentCommit: 'abc123' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.packet).toContain('# Codex Review Packet');
+    expect(body.packet).toContain('abc123');
+  });
+
+  it('generates a command plan with the hard safety rails', async () => {
+    const res = await app.request('/api/forge/command-plan' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'plan', verdict: 'STOP', categories: ['secrets_credentials'] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.plan).toContain('## Never approve');
+    expect(body.plan).toContain('git add .');
+    expect(body.plan).toContain('Lane verdict: STOP');
   });
 });
 

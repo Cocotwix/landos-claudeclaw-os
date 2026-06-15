@@ -72,6 +72,16 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
 import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
 import { startForgeEngagement, renderEngagementMarkdown } from './forge/engagement.js';
+import { generateReviewPacket } from './forge/review-packet.js';
+import { generateCommandPlan } from './forge/command-planner.js';
+import {
+  saveEngagement,
+  listEngagements,
+  getEngagement,
+  updateEngagement,
+  isForgeStatus,
+  type ForgeStatus,
+} from './forge/host-store.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -1921,6 +1931,154 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       decisionsNeeded: engagement.assumptionSummary.tylerDecisions,
       markdown: renderEngagementMarkdown(engagement),
     });
+  });
+
+  // Generate AND persist a Forge engagement in the host store. Returns the
+  // saved record (same shape used by list/get). The generate-only endpoint
+  // above is unchanged for callers that just want a preview. Save/list/get
+  // only store and display host records: they never execute anything.
+  app.post('/api/forge/engagements', async (c) => {
+    let body: { request?: unknown; title?: unknown; host?: unknown; status?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body?.request !== 'string') return c.json({ error: 'request must be a string' }, 400);
+    if (body?.title !== undefined && typeof body.title !== 'string') {
+      return c.json({ error: 'title must be a string' }, 400);
+    }
+    if (body?.host !== undefined && typeof body.host !== 'string') {
+      return c.json({ error: 'host must be a string' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+
+    const rawRequest = body.request.trim();
+    if (!rawRequest) return c.json({ error: 'request required' }, 400);
+    if (rawRequest.length > 10000) return c.json({ error: 'request too long (max 10000 chars)' }, 400);
+
+    const engagement = startForgeEngagement({
+      rawRequest,
+      title: body.title?.trim() || undefined,
+      host: body.host?.trim() || undefined,
+      requestedBy: 'Tyler',
+      createdAt: new Date().toISOString(),
+    });
+
+    const saved = saveEngagement({
+      title: engagement.title,
+      rawRequest: engagement.rawRequest,
+      host: engagement.host,
+      verdict: engagement.gate.verdict,
+      categories: engagement.gate.categories,
+      hits: engagement.gate.hits,
+      notice: engagement.gate.notice,
+      decisionsNeeded: engagement.assumptionSummary.tylerDecisions,
+      markdown: renderEngagementMarkdown(engagement),
+      status: (body.status as ForgeStatus | undefined) ?? 'draft',
+      source: 'dashboard',
+    });
+    return c.json({ engagement: saved }, 201);
+  });
+
+  // List saved Forge engagements (newest first), optional ?status= filter.
+  app.get('/api/forge/engagements', (c) => {
+    const statusParam = c.req.query('status');
+    const status = statusParam && isForgeStatus(statusParam) ? statusParam : undefined;
+    return c.json({ engagements: listEngagements({ status }) });
+  });
+
+  // Fetch one saved Forge engagement.
+  app.get('/api/forge/engagements/:id', (c) => {
+    const engagement = getEngagement(c.req.param('id'));
+    if (!engagement) return c.json({ error: 'not found' }, 404);
+    return c.json({ engagement });
+  });
+
+  // Update simple fields (status / notes / title) on a saved engagement.
+  app.patch('/api/forge/engagements/:id', async (c) => {
+    let body: { status?: unknown; notes?: unknown; title?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    if (body?.notes !== undefined && typeof body.notes !== 'string') {
+      return c.json({ error: 'notes must be a string' }, 400);
+    }
+    if (body?.title !== undefined && typeof body.title !== 'string') {
+      return c.json({ error: 'title must be a string' }, 400);
+    }
+    const updated = updateEngagement(c.req.param('id'), {
+      status: body.status as ForgeStatus | undefined,
+      notes: body.notes as string | undefined,
+      title: body.title as string | undefined,
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ engagement: updated });
+  });
+
+  // Generate a copy-ready Codex review packet for a SAVED engagement. Text
+  // only: it never runs Codex or executes anything.
+  app.post('/api/forge/engagements/:id/review-packet', (c) => {
+    const engagement = getEngagement(c.req.param('id'));
+    if (!engagement) return c.json({ error: 'not found' }, 404);
+    const packet = generateReviewPacket({
+      title: engagement.title,
+      verdict: engagement.verdict,
+      rawRequest: engagement.rawRequest,
+    });
+    return c.json({ packet });
+  });
+
+  // Generate an ad-hoc Codex review packet from supplied fields. Text only.
+  app.post('/api/forge/review-packet', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const packet = generateReviewPacket({
+      title: typeof body?.title === 'string' ? body.title : undefined,
+      repoPath: typeof body?.repoPath === 'string' ? body.repoPath : undefined,
+      currentCommit: typeof body?.currentCommit === 'string' ? body.currentCommit : undefined,
+      previousPushedCommit:
+        typeof body?.previousPushedCommit === 'string' ? body.previousPushedCommit : undefined,
+      expectedChangedFiles: Array.isArray(body?.expectedChangedFiles)
+        ? (body.expectedChangedFiles.filter((f) => typeof f === 'string') as string[])
+        : undefined,
+      verdict: body?.verdict === 'STOP' ? 'STOP' : 'SAFE',
+      rawRequest: typeof body?.rawRequest === 'string' ? body.rawRequest : undefined,
+    });
+    return c.json({ packet });
+  });
+
+  // Generate an ad-hoc Claude Code command plan (approval batching helper).
+  // Text only: it never executes commands.
+  app.post('/api/forge/command-plan', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const plan = generateCommandPlan({
+      title: typeof body?.title === 'string' ? body.title : undefined,
+      verdict: body?.verdict === 'STOP' ? 'STOP' : 'SAFE',
+      categories: Array.isArray(body?.categories)
+        ? (body.categories.filter((x) => typeof x === 'string') as string[])
+        : undefined,
+      expectedChangedFiles: Array.isArray(body?.expectedChangedFiles)
+        ? (body.expectedChangedFiles.filter((f) => typeof f === 'string') as string[])
+        : undefined,
+    });
+    return c.json({ plan });
   });
 
   // ── Agent endpoints ──────────────────────────────────────────────────
