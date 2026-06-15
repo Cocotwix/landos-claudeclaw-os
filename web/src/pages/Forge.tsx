@@ -54,6 +54,45 @@ interface StoredProfile {
   notes: string;
 }
 
+// Draft promotion scaffold lifecycle. A scaffold is a draft artifact set, never
+// an active or registered agent.
+const SCAFFOLD_STATUSES = [
+  'draft',
+  'review_ready',
+  'approved_for_generation',
+  'needs_revision',
+  'held',
+  'rejected',
+  'generated_draft_files',
+] as const;
+type ScaffoldStatus = (typeof SCAFFOLD_STATUSES)[number];
+
+interface ScaffoldFileMeta {
+  path: string;
+  purpose: string;
+  content: string;
+}
+
+interface StoredScaffold {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  savedProfileId: string;
+  displayName: string;
+  department: string;
+  proposedSlug: string;
+  status: ScaffoldStatus;
+  ownerDecision: OwnerDecision;
+  scaffold: {
+    proposedFolder: string;
+    readyForGeneration: boolean;
+    readinessNote: string;
+    files: ScaffoldFileMeta[];
+  };
+  markdown: string;
+  notes: string;
+}
+
 interface ForgeHit {
   category: string;
   label: string;
@@ -146,6 +185,8 @@ export function Forge() {
   const [agentDepartment, setAgentDepartment] = useState('');
   const [savedProfiles, setSavedProfiles] = useState<StoredProfile[]>([]);
   const [currentProfile, setCurrentProfile] = useState<StoredProfile | null>(null);
+  const [savedScaffolds, setSavedScaffolds] = useState<StoredScaffold[]>([]);
+  const [currentScaffold, setCurrentScaffold] = useState<StoredScaffold | null>(null);
 
   async function loadHistory() {
     try {
@@ -165,9 +206,19 @@ export function Forge() {
     }
   }
 
+  async function loadScaffolds() {
+    try {
+      const res = await apiGet<{ scaffolds: StoredScaffold[] }>('/api/forge/promotion-scaffolds');
+      setSavedScaffolds(res.scaffolds);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   useEffect(() => {
     loadHistory();
     loadProfiles();
+    loadScaffolds();
   }, []);
 
   async function generate() {
@@ -536,6 +587,52 @@ export function Forge() {
     }
   }
 
+  // Generate a DRAFT promotion scaffold for the saved profile. Draft artifact
+  // only: this activates nothing, registers nothing, and writes no agent files.
+  // Generation and activation stay separate owner-owned gates.
+  async function generateScaffold() {
+    if (!currentProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ scaffold: StoredScaffold }>(
+        `/api/forge/agent-profiles/${currentProfile.id}/promotion-scaffold`,
+        {},
+      );
+      setCurrentScaffold(resp.scaffold);
+      setOutput({ kind: 'Draft promotion scaffold', text: resp.scaffold.markdown });
+      await loadScaffolds();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function reopenScaffold(s: StoredScaffold) {
+    setCurrentScaffold(s);
+    setOutput({ kind: 'Draft promotion scaffold', text: s.markdown });
+    setError(null);
+  }
+
+  async function patchScaffold(patch: { status?: ScaffoldStatus; ownerDecision?: OwnerDecision }) {
+    if (!currentScaffold) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPatch<{ scaffold: StoredScaffold }>(
+        `/api/forge/promotion-scaffolds/${currentScaffold.id}`,
+        patch,
+      );
+      setCurrentScaffold(resp.scaffold);
+      await loadScaffolds();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const btn =
     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const btnAccent = `${btn} bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]`;
@@ -706,7 +803,80 @@ export function Forge() {
               <button type="button" onClick={profilePromotionChecklist} disabled={busy} class={btnGhost}>
                 Promotion readiness
               </button>
+              <button type="button" onClick={generateScaffold} disabled={busy} class={btnGhost}>
+                Draft promotion scaffold
+              </button>
             </div>
+          </section>
+        )}
+
+        {currentScaffold && (
+          <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+            <div class="flex items-center gap-2 flex-wrap">
+              <Pill tone={currentScaffold.scaffold.readyForGeneration ? 'done' : 'neutral'}>
+                {currentScaffold.scaffold.readyForGeneration ? 'ready for generation' : 'not active'}
+              </Pill>
+              <span class="text-[12.5px] text-[var(--color-text)] font-medium truncate">
+                {currentScaffold.displayName}
+              </span>
+              <span class="text-[10px] text-[var(--color-text-faint)]">
+                draft scaffold · {currentScaffold.id}
+              </span>
+            </div>
+            <p class="text-[11.5px] text-[var(--color-text-muted)] leading-relaxed">
+              {currentScaffold.scaffold.readinessNote}
+            </p>
+            <div class="text-[11px] text-[var(--color-text-muted)]">
+              Proposed folder: <code class="text-[var(--color-text)]">{currentScaffold.scaffold.proposedFolder}</code>
+            </div>
+            <div class="space-y-1">
+              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+                Proposed draft files
+              </div>
+              <ul class="list-disc pl-5 text-[11.5px] text-[var(--color-text-muted)] space-y-0.5">
+                {currentScaffold.scaffold.files.map((f) => (
+                  <li>
+                    <code class="text-[var(--color-text)]">{f.path}</code> — {f.purpose}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2 pt-1">
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Status
+                <select
+                  value={currentScaffold.status}
+                  disabled={busy}
+                  onChange={(e) => patchScaffold({ status: (e.target as HTMLSelectElement).value as ScaffoldStatus })}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {SCAFFOLD_STATUSES.map((s) => (
+                    <option value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                Owner decision
+                <select
+                  value={currentScaffold.ownerDecision}
+                  disabled={busy}
+                  onChange={(e) => patchScaffold({ ownerDecision: (e.target as HTMLSelectElement).value as OwnerDecision })}
+                  class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                >
+                  {OWNER_DECISIONS.map((d) => (
+                    <option value={d}>{d}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={() => copyText(currentScaffold.markdown)} class={btnGhost}>
+                <Copy size={12} /> {copied ? 'Copied' : 'Copy packet'}
+              </button>
+            </div>
+            <p class="text-[10.5px] text-[var(--color-text-faint)]">
+              Draft only. Not active, not registered, not authorized for live actions. Generation and activation are
+              separate owner-owned approvals.
+            </p>
           </section>
         )}
 
@@ -886,6 +1056,44 @@ export function Forge() {
                       </Pill>
                     )}
                     <span class="text-[10px] text-[var(--color-text-faint)]">{p.status}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Draft promotion scaffolds</h3>
+            <button type="button" onClick={loadScaffolds} class={btnGhost} aria-label="Refresh draft scaffolds">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          {savedScaffolds.length === 0 ? (
+            <p class="text-[11.5px] text-[var(--color-text-muted)]">No draft scaffolds yet.</p>
+          ) : (
+            <ul class="divide-y divide-[var(--color-border)]">
+              {savedScaffolds.map((s) => (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => reopenScaffold(s)}
+                    class="w-full text-left py-2 flex items-center gap-2 hover:bg-[var(--color-elevated)] rounded-md px-1.5 transition-colors"
+                  >
+                    <Pill tone={s.scaffold.readyForGeneration ? 'done' : 'neutral'}>
+                      {s.scaffold.readyForGeneration ? 'ready' : 'draft'}
+                    </Pill>
+                    <span class="flex-1 min-w-0 text-[12.5px] text-[var(--color-text)] truncate">
+                      {s.displayName}
+                      <span class="text-[var(--color-text-faint)]"> · {s.proposedSlug}</span>
+                    </span>
+                    {s.ownerDecision && s.ownerDecision !== 'pending' && (
+                      <Pill tone={s.ownerDecision === 'approved' ? 'done' : s.ownerDecision === 'rejected' ? 'failed' : 'neutral'}>
+                        {s.ownerDecision}
+                      </Pill>
+                    )}
+                    <span class="text-[10px] text-[var(--color-text-faint)]">{s.status}</span>
                   </button>
                 </li>
               ))}

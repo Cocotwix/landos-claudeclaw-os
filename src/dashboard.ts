@@ -94,6 +94,10 @@ import {
   type AgentProfileDraft,
 } from './forge/agent-profile.js';
 import {
+  generatePromotionScaffold,
+  renderPromotionScaffoldMarkdown,
+} from './forge/promotion-scaffold.js';
+import {
   saveEngagement,
   listEngagements,
   getEngagement,
@@ -102,12 +106,18 @@ import {
   listAgentProfiles,
   getAgentProfile,
   updateAgentProfile,
+  savePromotionScaffold,
+  listPromotionScaffolds,
+  getPromotionScaffold,
+  updatePromotionScaffold,
   isForgeStatus,
   isForgeOwnerDecision,
   isForgeProfileStatus,
+  isForgeScaffoldStatus,
   type ForgeStatus,
   type ForgeOwnerDecision,
   type ForgeProfileStatus,
+  type ForgeScaffoldStatus,
 } from './forge/host-store.js';
 import {
   resolveAgentAvatar,
@@ -2444,6 +2454,75 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       readiness,
       markdown: renderPromotionReadinessMarkdown(readiness, saved.displayName),
     });
+  });
+
+  // ── Draft promotion scaffolds ─────────────────────────────────────────
+  // Draft artifact generation only. Generating a scaffold activates nothing,
+  // registers nothing, authorizes no live action, connects nothing, and writes
+  // no agent files. The scaffold is stored as a Forge draft artifact for owner
+  // review. Generation and activation are separate owner-owned gates.
+
+  // Generate + save a draft promotion scaffold for a SAVED profile.
+  app.post('/api/forge/agent-profiles/:id/promotion-scaffold', (c) => {
+    const saved = getAgentProfile(c.req.param('id'));
+    if (!saved) return c.json({ error: 'not found' }, 404);
+    const scaffold = generatePromotionScaffold({
+      profile: saved.profile,
+      profileStatus: saved.status,
+      ownerDecision: saved.ownerDecision,
+    });
+    const stored = savePromotionScaffold({
+      savedProfileId: saved.id,
+      displayName: scaffold.displayName,
+      department: scaffold.department,
+      proposedSlug: scaffold.proposedSlug,
+      scaffold,
+      markdown: renderPromotionScaffoldMarkdown(scaffold),
+      source: 'dashboard',
+    });
+    return c.json({ scaffold: stored }, 201);
+  });
+
+  // List saved scaffolds (newest first), optional ?status= / ?profileId= filter.
+  app.get('/api/forge/promotion-scaffolds', (c) => {
+    const statusParam = c.req.query('status');
+    const status = statusParam && isForgeScaffoldStatus(statusParam) ? statusParam : undefined;
+    const profileId = c.req.query('profileId') || undefined;
+    return c.json({ scaffolds: listPromotionScaffolds({ status, savedProfileId: profileId }) });
+  });
+
+  // Reopen one saved scaffold.
+  app.get('/api/forge/promotion-scaffolds/:id', (c) => {
+    const scaffold = getPromotionScaffold(c.req.param('id'));
+    if (!scaffold) return c.json({ error: 'not found' }, 404);
+    return c.json({ scaffold });
+  });
+
+  // Update status / ownerDecision / notes on a saved scaffold. Record update
+  // only: this never generates real agent files, registers, or activates.
+  app.patch('/api/forge/promotion-scaffolds/:id', async (c) => {
+    let body: { status?: unknown; ownerDecision?: unknown; notes?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (body?.status !== undefined && !isForgeScaffoldStatus(body.status)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    if (body?.ownerDecision !== undefined && !isForgeOwnerDecision(body.ownerDecision)) {
+      return c.json({ error: 'invalid ownerDecision' }, 400);
+    }
+    if (body?.notes !== undefined && typeof body.notes !== 'string') {
+      return c.json({ error: 'notes must be a string' }, 400);
+    }
+    const updated = updatePromotionScaffold(c.req.param('id'), {
+      status: body.status as ForgeScaffoldStatus | undefined,
+      ownerDecision: body.ownerDecision as ForgeOwnerDecision | undefined,
+      notes: body.notes as string | undefined,
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ scaffold: updated });
   });
 
   // ── Agent endpoints ──────────────────────────────────────────────────

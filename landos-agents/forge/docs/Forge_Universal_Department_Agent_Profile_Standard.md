@@ -155,3 +155,40 @@ The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_r
 | `POST /api/forge/agent-profiles/:id/promotion-checklist` | Generate the promotion readiness checklist for a saved profile. |
 
 Promotion readiness is a readiness artifact. It does not promote a profile into a runnable agent, activate anything, connect accounts, or read secrets. Actual promotion stays an owner-owned decision.
+
+---
+
+## 11. Draft promotion scaffold layer
+
+A saved profile can produce a draft promotion scaffold: an artifact set that previews the files and configuration a host would need to turn the profile into a real department agent later. The scaffold is artifact-first and reviewable. It is a draft only.
+
+The pure core lives in `src/forge/promotion-scaffold.ts`. `generatePromotionScaffold` builds the scaffold from a profile; `renderPromotionScaffoldMarkdown` renders a copy-ready review packet. Persistence stays in `src/forge/host-store.ts` (the existing `store/forge.db`, a dedicated `forge_promotion_scaffold` table). No second database, and no agent files are written to disk: the scaffold lives in the store, the API, and the UI.
+
+A scaffold proposes a folder slug under a Forge-owned draft review area (`forge/drafts/promotions/<slug>`), never an active agent directory. It proposes draft files (operating doc, profile JSON, dashboard card, tool permissions, activation checklist, test plan, handoff, memory/storage) with content previews, plus activation requirements, owner approval gates, security/cost/live-action gates, a rollback plan, a test plan, dashboard behavior, memory/storage behavior, a tool permission plan, handoff behavior, and the pass/fail acceptance test.
+
+Every scaffold states clearly that it is not active, not registered, and not authorized for live actions, that owner review is required before generation, and that a separate owner approval is required before real activation. Generation readiness is true only when the profile is complete and owner-approved; otherwise the scaffold is produced as a blocked preview.
+
+### Scaffold status
+
+| Status | Meaning |
+|---|---|
+| `draft` | Generated, under review. The default. |
+| `review_ready` | Ready to send for review. |
+| `approved_for_generation` | The owner approved generating draft files. |
+| `needs_revision` | Sent back for changes. |
+| `held` | Paused pending an owner decision. |
+| `rejected` | The owner declined this scaffold. |
+| `generated_draft_files` | Draft files were generated into the Forge draft area. |
+
+The owner decision reuses the shared vocabulary: `pending`, `approved`, `tweak_requested`, `rejected`, `hold`.
+
+### Scaffold endpoints
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /api/forge/agent-profiles/:id/promotion-scaffold` | Generate and save a draft scaffold for a saved profile. |
+| `GET /api/forge/promotion-scaffolds` | List saved scaffolds newest first; optional `?status=` / `?profileId=` filters. |
+| `GET /api/forge/promotion-scaffolds/:id` | Reopen one saved scaffold. |
+| `PATCH /api/forge/promotion-scaffolds/:id` | Update status, owner decision, or notes. |
+
+Generating a scaffold activates nothing, registers nothing, authorizes no live action, connects nothing, and writes no agent files. Generation and activation remain separate owner-owned gates.

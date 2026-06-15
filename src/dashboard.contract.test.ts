@@ -756,6 +756,95 @@ describe('Forge saved department-agent profile endpoints', () => {
   });
 });
 
+describe('Forge draft promotion scaffold endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+  function patch(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function saveProfile(over: Record<string, unknown> = {}) {
+    const res = await post('/api/forge/agent-profiles', {
+      request: 'an agent that drafts and organizes status updates',
+      displayName: 'Reporter',
+      department: 'Reporting',
+      ...over,
+    });
+    expect(res.status).toBe(201);
+    return (await jsonOf(res)).profile;
+  }
+
+  it('generates and saves a scaffold for a saved profile', async () => {
+    const profile = await saveProfile();
+    const res = await post(`/api/forge/agent-profiles/${profile.id}/promotion-scaffold`, {});
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.scaffold.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(body.scaffold.savedProfileId).toBe(profile.id);
+    expect(body.scaffold.proposedSlug).toBe('reporter');
+    expect(body.scaffold.status).toBe('draft');
+    expect(body.scaffold.scaffold.notActive.join(' ')).toContain('Not active');
+    expect(body.scaffold.markdown).toContain('# Draft Promotion Scaffold');
+  });
+
+  it('404s generating a scaffold for an unknown profile', async () => {
+    const res = await post('/api/forge/agent-profiles/deadbeef/promotion-scaffold', {});
+    expect(res.status).toBe(404);
+  });
+
+  it('lists and reopens saved scaffolds', async () => {
+    const profile = await saveProfile();
+    const made = await jsonOf(
+      await post(`/api/forge/agent-profiles/${profile.id}/promotion-scaffold`, {}),
+    );
+    const listRes = await get('/api/forge/promotion-scaffolds');
+    const list = await jsonOf(listRes);
+    expect(list.scaffolds.length).toBeGreaterThanOrEqual(1);
+
+    const getRes = await get(`/api/forge/promotion-scaffolds/${made.scaffold.id}`);
+    expect(getRes.status).toBe(200);
+    expect((await jsonOf(getRes)).scaffold.id).toBe(made.scaffold.id);
+  });
+
+  it('updates scaffold status and owner decision', async () => {
+    const profile = await saveProfile();
+    const made = await jsonOf(
+      await post(`/api/forge/agent-profiles/${profile.id}/promotion-scaffold`, {}),
+    );
+    const res = await patch(`/api/forge/promotion-scaffolds/${made.scaffold.id}`, {
+      status: 'approved_for_generation',
+      ownerDecision: 'approved',
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.scaffold.status).toBe('approved_for_generation');
+    expect(body.scaffold.ownerDecision).toBe('approved');
+  });
+
+  it('rejects an invalid scaffold status on update', async () => {
+    const profile = await saveProfile();
+    const made = await jsonOf(
+      await post(`/api/forge/agent-profiles/${profile.id}/promotion-scaffold`, {}),
+    );
+    const res = await patch(`/api/forge/promotion-scaffolds/${made.scaffold.id}`, { status: 'bogus' });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s for an unknown scaffold id', async () => {
+    const res = await get('/api/forge/promotion-scaffolds/deadbeef');
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.

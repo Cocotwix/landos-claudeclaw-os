@@ -13,17 +13,28 @@ import {
   listAgentProfiles,
   getAgentProfile,
   updateAgentProfile,
+  savePromotionScaffold,
+  listPromotionScaffolds,
+  getPromotionScaffold,
+  updatePromotionScaffold,
   FORGE_STATUSES,
   FORGE_PROFILE_STATUSES,
   FORGE_PROFILE_SCHEMA_VERSION,
+  FORGE_SCAFFOLD_STATUSES,
+  FORGE_SCAFFOLD_SCHEMA_VERSION,
   type SaveForgeEngagementInput,
   type SaveAgentProfileInput,
+  type SavePromotionScaffoldInput,
 } from './host-store.js';
 import {
   buildAgentProfile,
   deriveAuthorityModel,
   generateAgentBuildPacket,
 } from './agent-profile.js';
+import {
+  generatePromotionScaffold,
+  renderPromotionScaffoldMarkdown,
+} from './promotion-scaffold.js';
 
 beforeEach(() => {
   _initTestForgeDb();
@@ -218,5 +229,92 @@ describe('Forge saved department-agent profiles', () => {
     expect(FORGE_PROFILE_STATUSES).toContain('held');
     expect(FORGE_PROFILE_STATUSES).toContain('rejected');
     expect(FORGE_PROFILE_STATUSES).toContain('promoted');
+  });
+});
+
+function sampleScaffold(
+  overrides: Partial<SavePromotionScaffoldInput> = {},
+): SavePromotionScaffoldInput {
+  const profile = buildAgentProfile({
+    rawRequest: 'an agent that drafts and organizes status updates',
+    displayName: 'Reporter',
+    department: 'Reporting',
+    createdAt: '2026-06-15T00:00:00.000Z',
+  });
+  const scaffold = generatePromotionScaffold({ profile });
+  return {
+    savedProfileId: 'abc12345',
+    displayName: scaffold.displayName,
+    department: scaffold.department,
+    proposedSlug: scaffold.proposedSlug,
+    scaffold,
+    markdown: renderPromotionScaffoldMarkdown(scaffold),
+    ...overrides,
+  };
+}
+
+describe('Forge draft promotion scaffolds', () => {
+  it('saves and reads back a scaffold with parsed JSON', () => {
+    const saved = savePromotionScaffold(sampleScaffold());
+    expect(saved.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(saved.status).toBe('draft');
+    expect(saved.ownerDecision).toBe('pending');
+    expect(saved.schemaVersion).toBe(FORGE_SCAFFOLD_SCHEMA_VERSION);
+    expect(saved.proposedSlug).toBe('reporter');
+    expect(saved.scaffold.files.length).toBeGreaterThan(0);
+    expect(saved.scaffold.notActive.join(' ')).toContain('Not active');
+
+    const fetched = getPromotionScaffold(saved.id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.savedProfileId).toBe('abc12345');
+    expect(fetched!.scaffold.proposedFolder).toBe('forge/drafts/promotions/reporter');
+  });
+
+  it('lists scaffolds newest-first and filters by status and profile id', () => {
+    savePromotionScaffold(sampleScaffold({ savedProfileId: 'p1' }));
+    const second = savePromotionScaffold(
+      sampleScaffold({ savedProfileId: 'p2', status: 'review_ready' }),
+    );
+    const all = listPromotionScaffolds();
+    expect(all.length).toBe(2);
+    expect(all[0].id).toBe(second.id);
+
+    expect(listPromotionScaffolds({ status: 'review_ready' }).length).toBe(1);
+    expect(listPromotionScaffolds({ savedProfileId: 'p1' }).length).toBe(1);
+    expect(listPromotionScaffolds({ savedProfileId: 'p1' })[0].savedProfileId).toBe('p1');
+  });
+
+  it('updates status, owner decision, and notes', () => {
+    const saved = savePromotionScaffold(sampleScaffold());
+    const updated = updatePromotionScaffold(saved.id, {
+      status: 'approved_for_generation',
+      ownerDecision: 'approved',
+      notes: 'go',
+    });
+    expect(updated!.status).toBe('approved_for_generation');
+    expect(updated!.ownerDecision).toBe('approved');
+    expect(updated!.notes).toBe('go');
+    expect(updated!.updatedAt).toBeGreaterThanOrEqual(saved.createdAt);
+  });
+
+  it('ignores invalid status/decision and returns undefined for unknown id', () => {
+    const saved = savePromotionScaffold(sampleScaffold());
+    const updated = updatePromotionScaffold(saved.id, {
+      status: 'nope' as never,
+      ownerDecision: 'bogus' as never,
+    });
+    expect(updated!.status).toBe('draft');
+    expect(updated!.ownerDecision).toBe('pending');
+    expect(updatePromotionScaffold('deadbeef', { status: 'held' })).toBeUndefined();
+  });
+
+  it('exposes the full scaffold status vocabulary', () => {
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('draft');
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('review_ready');
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('approved_for_generation');
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('needs_revision');
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('held');
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('rejected');
+    expect(FORGE_SCAFFOLD_STATUSES).toContain('generated_draft_files');
   });
 });

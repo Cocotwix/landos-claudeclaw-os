@@ -16,6 +16,7 @@ import path from 'path';
 import { STORE_DIR } from '../config.js';
 import type { RedLaneHit } from './engagement.js';
 import type { ActivationMode, DepartmentAgentProfile } from './agent-profile.js';
+import type { PromotionScaffold } from './promotion-scaffold.js';
 
 export const FORGE_STATUSES = [
   'draft',
@@ -103,6 +104,59 @@ export function isForgeProfileStatus(v: unknown): v is ForgeProfileStatus {
 /** Current schema marker for a saved profile record. */
 export const FORGE_PROFILE_SCHEMA_VERSION = 1;
 
+// Draft promotion scaffolds have their own lifecycle. A scaffold is a draft
+// artifact set previewing a future department-agent folder. It is never an
+// active or registered agent.
+export const FORGE_SCAFFOLD_STATUSES = [
+  'draft',
+  'review_ready',
+  'approved_for_generation',
+  'needs_revision',
+  'held',
+  'rejected',
+  'generated_draft_files',
+] as const;
+export type ForgeScaffoldStatus = (typeof FORGE_SCAFFOLD_STATUSES)[number];
+
+export function isForgeScaffoldStatus(v: unknown): v is ForgeScaffoldStatus {
+  return typeof v === 'string' && (FORGE_SCAFFOLD_STATUSES as readonly string[]).includes(v);
+}
+
+/** Current schema marker for a saved scaffold record. */
+export const FORGE_SCAFFOLD_SCHEMA_VERSION = 1;
+
+export interface StoredPromotionScaffold {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  savedProfileId: string;
+  displayName: string;
+  department: string;
+  proposedSlug: string;
+  status: ForgeScaffoldStatus;
+  ownerDecision: ForgeOwnerDecision;
+  /** The full draft scaffold (parsed JSON). */
+  scaffold: PromotionScaffold;
+  /** The copy-ready review packet (markdown). */
+  markdown: string;
+  notes: string;
+  schemaVersion: number;
+  source: string;
+}
+
+export interface SavePromotionScaffoldInput {
+  savedProfileId: string;
+  displayName: string;
+  department: string;
+  proposedSlug: string;
+  scaffold: PromotionScaffold;
+  markdown: string;
+  status?: ForgeScaffoldStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+  source?: string;
+}
+
 export interface StoredAgentProfile {
   id: string;
   createdAt: number;
@@ -186,6 +240,27 @@ function createForgeSchema(db: Database.Database): void {
       interview         TEXT NOT NULL DEFAULT '',
       authority_summary TEXT NOT NULL DEFAULT '',
       activation_mode   TEXT NOT NULL DEFAULT 'sandbox',
+      notes             TEXT NOT NULL DEFAULT '',
+      schema_version    INTEGER NOT NULL DEFAULT 1,
+      source            TEXT NOT NULL DEFAULT 'dashboard'
+    );
+  `);
+
+  // Draft promotion scaffolds. Same forge.db, separate table. Draft artifacts
+  // only: never an active or registered agent.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS forge_promotion_scaffold (
+      id                TEXT PRIMARY KEY,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      saved_profile_id  TEXT NOT NULL DEFAULT '',
+      display_name      TEXT NOT NULL DEFAULT '',
+      department        TEXT NOT NULL DEFAULT '',
+      proposed_slug     TEXT NOT NULL DEFAULT '',
+      status            TEXT NOT NULL DEFAULT 'draft',
+      owner_decision    TEXT NOT NULL DEFAULT 'pending',
+      scaffold_json     TEXT NOT NULL DEFAULT '{}',
+      markdown          TEXT NOT NULL DEFAULT '',
       notes             TEXT NOT NULL DEFAULT '',
       schema_version    INTEGER NOT NULL DEFAULT 1,
       source            TEXT NOT NULL DEFAULT 'dashboard'
@@ -509,4 +584,143 @@ export function updateAgentProfile(
     'UPDATE forge_agent_profile SET status = ?, owner_decision = ?, notes = ?, display_name = ?, updated_at = ? WHERE id = ?',
   ).run(status, ownerDecision, notes, displayName, now, id);
   return getAgentProfile(id);
+}
+
+// ── Draft promotion scaffolds ────────────────────────────────────────────
+
+interface ScaffoldRow {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  saved_profile_id: string;
+  display_name: string;
+  department: string;
+  proposed_slug: string;
+  status: string;
+  owner_decision: string;
+  scaffold_json: string;
+  markdown: string;
+  notes: string;
+  schema_version: number;
+  source: string;
+}
+
+function parseScaffoldJson(json: string): PromotionScaffold {
+  try {
+    const v = JSON.parse(json);
+    if (v && typeof v === 'object') return v as PromotionScaffold;
+  } catch { /* fall through */ }
+  return {} as PromotionScaffold;
+}
+
+function rowToScaffold(row: ScaffoldRow): StoredPromotionScaffold {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    savedProfileId: row.saved_profile_id,
+    displayName: row.display_name,
+    department: row.department,
+    proposedSlug: row.proposed_slug,
+    status: isForgeScaffoldStatus(row.status) ? row.status : 'draft',
+    ownerDecision: isForgeOwnerDecision(row.owner_decision) ? row.owner_decision : 'pending',
+    scaffold: parseScaffoldJson(row.scaffold_json),
+    markdown: row.markdown,
+    notes: row.notes,
+    schemaVersion: row.schema_version,
+    source: row.source,
+  };
+}
+
+export function savePromotionScaffold(
+  input: SavePromotionScaffoldInput,
+): StoredPromotionScaffold {
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const id = genId();
+  const status: ForgeScaffoldStatus =
+    input.status && isForgeScaffoldStatus(input.status) ? input.status : 'draft';
+  const ownerDecision: ForgeOwnerDecision =
+    input.ownerDecision && isForgeOwnerDecision(input.ownerDecision) ? input.ownerDecision : 'pending';
+  db.prepare(
+    `INSERT INTO forge_promotion_scaffold
+       (id, created_at, updated_at, saved_profile_id, display_name, department,
+        proposed_slug, status, owner_decision, scaffold_json, markdown, notes,
+        schema_version, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    now,
+    now,
+    input.savedProfileId,
+    input.displayName,
+    input.department,
+    input.proposedSlug,
+    status,
+    ownerDecision,
+    JSON.stringify(input.scaffold ?? {}),
+    input.markdown,
+    input.notes ?? '',
+    FORGE_SCAFFOLD_SCHEMA_VERSION,
+    input.source ?? 'dashboard',
+  );
+  return getPromotionScaffold(id)!;
+}
+
+export function listPromotionScaffolds(
+  opts: { status?: ForgeScaffoldStatus; savedProfileId?: string; limit?: number } = {},
+): StoredPromotionScaffold[] {
+  const db = getForgeDb();
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (opts.status) {
+    where.push('status = ?');
+    args.push(opts.status);
+  }
+  if (opts.savedProfileId) {
+    where.push('saved_profile_id = ?');
+    args.push(opts.savedProfileId);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
+  const rows = db
+    .prepare(
+      `SELECT * FROM forge_promotion_scaffold ${clause}ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+    )
+    .all(...args, limit) as ScaffoldRow[];
+  return rows.map(rowToScaffold);
+}
+
+export function getPromotionScaffold(id: string): StoredPromotionScaffold | undefined {
+  const row = getForgeDb()
+    .prepare('SELECT * FROM forge_promotion_scaffold WHERE id = ?')
+    .get(id) as ScaffoldRow | undefined;
+  return row ? rowToScaffold(row) : undefined;
+}
+
+export interface UpdatePromotionScaffoldPatch {
+  status?: ForgeScaffoldStatus;
+  ownerDecision?: ForgeOwnerDecision;
+  notes?: string;
+}
+
+export function updatePromotionScaffold(
+  id: string,
+  patch: UpdatePromotionScaffoldPatch,
+): StoredPromotionScaffold | undefined {
+  const existing = getPromotionScaffold(id);
+  if (!existing) return undefined;
+  const db = getForgeDb();
+  const now = Math.floor(Date.now() / 1000);
+  const status =
+    patch.status && isForgeScaffoldStatus(patch.status) ? patch.status : existing.status;
+  const ownerDecision =
+    patch.ownerDecision && isForgeOwnerDecision(patch.ownerDecision)
+      ? patch.ownerDecision
+      : existing.ownerDecision;
+  const notes = patch.notes !== undefined ? patch.notes : existing.notes;
+  db.prepare(
+    'UPDATE forge_promotion_scaffold SET status = ?, owner_decision = ?, notes = ?, updated_at = ? WHERE id = ?',
+  ).run(status, ownerDecision, notes, now, id);
+  return getPromotionScaffold(id);
 }
