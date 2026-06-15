@@ -486,6 +486,93 @@ describe('Forge engagement persistence + helpers', () => {
   });
 });
 
+describe('Forge security + release builder endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('security-check classifies owner-owned gates', async () => {
+    const res = await post('/api/forge/security-check', { request: 'Add OAuth and deploy to production.' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.security.categories).toEqual(expect.arrayContaining(['oauth', 'production_deploy']));
+    expect(body.security.lane).toBe('release_approval_required');
+  });
+
+  it('security-check 400s without a request or id', async () => {
+    const res = await post('/api/forge/security-check', {});
+    expect(res.status).toBe(400);
+  });
+
+  it('setup-checklist returns placeholders and the gate set', async () => {
+    const res = await post('/api/forge/setup-checklist', { request: 'Wire up an API key.', title: 'Provider' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.checklist).toContain('# Owner Setup Checklist');
+    expect(body.checklist).toContain('<your-');
+    expect(body.security.categories).toContain('api_key');
+  });
+
+  it('demo-runbook returns proof steps', async () => {
+    const res = await post('/api/forge/demo-runbook', { title: 'demo', startCommand: 'npm run dev' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.runbook).toContain('## How to start');
+    expect(body.runbook).toContain('## Do NOT test without owner approval');
+  });
+
+  it('completion-report returns all sections', async () => {
+    const res = await post('/api/forge/completion-report', {
+      request: 'Add OAuth and deploy to production.',
+      title: 'Build',
+      whatWasBuilt: ['A thing'],
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.report).toContain('# Forge Completion Report');
+    expect(body.report).toContain('## 10. Owner decision');
+    expect(body.security.lane).toBe('release_approval_required');
+  });
+
+  it('saves an engagement then sets the owner decision', async () => {
+    const saved = await jsonOf(
+      await post('/api/forge/engagements', { request: 'Add a safe util.', title: 'Util' }),
+    );
+    const id = saved.engagement.id;
+    expect(saved.engagement.ownerDecision).toBe('pending');
+
+    const res = await app.request(`/api/forge/engagements/${id}/decision` + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ownerDecision: 'approved' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.engagement.ownerDecision).toBe('approved');
+  });
+
+  it('rejects an invalid owner decision (400) and unknown id (404)', async () => {
+    const saved = await jsonOf(await post('/api/forge/engagements', { request: 'Add a util.' }));
+    const bad = await app.request(`/api/forge/engagements/${saved.engagement.id}/decision` + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ownerDecision: 'nope' }),
+    });
+    expect(bad.status).toBe(400);
+
+    const miss = await app.request('/api/forge/engagements/deadbeef/decision' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ownerDecision: 'approved' }),
+    });
+    expect(miss.status).toBe(404);
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.

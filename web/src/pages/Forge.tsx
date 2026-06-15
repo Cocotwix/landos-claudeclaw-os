@@ -22,6 +22,9 @@ const FORGE_STATUSES = [
 ] as const;
 type ForgeStatus = (typeof FORGE_STATUSES)[number];
 
+const OWNER_DECISIONS = ['pending', 'approved', 'tweak_requested', 'rejected', 'hold'] as const;
+type OwnerDecision = (typeof OWNER_DECISIONS)[number];
+
 interface ForgeHit {
   category: string;
   label: string;
@@ -42,6 +45,7 @@ interface StoredEngagement {
   decisionsNeeded: string[];
   markdown: string;
   status: ForgeStatus;
+  ownerDecision: OwnerDecision;
   notes: string;
   source: string;
 }
@@ -50,6 +54,7 @@ interface StoredEngagement {
 interface ForgeView {
   id?: string;
   title: string;
+  rawRequest?: string;
   verdict: 'SAFE' | 'STOP';
   categories: string[];
   hits: ForgeHit[];
@@ -57,6 +62,7 @@ interface ForgeView {
   decisionsNeeded: string[];
   markdown: string;
   status?: ForgeStatus;
+  ownerDecision?: OwnerDecision;
 }
 
 interface GenerateResponse {
@@ -71,6 +77,7 @@ function storedToView(s: StoredEngagement): ForgeView {
   return {
     id: s.id,
     title: s.title,
+    rawRequest: s.rawRequest,
     verdict: s.verdict,
     categories: s.categories,
     hits: s.hits,
@@ -78,6 +85,7 @@ function storedToView(s: StoredEngagement): ForgeView {
     decisionsNeeded: s.decisionsNeeded,
     markdown: s.markdown,
     status: s.status,
+    ownerDecision: s.ownerDecision,
   };
 }
 
@@ -137,6 +145,7 @@ export function Forge() {
       const resp = await apiPost<GenerateResponse>('/api/forge/engagement', body);
       setCurrent({
         title: resp.title,
+        rawRequest: trimmed,
         verdict: resp.verdict,
         categories: resp.lane.categories,
         hits: resp.lane.hits,
@@ -238,6 +247,97 @@ export function Forge() {
         categories: current.categories,
       });
       setOutput({ kind: 'Command plan', text: resp.plan });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Body shared by the release-layer generators. Prefer the saved id (so the
+  // server can pull the stored request); fall back to the raw request text.
+  function releaseBody() {
+    return current?.id ? { id: current.id, title: current?.title } : { request: current?.rawRequest, title: current?.title };
+  }
+
+  async function runGenerator(path: string, key: string, kind: string) {
+    if (!current) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<Record<string, string>>(path, releaseBody());
+      setOutput({ kind, text: resp[key] });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const setupChecklist = () => runGenerator('/api/forge/setup-checklist', 'checklist', 'Owner setup checklist');
+  const completionReport = () => runGenerator('/api/forge/completion-report', 'report', 'Completion report');
+
+  interface SecurityResult {
+    lane: string;
+    forgeCanProceed: boolean;
+    needsOwner: boolean;
+    notice: string;
+    gates: { label: string; lane: string; ownerAction: string }[];
+  }
+
+  async function securityCheck() {
+    if (!current) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ security: SecurityResult }>('/api/forge/security-check', releaseBody());
+      const s = resp.security;
+      const lines = [
+        `# Security / release gates — ${current.title}`,
+        '',
+        `Lane: ${s.lane}`,
+        `Forge can proceed: ${s.forgeCanProceed ? 'yes' : 'no'}`,
+        `Needs owner: ${s.needsOwner ? 'yes' : 'no'}`,
+        '',
+        s.notice,
+        '',
+        ...(s.gates.length
+          ? s.gates.map((g) => `- ${g.label} (${g.lane}): ${g.ownerAction}`)
+          : ['- No owner-owned gates detected.']),
+      ];
+      setOutput({ kind: 'Security gates', text: lines.join('\n') });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function demoRunbook() {
+    if (!current) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ runbook: string }>('/api/forge/demo-runbook', { title: current.title });
+      setOutput({ kind: 'Demo / trial runbook', text: resp.runbook });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeDecision(ownerDecision: OwnerDecision) {
+    if (!current?.id) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPatch<{ engagement: StoredEngagement }>(
+        `/api/forge/engagements/${current.id}/decision`,
+        { ownerDecision },
+      );
+      setCurrent(storedToView(resp.engagement));
+      await loadHistory();
     } catch (err) {
       setError(errMessage(err));
     } finally {
@@ -354,6 +454,36 @@ export function Forge() {
                   </select>
                 </label>
               )}
+              {current.id && (
+                <label class="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                  Owner decision
+                  <select
+                    value={current.ownerDecision}
+                    disabled={busy}
+                    onChange={(e) => changeDecision((e.target as HTMLSelectElement).value as OwnerDecision)}
+                    class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-2 py-1 text-[11.5px] text-[var(--color-text)]"
+                  >
+                    {OWNER_DECISIONS.map((d) => (
+                      <option value={d}>{d}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={completionReport} disabled={busy} class={btnGhost}>
+                Completion report
+              </button>
+              <button type="button" onClick={setupChecklist} disabled={busy} class={btnGhost}>
+                Owner setup checklist
+              </button>
+              <button type="button" onClick={demoRunbook} disabled={busy} class={btnGhost}>
+                Demo runbook
+              </button>
+              <button type="button" onClick={securityCheck} disabled={busy} class={btnGhost}>
+                Security gates
+              </button>
               <button type="button" onClick={reviewPacket} disabled={busy} class={btnGhost}>
                 Codex review packet
               </button>
@@ -407,6 +537,11 @@ export function Forge() {
                   >
                     <Pill tone={h.verdict === 'SAFE' ? 'done' : 'failed'}>{h.verdict}</Pill>
                     <span class="flex-1 min-w-0 text-[12.5px] text-[var(--color-text)] truncate">{h.title}</span>
+                    {h.ownerDecision && h.ownerDecision !== 'pending' && (
+                      <Pill tone={h.ownerDecision === 'approved' ? 'done' : h.ownerDecision === 'rejected' ? 'failed' : 'neutral'}>
+                        {h.ownerDecision}
+                      </Pill>
+                    )}
                     <span class="text-[10px] text-[var(--color-text-faint)]">{h.status}</span>
                   </button>
                 </li>

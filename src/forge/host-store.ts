@@ -32,6 +32,19 @@ export function isForgeStatus(v: unknown): v is ForgeStatus {
   return typeof v === 'string' && (FORGE_STATUSES as readonly string[]).includes(v);
 }
 
+export const FORGE_OWNER_DECISIONS = [
+  'pending',
+  'approved',
+  'tweak_requested',
+  'rejected',
+  'hold',
+] as const;
+export type ForgeOwnerDecision = (typeof FORGE_OWNER_DECISIONS)[number];
+
+export function isForgeOwnerDecision(v: unknown): v is ForgeOwnerDecision {
+  return typeof v === 'string' && (FORGE_OWNER_DECISIONS as readonly string[]).includes(v);
+}
+
 export interface StoredForgeEngagement {
   id: string;
   createdAt: number;
@@ -46,6 +59,7 @@ export interface StoredForgeEngagement {
   decisionsNeeded: string[];
   markdown: string;
   status: ForgeStatus;
+  ownerDecision: ForgeOwnerDecision;
   notes: string;
   source: string;
 }
@@ -61,6 +75,7 @@ export interface SaveForgeEngagementInput {
   decisionsNeeded: string[];
   markdown: string;
   status?: ForgeStatus;
+  ownerDecision?: ForgeOwnerDecision;
   notes?: string;
   source?: string;
 }
@@ -83,10 +98,17 @@ function createForgeSchema(db: Database.Database): void {
       decisions_needed TEXT NOT NULL DEFAULT '[]',
       markdown         TEXT NOT NULL DEFAULT '',
       status           TEXT NOT NULL DEFAULT 'draft',
+      owner_decision   TEXT NOT NULL DEFAULT 'pending',
       notes            TEXT NOT NULL DEFAULT '',
       source           TEXT NOT NULL DEFAULT 'dashboard'
     );
   `);
+  // Forward-compatible: add owner_decision to a forge.db created before this
+  // column existed. CREATE TABLE IF NOT EXISTS never alters an existing table.
+  const cols = db.prepare(`PRAGMA table_info(forge_engagement)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'owner_decision')) {
+    db.exec(`ALTER TABLE forge_engagement ADD COLUMN owner_decision TEXT NOT NULL DEFAULT 'pending'`);
+  }
 }
 
 /** Open (or return) the Forge host store. Lazy so processes that never touch
@@ -136,6 +158,7 @@ interface ForgeRow {
   decisions_needed: string;
   markdown: string;
   status: string;
+  owner_decision: string;
   notes: string;
   source: string;
 }
@@ -164,6 +187,7 @@ function rowToEngagement(row: ForgeRow): StoredForgeEngagement {
     decisionsNeeded: parseArray<string>(row.decisions_needed),
     markdown: row.markdown,
     status: isForgeStatus(row.status) ? row.status : 'draft',
+    ownerDecision: isForgeOwnerDecision(row.owner_decision) ? row.owner_decision : 'pending',
     notes: row.notes,
     source: row.source,
   };
@@ -174,11 +198,13 @@ export function saveEngagement(input: SaveForgeEngagementInput): StoredForgeEnga
   const now = Math.floor(Date.now() / 1000);
   const id = genId();
   const status: ForgeStatus = input.status && isForgeStatus(input.status) ? input.status : 'draft';
+  const ownerDecision: ForgeOwnerDecision =
+    input.ownerDecision && isForgeOwnerDecision(input.ownerDecision) ? input.ownerDecision : 'pending';
   db.prepare(
     `INSERT INTO forge_engagement
        (id, created_at, updated_at, title, raw_request, host, verdict, categories,
-        hits, notice, decisions_needed, markdown, status, notes, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        hits, notice, decisions_needed, markdown, status, owner_decision, notes, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     now,
@@ -193,6 +219,7 @@ export function saveEngagement(input: SaveForgeEngagementInput): StoredForgeEnga
     JSON.stringify(input.decisionsNeeded ?? []),
     input.markdown,
     status,
+    ownerDecision,
     input.notes ?? '',
     input.source ?? 'dashboard',
   );
@@ -227,6 +254,7 @@ export function getEngagement(id: string): StoredForgeEngagement | undefined {
 
 export interface UpdateForgeEngagementPatch {
   status?: ForgeStatus;
+  ownerDecision?: ForgeOwnerDecision;
   notes?: string;
   title?: string;
 }
@@ -240,10 +268,14 @@ export function updateEngagement(
   const db = getForgeDb();
   const now = Math.floor(Date.now() / 1000);
   const status = patch.status && isForgeStatus(patch.status) ? patch.status : existing.status;
+  const ownerDecision =
+    patch.ownerDecision && isForgeOwnerDecision(patch.ownerDecision)
+      ? patch.ownerDecision
+      : existing.ownerDecision;
   const notes = patch.notes !== undefined ? patch.notes : existing.notes;
   const title = patch.title !== undefined ? patch.title : existing.title;
   db.prepare(
-    'UPDATE forge_engagement SET status = ?, notes = ?, title = ?, updated_at = ? WHERE id = ?',
-  ).run(status, notes, title, now, id);
+    'UPDATE forge_engagement SET status = ?, owner_decision = ?, notes = ?, title = ?, updated_at = ? WHERE id = ?',
+  ).run(status, ownerDecision, notes, title, now, id);
   return getEngagement(id);
 }

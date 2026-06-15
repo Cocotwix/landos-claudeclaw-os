@@ -75,12 +75,20 @@ import { startForgeEngagement, renderEngagementMarkdown } from './forge/engageme
 import { generateReviewPacket } from './forge/review-packet.js';
 import { generateCommandPlan } from './forge/command-planner.js';
 import {
+  classifySecurityGates,
+  generateSetupChecklist,
+  generateDemoRunbook,
+  generateCompletionReport,
+} from './forge/release.js';
+import {
   saveEngagement,
   listEngagements,
   getEngagement,
   updateEngagement,
   isForgeStatus,
+  isForgeOwnerDecision,
   type ForgeStatus,
+  type ForgeOwnerDecision,
 } from './forge/host-store.js';
 import {
   resolveAgentAvatar,
@@ -2079,6 +2087,117 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         : undefined,
     });
     return c.json({ plan });
+  });
+
+  // ── Forge security + release builder layer ───────────────────────────
+  // All text/JSON generators. None execute, connect, subscribe, deploy,
+  // push, or read secrets. They classify owner-owned gates and produce
+  // setup/demo/completion artifacts for the owner to act on.
+
+  // Resolve a request string from an explicit field or a saved engagement id.
+  const resolveForgeRequest = (body: Record<string, unknown>): string | null => {
+    if (typeof body?.request === 'string') return body.request;
+    if (typeof body?.id === 'string') {
+      const saved = getEngagement(body.id);
+      if (saved) return saved.rawRequest;
+    }
+    return null;
+  };
+
+  app.post('/api/forge/security-check', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const request = resolveForgeRequest(body);
+    if (request === null) return c.json({ error: 'request (or saved id) required' }, 400);
+    return c.json({ security: classifySecurityGates(request) });
+  });
+
+  app.post('/api/forge/setup-checklist', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const request = resolveForgeRequest(body);
+    if (request === null) return c.json({ error: 'request (or saved id) required' }, 400);
+    const security = classifySecurityGates(request);
+    const checklist = generateSetupChecklist({
+      title: typeof body?.title === 'string' ? body.title : undefined,
+      gates: security.gates,
+      envKeys: Array.isArray(body?.envKeys)
+        ? (body.envKeys.filter((k) => typeof k === 'string') as string[])
+        : undefined,
+    });
+    return c.json({ checklist, security });
+  });
+
+  app.post('/api/forge/demo-runbook', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const runbook = generateDemoRunbook({
+      title: typeof body?.title === 'string' ? body.title : undefined,
+      startCommand: typeof body?.startCommand === 'string' ? body.startCommand : undefined,
+      openUrl: typeof body?.openUrl === 'string' ? body.openUrl : undefined,
+      steps: Array.isArray(body?.steps)
+        ? (body.steps.filter((s) => typeof s === 'string') as string[])
+        : undefined,
+      expectedResult: typeof body?.expectedResult === 'string' ? body.expectedResult : undefined,
+      missingSetupHint: typeof body?.missingSetupHint === 'string' ? body.missingSetupHint : undefined,
+    });
+    return c.json({ runbook });
+  });
+
+  app.post('/api/forge/completion-report', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const strArr = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? (v.filter((x) => typeof x === 'string') as string[]) : undefined;
+    const request = resolveForgeRequest(body);
+    const security = request !== null ? classifySecurityGates(request) : undefined;
+    const report = generateCompletionReport({
+      title: typeof body?.title === 'string' ? body.title : undefined,
+      whatWasBuilt: strArr(body?.whatWasBuilt),
+      workingCapabilities: strArr(body?.workingCapabilities),
+      filesChanged: strArr(body?.filesChanged),
+      testsRun: strArr(body?.testsRun),
+      security,
+      ownerSetup: strArr(body?.ownerSetup),
+      demoSteps: strArr(body?.demoSteps),
+      knownLimitations: strArr(body?.knownLimitations),
+    });
+    return c.json({ report, security });
+  });
+
+  // Set the owner decision (approve / tweak_requested / rejected / hold) on a
+  // saved engagement. Record update only.
+  app.patch('/api/forge/engagements/:id/decision', async (c) => {
+    let body: { ownerDecision?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (!isForgeOwnerDecision(body?.ownerDecision)) {
+      return c.json({ error: 'invalid ownerDecision' }, 400);
+    }
+    const updated = updateEngagement(c.req.param('id'), {
+      ownerDecision: body.ownerDecision as ForgeOwnerDecision,
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ engagement: updated });
   });
 
   // ── Agent endpoints ──────────────────────────────────────────────────

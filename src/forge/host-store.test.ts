@@ -103,4 +103,17 @@ describe('Forge host store', () => {
     expect(FORGE_STATUSES).toContain('pushed');
     expect(FORGE_STATUSES).toContain('blocked');
   });
+
+  it('defaults ownerDecision to pending and round-trips an update', () => {
+    const saved = saveEngagement(sample());
+    expect(saved.ownerDecision).toBe('pending');
+    const updated = updateEngagement(saved.id, { ownerDecision: 'approved' });
+    expect(updated!.ownerDecision).toBe('approved');
+  });
+
+  it('ignores an invalid ownerDecision on update', () => {
+    const saved = saveEngagement(sample());
+    const updated = updateEngagement(saved.id, { ownerDecision: 'bogus' as never });
+    expect(updated!.ownerDecision).toBe('pending');
+  });
 });
