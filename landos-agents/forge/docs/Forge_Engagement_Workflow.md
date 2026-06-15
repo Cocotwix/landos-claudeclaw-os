@@ -40,6 +40,53 @@ so the gate is impossible to miss.
 
 ---
 
+## Dashboard endpoint (Milestone 3)
+
+Forge engagements can also be started from the dashboard server via an HTTP
+endpoint, so an operator surface does not have to shell out to the CLI. The
+endpoint calls the same pure Forge core and **only generates the artifact** —
+it never executes, commits, pushes, installs, reads secrets, connects accounts,
+calls paid APIs, or mutates anything. Red-lane requests are classified, not run.
+
+```
+POST /api/forge/engagement?token=<DASHBOARD_TOKEN>
+Content-Type: application/json
+
+{ "request": "Add a date helper to src/utils with a test", "title": "Date utils", "host": "LandOS on ClaudeClaw" }
+```
+
+`request` is required (max 10000 chars); `title` and `host` are optional.
+
+Response (200):
+
+```json
+{
+  "verdict": "SAFE",
+  "title": "Date utils",
+  "lane": {
+    "verdict": "SAFE",
+    "categories": [],
+    "hits": [],
+    "notice": "No red-lane trigger detected. ..."
+  },
+  "decisionsNeeded": ["None required to start safe-lane work."],
+  "markdown": "# Forge Engagement — ...\n..."
+}
+```
+
+A STOP request (for example `"... git push and deploy to staging"`) returns the
+same shape with `verdict: "STOP"`, the matched `lane.categories`/`lane.hits`,
+and the Tyler decisions in `decisionsNeeded`. Errors: missing/empty `request`
+returns `400 { "error": "request required" }`; invalid JSON returns
+`400 { "error": "invalid JSON body" }`.
+
+A dashboard UI panel (textarea + optional title + "Start Forge Engagement"
+button + SAFE/STOP result area) was intentionally deferred to keep this
+milestone small and avoid touching the in-progress frontend rewrite. That panel
+is the recommended Milestone 4; the endpoint above is everything a UI needs.
+
+---
+
 ## The lane gate (safe vs stop)
 
 Every request runs through `classifyLane()`, which scans for Tyler-owned
@@ -165,13 +212,17 @@ npx vitest run src/forge/engagement.test.ts
 
 It proves SAFE vs STOP classification across every red-lane category, multi-
 category detection, matched-text reporting, deterministic rendering, the full
-set of artifact sections, and business-neutrality (no host-domain leakage).
+set of artifact sections, and business-neutrality (no host-domain leakage). The
+dashboard endpoint is covered by the contract tests in
+`src/dashboard.contract.test.ts` (`POST /api/forge/engagement`).
 
 ---
 
 ## Not in this milestone (next up)
 
-Dashboard UI wiring for a one-click Forge engagement kickoff was intentionally
-deferred to keep this milestone small and avoid touching large, fragile
-dashboard files. That is the recommended Milestone 3. For now the engagement
-runs via the CLI above.
+The dashboard **UI panel** (textarea + optional title + "Start Forge
+Engagement" button + SAFE/STOP result area) was intentionally deferred to avoid
+touching the in-progress frontend rewrite. That is the recommended Milestone 4.
+Today the engagement runs via the CLI above or the
+`POST /api/forge/engagement` endpoint, which already returns everything a UI
+needs (verdict, lane categories, decisions needed, and rendered Markdown).

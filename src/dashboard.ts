@@ -71,6 +71,7 @@ import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
 import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
+import { startForgeEngagement, renderEngagementMarkdown } from './forge/engagement.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -1864,6 +1865,61 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       botUsername: info.username || '',
       pid: process.pid,
       chatId: chatId || null,
+    });
+  });
+
+  // ── Forge endpoints ──────────────────────────────────────────────────
+
+  // Universal Forge engagement kickoff. Calls the pure, host-neutral Forge
+  // core (src/forge/engagement.ts) to turn a raw build request into a
+  // structured engagement artifact. This endpoint ONLY generates the
+  // artifact: it never executes, commits, pushes, installs, reads secrets,
+  // connects accounts, calls paid APIs, or mutates any system. Red-lane
+  // requests are CLASSIFIED (SAFE/STOP), never run.
+  app.post('/api/forge/engagement', async (c) => {
+    let body: { request?: unknown; title?: unknown; host?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    // Validate field TYPES before trimming. Valid JSON with a non-string
+    // field (e.g. { "request": 123 }) must 400, not throw a 500 on .trim().
+    if (typeof body?.request !== 'string') return c.json({ error: 'request must be a string' }, 400);
+    if (body?.title !== undefined && typeof body.title !== 'string') {
+      return c.json({ error: 'title must be a string' }, 400);
+    }
+    if (body?.host !== undefined && typeof body.host !== 'string') {
+      return c.json({ error: 'host must be a string' }, 400);
+    }
+
+    const rawRequest = body.request.trim();
+    const title = body.title?.trim() || undefined;
+    const host = body.host?.trim() || undefined;
+
+    if (!rawRequest) return c.json({ error: 'request required' }, 400);
+    if (rawRequest.length > 10000) return c.json({ error: 'request too long (max 10000 chars)' }, 400);
+
+    const engagement = startForgeEngagement({
+      rawRequest,
+      title,
+      host,
+      requestedBy: 'Tyler',
+      createdAt: new Date().toISOString(),
+    });
+
+    return c.json({
+      verdict: engagement.gate.verdict,
+      title: engagement.title,
+      lane: {
+        verdict: engagement.gate.verdict,
+        categories: engagement.gate.categories,
+        hits: engagement.gate.hits,
+        notice: engagement.gate.notice,
+      },
+      decisionsNeeded: engagement.assumptionSummary.tylerDecisions,
+      markdown: renderEngagementMarkdown(engagement),
     });
   });
 

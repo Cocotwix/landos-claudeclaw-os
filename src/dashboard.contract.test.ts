@@ -296,6 +296,89 @@ describe('POST /api/mission/tasks', () => {
   });
 });
 
+describe('POST /api/forge/engagement', () => {
+  async function forge(payload: unknown) {
+    return app.request('/api/forge/engagement' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('rejects missing request with 400', async () => {
+    const res = await forge({ title: 'no body' });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('rejects empty request with 400', async () => {
+    const res = await forge({ request: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns SAFE for a normal safe repo-local build request', async () => {
+    const res = await forge({ request: 'Add a date helper to src/utils with a unit test.' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.verdict).toBe('SAFE');
+    expect(body.lane.categories).toEqual([]);
+    expect(typeof body.markdown).toBe('string');
+    expect(body.markdown).toContain('# Forge Engagement');
+    expect(body.title.length).toBeGreaterThan(0);
+  });
+
+  it('returns STOP for a deploy / git push request', async () => {
+    const res = await forge({ request: 'Build the change then git push and deploy to staging.' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.verdict).toBe('STOP');
+    expect(body.lane.categories).toContain('git_push_or_deploy');
+    expect(body.decisionsNeeded.length).toBeGreaterThan(0);
+  });
+
+  it('returns STOP for a secrets / API key request', async () => {
+    const res = await forge({ request: 'Add the Stripe API key to the config.', title: 'Risky' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.verdict).toBe('STOP');
+    expect(body.lane.categories).toContain('secrets_credentials');
+  });
+
+  it('rejects invalid JSON with 400', async () => {
+    const res = await app.request('/api/forge/engagement' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ not valid json',
+    });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: 'invalid JSON body' });
+  });
+
+  it('rejects a non-string request with 400', async () => {
+    const res = await forge({ request: 123 });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: 'request must be a string' });
+  });
+
+  it('rejects a non-string title with 400', async () => {
+    const res = await forge({ request: 'Add a helper.', title: 42 });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: 'title must be a string' });
+  });
+
+  it('rejects a non-string host with 400', async () => {
+    const res = await forge({ request: 'Add a helper.', host: { name: 'LandOS' } });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: 'host must be a string' });
+  });
+
+  it('rejects a request longer than 10000 chars with 400', async () => {
+    const res = await forge({ request: 'a'.repeat(10001) });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: 'request too long (max 10000 chars)' });
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.
