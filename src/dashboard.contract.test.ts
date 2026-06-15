@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { _initTestDatabase } from './db.js';
 import { _initTestForgeDb } from './forge/host-store.js';
+import { _initTestLandosDb } from './landos/db.js';
 import { buildDashboardApp } from './dashboard.js';
 import type { Hono } from 'hono';
 
@@ -33,6 +34,9 @@ beforeEach(() => {
   // Forge endpoints persist to a dedicated store; use a fresh in-memory DB
   // per test so the contract suite never writes a real store/forge.db.
   _initTestForgeDb();
+  // LandOS property-card / lead-job endpoints persist to landos.db; fresh
+  // in-memory per test so the contract suite never writes a real store.
+  _initTestLandosDb();
 });
 
 async function get(path: string) {
@@ -1005,6 +1009,162 @@ describe('Forge writeback proposal endpoints', () => {
     const res = await post(`/api/forge/writeback-proposals/${made.proposal.id}/apply`, {});
     expect(res.status).toBe(501);
     expect((await jsonOf(res)).error).toBe('not implemented');
+  });
+});
+
+describe('LandOS property card + memory endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+  }
+  function patch(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+  }
+
+  it('creates an unverified lead card from a Duke address run', async () => {
+    const res = await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '83 Bub Wise Rd, Swansea SC',
+      county: 'Lexington', state: 'SC', verified: false, summary: 'zero candidates',
+    });
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.card.verification_status).toBe('unverified_lead');
+    expect(body.card.kanban_status).toBe('needs_parcel_verification');
+
+    const detail = await jsonOf(await get(`/api/landos/property-cards/${body.card.id}`));
+    expect(detail.card.nextActions.some((n: any) => /verify parcel/i.test(n.action))).toBe(true);
+  });
+
+  it('creates a verified property card and refuses proximity verification', async () => {
+    const ok = await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '123 Rural Rd, Lexington SC',
+      apn: '00123-45-678', county: 'Lexington', verified: true,
+      verificationSource: 'county assessor record (APN + county)',
+    }));
+    expect(ok.card.verification_status).toBe('verified_property');
+
+    const bad = await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'x', verified: true,
+      verificationSource: 'nearest parcel by map pin coordinates',
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it('attaches source evidence with offer-usability gating', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '5 Eviden Rd, X SC',
+    }))).card;
+    const noLink = await jsonOf(await post(`/api/landos/property-cards/${card.id}/source-evidence`, { fact: 'acreage' }));
+    expect(noLink.usableForOfferLogic).toBe(false);
+    const official = await jsonOf(await post(`/api/landos/property-cards/${card.id}/source-evidence`, {
+      fact: 'zoning', sourceUrl: 'https://planning.county.gov/ord', parcelVerified: true,
+    }));
+    expect(official.usableForOfferLogic).toBe(true);
+  });
+
+  it('serves the kanban board grouped by status and updates status', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '8 Board Rd, Q SC',
+    }))).card;
+    const moved = await patch(`/api/landos/property-cards/${card.id}`, { kanbanStatus: 'underwriting' });
+    expect(moved.status).toBe(200);
+    const board = await jsonOf(await get('/api/landos/board?entity=TY_LAND_BIZ'));
+    expect(Array.isArray(board.columns.underwriting)).toBe(true);
+    expect(board.columns.underwriting.length).toBe(1);
+    expect((await patch(`/api/landos/property-cards/${card.id}`, { kanbanStatus: 'bogus' })).status).toBe(400);
+  });
+
+  it('PATCH cannot promote a card to verified_property without strong identity', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '40 Promote Rd, Town SC',
+    }))).card;
+    const res = await patch(`/api/landos/property-cards/${card.id}`, { verificationStatus: 'verified_property' });
+    expect(res.status).toBe(400);
+    const detail = await jsonOf(await get(`/api/landos/property-cards/${card.id}`));
+    expect(detail.card.verification_status).toBe('unverified_lead');
+  });
+
+  it('PATCH can reject_mismatch/archive with a reason but not without', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '41 Reject Rd, Town SC',
+    }))).card;
+    expect((await patch(`/api/landos/property-cards/${card.id}`, { verificationStatus: 'rejected_mismatch' })).status).toBe(400);
+    const ok = await patch(`/api/landos/property-cards/${card.id}`, { verificationStatus: 'rejected_mismatch', reason: 'situs on different road' });
+    expect(ok.status).toBe(200);
+    expect((await jsonOf(ok)).card.verification_status).toBe('rejected_mismatch');
+  });
+
+  it('nearby reference requires a verified parcel and is non-identity', async () => {
+    const lead = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '42 Lead Rd, Town SC',
+    }))).card;
+    expect((await post(`/api/landos/property-cards/${lead.id}/nearby-reference`, { address: '44 Neighbor Rd' })).status).toBe(400);
+
+    const verified = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'APN-only vacant parcel, Lexington SC',
+      apn: 'VAC9', county: 'Lexington', fips: '45063', verified: true,
+      verificationSource: 'official assessor parcel record (APN + FIPS)',
+    }))).card;
+    const res = await post(`/api/landos/property-cards/${verified.id}/nearby-reference`, {
+      address: '44 Neighbor Rd', relationship: 'adjoining_addressed_property',
+    });
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.label).toBe('Nearby search reference only — not the subject parcel address.');
+    const detail = await jsonOf(await get(`/api/landos/property-cards/${verified.id}`));
+    expect(detail.card.active_input_address).not.toBe('44 Neighbor Rd');
+    expect(detail.card.nearbyReferences[0].usable_for_identity).toBe(0);
+  });
+
+  it('classifies Duke requests via the router endpoint', async () => {
+    const r = await jsonOf(await post('/api/landos/duke/route', { text: 'pull land comps by ZIP, 5-10 acres' }));
+    expect(r.result.route).toBe('land_comps');
+  });
+
+  it('checks the source evidence standard', async () => {
+    const noLink = await jsonOf(await post('/api/landos/source-evidence/check', { kind: 'fact', fact: 'zoning', parcelVerified: true }));
+    expect(noLink.result.usableForOfferLogic).toBe(false);
+  });
+
+  it('creates isolated batch lead jobs', async () => {
+    const res = await post('/api/landos/lead-jobs', {
+      entity: 'TY_LAND_BIZ', text: '83 Bub Wise Rd, Swansea SC\n221 Main St, Lexington SC',
+    });
+    expect(res.status).toBe(201);
+    const body = await jsonOf(res);
+    expect(body.count).toBe(2);
+    const list = await jsonOf(await get('/api/landos/lead-jobs?status=queued'));
+    expect(list.jobs.length).toBe(2);
+  });
+});
+
+describe('Forge build interview endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+  }
+
+  it('returns a build interview', async () => {
+    const res = await post('/api/forge/build-interview', { goal: 'a tool that organizes leads' });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.interview.sections.length).toBeGreaterThan(0);
+  });
+
+  it('returns a build packet with spec and markdown', async () => {
+    const res = await post('/api/forge/build-packet', { goal: 'a build that organizes leads', capabilities: ['list leads'] });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.markdown).toContain('# Forge Build Packet');
+    expect(body.spec.capabilities).toContain('list leads');
+  });
+
+  it('400s on a missing goal', async () => {
+    expect((await post('/api/forge/build-packet', {})).status).toBe(400);
   });
 });
 

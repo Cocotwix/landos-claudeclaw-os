@@ -254,6 +254,9 @@ export function Forge() {
   const [output, setOutput] = useState<{ kind: string; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Forge Build Interview Mode inputs.
+  const [buildGoal, setBuildGoal] = useState('');
+
   // Department-agent builder inputs. Independent of the engagement panel.
   const [agentRequest, setAgentRequest] = useState('');
   const [agentDisplayName, setAgentDisplayName] = useState('');
@@ -881,6 +884,31 @@ export function Forge() {
     }
   }
 
+  // Forge Build Interview Mode: turn a plain-English goal into an interview or a
+  // full build packet. Display only; builds nothing.
+  async function buildInterview() {
+    if (!buildGoal.trim()) { setError('Describe the build goal first.'); return; }
+    setBusy(true); setError(null);
+    try {
+      const resp = await apiPost<{ interview: { title: string; intro: string; sections: { heading: string; questions: string[] }[] } }>(
+        '/api/forge/build-interview', { goal: buildGoal.trim() },
+      );
+      const iv = resp.interview;
+      const text = `# ${iv.title}\n\n${iv.intro}\n\n` +
+        iv.sections.map((s) => `## ${s.heading}\n${s.questions.map((q) => `- ${q}`).join('\n')}`).join('\n\n');
+      setOutput({ kind: 'Build interview', text });
+    } catch (err) { setError(errMessage(err)); } finally { setBusy(false); }
+  }
+
+  async function buildPacket() {
+    if (!buildGoal.trim()) { setError('Describe the build goal first.'); return; }
+    setBusy(true); setError(null);
+    try {
+      const resp = await apiPost<{ markdown: string }>('/api/forge/build-packet', { goal: buildGoal.trim() });
+      setOutput({ kind: 'Build packet', text: resp.markdown });
+    } catch (err) { setError(errMessage(err)); } finally { setBusy(false); }
+  }
+
   const btn =
     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const btnAccent = `${btn} bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]`;
@@ -890,6 +918,33 @@ export function Forge() {
     <div class="h-full flex flex-col">
       <PageHeader title="Forge" breadcrumb="Workspace" />
       <div class="flex-1 overflow-y-auto p-6 space-y-5 max-w-3xl">
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center gap-2">
+            <Hammer size={14} class="text-[var(--color-accent)]" />
+            <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Build Interview</h3>
+          </div>
+          <p class="text-[11.5px] text-[var(--color-text-muted)] leading-relaxed">
+            Describe a build goal in plain English. Forge asks the targeted questions and turns the answer into a
+            capability spec, safety boundaries, tests, an implementation sprint packet, and a Codex review checklist.
+            Display only: nothing here builds, runs, connects, or touches secrets.
+          </p>
+          <textarea
+            value={buildGoal}
+            onInput={(e) => setBuildGoal((e.target as HTMLTextAreaElement).value)}
+            placeholder="e.g. A board where every lead becomes a property card I can move through a pipeline"
+            rows={3}
+            class="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-3 py-2 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] resize-y font-mono"
+          />
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={buildPacket} disabled={busy || !buildGoal.trim()} class={btnAccent}>
+              Build packet
+            </button>
+            <button type="button" onClick={buildInterview} disabled={busy || !buildGoal.trim()} class={btnGhost}>
+              Interview questions
+            </button>
+          </div>
+        </section>
+
         <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
           <div class="flex items-center gap-2">
             <Hammer size={14} class="text-[var(--color-accent)]" />

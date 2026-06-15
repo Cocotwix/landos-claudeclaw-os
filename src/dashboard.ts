@@ -98,6 +98,10 @@ import {
   renderPromotionScaffoldMarkdown,
 } from './forge/promotion-scaffold.js';
 import {
+  generateBuildInterview,
+  generateBuildPacket,
+} from './forge/build-interview.js';
+import {
   buildSnapshotFromFiles,
   reconstructAgentProfile,
   analyzeRetrofitGaps,
@@ -2362,6 +2366,51 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
   });
 
+  // ── Forge Build Interview Mode ────────────────────────────────────────
+  // Forge owns the architecture: turn a plain-English build goal into an
+  // interview, a capability spec, and an implementation packet. Text only.
+
+  app.post('/api/forge/build-interview', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const interview = generateBuildInterview({
+      goal: typeof body?.goal === 'string' ? body.goal : undefined,
+    });
+    return c.json({ interview });
+  });
+
+  app.post('/api/forge/build-packet', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body?.goal !== 'string' || !body.goal.trim()) {
+      return c.json({ error: 'goal must be a non-empty string' }, 400);
+    }
+    const strArr = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? (v.filter((x) => typeof x === 'string') as string[]) : undefined;
+    const packet = generateBuildPacket({
+      goal: body.goal,
+      capabilities: strArr(body.capabilities),
+      outOfScope: strArr(body.outOfScope),
+      inputs: strArr(body.inputs),
+      sourceRequirements: strArr(body.sourceRequirements),
+      safetyBoundaries: strArr(body.safetyBoundaries),
+      toolRequirements: strArr(body.toolRequirements),
+      dashboardBehavior: strArr(body.dashboardBehavior),
+      outputFormat: strArr(body.outputFormat),
+      acceptanceCriteria: strArr(body.acceptanceCriteria),
+      assumptions: strArr(body.assumptions),
+    });
+    return c.json({ spec: packet.spec, markdown: packet.markdown });
+  });
+
   // ── Saved department-agent profiles ───────────────────────────────────
   // Durable save/history for generated profiles. Persistence and record
   // updates only: nothing here activates an agent, promotes it into a runnable
@@ -3835,13 +3884,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
   });
 
-  // Chat history (paginated)
+  // Chat history (paginated). Contract API: chatId is required. A missing
+  // chatId is a malformed request and returns 400 — the frontend always sends
+  // an explicit chatId (it skips the fetch and uses its local cache when no
+  // chatId is available), so this never surfaces in normal use.
   app.get('/api/chat/history', (c) => {
-    // Default to the configured chat when the dashboard is opened
-    // without ?chatId. Other endpoints already do this; previously this
-    // route 400'd and the error landed in the user-facing UI.
-    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
-    if (!chatId) return c.json({ turns: [] });
+    const chatId = c.req.query('chatId');
+    if (!chatId) return c.json({ error: 'chatId required' }, 400);
     const limit = parseInt(c.req.query('limit') || '40', 10);
     const beforeId = c.req.query('beforeId');
     const turns = getConversationPage(chatId, limit, beforeId ? parseInt(beforeId, 10) : undefined);

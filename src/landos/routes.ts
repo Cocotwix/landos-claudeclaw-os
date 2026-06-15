@@ -23,6 +23,36 @@ import {
 } from './db.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
+import {
+  CARD_VERIFICATION_STATUSES,
+  KANBAN_STATUSES,
+  LEAD_JOB_STATUSES,
+  type CardVerificationStatus,
+  type KanbanStatus,
+  type LandosEntity,
+  type LeadJobStatus,
+} from './db.js';
+import {
+  upsertCardFromDukeRun,
+  getPropertyCard,
+  listPropertyCards,
+  setCardKanbanStatus,
+  setCardVerificationStatus,
+  attachCardSourceEvidence,
+  attachCardActivity,
+  addCardNextAction,
+  attachNearbySearchReference,
+  createLeadJobs,
+  listLeadJobs,
+  updateLeadJob,
+} from './property-card.js';
+import { routeDukeRequest } from './duke-router.js';
+import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
+
+const isEntity = (v: unknown): v is LandosEntity =>
+  v === 'LAND_ALLY' || v === 'TY_LAND_BIZ';
+const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
 function entityParam(raw: string | undefined): string | undefined {
   if (!raw || raw === 'all') return undefined;
@@ -265,6 +295,225 @@ export function registerLandosRoutes(app: Hono): void {
   }));
 
   app.get('/api/landos/strategies', (c) => c.json({ strategies: STRATEGIES }));
+
+  // ── Property Card / Property Memory ─────────────────────────────────
+  // The property-centered source of truth. Every Duke property-address run
+  // creates or updates a card. Identity is never inferred from coordinates.
+
+  app.get('/api/landos/property-cards', (c) => {
+    const entity = entityParam(c.req.query('entity'));
+    const ks = c.req.query('kanbanStatus');
+    const vs = c.req.query('verificationStatus');
+    return c.json({
+      cards: listPropertyCards({
+        entity,
+        kanbanStatus: (KANBAN_STATUSES as readonly string[]).includes(ks ?? '') ? (ks as KanbanStatus) : undefined,
+        verificationStatus: (CARD_VERIFICATION_STATUSES as readonly string[]).includes(vs ?? '') ? (vs as CardVerificationStatus) : undefined,
+      }),
+    });
+  });
+
+  // Kanban board: cards grouped by status column (property-centered).
+  app.get('/api/landos/board', (c) => {
+    const entity = entityParam(c.req.query('entity'));
+    const cards = listPropertyCards({ entity, limit: 500 });
+    const columns: Record<string, unknown[]> = {};
+    for (const s of KANBAN_STATUSES) columns[s] = [];
+    for (const card of cards) columns[(card as { kanban_status: string }).kanban_status]?.push(card);
+    return c.json({ columns, statuses: KANBAN_STATUSES });
+  });
+
+  app.get('/api/landos/property-cards/:id', (c) => {
+    const card = getPropertyCard(Number(c.req.param('id')));
+    if (!card) return c.json({ error: 'not found' }, 404);
+    return c.json({ card });
+  });
+
+  // Create/update a card from a Duke property-address run. Body carries the
+  // identity + verification the agent established. No live LP call here.
+  app.post('/api/landos/property-cards', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const entity = body.entity;
+    if (!isEntity(entity)) return c.json({ error: 'entity must be LAND_ALLY or TY_LAND_BIZ' }, 400);
+    const activeInputAddress = str(body.activeInputAddress);
+    if (!activeInputAddress || !activeInputAddress.trim()) {
+      return c.json({ error: 'activeInputAddress required' }, 400);
+    }
+    try {
+      const result = upsertCardFromDukeRun({
+        entity,
+        agentId: str(body.agentId),
+        activeInputAddress,
+        city: str(body.city),
+        county: str(body.county),
+        state: str(body.state),
+        apn: str(body.apn),
+        lpPropertyId: str(body.lpPropertyId),
+        fips: str(body.fips),
+        lpUrl: str(body.lpUrl),
+        owner: str(body.owner),
+        acres: num(body.acres),
+        verified: body.verified === true,
+        verificationSource: str(body.verificationSource),
+        summary: str(body.summary),
+        priorInputAddress: str(body.priorInputAddress),
+        cardId: num(body.cardId),
+      });
+      return c.json({ card: result.card, created: result.created, warnings: result.warnings }, result.created ? 201 : 200);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'upsert failed' }, 400);
+    }
+  });
+
+  // PATCH handles WORKFLOW changes only. It can move the kanban status freely,
+  // and it can reject/archive a card (with a reason, audited). It can NEVER
+  // directly promote a card to verified_property — that requires strong parcel
+  // identity evidence through POST /property-cards — and it never downgrades a
+  // verified card to a non-terminal status or erases identity evidence.
+  app.patch('/api/landos/property-cards/:id', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    let updated;
+    if (body.kanbanStatus !== undefined) {
+      if (!(KANBAN_STATUSES as readonly string[]).includes(String(body.kanbanStatus))) {
+        return c.json({ error: 'invalid kanbanStatus' }, 400);
+      }
+      updated = setCardKanbanStatus(id, body.kanbanStatus as KanbanStatus);
+      if (!updated) return c.json({ error: 'not found' }, 404);
+    }
+    if (body.verificationStatus !== undefined) {
+      const vs = String(body.verificationStatus);
+      if (vs === 'verified_property' || vs === 'unverified_lead' || vs === 'address_matched') {
+        return c.json({
+          error: 'verification_status cannot be promoted or downgraded via PATCH. Provide strong parcel identity evidence (APN + county/state/FIPS, or LandPortal property id + FIPS) via POST /api/landos/property-cards.',
+        }, 400);
+      }
+      // Only rejected_mismatch / archived are allowed here, with a reason.
+      const result = setCardVerificationStatus(id, vs as CardVerificationStatus, str(body.actor) ?? 'tyler', str(body.reason) ?? '');
+      if (result.error) {
+        return c.json({ error: result.error }, result.error === 'not found' ? 404 : 400);
+      }
+      updated = result.card;
+    }
+    if (!updated) return c.json({ error: 'no valid field (use kanbanStatus, or verificationStatus=rejected_mismatch|archived with a reason)' }, 400);
+    return c.json({ card: updated });
+  });
+
+  // Attach a Nearby Search Reference (verified subject parcel only). Never
+  // identity/offer-usable; never the subject parcel address.
+  app.post('/api/landos/property-cards/:id/nearby-reference', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!str(body.address)) return c.json({ error: 'address required' }, 400);
+    const result = attachNearbySearchReference({
+      cardId: id,
+      address: str(body.address)!,
+      relationship: str(body.relationship) as never,
+      sourceLink: str(body.sourceLink),
+      note: str(body.note),
+      dateAccessed: str(body.dateAccessed),
+    });
+    if (result.error) {
+      return c.json({ error: result.error, label: result.label }, result.error === 'card not found' ? 404 : 400);
+    }
+    return c.json(result, 201);
+  });
+
+  app.post('/api/landos/property-cards/:id/source-evidence', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!str(body.fact)) return c.json({ error: 'fact required' }, 400);
+    const res = attachCardSourceEvidence({
+      cardId: id,
+      fact: str(body.fact)!,
+      value: str(body.value),
+      sourceUrl: str(body.sourceUrl),
+      sourceLabel: str(body.sourceLabel),
+      dateAccessed: str(body.dateAccessed),
+      note: str(body.note),
+      parcelVerified: body.parcelVerified === true,
+    });
+    return c.json(res, 201);
+  });
+
+  app.post('/api/landos/property-cards/:id/activity', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const evId = attachCardActivity({
+      cardId: id,
+      agentId: str(body.agentId) ?? 'tyler',
+      kind: str(body.kind) ?? 'note',
+      summary: str(body.summary) ?? '',
+      ref: str(body.ref),
+    });
+    return c.json({ id: evId }, 201);
+  });
+
+  app.post('/api/landos/property-cards/:id/next-action', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!str(body.action)) return c.json({ error: 'action required' }, 400);
+    const naId = addCardNextAction({ cardId: id, action: str(body.action)!, createdBy: str(body.createdBy) });
+    return c.json({ id: naId }, 201);
+  });
+
+  // ── Batch lead intake ───────────────────────────────────────────────
+  app.post('/api/landos/lead-jobs', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const entity = body.entity;
+    if (!isEntity(entity)) return c.json({ error: 'entity must be LAND_ALLY or TY_LAND_BIZ' }, 400);
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const { batchId, jobs } = createLeadJobs({ entity, text, agentId: str(body.agentId) });
+    return c.json({ batchId, jobs, count: jobs.length }, 201);
+  });
+
+  app.get('/api/landos/lead-jobs', (c) => {
+    const entity = entityParam(c.req.query('entity'));
+    const status = c.req.query('status');
+    const batchId = c.req.query('batchId') || undefined;
+    return c.json({
+      jobs: listLeadJobs({
+        entity,
+        batchId,
+        status: (LEAD_JOB_STATUSES as readonly string[]).includes(status ?? '') ? (status as LeadJobStatus) : undefined,
+      }),
+    });
+  });
+
+  app.patch('/api/landos/lead-jobs/:id', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (body.status !== undefined && !(LEAD_JOB_STATUSES as readonly string[]).includes(String(body.status))) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    const updated = updateLeadJob(id, {
+      status: body.status as LeadJobStatus | undefined,
+      cardId: num(body.cardId),
+      resultSummary: str(body.resultSummary),
+      nextAction: str(body.nextAction),
+      error: str(body.error),
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ job: updated });
+  });
+
+  // ── Duke capability router (classification only) ────────────────────
+  app.post('/api/landos/duke/route', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text) ?? '';
+    return c.json({ result: routeDukeRequest(text) });
+  });
+
+  // ── Source Evidence Standard check ──────────────────────────────────
+  app.post('/api/landos/source-evidence/check', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const kind = str(body.kind) ?? 'fact';
+    if (kind === 'comp') return c.json({ result: evaluateComp(body as never) });
+    if (kind === 'zoning') return c.json({ result: evaluateZoning(body as never) });
+    if (!str(body.fact)) return c.json({ error: 'fact required for kind=fact' }, 400);
+    return c.json({ result: evaluateFact(body as never) });
+  });
 
   // Scenario preview: internal underwriting math only. Never seller-facing.
   app.post('/api/landos/strategies/evaluate', async (c) => {

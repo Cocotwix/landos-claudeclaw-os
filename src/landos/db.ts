@@ -57,6 +57,126 @@ export const LEAD_STATUSES = [
   'disqualified',
 ] as const;
 
+// Property Card / Lead Card verification lifecycle. A card is the property-
+// centered source-of-truth container that unifies property + parcel + facts +
+// agent work. Identity is never inferred from coordinates/proximity.
+export const CARD_VERIFICATION_STATUSES = [
+  'unverified_lead',
+  'address_matched',
+  'verified_property',
+  'rejected_mismatch',
+  'archived',
+] as const;
+export type CardVerificationStatus = (typeof CARD_VERIFICATION_STATUSES)[number];
+
+// Relationship of a nearby search-reference address to the (already verified)
+// subject parcel. A search convenience only — never the subject parcel.
+export const NEARBY_REFERENCE_RELATIONSHIPS = [
+  'adjoining_addressed_property',
+  'nearby_same_road',
+  'nearby_area_reference',
+  'unknown',
+] as const;
+export type NearbyReferenceRelationship = (typeof NEARBY_REFERENCE_RELATIONSHIPS)[number];
+
+/** Required disclaimer wherever a nearby search reference is shown. */
+export const NEARBY_REFERENCE_LABEL = 'Nearby search reference only — not the subject parcel address.';
+
+// Seller Lead / Deal Card lifecycle. A Deal Card is a seller opportunity that
+// links one OR MORE Property Cards. Deal-level facts (package strategy, asking
+// price, seller notes) live here; parcel identity stays on each Property Card.
+export const DEAL_CARD_STATUSES = [
+  'new',
+  'researching',
+  'discovery',
+  'underwriting',
+  'offer_ready',
+  'offer_sent',
+  'follow_up',
+  'under_contract',
+  'closed',
+  'dead',
+  'archived',
+] as const;
+export type DealCardStatus = (typeof DEAL_CARD_STATUSES)[number];
+
+// How a Property Card relates to a Deal Card.
+export const DEAL_PROPERTY_ROLES = ['subject', 'package_member'] as const;
+export type DealPropertyRole = (typeof DEAL_PROPERTY_ROLES)[number];
+
+// Contiguity between package parcels is NEVER assumed. Seller statements are
+// stored as seller_stated; only official GIS/assessor/plat/deed confirms it.
+export const CONTIGUITY_STATUSES = ['unknown', 'seller_stated', 'source_confirmed'] as const;
+export type ContiguityStatus = (typeof CONTIGUITY_STATUSES)[number];
+
+// Roles a person can hold on a deal/property. Being related to the owner never
+// implies signing authority.
+export const PERSON_ROLES = [
+  'seller',
+  'lead_contact',
+  'wholesaler',
+  'agent',
+  'record_owner',
+  'heir',
+  'sibling',
+  'spouse',
+  'decision_maker',
+  'probate_contact',
+  'attorney',
+  'title_contact',
+  'unknown_relation',
+] as const;
+export type PersonRole = (typeof PERSON_ROLES)[number];
+
+// Authority/signing status. Defaults to 'unknown' — never auto can_sign.
+// Deed/title/authority facts require source evidence or attorney/title
+// confirmation before offer/closing logic relies on them.
+export const PERSON_AUTHORITY_STATUSES = [
+  'unknown',
+  'title_to_confirm',
+  'attorney_or_title_to_confirm',
+  'needs_to_sign',
+  'can_sign',
+  'cannot_sign',
+  'unsure_if_on_deed',
+  'heir_claimed',
+  'probate_attorney',
+] as const;
+export type PersonAuthorityStatus = (typeof PERSON_AUTHORITY_STATUSES)[number];
+
+// Kanban pipeline statuses for the property/lead board (property-centered).
+export const KANBAN_STATUSES = [
+  'new_lead',
+  'needs_parcel_verification',
+  'needs_seller_discovery',
+  'researching',
+  'underwriting',
+  'offer_ready',
+  'offer_sent',
+  'follow_up',
+  'under_contract',
+  'due_diligence',
+  'disposition',
+  'closed',
+  'dead',
+  'archived',
+] as const;
+export type KanbanStatus = (typeof KANBAN_STATUSES)[number];
+
+// Batch lead-intake job lifecycle. Each lead becomes one isolated job; jobs
+// never share parcel state.
+export const LEAD_JOB_STATUSES = [
+  'queued',
+  'running',
+  'parcel_not_verified',
+  'needs_apn_or_owner',
+  'verified',
+  'complete',
+  'failed',
+  'blocked_needs_approval',
+] as const;
+export type LeadJobStatus = (typeof LEAD_JOB_STATUSES)[number];
+
 /** Action types that always require a Tyler-approved landos_approval row. */
 export const GATED_ACTION_TYPES = [
   'seller_message',
@@ -373,6 +493,193 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_landos_secreview_time ON landos_security_review(created_at DESC);
 
+    -- Property Card: the property-centered source-of-truth container. Unifies
+    -- a lead/property across agents. Identity is keyed by verified parcel
+    -- identifiers (lp_property_id+fips or apn+county) for verified cards, or by
+    -- the normalized active input address for unverified leads. NEVER keyed or
+    -- merged by coordinates, proximity, map pins, or nearest parcel.
+    CREATE TABLE IF NOT EXISTS landos_property_card (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity                TEXT NOT NULL REFERENCES landos_business_entity(id),
+      verification_status   TEXT NOT NULL DEFAULT 'unverified_lead'
+                            CHECK (verification_status IN (${inList(CARD_VERIFICATION_STATUSES)})),
+      kanban_status         TEXT NOT NULL DEFAULT 'new_lead'
+                            CHECK (kanban_status IN (${inList(KANBAN_STATUSES)})),
+      active_input_address  TEXT NOT NULL DEFAULT '',
+      address_key           TEXT NOT NULL DEFAULT '',
+      prior_inputs          TEXT NOT NULL DEFAULT '[]',
+      apn                   TEXT NOT NULL DEFAULT '',
+      lp_property_id        TEXT NOT NULL DEFAULT '',
+      fips                  TEXT NOT NULL DEFAULT '',
+      lp_url                TEXT NOT NULL DEFAULT '',
+      county                TEXT NOT NULL DEFAULT '',
+      state                 TEXT NOT NULL DEFAULT '',
+      city                  TEXT NOT NULL DEFAULT '',
+      owner                 TEXT NOT NULL DEFAULT '',
+      acres                 REAL,
+      verification_source   TEXT NOT NULL DEFAULT '',
+      property_id           INTEGER REFERENCES landos_property(id),
+      parcel_id             INTEGER REFERENCES landos_parcel(id),
+      open_risks            TEXT NOT NULL DEFAULT '[]',
+      summary               TEXT NOT NULL DEFAULT '',
+      last_refreshed_at     INTEGER,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_card_entity ON landos_property_card(entity, kanban_status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_card_addrkey ON landos_property_card(entity, address_key);
+    CREATE INDEX IF NOT EXISTS idx_landos_card_parcel ON landos_property_card(entity, lp_property_id, fips);
+
+    -- Source evidence attached to a card. usable_for_offer_logic is decided by
+    -- the Source Evidence Standard (requires a real source link + verification).
+    CREATE TABLE IF NOT EXISTS landos_card_source_evidence (
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id                 INTEGER NOT NULL REFERENCES landos_property_card(id),
+      fact                    TEXT NOT NULL DEFAULT '',
+      source_type             TEXT NOT NULL DEFAULT 'unknown',
+      source_url              TEXT NOT NULL DEFAULT '',
+      date_accessed           TEXT NOT NULL DEFAULT '',
+      note                    TEXT NOT NULL DEFAULT '',
+      usable_for_offer_logic  INTEGER NOT NULL DEFAULT 0,
+      created_at              INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_card_evidence ON landos_card_source_evidence(card_id, created_at DESC);
+
+    -- Agent activity timeline on a card (who did what, when).
+    CREATE TABLE IF NOT EXISTS landos_card_activity (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id     INTEGER NOT NULL REFERENCES landos_property_card(id),
+      agent_id    TEXT NOT NULL DEFAULT '',
+      kind        TEXT NOT NULL DEFAULT '',
+      summary     TEXT NOT NULL DEFAULT '',
+      ref         TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_card_activity ON landos_card_activity(card_id, created_at DESC);
+
+    -- Next actions / open work items on a card.
+    CREATE TABLE IF NOT EXISTS landos_card_next_action (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id     INTEGER NOT NULL REFERENCES landos_property_card(id),
+      action      TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'open',
+      created_by  TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_card_nextaction ON landos_card_next_action(card_id, status, created_at DESC);
+
+    -- Nearby search reference: a convenience addressed property used only to
+    -- locate a verified vacant subject parcel that has no street/situs address.
+    -- It NEVER identifies, verifies, values, or merges the subject parcel and
+    -- is never the active/situs address. Only attachable to a verified_property.
+    CREATE TABLE IF NOT EXISTS landos_card_nearby_reference (
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id                 INTEGER NOT NULL REFERENCES landos_property_card(id),
+      address                 TEXT NOT NULL DEFAULT '',
+      relationship            TEXT NOT NULL DEFAULT 'unknown'
+                              CHECK (relationship IN (${inList(NEARBY_REFERENCE_RELATIONSHIPS)})),
+      source_link             TEXT NOT NULL DEFAULT '',
+      note                    TEXT NOT NULL DEFAULT '',
+      date_accessed           TEXT NOT NULL DEFAULT '',
+      usable_for_identity     INTEGER NOT NULL DEFAULT 0,
+      usable_for_offer_logic  INTEGER NOT NULL DEFAULT 0,
+      created_at              INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_card_nearby ON landos_card_nearby_reference(card_id, created_at DESC);
+
+    -- Seller Lead / Deal Card: a seller opportunity that links one or more
+    -- Property Cards. Deal-level facts live here; parcel identity stays on each
+    -- Property Card and is never merged across parcels.
+    CREATE TABLE IF NOT EXISTS landos_deal_card (
+      id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity                      TEXT NOT NULL REFERENCES landos_business_entity(id),
+      title                       TEXT NOT NULL DEFAULT '',
+      status                      TEXT NOT NULL DEFAULT 'new'
+                                  CHECK (status IN (${inList(DEAL_CARD_STATUSES)})),
+      seller_notes                TEXT NOT NULL DEFAULT '',
+      asking_price                REAL,
+      combined_strategy           TEXT NOT NULL DEFAULT '',
+      package_notes               TEXT NOT NULL DEFAULT '',
+      -- Combined acreage is only "verified" when EVERY linked parcel's identity
+      -- and acreage is verified; otherwise it is preliminary.
+      combined_acreage            REAL,
+      combined_acreage_verified   INTEGER NOT NULL DEFAULT 0,
+      created_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_entity ON landos_deal_card(entity, status, created_at DESC);
+
+    -- Link table: Property Cards under a Deal Card (many-to-many). Linking does
+    -- NOT merge parcels; each Property Card keeps its own identity/verification.
+    CREATE TABLE IF NOT EXISTS landos_deal_card_property (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id        INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      card_id             INTEGER NOT NULL REFERENCES landos_property_card(id),
+      role                TEXT NOT NULL DEFAULT 'subject'
+                          CHECK (role IN (${inList(DEAL_PROPERTY_ROLES)})),
+      contiguity_status   TEXT NOT NULL DEFAULT 'unknown'
+                          CHECK (contiguity_status IN (${inList(CONTIGUITY_STATUSES)})),
+      contiguity_source   TEXT NOT NULL DEFAULT '',
+      note                TEXT NOT NULL DEFAULT '',
+      created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, card_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_property ON landos_deal_card_property(deal_card_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_property_card ON landos_deal_card_property(card_id);
+
+    -- People / Contact Records. Identity of a person; never implies authority.
+    CREATE TABLE IF NOT EXISTS landos_person (
+      id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity                   TEXT NOT NULL REFERENCES landos_business_entity(id),
+      name                     TEXT NOT NULL DEFAULT '',
+      phone                    TEXT NOT NULL DEFAULT '',
+      email                    TEXT NOT NULL DEFAULT '',
+      mailing_address          TEXT NOT NULL DEFAULT '',
+      preferred_contact_method TEXT NOT NULL DEFAULT '',
+      notes                    TEXT NOT NULL DEFAULT '',
+      created_at               INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at               INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_person_entity ON landos_person(entity, created_at DESC);
+
+    -- Link a person to a deal and/or a property with a role and authority
+    -- status. authority_status defaults to 'unknown' — relationship never
+    -- implies signing authority.
+    CREATE TABLE IF NOT EXISTS landos_person_link (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      person_id         INTEGER NOT NULL REFERENCES landos_person(id),
+      deal_card_id      INTEGER REFERENCES landos_deal_card(id),
+      card_id           INTEGER REFERENCES landos_property_card(id),
+      role              TEXT NOT NULL DEFAULT 'unknown_relation'
+                        CHECK (role IN (${inList(PERSON_ROLES)})),
+      authority_status  TEXT NOT NULL DEFAULT 'unknown'
+                        CHECK (authority_status IN (${inList(PERSON_AUTHORITY_STATUSES)})),
+      authority_source  TEXT NOT NULL DEFAULT '',
+      note              TEXT NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_person_link_deal ON landos_person_link(deal_card_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_person_link_card ON landos_person_link(card_id, created_at DESC);
+
+    -- Batch lead-intake jobs. One row per pasted lead; isolated parcel state.
+    CREATE TABLE IF NOT EXISTS landos_lead_job (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity          TEXT NOT NULL REFERENCES landos_business_entity(id),
+      batch_id        TEXT NOT NULL DEFAULT '',
+      raw_input       TEXT NOT NULL DEFAULT '',
+      status          TEXT NOT NULL DEFAULT 'queued'
+                      CHECK (status IN (${inList(LEAD_JOB_STATUSES)})),
+      card_id         INTEGER REFERENCES landos_property_card(id),
+      result_summary  TEXT NOT NULL DEFAULT '',
+      next_action     TEXT NOT NULL DEFAULT '',
+      error           TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_lead_job_entity ON landos_lead_job(entity, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_lead_job_batch ON landos_lead_job(batch_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS landos_research_item (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       kind        TEXT NOT NULL
@@ -680,7 +987,7 @@ export function logCostRecord(opts: {
 const ENTITY_TABLES = [
   'landos_contact', 'landos_seller', 'landos_lead', 'landos_property',
   'landos_parcel', 'landos_deal', 'landos_fact', 'landos_task',
-  'landos_file_ref', 'landos_note',
+  'landos_file_ref', 'landos_note', 'landos_property_card', 'landos_lead_job',
 ] as const;
 
 const NO_ENTITY_TABLES = [

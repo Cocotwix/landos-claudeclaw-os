@@ -9,6 +9,13 @@ import { renderMarkdown } from '@/lib/markdown';
 import { formatCost, formatNumber } from '@/lib/format';
 import { showCosts } from '@/lib/theme';
 import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
+import {
+  loadActiveAgent,
+  saveActiveAgent,
+  loadCachedTurns,
+  saveCachedTurns,
+  clearCachedTurns,
+} from '@/lib/chat-history-cache';
 
 interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; photoUrl?: string; photoCaption?: string; }
 interface Agent { id: string; name: string; running: boolean; }
@@ -25,8 +32,12 @@ const QUICK_ACTIONS = [
 
 export function Chat() {
   const agents = useFetch<{ agents: Agent[] }>('/api/agents', 60_000);
-  const [activeAgent, setActiveAgent] = useState<string>('all');
-  const [turns, setTurns] = useState<Turn[]>([]);
+  // Restore the agent selected before navigating away so returning to chat
+  // lands on the same conversation instead of resetting to "All".
+  const [activeAgent, setActiveAgent] = useState<string>(() => loadActiveAgent('all'));
+  // Hydrate from the per-agent UI-continuity cache immediately so the prior
+  // conversation is visible before the backend history fetch resolves.
+  const [turns, setTurns] = useState<Turn[]>(() => loadCachedTurns(loadActiveAgent('all')));
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -58,19 +69,42 @@ export function Chat() {
     30_000,
   );
 
-  // Load conversation history when active agent changes.
+  // Load conversation history when active agent changes. The active agent is
+  // persisted and the per-agent cache is hydrated immediately, then reconciled
+  // with the backend. If the backend returns no turns but we have cached ones
+  // (e.g. a dashboard run not yet in the conversation log, or a failed stream),
+  // we keep the cached turns so completed messages don't disappear.
   useEffect(() => {
     let cancelled = false;
+    saveActiveAgent(activeAgent);
+    setTurns(loadCachedTurns(activeAgent));
+    // /api/chat/history and /conversation require an explicit chatId. When the
+    // dashboard was opened without one, skip the backend fetch and rely on the
+    // local UI-continuity cache instead of sending a malformed request.
+    if (!chatId) { setLoading(false); return; }
     setLoading(true);
     const path = activeAgent === 'all'
       ? `/api/chat/history?chatId=${encodeURIComponent(chatId)}&limit=50`
       : `/api/agents/${activeAgent}/conversation?chatId=${encodeURIComponent(chatId)}&limit=50`;
     apiGet<{ turns: Turn[] }>(path)
-      .then((d) => { if (!cancelled) setTurns(d.turns || []); })
+      .then((d) => {
+        if (cancelled) return;
+        const backend = d.turns || [];
+        if (backend.length > 0) {
+          setTurns(backend);
+          saveCachedTurns(activeAgent, backend);
+        }
+      })
       .catch((e) => { if (!cancelled) setError(e?.message || String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [activeAgent]);
+
+  // Write the live turn list through to the per-agent cache so navigation away
+  // and back (or a failed stream) preserves completed messages.
+  useEffect(() => {
+    saveCachedTurns(activeAgent, turns);
+  }, [turns, activeAgent]);
 
   // Auto-scroll only when the user is already near the bottom. New
   // messages arriving while they're reading history shouldn't yank
@@ -172,12 +206,14 @@ export function Chat() {
     setDraft('');
     if (activeAgent === 'all') {
       setTurns([]);
+      clearCachedTurns('all');
       return;
     }
     setClearingSession(true);
     try {
       await apiPost('/api/chat/clear-session', { agentId: activeAgent });
       setTurns([]);
+      clearCachedTurns(activeAgent);
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
