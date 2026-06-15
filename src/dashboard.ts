@@ -81,6 +81,16 @@ import {
   generateCompletionReport,
 } from './forge/release.js';
 import {
+  buildAgentProfile,
+  deriveAuthorityModel,
+  generateAgentInterview,
+  generateAgentBuildPacket,
+  renderInterviewMarkdown,
+  renderAgentProfileMarkdown,
+  type ActivationMode,
+  type AgentProfileDraft,
+} from './forge/agent-profile.js';
+import {
   saveEngagement,
   listEngagements,
   getEngagement,
@@ -2198,6 +2208,109 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
     if (!updated) return c.json({ error: 'not found' }, 404);
     return c.json({ engagement: updated });
+  });
+
+  // ── Forge universal department-agent profile standard ─────────────────
+  // Text/JSON generators over the pure agent-profile core. They interview the
+  // owner about a department agent, build a normalized industry-neutral
+  // profile, and render an owner-reviewable build packet. None execute,
+  // connect, activate an agent, deploy, push, or read secrets. Live actions
+  // stay gated in sandbox until the owner scopes and authorizes them.
+
+  const isActivationMode = (v: unknown): v is ActivationMode =>
+    v === 'sandbox' || v === 'assisted_live' || v === 'live';
+
+  const strArr = (v: unknown): string[] | undefined =>
+    Array.isArray(v) ? (v.filter((x) => typeof x === 'string') as string[]) : undefined;
+
+  // Build a normalized AgentProfileDraft from an arbitrary request body. Only
+  // recognized fields are read; everything else is ignored.
+  const draftFromBody = (body: Record<string, unknown>): AgentProfileDraft => {
+    const liveRaw =
+      body?.liveActionAuthority && typeof body.liveActionAuthority === 'object'
+        ? (body.liveActionAuthority as Record<string, unknown>)
+        : undefined;
+    return {
+      rawRequest: typeof body?.request === 'string' ? body.request : undefined,
+      agentName: typeof body?.agentName === 'string' ? body.agentName : undefined,
+      displayName: typeof body?.displayName === 'string' ? body.displayName : undefined,
+      department: typeof body?.department === 'string' ? body.department : undefined,
+      primaryMission: typeof body?.primaryMission === 'string' ? body.primaryMission : undefined,
+      normalOwnerInput: strArr(body?.normalOwnerInput),
+      automaticActions: strArr(body?.automaticActions),
+      liveActionAuthority: liveRaw
+        ? {
+            authorized: liveRaw.authorized === true,
+            approvedActions: strArr(liveRaw.approvedActions),
+            untilAuthorized:
+              typeof liveRaw.untilAuthorized === 'string' ? liveRaw.untilAuthorized : undefined,
+          }
+        : undefined,
+      hardStops: strArr(body?.hardStops),
+      allowedTools: strArr(body?.allowedTools),
+      costRules: strArr(body?.costRules),
+      memoryBoundaries: strArr(body?.memoryBoundaries),
+      outputFormat: strArr(body?.outputFormat),
+      storageBehavior: strArr(body?.storageBehavior),
+      verificationRules: strArr(body?.verificationRules),
+      handoffRules: strArr(body?.handoffRules),
+      dashboardBehavior: strArr(body?.dashboardBehavior),
+      activationMode: isActivationMode(body?.activationMode) ? body.activationMode : undefined,
+      auditExpectations: strArr(body?.auditExpectations),
+      rollbackExpectations: strArr(body?.rollbackExpectations),
+      passFailTest: strArr(body?.passFailTest),
+      ownerApprovalLoop: strArr(body?.ownerApprovalLoop),
+      host: typeof body?.host === 'string' ? body.host : undefined,
+      createdAt: new Date().toISOString(),
+    };
+  };
+
+  // Generate the interview that defines a new department agent.
+  app.post('/api/forge/agent-interview', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const interview = generateAgentInterview({
+      rawRequest: typeof body?.request === 'string' ? body.request : undefined,
+      department: typeof body?.department === 'string' ? body.department : undefined,
+      displayName: typeof body?.displayName === 'string' ? body.displayName : undefined,
+    });
+    return c.json({ interview, markdown: renderInterviewMarkdown(interview) });
+  });
+
+  // Build a normalized universal department-agent profile from a draft.
+  app.post('/api/forge/agent-profile', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const profile = buildAgentProfile(draftFromBody(body));
+    return c.json({
+      profile,
+      authority: deriveAuthorityModel(profile),
+      markdown: renderAgentProfileMarkdown(profile),
+    });
+  });
+
+  // Build the complete owner-reviewable agent build packet from a draft.
+  app.post('/api/forge/agent-build-packet', async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const profile = buildAgentProfile(draftFromBody(body));
+    return c.json({
+      profile,
+      authority: deriveAuthorityModel(profile),
+      packet: generateAgentBuildPacket(profile),
+    });
   });
 
   // ── Agent endpoints ──────────────────────────────────────────────────

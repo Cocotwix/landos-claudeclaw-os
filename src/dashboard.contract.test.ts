@@ -573,6 +573,79 @@ describe('Forge security + release builder endpoints', () => {
   });
 });
 
+describe('Forge department-agent profile endpoints', () => {
+  function post(path: string, payload: unknown) {
+    return app.request(path + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('agent-interview returns sections and markdown', async () => {
+    const res = await post('/api/forge/agent-interview', {
+      request: 'an agent that drafts status updates',
+      displayName: 'Reporter',
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(Array.isArray(body.interview.sections)).toBe(true);
+    expect(body.interview.sections.length).toBeGreaterThan(0);
+    expect(body.markdown).toContain('# Define a department agent');
+  });
+
+  it('agent-profile fills neutral defaults and forces sandbox when unauthorized', async () => {
+    const res = await post('/api/forge/agent-profile', {
+      request: 'an agent for reporting',
+      displayName: 'Reporter',
+      department: 'Reporting',
+      activationMode: 'live',
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.profile.agentName).toBe('reporter');
+    expect(body.profile.activationMode).toBe('sandbox');
+    expect(body.authority.authorized).toBe(false);
+    expect(body.authority.effectiveMode).toBe('sandbox');
+    expect(body.profile.hardStops.length).toBeGreaterThan(0);
+    expect(body.markdown).toContain('# Department Agent Profile');
+  });
+
+  it('agent-profile honors authorized live actions', async () => {
+    const res = await post('/api/forge/agent-profile', {
+      request: 'an agent for reporting',
+      displayName: 'Reporter',
+      activationMode: 'assisted_live',
+      liveActionAuthority: { authorized: true, approvedActions: ['send a draft for review'] },
+    });
+    const body = await jsonOf(res);
+    expect(body.profile.activationMode).toBe('assisted_live');
+    expect(body.authority.approvedLiveActions).toEqual(['send a draft for review']);
+  });
+
+  it('agent-build-packet returns every required section', async () => {
+    const res = await post('/api/forge/agent-build-packet', {
+      request: 'an agent for reporting',
+      displayName: 'Reporter',
+    });
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.packet).toContain('# Forge Agent Build Packet');
+    expect(body.packet).toContain('## 4. Authority model');
+    expect(body.packet).toContain('## 10. Activation checklist');
+    expect(body.packet).toContain('## 11. Owner decision options');
+  });
+
+  it('400s on invalid JSON', async () => {
+    const res = await app.request('/api/forge/agent-profile' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ not json',
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.

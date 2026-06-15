@@ -111,6 +111,11 @@ export function Forge() {
   const [output, setOutput] = useState<{ kind: string; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Department-agent builder inputs. Independent of the engagement panel.
+  const [agentRequest, setAgentRequest] = useState('');
+  const [agentDisplayName, setAgentDisplayName] = useState('');
+  const [agentDepartment, setAgentDepartment] = useState('');
+
   async function loadHistory() {
     try {
       const res = await apiGet<{ engagements: StoredEngagement[] }>('/api/forge/engagements');
@@ -345,6 +350,53 @@ export function Forge() {
     }
   }
 
+  // Department-agent builder. Builds a universal, industry-neutral agent
+  // profile or full build packet from a plain request. Display only: nothing
+  // here activates an agent, connects, deploys, or touches secrets. Live
+  // actions stay gated in sandbox until the owner scopes them.
+  function agentBody() {
+    const body: Record<string, string> = { request: agentRequest.trim() };
+    const d = agentDisplayName.trim();
+    const dept = agentDepartment.trim();
+    if (d) body.displayName = d;
+    if (dept) body.department = dept;
+    return body;
+  }
+
+  async function agentInterview() {
+    if (!agentRequest.trim()) {
+      setError('Describe the department agent first.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ markdown: string }>('/api/forge/agent-interview', agentBody());
+      setOutput({ kind: 'Agent interview', text: resp.markdown });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function agentBuildPacket() {
+    if (!agentRequest.trim()) {
+      setError('Describe the department agent first.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiPost<{ packet: string }>('/api/forge/agent-build-packet', agentBody());
+      setOutput({ kind: 'Agent build packet', text: resp.packet });
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const btn =
     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const btnAccent = `${btn} bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]`;
@@ -401,6 +453,61 @@ export function Forge() {
               {error}
             </div>
           )}
+        </section>
+
+        <section class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 space-y-3">
+          <div class="flex items-center gap-2">
+            <Hammer size={14} class="text-[var(--color-accent)]" />
+            <h3 class="text-[13px] font-semibold text-[var(--color-text)]">Department Agent Builder</h3>
+          </div>
+          <p class="text-[11.5px] text-[var(--color-text-muted)] leading-relaxed">
+            Describe a department agent for your operating system. Forge builds a universal, industry-neutral profile and
+            an owner-reviewable build packet. The agent stays in sandbox until you scope its authority and approve
+            activation. Display only: nothing here activates an agent, connects, deploys, or touches secrets.
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <label class="block">
+              <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Display name (optional)</span>
+              <input
+                type="text"
+                value={agentDisplayName}
+                onInput={(e) => setAgentDisplayName((e.target as HTMLInputElement).value)}
+                placeholder="e.g. Reporter"
+                class="mt-1 w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-3 py-2 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+              />
+            </label>
+            <label class="block">
+              <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Department (optional)</span>
+              <input
+                type="text"
+                value={agentDepartment}
+                onInput={(e) => setAgentDepartment((e.target as HTMLInputElement).value)}
+                placeholder="e.g. Reporting"
+                class="mt-1 w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-3 py-2 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+              />
+            </label>
+          </div>
+
+          <label class="block">
+            <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Agent request</span>
+            <textarea
+              value={agentRequest}
+              onInput={(e) => setAgentRequest((e.target as HTMLTextAreaElement).value)}
+              placeholder="e.g. An agent that drafts and organizes status updates"
+              rows={3}
+              class="mt-1 w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-3 py-2 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] resize-y font-mono"
+            />
+          </label>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={agentBuildPacket} disabled={busy || !agentRequest.trim()} class={btnAccent}>
+              Build agent packet
+            </button>
+            <button type="button" onClick={agentInterview} disabled={busy || !agentRequest.trim()} class={btnGhost}>
+              Interview questions
+            </button>
+          </div>
         </section>
 
         {current && (
