@@ -2,7 +2,8 @@
 //
 // Focus: prove the lane gate classifies SAFE vs STOP correctly across every
 // red-lane category, and that the engagement artifact is well-formed,
-// deterministic, and business-neutral (no LandOS/Duke leakage into Forge Core).
+// deterministic, and universal (no business- or domain-specific leakage into
+// Forge Core).
 
 import { describe, it, expect } from 'vitest';
 
@@ -71,7 +72,7 @@ describe('classifyLane — stop-gated requests', () => {
     );
   });
 
-  it('reports the matched text so Tyler sees why it stopped', () => {
+  it('reports the matched text so the owner sees why it stopped', () => {
     const gate = classifyLane('Please connect my Slack account.');
     const hit = gate.hits.find((h) => h.category === 'account_connection');
     expect(hit).toBeDefined();
@@ -82,7 +83,7 @@ describe('classifyLane — stop-gated requests', () => {
 describe('startForgeEngagement', () => {
   const baseReq = (rawRequest: string): ForgeEngagementRequest => ({
     rawRequest,
-    host: 'LandOS on ClaudeClaw',
+    host: 'your operating system',
     createdAt: '2026-06-15T00:00:00.000Z',
   });
 
@@ -90,19 +91,19 @@ describe('startForgeEngagement', () => {
     const e = startForgeEngagement(baseReq('Add a date helper to src/utils with a test.'));
     expect(e.gate.verdict).toBe('SAFE');
     expect(e.title.length).toBeGreaterThan(0);
-    expect(e.host).toBe('LandOS on ClaudeClaw');
-    expect(e.requestedBy).toBe('Tyler');
+    expect(e.host).toBe('your operating system');
+    expect(e.requestedBy).toBe('owner');
     expect(e.assumptionSummary.objective.length).toBeGreaterThan(0);
     expect(e.buildPlan.steps.length).toBeGreaterThan(0);
     expect(e.buildPlan.guardrails.join(' ')).toContain('approval spam');
     expect(e.buildPlan.guardrails.join(' ')).toContain('business-direction');
   });
 
-  it('surfaces Tyler decisions and risk gates for a stop request', () => {
+  it('surfaces owner decisions and risk gates for a stop request', () => {
     const e = startForgeEngagement(baseReq('Add the API key and git push to main.'));
     expect(e.gate.verdict).toBe('STOP');
-    expect(e.assumptionSummary.riskGates.join(' ')).toContain('Tyler-owned');
-    expect(e.assumptionSummary.tylerDecisions.length).toBeGreaterThan(0);
+    expect(e.assumptionSummary.riskGates.join(' ')).toContain('owner-owned');
+    expect(e.assumptionSummary.ownerDecisions.length).toBeGreaterThan(0);
     expect(e.buildPlan.steps[0]).toContain('STOP');
   });
 
@@ -126,17 +127,17 @@ describe('renderEngagementMarkdown', () => {
     expect(md).toContain('## 2. Assumption Summary');
     expect(md).toContain('## 3. Milestone Build Plan');
     expect(md).toContain('## 4. Review Packet');
-    expect(md).toContain('## 5. Tyler Direction Review');
+    expect(md).toContain('## 5. Owner Direction Review');
     expect(md).toContain('## 6. Next Milestone');
     expect(md).toContain('**Lane verdict:** SAFE');
   });
 
-  it('stays business-neutral — no host-domain leakage in a generic engagement', () => {
+  it('stays universal — uses neutral owner language, not a specific owner name', () => {
     const md = renderEngagementMarkdown(
       startForgeEngagement({ rawRequest: 'Add a logging helper and a test.', createdAt: 'x' }),
-    ).toLowerCase();
-    expect(md).not.toContain('parcel');
-    expect(md).not.toContain('landportal');
-    expect(md).not.toContain('due diligence');
+    );
+    expect(md).toContain('Owner Direction Review');
+    // No specific person/business/domain name should leak into the artifact.
+    expect(md).not.toContain('Tyler');
   });
 });

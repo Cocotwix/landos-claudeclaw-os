@@ -25,7 +25,7 @@ The final gate before anything is staged, committed, or promoted. Forge promotes
 
 ## Push
 
-- [ ] Push happens ONLY with Tyler's explicit approval. Default is do not push.
+- [ ] Push happens ONLY with the owner's explicit approval. Default is do not push.
 
 ## Verdict
 

@@ -4,14 +4,14 @@ The full Forge rhythm, start to finish. Every engagement runs this loop. The Orc
 
 ```
 Interview → Assumption Summary → Build Milestone → Security Review
-   → QA Review → Promotion Review → Tyler Direction Review → Next Milestone
+   → QA Review → Promotion Review → Owner Direction Review → Next Milestone
 ```
 
 ---
 
 ## Step 1: Interview
 
-Pull the real intent out of Tyler. Most build mistakes come from building the wrong thing, not building it badly.
+Pull the real intent out of the owner. Most build mistakes come from building the wrong thing, not building it badly.
 
 - Use `Forge_Interview_Template.md`.
 - Ask only the questions that actually change the build. No interrogation.
@@ -77,13 +77,13 @@ Run `Forge_Promotion_Checklist.md`. Final gate before anything is staged.
 - Tests pass. Security PASS. QA PASS.
 - Staged file list equals the approved file list, exactly. No `git add .`.
 - Commit message is clear. No secrets, logs, or unrelated files in the diff.
-- Push only with Tyler's explicit approval.
+- Push only with the owner's explicit approval.
 
 Output: promote, or send back to build with specifics.
 
 ---
 
-## Step 7: Tyler Direction Review
+## Step 7: Owner Direction Review
 
 Surface the milestone result in the standard format (`Forge_Milestone_Review_Template.md`) and the next decision. Keep it tight. Lead with the verdict.
 
@@ -105,5 +105,5 @@ Recommend the single best next milestone. Then loop back to Step 1 or Step 3 dep
 | Security Review | Security Reviewer |
 | QA Review | QA Reviewer |
 | Promotion Review | Promoter |
-| Tyler Direction Review | Orchestrator |
+| Owner Direction Review | Orchestrator |
 | Next Milestone | Orchestrator + Architect |

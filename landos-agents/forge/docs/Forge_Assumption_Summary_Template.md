@@ -28,7 +28,7 @@ One sentence. What this specific milestone delivers.
 
 ## Assumptions
 
-Things I am taking as true unless Tyler corrects them. Each one is a place the build could go wrong if I guessed.
+Things I am taking as true unless the owner corrects them. Each one is a place the build could go wrong if I guessed.
 
 1.
 2.
@@ -42,7 +42,7 @@ The exact set I expect to touch. Promotion will check the staged list against th
 
 ## Risk Gates
 
-Red-lane items this milestone will hit, if any (secrets, paid, install, destructive, major tradeoff). Each one stops for Tyler.
+Red-lane items this milestone will hit, if any (secrets, paid, install, destructive, major tradeoff). Each one stops for the owner.
 
 -
 
@@ -58,7 +58,7 @@ How QA will confirm this milestone is done (specific command, behavior, or outpu
 
 -
 
-## Tyler Decisions Needed Before Build
+## Owner Decisions Needed Before Build
 
 The minimum set of yes/no answers needed to start. Keep it short.
 

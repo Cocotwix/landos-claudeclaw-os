@@ -25,7 +25,7 @@ const DEFAULT_TESTS = [
 ];
 
 // The hard safety rails. These are ALWAYS emitted under "Never approve" so the
-// planner can never produce a plan that quietly green-lights a Tyler-owned or
+// planner can never produce a plan that quietly green-lights an owner-owned or
 // destructive action.
 export const NEVER_APPROVE_RAILS = [
   'git add . (stage exact files by path only)',
@@ -56,7 +56,7 @@ export function generateCommandPlan(input: CommandPlanInput): string {
 
   const stopWarning =
     verdict === 'STOP'
-      ? `\n> Lane verdict is STOP (${categories.join(', ') || 'Tyler-owned decision'}). Resolve the Tyler-owned decision(s) before running ANY build commands below.\n`
+      ? `\n> Lane verdict is STOP (${categories.join(', ') || 'owner-owned decision'}). Resolve the owner-owned decision(s) before running ANY build commands below.\n`
       : '';
 
   return `# Forge Command Plan — ${title}

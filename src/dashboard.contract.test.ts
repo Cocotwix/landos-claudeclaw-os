@@ -371,7 +371,7 @@ describe('POST /api/forge/engagement', () => {
   });
 
   it('rejects a non-string host with 400', async () => {
-    const res = await forge({ request: 'Add a helper.', host: { name: 'LandOS' } });
+    const res = await forge({ request: 'Add a helper.', host: { name: 'not a string' } });
     expect(res.status).toBe(400);
     expect(await jsonOf(res)).toMatchObject({ error: 'host must be a string' });
   });

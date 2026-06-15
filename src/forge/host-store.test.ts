@@ -1,5 +1,5 @@
 // Tests for the Forge host-adapter store. In-memory DB per test, mirroring the
-// LandOS db test convention (_initTestLandosDb).
+// host db test convention (a fresh in-memory database per test).
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -21,7 +21,7 @@ function sample(overrides: Partial<SaveForgeEngagementInput> = {}): SaveForgeEng
   return {
     title: 'Add a date helper',
     rawRequest: 'Add a date helper to src/utils with a test.',
-    host: 'LandOS Mission Control',
+    host: 'Mission Control',
     verdict: 'SAFE',
     categories: [],
     hits: [],

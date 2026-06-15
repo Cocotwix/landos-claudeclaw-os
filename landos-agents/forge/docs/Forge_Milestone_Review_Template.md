@@ -1,6 +1,6 @@
 # Forge Milestone Review Template
 
-Standard report Forge gives Tyler at the end of a milestone. Lead with the verdict. Keep it tight.
+Standard report Forge gives the owner at the end of a milestone. Lead with the verdict. Keep it tight.
 
 ---
 
@@ -50,6 +50,6 @@ What was deliberately excluded and why.
 
 The single best next step, with a one-line reason.
 
-## 9. Decisions Needed From Tyler
+## 9. Decisions Needed From the Owner
 
-Any Red-lane gates waiting on Tyler (push approval, paid tool, secret, install).
+Any Red-lane gates waiting on the owner (push approval, paid tool, secret, install).

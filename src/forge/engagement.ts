@@ -1,31 +1,31 @@
 // Forge engagement workflow — the operational core of Universal Forge.
 //
-// Forge is business-neutral (see landos-agents/forge/CLAUDE.md). This module
-// is deliberately host-agnostic: it has NO LandOS / Duke / property concepts,
-// NO dependencies, NO network calls, NO filesystem access, and NO env reads.
-// It is pure and deterministic so it can be tested cheaply and later lifted
-// into a standalone forge-core repo without rework.
+// Forge is a universal, industry-neutral builder. This module is deliberately
+// host-agnostic: it carries no business- or domain-specific concepts, no
+// dependencies, no network calls, no filesystem access, and no env reads. It
+// is pure and deterministic so it can be tested cheaply and later lifted into
+// a standalone forge-core repo without rework.
 //
-// What it does: take a raw build request from Tyler and turn it into a
+// What it does: take a raw build request from the owner and turn it into a
 // structured engagement artifact through the Forge rhythm —
 //   Interview -> Assumption Summary -> Milestone Build Plan ->
 //   Security Review -> QA Review -> Promotion Review ->
-//   Tyler Direction Review -> Next Milestone
+//   Owner Direction Review -> Next Milestone
 //
 // The load-bearing logic is the LANE GATE: a conservative classifier that
 // decides whether a request is safe to build inside Forge's repo-local lane
-// (SAFE) or whether it touches a Tyler-owned decision and must stop (STOP).
+// (SAFE) or whether it touches an owner-owned decision and must stop (STOP).
 //
 // IMPORTANT: the lane gate is a triage aid, not a security boundary. STOP is
-// intentionally conservative (better to over-flag a Tyler decision than to
+// intentionally conservative (better to over-flag an owner decision than to
 // act on one unasked). SAFE means "no red-lane trigger was detected" — the
 // operator still applies judgment before building.
 
 /** Outcome of the lane gate. */
 export type ForgeLaneVerdict = 'SAFE' | 'STOP';
 
-/** The Tyler-owned red-lane categories. Each maps to a real hard-stop in the
- *  Forge Core Policy. A request matching any of these stops for Tyler. */
+/** The owner-owned red-lane categories. Each maps to a real hard-stop in the
+ *  Forge Core Policy. A request matching any of these stops for the owner. */
 export type RedLaneCategory =
   | 'secrets_credentials'
   | 'paid_tools_apis'
@@ -39,7 +39,7 @@ export type RedLaneCategory =
 
 interface RedLaneRule {
   category: RedLaneCategory;
-  /** Human-readable label shown to Tyler in the artifact. */
+  /** Human-readable label shown to the owner in the artifact. */
   label: string;
   patterns: RegExp[];
 }
@@ -132,7 +132,7 @@ const RED_LANE_RULES: readonly RedLaneRule[] = [
       /\bgit\s+push\b/i,
       /\bpush\s+(to\s+)?(origin|remote|main|master|prod|production|staging|github|gitlab)\b/i,
       /\bforce[\s-]?push\b/i,
-      // Deploy is Tyler-owned generally, not only for prod/live. Match the
+      // Deploy is owner-owned generally, not only for prod/live. Match the
       // verb "deploy" on its own (\bdeploy\b excludes "deployment", so docs
       // about deployment do not trip the gate).
       /\bdeploy\b/i,
@@ -171,7 +171,7 @@ const RED_LANE_RULES: readonly RedLaneRule[] = [
 export interface RedLaneHit {
   category: RedLaneCategory;
   label: string;
-  /** The exact substring that matched, so Tyler sees why it stopped. */
+  /** The exact substring that matched, so the owner sees why it stopped. */
   matchedText: string;
 }
 
@@ -185,15 +185,15 @@ export interface ForgeLaneGate {
   notice: string;
 }
 
-/** Tyler's raw request into Forge. Only `rawRequest` is required. */
+/** The owner's raw request into Forge. Only `rawRequest` is required. */
 export interface ForgeEngagementRequest {
   /** Short label for the engagement. Falls back to a derived title. */
   title?: string;
-  /** The raw, unstructured ask in Tyler's own words. */
+  /** The raw, unstructured ask in the owner's own words. */
   rawRequest: string;
-  /** Host OS / chassis the work targets, e.g. "LandOS on ClaudeClaw". */
+  /** Host OS / chassis the work targets, e.g. "your operating system". */
   host?: string;
-  /** Who requested it. Defaults to "Tyler". */
+  /** Who requested it. Defaults to "owner". */
   requestedBy?: string;
   /** ISO timestamp. Injected by the caller (CLI) so the core stays
    *  deterministic and testable. */
@@ -209,7 +209,7 @@ export interface ForgeAssumptionSummary {
   expectedFiles: string[];
   riskGates: string[];
   successCheck: string;
-  tylerDecisions: string[];
+  ownerDecisions: string[];
 }
 
 export interface ForgeMilestoneBuildPlan {
@@ -247,7 +247,7 @@ export interface ForgeEngagement {
 const BUNDLING_RULE =
   'Bundle safe repo-local work into one cohesive milestone. Do not generate command-level approval spam for ordinary safe work (reading, searching, writing approved artifacts, tests, builds, typechecks).';
 const CHECKPOINT_RULE =
-  'Ask Tyler only at real business-direction checkpoints: red-lane gates, paid-tool decisions, secrets, destructive changes, external account connections, git push, or a major architecture tradeoff. Not for every safe command.';
+  'Ask the owner only at real business-direction checkpoints: red-lane gates, paid-tool decisions, secrets, destructive changes, external account connections, git push, or a major architecture tradeoff. Not for every safe command.';
 
 function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -295,7 +295,7 @@ export function classifyLane(rawRequest: string): ForgeLaneGate {
   const notice =
     verdict === 'SAFE'
       ? 'No red-lane trigger detected. Safe to build inside Forge\'s repo-local lane with normal operator judgment.'
-      : 'Red-lane trigger(s) detected. This request needs a Tyler-owned decision before Forge builds it.';
+      : 'Red-lane trigger(s) detected. This request needs an owner-owned decision before Forge builds it.';
 
   return { verdict, hits, categories, notice };
 }
@@ -307,9 +307,9 @@ export function buildAssumptionSummary(
   const objective = condense(request.rawRequest);
   const riskGates =
     gate.hits.length > 0
-      ? gate.hits.map((h) => `${h.label}: "${h.matchedText}" (Tyler-owned)`)
+      ? gate.hits.map((h) => `${h.label}: "${h.matchedText}" (owner-owned)`)
       : ['None detected by the lane gate.'];
-  const tylerDecisions =
+  const ownerDecisions =
     gate.verdict === 'STOP'
       ? gate.categories.map((c) => `Decide / authorize: ${labelFor(c)}.`)
       : ['None required to start safe-lane work.'];
@@ -323,7 +323,7 @@ export function buildAssumptionSummary(
     expectedFiles: ['(operator: list the exact files expected to change)'],
     riskGates,
     successCheck: '(operator: define the concrete check that proves this milestone is done)',
-    tylerDecisions,
+    ownerDecisions,
   };
 }
 
@@ -333,17 +333,17 @@ export function buildMilestonePlan(
 ): ForgeMilestoneBuildPlan {
   const steps: string[] = [];
   if (gate.verdict === 'STOP') {
-    steps.push('STOP: resolve the Tyler-owned red-lane decision(s) below before any build work.');
+    steps.push('STOP: resolve the owner-owned red-lane decision(s) below before any build work.');
   }
   steps.push(
     'Inspect the active project\'s conventions first (Active Project Adapter).',
-    'Confirm the Assumption Summary with Tyler for anything non-trivial.',
+    'Confirm the Assumption Summary with the owner for anything non-trivial.',
     'Build the approved scope as one cohesive milestone.',
     'Run the host project\'s tests and typecheck/build.',
     'Run the Security Review on changed files only.',
     'Run the QA Review and make a clear PASS/FAIL call.',
     'Run the Promotion Review; stage only exact approved files (never git add .).',
-    'Report to Tyler and recommend the next milestone.',
+    'Report to the owner and recommend the next milestone.',
   );
 
   return {
@@ -354,7 +354,7 @@ export function buildMilestonePlan(
     guardrails: [
       BUNDLING_RULE,
       CHECKPOINT_RULE,
-      'Stay inside the repo-local lane. No secrets, paid tools, installs, deletes, broad rewrites, or pushes without Tyler.',
+      'Stay inside the repo-local lane. No secrets, paid tools, installs, deletes, broad rewrites, or pushes without the owner.',
     ],
   };
 }
@@ -378,7 +378,7 @@ export function buildReviewPacket(gate: ForgeLaneGate): ForgeReviewPacket {
     promotion: [
       'Security PASS and QA PASS recorded.',
       'Staged file set equals the approved set, by explicit path.',
-      'No push without Tyler\'s explicit approval.',
+      'No push without the owner\'s explicit approval.',
     ],
   };
 }
@@ -398,7 +398,7 @@ export function startForgeEngagement(request: ForgeEngagementRequest): ForgeEnga
   return {
     title: deriveTitle(request),
     host: request.host?.trim() || 'unspecified host',
-    requestedBy: request.requestedBy?.trim() || 'Tyler',
+    requestedBy: request.requestedBy?.trim() || 'owner',
     createdAt: request.createdAt?.trim() || 'unset',
     rawRequest: collapse(request.rawRequest),
     gate,
@@ -420,7 +420,7 @@ function mdChecklist(items: string[]): string {
 
 /**
  * Render a Forge engagement as a single Markdown artifact following the full
- * Forge rhythm. This is the reviewable operating document Tyler gets back.
+ * Forge rhythm. This is the reviewable operating document the owner gets back.
  */
 export function renderEngagementMarkdown(engagement: ForgeEngagement): string {
   const e = engagement;
@@ -446,7 +446,7 @@ ${g.notice}
 
 ${gateBlock}
 
-> The lane gate is a conservative triage aid, not a security boundary. STOP means a Tyler-owned decision is involved. SAFE means no trigger was detected; the operator still applies judgment.
+> The lane gate is a conservative triage aid, not a security boundary. STOP means an owner-owned decision is involved. SAFE means no trigger was detected; the operator still applies judgment.
 
 ---
 
@@ -479,8 +479,8 @@ ${mdList(e.assumptionSummary.riskGates)}
 
 **Success check:** ${e.assumptionSummary.successCheck}
 
-**Tyler decisions needed before build:**
-${mdList(e.assumptionSummary.tylerDecisions)}
+**Owner decisions needed before build:**
+${mdList(e.assumptionSummary.ownerDecisions)}
 
 ---
 
@@ -513,12 +513,12 @@ ${mdChecklist(e.reviewPacket.promotion)}
 
 ---
 
-## 5. Tyler Direction Review
+## 5. Owner Direction Review
 
 ${
     g.verdict === 'STOP'
-      ? 'Forge needs these Tyler-owned decisions before building:\n' +
-        mdList(e.assumptionSummary.tylerDecisions)
+      ? 'Forge needs these owner-owned decisions before building:\n' +
+        mdList(e.assumptionSummary.ownerDecisions)
       : 'No red-lane decisions detected. Forge can proceed inside the safe repo-local lane once the Assumption Summary is confirmed.'
   }
 

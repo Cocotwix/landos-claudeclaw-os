@@ -138,7 +138,7 @@ export function Forge() {
     try {
       const body: { request: string; title?: string; host: string } = {
         request: trimmed,
-        host: 'LandOS Mission Control',
+        host: 'Mission Control',
       };
       const t = title.trim();
       if (t) body.title = t;
@@ -168,7 +168,7 @@ export function Forge() {
     try {
       const body: { request: string; title?: string; host: string } = {
         request: trimmed,
-        host: 'LandOS Mission Control',
+        host: 'Mission Control',
       };
       const t = title.trim();
       if (t) body.title = t;
@@ -419,7 +419,7 @@ export function Forge() {
             {current.verdict === 'STOP' && current.hits.length > 0 && (
               <div class="space-y-1.5">
                 <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
-                  Tyler-owned stop categories
+                  Owner-owned stop categories
                 </div>
                 <div class="flex flex-wrap gap-1.5">
                   {current.hits.map((h) => (

@@ -1,12 +1,11 @@
-// Forge host-adapter persistence — ClaudeClaw/LandOS host layer.
+// Forge host-adapter persistence — the current host layer.
 //
 // This is NOT Forge Core. Forge Core (engagement.ts, review-packet.ts,
 // command-planner.ts) is pure and host-neutral. Persistence is a host concern:
-// a future host (a creator OS, agency OS, etc.) would provide its own store
-// and reuse the same pure core. This adapter uses the repo's existing storage
-// convention (better-sqlite3, idempotent CREATE TABLE IF NOT EXISTS, WAL,
-// chmod 0600) in a dedicated store/forge.db so Forge data never mixes with the
-// framework DB or the LandOS business DB.
+// a future host would provide its own store and reuse the same pure core. This
+// adapter uses the repo's existing storage convention (better-sqlite3,
+// idempotent CREATE TABLE IF NOT EXISTS, WAL, chmod 0600) in a dedicated
+// store/forge.db so Forge data never mixes with the host's other databases.
 //
 // No network, no .env, no secrets. Records are display/audit data only.
 

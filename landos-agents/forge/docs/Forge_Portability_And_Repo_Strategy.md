@@ -1,14 +1,14 @@
 # Forge Portability and Repo Strategy
 
-Forge Core is universal. This first install lives inside the ClaudeClaw/LandOS repo so it can appear and operate in the current dashboard, but Forge is meant to outlive this repo and run inside any operating system Tyler builds.
+Forge Core is universal. This first install lives inside the current host's repo so it can appear and operate in the current dashboard, but Forge is meant to outlive this repo and run inside any operating system the owner builds.
 
 ---
 
 ## Why Portability Matters
 
-- **ClaudeClaw** is only the first technical chassis.
-- **LandOS** is only the first host operating system.
-- Future hosts: TikTok Creator OS, Agency OS, Service Business OS, any future Tyler-built or non-ClaudeClaw AI operating system.
+- The current runtime is only the first technical chassis.
+- The current host is only the first host operating system.
+- Future hosts: any operating system the owner builds, in any industry or domain.
 
 Forge should drop into any of these with minimal rework. The way to guarantee that is to keep Forge Core clean and push everything host-specific behind the Active Project Adapter.
 
@@ -24,15 +24,15 @@ Forge should drop into any of these with minimal rework. The way to guarantee th
 
 ## What Does NOT Belong in Forge Core (host-specific)
 
-- Any specific host's business rules (LandOS property rules, Duke, LandPortal, comp-credit logic, land-investing logic)
+- Any specific host's business rules (the active host's domain logic and business-specific agents)
 - Host discovery wiring details (how a particular chassis lists agents)
 - Host-specific secrets, config, or accounts
 
-In this repo, those LandOS rules stay owned by LandOS docs and LandOS agents. Forge preserves them through the adapter; Forge is not them.
+The host's business rules stay owned by that host's docs and agents. Forge respects them through the adapter and keeps its core universal.
 
 ---
 
-## Current Install Shape (ClaudeClaw chassis)
+## Current Install Shape
 
 Forge is installed as a repo-backed agent at `landos-agents/forge/`, following this chassis's existing agent convention:
 
@@ -48,9 +48,9 @@ Discovery is automatic: the chassis scans `landos-agents/` (`listAgentIds()`), s
 
 When Forge graduates to its own repo:
 
-1. **Create a standalone repo.** Candidate names: `universal-forge`, `forge-core`, `tyler-forge`.
+1. **Create a standalone repo.** Candidate names: `universal-forge`, `forge-core`, `forge-os`.
 2. **Move the portable set.** `CLAUDE.md` plus all of `docs/` become the core of the standalone repo. They are already written host-neutral.
-3. **Define an adapter interface.** Each host OS provides a small adapter that tells Forge where the host's rules live and how the host discovers/registers agents. ClaudeClaw's adapter is the `landos-agents/<id>/` convention used here.
+3. **Define an adapter interface.** Each host OS provides a small adapter that tells Forge where the host's rules live and how the host discovers/registers agents. The current host's adapter is the `landos-agents/<id>/` convention used here.
 4. **Vendor or submodule into hosts.** Hosts pull Forge Core in by copy, git submodule, package, or vendor directory, then add their adapter.
 5. **Keep one source of truth.** Improvements to Forge Core land in the standalone repo and propagate to hosts, instead of each host forking its own Forge.
 
@@ -58,7 +58,7 @@ When Forge graduates to its own repo:
 
 ## Design Rules That Keep This Cheap
 
-- Write every Forge doc host-neutral. If a sentence only makes sense inside LandOS, it belongs in a LandOS doc, not a Forge doc.
+- Write every Forge doc host-neutral. If a sentence only makes sense inside one host, it belongs in that host's doc, not a Forge doc.
 - Never hardcode a host's domain concepts into Forge Core.
 - Treat the chassis's discovery mechanism as an adapter detail, documented here, not as part of Forge's identity.
-- Anything you would not want copied verbatim into a creator OS or agency OS does not belong in Forge Core.
+- Anything you would not want copied verbatim into another host operating system does not belong in Forge Core.

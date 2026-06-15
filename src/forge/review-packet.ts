@@ -31,7 +31,7 @@ const DEFAULT_TESTS = [
 const ARCHITECTURE_RULES = [
   'Forge Core (src/forge/engagement.ts, review-packet.ts, command-planner.ts) must stay pure: deterministic, dependency-free, host-neutral, no network, no env, no secrets.',
   'Persistence, dashboard UI, and host routing belong in the host adapter layer (host-store.ts, dashboard.ts, web/), never in Forge Core.',
-  'Forge is business-neutral. No Duke / LandPortal / parcel / comp-credit / land-investing concepts in Forge Core.',
+  'Forge Core stays universal and industry-neutral: no business- or domain-specific concepts belong in it.',
   'No new dependencies without explicit approval.',
 ];
 

@@ -1,7 +1,7 @@
 # Forge Host Adapter Layer
 
 Forge is split into a portable **Core** and a host-specific **Adapter**. This
-boundary is what lets Forge move beyond LandOS/ClaudeClaw later. Keep it clean.
+boundary is what lets Forge move beyond the current host later. Keep it clean.
 
 ---
 
@@ -17,16 +17,16 @@ network, no `.env`, no secrets, no database, no business-specific concepts.
 | `command-planner.ts` | Generate a Claude Code execution plan with hard safety rails (text only). |
 
 Core takes plain inputs and returns plain data/text. It never persists, routes,
-renders UI, or executes anything. The same Core would drop into a creator OS,
-agency OS, or any future host unchanged.
+renders UI, or executes anything. The same Core would drop into another host
+operating system or any future host implementation unchanged.
 
-## Forge Host Adapter (this host: ClaudeClaw + LandOS)
+## Forge Host Adapter (the current host)
 
 Everything host-specific. Replaceable per host.
 
 | Layer | Where | Responsibility |
 |---|---|---|
-| Persistence | `src/forge/host-store.ts` → `store/forge.db` | Save/list/get/update engagements. Dedicated SQLite file (gitignored) so Forge data never mixes with the framework DB or the LandOS business DB. |
+| Persistence | `src/forge/host-store.ts` → `store/forge.db` | Save/list/get/update engagements. Dedicated SQLite file (gitignored) so Forge data never mixes with the host's other databases. |
 | Routing | `src/dashboard.ts` (`/api/forge/*`) | HTTP endpoints that call Core + Adapter. Generate-only, save, list, get, patch, review-packet, command-plan. |
 | UI | `web/src/pages/Forge.tsx` | The `/forge` Mission Control panel: create, save, history, reopen, status, copy review packet / command plan. |
 
@@ -37,8 +37,8 @@ Core; Core never depends on it.
 
 ## Portability rules
 
-- Business-specific rules (Duke, LandPortal, parcel, comp-credit, land
-  investing) stay out of Forge Core. They belong to the host's own agents/docs.
+- Business- and domain-specific rules stay out of Forge Core. They belong to
+  the host's own agents/docs.
 - A new host reuses `src/forge/engagement.ts`, `review-packet.ts`, and
   `command-planner.ts` verbatim, and provides its own store, routes, and UI.
 - The store is a clean swap point: any host can back `saveEngagement` /

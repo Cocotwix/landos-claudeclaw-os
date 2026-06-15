@@ -30,7 +30,7 @@ describe('generateCommandPlan', () => {
   it('warns up front when the lane verdict is STOP', () => {
     const out = generateCommandPlan({ verdict: 'STOP', categories: ['secrets_credentials'] });
     expect(out).toContain('Lane verdict: STOP');
-    expect(out).toContain('Resolve the Tyler-owned decision');
+    expect(out).toContain('Resolve the owner-owned decision');
     expect(out).toContain('secrets_credentials');
   });
 

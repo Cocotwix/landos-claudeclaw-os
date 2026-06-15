@@ -1923,7 +1923,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       rawRequest,
       title,
       host,
-      requestedBy: 'Tyler',
+      requestedBy: 'owner',
       createdAt: new Date().toISOString(),
     });
 
@@ -1936,7 +1936,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         hits: engagement.gate.hits,
         notice: engagement.gate.notice,
       },
-      decisionsNeeded: engagement.assumptionSummary.tylerDecisions,
+      decisionsNeeded: engagement.assumptionSummary.ownerDecisions,
       markdown: renderEngagementMarkdown(engagement),
     });
   });
@@ -1971,7 +1971,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       rawRequest,
       title: body.title?.trim() || undefined,
       host: body.host?.trim() || undefined,
-      requestedBy: 'Tyler',
+      requestedBy: 'owner',
       createdAt: new Date().toISOString(),
     });
 
@@ -1983,7 +1983,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       categories: engagement.gate.categories,
       hits: engagement.gate.hits,
       notice: engagement.gate.notice,
-      decisionsNeeded: engagement.assumptionSummary.tylerDecisions,
+      decisionsNeeded: engagement.assumptionSummary.ownerDecisions,
       markdown: renderEngagementMarkdown(engagement),
       status: (body.status as ForgeStatus | undefined) ?? 'draft',
       source: 'dashboard',

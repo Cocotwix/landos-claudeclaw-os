@@ -1,6 +1,6 @@
 # Forge Interview Template
 
-Fill this from Tyler's raw input. Ask only the questions that change the build. Leave a field blank and mark it `ASSUMING:` rather than stalling on it.
+Fill this from the owner's raw input. Ask only the questions that change the build. Leave a field blank and mark it `ASSUMING:` rather than stalling on it.
 
 ---
 
@@ -8,20 +8,20 @@ Fill this from Tyler's raw input. Ask only the questions that change the build. 
 
 **Date:** _____
 
-**Host OS / chassis:** (e.g. LandOS on ClaudeClaw) _____
+**Host OS / chassis:** (e.g. your operating system) _____
 
 ---
 
 ## 1. The Real Problem
 
-What is actually broken, missing, or frustrating? In Tyler's words, then in one tightened sentence.
+What is actually broken, missing, or frustrating? In the owner's words, then in one tightened sentence.
 
 - Raw:
 - Tightened:
 
 ## 2. Desired Outcome
 
-What does the world look like when this works? What can Tyler do that they cannot do now?
+What does the world look like when this works? What can the owner do that they cannot do now?
 
 -
 
@@ -38,7 +38,7 @@ What triggered this? Is there a deadline, a dependency, or a blocker downstream?
 - Must preserve: _____
 - Tech/stack constraints: _____
 
-## 5. Hard Stops (Tyler-owned)
+## 5. Hard Stops (owner-owned)
 
 Anything in this build that touches secrets, paid tools, private accounts, billing, or legal/financial access? List it so it is flagged up front.
 
@@ -46,7 +46,7 @@ Anything in this build that touches secrets, paid tools, private accounts, billi
 
 ## 6. Open Source First
 
-Is there a known open-source option, or should Forge research one? Any tools Tyler already likes or wants avoided?
+Is there a known open-source option, or should Forge research one? Any tools the owner already likes or wants avoided?
 
 -
 

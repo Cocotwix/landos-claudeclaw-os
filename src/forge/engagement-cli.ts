@@ -9,7 +9,7 @@
  * Usage:
  *   node dist/forge/engagement-cli.js "raw request text"
  *   node dist/forge/engagement-cli.js --stdin            (request on stdin)
- *   node dist/forge/engagement-cli.js --title "Label" --host "LandOS on ClaudeClaw" "raw request"
+ *   node dist/forge/engagement-cli.js --title "Label" --host "your operating system" "raw request"
  *
  * Dev (no build):
  *   npx tsx src/forge/engagement-cli.ts "add a date helper to src/utils with a test"
@@ -54,7 +54,7 @@ const request: ForgeEngagementRequest = {
   title,
   host,
   rawRequest,
-  requestedBy: 'Tyler',
+  requestedBy: 'owner',
   createdAt: new Date().toISOString(),
 };
 
@@ -65,5 +65,5 @@ console.log(renderEngagementMarkdown(engagement));
 // still valid output) but prints a clear stderr note so an operator piping
 // output notices the gate fired.
 if (engagement.gate.verdict === 'STOP') {
-  console.error(`\n[forge] Lane gate: STOP — ${engagement.gate.categories.length} Tyler-owned decision category(ies) detected.`);
+  console.error(`\n[forge] Lane gate: STOP — ${engagement.gate.categories.length} owner-owned decision category(ies) detected.`);
 }
