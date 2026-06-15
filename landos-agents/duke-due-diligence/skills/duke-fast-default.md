@@ -79,6 +79,7 @@ When Tyler provides an address without APN, property ID, or FIPS:
 5. Never use geocoding, nearest-parcel lookup, road midpoints, town centroids, ZIP centroids, or any coordinate-based method.
 6. If `lp_resolve_property` returns `not_verified`: label as "LandPortal Search Mismatch, Parcel Not Verified." Ask Tyler for APN, FIPS, county, or property ID to proceed.
 7. If `lp_resolve_property` returns `multiple_candidates` or `ambiguous_fips`: switch to `duke-unconfirmed-parcel.md`.
+7b. If `lp_resolve_property` returns `status: lookup_timeout` or `timed_out: true`: run the Lookup Timeout Recovery Ladder in Step 3 (retry once, county/GIS exact-address fallback, then `Local Area Context, Not Parcel Verified`, then one next action). A timeout is not a mismatch.
 8. If parcel is not verified but a reliable location anchor exists (city/state, county/state, or road/city/state): include Local Area Context, Not Parcel Verified using one area statistics web search (this is the 2nd and final allowed call in the budget).
 
 ---
@@ -100,6 +101,18 @@ Never label a failed filter search or `lp_search` result as LP Coverage Gap.
 - **Single match:** Proceed.
 - **Multiple matches:** Switch to `duke-unconfirmed-parcel.md` immediately. Do not proceed with parcel-specific analysis.
 - **Zero matches:** Ask Tyler to retry with a different identifier, or provide APN, county, or FIPS.
+- **Lookup timeout** (`status: lookup_timeout`, `timed_out: true`, or equivalent timeout wording): run the LandPortal Timeout Recovery Ladder. Do not treat this as a mismatch, a coverage gap, or zero matches, and do not dead-end.
+
+**Lookup Timeout Recovery Ladder** (when an LP lookup times out):
+
+A timeout is a first-class unverified state, not a parcel mismatch. Keep every parcel identity rule in force: do not score, do not value, do not recommend an offer, and never use coordinates, geocoding, nearest parcel lookup, map pins, road midpoints, town/ZIP centroids, map bounds, or proximity search.
+
+1. **Retry once.** Re-run the same exact-address `lp_resolve_property` lookup one time only, and only if still within the runtime budget. Never retry more than once.
+2. **County assessor / GIS exact-address fallback.** If the retry also times out, run the bounded exact-address disambiguation pass from `duke-unconfirmed-parcel.md` (exact address + county/state against county assessor or county GIS, only if reachable through the normal allowed path). Exact-address verification only -- never coordinates or proximity.
+3. **Local Area Context, Not Parcel Verified.** If still not definitively verified, return `Local Area Context, Not Parcel Verified` using only the location anchor from Tyler's input. Do not identify or infer a parcel from area context.
+4. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+
+State plainly what Duke tried and that no score, valuation, or offer was produced because parcel identity was not verified. Emit the `landos-persist` block with `status: "timeout"`, `reportStatus: "partial"`, `verificationStatus: "not_verified"`, and `parcel.verified: false`.
 
 **Address Mismatch and Rejection Rules** (when `lp_resolve_property` returns `not_verified` or `multiple_candidates`):
 

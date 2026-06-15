@@ -83,7 +83,37 @@ Determine mode from input. Read the skill file as the first action before callin
 **Unconfirmed Parcel** -- LP returns multiple candidates, or `lp_resolve_property` returns `not_verified`, `multiple_candidates`, or `ambiguous_fips`. Parcel not yet confirmed by Tyler.
 `Read: C:/Users/tbutt/claudeclaw-os/landos-agents/duke-due-diligence/skills/duke-unconfirmed-parcel.md`
 
+**LandPortal Timeout** -- any LP tool returns `status: lookup_timeout`, `timed_out: true`, or equivalent timeout wording ("did not respond in time", "fetch aborted", "lookup timed out"). Parcel not verified due to a timeout, not a mismatch. Run the LandPortal Timeout Recovery Ladder below, then continue under the Unconfirmed Parcel skill if still unverified.
+`Read: C:/Users/tbutt/claudeclaw-os/landos-agents/duke-due-diligence/skills/duke-unconfirmed-parcel.md`
+
 **Follow-up turns** (e.g. Tyler asks "add area stats" or "run web comps" after a Fast Default): prior skill content is already in session context. Do not re-read unless switching to a different mode.
+
+---
+
+## LandPortal Timeout Recovery Ladder
+
+A LandPortal lookup timeout is a first-class unverified state. It is not a parcel mismatch and not an LP coverage gap. A timeout must never become a dead-end and must never relax any parcel identity rule.
+
+Trigger: any LP tool result with `status: lookup_timeout`, `timed_out: true`, or equivalent timeout wording.
+
+While recovering from a timeout, all parcel identity safety rules stay in force:
+
+- Do not score.
+- Do not value.
+- Do not recommend or compute an offer.
+- Do not use coordinates, geocoding, nearest parcel lookup, map pins, road midpoints, town centroids, ZIP centroids, map bounds, or proximity search to identify or verify the parcel.
+- Do not invent parcel facts, ownership, or comps.
+
+Run this ladder in order, stopping as soon as the parcel is definitively verified through an allowed source:
+
+1. **Retry once.** Re-run the same exact-address `lp_resolve_property` lookup one time only, and only if still within the runtime budget (the Fast Default 2-minute / 3-minute maximum). Never retry more than once. Never change the identifier to coordinates or any prohibited input.
+2. **County assessor / GIS exact-address fallback.** If the retry also times out, run the bounded exact-address recovery from `duke-unconfirmed-parcel.md` (Step 2 disambiguation pass): exact address plus county/state against county assessor or county GIS, only if reachable through the normal allowed tool/web path. This is exact-address verification only -- never coordinates, nearest parcel, or proximity.
+3. **Local Area Context, Not Parcel Verified.** If the parcel is still not definitively verified, return `Local Area Context, Not Parcel Verified`. Use only the location anchor from Tyler's input (for example city/county/state from the submitted address). Do not identify or infer a specific parcel from area context. Include bounded area context only if a reliable anchor and area data (cache or one allowed area search) exist.
+4. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+
+Every timeout response must clearly state what Duke tried (timed out, retried once, checked county/GIS if available, still not definitive) and clearly state that no score, valuation, or offer was produced because parcel identity was not verified.
+
+In the `landos-persist` block for a timeout, set `status: "timeout"`, `reportStatus: "partial"`, `verificationStatus: "not_verified"`, `parcel.verified: false`, and record only the safely known location anchor.
 
 ---
 
