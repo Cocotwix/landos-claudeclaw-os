@@ -42,6 +42,8 @@ Work backward from whatever Tyler provides. Ask one short follow-up if a critica
 - Identifier returns multiple matches: switch to `duke-unconfirmed-parcel.md` immediately
 - Never ask for more than one missing piece at a time
 
+**Corrected / follow-up / replacement address:** If Tyler corrects, edits, or replaces the address in the same thread (e.g. "it is actually 183 Bob Wise Road"), treat the corrected address as the active input and re-run this address path from the start against it. Do not reuse parcel assumptions, candidates, or FIPS from the prior failed address. The Lookup Timeout Recovery Ladder and the Zero-Candidate Address-Mismatch Recovery Ladder (Step 3) apply to corrected and follow-up addresses exactly as they do to a first-turn fresh address. A timeout or zero-candidate result on a corrected address must route through the ladder, never a bare dead-end.
+
 If Tyler writes TY_LAND_BIZ explicitly in the input: tag as TY_LAND_BIZ. Otherwise tag LAND_ALLY and proceed without asking.
 
 ---

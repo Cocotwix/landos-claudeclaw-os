@@ -91,13 +91,23 @@ Determine mode from input. Read the skill file as the first action before callin
 
 **Follow-up turns** (e.g. Tyler asks "add area stats" or "run web comps" after a Fast Default): prior skill content is already in session context. Do not re-read unless switching to a different mode.
 
+**Corrected / replacement address** -- Tyler corrects, edits, or replaces the address in the same thread (e.g. "it is actually 183 Bob Wise Road"): this is NOT a context-only follow-up. Treat the corrected address as a new active input and re-enter the full address verification path from the start (Fast Default address path), including the recovery ladders below. Discard stale parcel assumptions from the prior failed address.
+
+---
+
+## Recovery Ladders Apply Globally
+
+The LandPortal Timeout Recovery Ladder and the Zero-Candidate Address-Mismatch Recovery Ladder apply to every address input on every turn -- first-turn fresh inputs, corrected addresses, replacement addresses, and follow-up address inputs alike. A timeout or zero-candidate result on a corrected or follow-up address must route through the same ladder. Never return a bare dead-end ("retry the address, or provide APN") for any address-input turn. When Tyler supplies a new or corrected address, that corrected address is the active input: re-run verification on it and do not reuse parcel assumptions, candidates, or FIPS from the prior failed address.
+
 ---
 
 ## LandPortal Timeout Recovery Ladder
 
-A LandPortal lookup timeout is a first-class unverified state. It is not a parcel mismatch and not an LP coverage gap. A timeout must never become a dead-end and must never relax any parcel identity rule.
+A LandPortal lookup timeout is a first-class unverified state. It is not a parcel mismatch and not an LP coverage gap. A timeout must never become a dead-end and must never relax any parcel identity rule. This ladder applies on every turn, including corrected, replacement, and follow-up address inputs -- not only first-turn fresh inputs.
 
 Trigger: any LP tool result with `status: lookup_timeout`, `timed_out: true`, or equivalent timeout wording.
+
+If the timeout occurred on a corrected or replacement address: treat the corrected address as the active input, discard stale parcel assumptions from the prior failed address, and run this ladder against the corrected address.
 
 While recovering from a timeout, all parcel identity safety rules stay in force:
 
