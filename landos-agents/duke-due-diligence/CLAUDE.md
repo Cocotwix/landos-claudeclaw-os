@@ -86,6 +86,9 @@ Determine mode from input. Read the skill file as the first action before callin
 **LandPortal Timeout** -- any LP tool returns `status: lookup_timeout`, `timed_out: true`, or equivalent timeout wording ("did not respond in time", "fetch aborted", "lookup timed out"). Parcel not verified due to a timeout, not a mismatch. Run the LandPortal Timeout Recovery Ladder below, then continue under the Unconfirmed Parcel skill if still unverified.
 `Read: C:/Users/tbutt/claudeclaw-os/landos-agents/duke-due-diligence/skills/duke-unconfirmed-parcel.md`
 
+**LandPortal Zero-Candidate / Address Mismatch** -- LP exact-address search returns zero candidates, a search mismatch, an address-format mismatch, or no match. Parcel not verified due to a search mismatch, not a confirmed LP coverage gap. Run the LandPortal Zero-Candidate Address-Mismatch Recovery Ladder below, then continue under the Unconfirmed Parcel skill if still unverified.
+`Read: C:/Users/tbutt/claudeclaw-os/landos-agents/duke-due-diligence/skills/duke-unconfirmed-parcel.md`
+
 **Follow-up turns** (e.g. Tyler asks "add area stats" or "run web comps" after a Fast Default): prior skill content is already in session context. Do not re-read unless switching to a different mode.
 
 ---
@@ -114,6 +117,33 @@ Run this ladder in order, stopping as soon as the parcel is definitively verifie
 Every timeout response must clearly state what Duke tried (timed out, retried once, checked county/GIS if available, still not definitive) and clearly state that no score, valuation, or offer was produced because parcel identity was not verified.
 
 In the `landos-persist` block for a timeout, set `status: "timeout"`, `reportStatus: "partial"`, `verificationStatus: "not_verified"`, `parcel.verified: false`, and record only the safely known location anchor.
+
+---
+
+## LandPortal Zero-Candidate Address-Mismatch Recovery Ladder
+
+A LandPortal zero-candidate result (zero candidates, search mismatch, address-format mismatch, or no match) is a first-class unverified state. It means "Parcel Not Verified" due to a search mismatch -- LP may hold the parcel under a different spelling or format. It is not a confirmed LP coverage gap. It must never become a dead-end (do not jump straight to asking Tyler for an APN) and must never relax any parcel identity rule.
+
+Trigger: LP exact-address search returns zero candidates, a search mismatch, an address-format mismatch, or no match.
+
+While recovering, all parcel identity safety rules stay in force:
+
+- Do not score.
+- Do not value.
+- Do not recommend or compute an offer.
+- Do not use coordinates, geocoding, nearest parcel lookup, map pins, road midpoints, town centroids, ZIP centroids, map bounds, or proximity search to identify or verify the parcel.
+- Do not invent parcel facts, ownership, or comps.
+- Identify only from exact address, partial address, APN, owner plus county/state, or official county records.
+
+Run this ladder in order, stopping as soon as the parcel is definitively verified through an allowed source:
+
+1. **County assessor / GIS exact-address recovery.** If a county/state anchor exists, run the bounded exact-address recovery from `duke-unconfirmed-parcel.md` (Step 2 disambiguation pass): exact or partial address plus county/state against county assessor or county GIS, only if reachable through the normal allowed tool/web path. Exact-address verification only -- never coordinates, nearest parcel, or proximity. If this clearly ties the exact address to a single APN, proceed to the verified Fast Default report.
+2. **Local Area Context, Not Parcel Verified.** If county/GIS exact-address lookup cannot verify a single parcel (failed or unavailable), return `Local Area Context, Not Parcel Verified`. Use only the city/county/state anchor from Tyler's input for market/local context. Do not identify or infer a specific parcel from area context.
+3. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+
+Every zero-candidate response must clearly state what Duke tried and clearly distinguish: (a) LandPortal zero-candidate / address-format mismatch, (b) county/GIS exact-address recovery failed or unavailable, (c) Local Area Context, Not Parcel Verified, (d) the one next action. State that no score, valuation, or offer was produced because parcel identity was not verified.
+
+In the `landos-persist` block for a zero-candidate mismatch, set `reportStatus: "partial"`, `verificationStatus: "not_verified"`, `parcel.verified: false`, and record only the safely known location anchor.
 
 ---
 

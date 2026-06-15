@@ -77,7 +77,7 @@ When Tyler provides an address without APN, property ID, or FIPS:
 3. Never convert an address to coordinates for parcel lookup.
 4. Never use lat/lng as parcel lookup inputs under any circumstance.
 5. Never use geocoding, nearest-parcel lookup, road midpoints, town centroids, ZIP centroids, or any coordinate-based method.
-6. If `lp_resolve_property` returns `not_verified`: label as "LandPortal Search Mismatch, Parcel Not Verified." Ask Tyler for APN, FIPS, county, or property ID to proceed.
+6. If `lp_resolve_property` returns `not_verified` or zero candidates: label as "LandPortal Search Mismatch, Parcel Not Verified" and run the Zero-Candidate Address-Mismatch Recovery Ladder in Step 3 (county/GIS exact-address recovery, then `Local Area Context, Not Parcel Verified`, then one next action). Do not jump straight to asking Tyler for an APN.
 7. If `lp_resolve_property` returns `multiple_candidates` or `ambiguous_fips`: switch to `duke-unconfirmed-parcel.md`.
 7b. If `lp_resolve_property` returns `status: lookup_timeout` or `timed_out: true`: run the Lookup Timeout Recovery Ladder in Step 3 (retry once, county/GIS exact-address fallback, then `Local Area Context, Not Parcel Verified`, then one next action). A timeout is not a mismatch.
 8. If parcel is not verified but a reliable location anchor exists (city/state, county/state, or road/city/state): include Local Area Context, Not Parcel Verified using one area statistics web search (this is the 2nd and final allowed call in the budget).
@@ -90,7 +90,7 @@ These are different failure modes. Do not use them interchangeably.
 
 **LP Coverage Gap:** `lp_property_data` returns no property record for a propertyid + fips that are known and valid. LP genuinely has no data for this parcel. Label: `LP Coverage Gap`.
 
-**LandPortal Search Mismatch, Parcel Not Verified:** The LP address filter search or `lp_search` returns no results or `not_verified`. This does not confirm LP lacks the parcel -- LP may have it under a different address format or spelling. Label: `LandPortal Search Mismatch, Parcel Not Verified`. Ask Tyler for APN, county, or property ID to retry.
+**LandPortal Search Mismatch, Parcel Not Verified:** The LP address filter search or `lp_search` returns no results, zero candidates, or `not_verified`. This does not confirm LP lacks the parcel -- LP may have it under a different address format or spelling. Label: `LandPortal Search Mismatch, Parcel Not Verified`. Run the Zero-Candidate Address-Mismatch Recovery Ladder (county/GIS exact-address recovery, then Local Area Context, then one next action) before asking Tyler for an APN.
 
 Never label a failed filter search or `lp_search` result as LP Coverage Gap.
 
@@ -100,8 +100,18 @@ Never label a failed filter search or `lp_search` result as LP Coverage Gap.
 
 - **Single match:** Proceed.
 - **Multiple matches:** Switch to `duke-unconfirmed-parcel.md` immediately. Do not proceed with parcel-specific analysis.
-- **Zero matches:** Ask Tyler to retry with a different identifier, or provide APN, county, or FIPS.
+- **Zero candidates / search mismatch / address-format mismatch / no match:** run the Zero-Candidate Address-Mismatch Recovery Ladder below. Do not dead-end by immediately asking Tyler for an APN. Treat as "Parcel Not Verified" (LandPortal Search Mismatch), never as a confirmed LP Coverage Gap.
 - **Lookup timeout** (`status: lookup_timeout`, `timed_out: true`, or equivalent timeout wording): run the LandPortal Timeout Recovery Ladder. Do not treat this as a mismatch, a coverage gap, or zero matches, and do not dead-end.
+
+**Zero-Candidate Address-Mismatch Recovery Ladder** (when LP exact-address search returns zero candidates, a search mismatch, an address-format mismatch, or no match):
+
+This is a "Parcel Not Verified" state, not a confirmed LP coverage gap. Keep every parcel identity rule in force: do not score, do not value, do not recommend an offer, and never use coordinates, geocoding, nearest parcel lookup, map pins, road midpoints, town/ZIP centroids, map bounds, or proximity search. Use only exact address, partial address, APN, owner plus county/state, or official county records for identification.
+
+1. **County assessor / GIS exact-address recovery.** If a county/state anchor exists, run the bounded exact-address recovery from `duke-unconfirmed-parcel.md` (Step 2 disambiguation pass): exact or partial address + county/state against county assessor or county GIS, only if reachable through the normal allowed path. Exact-address verification only -- never coordinates or proximity. If this clearly ties the exact address to a single APN, proceed to verified Fast Default.
+2. **Local Area Context, Not Parcel Verified.** If county/GIS exact-address lookup cannot verify a single parcel (failed or unavailable), return `Local Area Context, Not Parcel Verified` using only the city/county/state anchor from Tyler's input for market/local context. Never identify or infer a parcel from area context.
+3. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+
+State plainly what Duke tried, distinguishing: (a) LandPortal zero-candidate / address-format mismatch, (b) county/GIS exact-address recovery failed or unavailable, (c) Local Area Context, Not Parcel Verified, (d) the one next action. State that no score, valuation, or offer was produced because parcel identity was not verified. Emit the `landos-persist` block with `status: "success"`, `reportStatus: "partial"`, `verificationStatus: "not_verified"`, and `parcel.verified: false`.
 
 **Lookup Timeout Recovery Ladder** (when an LP lookup times out):
 

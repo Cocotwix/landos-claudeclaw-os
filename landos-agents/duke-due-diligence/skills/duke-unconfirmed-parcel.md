@@ -2,11 +2,13 @@
 
 Load when:
 - `lp_resolve_property` returns `multiple_candidates`, `not_verified`, or `ambiguous_fips`
-- LP address filter search or `lp_search` returns no results
+- LP address filter search or `lp_search` returns no results, zero candidates, a search mismatch, or an address-format mismatch
 - An LP lookup times out (`status: lookup_timeout`, `timed_out: true`, or equivalent) and the Lookup Timeout Recovery Ladder has reached its county/GIS or area-context step
 - Tyler has not yet confirmed which parcel to proceed with
 
 **Timeout note:** When entered via a LandPortal timeout, the parcel is unverified due to a timeout, not a mismatch. Apply the same hard rules below (no score, no value, no offer, no coordinates/proximity). Use Step 2's bounded exact-address disambiguation (county assessor / GIS) and, if still unverified, the `Local Area Context, Not Parcel Verified` fallback in Step 4, then ask one confirmation question.
+
+**Zero-candidate / address-mismatch note:** When entered via a LandPortal zero-candidate, search mismatch, or address-format mismatch, the parcel is unverified due to a search mismatch, not a confirmed LP coverage gap. Apply the same hard rules below (no score, no value, no offer, no coordinates/proximity). Run Step 2's bounded exact-address disambiguation (county assessor / GIS exact or partial address + county/state) first; if it cannot verify a single parcel, return the `Local Area Context, Not Parcel Verified` fallback in Step 4 using only the city/county/state anchor, then ask one confirmation question.
 
 ---
 
