@@ -359,6 +359,31 @@ export interface DealCardDetail extends DealCardRow {
  * acreage rollup. Combined acreage is "verified" only when EVERY linked parcel
  * is verified_property with a known acreage; otherwise it is preliminary.
  */
+/** The Deal Card a property card is linked under, if any (oldest link wins). */
+export function getDealCardIdForPropertyCard(cardId: number): number | undefined {
+  const row = getLandosDb()
+    .prepare('SELECT deal_card_id FROM landos_deal_card_property WHERE card_id = ? ORDER BY id ASC LIMIT 1')
+    .get(cardId) as { deal_card_id: number } | undefined;
+  return row?.deal_card_id;
+}
+
+/**
+ * Find-or-create the Deal Card for a property card. Used by the comp UI so a
+ * comp can be attached from a property view. Creating/linking a Deal Card never
+ * changes the property's identity, verification status, or facts.
+ */
+export function ensureDealCardForProperty(input: {
+  cardId: number;
+  entity: LandosEntity;
+  title?: string;
+}): number {
+  const existing = getDealCardIdForPropertyCard(input.cardId);
+  if (existing) return existing;
+  const deal = createDealCard({ entity: input.entity, title: input.title || `Deal ${input.cardId}` });
+  linkPropertyToDeal({ dealCardId: deal.id, cardId: input.cardId, role: 'subject' });
+  return deal.id;
+}
+
 export function getDealCard(id: number): DealCardDetail | undefined {
   const db = getLandosDb();
   const deal = getDealCardRow(id);

@@ -1165,6 +1165,58 @@ describe('LandOS property card + memory endpoints', () => {
     expect(large.recommendation.order).toEqual(expect.arrayContaining(['Land.com', 'LandWatch']));
     expect(large.recency.stale).toBe(true);
   });
+
+  it('adds + lists a manual comp on a property card without changing identity/verification', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '600 Comp UI Rd, Lexington SC',
+      apn: 'C600', county: 'Lexington', fips: '45063', verified: true,
+      verificationSource: 'county assessor record (APN + county)',
+    }))).card;
+    expect(card.verification_status).toBe('verified_property');
+
+    // Empty list before.
+    expect((await jsonOf(await get(`/api/landos/property-cards/${card.id}/comps`))).comps.length).toBe(0);
+
+    // Add a comp (computes price-per-acre from price + acres).
+    const added = await post(`/api/landos/property-cards/${card.id}/comps`, {
+      sourceLabel: 'Zillow', sourceUrl: 'https://www.zillow.com/x', addressDesc: '5ac nearby',
+      price: 50000, priceKind: 'sale', acres: 5, status: 'market_reference', notes: 'comparable',
+    });
+    expect(added.status).toBe(201);
+    const addedBody = await jsonOf(added);
+    expect(addedBody.comp.source_label).toBe('Zillow');
+    expect(addedBody.comp.price_per_acre).toBe(10000);
+    expect(addedBody.comp.status).toBe('market_reference');
+    expect(typeof addedBody.dealCardId).toBe('number');
+
+    // Lists it back.
+    const list = await jsonOf(await get(`/api/landos/property-cards/${card.id}/comps`));
+    expect(list.comps.length).toBe(1);
+
+    // The property card identity + verification are untouched by the comp.
+    const after = (await jsonOf(await get(`/api/landos/property-cards/${card.id}`))).card;
+    expect(after.verification_status).toBe('verified_property');
+    expect(after.apn).toBe('C600');
+  });
+
+  it('does not fabricate price-per-acre when price or acreage is missing', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '601 NoPpa Rd, Lexington SC',
+    }))).card;
+    const noAcres = await jsonOf(await post(`/api/landos/property-cards/${card.id}/comps`, { sourceLabel: 'Redfin', price: 40000 }));
+    expect(noAcres.comp.price_per_acre).toBeNull();
+    const noPrice = await jsonOf(await post(`/api/landos/property-cards/${card.id}/comps`, { sourceLabel: 'Land.com', acres: 10 }));
+    expect(noPrice.comp.price_per_acre).toBeNull();
+  });
+
+  it('accepts the Other source label and 404s an unknown property card', async () => {
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '602 Other Rd, Lexington SC',
+    }))).card;
+    const other = await jsonOf(await post(`/api/landos/property-cards/${card.id}/comps`, { sourceLabel: 'Other', notes: 'FSBO sign on road' }));
+    expect(other.comp.source_label).toBe('Other');
+    expect((await post('/api/landos/property-cards/999999/comps', { sourceLabel: 'Zillow' })).status).toBe(404);
+  });
 });
 
 describe('Forge build interview endpoints', () => {

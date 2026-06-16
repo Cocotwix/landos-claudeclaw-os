@@ -48,7 +48,7 @@ import {
 } from './property-card.js';
 import { routeDukeRequest } from './duke-router.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
-import { listDealCards, getDealCard } from './deal-card.js';
+import { listDealCards, getDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
   DEAL_CARD_STATUSES,
@@ -556,6 +556,45 @@ export function registerLandosRoutes(app: Hono): void {
       status: str(body.status) as CompStatus | undefined,
     });
     return c.json({ comp }, 201);
+  });
+
+  // Property-card-scoped comps for the Property Board UI. A property card may
+  // not have a Deal Card yet; GET resolves the linked deal (if any) and POST
+  // find-or-creates it. A comp NEVER changes the property's verification status,
+  // identity, owner, contiguity, or facts.
+  app.get('/api/landos/property-cards/:id/comps', (c) => {
+    const cardId = Number(c.req.param('id'));
+    const dealCardId = getDealCardIdForPropertyCard(cardId) ?? null;
+    return c.json({ dealCardId, comps: listComps({ cardId }) });
+  });
+
+  app.post('/api/landos/property-cards/:id/comps', async (c) => {
+    const cardId = Number(c.req.param('id'));
+    const card = getPropertyCard(cardId);
+    if (!card) return c.json({ error: 'property card not found' }, 404);
+    if (!isEntity(card.entity)) return c.json({ error: 'property card has no valid entity' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const dealCardId = ensureDealCardForProperty({ cardId, entity: card.entity, title: card.active_input_address });
+    const comp = addComp({
+      entity: card.entity,
+      dealCardId,
+      cardId,
+      sourceLabel: str(body.sourceLabel) as CompSourceLabel | undefined,
+      sourceUrl: str(body.sourceUrl),
+      addressDesc: str(body.addressDesc),
+      apn: str(body.apn),
+      county: str(body.county),
+      state: str(body.state),
+      price: num(body.price),
+      priceKind: str(body.priceKind) as CompPriceKind | undefined,
+      saleOrListDate: str(body.saleOrListDate),
+      acres: num(body.acres),
+      pricePerAcre: num(body.pricePerAcre),
+      notes: str(body.notes),
+      addedBy: str(body.addedBy),
+      status: str(body.status) as CompStatus | undefined,
+    });
+    return c.json({ comp, dealCardId }, 201);
   });
 
   // Comp-source recommendation + LP staleness (no paid calls; advice only).

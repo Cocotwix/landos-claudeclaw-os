@@ -3,7 +3,7 @@ import { RefreshCw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Pill } from '@/components/Pill';
-import { apiGet, apiPatch } from '@/lib/api';
+import { apiGet, apiPatch, apiPost } from '@/lib/api';
 
 // Property/Lead Kanban board. Property-centered, not chat-centered: each card is
 // a lead/property with all its memory behind it. Display + status moves only;
@@ -34,6 +34,28 @@ interface CardDetail extends Card {
 
 interface BoardResponse { columns: Record<string, Card[]>; statuses: string[]; }
 
+// Comp source labels / kinds / statuses (mirror the backend model).
+const COMP_SOURCE_LABELS = ['LandPortal', 'Zillow', 'Redfin', 'Land.com', 'LandWatch', 'LandsOfAmerica', 'Realtor', 'County', 'Other'] as const;
+const COMP_PRICE_KINDS = ['sale', 'list', 'unknown'] as const;
+const COMP_STATUSES = ['manual_unverified', 'market_reference', 'verified_sale', 'rejected'] as const;
+
+interface Comp {
+  id: number;
+  source_label: string;
+  source_url: string;
+  address_desc: string;
+  apn: string;
+  county: string;
+  state: string;
+  price: number | null;
+  price_kind: string;
+  sale_or_list_date: string;
+  acres: number | null;
+  price_per_acre: number | null;
+  notes: string;
+  status: string;
+}
+
 const ENTITIES = [
   { id: 'all', label: 'All' },
   { id: 'TY_LAND_BIZ', label: "Ty's Land Biz" },
@@ -47,6 +69,18 @@ export function PropertyBoard() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<CardDetail | null>(null);
   const [busy, setBusy] = useState(false);
+  const [comps, setComps] = useState<Comp[]>([]);
+  const [showCompForm, setShowCompForm] = useState(false);
+  const [compBusy, setCompBusy] = useState(false);
+  const emptyComp = {
+    sourceLabel: 'Zillow', sourceUrl: '', addressDesc: '', apn: '', county: '', state: '',
+    price: '', priceKind: 'sale', saleOrListDate: '', acres: '', notes: '', status: 'manual_unverified',
+  };
+  const [compForm, setCompForm] = useState<Record<string, string>>({ ...emptyComp });
+
+  function compField(k: string, v: string) {
+    setCompForm((f) => ({ ...f, [k]: v }));
+  }
 
   async function load() {
     setLoading(true);
@@ -67,8 +101,55 @@ export function PropertyBoard() {
     try {
       const res = await apiGet<{ card: CardDetail }>(`/api/landos/property-cards/${id}`);
       setSelected(res.card);
+      setShowCompForm(false);
+      setCompForm({ ...emptyComp });
+      await loadComps(id);
     } catch (e: any) {
       setError(e?.message || String(e));
+    }
+  }
+
+  async function loadComps(cardId: number) {
+    try {
+      const res = await apiGet<{ comps: Comp[] }>(`/api/landos/property-cards/${cardId}/comps`);
+      setComps(res.comps || []);
+    } catch {
+      setComps([]);
+    }
+  }
+
+  // Save a manual comp to the selected property card's Deal Card. Never changes
+  // verification status, identity, owner, contiguity, or facts.
+  async function saveComp() {
+    if (!selected) return;
+    setCompBusy(true);
+    setError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        sourceLabel: compForm.sourceLabel,
+        sourceUrl: compForm.sourceUrl.trim(),
+        addressDesc: compForm.addressDesc.trim(),
+        apn: compForm.apn.trim(),
+        county: compForm.county.trim(),
+        state: compForm.state.trim(),
+        priceKind: compForm.priceKind,
+        saleOrListDate: compForm.saleOrListDate.trim(),
+        notes: compForm.notes.trim(),
+        status: compForm.status,
+        addedBy: 'tyler/manual',
+      };
+      const price = parseFloat(compForm.price);
+      if (Number.isFinite(price)) payload.price = price;
+      const acres = parseFloat(compForm.acres);
+      if (Number.isFinite(acres)) payload.acres = acres;
+      await apiPost(`/api/landos/property-cards/${selected.id}/comps`, payload);
+      setShowCompForm(false);
+      setCompForm({ ...emptyComp });
+      await loadComps(selected.id);
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setCompBusy(false);
     }
   }
 
@@ -203,6 +284,82 @@ export function PropertyBoard() {
             <DetailList title="Facts" items={selected.facts.map((f: any) => `${f.fact}: ${f.value} [${f.label}]`)} />
             <DetailList title="Activity" items={selected.activity.map((a: any) => `${a.agent_id}: ${a.summary}`)} />
 
+            {/* Comps — manual entry. A comp never verifies the parcel or changes
+                identity/owner/contiguity/verification; source + status stay visible. */}
+            <div class="border-t border-[var(--color-border)] pt-3 space-y-2">
+              <div class="flex items-center justify-between">
+                <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Comps</div>
+                <button
+                  type="button"
+                  onClick={() => setShowCompForm((v) => !v)}
+                  class="text-[11px] px-2 py-1 rounded-md bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]"
+                >
+                  {showCompForm ? 'Cancel' : 'Add Manual Comp'}
+                </button>
+              </div>
+
+              {comps.length === 0 && !showCompForm && (
+                <div class="text-[11.5px] text-[var(--color-text-muted)]">No comps yet.</div>
+              )}
+
+              {comps.length > 0 && (
+                <ul class="space-y-1.5">
+                  {comps.map((cp) => (
+                    <li key={cp.id} class="text-[11.5px] border border-[var(--color-border)] rounded-md p-2">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <Pill tone="neutral">{cp.source_label}</Pill>
+                        {typeof cp.price === 'number' && (
+                          <span class="text-[var(--color-text)]">{formatMoney(cp.price)} <span class="text-[var(--color-text-faint)]">({cp.price_kind})</span></span>
+                        )}
+                        {typeof cp.acres === 'number' && <span class="text-[var(--color-text-muted)]">{cp.acres} ac</span>}
+                        {typeof cp.price_per_acre === 'number' && (
+                          <span class="text-[var(--color-text-muted)]">{formatMoney(cp.price_per_acre)}/ac</span>
+                        )}
+                        {cp.sale_or_list_date && <span class="text-[var(--color-text-faint)]">{cp.sale_or_list_date}</span>}
+                        <Pill tone={cp.status === 'verified_sale' ? 'done' : cp.status === 'rejected' ? 'failed' : 'neutral'}>{cp.status}</Pill>
+                        {cp.source_url && (
+                          <a href={cp.source_url} target="_blank" rel="noopener noreferrer" class="text-[var(--color-accent)] hover:underline">source ↗</a>
+                        )}
+                      </div>
+                      {(cp.address_desc || cp.notes) && (
+                        <div class="text-[var(--color-text-muted)] mt-0.5">{[cp.address_desc, cp.notes].filter(Boolean).join(' — ')}</div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {showCompForm && (
+                <div class="border border-[var(--color-border)] rounded-md p-2.5 space-y-2 bg-[var(--color-bg)]">
+                  <div class="grid grid-cols-2 gap-2">
+                    <CompSelect label="Source" value={compForm.sourceLabel} options={COMP_SOURCE_LABELS as readonly string[]} onChange={(v) => compField('sourceLabel', v)} />
+                    <CompSelect label="Price kind" value={compForm.priceKind} options={COMP_PRICE_KINDS as readonly string[]} onChange={(v) => compField('priceKind', v)} />
+                    <CompInput label="Price" value={compForm.price} onChange={(v) => compField('price', v)} placeholder="42000" type="number" />
+                    <CompInput label="Acres" value={compForm.acres} onChange={(v) => compField('acres', v)} placeholder="5" type="number" />
+                    <CompInput label="Sale/List date" value={compForm.saleOrListDate} onChange={(v) => compField('saleOrListDate', v)} placeholder="2026-03-01" />
+                    <CompSelect label="Status" value={compForm.status} options={COMP_STATUSES as readonly string[]} onChange={(v) => compField('status', v)} />
+                    <CompInput label="APN" value={compForm.apn} onChange={(v) => compField('apn', v)} />
+                    <CompInput label="County" value={compForm.county} onChange={(v) => compField('county', v)} />
+                    <CompInput label="State" value={compForm.state} onChange={(v) => compField('state', v)} />
+                    <CompInput label="Source URL" value={compForm.sourceUrl} onChange={(v) => compField('sourceUrl', v)} placeholder="https://..." />
+                  </div>
+                  <CompInput label="Address / description" value={compForm.addressDesc} onChange={(v) => compField('addressDesc', v)} />
+                  <CompInput label="Notes" value={compForm.notes} onChange={(v) => compField('notes', v)} />
+                  {parsedPpaPreview(compForm.price, compForm.acres) && (
+                    <div class="text-[11px] text-[var(--color-text-muted)]">Price per acre: {parsedPpaPreview(compForm.price, compForm.acres)}</div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void saveComp()}
+                    disabled={compBusy}
+                    class="text-[12px] px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
+                  >
+                    {compBusy ? 'Saving…' : 'Save comp'}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <button type="button" onClick={() => setSelected(null)} class="text-[12px] px-3 py-1.5 rounded-md bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">Close</button>
           </div>
         </div>
@@ -220,5 +377,41 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
         {items.map((i, idx) => <li key={idx}>{i}</li>)}
       </ul>
     </div>
+  );
+}
+
+function formatMoney(n: number): string {
+  return '$' + Math.round(n).toLocaleString('en-US');
+}
+
+// Preview price-per-acre in the form ONLY when both price and acreage parse to
+// positive numbers. Never fabricates a value when either is missing.
+function parsedPpaPreview(priceStr: string, acresStr: string): string | null {
+  const price = parseFloat(priceStr);
+  const acres = parseFloat(acresStr);
+  if (!Number.isFinite(price) || !Number.isFinite(acres) || acres <= 0) return null;
+  return formatMoney(price / acres) + '/ac';
+}
+
+const fieldCls =
+  'mt-0.5 w-full bg-[var(--color-card)] border border-[var(--color-border)] rounded px-2 py-1 text-[11.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]';
+
+function CompInput({ label, value, onChange, placeholder, type }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string }) {
+  return (
+    <label class="block">
+      <span class="text-[9.5px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</span>
+      <input type={type || 'text'} value={value} placeholder={placeholder} onInput={(e) => onChange((e.target as HTMLInputElement).value)} class={fieldCls} />
+    </label>
+  );
+}
+
+function CompSelect({ label, value, options, onChange }: { label: string; value: string; options: readonly string[]; onChange: (v: string) => void }) {
+  return (
+    <label class="block">
+      <span class="text-[9.5px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</span>
+      <select value={value} onChange={(e) => onChange((e.target as HTMLSelectElement).value)} class={fieldCls}>
+        {options.map((o) => <option value={o}>{o}</option>)}
+      </select>
+    </label>
   );
 }
