@@ -156,20 +156,209 @@ function parseStreetAddress(address: string): { number: string; streetBody: stri
   return { number, streetBody: street };
 }
 
-function parseLpUrl(url: string): { propertyid: string; fips: string } | null {
+/** Strong identity extracted from a LandPortal URL. Identity only -- never
+ * coordinates, map pins, or proximity. */
+export interface ParsedLpUrl {
+  propertyid: string | null;
+  fips: string | null;
+  apn: string | null;           // raw, e.g. "08-2518-++-++-"
+  apnNormalized: string | null; // search key, e.g. "08-2518"
+  llUuid: string | null;
+}
+
+/**
+ * Read a query-string value WITHOUT the `+` -> space conversion that
+ * URLSearchParams applies. Base64 / base64url payloads must survive intact,
+ * and the decoded APN can itself contain literal `+` placeholder segments.
+ */
+function rawQueryParam(search: string, key: string): string | null {
+  const q = search.startsWith('?') ? search.slice(1) : search;
+  for (const pair of q.split('&')) {
+    const eq = pair.indexOf('=');
+    const k = eq === -1 ? pair : pair.slice(0, eq);
+    if (k === key) {
+      const v = eq === -1 ? '' : pair.slice(eq + 1);
+      try { return decodeURIComponent(v); } catch { return v; }
+    }
+  }
+  return null;
+}
+
+/** Decode a base64 or base64url string to UTF-8, or null if it isn't valid. */
+function decodeBase64Payload(value: string): string | null {
+  try {
+    const norm = value.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = norm.length % 4 === 0 ? norm : norm + '='.repeat(4 - (norm.length % 4));
+    const decoded = Buffer.from(pad, 'base64').toString('utf-8');
+    return decoded.length ? decoded : null;
+  } catch { return null; }
+}
+
+/** Read a field from a urlencoded payload, preserving literal `+` characters. */
+function parsePayloadField(payload: string, key: string): string | null {
+  for (const pair of payload.split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    if (pair.slice(0, eq) === key) {
+      const v = pair.slice(eq + 1);
+      try { return decodeURIComponent(v); } catch { return v; }
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalize an APN into a safe search key by dropping trailing placeholder
+ * segments (all-`+` or empty). e.g. "08-2518-++-++-" -> "08-2518".
+ * A normal APN like "12-345-678" is returned unchanged.
+ */
+export function normalizeApn(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const segs = String(raw).split('-');
+  while (segs.length > 1) {
+    const last = segs[segs.length - 1];
+    if (last === '' || /^\++$/.test(last)) segs.pop();
+    else break;
+  }
+  const out = segs.join('-').trim();
+  return out.length ? out : null;
+}
+
+/**
+ * Parse strong parcel identity from a LandPortal URL. Handles three forms:
+ *   A. ?propertyid=...&fips=...
+ *   B. ?property=<base64|base64url> encoding fips/apn/ll_uuid (and propertyid)
+ *   C. path /<5-digit fips>/<numeric propertyid>
+ * Returns null when no usable identifier is present. Never derives coordinates.
+ */
+export function parseLandPortalUrl(url: string): ParsedLpUrl | null {
   try {
     const u = new URL(url);
-    const propertyid = u.searchParams.get('propertyid');
-    const fips = u.searchParams.get('fips');
-    if (propertyid && fips) return { propertyid, fips };
+
+    // Form A: explicit propertyid + fips query params
+    const qPropertyid = u.searchParams.get('propertyid');
+    const qFips = u.searchParams.get('fips');
+    if (qPropertyid && qFips) {
+      return { propertyid: qPropertyid, fips: qFips, apn: null, apnNormalized: null, llUuid: null };
+    }
+
+    // Form B: base64 ?property= payload
+    const propertyParam = rawQueryParam(u.search, 'property');
+    if (propertyParam) {
+      const payload = decodeBase64Payload(propertyParam);
+      if (payload && /(?:^|&)(?:fips|apn|ll_uuid|propertyid)=/.test(payload)) {
+        const fips = parsePayloadField(payload, 'fips');
+        const apn = parsePayloadField(payload, 'apn');
+        const llUuid = parsePayloadField(payload, 'll_uuid');
+        const propertyid = parsePayloadField(payload, 'propertyid');
+        if (fips || apn || llUuid || propertyid) {
+          return {
+            propertyid: propertyid ?? null,
+            fips: fips ?? null,
+            apn: apn ?? null,
+            apnNormalized: normalizeApn(apn),
+            llUuid: llUuid ?? null,
+          };
+        }
+      }
+    }
+
+    // Form C: path /<fips>/<propertyid>
     const parts = u.pathname.split('/').filter(Boolean);
     for (let i = 0; i < parts.length - 1; i++) {
       if (/^\d{5}$/.test(parts[i]) && /^\d{6,}$/.test(parts[i + 1])) {
-        return { fips: parts[i], propertyid: parts[i + 1] };
+        return { propertyid: parts[i + 1], fips: parts[i], apn: null, apnNormalized: null, llUuid: null };
       }
     }
+
     return null;
   } catch { return null; }
+}
+
+/**
+ * Map parsed LP-URL identity to the strongest direct-lookup args. Prefers exact
+ * LandPortal property ID + FIPS, otherwise APN (normalized search key) + FIPS.
+ * Identity only -- never produces coordinates, an address from proximity, or any
+ * map-derived input. Returns null when nothing usable is present.
+ */
+export function lpUrlIdentityToArgs(parsed: ParsedLpUrl): LpResolveArgs | null {
+  if (parsed.propertyid && parsed.fips) {
+    return { propertyid: parsed.propertyid, fips: parsed.fips };
+  }
+  const apnKey = parsed.apnNormalized ?? parsed.apn;
+  if (apnKey && parsed.fips) return { apn: apnKey, fips: parsed.fips };
+  if (apnKey) return { apn: apnKey };
+  return null;
+}
+
+/**
+ * Build a precise unverified message that names the identity already extracted
+ * from the LP URL, instead of re-asking Tyler for data he supplied. Used when
+ * the URL parsed cleanly but the exact LP lookup could not confirm one parcel.
+ */
+export function buildLpUrlGapMessage(parsed: ParsedLpUrl): string {
+  const bits: string[] = [];
+  if (parsed.fips) bits.push(`FIPS ${parsed.fips}`);
+  const apn = parsed.apnNormalized ?? parsed.apn;
+  if (apn) bits.push(`APN ${apn}`);
+  if (parsed.llUuid) bits.push(`LP UUID ${parsed.llUuid}`);
+  if (parsed.propertyid) bits.push(`property ID ${parsed.propertyid}`);
+  const ident = bits.length ? bits.join(', ') : 'the LandPortal identifiers';
+  return (
+    'Parcel not verified -- no scoring, valuation, or offer. ' +
+    `Parsed the LandPortal URL identity (${ident}), but the exact LP lookup did not confirm a single parcel. ` +
+    'This is a lookup/wrapper gap, not missing input. ' +
+    'Verify via county assessor/GIS by APN + county, or confirm the exact LP property ID + FIPS.'
+  );
+}
+
+/** Resolve a parcel by APN exact search (+ optional fips/state scoping). */
+async function resolveByApnSearch(
+  apn: string,
+  opts: { fips?: string; state?: string },
+  signal: AbortSignal,
+): Promise<LpResolveResult> {
+  const params = new URLSearchParams({ type: 'parcelnumb', query: apn });
+  if (opts.fips) params.set('fips', opts.fips);
+  if (opts.state) params.set('state', opts.state);
+  const searchResult = await lpFetch(`/search?${params}`, {}, signal) as Record<string, unknown>;
+  if (searchResult.error) {
+    return {
+      verified: false, status: 'not_verified', propertyid: null,
+      fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+      match_notes: `APN search failed: ${(searchResult.body as Record<string, unknown>)?.message ?? searchResult.http_status}`,
+      candidates: [],
+    };
+  }
+  const items = extractSearchItems(searchResult);
+  if (items.length === 0) {
+    return {
+      verified: false, status: 'not_verified', propertyid: null,
+      fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+      match_notes: 'No results found for this APN.', candidates: [],
+    };
+  }
+  if (items.length > 1) {
+    return {
+      verified: false, status: 'multiple_candidates', propertyid: null,
+      fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+      match_notes: `${items.length} parcels matched this APN. Ask Tyler to select the correct one.`,
+      candidates: items.slice(0, 5).map(formatCandidate),
+    };
+  }
+  const match = items[0];
+  if (!match.propertyid || !match.fips) {
+    return {
+      verified: false, status: 'not_verified', propertyid: null,
+      fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+      match_notes: 'APN search returned result without propertyid or fips.', candidates: [],
+    };
+  }
+  const raw = await lpFetch(
+    `/property-data?propertyid=${match.propertyid}&fips=${match.fips}`,
+    {}, signal,
+  );
+  return buildResolverResult(raw, { source: 'apn_search', fips: match.fips as string });
 }
 
 function median(arr: number[]): number {
@@ -362,20 +551,41 @@ export async function lpResolveForPreflight(
   try {
     // Path 1: LP URL
     if (args.lp_url) {
-      const extracted = parseLpUrl(args.lp_url);
-      if (!extracted) {
+      const parsed = parseLandPortalUrl(args.lp_url);
+      if (!parsed) {
         return {
           verified: false, status: 'not_verified', propertyid: null, fips: null,
           apn: null, situs_address: null, owner: null,
-          match_notes: 'Could not parse propertyid or fips from LP URL.',
+          match_notes: 'Could not parse propertyid, APN, or FIPS from LP URL.',
           candidates: [],
         };
       }
-      const raw = await lpFetch(
-        `/property-data?propertyid=${extracted.propertyid}&fips=${extracted.fips}`,
-        {}, ac.signal,
-      );
-      return buildResolverResult(raw, { source: 'lp_url', fips: extracted.fips });
+      // Strongest path: exact LP property ID + FIPS -> direct property-data.
+      if (parsed.propertyid && parsed.fips) {
+        const raw = await lpFetch(
+          `/property-data?propertyid=${parsed.propertyid}&fips=${parsed.fips}`,
+          {}, ac.signal,
+        );
+        return buildResolverResult(raw, { source: 'lp_url', fips: parsed.fips });
+      }
+      // Next: APN (normalized search key) + FIPS exact search.
+      const apnKey = parsed.apnNormalized ?? parsed.apn;
+      if (apnKey) {
+        const r = await resolveByApnSearch(apnKey, { fips: parsed.fips ?? undefined }, ac.signal);
+        // On a clean miss, name the parsed identity instead of re-asking for it.
+        // Preserve multiple_candidates (keeps candidate list for disambiguation).
+        if (!r.verified && r.status === 'not_verified') {
+          return { ...r, match_notes: buildLpUrlGapMessage(parsed) };
+        }
+        return r;
+      }
+      // URL parsed but no propertyid+fips and no APN: surface the lookup gap.
+      return {
+        verified: false, status: 'not_verified', propertyid: null,
+        fips: parsed.fips ?? null, apn: null, situs_address: null, owner: null,
+        match_notes: buildLpUrlGapMessage(parsed),
+        candidates: [],
+      };
     }
 
     // Path 2: propertyid + fips
@@ -389,47 +599,7 @@ export async function lpResolveForPreflight(
 
     // Path 3: APN search
     if (args.apn) {
-      const params = new URLSearchParams({ type: 'parcelnumb', query: args.apn });
-      if (args.fips) params.set('fips', args.fips);
-      if (args.state) params.set('state', args.state);
-      const searchResult = await lpFetch(`/search?${params}`, {}, ac.signal) as Record<string, unknown>;
-      if (searchResult.error) {
-        return {
-          verified: false, status: 'not_verified', propertyid: null,
-          fips: args.fips ?? null, apn: null, situs_address: null, owner: null,
-          match_notes: `APN search failed: ${(searchResult.body as Record<string, unknown>)?.message ?? searchResult.http_status}`,
-          candidates: [],
-        };
-      }
-      const items = extractSearchItems(searchResult);
-      if (items.length === 0) {
-        return {
-          verified: false, status: 'not_verified', propertyid: null,
-          fips: args.fips ?? null, apn: null, situs_address: null, owner: null,
-          match_notes: 'No results found for this APN.', candidates: [],
-        };
-      }
-      if (items.length > 1) {
-        return {
-          verified: false, status: 'multiple_candidates', propertyid: null,
-          fips: args.fips ?? null, apn: null, situs_address: null, owner: null,
-          match_notes: `${items.length} parcels matched this APN. Ask Tyler to select the correct one.`,
-          candidates: items.slice(0, 5).map(formatCandidate),
-        };
-      }
-      const match = items[0];
-      if (!match.propertyid || !match.fips) {
-        return {
-          verified: false, status: 'not_verified', propertyid: null,
-          fips: args.fips ?? null, apn: null, situs_address: null, owner: null,
-          match_notes: 'APN search returned result without propertyid or fips.', candidates: [],
-        };
-      }
-      const raw = await lpFetch(
-        `/property-data?propertyid=${match.propertyid}&fips=${match.fips}`,
-        {}, ac.signal,
-      );
-      return buildResolverResult(raw, { source: 'apn_search', fips: match.fips as string });
+      return resolveByApnSearch(args.apn, { fips: args.fips, state: args.state }, ac.signal);
     }
 
     // Path 4: Address + city + state + fips

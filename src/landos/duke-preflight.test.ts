@@ -120,6 +120,13 @@ describe('extractPropertyArgs', () => {
     expect(r).toMatchObject({ lp_url: 'https://landportal.com/property?propertyid=12345&fips=37005' });
   });
 
+  it('captures the base64 ?property= LP URL for forwarding (Chinquapin)', () => {
+    const url =
+      'https://landportal.com/?property=Zmlwcz0zNzA2MSZhcG49MDgtMjUxOC0rKy0rKy0mbGxfdXVpZD05NjUzMTE1NQ%3D%3D';
+    const r = extractPropertyArgs(`3832 S NC 50 Hwy, Chinquapin, NC ${url}`);
+    expect(r).toMatchObject({ lp_url: url });
+  });
+
   it('extracts APN with keyword (colon form)', () => {
     const r = extractPropertyArgs('Run DD on APN: 12-345-678, Alleghany County NC');
     expect(r).toMatchObject({ apn: '12-345-678', state: 'NC' });
