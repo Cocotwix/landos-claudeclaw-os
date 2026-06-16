@@ -1077,6 +1077,25 @@ describe('LandOS property card + memory endpoints', () => {
     expect((await patch(`/api/landos/property-cards/${card.id}`, { kanbanStatus: 'bogus' })).status).toBe(400);
   });
 
+  it('GET /api/landos/board returns 200 (not 404) for every entity filter incl. empty state', async () => {
+    // Empty DB — the page must load with a valid empty board, never a 404.
+    for (const entity of ['all', 'TY_LAND_BIZ', 'LAND_ALLY']) {
+      const res = await get(`/api/landos/board?entity=${entity}`);
+      expect(res.status, entity).toBe(200);
+      const body = await jsonOf(res);
+      expect(typeof body.columns, entity).toBe('object');
+      expect(Array.isArray(body.statuses), entity).toBe(true);
+      // Empty payload: each status column is an empty array, not missing/404.
+      expect(body.columns.new_lead, entity).toEqual([]);
+    }
+    // entity=all aggregates across both entities.
+    await post('/api/landos/property-cards', { entity: 'TY_LAND_BIZ', activeInputAddress: '70 All Rd, Lexington SC' });
+    await post('/api/landos/property-cards', { entity: 'LAND_ALLY', activeInputAddress: '72 All Rd, Lexington SC' });
+    const all = await jsonOf(await get('/api/landos/board?entity=all'));
+    const total = Object.values(all.columns).reduce((n: number, col: any) => n + (col as unknown[]).length, 0);
+    expect(total).toBe(2);
+  });
+
   it('PATCH cannot promote a card to verified_property without strong identity', async () => {
     const card = (await jsonOf(await post('/api/landos/property-cards', {
       entity: 'TY_LAND_BIZ', activeInputAddress: '40 Promote Rd, Town SC',

@@ -13,6 +13,17 @@ const SRC = fs.readFileSync(
   'utf-8',
 );
 
+describe('Property Board board endpoint wiring', () => {
+  it('fetches the board from the real backend route with the entity filter', () => {
+    expect(SRC).toMatch(/\/api\/landos\/board\?entity=\$\{encodeURIComponent\(entity\)\}/);
+  });
+
+  it('degrades to a clean empty board (no red error) if the board endpoint fails', () => {
+    // On load failure the page sets an empty valid board instead of an error.
+    expect(SRC).toMatch(/setBoard\(\{\s*columns:\s*\{\}\s*,\s*statuses:\s*\[\]\s*\}\)/);
+  });
+});
+
 describe('Property Board manual comp UI', () => {
   it('has a Comps section with an Add Manual Comp action wired to the real API', () => {
     expect(SRC).toMatch(/Add Manual Comp/);

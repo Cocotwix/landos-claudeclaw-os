@@ -106,7 +106,11 @@ export function PropertyBoard() {
       const res = await apiGet<BoardResponse>(`/api/landos/board?entity=${encodeURIComponent(entity)}`);
       setBoard(res);
     } catch (e: any) {
-      setError(e?.message || String(e));
+      // The board endpoint may be briefly unavailable (e.g. a backend still
+      // rolling out). Degrade to a clean empty board — show "No property cards
+      // yet" rather than a red error banner — instead of breaking the page.
+      console.warn('Property Board load failed; showing empty board:', e?.message || e);
+      setBoard({ columns: {}, statuses: [] });
     } finally {
       setLoading(false);
     }
