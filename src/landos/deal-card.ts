@@ -703,7 +703,9 @@ export interface MultiParcelDukeWritebackInput {
 export interface MultiParcelDukeWritebackResult {
   dealCardId: number;
   createdDeal: boolean;
-  properties: Array<{ cardId: number; apn: string; verificationStatus: string; created: boolean }>;
+  /** linkedToThisDeal is false for a conflict parcel that was left linked to a
+   *  different Deal Card (not cross-merged); otherActiveDealId names that deal. */
+  properties: Array<{ cardId: number; apn: string; verificationStatus: string; created: boolean; linkedToThisDeal: boolean; otherActiveDealId?: number }>;
   warnings: string[];
 }
 
@@ -773,17 +775,34 @@ export function upsertDealCardFromMultiParcelDukeRun(
         createdBy: input.agentId ?? 'duke-due-diligence',
       });
     }
-    properties.push({ cardId: u.card.id, apn: u.card.apn, verificationStatus: u.card.verification_status, created: u.created });
+    properties.push({
+      cardId: u.card.id,
+      apn: u.card.apn,
+      verificationStatus: u.card.verification_status,
+      created: u.created,
+      linkedToThisDeal: !conflict,
+      otherActiveDealId: conflict ? (u.existingDealId as number) : undefined,
+    });
   }
 
   // 7. Update the reused/created Deal Card's package notes (never a new card).
-  const apns = properties.map((x) => x.apn).filter(Boolean);
-  const verifiedCount = properties.filter((x) => x.verificationStatus === 'verified_property').length;
+  //    Be precise: count only the parcels ACTUALLY attached to this Deal Card,
+  //    and separately note any conflict parcels left linked elsewhere.
+  const attached = properties.filter((x) => x.linkedToThisDeal);
+  const conflicts = properties.filter((x) => !x.linkedToThisDeal);
+  const attachedApns = attached.map((x) => x.apn).filter(Boolean);
+  const verifiedAttached = attached.filter((x) => x.verificationStatus === 'verified_property').length;
+  const conflictApns = conflicts.map((x) => x.apn).filter(Boolean);
   const packageNotes =
-    `${properties.length} properties/APNs attached to this Deal Card` +
-    (apns.length ? ` (APNs: ${apns.join(', ')})` : '') +
-    `. Verified: ${verifiedCount}/${properties.length}. APNs are kept as distinct property records; contiguity is not assumed.` +
-    (conflictDealIds.length ? ` Note: conflicting Deal Card links detected (${conflictDealIds.join(', ')}); not merged.` : '') +
+    `${attached.length} propert${attached.length === 1 ? 'y' : 'ies'}/APN${attached.length === 1 ? '' : 's'} attached to this Deal Card` +
+    (attachedApns.length ? ` (APNs: ${attachedApns.join(', ')})` : '') +
+    `. Verified: ${verifiedAttached}/${attached.length}. APNs are kept as distinct property records; contiguity is not assumed.` +
+    (conflicts.length
+      ? ` ${conflicts.length} propert${conflicts.length === 1 ? 'y' : 'ies'} seen in this run ` +
+        `${conflicts.length === 1 ? 'was' : 'were'} left linked to another Deal Card` +
+        (conflictApns.length ? ` (APNs: ${conflictApns.join(', ')}` : ' (') +
+        `; Deal Cards: ${conflictDealIds.join(', ')}) and ${conflicts.length === 1 ? 'was' : 'were'} NOT merged.`
+      : '') +
     (input.dealContext?.summary ? ` ${sanitizeUnverifiedSummary(input.dealContext.summary)}` : '');
   updateDealCard(dealCardId, { packageNotes });
 

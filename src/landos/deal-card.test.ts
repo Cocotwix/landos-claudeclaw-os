@@ -534,3 +534,93 @@ describe('Multi-APN Deal Card idempotency / reuse on rerun', () => {
     expect(counts().deals).toBe(1);
   });
 });
+
+describe('Multi-APN conflicting Deal Card links', () => {
+  function links(db: ReturnType<typeof getLandosDb>) {
+    return db.prepare('SELECT deal_card_id, card_id FROM landos_deal_card_property ORDER BY id').all() as any[];
+  }
+
+  // Parcel A pre-linked to Deal Card 1, Parcel B pre-linked to Deal Card 2.
+  function setupConflict() {
+    const a = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '1 Conf Rd, Lexington SC', apn: 'CFL-A', county: 'Lexington',
+      verified: true, verificationSource: 'county assessor record',
+    })!;
+    const b = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '9 Other Rd, Lexington SC', apn: 'CFL-B', county: 'Lexington',
+      verified: true, verificationSource: 'county assessor record',
+    })!;
+    return { deal1: a.dealCardId, deal2: b.dealCardId, cardA: a.cardId, cardB: b.cardId };
+  }
+
+  function runMulti() {
+    return upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      agentId: 'duke-due-diligence',
+      parcels: [
+        { activeInputAddress: '1 Conf Rd, Lexington SC', apn: 'CFL-A', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+        { activeInputAddress: '9 Other Rd, Lexington SC', apn: 'CFL-B', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+      ],
+    })!;
+  }
+
+  it('does not silently merge two parcels already linked to different Deal Cards', () => {
+    const { deal1, deal2, cardA, cardB } = setupConflict();
+    const db = getLandosDb();
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card').get() as any).n).toBe(2);
+
+    const res = runMulti();
+
+    // Deterministic target = lowest existing deal id (deal1).
+    expect(deal1).toBeLessThan(deal2);
+    expect(res.dealCardId).toBe(deal1);
+    expect(res.createdDeal).toBe(false);
+
+    // No new/merged Deal Cards: both originals preserved.
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card').get() as any).n).toBe(2);
+
+    // Distinct property cards + APNs unchanged.
+    expect(getPropertyCard(cardA)!.apn).toBe('CFL-A');
+    expect(getPropertyCard(cardB)!.apn).toBe('CFL-B');
+    expect(cardA).not.toBe(cardB);
+
+    // The conflict parcel B is NOT cross-linked into the target deal1.
+    const all = links(db);
+    expect(all.length).toBe(2); // no duplicate property-to-deal links
+    expect(all.filter((l) => l.card_id === cardB).map((l) => l.deal_card_id)).toEqual([deal2]);
+    expect(all.some((l) => l.card_id === cardB && l.deal_card_id === deal1)).toBe(false);
+
+    // Result flags: A attached to this deal; B left linked elsewhere.
+    const pa = res.properties.find((p) => p.apn === 'CFL-A')!;
+    const pb = res.properties.find((p) => p.apn === 'CFL-B')!;
+    expect(pa.linkedToThisDeal).toBe(true);
+    expect(pb.linkedToThisDeal).toBe(false);
+    expect(pb.otherActiveDealId).toBe(deal2);
+
+    // Clear conflict warning + next action on the conflict parcel.
+    expect(res.warnings.join(' ')).toMatch(/conflicting deal card links/i);
+    const na = db.prepare("SELECT * FROM landos_card_next_action WHERE card_id = ? AND action LIKE 'Resolve conflicting Deal Card linkage%'").get(cardB) as any;
+    expect(na).toBeTruthy();
+  });
+
+  it('package notes distinguish attached properties from conflict properties left linked elsewhere', () => {
+    setupConflict();
+    const res = runMulti();
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.package_notes).toMatch(/1 property\/APN attached to this Deal Card/i);
+    expect(detail.package_notes).toMatch(/CFL-A/);
+    expect(detail.package_notes).toMatch(/1 property seen in this run was left linked to another Deal Card/i);
+    expect(detail.package_notes).toMatch(/CFL-B/);
+    expect(detail.package_notes).toMatch(/NOT merged/i);
+  });
+
+  it('rerunning the same conflict scenario stays idempotent (no new deals or links)', () => {
+    setupConflict();
+    runMulti();
+    runMulti();
+    const db = getLandosDb();
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card').get() as any).n).toBe(2);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card_property').get() as any).n).toBe(2);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_property_card').get() as any).n).toBe(2);
+  });
+});
