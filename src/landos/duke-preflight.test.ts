@@ -164,9 +164,32 @@ describe('extractPropertyArgs', () => {
     expect(extractPropertyArgs('What is the buildability threshold for a PURSUE verdict?')).toBeNull();
   });
 
-  it('returns null for a plain address without county or fips', () => {
-    // extractPropertyArgs returns null; runDukePreflight then blocks via looksLikePropertyInput
-    expect(extractPropertyArgs('731 Filter Plant Rd, Sparta, NC')).toBeNull();
+  it('parses a full street address + city + state without FIPS (comma form)', () => {
+    // No FIPS supplied: still parse the address so the resolver returns
+    // ambiguous_fips and Duke resolves county via its non-coordinate ladder.
+    const r = extractPropertyArgs('731 Filter Plant Rd, Sparta, NC');
+    expect(r).toMatchObject({ address: '731 Filter Plant Rd', city: 'Sparta', state: 'NC' });
+    expect(r?.fips).toBeUndefined();
+  });
+
+  it('parses the Clydeville fixture (street, city, state, ZIP) as an address input', () => {
+    const r = extractPropertyArgs('217 Clydeville Ln, Cottageville, SC 29435');
+    expect(r).toMatchObject({ address: '217 Clydeville Ln', city: 'Cottageville', state: 'SC' });
+    expect(r?.fips).toBeUndefined();
+  });
+
+  it('parses an address with city + state and no comma before the state', () => {
+    const r = extractPropertyArgs('57 Church Road, Arnold MD');
+    expect(r).toMatchObject({ address: '57 Church Road', city: 'Arnold', state: 'MD' });
+  });
+
+  it('still includes a labeled FIPS with a full address when present', () => {
+    const r = extractPropertyArgs('731 Filter Plant Rd, Sparta, NC fips: 37005');
+    expect(r).toMatchObject({ address: '731 Filter Plant Rd', city: 'Sparta', state: 'NC', fips: '37005' });
+  });
+
+  it('returns null for a street address with no city or state', () => {
+    expect(extractPropertyArgs('57 Church Road')).toBeNull();
   });
 });
 
@@ -181,8 +204,8 @@ describe('runDukePreflight', () => {
     expect(mockLp).not.toHaveBeenCalled();
   });
 
-  it('blocks on address-only input without county/FIPS -- does not call LP or runAgent', async () => {
-    const outcome = await runDukePreflight('57 Church Road, Arnold MD', ALLOWLIST, 10_000);
+  it('blocks property-ish input with no parseable address/state -- does not call LP', async () => {
+    const outcome = await runDukePreflight('Run due diligence on this parcel', ALLOWLIST, 10_000);
     expect(outcome.type).toBe('blocked');
     expect(mockLp).not.toHaveBeenCalled();
     const b = outcome as Extract<typeof outcome, { type: 'blocked' }>;
@@ -191,18 +214,34 @@ describe('runDukePreflight', () => {
     expect(b.reason).toBe('missing_parcel_identity');
   });
 
-  it('blocks on address with state but no county -- does not call LP', async () => {
-    const outcome = await runDukePreflight('731 Filter Plant Rd, Sparta, NC', ALLOWLIST, 10_000);
-    expect(outcome.type).toBe('blocked');
-    expect(mockLp).not.toHaveBeenCalled();
+  it('does not re-ask for an address when a full address was supplied', async () => {
+    const outcome = await runDukePreflight('57 Church Road', ALLOWLIST, 10_000);
     const b = outcome as Extract<typeof outcome, { type: 'blocked' }>;
-    expect(b.message).toContain('Provide APN + county');
+    // Improved message never tells Tyler to "provide address".
+    expect(b.message).not.toMatch(/provide.*address|address \+ county/i);
+    // But still points to a valid non-coordinate identifier path.
+    expect(b.message).toMatch(/county|APN|FIPS/i);
   });
 
-  it('blocked message tells Tyler to provide county for direct lookup', async () => {
-    const outcome = await runDukePreflight('57 Church Road, Arnold MD', ALLOWLIST, 10_000);
-    const b = outcome as Extract<typeof outcome, { type: 'blocked' }>;
-    expect(b.message).toMatch(/county|APN/i);
+  it('does NOT instantly block a full address with city/state/ZIP -- routes to lookup (Clydeville)', async () => {
+    // Live bug: "217 Clydeville Ln, Cottageville, SC 29435" returned an instant
+    // "provide address + county/state". It must reach the resolver instead.
+    mockLp.mockResolvedValue(AMBIGUOUS_FIPS);
+    const outcome = await runDukePreflight('217 Clydeville Ln, Cottageville, SC 29435', ALLOWLIST, 10_000);
+    expect(mockLp).toHaveBeenCalledTimes(1);
+    expect(mockLp).toHaveBeenCalledWith(
+      expect.objectContaining({ address: '217 Clydeville Ln', city: 'Cottageville', state: 'SC' }),
+      10_000,
+    );
+    // ambiguous_fips passes through so Duke can resolve county via its allowed,
+    // non-coordinate recovery ladder (county assessor/GIS) -- not a hard block.
+    expect(outcome.type).toBe('skip');
+  });
+
+  it('skips a full address with state but no county so Duke can resolve county', async () => {
+    mockLp.mockResolvedValue(AMBIGUOUS_FIPS);
+    const outcome = await runDukePreflight('731 Filter Plant Rd, Sparta, NC', ALLOWLIST, 10_000);
+    expect(outcome.type).toBe('skip');
   });
 
   it('blocks with timeout message on LP timeout result', async () => {

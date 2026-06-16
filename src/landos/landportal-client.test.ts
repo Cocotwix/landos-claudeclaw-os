@@ -2,13 +2,14 @@
 // network, no live LandPortal calls, no paid comp tools. Covers the Chinquapin
 // fixture (?property=<base64> form) that previously produced a false negative.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   parseLandPortalUrl,
   normalizeApn,
   lpUrlIdentityToArgs,
   buildLpUrlGapMessage,
+  lpResolveForPreflight,
 } from './landportal-client.js';
 
 // The exact fixture Tyler supplied. property= base64 decodes to
@@ -109,5 +110,75 @@ describe('buildLpUrlGapMessage', () => {
     const parsed = parseLandPortalUrl(CHINQUAPIN_URL)!;
     const msg = buildLpUrlGapMessage(parsed);
     expect(/coordinate|proximity|nearest|geocod|centroid|midpoint|map pin/i.test(msg)).toBe(false);
+  });
+});
+
+describe('lpResolveForPreflight address-without-FIPS (no network)', () => {
+  it('returns ambiguous_fips with an exact-lookup/county message, not a "provide address" re-ask', async () => {
+    // No FIPS short-circuits before any fetch, so this needs no token or mock.
+    const r = await lpResolveForPreflight(
+      { address: '217 Clydeville Ln', city: 'Cottageville', state: 'SC' },
+      5_000,
+    );
+    expect(r.status).toBe('ambiguous_fips');
+    expect(r.match_notes).toMatch(/county|fips|exact/i);
+    expect(r.match_notes.toLowerCase()).toContain('no scoring, valuation, or offer');
+    // Must not tell Tyler to provide an address he already supplied.
+    expect(r.match_notes).not.toMatch(/provide.*address|address \+ county/i);
+    // Never coordinates/proximity.
+    expect(/coordinate|proximity|nearest|geocod|centroid|midpoint|map pin/i.test(r.match_notes)).toBe(false);
+  });
+});
+
+describe('lpResolveForPreflight LP-URL exact lookup (mocked fetch)', () => {
+  const origFetch = global.fetch;
+  const hadToken = Object.prototype.hasOwnProperty.call(process.env, 'LP_JWT_TOKEN');
+  const origToken = process.env.LP_JWT_TOKEN;
+
+  afterEach(() => {
+    global.fetch = origFetch;
+    if (hadToken) process.env.LP_JWT_TOKEN = origToken;
+    else delete process.env.LP_JWT_TOKEN;
+    vi.restoreAllMocks();
+  });
+
+  it('Chinquapin URL runs an exact parcelnumb search (query=08-2518, fips=37061) before property-data', async () => {
+    process.env.LP_JWT_TOKEN = 'test-token';
+    const calls: string[] = [];
+    global.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes('/search')) {
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify({ data: [{ propertyid: '555', fips: '37061', apn: '08-2518' }] }),
+        } as Response;
+      }
+      return {
+        ok: true, status: 200,
+        text: async () => JSON.stringify({
+          meta: { requests_left: '9' },
+          data: { property: {
+            propertyid: '555', apn: '08-2518',
+            situsfullstreetaddress: '217 CLYDEVILLE LN',
+            situscity: 'COTTAGEVILLE', situsstate: 'SC',
+          } },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const r = await lpResolveForPreflight({ lp_url: CHINQUAPIN_URL }, 10_000);
+
+    expect(calls.length).toBe(2);
+    expect(calls[0]).toContain('/search');
+    expect(calls[0]).toContain('type=parcelnumb');
+    expect(calls[0]).toContain('query=08-2518');
+    expect(calls[0]).toContain('fips=37061');
+    // property-data is only hit AFTER the exact search resolves a single parcel.
+    expect(calls[1]).toContain('/property-data');
+    expect(calls[1]).toContain('propertyid=555');
+    expect(calls[1]).toContain('fips=37061');
+    expect(r.verified).toBe(true);
+    expect(r.propertyid).toBe('555');
   });
 });

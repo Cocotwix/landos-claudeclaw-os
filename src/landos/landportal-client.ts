@@ -608,7 +608,10 @@ export async function lpResolveForPreflight(
         return {
           verified: false, status: 'ambiguous_fips', propertyid: null, fips: null,
           apn: null, situs_address: null, owner: null,
-          match_notes: `County or FIPS required for address lookup of "${args.address}, ${args.city}, ${args.state}".`,
+          match_notes:
+            `Address parsed ("${args.address}, ${args.city}, ${args.state}"), but exact LandPortal ` +
+            'address lookup requires a county/FIPS. No parcel verified -- no scoring, valuation, or offer. ' +
+            'Resolve county via official county assessor/GIS records.',
           candidates: [],
         };
       }

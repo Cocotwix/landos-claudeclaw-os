@@ -11,7 +11,9 @@ const TIMEOUT_MESSAGE =
 
 const INCOMPLETE_IDENTITY_MESSAGE =
   'Parcel not verified -- no scoring, valuation, or offer. ' +
-  'Provide APN + county or address + county/state for direct lookup.';
+  'I could not read a parcel identity from this input. ' +
+  'Send the state plus county (or FIPS), the APN, or owner + county/state for exact lookup. ' +
+  'Coordinates and proximity are never used to identify a parcel.';
 
 const US_STATES = new Set([
   'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
@@ -35,6 +37,20 @@ function extractLabeledFips(text: string): string | undefined {
 // Street-type keywords used to detect likely property address inputs.
 const STREET_TYPE_RE =
   /(?:^|[,;\n])\s*\d+[A-Za-z]?\s+[A-Za-z]\w*(?:\s+\w+)*?\s+(?:road|rd|street|st|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|way|place|pl|highway|hwy|parkway|pkwy|circle|cir|loop|trail|trl|pike|route|terrace|ter)\b/i;
+
+// Street-type vocabulary for capturing a full street address (full word OR
+// abbreviation). Used to extract the address span for an exact LP lookup.
+const STREET_TYPE_WORDS =
+  'street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|court|ct|' +
+  'way|place|pl|highway|hwy|parkway|pkwy|circle|cir|loop|trail|trl|pike|' +
+  'terrace|terr|ter|route|rt|cove|cv|crossing|xing|square|sq';
+const ADDRESS_RE = new RegExp(
+  `\\b(\\d+[A-Za-z]?\\s+[A-Za-z][\\w ]*?\\s+(?:${STREET_TYPE_WORDS}))\\b`,
+  'i',
+);
+// City + 2-letter state, with or without a comma before the state, e.g.
+// ", Cottageville, SC" or ", Arnold MD". The state is validated against US_STATES.
+const CITY_STATE_RE = /,\s*([A-Za-z][A-Za-z .'\-]*?)\s*,?\s+([A-Z]{2})\b/;
 
 /**
  * Returns true when the message looks like a specific property address input
@@ -96,23 +112,26 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
     return { propertyid: propIdMatch[1], fips: labeledFips };
   }
 
-  // Address + city + state + labeled FIPS. Only run LP if all four are present
-  // because LP's address filter requires FIPS.
-  if (labeledFips) {
-    // Simple address pattern: house number + street name + street type
-    const addrMatch = text.match(
-      /\b(\d+[A-Za-z]?\s+[\w ]+?\s+(?:St|Rd|Ave|Blvd|Dr|Ln|Ct|Way|Pl|Hwy|Pkwy|Cir|Loop|Trail|Trl|Pike|Terr?|Route|Rt))\b/i,
-    );
-    const cityMatch = text.match(/,\s*([\w ]+?)\s*,\s*[A-Z]{2}\b/);
-    const state = extractState(text);
-    if (addrMatch && cityMatch && state) {
-      return {
-        address: addrMatch[1].trim(),
-        city: cityMatch[1].trim(),
-        state,
-        fips: labeledFips,
-      };
-    }
+  // Full street address + city + state. LP's address filter needs a FIPS, but a
+  // street address with city/state is a valid exact-lookup input: when FIPS is
+  // absent we still return the parsed address so the resolver returns
+  // ambiguous_fips and Duke resolves county via its allowed, non-coordinate
+  // recovery ladder. Never block a full address with a "provide address" re-ask.
+  const addrMatch = text.match(ADDRESS_RE);
+  const cityStateMatch = text.match(CITY_STATE_RE);
+  const state = extractState(text);
+  if (
+    addrMatch &&
+    cityStateMatch &&
+    state &&
+    US_STATES.has(cityStateMatch[2].toUpperCase())
+  ) {
+    return {
+      address: addrMatch[1].trim(),
+      city: cityStateMatch[1].trim(),
+      state,
+      ...(labeledFips ? { fips: labeledFips } : {}),
+    };
   }
 
   return null;
