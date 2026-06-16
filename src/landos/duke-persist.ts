@@ -54,11 +54,14 @@ export interface DukeParcelInput {
   apn?: string;
   lpPropertyId?: string;
   fips?: string;
+  /** LandPortal property URL — only when provided; NEVER fabricated. */
+  lpUrl?: string;
   county?: string;
   state?: string;
   city?: string;
   address?: string;
   acres?: number;
+  owner?: string;
   verified?: boolean;
   verificationSource?: string;
   /** Shaped LP response reference metadata (NOT raw work product dumps). */

@@ -32,6 +32,7 @@ import {
   type DukeRunPayload,
   type DukeRunStatus,
 } from './duke-persist.js';
+import { upsertDealCardFromDukeRun } from './deal-card.js';
 
 export interface DukeDashboardRunInfo {
   agentId?: string;
@@ -52,6 +53,12 @@ interface LandosPersistBlock {
   fileRefs?: DukeFileRefInput[];
   reportStatus?: DukeReportStatus;
   summary?: string;
+  /** Deal Card writeback extras (all optional). */
+  leadName?: string;
+  recordOwnerName?: string;
+  risks?: string[];
+  nextActions?: string[];
+  sourceLinks?: Array<{ fact?: string; url?: string }>;
 }
 
 const PERSIST_BLOCK_RE = /```landos-persist\s*\n([\s\S]*?)```/;
@@ -127,21 +134,76 @@ export function buildDukePersistPayload(info: DukeDashboardRunInfo): DukeRunPayl
 }
 
 /**
- * Persist a completed Duke dashboard run. Never throws: any failure
- * (including a hard-parcel-rule refusal) is reported through onError and
- * the function returns null — report delivery has already happened and
- * must stand.
+ * Build the Deal Card writeback input from a completed run. Pure. Returns null
+ * when there is no usable identity/address to anchor a card on. Strong-identity
+ * verification is enforced downstream by the property-card layer — this only
+ * passes through what the run reported (and never fabricates a LandPortal URL).
+ */
+export function buildDealWritebackInput(info: DukeDashboardRunInfo): import('./deal-card.js').DukeDealWritebackInput | null {
+  const text = info.responseText ?? '';
+  const { block } = extractPersistBlock(text);
+  const parcel = block?.parcel;
+  const entity = block?.entity ?? info.entity ?? 'TY_LAND_BIZ';
+  const address = (parcel?.address ?? '').trim();
+  const hasIdentity = !!(parcel?.apn || parcel?.lpPropertyId);
+  if (!address && !hasIdentity) return null;
+
+  const sourceLinks = (block?.sourceLinks ?? [])
+    .filter((s) => s && typeof s.url === 'string' && s.url.trim() && !isInsideRepo(s.url))
+    .map((s) => ({ fact: s.fact ?? 'source', url: s.url as string }));
+
+  return {
+    entity,
+    agentId: info.agentId ?? 'duke-due-diligence',
+    activeInputAddress: address,
+    apn: parcel?.apn,
+    lpPropertyId: parcel?.lpPropertyId,
+    fips: parcel?.fips,
+    lpUrl: parcel?.lpUrl, // only when provided; never fabricated
+    county: parcel?.county,
+    state: parcel?.state,
+    city: parcel?.city,
+    owner: parcel?.owner,
+    acres: parcel?.acres,
+    verified: parcel?.verified,
+    verificationSource: parcel?.verificationSource,
+    summary: block?.summary,
+    leadName: block?.leadName,
+    recordOwnerName: block?.recordOwnerName,
+    risks: block?.risks,
+    nextActions: block?.nextActions,
+    sourceLinks,
+  };
+}
+
+/**
+ * Persist a completed Duke dashboard run AND bridge it into the Deal Card
+ * system. Never throws: any failure (including a hard-parcel-rule refusal) is
+ * reported through onError and the function returns null — report delivery has
+ * already happened and must stand. The Deal Card writeback is best-effort and
+ * its failure never affects the parcel persistence result.
  */
 export function persistDukeRunPostDelivery(
   info: DukeDashboardRunInfo,
   onError?: (message: string, err: unknown) => void,
 ): DukePersistResult | null {
+  let result: DukePersistResult | null = null;
   try {
-    return persistDukeRun(buildDukePersistPayload(info));
+    result = persistDukeRun(buildDukePersistPayload(info));
   } catch (err) {
     try {
       onError?.('Duke persistence failed (nonfatal — report delivery unaffected)', err);
     } catch { /* even a broken logger must not break delivery */ }
-    return null;
   }
+  // Deal Card writeback bridge: separate try so it can never undo the parcel
+  // persistence above or affect the delivered report.
+  try {
+    const writeback = buildDealWritebackInput(info);
+    if (writeback) upsertDealCardFromDukeRun(writeback);
+  } catch (err) {
+    try {
+      onError?.('Duke Deal Card writeback failed (nonfatal — report delivery unaffected)', err);
+    } catch { /* ignore */ }
+  }
+  return result;
 }

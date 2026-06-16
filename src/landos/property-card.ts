@@ -490,6 +490,23 @@ export function setNextActionStatus(id: number, status: string): void {
   getLandosDb().prepare('UPDATE landos_card_next_action SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id);
 }
 
+/** Merge risk/anomaly flags into a card's open_risks (deduped). Returns the
+ *  merged list. */
+export function appendCardOpenRisks(cardId: number, risks: string[]): string[] {
+  const db = getLandosDb();
+  const card = getPropertyCardRow(cardId);
+  if (!card) return [];
+  const current = parseJsonArray(card.open_risks);
+  for (const r of risks) {
+    const v = (r ?? '').trim();
+    if (v && !current.includes(v)) current.push(v);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare('UPDATE landos_property_card SET open_risks = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(current), now, cardId);
+  return current;
+}
+
 // ── Nearby search reference ────────────────────────────────────────────────
 
 export interface NearbySearchReferenceInput {

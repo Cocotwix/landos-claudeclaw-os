@@ -9,6 +9,8 @@ import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 
+import { paidCompDecision, compWorkflowMode } from './comp-guard.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -637,6 +639,11 @@ async function callTool(name, args = {}, signal = null) {
   }
 
   if (name === 'lp_comp_report_create') {
+    // Paid comp credit: blocked unless running inside a live LandOS property
+    // workflow. Default-deny. Checked BEFORE any network call so a build/test/
+    // mock/seed/debug/unknown run can never spend a comp credit.
+    const decision = paidCompDecision(name, compWorkflowMode());
+    if (!decision.allowed) return decision.error;
     return lpFetch('/reports', {
       method: 'POST',
       body: JSON.stringify({
@@ -647,6 +654,8 @@ async function callTool(name, args = {}, signal = null) {
   }
 
   if (name === 'lp_comp_report_get') {
+    const decision = paidCompDecision(name, compWorkflowMode());
+    if (!decision.allowed) return decision.error;
     const params = new URLSearchParams({
       propertyid: args.propertyid,
       fips: args.fips,

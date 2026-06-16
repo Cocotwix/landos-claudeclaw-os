@@ -48,6 +48,15 @@ import {
 } from './property-card.js';
 import { routeDukeRequest } from './duke-router.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
+import { listDealCards, getDealCard } from './deal-card.js';
+import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
+import {
+  DEAL_CARD_STATUSES,
+  type DealCardStatus,
+  type CompSourceLabel,
+  type CompPriceKind,
+  type CompStatus,
+} from './db.js';
 
 const isEntity = (v: unknown): v is LandosEntity =>
   v === 'LAND_ALLY' || v === 'TY_LAND_BIZ';
@@ -496,6 +505,72 @@ export function registerLandosRoutes(app: Hono): void {
     });
     if (!updated) return c.json({ error: 'not found' }, 404);
     return c.json({ job: updated });
+  });
+
+  // ── Deal Cards (the user-facing object) ─────────────────────────────
+  app.get('/api/landos/deal-cards', (c) => {
+    const entity = entityParam(c.req.query('entity'));
+    const status = c.req.query('status');
+    return c.json({
+      dealCards: listDealCards({
+        entity,
+        status: (DEAL_CARD_STATUSES as readonly string[]).includes(status ?? '') ? (status as DealCardStatus) : undefined,
+      }),
+    });
+  });
+
+  app.get('/api/landos/deal-cards/:id', (c) => {
+    const deal = getDealCard(Number(c.req.param('id')));
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    return c.json({ dealCard: deal });
+  });
+
+  // ── Comps (manual + automated). Never verifies parcel identity. ─────
+  app.get('/api/landos/deal-cards/:id/comps', (c) => {
+    return c.json({ comps: listComps({ dealCardId: Number(c.req.param('id')) }) });
+  });
+
+  app.post('/api/landos/deal-cards/:id/comps', async (c) => {
+    const dealCardId = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const deal = getDealCard(dealCardId);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    if (!isEntity(deal.entity)) return c.json({ error: 'deal card has no valid entity' }, 400);
+    const comp = addComp({
+      entity: deal.entity,
+      dealCardId,
+      cardId: num(body.cardId),
+      sourceLabel: str(body.sourceLabel) as CompSourceLabel | undefined,
+      sourceUrl: str(body.sourceUrl),
+      addressDesc: str(body.addressDesc),
+      apn: str(body.apn),
+      county: str(body.county),
+      state: str(body.state),
+      price: num(body.price),
+      priceKind: str(body.priceKind) as CompPriceKind | undefined,
+      saleOrListDate: str(body.saleOrListDate),
+      acres: num(body.acres),
+      pricePerAcre: num(body.pricePerAcre),
+      notes: str(body.notes),
+      addedBy: str(body.addedBy),
+      status: str(body.status) as CompStatus | undefined,
+    });
+    return c.json({ comp }, 201);
+  });
+
+  // Comp-source recommendation + LP staleness (no paid calls; advice only).
+  app.post('/api/landos/comps/recommend', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const recommendation = recommendCompSources({
+      acres: num(body.acres),
+      lpAvailable: body.lpAvailable === true,
+      lpStale: body.lpStale === true,
+      niche: body.niche === true,
+    });
+    const recency = str(body.newestCompDate) || str(body.runDate)
+      ? evaluateCompRecency(str(body.newestCompDate) ?? null, str(body.runDate) ?? new Date().toISOString())
+      : undefined;
+    return c.json({ recommendation, recency });
   });
 
   // ── Duke capability router (classification only) ────────────────────

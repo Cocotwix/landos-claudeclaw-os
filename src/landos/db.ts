@@ -109,6 +109,29 @@ export type DealPropertyRole = (typeof DEAL_PROPERTY_ROLES)[number];
 export const CONTIGUITY_STATUSES = ['unknown', 'seller_stated', 'source_confirmed'] as const;
 export type ContiguityStatus = (typeof CONTIGUITY_STATUSES)[number];
 
+// Comp source labels. GIS is intentionally NOT a comp source — county/GIS is
+// for parcel verification and legal facts, never the first-pass comp engine.
+export const COMP_SOURCE_LABELS = [
+  'LandPortal',
+  'Zillow',
+  'Redfin',
+  'Land.com',
+  'LandWatch',
+  'LandsOfAmerica',
+  'Realtor',
+  'County',
+  'Other',
+] as const;
+export type CompSourceLabel = (typeof COMP_SOURCE_LABELS)[number];
+
+export const COMP_PRICE_KINDS = ['sale', 'list', 'unknown'] as const;
+export type CompPriceKind = (typeof COMP_PRICE_KINDS)[number];
+
+// A manual/automated comp's confidence. Manual comps never verify parcel
+// identity and never override source-confirmed parcel facts.
+export const COMP_STATUSES = ['manual_unverified', 'market_reference', 'verified_sale', 'rejected'] as const;
+export type CompStatus = (typeof COMP_STATUSES)[number];
+
 // Roles a person can hold on a deal/property. Being related to the owner never
 // implies signing authority.
 export const PERSON_ROLES = [
@@ -661,6 +684,37 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_landos_person_link_deal ON landos_person_link(deal_card_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_landos_person_link_card ON landos_person_link(card_id, created_at DESC);
+
+    -- Comps attached to a Deal Card (and optionally a specific property card).
+    -- Manual or automated. A comp NEVER verifies parcel identity, never merges
+    -- APNs, and never overrides source-confirmed parcel facts; its source label
+    -- and confidence status always stay visible.
+    CREATE TABLE IF NOT EXISTS landos_comp (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity              TEXT NOT NULL REFERENCES landos_business_entity(id),
+      deal_card_id        INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      card_id             INTEGER REFERENCES landos_property_card(id),
+      source_label        TEXT NOT NULL DEFAULT 'Other'
+                          CHECK (source_label IN (${inList(COMP_SOURCE_LABELS)})),
+      source_url          TEXT NOT NULL DEFAULT '',
+      address_desc        TEXT NOT NULL DEFAULT '',
+      apn                 TEXT NOT NULL DEFAULT '',
+      county              TEXT NOT NULL DEFAULT '',
+      state               TEXT NOT NULL DEFAULT '',
+      price               REAL,
+      price_kind          TEXT NOT NULL DEFAULT 'unknown'
+                          CHECK (price_kind IN (${inList(COMP_PRICE_KINDS)})),
+      sale_or_list_date   TEXT NOT NULL DEFAULT '',
+      acres               REAL,
+      price_per_acre      REAL,
+      notes               TEXT NOT NULL DEFAULT '',
+      added_by            TEXT NOT NULL DEFAULT '',
+      status              TEXT NOT NULL DEFAULT 'manual_unverified'
+                          CHECK (status IN (${inList(COMP_STATUSES)})),
+      created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_comp_deal ON landos_comp(deal_card_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_comp_card ON landos_comp(card_id, created_at DESC);
 
     -- Batch lead-intake jobs. One row per pasted lead; isolated parcel state.
     CREATE TABLE IF NOT EXISTS landos_lead_job (

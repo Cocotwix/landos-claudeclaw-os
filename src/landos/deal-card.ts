@@ -37,7 +37,37 @@ import {
   PERSON_AUTHORITY_STATUSES,
   PERSON_ROLES,
 } from './db.js';
-import { getPropertyCardRow } from './property-card.js';
+import {
+  getPropertyCardRow,
+  upsertCardFromDukeRun,
+  attachCardSourceEvidence,
+  attachCardActivity,
+  addCardNextAction,
+  appendCardOpenRisks,
+  hasStrongParcelIdentity,
+  isProximityVerificationSource,
+  type PropertyCardRow,
+} from './property-card.js';
+
+// Score / value / offer language that must NEVER appear in an unverified /
+// research Deal Card summary. Risks, data gaps, identity status, source links,
+// and next actions are stored in their own fields and stay intact.
+const VALUE_OFFER_LANGUAGE =
+  /\bscore\b|\bvalue[ds]?\b|\bvaluation\b|\bEV\b|\bARV\b|\bMAO\b|\boffer\b|\bworth\b|\bprice\s*per\s*acre\b|\bppa\b|\$\s?\d|\brecommend|\bstrateg|\bcomp[\s-]*supported\b/i;
+
+const UNVERIFIED_SAFE_SUMMARY =
+  'Parcel not definitively verified. Research Deal Card created. Confirm APN, county/state/FIPS, or LandPortal property ID before scoring, valuing, or making offer guidance.';
+
+/**
+ * Defensive sanitizer for an unverified/research Deal Card summary. If the
+ * summary carries any score/value/offer/pricing/strategy language, replace it
+ * with a neutral research summary. Neutral text is left as-is. Pure.
+ */
+export function sanitizeUnverifiedSummary(summary?: string): string {
+  const s = (summary ?? '').trim();
+  if (!s) return '';
+  return VALUE_OFFER_LANGUAGE.test(s) ? UNVERIFIED_SAFE_SUMMARY : s;
+}
 
 // Hearsay / relationship / proximity phrases that can NEVER stand in for
 // official evidence (used to reject contiguity and authority claims).
@@ -365,4 +395,165 @@ export function getDealCard(id: number): DealCardDetail | undefined {
   };
 
   return { ...deal, propertyCards: links, people, combinedAcreage };
+}
+
+// ── Live Duke run -> Deal Card writeback bridge ─────────────────────────────
+
+export interface DukeDealWritebackInput {
+  entity: LandosEntity;
+  agentId?: string;
+  /** The active input address (parcel situs or Tyler's raw input). */
+  activeInputAddress: string;
+  apn?: string;
+  lpPropertyId?: string;
+  fips?: string;
+  lpUrl?: string;
+  county?: string;
+  state?: string;
+  city?: string;
+  owner?: string;
+  acres?: number;
+  verified?: boolean;
+  verificationSource?: string;
+  summary?: string;
+  /** The lead/contact who reached out — separate from the record owner. */
+  leadName?: string;
+  /** The record owner of the parcel, if known. */
+  recordOwnerName?: string;
+  /** Risk / anomaly flags surfaced by the run. */
+  risks?: string[];
+  /** Additional next actions surfaced by the run. */
+  nextActions?: string[];
+  /** Source evidence links: { fact, url }. Stored on the property card. */
+  sourceLinks?: Array<{ fact: string; url: string }>;
+}
+
+export interface DukeDealWritebackResult {
+  dealCardId: number;
+  cardId: number;
+  createdDeal: boolean;
+  createdCard: boolean;
+  verificationStatus: string;
+  warnings: string[];
+}
+
+/**
+ * Bridge a completed live Duke run into the Deal Card system. Creates/updates
+ * the property card (verified vs research per strong identity — never verified
+ * from address-only/weak/timeout), ensures a Deal Card exists and links the
+ * property, then attaches source links, risks, next actions, the LandPortal URL
+ * (only if provided), and a neutral lead-vs-owner mismatch action. Writes no
+ * score/value/offer for unverified runs. Never merges APNs.
+ */
+export function upsertDealCardFromDukeRun(input: DukeDealWritebackInput): DukeDealWritebackResult | null {
+  const address = (input.activeInputAddress ?? '').trim();
+  const hasIdentity = !!(input.apn || input.lpPropertyId);
+  // Nothing to anchor a card on (e.g. a bare timeout with no echoed address).
+  if (!address && !hasIdentity) return null;
+
+  // Defensive summary sanitizer: unless this run is unambiguously verifying the
+  // parcel (verified flag + strong identity + a real non-proximity source),
+  // strip any score/value/offer language from the persisted summary. Erring
+  // toward sanitizing a rare weak-follow-up-on-verified run is safe.
+  const vsource = (input.verificationSource ?? '').trim();
+  const willVerify =
+    input.verified === true &&
+    hasStrongParcelIdentity({
+      apn: input.apn, lpPropertyId: input.lpPropertyId, fips: input.fips,
+      county: input.county, state: input.state,
+    }) &&
+    vsource.length > 0 &&
+    !isProximityVerificationSource(vsource);
+  const safeSummary = willVerify ? input.summary : sanitizeUnverifiedSummary(input.summary);
+
+  const cardRes = upsertCardFromDukeRun({
+    entity: input.entity,
+    agentId: input.agentId,
+    activeInputAddress: address || `${input.apn || input.lpPropertyId} (no address)`,
+    apn: input.apn,
+    lpPropertyId: input.lpPropertyId,
+    fips: input.fips,
+    lpUrl: input.lpUrl,
+    county: input.county,
+    state: input.state,
+    city: input.city,
+    owner: input.recordOwnerName ?? input.owner,
+    acres: input.acres,
+    verified: input.verified,
+    verificationSource: input.verificationSource,
+    summary: safeSummary,
+  });
+  const card: PropertyCardRow = cardRes.card;
+  const warnings = [...cardRes.warnings];
+
+  const db = getLandosDb();
+  // Find an existing Deal Card already linking this property card.
+  const existingLink = db.prepare(
+    'SELECT deal_card_id FROM landos_deal_card_property WHERE card_id = ? ORDER BY id ASC LIMIT 1',
+  ).get(card.id) as { deal_card_id: number } | undefined;
+
+  let dealCardId: number;
+  let createdDeal = false;
+  if (existingLink) {
+    dealCardId = existingLink.deal_card_id;
+  } else {
+    const deal = createDealCard({
+      entity: input.entity,
+      title: address || input.summary || `Deal ${card.id}`,
+    });
+    dealCardId = deal.id;
+    createdDeal = true;
+    linkPropertyToDeal({ dealCardId, cardId: card.id, role: 'subject' });
+  }
+
+  // Source evidence links (offer-usability gated by the standard; verified
+  // parcels only become offer-usable downstream).
+  const parcelVerified = card.verification_status === 'verified_property';
+  for (const link of input.sourceLinks ?? []) {
+    if (link?.url) {
+      attachCardSourceEvidence({ cardId: card.id, fact: link.fact || 'source', sourceUrl: link.url, parcelVerified });
+    }
+  }
+
+  // Risk / anomaly flags.
+  if (input.risks && input.risks.length) appendCardOpenRisks(card.id, input.risks);
+
+  // Extra next actions.
+  for (const a of input.nextActions ?? []) {
+    const v = (a ?? '').trim();
+    if (v) addCardNextAction({ cardId: card.id, action: v, createdBy: input.agentId ?? 'duke-due-diligence' });
+  }
+
+  // Lead-contact vs record-owner: store both neutrally and require confirming
+  // relationship/authority. Never auto-tag probate/inheritance or reject.
+  const mismatch = leadContactMismatchNote(input.leadName, input.recordOwnerName);
+  if (mismatch.mismatch) {
+    attachCardActivity({
+      cardId: card.id,
+      agentId: input.agentId ?? 'duke-due-diligence',
+      kind: 'lead_contact_differs_from_record_owner',
+      summary: `Lead contact "${input.leadName}" differs from record owner "${input.recordOwnerName}". ${LEAD_OWNER_MISMATCH_NOTE}`,
+    });
+    addCardNextAction({
+      cardId: card.id,
+      action: 'Confirm relationship and authority before contract/closing.',
+      createdBy: input.agentId ?? 'duke-due-diligence',
+    });
+  }
+
+  attachCardActivity({
+    cardId: card.id,
+    agentId: input.agentId ?? 'duke-due-diligence',
+    kind: 'duke_deal_writeback',
+    summary: safeSummary || (parcelVerified ? 'Verified Duke run linked to deal' : 'Research Duke run linked to deal'),
+  });
+
+  return {
+    dealCardId,
+    cardId: card.id,
+    createdDeal,
+    createdCard: cardRes.created,
+    verificationStatus: card.verification_status,
+    warnings,
+  };
 }

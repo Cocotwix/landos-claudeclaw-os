@@ -13,7 +13,10 @@ import {
   isSourceBackedAuthority,
   leadContactMismatchNote,
   LEAD_OWNER_MISMATCH_NOTE,
+  upsertDealCardFromDukeRun,
+  sanitizeUnverifiedSummary,
 } from './deal-card.js';
+import { getPropertyCard } from './property-card.js';
 
 beforeEach(() => {
   _initTestLandosDb();
@@ -303,5 +306,49 @@ describe('People / contacts without implied authority', () => {
   it('a person link needs at least a deal or a card', () => {
     const p = addPerson({ entity: 'TY_LAND_BIZ', name: 'Floating' });
     expect(linkPerson({ personId: p, role: 'seller' }).error).toBeTruthy();
+  });
+});
+
+describe('Unverified summary sanitizer + bridge', () => {
+  it('sanitizeUnverifiedSummary replaces score/value/offer language, keeps neutral text', () => {
+    expect(sanitizeUnverifiedSummary('Duke could not verify the parcel. Confirm APN.'))
+      .toBe('Duke could not verify the parcel. Confirm APN.');
+    for (const bad of [
+      'Likely parcel worth around $42,000, offer range $12,000 to $18,000',
+      'Land Score 72/100',
+      'EV approx 40k; recommend MAO 15k',
+      'comp-supported value suggests strong margin',
+    ]) {
+      expect(sanitizeUnverifiedSummary(bad)).toMatch(/not definitively verified/i);
+      // No value/offer DATA survives (dollar figures, score, EV/MAO/ARV). The
+      // instructional words "scoring/valuing/offer guidance" are allowed.
+      expect(sanitizeUnverifiedSummary(bad)).not.toMatch(/\$\s?\d|\d+\s*\/\s*100|\bEV\b|\bMAO\b|\bARV\b/i);
+    }
+  });
+
+  it('an unverified bridge writeback does not persist score/value/offer summary', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '70 Unverified Rd, Lexington SC',
+      county: 'Lexington', state: 'SC', verified: false,
+      summary: 'Likely worth around $42,000; recommend offer range $12,000-$18,000. Land Score 60/100.',
+    })!;
+    expect(res.verificationStatus).not.toBe('verified_property');
+    const detail = getPropertyCard(res.cardId)!;
+    expect(detail.summary).not.toMatch(/\$\s?\d|\d+\s*\/\s*100|\bEV\b|\bMAO\b|\bARV\b/i);
+    expect(detail.summary).toMatch(/not definitively verified/i);
+  });
+
+  it('a verified bridge writeback keeps valuation/offer summary', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '71 Verified Rd, Lexington SC',
+      apn: 'V71', county: 'Lexington', fips: '45063', verified: true,
+      verificationSource: 'lp_resolve_property address filter, verified:true',
+      summary: 'Land Score 78/100. EV $55,000; offer range $24,000-$30,000.',
+    })!;
+    expect(res.verificationStatus).toBe('verified_property');
+    const detail = getPropertyCard(res.cardId)!;
+    expect(detail.summary).toMatch(/offer range/i); // preserved when verified
   });
 });

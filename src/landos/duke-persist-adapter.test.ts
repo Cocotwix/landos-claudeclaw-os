@@ -274,3 +274,75 @@ describe('persistDukeRunPostDelivery', () => {
     )).not.toThrow();
   });
 });
+
+// ── Deal Card writeback bridge (live runtime path) ──────────────────────────
+
+describe('Deal Card writeback bridge', () => {
+  function blockOf(obj: Record<string, unknown>): string {
+    return '```landos-persist\n' + JSON.stringify(obj) + '\n```';
+  }
+
+  it('a verified Duke run creates/links a Deal Card + verified property card', () => {
+    const block = blockOf({
+      entity: 'TY_LAND_BIZ',
+      summary: '123 Rural Rd -- Land Score 72/100',
+      parcel: {
+        address: '123 Rural Rd, Lexington SC', apn: 'BR-1', county: 'Lexington', state: 'SC', fips: '45063',
+        acres: 5, owner: 'Jane Owner', lpPropertyId: 'LP1', lpUrl: 'https://landportal.example/p/1',
+        verified: true, verificationSource: 'lp_resolve_property address filter, verified:true',
+      },
+      sourceLinks: [{ fact: 'zoning', url: 'https://planning.lexingtoncounty.gov/ord' }],
+      risks: ['No LP valuation'],
+      nextActions: ['Pull county checklist'],
+    });
+    persistDukeRunPostDelivery(successInfo({ responseText: FAKE_REPORT + '\n' + block }));
+
+    const db = getLandosDb();
+    const card = db.prepare("SELECT * FROM landos_property_card WHERE apn = 'BR-1'").get() as any;
+    expect(card).toBeTruthy();
+    expect(card.verification_status).toBe('verified_property');
+    expect(card.lp_url).toBe('https://landportal.example/p/1'); // passthrough
+    const link = db.prepare('SELECT * FROM landos_deal_card_property WHERE card_id = ?').get(card.id) as any;
+    expect(link).toBeTruthy(); // linked to a deal card
+    const ev = db.prepare('SELECT COUNT(*) AS n FROM landos_card_source_evidence WHERE card_id = ?').get(card.id) as any;
+    expect(ev.n).toBeGreaterThan(0);
+  });
+
+  it('an address-only / unverified run creates a research card, never verified, no lp_url fabricated', () => {
+    const block = blockOf({
+      entity: 'TY_LAND_BIZ', summary: 'zero candidates',
+      parcel: { address: '83 Bub Wise Rd, Swansea SC', county: 'Lexington', state: 'SC', verified: false },
+    });
+    persistDukeRunPostDelivery(successInfo({ responseText: FAKE_REPORT + '\n' + block }));
+    const db = getLandosDb();
+    const card = db.prepare("SELECT * FROM landos_property_card WHERE active_input_address = '83 Bub Wise Rd, Swansea SC'").get() as any;
+    expect(card.verification_status).not.toBe('verified_property');
+    expect(card.lp_url).toBe(''); // never fabricated
+    // research card still linked to a deal card and has a verify next-action.
+    const na = db.prepare("SELECT * FROM landos_card_next_action WHERE card_id = ? AND action LIKE 'Verify parcel%'").get(card.id) as any;
+    expect(na).toBeTruthy();
+  });
+
+  it('owner/contact mismatch adds the neutral confirm-authority action', () => {
+    const block = blockOf({
+      entity: 'TY_LAND_BIZ',
+      parcel: { address: '9 Mismatch Rd, Lexington SC', apn: 'MM-1', county: 'Lexington', fips: '45063', verified: true, verificationSource: 'county assessor record (APN + county)' },
+      leadName: 'Bob Wholesaler', recordOwnerName: 'Jane Owner',
+    });
+    persistDukeRunPostDelivery(successInfo({ responseText: FAKE_REPORT + '\n' + block }));
+    const db = getLandosDb();
+    const card = db.prepare("SELECT * FROM landos_property_card WHERE apn = 'MM-1'").get() as any;
+    const na = db.prepare("SELECT * FROM landos_card_next_action WHERE card_id = ? AND action LIKE 'Confirm relationship and authority%'").get(card.id) as any;
+    expect(na).toBeTruthy();
+    // neutral: not auto-tagged probate.
+    const probate = db.prepare("SELECT COUNT(*) AS n FROM landos_card_activity WHERE card_id = ? AND kind = 'probate'").get(card.id) as any;
+    expect(probate.n).toBe(0);
+  });
+
+  it('a run with no address and no identity writes no card', () => {
+    const before = (getLandosDb().prepare('SELECT COUNT(*) AS n FROM landos_property_card').get() as any).n;
+    persistDukeRunPostDelivery(successInfo({ status: 'timeout', responseText: 'LandPortal lookup timed out.' }));
+    const after = (getLandosDb().prepare('SELECT COUNT(*) AS n FROM landos_property_card').get() as any).n;
+    expect(after).toBe(before);
+  });
+});
