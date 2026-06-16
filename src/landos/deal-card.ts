@@ -190,6 +190,38 @@ export function createDealCard(input: {
   return getDealCardRow(id)!;
 }
 
+export function updateDealCard(
+  id: number,
+  patch: { title?: string; status?: DealCardStatus; sellerNotes?: string; askingPrice?: number; combinedStrategy?: string; packageNotes?: string },
+): DealCardRow | undefined {
+  const existing = getDealCardRow(id);
+  if (!existing) return undefined;
+  const db = getLandosDb();
+  const now = Math.floor(Date.now() / 1000);
+  const status = patch.status && (DEAL_CARD_STATUSES as readonly string[]).includes(patch.status) ? patch.status : existing.status;
+  db.prepare(
+    `UPDATE landos_deal_card SET
+       title = CASE WHEN ? != '' THEN ? ELSE title END,
+       status = ?,
+       seller_notes = CASE WHEN ? != '' THEN ? ELSE seller_notes END,
+       asking_price = COALESCE(?, asking_price),
+       combined_strategy = CASE WHEN ? != '' THEN ? ELSE combined_strategy END,
+       package_notes = CASE WHEN ? != '' THEN ? ELSE package_notes END,
+       updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    patch.title ?? '', patch.title ?? '',
+    status,
+    patch.sellerNotes ?? '', patch.sellerNotes ?? '',
+    patch.askingPrice ?? null,
+    patch.combinedStrategy ?? '', patch.combinedStrategy ?? '',
+    patch.packageNotes ?? '', patch.packageNotes ?? '',
+    now,
+    id,
+  );
+  return getDealCardRow(id);
+}
+
 export function listDealCards(opts: { entity?: string; status?: DealCardStatus; limit?: number } = {}): DealCardRow[] {
   const db = getLandosDb();
   const limit = Math.min(opts.limit ?? 200, 500);
@@ -352,6 +384,20 @@ export interface DealCardDetail extends DealCardRow {
   people: unknown[];
   /** Combined acreage rollup with a preliminary/verified label. */
   combinedAcreage: { acres: number; verified: boolean; label: string };
+  /** Review-panel rollups (read-only; computed from linked cards). */
+  propertyCount: number;
+  /** True only when at least one linked parcel is verified_property. */
+  hasVerifiedProperty: boolean;
+  /** True when any linked parcel is NOT verified_property (show a warning). */
+  hasUnverifiedProperty: boolean;
+  /** Aggregated open risks across linked properties (deduped). */
+  risks: string[];
+  /** Open next actions across linked properties. */
+  nextActions: Array<Record<string, unknown>>;
+  /** Manual/automated comp count for the deal. */
+  compCount: number;
+  /** Latest Duke writeback activity summary across linked properties. */
+  latestWriteback: string | null;
 }
 
 /**
@@ -419,7 +465,46 @@ export function getDealCard(id: number): DealCardDetail | undefined {
       : 'Combined acreage PRELIMINARY — not every linked parcel identity/acreage is verified.',
   };
 
-  return { ...deal, propertyCards: links, people, combinedAcreage };
+  // Review-panel rollups computed from the linked property cards.
+  const cardIds = links.map((l) => l.id as number).filter((n) => typeof n === 'number');
+  const risks: string[] = [];
+  for (const l of links) {
+    try {
+      const arr = JSON.parse(String(l.open_risks ?? '[]'));
+      if (Array.isArray(arr)) for (const r of arr) if (typeof r === 'string' && r.trim() && !risks.includes(r)) risks.push(r);
+    } catch { /* ignore malformed */ }
+  }
+  let nextActions: Array<Record<string, unknown>> = [];
+  let latestWriteback: string | null = null;
+  let compCount = 0;
+  if (cardIds.length) {
+    const placeholders = cardIds.map(() => '?').join(',');
+    nextActions = db.prepare(
+      `SELECT * FROM landos_card_next_action WHERE card_id IN (${placeholders}) AND status = 'open' ORDER BY created_at DESC, id DESC`,
+    ).all(...cardIds) as Array<Record<string, unknown>>;
+    const wb = db.prepare(
+      `SELECT summary FROM landos_card_activity WHERE card_id IN (${placeholders}) AND kind = 'duke_deal_writeback' ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(...cardIds) as { summary: string } | undefined;
+    latestWriteback = wb?.summary ?? null;
+  }
+  compCount = (db.prepare('SELECT COUNT(*) AS n FROM landos_comp WHERE deal_card_id = ?').get(id) as { n: number }).n;
+
+  const hasVerifiedProperty = links.some((l) => l.verification_status === 'verified_property');
+  const hasUnverifiedProperty = links.some((l) => l.verification_status !== 'verified_property');
+
+  return {
+    ...deal,
+    propertyCards: links,
+    people,
+    combinedAcreage,
+    propertyCount: links.length,
+    hasVerifiedProperty,
+    hasUnverifiedProperty,
+    risks,
+    nextActions,
+    compCount,
+    latestWriteback,
+  };
 }
 
 // ── Live Duke run -> Deal Card writeback bridge ─────────────────────────────
@@ -462,57 +547,126 @@ export interface DukeDealWritebackResult {
   warnings: string[];
 }
 
+/** Per-parcel writeback fields for a multi-parcel Duke run. Each parcel keeps
+ *  its own identity, verification, and evidence — never merged with another. */
+export interface DukeParcelWriteback {
+  activeInputAddress: string;
+  apn?: string;
+  lpPropertyId?: string;
+  fips?: string;
+  lpUrl?: string;
+  county?: string;
+  state?: string;
+  city?: string;
+  owner?: string;
+  acres?: number;
+  verified?: boolean;
+  verificationSource?: string;
+  summary?: string;
+  leadName?: string;
+  recordOwnerName?: string;
+  risks?: string[];
+  nextActions?: string[];
+  sourceLinks?: Array<{ fact: string; url: string }>;
+}
+
+/** Upsert ONE property card from a parcel writeback, with the defensive
+ *  unverified-summary sanitizer. Pure-ish (DB write); never merges APNs. */
+function upsertParcelCard(
+  p: DukeParcelWriteback,
+  ctx: { entity: LandosEntity; agentId?: string },
+): { card: PropertyCardRow; created: boolean; warnings: string[]; safeSummary?: string } {
+  const address = (p.activeInputAddress ?? '').trim();
+  const vsource = (p.verificationSource ?? '').trim();
+  const willVerify =
+    p.verified === true &&
+    hasStrongParcelIdentity({ apn: p.apn, lpPropertyId: p.lpPropertyId, fips: p.fips, county: p.county, state: p.state }) &&
+    vsource.length > 0 &&
+    !isProximityVerificationSource(vsource);
+  const safeSummary = willVerify ? p.summary : sanitizeUnverifiedSummary(p.summary);
+  const cardRes = upsertCardFromDukeRun({
+    entity: ctx.entity,
+    agentId: ctx.agentId,
+    activeInputAddress: address || `${p.apn || p.lpPropertyId} (no address)`,
+    apn: p.apn,
+    lpPropertyId: p.lpPropertyId,
+    fips: p.fips,
+    lpUrl: p.lpUrl, // only when provided; never fabricated
+    county: p.county,
+    state: p.state,
+    city: p.city,
+    owner: p.recordOwnerName ?? p.owner,
+    acres: p.acres,
+    verified: p.verified,
+    verificationSource: p.verificationSource,
+    summary: safeSummary,
+  });
+  return { card: cardRes.card, created: cardRes.created, warnings: cardRes.warnings, safeSummary };
+}
+
+/** Link a parcel's card to a deal and attach its evidence, risks, next actions,
+ *  neutral lead/owner mismatch action, and the writeback activity entry. */
+function attachParcelExtras(
+  dealCardId: number,
+  card: PropertyCardRow,
+  p: DukeParcelWriteback,
+  ctx: { entity: LandosEntity; agentId?: string },
+  safeSummary?: string,
+  opts?: { skipLink?: boolean },
+): void {
+  // linkPropertyToDeal is idempotent on (deal, card). Skip only when this card
+  // is already linked to a DIFFERENT deal (conflict) so we never cross-merge.
+  if (!opts?.skipLink) linkPropertyToDeal({ dealCardId, cardId: card.id, role: 'subject' });
+
+  const parcelVerified = card.verification_status === 'verified_property';
+  for (const link of p.sourceLinks ?? []) {
+    if (link?.url) {
+      attachCardSourceEvidence({ cardId: card.id, fact: link.fact || 'source', sourceUrl: link.url, parcelVerified });
+    }
+  }
+  if (p.risks && p.risks.length) appendCardOpenRisks(card.id, p.risks);
+  for (const a of p.nextActions ?? []) {
+    const v = (a ?? '').trim();
+    if (v) addCardNextAction({ cardId: card.id, action: v, createdBy: ctx.agentId ?? 'duke-due-diligence' });
+  }
+  const mismatch = leadContactMismatchNote(p.leadName, p.recordOwnerName);
+  if (mismatch.mismatch) {
+    attachCardActivity({
+      cardId: card.id,
+      agentId: ctx.agentId ?? 'duke-due-diligence',
+      kind: 'lead_contact_differs_from_record_owner',
+      summary: `Lead contact "${p.leadName}" differs from record owner "${p.recordOwnerName}". ${LEAD_OWNER_MISMATCH_NOTE}`,
+    });
+    addCardNextAction({
+      cardId: card.id,
+      action: 'Confirm relationship and authority before contract/closing.',
+      createdBy: ctx.agentId ?? 'duke-due-diligence',
+    });
+  }
+  attachCardActivity({
+    cardId: card.id,
+    agentId: ctx.agentId ?? 'duke-due-diligence',
+    kind: 'duke_deal_writeback',
+    summary: safeSummary || (parcelVerified ? 'Verified Duke run linked to deal' : 'Research Duke run linked to deal'),
+  });
+}
+
 /**
- * Bridge a completed live Duke run into the Deal Card system. Creates/updates
- * the property card (verified vs research per strong identity — never verified
- * from address-only/weak/timeout), ensures a Deal Card exists and links the
- * property, then attaches source links, risks, next actions, the LandPortal URL
- * (only if provided), and a neutral lead-vs-owner mismatch action. Writes no
- * score/value/offer for unverified runs. Never merges APNs.
+ * Bridge a completed single-parcel live Duke run into the Deal Card system.
+ * Creates/updates the property card (verified vs research per strong identity),
+ * reuses an existing Deal Card linked to that card or creates one, and attaches
+ * evidence/risks/next-actions/mismatch. Writes no score/value/offer for
+ * unverified runs. Never merges APNs.
  */
 export function upsertDealCardFromDukeRun(input: DukeDealWritebackInput): DukeDealWritebackResult | null {
   const address = (input.activeInputAddress ?? '').trim();
   const hasIdentity = !!(input.apn || input.lpPropertyId);
-  // Nothing to anchor a card on (e.g. a bare timeout with no echoed address).
   if (!address && !hasIdentity) return null;
 
-  // Defensive summary sanitizer: unless this run is unambiguously verifying the
-  // parcel (verified flag + strong identity + a real non-proximity source),
-  // strip any score/value/offer language from the persisted summary. Erring
-  // toward sanitizing a rare weak-follow-up-on-verified run is safe.
-  const vsource = (input.verificationSource ?? '').trim();
-  const willVerify =
-    input.verified === true &&
-    hasStrongParcelIdentity({
-      apn: input.apn, lpPropertyId: input.lpPropertyId, fips: input.fips,
-      county: input.county, state: input.state,
-    }) &&
-    vsource.length > 0 &&
-    !isProximityVerificationSource(vsource);
-  const safeSummary = willVerify ? input.summary : sanitizeUnverifiedSummary(input.summary);
-
-  const cardRes = upsertCardFromDukeRun({
-    entity: input.entity,
-    agentId: input.agentId,
-    activeInputAddress: address || `${input.apn || input.lpPropertyId} (no address)`,
-    apn: input.apn,
-    lpPropertyId: input.lpPropertyId,
-    fips: input.fips,
-    lpUrl: input.lpUrl,
-    county: input.county,
-    state: input.state,
-    city: input.city,
-    owner: input.recordOwnerName ?? input.owner,
-    acres: input.acres,
-    verified: input.verified,
-    verificationSource: input.verificationSource,
-    summary: safeSummary,
-  });
-  const card: PropertyCardRow = cardRes.card;
-  const warnings = [...cardRes.warnings];
+  const ctx = { entity: input.entity, agentId: input.agentId };
+  const { card, created, warnings, safeSummary } = upsertParcelCard(input, ctx);
 
   const db = getLandosDb();
-  // Find an existing Deal Card already linking this property card.
   const existingLink = db.prepare(
     'SELECT deal_card_id FROM landos_deal_card_property WHERE card_id = ? ORDER BY id ASC LIMIT 1',
   ).get(card.id) as { deal_card_id: number } | undefined;
@@ -522,63 +676,116 @@ export function upsertDealCardFromDukeRun(input: DukeDealWritebackInput): DukeDe
   if (existingLink) {
     dealCardId = existingLink.deal_card_id;
   } else {
-    const deal = createDealCard({
-      entity: input.entity,
-      title: address || input.summary || `Deal ${card.id}`,
-    });
+    const deal = createDealCard({ entity: input.entity, title: address || input.summary || `Deal ${card.id}` });
     dealCardId = deal.id;
     createdDeal = true;
-    linkPropertyToDeal({ dealCardId, cardId: card.id, role: 'subject' });
   }
-
-  // Source evidence links (offer-usability gated by the standard; verified
-  // parcels only become offer-usable downstream).
-  const parcelVerified = card.verification_status === 'verified_property';
-  for (const link of input.sourceLinks ?? []) {
-    if (link?.url) {
-      attachCardSourceEvidence({ cardId: card.id, fact: link.fact || 'source', sourceUrl: link.url, parcelVerified });
-    }
-  }
-
-  // Risk / anomaly flags.
-  if (input.risks && input.risks.length) appendCardOpenRisks(card.id, input.risks);
-
-  // Extra next actions.
-  for (const a of input.nextActions ?? []) {
-    const v = (a ?? '').trim();
-    if (v) addCardNextAction({ cardId: card.id, action: v, createdBy: input.agentId ?? 'duke-due-diligence' });
-  }
-
-  // Lead-contact vs record-owner: store both neutrally and require confirming
-  // relationship/authority. Never auto-tag probate/inheritance or reject.
-  const mismatch = leadContactMismatchNote(input.leadName, input.recordOwnerName);
-  if (mismatch.mismatch) {
-    attachCardActivity({
-      cardId: card.id,
-      agentId: input.agentId ?? 'duke-due-diligence',
-      kind: 'lead_contact_differs_from_record_owner',
-      summary: `Lead contact "${input.leadName}" differs from record owner "${input.recordOwnerName}". ${LEAD_OWNER_MISMATCH_NOTE}`,
-    });
-    addCardNextAction({
-      cardId: card.id,
-      action: 'Confirm relationship and authority before contract/closing.',
-      createdBy: input.agentId ?? 'duke-due-diligence',
-    });
-  }
-
-  attachCardActivity({
-    cardId: card.id,
-    agentId: input.agentId ?? 'duke-due-diligence',
-    kind: 'duke_deal_writeback',
-    summary: safeSummary || (parcelVerified ? 'Verified Duke run linked to deal' : 'Research Duke run linked to deal'),
-  });
+  attachParcelExtras(dealCardId, card, input, ctx, safeSummary);
 
   return {
     dealCardId,
     cardId: card.id,
     createdDeal,
-    createdCard: cardRes.created,
+    createdCard: created,
     verificationStatus: card.verification_status,
     warnings,
   };
+}
+
+export interface MultiParcelDukeWritebackInput {
+  entity: LandosEntity;
+  agentId?: string;
+  parcels: DukeParcelWriteback[];
+  /** Shared deal-level context for the run. */
+  dealContext?: { title?: string; summary?: string };
+}
+
+export interface MultiParcelDukeWritebackResult {
+  dealCardId: number;
+  createdDeal: boolean;
+  properties: Array<{ cardId: number; apn: string; verificationStatus: string; created: boolean }>;
+  warnings: string[];
+}
+
+/**
+ * Bridge a completed live Duke run that carries MULTIPLE parcels/APNs from one
+ * seller/call context into ONE Deal Card with multiple distinct property
+ * records. Each parcel keeps its own identity, verification status, evidence,
+ * risks, owner, county/state/FIPS, LandPortal id/URL. APNs are NEVER merged and
+ * contiguity is NEVER assumed (same owner is not contiguity). Falls back to the
+ * single-parcel path for 0/1 parcels.
+ */
+export function upsertDealCardFromMultiParcelDukeRun(
+  input: MultiParcelDukeWritebackInput,
+): MultiParcelDukeWritebackResult | null {
+  const parcels = (input.parcels ?? []).filter(
+    (p) => (p.activeInputAddress ?? '').trim() || p.apn || p.lpPropertyId,
+  );
+  if (parcels.length === 0) return null;
+
+  const ctx = { entity: input.entity, agentId: input.agentId };
+  const warnings: string[] = [];
+
+  // 1. Upsert all parcel/property cards FIRST (distinct cards; APNs never
+  //    merged), then snapshot each card's existing Deal Card link.
+  const upserted = parcels.map((p) => {
+    const r = upsertParcelCard(p, ctx);
+    warnings.push(...r.warnings);
+    return { p, card: r.card, created: r.created, safeSummary: r.safeSummary, existingDealId: getDealCardIdForPropertyCard(r.card.id) };
+  });
+
+  // 2/3/4. Resolve ONE target Deal Card: reuse an existing linked deal when any
+  //    upserted property already has one (deterministic: lowest deal id);
+  //    otherwise create a new Deal Card. Never merge distinct deals.
+  const linkedDealIds = [...new Set(upserted.map((u) => u.existingDealId).filter((x): x is number => typeof x === 'number'))].sort((a, b) => a - b);
+  let dealCardId: number;
+  let createdDeal = false;
+  if (linkedDealIds.length === 0) {
+    const firstAddr = (parcels[0].activeInputAddress ?? '').trim();
+    const deal = createDealCard({
+      entity: input.entity,
+      title: input.dealContext?.title || firstAddr || `Multi-parcel deal (${parcels.length})`,
+    });
+    dealCardId = deal.id;
+    createdDeal = true;
+  } else {
+    dealCardId = linkedDealIds[0];
+  }
+  const conflictDealIds = linkedDealIds.filter((id) => id !== dealCardId);
+  if (conflictDealIds.length > 0) {
+    warnings.push(
+      `Conflicting Deal Card links across these parcels (Deal Cards ${conflictDealIds.join(', ')}). Reused Deal Card ${dealCardId}; conflicting parcels were NOT relinked or merged.`,
+    );
+  }
+
+  // 5/6. Attach each parcel to the resolved deal. A card already linked to a
+  //    DIFFERENT deal keeps its evidence/risks/actions but is NOT relinked
+  //    (no cross-merge); it gets a conflict next-action instead. linkPropertyToDeal
+  //    is idempotent so reruns never duplicate (deal, card) links.
+  const properties: MultiParcelDukeWritebackResult['properties'] = [];
+  for (const u of upserted) {
+    const conflict = typeof u.existingDealId === 'number' && u.existingDealId !== dealCardId;
+    attachParcelExtras(dealCardId, u.card, u.p, ctx, u.safeSummary, { skipLink: conflict });
+    if (conflict) {
+      addCardNextAction({
+        cardId: u.card.id,
+        action: `Resolve conflicting Deal Card linkage: this parcel is linked to Deal Card ${u.existingDealId}, not ${dealCardId}. Confirm the correct Deal Card before merging.`,
+        createdBy: input.agentId ?? 'duke-due-diligence',
+      });
+    }
+    properties.push({ cardId: u.card.id, apn: u.card.apn, verificationStatus: u.card.verification_status, created: u.created });
+  }
+
+  // 7. Update the reused/created Deal Card's package notes (never a new card).
+  const apns = properties.map((x) => x.apn).filter(Boolean);
+  const verifiedCount = properties.filter((x) => x.verificationStatus === 'verified_property').length;
+  const packageNotes =
+    `${properties.length} properties/APNs attached to this Deal Card` +
+    (apns.length ? ` (APNs: ${apns.join(', ')})` : '') +
+    `. Verified: ${verifiedCount}/${properties.length}. APNs are kept as distinct property records; contiguity is not assumed.` +
+    (conflictDealIds.length ? ` Note: conflicting Deal Card links detected (${conflictDealIds.join(', ')}); not merged.` : '') +
+    (input.dealContext?.summary ? ` ${sanitizeUnverifiedSummary(input.dealContext.summary)}` : '');
+  updateDealCard(dealCardId, { packageNotes });
+
+  return { dealCardId, createdDeal, properties, warnings };
 }

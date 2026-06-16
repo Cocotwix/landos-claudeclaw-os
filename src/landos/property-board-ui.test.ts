@@ -52,3 +52,30 @@ describe('Property Board manual comp UI', () => {
     expect(/lp_comp_report_get\s*\(/.test(SRC)).toBe(false);
   });
 });
+
+describe('Deal Card Review Panel', () => {
+  it('renders a Deal Review panel fed by the deal-card detail API', () => {
+    expect(SRC).toMatch(/Deal Review/);
+    expect(SRC).toMatch(/\/api\/landos\/deal-cards\/\$\{[^}]+\}/);
+    expect(SRC).toMatch(/dealReview/);
+  });
+
+  it('shows property count, distinct properties/APNs, comp count, risks, and next actions', () => {
+    expect(SRC).toMatch(/propertyCount/);
+    expect(SRC).toMatch(/Properties \/ APNs/);
+    expect(SRC).toMatch(/dealReview\.propertyCards\.map/);
+    expect(SRC).toMatch(/compCount/);
+    expect(SRC).toMatch(/Risks \/ anomaly flags/);
+    expect(SRC).toMatch(/dealReview\.nextActions/);
+    expect(SRC).toMatch(/latestWriteback/);
+  });
+
+  it('shows a verification warning for research/unverified deal cards', () => {
+    expect(SRC).toMatch(/hasUnverifiedProperty/);
+    expect(SRC).toMatch(/before scoring, valuing, or offer guidance/i);
+  });
+
+  it('opens panel LandPortal links in a new tab safely', () => {
+    expect(SRC).toMatch(/p\.lp_url[\s\S]{0,120}target="_blank"[\s\S]{0,60}rel="noopener noreferrer"/);
+  });
+});

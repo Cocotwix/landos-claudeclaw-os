@@ -4,6 +4,7 @@ import { _initTestLandosDb, getLandosDb } from './db.js';
 import {
   buildDukePersistPayload,
   persistDukeRunPostDelivery,
+  buildMultiDealWritebackInput,
   type DukeDashboardRunInfo,
 } from './duke-persist-adapter.js';
 
@@ -344,5 +345,70 @@ describe('Deal Card writeback bridge', () => {
     persistDukeRunPostDelivery(successInfo({ status: 'timeout', responseText: 'LandPortal lookup timed out.' }));
     const after = (getLandosDb().prepare('SELECT COUNT(*) AS n FROM landos_property_card').get() as any).n;
     expect(after).toBe(before);
+  });
+});
+
+describe('Multi-APN Deal Card writeback (live hook)', () => {
+  function multiBlock(): string {
+    return '```landos-persist\n' + JSON.stringify({
+      entity: 'TY_LAND_BIZ',
+      summary: 'Seller has three parcels',
+      parcels: [
+        { address: '1 Pkg Rd, Lexington SC', apn: 'LA-1', county: 'Lexington', fips: '45063', acres: 5, verified: true, verificationSource: 'county assessor record (APN + county)', recordOwnerName: 'Jane Owner', lpPropertyId: 'LP1', lpUrl: 'https://landportal.example/p/1' },
+        { address: '3 Pkg Rd, Lexington SC', apn: 'LA-2', county: 'Lexington', fips: '45063', acres: 6, verified: true, verificationSource: 'lp_resolve_property address filter, verified:true' },
+        { address: '5 Pkg Rd, Swansea SC', county: 'Lexington', state: 'SC', verified: false, summary: 'zero candidates; likely worth $30k offer $9k' },
+      ],
+    }) + '\n```';
+  }
+
+  it('a >1-parcel run links multiple distinct property cards to ONE Deal Card via the live hook', () => {
+    persistDukeRunPostDelivery(successInfo({ responseText: FAKE_REPORT + '\n' + multiBlock() }));
+    const db = getLandosDb();
+    const deals = db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card').get() as any;
+    expect(deals.n).toBe(1);
+    const cards = db.prepare('SELECT * FROM landos_property_card ORDER BY id').all() as any[];
+    expect(cards.length).toBe(3);
+    // APNs distinct, not merged.
+    expect(cards.map((c) => c.apn).filter(Boolean).sort()).toEqual(['LA-1', 'LA-2']);
+    // All three linked to the single deal.
+    const dealId = (db.prepare('SELECT id FROM landos_deal_card LIMIT 1').get() as any).id;
+    const links = db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card_property WHERE deal_card_id = ?').get(dealId) as any;
+    expect(links.n).toBe(3);
+    // lp_url passthrough only where provided.
+    const la1 = cards.find((c) => c.apn === 'LA-1');
+    const la2 = cards.find((c) => c.apn === 'LA-2');
+    expect(la1.lp_url).toBe('https://landportal.example/p/1');
+    expect(la2.lp_url).toBe('');
+    // Mixed verification: two verified, one research.
+    expect(cards.filter((c) => c.verification_status === 'verified_property').length).toBe(2);
+    const research = cards.find((c) => c.verification_status !== 'verified_property');
+    expect(research.summary).not.toMatch(/\$\s?\d/);
+  });
+
+  it('buildMultiDealWritebackInput returns null when fewer than 2 parcels', () => {
+    expect(buildMultiDealWritebackInput(successInfo({ responseText: FAKE_REPORT + PERSIST_BLOCK }))).toBeNull();
+  });
+});
+
+describe('Repeated multi-APN live writeback is idempotent', () => {
+  function multiBlock(): string {
+    return '```landos-persist\n' + JSON.stringify({
+      entity: 'TY_LAND_BIZ',
+      summary: 'Seller package, three parcels',
+      parcels: [
+        { address: '1 Idem Rd, Lexington SC', apn: 'ID-1', county: 'Lexington', fips: '45063', acres: 5, verified: true, verificationSource: 'county assessor record (APN + county)' },
+        { address: '3 Idem Rd, Lexington SC', apn: 'ID-2', county: 'Lexington', fips: '45063', acres: 6, verified: true, verificationSource: 'county assessor record (APN + county)' },
+        { address: '5 Idem Rd, Swansea SC', county: 'Lexington', state: 'SC', verified: false },
+      ],
+    }) + '\n```';
+  }
+
+  it('persistDukeRunPostDelivery twice on the same package yields one Deal Card, no duplicate links', () => {
+    persistDukeRunPostDelivery(successInfo({ responseText: FAKE_REPORT + '\n' + multiBlock() }));
+    persistDukeRunPostDelivery(successInfo({ responseText: FAKE_REPORT + '\n' + multiBlock() }));
+    const db = getLandosDb();
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card').get() as any).n).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_property_card').get() as any).n).toBe(3);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card_property').get() as any).n).toBe(3);
   });
 });

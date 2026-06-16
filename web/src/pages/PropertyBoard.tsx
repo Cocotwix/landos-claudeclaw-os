@@ -34,6 +34,22 @@ interface CardDetail extends Card {
 
 interface BoardResponse { columns: Record<string, Card[]>; statuses: string[]; }
 
+interface DealReview {
+  id: number;
+  title: string;
+  status: string;
+  package_notes: string;
+  propertyCount: number;
+  hasVerifiedProperty: boolean;
+  hasUnverifiedProperty: boolean;
+  risks: string[];
+  nextActions: any[];
+  compCount: number;
+  latestWriteback: string | null;
+  combinedAcreage: { acres: number; verified: boolean; label: string };
+  propertyCards: any[];
+}
+
 // Comp source labels / kinds / statuses (mirror the backend model).
 const COMP_SOURCE_LABELS = ['LandPortal', 'Zillow', 'Redfin', 'Land.com', 'LandWatch', 'LandsOfAmerica', 'Realtor', 'County', 'Other'] as const;
 const COMP_PRICE_KINDS = ['sale', 'list', 'unknown'] as const;
@@ -70,6 +86,7 @@ export function PropertyBoard() {
   const [selected, setSelected] = useState<CardDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [comps, setComps] = useState<Comp[]>([]);
+  const [dealReview, setDealReview] = useState<DealReview | null>(null);
   const [showCompForm, setShowCompForm] = useState(false);
   const [compBusy, setCompBusy] = useState(false);
   const emptyComp = {
@@ -111,10 +128,21 @@ export function PropertyBoard() {
 
   async function loadComps(cardId: number) {
     try {
-      const res = await apiGet<{ comps: Comp[] }>(`/api/landos/property-cards/${cardId}/comps`);
+      const res = await apiGet<{ dealCardId: number | null; comps: Comp[] }>(`/api/landos/property-cards/${cardId}/comps`);
       setComps(res.comps || []);
+      if (res.dealCardId) {
+        try {
+          const dr = await apiGet<{ dealCard: DealReview }>(`/api/landos/deal-cards/${res.dealCardId}`);
+          setDealReview(dr.dealCard);
+        } catch {
+          setDealReview(null);
+        }
+      } else {
+        setDealReview(null);
+      }
     } catch {
       setComps([]);
+      setDealReview(null);
     }
   }
 
@@ -259,6 +287,58 @@ export function PropertyBoard() {
                 </a>
               )}
             </div>
+
+            {dealReview && (
+              <div class="border border-[var(--color-border)] rounded-lg p-3 space-y-2 bg-[var(--color-bg)]">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Deal Review</span>
+                  <span class="text-[12.5px] text-[var(--color-text)] font-medium">{dealReview.title || `Deal ${dealReview.id}`}</span>
+                  <Pill tone={dealReview.hasVerifiedProperty && !dealReview.hasUnverifiedProperty ? 'done' : 'neutral'}>
+                    {dealReview.hasVerifiedProperty && !dealReview.hasUnverifiedProperty ? 'verified' : 'research / unverified'}
+                  </Pill>
+                  <span class="text-[10px] text-[var(--color-text-faint)]">
+                    {dealReview.propertyCount} propert{dealReview.propertyCount === 1 ? 'y' : 'ies'}/APN · {dealReview.compCount} comp{dealReview.compCount === 1 ? '' : 's'}
+                  </span>
+                </div>
+
+                {dealReview.hasUnverifiedProperty && (
+                  <div class="text-[11px] text-[var(--color-status-failed)] bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] rounded-md px-2 py-1.5">
+                    Research / unverified parcel(s) present. Confirm APN + county/state/FIPS, or LandPortal property ID + FIPS, before scoring, valuing, or offer guidance.
+                  </div>
+                )}
+
+                <div class="space-y-1">
+                  <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Properties / APNs</div>
+                  <ul class="space-y-1">
+                    {dealReview.propertyCards.map((p: any) => (
+                      <li key={p.id} class="text-[11.5px] flex items-center gap-2 flex-wrap">
+                        <Pill tone={p.verification_status === 'verified_property' ? 'done' : 'neutral'}>
+                          {p.verification_status === 'verified_property' ? 'verified' : 'research'}
+                        </Pill>
+                        <span class="text-[var(--color-text)]">{p.apn || p.active_input_address || '(no APN)'}</span>
+                        <span class="text-[var(--color-text-faint)]">{[p.county, p.state].filter(Boolean).join(', ')}</span>
+                        {typeof p.acres === 'number' && <span class="text-[var(--color-text-muted)]">{p.acres} ac</span>}
+                        {p.owner && <span class="text-[var(--color-text-muted)]">owner: {p.owner}</span>}
+                        {p.lp_url && <a href={p.lp_url} target="_blank" rel="noopener noreferrer" class="text-[var(--color-accent)] hover:underline">LandPortal ↗</a>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {dealReview.risks.length > 0 && (
+                  <DetailList title="Risks / anomaly flags" items={dealReview.risks} />
+                )}
+                {dealReview.nextActions.length > 0 && (
+                  <DetailList title="Next actions" items={dealReview.nextActions.map((n: any) => `${n.action} (${n.status})`)} />
+                )}
+                {dealReview.latestWriteback && (
+                  <div class="text-[11px] text-[var(--color-text-muted)]">
+                    <span class="uppercase tracking-wider text-[10px] text-[var(--color-text-faint)]">Latest Duke writeback</span>
+                    <div>{dealReview.latestWriteback}</div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <label class="flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
               Move to

@@ -1,6 +1,6 @@
 import { beforeEach, describe, it, expect } from 'vitest';
 
-import { _initTestLandosDb } from './db.js';
+import { _initTestLandosDb, getLandosDb } from './db.js';
 import { upsertPropertyCard } from './property-card.js';
 import {
   createDealCard,
@@ -14,6 +14,7 @@ import {
   leadContactMismatchNote,
   LEAD_OWNER_MISMATCH_NOTE,
   upsertDealCardFromDukeRun,
+  upsertDealCardFromMultiParcelDukeRun,
   sanitizeUnverifiedSummary,
 } from './deal-card.js';
 import { getPropertyCard } from './property-card.js';
@@ -350,5 +351,186 @@ describe('Unverified summary sanitizer + bridge', () => {
     expect(res.verificationStatus).toBe('verified_property');
     const detail = getPropertyCard(res.cardId)!;
     expect(detail.summary).toMatch(/offer range/i); // preserved when verified
+  });
+});
+
+describe('Multi-APN one Deal Card writeback', () => {
+  it('links multiple distinct property records to ONE Deal Card; never merges APNs', () => {
+    const res = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      agentId: 'duke-due-diligence',
+      dealContext: { title: 'Three parcels from one seller' },
+      parcels: [
+        { activeInputAddress: '1 Pkg Rd, Lexington SC', apn: 'MA-1', county: 'Lexington', fips: '45063', acres: 5, verified: true, verificationSource: 'county assessor record (APN + county)', recordOwnerName: 'Jane Owner' },
+        { activeInputAddress: '3 Pkg Rd, Lexington SC', apn: 'MA-2', county: 'Lexington', fips: '45063', acres: 6, verified: true, verificationSource: 'lp_resolve_property address filter, verified:true', lpPropertyId: 'LP2', lpUrl: 'https://landportal.example/p/2' },
+        { activeInputAddress: '5 Pkg Rd, Swansea SC', county: 'Lexington', state: 'SC', verified: false, summary: 'zero candidates; likely worth $30,000 offer $9,000' },
+      ],
+    })!;
+    expect(res.createdDeal).toBe(true);
+    expect(res.properties.length).toBe(3);
+    // Distinct cards, APNs not merged.
+    expect(new Set(res.properties.map((p) => p.cardId)).size).toBe(3);
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.propertyCount).toBe(3);
+    expect((detail.propertyCards as any[]).map((p) => p.apn).filter(Boolean).sort()).toEqual(['MA-1', 'MA-2']);
+  });
+
+  it('verified and unverified properties coexist; unverified gets no value/score/offer', () => {
+    const res = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      parcels: [
+        { activeInputAddress: '10 Mix Rd, Lexington SC', apn: 'MIX-1', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+        { activeInputAddress: '12 Mix Rd, Lexington SC', verified: false, summary: 'Likely worth $42,000; recommend offer $12,000. Score 60/100.' },
+      ],
+    })!;
+    const verified = res.properties.find((p) => p.verificationStatus === 'verified_property')!;
+    const unverified = res.properties.find((p) => p.verificationStatus !== 'verified_property')!;
+    expect(verified).toBeTruthy();
+    expect(unverified).toBeTruthy();
+    const u = getPropertyCard(unverified.cardId)!;
+    expect(u.summary).not.toMatch(/\$\s?\d|\d+\s*\/\s*100|\boffer\b\s*\$|\bMAO\b/i);
+    expect(u.summary).toMatch(/not definitively verified/i);
+  });
+
+  it('same owner across parcels does NOT create contiguity', () => {
+    const res = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      parcels: [
+        { activeInputAddress: '20 Same Rd, Lexington SC', apn: 'SO-1', county: 'Lexington', owner: 'Same Owner', verified: true, verificationSource: 'county assessor record' },
+        { activeInputAddress: '22 Same Rd, Lexington SC', apn: 'SO-2', county: 'Lexington', owner: 'Same Owner', verified: true, verificationSource: 'county assessor record' },
+      ],
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    // No link is marked source_confirmed just because the owner matches.
+    expect((detail.propertyCards as any[]).every((p) => p.contiguity_status !== 'source_confirmed')).toBe(true);
+  });
+
+  it('LandPortal URL passes through only when provided per property, never fabricated', () => {
+    const res = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      parcels: [
+        { activeInputAddress: '30 Url Rd, Lexington SC', apn: 'U-1', county: 'Lexington', fips: '45063', verified: true, verificationSource: 'lp', lpPropertyId: 'LPX', lpUrl: 'https://landportal.example/p/x' },
+        { activeInputAddress: '32 NoUrl Rd, Lexington SC', apn: 'U-2', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+      ],
+    })!;
+    const cards = res.properties.map((p) => getPropertyCard(p.cardId)!);
+    const withUrl = cards.find((c) => c.apn === 'U-1')!;
+    const without = cards.find((c) => c.apn === 'U-2')!;
+    expect(withUrl.lp_url).toBe('https://landportal.example/p/x');
+    expect(without.lp_url).toBe('');
+  });
+
+  it('the Deal Card package notes state multiple properties/APNs are attached', () => {
+    const res = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      parcels: [
+        { activeInputAddress: '40 Note Rd, Lexington SC', apn: 'N-1', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+        { activeInputAddress: '42 Note Rd, Lexington SC', apn: 'N-2', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+      ],
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.package_notes).toMatch(/2 properties\/APNs attached/i);
+    expect(detail.package_notes).toMatch(/contiguity is not assumed/i);
+  });
+
+  it('returns null for fewer than one usable parcel', () => {
+    expect(upsertDealCardFromMultiParcelDukeRun({ entity: 'TY_LAND_BIZ', parcels: [] })).toBeNull();
+  });
+});
+
+describe('Deal Card review rollups', () => {
+  it('exposes property count, risks, next actions, comp count, and verification mix', () => {
+    const res = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      parcels: [
+        { activeInputAddress: '50 Rev Rd, Lexington SC', apn: 'R-1', county: 'Lexington', verified: true, verificationSource: 'county assessor record', risks: ['No LP valuation'], nextActions: ['Pull county checklist'] },
+        { activeInputAddress: '52 Rev Rd, Lexington SC', verified: false },
+      ],
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.propertyCount).toBe(2);
+    expect(detail.hasVerifiedProperty).toBe(true);
+    expect(detail.hasUnverifiedProperty).toBe(true);
+    expect(detail.risks).toContain('No LP valuation');
+    expect(detail.nextActions.some((n: any) => /county checklist/i.test(n.action))).toBe(true);
+    expect(typeof detail.compCount).toBe('number');
+    expect(detail.latestWriteback).toBeTruthy();
+  });
+});
+
+describe('Multi-APN Deal Card idempotency / reuse on rerun', () => {
+  const sameInput = () => ({
+    entity: 'TY_LAND_BIZ' as const,
+    agentId: 'duke-due-diligence',
+    dealContext: { title: 'Seller package' },
+    parcels: [
+      { activeInputAddress: '1 Re Rd, Lexington SC', apn: 'RE-1', county: 'Lexington', fips: '45063', acres: 5, owner: 'Same Owner', verified: true, verificationSource: 'county assessor record', lpPropertyId: 'LP1', lpUrl: 'https://landportal.example/p/1' },
+      { activeInputAddress: '3 Re Rd, Lexington SC', apn: 'RE-2', county: 'Lexington', fips: '45063', acres: 6, owner: 'Same Owner', verified: true, verificationSource: 'county assessor record' },
+      { activeInputAddress: '5 Re Rd, Swansea SC', county: 'Lexington', state: 'SC', verified: false, summary: 'zero candidates; likely worth $30,000 offer $9,000' },
+    ],
+  });
+
+  function counts() {
+    const db = getLandosDb();
+    return {
+      deals: (db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card').get() as any).n,
+      cards: (db.prepare('SELECT COUNT(*) AS n FROM landos_property_card').get() as any).n,
+      links: (db.prepare('SELECT COUNT(*) AS n FROM landos_deal_card_property').get() as any).n,
+    };
+  }
+
+  it('running the same multi-APN writeback twice yields exactly one Deal Card', () => {
+    const first = upsertDealCardFromMultiParcelDukeRun(sameInput())!;
+    const c1 = counts();
+    expect(c1.deals).toBe(1);
+    expect(c1.cards).toBe(3);
+    expect(c1.links).toBe(3);
+
+    const second = upsertDealCardFromMultiParcelDukeRun(sameInput())!;
+    expect(second.createdDeal).toBe(false);
+    expect(second.dealCardId).toBe(first.dealCardId);
+
+    const c2 = counts();
+    expect(c2.deals).toBe(1); // no duplicate Deal Card
+    expect(c2.cards).toBe(3); // distinct property records preserved, not merged
+    expect(c2.links).toBe(3); // no duplicate property-to-deal links
+  });
+
+  it('rerun preserves distinct APNs, mixed verification, sanitized summary, and lp_url passthrough', () => {
+    upsertDealCardFromMultiParcelDukeRun(sameInput());
+    const res = upsertDealCardFromMultiParcelDukeRun(sameInput())!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect((detail.propertyCards as any[]).map((p) => p.apn).filter(Boolean).sort()).toEqual(['RE-1', 'RE-2']);
+    expect(detail.propertyCount).toBe(3);
+    expect(detail.hasVerifiedProperty).toBe(true);
+    expect(detail.hasUnverifiedProperty).toBe(true);
+
+    const cards = res.properties.map((p) => getPropertyCard(p.cardId)!);
+    const withUrl = cards.find((c) => c.apn === 'RE-1')!;
+    const without = cards.find((c) => c.apn === 'RE-2')!;
+    expect(withUrl.lp_url).toBe('https://landportal.example/p/1');
+    expect(without.lp_url).toBe('');
+    const research = cards.find((c) => c.verification_status !== 'verified_property')!;
+    expect(research.summary).not.toMatch(/\$\s?\d/);
+
+    // Same owner still does not create contiguity on rerun.
+    expect((detail.propertyCards as any[]).every((p) => p.contiguity_status !== 'source_confirmed')).toBe(true);
+  });
+
+  it('reuses an existing single-parcel Deal Card when a later multi run includes that parcel', () => {
+    const single = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '1 Re Rd, Lexington SC', apn: 'RE-1', county: 'Lexington',
+      verified: true, verificationSource: 'county assessor record',
+    })!;
+    const multi = upsertDealCardFromMultiParcelDukeRun({
+      entity: 'TY_LAND_BIZ',
+      parcels: [
+        { activeInputAddress: '1 Re Rd, Lexington SC', apn: 'RE-1', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+        { activeInputAddress: '3 Re Rd, Lexington SC', apn: 'RE-9', county: 'Lexington', verified: true, verificationSource: 'county assessor record' },
+      ],
+    })!;
+    expect(multi.dealCardId).toBe(single.dealCardId); // reused, not a new deal
+    expect(multi.createdDeal).toBe(false);
+    expect(counts().deals).toBe(1);
   });
 });

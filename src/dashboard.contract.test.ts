@@ -1217,6 +1217,20 @@ describe('LandOS property card + memory endpoints', () => {
     expect(other.comp.source_label).toBe('Other');
     expect((await post('/api/landos/property-cards/999999/comps', { sourceLabel: 'Zillow' })).status).toBe(404);
   });
+
+  it('deal-card detail returns review-panel rollups', async () => {
+    // Create a property card, add a comp (auto-creates + links a deal card).
+    const card = (await jsonOf(await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '610 Review Rd, Lexington SC',
+    }))).card;
+    const added = await jsonOf(await post(`/api/landos/property-cards/${card.id}/comps`, { sourceLabel: 'Zillow', price: 40000, acres: 4 }));
+    const review = (await jsonOf(await get(`/api/landos/deal-cards/${added.dealCardId}`))).dealCard;
+    expect(review.propertyCount).toBe(1);
+    expect(review.hasUnverifiedProperty).toBe(true);
+    expect(review.compCount).toBe(1);
+    expect(Array.isArray(review.risks)).toBe(true);
+    expect(Array.isArray(review.nextActions)).toBe(true);
+  });
 });
 
 describe('Forge build interview endpoints', () => {

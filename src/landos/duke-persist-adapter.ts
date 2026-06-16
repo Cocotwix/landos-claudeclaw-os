@@ -32,7 +32,12 @@ import {
   type DukeRunPayload,
   type DukeRunStatus,
 } from './duke-persist.js';
-import { upsertDealCardFromDukeRun } from './deal-card.js';
+import {
+  upsertDealCardFromDukeRun,
+  upsertDealCardFromMultiParcelDukeRun,
+  type DukeParcelWriteback,
+  type MultiParcelDukeWritebackInput,
+} from './deal-card.js';
 
 export interface DukeDashboardRunInfo {
   agentId?: string;
@@ -45,10 +50,24 @@ export interface DukeDashboardRunInfo {
   error?: string;
 }
 
+/** A parcel entry inside a multi-parcel landos-persist block. Each carries its
+ *  own identity + per-parcel writeback extras; APNs are never merged. */
+type LandosPersistParcel = DukeParcelInput & {
+  summary?: string;
+  leadName?: string;
+  recordOwnerName?: string;
+  risks?: string[];
+  nextActions?: string[];
+  sourceLinks?: Array<{ fact?: string; url?: string }>;
+};
+
 /** Optional structured block Duke may embed in its response. */
 interface LandosPersistBlock {
   entity?: LandosEntity;
   parcel?: DukeParcelInput;
+  /** Multiple parcels/APNs from one run context (same seller/call). When
+   *  present with >1 entry, all link to ONE Deal Card as distinct properties. */
+  parcels?: LandosPersistParcel[];
   facts?: DukeFactInput[];
   fileRefs?: DukeFileRefInput[];
   reportStatus?: DukeReportStatus;
@@ -177,11 +196,55 @@ export function buildDealWritebackInput(info: DukeDashboardRunInfo): import('./d
 }
 
 /**
+ * Build a MULTI-parcel Deal Card writeback input when a run carries >1 parcel
+ * in its landos-persist block. Returns null when fewer than 2 usable parcels
+ * exist (the single-parcel path handles those). Pure; never fabricates URLs.
+ */
+export function buildMultiDealWritebackInput(info: DukeDashboardRunInfo): MultiParcelDukeWritebackInput | null {
+  const text = info.responseText ?? '';
+  const { block } = extractPersistBlock(text);
+  const raw = block?.parcels ?? [];
+  const entity = block?.entity ?? info.entity ?? 'TY_LAND_BIZ';
+  const parcels: DukeParcelWriteback[] = raw
+    .filter((p) => p && ((p.address ?? '').trim() || p.apn || p.lpPropertyId))
+    .map((p) => ({
+      activeInputAddress: (p.address ?? '').trim(),
+      apn: p.apn,
+      lpPropertyId: p.lpPropertyId,
+      fips: p.fips,
+      lpUrl: p.lpUrl, // only when provided; never fabricated
+      county: p.county,
+      state: p.state,
+      city: p.city,
+      owner: p.owner,
+      acres: p.acres,
+      verified: p.verified,
+      verificationSource: p.verificationSource,
+      summary: p.summary,
+      leadName: p.leadName ?? block?.leadName,
+      recordOwnerName: p.recordOwnerName ?? block?.recordOwnerName,
+      risks: p.risks,
+      nextActions: p.nextActions,
+      sourceLinks: (p.sourceLinks ?? [])
+        .filter((s) => s && typeof s.url === 'string' && s.url.trim() && !isInsideRepo(s.url))
+        .map((s) => ({ fact: s.fact ?? 'source', url: s.url as string })),
+    }));
+  if (parcels.length < 2) return null;
+  return {
+    entity,
+    agentId: info.agentId ?? 'duke-due-diligence',
+    parcels,
+    dealContext: { summary: block?.summary },
+  };
+}
+
+/**
  * Persist a completed Duke dashboard run AND bridge it into the Deal Card
  * system. Never throws: any failure (including a hard-parcel-rule refusal) is
  * reported through onError and the function returns null — report delivery has
  * already happened and must stand. The Deal Card writeback is best-effort and
- * its failure never affects the parcel persistence result.
+ * its failure never affects the parcel persistence result. A run carrying >1
+ * parcel links multiple distinct property records to ONE Deal Card.
  */
 export function persistDukeRunPostDelivery(
   info: DukeDashboardRunInfo,
@@ -198,8 +261,13 @@ export function persistDukeRunPostDelivery(
   // Deal Card writeback bridge: separate try so it can never undo the parcel
   // persistence above or affect the delivered report.
   try {
-    const writeback = buildDealWritebackInput(info);
-    if (writeback) upsertDealCardFromDukeRun(writeback);
+    const multi = buildMultiDealWritebackInput(info);
+    if (multi) {
+      upsertDealCardFromMultiParcelDukeRun(multi);
+    } else {
+      const writeback = buildDealWritebackInput(info);
+      if (writeback) upsertDealCardFromDukeRun(writeback);
+    }
   } catch (err) {
     try {
       onError?.('Duke Deal Card writeback failed (nonfatal — report delivery unaffected)', err);
