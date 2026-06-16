@@ -234,6 +234,54 @@ describe('addressStrongMatch (fuzzy but strict)', () => {
     const r = addressStrongMatch({ address: '217 Clydeville Ln', state: 'NC', zip: '29435' }, lp);
     expect(r.match).toBe(false);
   });
+
+  // ── Locality guard (Codex fix): fuzzy street alone must never verify ──────
+  it('A. rejects a city mismatch even when street/state/ZIP align', () => {
+    const r = addressStrongMatch(
+      { address: '217 Clydeville Ln', city: 'Cottageville', state: 'SC', zip: '29435' },
+      { street_address: '217 CLYDEVILLE LN', city: 'CHARLESTON', state: 'SC', zip_code: '29435' },
+    );
+    expect(r.match).toBe(false);
+    expect(r.reason).toMatch(/city/i);
+  });
+
+  it('B. rejects a fuzzy street with no locality context (no city/state/ZIP/FIPS)', () => {
+    const r = addressStrongMatch({ address: '217 Clideville Ln' }, { street_address: '217 CLYDEVILLE LN' });
+    expect(r.match).toBe(false);
+    expect(r.reason).toMatch(/insufficient locality/i);
+  });
+
+  it('B. rejects an exact street with no locality context', () => {
+    const r = addressStrongMatch({ address: '217 Clydeville Ln' }, { street_address: '217 CLYDEVILLE LN' });
+    expect(r.match).toBe(false);
+  });
+
+  it('F. rejects a genuinely different road regardless of context', () => {
+    const r = addressStrongMatch(
+      { address: '100 Oak Ave', city: 'Cottageville', state: 'SC', zip: '29435' },
+      { street_address: '100 MAPLE ST', city: 'COTTAGEVILLE', state: 'SC', zip_code: '29435' },
+    );
+    expect(r.match).toBe(false);
+    expect(r.reason).toMatch(/different road/i);
+  });
+
+  it('accepts a FIPS-context match even when ZIP differs (same county)', () => {
+    const r = addressStrongMatch(
+      { address: '217 Clydeville Ln', state: 'SC', zip: '29434', fips: '37061' },
+      { street_address: '217 CLYDEVILLE LN', state: 'SC', zip_code: '29435', fips: '37061' },
+    );
+    expect(r.match).toBe(true);
+    expect(r.reason).toMatch(/FIPS/i);
+  });
+
+  it('rejects a FIPS mismatch outright', () => {
+    const r = addressStrongMatch(
+      { address: '217 Clydeville Ln', state: 'SC', zip: '29435', fips: '45019' },
+      { street_address: '217 CLYDEVILLE LN', state: 'SC', zip_code: '29435', fips: '37061' },
+    );
+    expect(r.match).toBe(false);
+    expect(r.reason).toMatch(/FIPS/i);
+  });
 });
 
 // ── v2 adapter (flag-gated, mocked fetch) ─────────────────────────────────────
@@ -398,6 +446,40 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     const r = await lpResolveForPreflight({ point: { latitude: 34.9, longitude: -77.8 } }, 10_000);
     expect(r.verified).toBe(false);
     expect(r.status).toBe('point_candidate');
+  });
+
+  it('C. point candidate with similar address but NO seller locality stays unverified', async () => {
+    // Candidate returns a similar street, but the seller supplied no city/ZIP/
+    // FIPS/APN to confirm against -- fuzzy street alone cannot verify.
+    install(() => jsonRes(200, detailBody({ property_id: 777, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN', city: 'COTTAGEVILLE', state: 'SC', zip_code: '29435' })));
+    const r = await lpResolveForPreflight({ point: { latitude: 34.9, longitude: -77.8 }, address: '217 Clideville Ln' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.status).toBe('point_candidate');
+    expect(r.match_notes.toLowerCase()).toContain('candidate from point lookup');
+  });
+
+  it('D. point candidate promotes to verified when address + state + ZIP match', async () => {
+    install(() => jsonRes(200, detailBody({ property_id: 777, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN', city: 'COTTAGEVILLE', state: 'SC', zip_code: '29435' })));
+    const r = await lpResolveForPreflight(
+      { point: { latitude: 34.9, longitude: -77.8 }, address: '217 Clideville Ln', state: 'SC', zip: '29435' },
+      10_000,
+    );
+    expect(r.verified).toBe(true);
+    expect(r.match_notes).toMatch(/point lookup CONFIRMED/i);
+  });
+
+  it('A. v2 address search stays unverified when the only match is a city conflict', async () => {
+    install(url => {
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN', city: 'CHARLESTON', state: 'SC', zip_code: '29435' }));
+      return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN', city: 'CHARLESTON', state: 'SC', zip_code: '29435' })]));
+    });
+    const r = await lpResolveForPreflight(
+      { address: '217 Clydeville Ln', city: 'Cottageville', state: 'SC', zip: '29435' },
+      10_000,
+    );
+    expect(r.verified).toBe(false);
+    // No detail fetch happens because the single search result fails locality.
+    expect(calls.some(c => isDetail(c))).toBe(false);
   });
 
   it('J. no v2 path ever calls a comp/report endpoint', async () => {

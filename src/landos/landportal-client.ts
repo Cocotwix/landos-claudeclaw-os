@@ -879,31 +879,71 @@ function streetSimilar(a: string, b: string): boolean {
   return d <= Math.max(1, Math.floor(Math.min(sa.length, sb.length) * 0.15));
 }
 
-/** Strong situs-address match after safe normalization, gated by city/state/
- *  ZIP/FIPS context. House number must agree when both sides have one. */
+/**
+ * Strong situs-address match after safe normalization. A fuzzy street match
+ * alone is NEVER enough: identity is confirmed only when house number agrees
+ * (when both have one), the street is exact/safely-fuzzy, AND a strong
+ * locality/context check passes (FIPS, or state + ZIP/city). Any directly
+ * conflicting locality field (city, state, FIPS, or ZIP without a confirming
+ * FIPS) hard-rejects.
+ */
 export function addressStrongMatch(
   seller: { address?: string; city?: string; state?: string; zip?: string; fips?: string },
   lp: { street_address?: string; city?: string; state?: string; zip_code?: string; fips?: string },
 ): { match: boolean; reason: string } {
   const s = normalizeStreet(seller.address);
   const l = normalizeStreet(lp.street_address);
+
+  // House number must agree when both sides have one.
   if (s.number && l.number && s.number !== l.number) {
     return { match: false, reason: `house number mismatch (${s.number} vs ${l.number})` };
   }
+  // Street must be exact or safely fuzzy; a different road is an immediate reject.
   if (!streetSimilar(s.street, l.street)) {
     return { match: false, reason: `different road ("${s.street}" vs "${l.street}")` };
   }
+  const streetExact = s.street.length > 0 && s.street.replace(/\s+/g, '') === l.street.replace(/\s+/g, '');
+
   const up = (v?: string) => (v ?? '').toUpperCase().trim();
-  if (seller.state && lp.state && up(seller.state) !== up(lp.state)) {
-    return { match: false, reason: 'state mismatch' };
-  }
-  if (seller.zip && lp.zip_code && String(seller.zip).slice(0, 5) !== String(lp.zip_code).slice(0, 5)) {
+  const zip5 = (v?: string) => (v == null ? '' : String(v).slice(0, 5).trim());
+  const sState = up(seller.state), lState = up(lp.state);
+  const sCity = up(seller.city), lCity = up(lp.city);
+  const sZip = zip5(seller.zip), lZip = zip5(lp.zip_code);
+  const sFips = (seller.fips ?? '').trim(), lFips = (lp.fips ?? '').trim();
+
+  // Hard conflict rejections (only when both sides actually carry the field).
+  if (sState && lState && sState !== lState) return { match: false, reason: 'state mismatch' };
+  if (sCity && lCity && sCity !== lCity) return { match: false, reason: 'city mismatch' };
+  if (sFips && lFips && sFips !== lFips) return { match: false, reason: 'FIPS mismatch' };
+
+  const fipsMatch = !!sFips && !!lFips && sFips === lFips;
+  // ZIP conflict rejects unless a stronger FIPS match confirms the same county.
+  if (sZip && lZip && sZip !== lZip && !fipsMatch) {
     return { match: false, reason: 'ZIP mismatch' };
   }
-  if (seller.fips && lp.fips && seller.fips !== lp.fips) {
-    return { match: false, reason: 'FIPS mismatch' };
+
+  const stateMatch = !!sState && !!lState && sState === lState;
+  const zipMatch = !!sZip && !!lZip && sZip === lZip;
+  const cityMatch = !!sCity && !!lCity && sCity === lCity;
+
+  // A strong locality/context check is REQUIRED before any match. Fuzzy street
+  // similarity by itself never verifies.
+  if (fipsMatch) {
+    return { match: true, reason: 'address match confirmed by FIPS context' };
   }
-  return { match: true, reason: 'address strongly matches after normalization' };
+  if (stateMatch && (zipMatch || cityMatch)) {
+    return { match: true, reason: `address match confirmed by state + ${zipMatch ? 'ZIP' : 'city'} context` };
+  }
+  // State + exact street + same house number, only when the seller supplied no
+  // city or ZIP to check against.
+  if (stateMatch && streetExact && s.number && l.number && s.number === l.number && !sCity && !sZip) {
+    return { match: true, reason: 'exact street + house number + state (no city/ZIP supplied)' };
+  }
+
+  return {
+    match: false,
+    reason: 'insufficient locality/context to verify (need matching FIPS, or matching state plus ZIP or city)',
+  };
 }
 
 // ── v2 resolution paths ───────────────────────────────────────────────────────
