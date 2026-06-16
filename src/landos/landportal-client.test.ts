@@ -448,6 +448,35 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     expect(r.status).toBe('point_candidate');
   });
 
+  it('A. point + APN only (no FIPS/county/state) stays an unverified candidate', async () => {
+    // APNs are not globally unique: a coordinate-derived candidate cannot verify
+    // from APN alone without confirming county/FIPS context.
+    install(() => jsonRes(200, detailBody({ property_id: 777, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN' })));
+    const r = await lpResolveForPreflight({ point: { latitude: 34.9, longitude: -77.8 }, apn: '08-2518' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.status).toBe('point_candidate');
+    expect(r.match_notes.toLowerCase()).toContain('candidate from point lookup');
+    expect(r.match_notes).toMatch(/county\/FIPS context/i);
+    expect(r.match_notes).toMatch(/no scoring, valuation, or offer/i);
+  });
+
+  it('B. point + APN + matching FIPS can verify', async () => {
+    install(() => jsonRes(200, detailBody({ property_id: 777, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN' })));
+    const r = await lpResolveForPreflight({ point: { latitude: 34.9, longitude: -77.8 }, apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(true);
+    expect(r.match_notes).toMatch(/point lookup CONFIRMED/i);
+    expect(r.match_notes).toMatch(/FIPS 37061/);
+  });
+
+  it('C. point + APN + FIPS mismatch rejects (different county)', async () => {
+    install(() => jsonRes(200, detailBody({ property_id: 777, apn: '08-2518', fips: '45019', street_address: '217 CLYDEVILLE LN' })));
+    const r = await lpResolveForPreflight({ point: { latitude: 34.9, longitude: -77.8 }, apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.status).toBe('point_candidate');
+    expect(r.match_notes).toMatch(/FIPS differs/i);
+    expect(r.match_notes).toMatch(/no scoring, valuation, or offer/i);
+  });
+
   it('C. point candidate with similar address but NO seller locality stays unverified', async () => {
     // Candidate returns a similar street, but the seller supplied no city/ZIP/
     // FIPS/APN to confirm against -- fuzzy street alone cannot verify.

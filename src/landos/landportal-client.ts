@@ -1106,12 +1106,23 @@ async function resolveV2Point(args: LpResolveArgs, signal: AbortSignal): Promise
     owner: v2str(props.owner_full_name) || null,
   };
 
+  // APN confirmation for a point-derived candidate REQUIRES confirming county
+  // context: APNs are not globally unique, so APN alone (or APN without matching
+  // FIPS) can never verify a coordinate-discovered parcel. Strict rule: seller
+  // FIPS and candidate FIPS must both be present and equal.
+  const apnHit = !!args.apn && apnMatches(args.apn, candApn);
+  const fipsBothPresent = !!args.fips && !!candFips;
+  const fipsContextOk = fipsBothPresent && args.fips === candFips;
+  const fipsMismatch = fipsBothPresent && args.fips !== candFips;
+
   let confirmed = false;
   let how = '';
-  if (args.apn && apnMatches(args.apn, candApn) && (!args.fips || !candFips || args.fips === candFips)) {
+  if (apnHit && fipsContextOk) {
     confirmed = true;
-    how = `APN ${candApn}`;
+    how = `APN ${candApn} within matching FIPS ${candFips}`;
   } else if (args.address) {
+    // Address path is governed by addressStrongMatch, which itself requires
+    // locality/FIPS context before it returns a match.
     const am = addressStrongMatch(
       { address: args.address, city: args.city, state: args.state, zip: args.zip, fips: args.fips },
       { street_address: candAddr, city: v2str(props.city), state: v2str(props.state), zip_code: v2str(props.zip_code), fips: candFips },
@@ -1129,11 +1140,20 @@ async function resolveV2Point(args: LpResolveArgs, signal: AbortSignal): Promise
       property_summary: summaryFromV2(props),
     };
   }
+
+  let why: string;
+  if (apnHit && fipsMismatch) {
+    why = `APN ${candApn} matches but FIPS differs (seller ${args.fips} vs candidate ${candFips}) -- different county/jurisdiction, not the same parcel`;
+  } else if (apnHit) {
+    why = `APN ${candApn} matches but lacks confirming county/FIPS context (APNs are not globally unique); a point candidate cannot verify on APN alone`;
+  } else {
+    why = 'point/coordinates are candidate discovery only and require APN + matching FIPS, or an address + locality match, against seller input';
+  }
   return {
     ...baseCand,
     verified: false,
     status: 'point_candidate',
-    match_notes: `Candidate from point lookup (APN ${candApn || 'n/a'}, ${candAddr || 'no address'}). NOT verified -- point/coordinates are candidate discovery only and require an APN or address match against seller input. No scoring, valuation, or offer.`,
+    match_notes: `Candidate from point lookup (APN ${candApn || 'n/a'}, ${candAddr || 'no address'}). NOT verified -- ${why}. No scoring, valuation, or offer.`,
     candidates: [baseCand],
     property_summary: summaryFromV2(props),
   };
