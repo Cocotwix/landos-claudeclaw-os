@@ -292,17 +292,23 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
   const origToken = process.env.LP_JWT_TOKEN;
   const hadVer = Object.prototype.hasOwnProperty.call(process.env, 'LANDPORTAL_API_VERSION');
   const origVer = process.env.LANDPORTAL_API_VERSION;
+  const hadV2Token = Object.prototype.hasOwnProperty.call(process.env, 'LANDPORTAL_V2_TOKEN');
+  const origV2Token = process.env.LANDPORTAL_V2_TOKEN;
   let calls: string[];
+  let authHeaders: string[];
 
   beforeEach(() => {
     process.env.LANDPORTAL_API_VERSION = 'v2';
     process.env.LP_JWT_TOKEN = 'test-token';
+    delete process.env.LANDPORTAL_V2_TOKEN;
     calls = [];
+    authHeaders = [];
   });
   afterEach(() => {
     global.fetch = origFetch;
     if (hadToken) process.env.LP_JWT_TOKEN = origToken; else delete process.env.LP_JWT_TOKEN;
     if (hadVer) process.env.LANDPORTAL_API_VERSION = origVer; else delete process.env.LANDPORTAL_API_VERSION;
+    if (hadV2Token) process.env.LANDPORTAL_V2_TOKEN = origV2Token; else delete process.env.LANDPORTAL_V2_TOKEN;
     vi.restoreAllMocks();
   });
 
@@ -315,10 +321,11 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     } as Response;
   }
   function install(router: (url: string) => Response) {
-    global.fetch = vi.fn(async (input: unknown) => {
-      const url = String(input);
-      calls.push(url);
-      return router(url);
+    global.fetch = vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
+      calls.push(String(input));
+      const auth = init?.headers?.Authorization;
+      if (auth) authHeaders.push(String(auth));
+      return router(String(input));
     }) as unknown as typeof fetch;
   }
   const feature = (props: Record<string, unknown>) => ({ type: 'Feature', geometry: null, properties: props });
@@ -533,5 +540,98 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
     expect(calls.every(c => !c.includes('/v2/'))).toBe(true);
     expect(calls.some(c => c.includes('/search'))).toBe(true);
+  });
+
+  // ── v2 token override (LANDPORTAL_V2_TOKEN) ─────────────────────────────────
+  it('A(token). v2 prefers LANDPORTAL_V2_TOKEN over LP_JWT_TOKEN', async () => {
+    process.env.LANDPORTAL_V2_TOKEN = 'v2-opaque-token';
+    process.env.LP_JWT_TOKEN = 'v1-jwt-token';
+    install(url => {
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '37061' }));
+      return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061' })]));
+    });
+    await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(authHeaders.length).toBeGreaterThan(0);
+    expect(authHeaders.every(h => h === 'Bearer v2-opaque-token')).toBe(true);
+    expect(authHeaders.some(h => h.includes('v1-jwt-token'))).toBe(false);
+  });
+
+  it('B(token). v2 falls back to LP_JWT_TOKEN when LANDPORTAL_V2_TOKEN is absent', async () => {
+    delete process.env.LANDPORTAL_V2_TOKEN;
+    process.env.LP_JWT_TOKEN = 'v1-jwt-token';
+    install(url => {
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '37061' }));
+      return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061' })]));
+    });
+    await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(authHeaders.length).toBeGreaterThan(0);
+    expect(authHeaders.every(h => h === 'Bearer v1-jwt-token')).toBe(true);
+  });
+
+  it('D(token). adapter results never leak token, Bearer, or Authorization', async () => {
+    process.env.LANDPORTAL_V2_TOKEN = 'v2-opaque-token';
+    install(() => jsonRes(401, errBody('unauthorized', 'rid-xyz')));
+    const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    const blob = JSON.stringify(r);
+    // No token values and no echoed Authorization header content.
+    expect(blob).not.toContain('v2-opaque-token');
+    expect(blob).not.toContain('test-token');
+    expect(blob).not.toContain('Bearer ');
+    expect(blob).not.toContain('LANDPORTAL_V2_TOKEN');
+    expect(blob).not.toContain('LP_JWT_TOKEN');
+    // But the safe request_id is still surfaced.
+    expect(r.match_notes).toContain('request_id rid-xyz');
+  });
+
+  it('E(token). 401 and 403 still surface safe auth/permission messages + request_id', async () => {
+    process.env.LANDPORTAL_V2_TOKEN = 'v2-opaque-token';
+    for (const [status, label] of [[401, /authorization failed/i], [403, /forbidden/i]] as Array<[number, RegExp]>) {
+      install(() => jsonRes(status, errBody('some_code', 'rid-401-403')));
+      const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+      expect(r.verified).toBe(false);
+      expect(r.match_notes).toMatch(label);
+      expect(r.match_notes).toContain('request_id rid-401-403');
+      expect(r.match_notes).not.toContain('v2-opaque-token');
+    }
+  });
+});
+
+describe('v1 token behavior unchanged by v2 override', () => {
+  const hadToken = Object.prototype.hasOwnProperty.call(process.env, 'LP_JWT_TOKEN');
+  const origToken = process.env.LP_JWT_TOKEN;
+  const hadV2Token = Object.prototype.hasOwnProperty.call(process.env, 'LANDPORTAL_V2_TOKEN');
+  const origV2Token = process.env.LANDPORTAL_V2_TOKEN;
+  const origFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = origFetch;
+    if (hadToken) process.env.LP_JWT_TOKEN = origToken; else delete process.env.LP_JWT_TOKEN;
+    if (hadV2Token) process.env.LANDPORTAL_V2_TOKEN = origV2Token; else delete process.env.LANDPORTAL_V2_TOKEN;
+    delete process.env.LANDPORTAL_API_VERSION;
+    vi.restoreAllMocks();
+  });
+
+  it('C(token). v1 path uses LP_JWT_TOKEN and ignores LANDPORTAL_V2_TOKEN', async () => {
+    delete process.env.LANDPORTAL_API_VERSION; // v1 default
+    process.env.LP_JWT_TOKEN = 'v1-jwt-token';
+    process.env.LANDPORTAL_V2_TOKEN = 'v2-opaque-token';
+    const authHeaders: string[] = [];
+    const calls: string[] = [];
+    global.fetch = vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
+      calls.push(String(input));
+      const auth = init?.headers?.Authorization;
+      if (auth) authHeaders.push(String(auth));
+      const url = String(input);
+      if (url.includes('/search')) {
+        return { ok: true, status: 200, statusText: 'HTTP 200', text: async () => JSON.stringify({ data: [{ propertyid: '555', fips: '37061', apn: '08-2518' }] }) } as Response;
+      }
+      return { ok: true, status: 200, statusText: 'HTTP 200', text: async () => JSON.stringify({ meta: { requests_left: '9' }, data: { property: { propertyid: '555', apn: '08-2518', situsfullstreetaddress: '217 CLYDEVILLE LN' } } }) } as Response;
+    }) as unknown as typeof fetch;
+
+    await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(calls.every(c => !c.includes('/v2/'))).toBe(true);
+    expect(authHeaders.length).toBeGreaterThan(0);
+    expect(authHeaders.every(h => h === 'Bearer v1-jwt-token')).toBe(true);
+    expect(authHeaders.some(h => h.includes('v2-opaque-token'))).toBe(false);
   });
 });

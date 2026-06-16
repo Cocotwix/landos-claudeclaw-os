@@ -4,9 +4,10 @@ import path from 'path';
 import { PROJECT_ROOT } from '../config.js';
 
 // ── Token reader ─────────────────────────────────────────────────────────────
-// Reads LP_JWT_TOKEN from environment or .env. Never logs or exposes the value.
-function readLpToken(): string | null {
-  if (process.env.LP_JWT_TOKEN) return process.env.LP_JWT_TOKEN;
+// Reads a named token from the process environment or, as a fallback, the
+// project .env file. Never logs or exposes the value.
+function readTokenVar(key: string): string | null {
+  if (process.env[key]) return process.env[key] as string;
   try {
     const content = fs.readFileSync(path.join(PROJECT_ROOT, '.env'), 'utf-8');
     for (const line of content.split('\n')) {
@@ -14,7 +15,7 @@ function readLpToken(): string | null {
       if (!trimmed || trimmed.startsWith('#')) continue;
       const eq = trimmed.indexOf('=');
       if (eq < 0) continue;
-      if (trimmed.slice(0, eq).trim() !== 'LP_JWT_TOKEN') continue;
+      if (trimmed.slice(0, eq).trim() !== key) continue;
       let val = trimmed.slice(eq + 1).trim();
       if (
         (val.startsWith('"') && val.endsWith('"')) ||
@@ -24,6 +25,18 @@ function readLpToken(): string | null {
     }
   } catch { /* ignore */ }
   return null;
+}
+
+// v1 token (behavior unchanged): LP_JWT_TOKEN from environment or .env.
+function readLpToken(): string | null {
+  return readTokenVar('LP_JWT_TOKEN');
+}
+
+// v2 token: prefer LANDPORTAL_V2_TOKEN (the v2 host uses an opaque bearer token),
+// falling back to LP_JWT_TOKEN for backward compatibility. Never logs or exposes
+// the value.
+function readLpV2Token(): string | null {
+  return readTokenVar('LANDPORTAL_V2_TOKEN') ?? readLpToken();
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -728,11 +741,12 @@ function isV2Error(x: unknown): x is LpV2FetchError {
   return !!x && typeof x === 'object' && (x as Record<string, unknown>).error === true;
 }
 
-/** v2 HTTP layer. Bearer auth (same token source). Never logs or returns the token.
- *  Maps HttpError ({ error: { code, message, request_id } }) into a safe shape. */
+/** v2 HTTP layer. Bearer auth via readLpV2Token (LANDPORTAL_V2_TOKEN, else
+ *  LP_JWT_TOKEN). Never logs or returns the token. Maps HttpError
+ *  ({ error: { code, message, request_id } }) into a safe shape. */
 async function lpV2Fetch(path: string, signal?: AbortSignal): Promise<unknown> {
-  const token = readLpToken();
-  if (!token) throw new Error('LP_JWT_TOKEN not configured');
+  const token = readLpV2Token();
+  if (!token) throw new Error('LandPortal v2 token not configured (set LANDPORTAL_V2_TOKEN or LP_JWT_TOKEN)');
   const res = await fetch(`${LP_V2_BASE}${path}`, {
     signal,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
