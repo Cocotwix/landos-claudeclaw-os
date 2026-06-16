@@ -76,6 +76,22 @@ export const DEPARTMENTS: readonly Department[] = [
     ],
   },
   {
+    id: 'crm_ghl_success',
+    label: 'CRM / GHL Success Management',
+    status: 'planned',
+    description: 'Monitors and routes CRM/GHL workflow health: pipeline hygiene, missed-lead and follow-up alerts, source/campaign attribution, automation health, duplicate/contact data quality. GHL/CRM is one operating leg inside LandOS, not LandOS itself; this lane never modifies GHL.',
+    agents: [],
+  },
+  {
+    id: 'transaction_coordination',
+    label: 'Transaction Coordination',
+    status: 'planned',
+    description: 'Signed-deal-through-closing coordination: title/closing checklist, deadlines, seller documents, earnest-money status, attorney/title-company coordination. Sits between Acquisitions, Due Diligence, Finance, and Dispositions.',
+    agents: [
+      { agentId: 'transaction-coordination', name: 'TC', role: 'Transaction coordination (planned)', status: 'planned' },
+    ],
+  },
+  {
     id: 'research',
     label: 'Research',
     status: 'planned',

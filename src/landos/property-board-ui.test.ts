@@ -8,6 +8,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
+import { KANBAN_STATUSES } from './db.js';
+
 const SRC = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/pages/PropertyBoard.tsx', import.meta.url)),
   'utf-8',
@@ -88,5 +90,36 @@ describe('Deal Card Review Panel', () => {
 
   it('opens panel LandPortal links in a new tab safely', () => {
     expect(SRC).toMatch(/p\.lp_url[\s\S]{0,120}target="_blank"[\s\S]{0,60}rel="noopener noreferrer"/);
+  });
+});
+
+describe('Property Board routing display metadata', () => {
+  it('renders the stage owner from the routing-map mirror', () => {
+    expect(SRC).toMatch(/STAGE_OWNER/);
+    expect(SRC).toMatch(/owner:\s*\{STAGE_OWNER\[status\]/);
+  });
+
+  it('keeps the STAGE_OWNER mirror in sync with every kanban_status', () => {
+    for (const s of KANBAN_STATUSES) {
+      expect(SRC.includes(`${s}:`), `STAGE_OWNER missing key ${s}`).toBe(true);
+    }
+  });
+
+  it('keeps verification badge and never implies value/offer is approved', () => {
+    expect(SRC).toMatch(/verification_status === 'verified_property'/);
+    // The unverified guardrail warning text stays present.
+    expect(SRC).toMatch(/before scoring, valuing, or offer guidance/i);
+  });
+
+  it('shows a blocker indicator derived only from existing open_risks data', () => {
+    expect(SRC).toMatch(/function parseRisks/);
+    expect(SRC).toMatch(/open_risks/);
+    expect(SRC).toMatch(/blocker/);
+    // Blocker display reads card data only -- no new fetch/endpoint.
+    expect(SRC).toMatch(/parseRisks\(card\.open_risks\)/);
+  });
+
+  it('uses no coordinate/proximity/map-pin verification language', () => {
+    expect(/geocod|proximity|nearest parcel|map pin|coordinate/i.test(SRC)).toBe(false);
   });
 });

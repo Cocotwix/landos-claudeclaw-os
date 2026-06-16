@@ -21,6 +21,7 @@ interface Card {
   owner: string;
   lp_url: string;
   summary: string;
+  open_risks: string; // JSON array string from the board payload (may be '[]')
   updated_at: number;
 }
 
@@ -48,6 +49,38 @@ interface DealReview {
   latestWriteback: string | null;
   combinedAcreage: { acres: number; verified: boolean; label: string };
   propertyCards: any[];
+}
+
+// Stage -> primary owner role lane. Display only; mirrors the backend routing
+// map in src/landos/routing-map.ts (KANBAN_ROUTING). Keep these keys in sync
+// with the kanban_status values; a missing key falls back to no owner label.
+const STAGE_OWNER: Record<string, string> = {
+  new_lead: 'Marketing / Lead Gen',
+  needs_parcel_verification: 'Due Diligence',
+  needs_seller_discovery: 'Acquisitions',
+  researching: 'Due Diligence',
+  underwriting: 'Valuation / Comps',
+  offer_ready: 'Command Center',
+  offer_sent: 'Acquisitions',
+  follow_up: 'Acquisitions',
+  under_contract: 'Transaction Coordination',
+  due_diligence: 'Due Diligence',
+  disposition: 'Dispositions',
+  closed: 'Transaction Coordination',
+  dead: 'Command Center',
+  archived: 'Command Center',
+};
+
+// Parse a card's open_risks JSON array safely; never throws. Used only to show
+// a blocker indicator from data already on the card — no new fetch, no schema.
+function parseRisks(openRisks: string | undefined): string[] {
+  if (!openRisks) return [];
+  try {
+    const arr = JSON.parse(openRisks);
+    return Array.isArray(arr) ? arr.filter((r) => typeof r === 'string' && r.trim()) : [];
+  } catch {
+    return [];
+  }
 }
 
 // Comp source labels / kinds / statuses (mirror the backend model).
@@ -241,6 +274,9 @@ export function PropertyBoard() {
                   <span>{status.replace(/_/g, ' ')}</span>
                   <span>{board?.columns[status]?.length ?? 0}</span>
                 </div>
+                {STAGE_OWNER[status] && (
+                  <div class="text-[9.5px] text-[var(--color-text-faint)] mb-2 -mt-1.5">owner: {STAGE_OWNER[status]}</div>
+                )}
                 <div class="space-y-2">
                   {(board?.columns[status] ?? []).map((card) => (
                     <button
@@ -249,10 +285,13 @@ export function PropertyBoard() {
                       onClick={() => void openCard(card.id)}
                       class="w-full text-left bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-2.5 hover:border-[var(--color-accent)] transition-colors"
                     >
-                      <div class="flex items-center gap-1.5 mb-1">
+                      <div class="flex items-center gap-1.5 mb-1 flex-wrap">
                         <Pill tone={card.verification_status === 'verified_property' ? 'done' : card.verification_status === 'rejected_mismatch' ? 'failed' : 'neutral'}>
                           {card.verification_status === 'verified_property' ? 'verified' : card.verification_status === 'unverified_lead' ? 'unverified' : card.verification_status}
                         </Pill>
+                        {parseRisks(card.open_risks).length > 0 && (
+                          <Pill tone="failed">⚠ {parseRisks(card.open_risks).length} blocker{parseRisks(card.open_risks).length === 1 ? '' : 's'}</Pill>
+                        )}
                       </div>
                       <div class="text-[12px] text-[var(--color-text)] truncate">{card.active_input_address || '(no address)'}</div>
                       <div class="text-[10px] text-[var(--color-text-faint)] truncate">
