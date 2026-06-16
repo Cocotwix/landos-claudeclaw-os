@@ -9,3 +9,9 @@ process.env.WARROOM_ENABLED = process.env.WARROOM_ENABLED || 'false';
 // middleware lets it through. Without this, the CSRF check has no
 // allowed-origin host and 403s every cross-origin POST.
 process.env.DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://dash.test.example';
+// Hermetic token reads: stop LandPortal token resolution from falling back to
+// the developer's real .env during tests. Without this, a real LANDPORTAL_V2_TOKEN
+// / LP_JWT_TOKEN on disk could satisfy (or leak into an assertion diff of) a
+// token test. Tests set tokens via process.env only; runtime never sets this
+// flag, so the production .env fallback is unchanged.
+process.env.LANDOS_DISABLE_DOTENV_FALLBACK = '1';

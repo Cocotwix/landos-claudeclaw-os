@@ -8,6 +8,11 @@ import { PROJECT_ROOT } from '../config.js';
 // project .env file. Never logs or exposes the value.
 function readTokenVar(key: string): string | null {
   if (process.env[key]) return process.env[key] as string;
+  // Hermetic tests: when this flag is set (src/test-env-setup.ts), never read
+  // the on-disk .env, so a developer's real token can neither satisfy nor leak
+  // into a test. The flag is unset in production, so the runtime .env fallback
+  // below is unchanged.
+  if (process.env.LANDOS_DISABLE_DOTENV_FALLBACK) return null;
   try {
     const content = fs.readFileSync(path.join(PROJECT_ROOT, '.env'), 'utf-8');
     for (const line of content.split('\n')) {
