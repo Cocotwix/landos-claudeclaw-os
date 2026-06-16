@@ -126,10 +126,14 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
     state &&
     US_STATES.has(cityStateMatch[2].toUpperCase())
   ) {
+    // Capture a 5-digit ZIP that trails the state (e.g. "SC 29435"). Used by the
+    // v2 address search as an extra context filter; ignored by the v1 path.
+    const zip = text.match(/\b[A-Z]{2}\s+(\d{5})(?:-\d{4})?\b/)?.[1];
     return {
       address: addrMatch[1].trim(),
       city: cityStateMatch[1].trim(),
       state,
+      ...(zip ? { zip } : {}),
       ...(labeledFips ? { fips: labeledFips } : {}),
     };
   }

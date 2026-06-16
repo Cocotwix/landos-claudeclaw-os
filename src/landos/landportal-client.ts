@@ -36,6 +36,10 @@ export interface LpResolveArgs {
   apn?: string;
   propertyid?: string;
   lp_url?: string;
+  zip?: string;
+  /** Coordinates for candidate-only point discovery (v2). Never used as final
+   *  verification: a point-derived parcel must be confirmed by APN/address. */
+  point?: { latitude: number; longitude: number };
 }
 
 export interface LpPropertySummary {
@@ -83,7 +87,7 @@ export interface LpPropertySummary {
 
 export interface LpResolveResult {
   verified: boolean;
-  status: 'verified' | 'not_verified' | 'multiple_candidates' | 'ambiguous_fips' | 'lookup_timeout' | 'error';
+  status: 'verified' | 'not_verified' | 'multiple_candidates' | 'ambiguous_fips' | 'lookup_timeout' | 'error' | 'point_candidate';
   propertyid: string | null;
   fips: string | null;
   apn: string | null;
@@ -545,6 +549,10 @@ export async function lpResolveForPreflight(
   args: LpResolveArgs,
   timeoutMs: number,
 ): Promise<LpResolveResult> {
+  // Feature flag: route to the LandPortal API v2 adapter only when explicitly
+  // opted in. Default stays on the current v1 path so behavior is unchanged.
+  if (lpApiVersion() === 'v2') return lpResolveForPreflightV2(args, timeoutMs);
+
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
 
@@ -684,6 +692,462 @@ export async function lpResolveForPreflight(
         situs_address: null,
         owner: null,
         match_notes: `LandPortal preflight fetch aborted after ${Math.round(timeoutMs / 1000)}s.`,
+        candidates: [],
+      };
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── LandPortal API v2 adapter (flag: LANDPORTAL_API_VERSION=v2) ────────────────
+//
+// Strict parcel verification is preserved. v2 endpoints used:
+//   GET /v2/properties              (owner/parcelnumb/address search; <=10 results)
+//   GET /v2/properties/{propertyId} (detail by id; optional fips)
+//   GET /v2/properties/point        (CANDIDATE-ONLY; never final verification)
+// A point-derived parcel is only ever a candidate: it must be confirmed by an
+// APN or address match against seller input before it can be marked verified.
+
+const LP_V2_BASE = 'https://api.landportal.com';
+
+/** Returns 'v2' only when the feature flag is explicitly set; defaults to 'v1'. */
+export function lpApiVersion(): 'v1' | 'v2' {
+  return (process.env.LANDPORTAL_API_VERSION ?? '').trim().toLowerCase() === 'v2' ? 'v2' : 'v1';
+}
+
+interface LpV2FetchError {
+  error: true;
+  http_status: number;
+  code: string | null;
+  message: string;
+  request_id: string | null;
+}
+function isV2Error(x: unknown): x is LpV2FetchError {
+  return !!x && typeof x === 'object' && (x as Record<string, unknown>).error === true;
+}
+
+/** v2 HTTP layer. Bearer auth (same token source). Never logs or returns the token.
+ *  Maps HttpError ({ error: { code, message, request_id } }) into a safe shape. */
+async function lpV2Fetch(path: string, signal?: AbortSignal): Promise<unknown> {
+  const token = readLpToken();
+  if (!token) throw new Error('LP_JWT_TOKEN not configured');
+  const res = await fetch(`${LP_V2_BASE}${path}`, {
+    signal,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  });
+  const text = await res.text();
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { body = { raw_text: text }; }
+  if (!res.ok) {
+    const errObj = (((body as Record<string, unknown>)?.error) ?? {}) as Record<string, unknown>;
+    return {
+      error: true,
+      http_status: res.status,
+      code: (errObj.code as string) ?? null,
+      message: (errObj.message as string) ?? ((body as Record<string, unknown>)?.message as string) ?? res.statusText ?? 'LandPortal v2 error',
+      request_id: (errObj.request_id as string) ?? null,
+    } satisfies LpV2FetchError;
+  }
+  return body;
+}
+
+const v2str = (v: unknown) => (v == null ? '' : String(v));
+
+/** Map a v2 HttpError to a safe, secret-free LpResolveResult. */
+function v2ErrorToResult(err: LpV2FetchError): LpResolveResult {
+  const rid = err.request_id ? ` (request_id ${err.request_id})` : '';
+  let label: string;
+  switch (err.http_status) {
+    case 401: label = 'LandPortal v2 authorization failed (token invalid, expired, revoked, or deleted).'; break;
+    case 403: label = 'LandPortal v2 access forbidden (plan/scope restriction).'; break;
+    case 429: label = 'LandPortal v2 rate limit / quota exhausted.'; break;
+    default:  label = `LandPortal v2 error (HTTP ${err.http_status}${err.code ? `, ${err.code}` : ''}).`;
+  }
+  return {
+    verified: false, status: 'error', propertyid: null, fips: null,
+    apn: null, situs_address: null, owner: null,
+    match_notes: `${label} Parcel not verified -- no scoring, valuation, or offer.${rid}`,
+    candidates: [],
+  };
+}
+
+function v2NotVerified(fips: string | null, notes: string, candidates: Array<Record<string, unknown>> = []): LpResolveResult {
+  return {
+    verified: false, status: 'not_verified', propertyid: null, fips,
+    apn: null, situs_address: null, owner: null, match_notes: notes, candidates,
+  };
+}
+
+function v2FeatureProps(feature: unknown): Record<string, unknown> | null {
+  const p = (feature as Record<string, unknown>)?.properties as Record<string, unknown> | undefined;
+  return p ?? null;
+}
+function v2DetailProps(body: unknown): Record<string, unknown> | null {
+  const data = (body as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+  return (data?.properties as Record<string, unknown>) ?? null;
+}
+function v2SearchFeatures(body: unknown): Array<Record<string, unknown>> {
+  const data = (body as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+  const features = data?.features;
+  return Array.isArray(features) ? (features as Array<Record<string, unknown>>) : [];
+}
+function formatV2Candidate(feature: Record<string, unknown>): Record<string, unknown> {
+  const p = v2FeatureProps(feature) ?? feature;
+  return {
+    propertyid: p.property_id ?? null,
+    fips: p.fips ?? null,
+    apn: p.apn ?? null,
+    situs_address: p.street_address ?? null,
+    owner: p.owner_full_name ?? null,
+  };
+}
+
+/** Build the rich LpPropertySummary from v2 property attributes (snake_case). */
+function summaryFromV2(p: Record<string, unknown>): LpPropertySummary {
+  const acres = v2str(p.lot_size_acres);
+  return {
+    propertyid: v2str(p.property_id), apn: v2str(p.apn),
+    situs_address: v2str(p.street_address), city: v2str(p.city), state: v2str(p.state),
+    zip: v2str(p.zip_code), county: v2str(p.county), owner: v2str(p.owner_full_name),
+    land_use: v2str(p.land_use_description), lot_size_acres: acres, calc_acres: acres,
+    lot_size_sqft: '', road_frontage_ft: '', land_locked: '', near_water: '',
+    wetlands_pct: '', fema_pct: '', buildability_pct: '', buildability_acres: '',
+    slope_avg_deg: '', elevation_avg_ft: '', building_area_sqft: '',
+    assessed_total: v2str(p.assessed_total_value), assessed_land: '', market_total: '',
+    market_land: '', tlp_estimate: '', tlp_ppa: '', price_acre_county: '',
+    lat: v2str(p.latitude), lng: v2str(p.longitude), municipality: '',
+    mailing_address: '', mailing_city: '', mailing_state: '',
+    similars_count: '', similars_ppa_min: '', similars_ppa_max: '',
+    similars_ppa_median: '', similars_most_recent_year: '',
+  };
+}
+
+// ── Identity matching (shared, tolerant-but-strict) ───────────────────────────
+
+/** Canonical APN comparison key: uppercased, separators/placeholders removed.
+ *  Tolerates dashes vs spaces vs decimals, county punctuation, and "++"
+ *  placeholder suffixes; rejects different/transposed/missing core digits. */
+export function apnMatchKey(apn: string | null | undefined): string {
+  return (apn ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+function apnMatches(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ka = apnMatchKey(a);
+  return ka.length > 0 && ka === apnMatchKey(b);
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, (_, i) => i);
+  for (let j = 1; j <= n; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= m; i++) {
+      const tmp = dp[i];
+      dp[i] = Math.min(dp[i] + 1, dp[i - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return dp[m];
+}
+
+function normalizeStreet(addr: string | null | undefined): { number: string; street: string } {
+  const up = (addr ?? '').toUpperCase().replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
+  const m = up.match(/^(\d+[A-Z]?)\s+(.+)$/);
+  const number = m ? m[1] : '';
+  const rest = m ? m[2] : up;
+  const parts = rest.split(' ').filter(Boolean);
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (FULL_TO_ABBREV[last]) parts[parts.length - 1] = FULL_TO_ABBREV[last];
+  }
+  return { number, street: parts.join(' ') };
+}
+
+/** Street body similarity: tolerates minor typos and seller noise tokens
+ *  ("P BLACK ST" vs "BLACK ST") but not a genuinely different road. */
+function streetSimilar(a: string, b: string): boolean {
+  const sa = a.replace(/\s+/g, '');
+  const sb = b.replace(/\s+/g, '');
+  if (!sa || !sb) return false;
+  if (sa === sb) return true;
+  if (sa.length >= 4 && sb.length >= 4 && (sa.includes(sb) || sb.includes(sa))) return true;
+  const d = levenshtein(sa, sb);
+  return d <= Math.max(1, Math.floor(Math.min(sa.length, sb.length) * 0.15));
+}
+
+/** Strong situs-address match after safe normalization, gated by city/state/
+ *  ZIP/FIPS context. House number must agree when both sides have one. */
+export function addressStrongMatch(
+  seller: { address?: string; city?: string; state?: string; zip?: string; fips?: string },
+  lp: { street_address?: string; city?: string; state?: string; zip_code?: string; fips?: string },
+): { match: boolean; reason: string } {
+  const s = normalizeStreet(seller.address);
+  const l = normalizeStreet(lp.street_address);
+  if (s.number && l.number && s.number !== l.number) {
+    return { match: false, reason: `house number mismatch (${s.number} vs ${l.number})` };
+  }
+  if (!streetSimilar(s.street, l.street)) {
+    return { match: false, reason: `different road ("${s.street}" vs "${l.street}")` };
+  }
+  const up = (v?: string) => (v ?? '').toUpperCase().trim();
+  if (seller.state && lp.state && up(seller.state) !== up(lp.state)) {
+    return { match: false, reason: 'state mismatch' };
+  }
+  if (seller.zip && lp.zip_code && String(seller.zip).slice(0, 5) !== String(lp.zip_code).slice(0, 5)) {
+    return { match: false, reason: 'ZIP mismatch' };
+  }
+  if (seller.fips && lp.fips && seller.fips !== lp.fips) {
+    return { match: false, reason: 'FIPS mismatch' };
+  }
+  return { match: true, reason: 'address strongly matches after normalization' };
+}
+
+// ── v2 resolution paths ───────────────────────────────────────────────────────
+
+async function resolveV2ByPropertyId(
+  propertyId: string,
+  fips: string,
+  expect: { apn?: string; address?: string; city?: string; state?: string; zip?: string },
+  signal: AbortSignal,
+): Promise<LpResolveResult> {
+  const params = new URLSearchParams();
+  if (fips) params.set('fips', fips);
+  const q = params.toString();
+  const body = await lpV2Fetch(`/v2/properties/${encodeURIComponent(propertyId)}${q ? `?${q}` : ''}`, signal);
+  if (isV2Error(body)) return v2ErrorToResult(body);
+  const props = v2DetailProps(body);
+  if (!props) return v2NotVerified(fips || null, 'LandPortal v2 returned no property detail. Parcel not verified -- no scoring, valuation, or offer.');
+
+  const retApn = v2str(props.apn);
+  const retFips = v2str(props.fips) || fips;
+  let verified = true;
+  let notes = `Parcel resolved via LandPortal v2 property_id ${propertyId} (API v2).`;
+
+  if (expect.apn) {
+    if (!apnMatches(expect.apn, retApn)) {
+      verified = false;
+      notes = `APN mismatch -- seller "${expect.apn}" vs LandPortal "${retApn}". Parcel not verified.`;
+    } else if (fips && retFips && fips !== retFips) {
+      verified = false;
+      notes = `FIPS mismatch -- ${fips} vs ${retFips}. Parcel not verified.`;
+    }
+  }
+  if (verified && expect.address) {
+    const am = addressStrongMatch(
+      { address: expect.address, city: expect.city, state: expect.state, zip: expect.zip, fips },
+      { street_address: v2str(props.street_address), city: v2str(props.city), state: v2str(props.state), zip_code: v2str(props.zip_code), fips: retFips },
+    );
+    if (!am.match) {
+      verified = false;
+      notes = `Address ${am.reason} -- seller "${expect.address}" vs LandPortal "${v2str(props.street_address)}". Parcel not verified.`;
+    }
+  }
+
+  return {
+    verified,
+    status: verified ? 'verified' : 'not_verified',
+    propertyid: v2str(props.property_id) || propertyId,
+    fips: retFips || null,
+    apn: retApn || null,
+    situs_address: v2str(props.street_address) || null,
+    city: v2str(props.city) || null,
+    state: v2str(props.state) || null,
+    owner: v2str(props.owner_full_name) || null,
+    match_notes: notes,
+    candidates: [],
+    property_summary: summaryFromV2(props),
+  };
+}
+
+function v2Multiple(features: Array<Record<string, unknown>>, fips: string | null, label: string): LpResolveResult {
+  return {
+    verified: false, status: 'multiple_candidates', propertyid: null, fips,
+    apn: null, situs_address: null, owner: null,
+    match_notes: `${features.length} LandPortal v2 parcels matched ${label}. Parcel not verified -- specify APN, FIPS, or property ID. No scoring, valuation, or offer.`,
+    candidates: features.slice(0, 5).map(formatV2Candidate),
+  };
+}
+
+async function resolveV2ByApn(
+  apn: string,
+  opts: { fips?: string; state?: string },
+  signal: AbortSignal,
+): Promise<LpResolveResult> {
+  const params = new URLSearchParams({ parcelnumb: apn });
+  if (opts.fips) params.set('fips', opts.fips);
+  else if (opts.state) params.set('state', opts.state);
+  const body = await lpV2Fetch(`/v2/properties?${params}`, signal);
+  if (isV2Error(body)) return v2ErrorToResult(body);
+  const features = v2SearchFeatures(body);
+  if (features.length === 0) {
+    return v2NotVerified(opts.fips ?? null, `No LandPortal v2 result for APN ${apn}${opts.fips ? ` (FIPS ${opts.fips})` : ''}. Exact lookup miss -- parcel not verified, no scoring, valuation, or offer.`);
+  }
+  const apnMatched = features.filter(f => apnMatches(apn, v2str(v2FeatureProps(f)?.apn)));
+  const pool = apnMatched.length ? apnMatched : features;
+  if (pool.length > 1) return v2Multiple(pool, opts.fips ?? null, `APN ${apn}`);
+  const props = v2FeatureProps(pool[0]);
+  if (!props?.property_id) {
+    return v2NotVerified(opts.fips ?? null, 'LandPortal v2 search result missing property_id. Parcel not verified.');
+  }
+  const fips = v2str(props.fips) || opts.fips || '';
+  return resolveV2ByPropertyId(v2str(props.property_id), fips, { apn }, signal);
+}
+
+async function resolveV2ByAddress(args: LpResolveArgs, signal: AbortSignal): Promise<LpResolveResult> {
+  const params = new URLSearchParams({ address: args.address! });
+  if (args.city) params.set('city', args.city);
+  if (args.fips) params.set('fips', args.fips);
+  else if (args.state) params.set('state', args.state);
+  if (args.zip) params.set('zip', args.zip);
+  const body = await lpV2Fetch(`/v2/properties?${params}`, signal);
+  if (isV2Error(body)) return v2ErrorToResult(body);
+  const features = v2SearchFeatures(body);
+  if (features.length === 0) {
+    return v2NotVerified(args.fips ?? null, `No LandPortal v2 result for "${args.address}". Exact lookup miss -- parcel not verified, no scoring, valuation, or offer.`);
+  }
+  const seller = { address: args.address, city: args.city, state: args.state, zip: args.zip, fips: args.fips };
+  const strong = features.filter(f => {
+    const p = v2FeatureProps(f) ?? {};
+    return addressStrongMatch(seller, {
+      street_address: v2str(p.street_address), city: v2str(p.city),
+      state: v2str(p.state), zip_code: v2str(p.zip_code), fips: v2str(p.fips),
+    }).match;
+  });
+  if (strong.length === 0) {
+    return v2NotVerified(
+      args.fips ?? null,
+      `LandPortal v2 returned ${features.length} result(s) but none strongly match "${args.address}". Unverified candidate/mismatch -- no scoring, valuation, or offer.`,
+      features.slice(0, 5).map(formatV2Candidate),
+    );
+  }
+  if (strong.length > 1) return v2Multiple(strong, args.fips ?? null, `address "${args.address}"`);
+  const props = v2FeatureProps(strong[0]);
+  if (!props?.property_id) {
+    return v2NotVerified(args.fips ?? null, 'LandPortal v2 search result missing property_id. Parcel not verified.');
+  }
+  const fips = v2str(props.fips) || args.fips || '';
+  return resolveV2ByPropertyId(v2str(props.property_id), fips, {
+    address: args.address, city: args.city, state: args.state, zip: args.zip,
+  }, signal);
+}
+
+/**
+ * Point lookup: CANDIDATE-ONLY. Coordinates can surface a candidate parcel but
+ * can NEVER finalize verification. The candidate is promoted to verified only
+ * when its returned APN or situs address matches the seller's APN/address.
+ */
+async function resolveV2Point(args: LpResolveArgs, signal: AbortSignal): Promise<LpResolveResult> {
+  const { latitude, longitude } = args.point!;
+  const params = new URLSearchParams({ latitude: String(latitude), longitude: String(longitude) });
+  const body = await lpV2Fetch(`/v2/properties/point?${params}`, signal);
+  if (isV2Error(body)) {
+    if (body.http_status === 404) {
+      return v2NotVerified(args.fips ?? null, 'No parcel found at the supplied point. Candidate from point lookup unavailable -- parcel not verified.');
+    }
+    return v2ErrorToResult(body);
+  }
+  const props = v2DetailProps(body);
+  if (!props) return v2NotVerified(args.fips ?? null, 'Point lookup returned no property. Parcel not verified.');
+
+  const candApn = v2str(props.apn);
+  const candFips = v2str(props.fips);
+  const candAddr = v2str(props.street_address);
+  const baseCand = {
+    propertyid: v2str(props.property_id) || null,
+    fips: candFips || null,
+    apn: candApn || null,
+    situs_address: candAddr || null,
+    city: v2str(props.city) || null,
+    state: v2str(props.state) || null,
+    owner: v2str(props.owner_full_name) || null,
+  };
+
+  let confirmed = false;
+  let how = '';
+  if (args.apn && apnMatches(args.apn, candApn) && (!args.fips || !candFips || args.fips === candFips)) {
+    confirmed = true;
+    how = `APN ${candApn}`;
+  } else if (args.address) {
+    const am = addressStrongMatch(
+      { address: args.address, city: args.city, state: args.state, zip: args.zip, fips: args.fips },
+      { street_address: candAddr, city: v2str(props.city), state: v2str(props.state), zip_code: v2str(props.zip_code), fips: candFips },
+    );
+    if (am.match) { confirmed = true; how = `address "${candAddr}"`; }
+  }
+
+  if (confirmed) {
+    return {
+      ...baseCand,
+      verified: true,
+      status: 'verified',
+      match_notes: `Candidate from point lookup CONFIRMED by ${how} match against seller input. Parcel verified (API v2).`,
+      candidates: [],
+      property_summary: summaryFromV2(props),
+    };
+  }
+  return {
+    ...baseCand,
+    verified: false,
+    status: 'point_candidate',
+    match_notes: `Candidate from point lookup (APN ${candApn || 'n/a'}, ${candAddr || 'no address'}). NOT verified -- point/coordinates are candidate discovery only and require an APN or address match against seller input. No scoring, valuation, or offer.`,
+    candidates: [baseCand],
+    property_summary: summaryFromV2(props),
+  };
+}
+
+/** v2 entry point mirroring the v1 verification ladder; reached only via flag. */
+async function lpResolveForPreflightV2(args: LpResolveArgs, timeoutMs: number): Promise<LpResolveResult> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    // Path 0: explicit point candidate (candidate-only discovery).
+    if (args.point) return await resolveV2Point(args, ac.signal);
+
+    // Path 1: LP URL -> parsed identity, then propertyid+fips or APN+fips.
+    if (args.lp_url) {
+      const parsed = parseLandPortalUrl(args.lp_url);
+      if (!parsed) {
+        return v2NotVerified(null, 'Could not parse propertyid, APN, or FIPS from LP URL. Parcel not verified.');
+      }
+      if (parsed.propertyid && parsed.fips) {
+        return await resolveV2ByPropertyId(parsed.propertyid, parsed.fips, { apn: parsed.apnNormalized ?? parsed.apn ?? undefined }, ac.signal);
+      }
+      const apnKey = parsed.apnNormalized ?? parsed.apn;
+      if (apnKey) {
+        const r = await resolveV2ByApn(apnKey, { fips: parsed.fips ?? undefined }, ac.signal);
+        if (!r.verified && r.status === 'not_verified') return { ...r, match_notes: buildLpUrlGapMessage(parsed) };
+        return r;
+      }
+      return v2NotVerified(parsed.fips ?? null, buildLpUrlGapMessage(parsed));
+    }
+
+    // Path 2: property ID + FIPS.
+    if (args.propertyid && args.fips) {
+      return await resolveV2ByPropertyId(args.propertyid, args.fips, {}, ac.signal);
+    }
+
+    // Path 3: APN (+ FIPS or state).
+    if (args.apn) {
+      return await resolveV2ByApn(args.apn, { fips: args.fips, state: args.state }, ac.signal);
+    }
+
+    // Path 4: address search. v2 supports address without FIPS, so a full
+    // address with city/state/ZIP resolves directly (closes the v1 gap).
+    if (args.address && (args.state || args.fips || args.city || args.zip)) {
+      return await resolveV2ByAddress(args, ac.signal);
+    }
+
+    return v2NotVerified(null, 'No usable identifier provided. Parcel not verified.');
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') {
+      return {
+        verified: false, status: 'lookup_timeout', propertyid: null, fips: args.fips ?? null,
+        apn: null, situs_address: null, owner: null,
+        match_notes: `LandPortal v2 lookup aborted after ${Math.round(timeoutMs / 1000)}s. Parcel not verified.`,
         candidates: [],
       };
     }
