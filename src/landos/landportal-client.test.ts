@@ -12,6 +12,7 @@ import {
   lpResolveForPreflight,
   apnMatchKey,
   addressStrongMatch,
+  lpApiVersion,
 } from './landportal-client.js';
 import { runDukePreflight } from './duke-preflight.js';
 
@@ -542,6 +543,33 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     expect(calls.some(c => c.includes('/search'))).toBe(true);
   });
 
+  // ── Duke dashboard path does not bypass the version selector ────────────────
+  it('runDukePreflight (Duke/dashboard path) routes APN+FIPS through the v2 selector', async () => {
+    install(url => {
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN' }));
+      return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061' })]));
+    });
+    const outcome = await runDukePreflight('Run DD on APN: 08-2518 fips: 37061', ['landportal', 'filesystem'], 10_000);
+    // The dashboard path hit the v2 endpoints (no bypass to v1 /search).
+    expect(calls.some(c => c.includes('/v2/properties?') && c.includes('parcelnumb=08-2518') && c.includes('fips=37061'))).toBe(true);
+    expect(calls.every(c => !c.includes('/wp-json/'))).toBe(true);
+    expect(outcome.type).toBe('verified');
+    // Verified preflight excludes the (v1) landportal MCP from the run.
+    const v = outcome as Extract<typeof outcome, { type: 'verified' }>;
+    expect(v.filteredMcpAllowlist).not.toContain('landportal');
+  });
+
+  it('v2 APN/FIPS does not verify when the detail FIPS differs from the requested FIPS', async () => {
+    install(url => {
+      // Search matches the APN, but the detail record is in a different county.
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '45019', street_address: '217 CLYDEVILLE LN' }));
+      return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061' })]));
+    });
+    const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.match_notes).toMatch(/FIPS mismatch/i);
+  });
+
   // ── v2 token override (LANDPORTAL_V2_TOKEN) ─────────────────────────────────
   it('A(token). v2 prefers LANDPORTAL_V2_TOKEN over LP_JWT_TOKEN', async () => {
     process.env.LANDPORTAL_V2_TOKEN = 'v2-opaque-token';
@@ -633,5 +661,37 @@ describe('v1 token behavior unchanged by v2 override', () => {
     expect(authHeaders.length).toBeGreaterThan(0);
     expect(authHeaders.every(h => h === 'Bearer v1-jwt-token')).toBe(true);
     expect(authHeaders.some(h => h.includes('v2-opaque-token'))).toBe(false);
+  });
+});
+
+describe('lpApiVersion selector', () => {
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'LANDPORTAL_API_VERSION');
+  const orig = process.env.LANDPORTAL_API_VERSION;
+  afterEach(() => {
+    if (had) process.env.LANDPORTAL_API_VERSION = orig; else delete process.env.LANDPORTAL_API_VERSION;
+  });
+
+  it('defaults to v1 when unset', () => {
+    delete process.env.LANDPORTAL_API_VERSION;
+    expect(lpApiVersion()).toBe('v1');
+  });
+
+  it('selects v2 for the explicit opt-in value', () => {
+    process.env.LANDPORTAL_API_VERSION = 'v2';
+    expect(lpApiVersion()).toBe('v2');
+  });
+
+  it('stays on v1 for any non-v2 value (typos / other versions)', () => {
+    for (const val of ['v1', 'v3', 'V1', 'foo', '', '2', 'vv2', 'v2x']) {
+      process.env.LANDPORTAL_API_VERSION = val;
+      expect(lpApiVersion(), `value "${val}"`).toBe('v1');
+    }
+  });
+
+  it('is case/whitespace tolerant for the explicit opt-in (still a deliberate choice)', () => {
+    for (const val of ['v2', 'V2', ' v2 ', 'V2\t']) {
+      process.env.LANDPORTAL_API_VERSION = val;
+      expect(lpApiVersion(), `value "${val}"`).toBe('v2');
+    }
   });
 });
