@@ -46,8 +46,14 @@ At the start of every LandOS build session, read:
 1. `docs/landos/LandOS_Current_State.md` — latest commit, active issue, server status, next action
 2. `docs/landos/LandOS_Active_Plans.md` — active and next plans
 3. `docs/landos/LandOS_Project_Memory.md` — durable lessons and architecture decisions
+4. `docs/landos/LandOS_Execution_Overlay.md` — execution guidance for CC and LandOS agent build sessions
 
 Do not ask Tyler to re-explain what is already in these docs.
+
+The Execution Overlay is execution guidance only. These Build Rules and all LandOS
+hard rules override it. Property/parcel verification, secrets and repo safety, paid
+tool and comp credit approval, destructive-command, and approval rules always
+override the overlay; load it for posture, never to relax a hard rule.
 
 ---
 
