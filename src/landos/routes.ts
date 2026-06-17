@@ -47,6 +47,9 @@ import {
   updateLeadJob,
 } from './property-card.js';
 import { routeDukeRequest } from './duke-router.js';
+import { planLandosIntake } from './intake-planner.js';
+import { departmentRegistrySummary } from './department-registry.js';
+import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -618,6 +621,47 @@ export function registerLandosRoutes(app: Hono): void {
     const text = str(body.text) ?? '';
     return c.json({ result: routeDukeRequest(text) });
   });
+
+  // ── LandOS Intake / Main Orchestrator (READ-ONLY planner) ───────────
+  // The single entry path for dashboard text/voice, Telegram text/voice, CRM
+  // leads, and manual API. Returns a worker dispatch plan only: it runs no
+  // agent, writes no DB row, calls no LandPortal/comp tool, and never fakes
+  // market data. Duke/Due Diligence stays operational through this path.
+  app.post('/api/landos/intake', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const transport = (INTAKE_TRANSPORTS as readonly string[]).includes(str(body.transport) ?? '')
+      ? (str(body.transport) as IntakeTransport)
+      : 'manual_api';
+    const requestedResponseMode = ['text_only', 'text_and_voice_summary', 'voice_briefing_requested'].includes(str(body.responseMode) ?? '')
+      ? (str(body.responseMode) as ResponseMode)
+      : undefined;
+    const ctxRaw = body.context as Record<string, unknown> | undefined;
+    const intake: LandOSIntake = {
+      transport,
+      text,
+      voiceTranscriptSource: str(body.voiceTranscriptSource) as LandOSIntake['voiceTranscriptSource'],
+      requestedResponseMode,
+      entityHint: str(body.entityHint),
+      context: ctxRaw
+        ? {
+            parcelVerified: ctxRaw.parcelVerified === true,
+            verifiedFacts: Array.isArray(ctxRaw.verifiedFacts)
+              ? (ctxRaw.verifiedFacts as Array<Record<string, unknown>>)
+                  .filter((f) => typeof f.fact === 'string' && typeof f.source === 'string')
+                  .map((f) => ({ fact: String(f.fact), value: str(f.value), source: String(f.source) }))
+              : undefined,
+            propertyCardId: num(ctxRaw.propertyCardId),
+            dealCardId: num(ctxRaw.dealCardId),
+          }
+        : undefined,
+    };
+    return c.json({ plan: planLandosIntake(intake) });
+  });
+
+  // Department registry summary (deeper capability/model-policy registry).
+  app.get('/api/landos/department-registry', (c) => c.json({ departments: departmentRegistrySummary() }));
 
   // ── Source Evidence Standard check ──────────────────────────────────
   app.post('/api/landos/source-evidence/check', async (c) => {
