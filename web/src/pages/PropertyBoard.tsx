@@ -49,14 +49,27 @@ interface DealReview {
   latestWriteback: string | null;
   latestReportStatus: string | null;
   dukePartial: {
+    reportType: string;
+    compMode: string;
     reportStatus: string;
+    taskStatus: string;
     verificationStatus: string;
     parcelVerificationSummary: string;
+    localAreaContext: { allowed: boolean; label: string; note: string };
+    dueDiligenceSummary: string;
+    anomalyFlags: string[];
+    evaluationStatus: string;
+    evaluationEngine: { parcelSpecific: boolean; missingFacts: string[]; compSource: string; compLimitation: string; confidenceLabel: string; note: string };
+    strategyMatrix: { parcelSpecific: boolean; note: string; strategies: Array<{ id: string; label: string; offerBand: string; minNetProfitUsd: number; confirmed: boolean }> };
+    offerReadiness: { status: string; reason: string; offerGuidanceAllowed: boolean; compSource: string; missingFormulaWarning: string | null };
+    offerGuidance: { allowed: boolean; note: string; strategyBandsSource: string };
     blockedReason: string | null;
     nextBestAction: string | null;
     discoveryQuestions: string[];
+    compCreditUsed: boolean;
+    compFallbackUsed: boolean;
+    compSourceNote: string;
     noCompCreditUsed: boolean;
-    fullReportNote: string;
   };
   combinedAcreage: { acres: number; verified: boolean; label: string };
   propertyCards: any[];
@@ -140,15 +153,21 @@ export function PropertyBoard() {
   const [compForm, setCompForm] = useState<Record<string, string>>({ ...emptyComp });
   const [partialBusy, setPartialBusy] = useState(false);
   const [partialQueued, setPartialQueued] = useState<string | null>(null);
+  // Comp source for a Duke Report run. Redfin/Zillow is the default no-credit
+  // path; 'landportal_credit' is an explicit per-run approval to spend ONE LP
+  // comp credit. The dashboard never spends a credit itself.
+  const [compMode, setCompMode] = useState<'redfin_zillow' | 'landportal_credit'>('redfin_zillow');
 
   function compField(k: string, v: string) {
     setCompForm((f) => ({ ...f, [k]: v }));
   }
 
-  // Run Duke Partial: queue a Partial-only, no-comp due-diligence pass for the
-  // selected card via the existing mission task system. Never requests a Full
-  // Report and never spends a comp credit.
-  async function runDukePartial() {
+  // Run Duke Report: queue a Duke Report for the selected card via the existing
+  // mission task system. Comp source is chosen by Tyler. Redfin/Zillow uses no
+  // LP comp credit; "LandPortal Comps" carries explicit approval to spend ONE LP
+  // comp credit for THIS run only, with a Redfin/Zillow/manual fallback. No Full
+  // Report split; no hidden comp spend (the dashboard only records the choice).
+  async function runDukeReport() {
     if (!selected) return;
     setPartialBusy(true);
     setPartialQueued(null);
@@ -156,17 +175,19 @@ export function PropertyBoard() {
     try {
       const ident = selected.apn ? `APN ${selected.apn}` : (selected.active_input_address || '(no identifier)');
       const place = [selected.county, selected.state].filter(Boolean).join(', ');
+      const compLine = compMode === 'landportal_credit'
+        ? 'Comp source: LandPortal Comps. I approve spending ONE LandPortal comp credit for THIS run only. If the comp credit is unavailable, exhausted, blocked, or the comp report fails, fall back to Redfin/Zillow/manual comps and clearly label the comp source/quality.'
+        : 'Comp source: Redfin/Zillow (no LandPortal comp credit).';
       const prompt =
-        `Run a Duke Partial due-diligence pass (Partial only, no comp credit, no Full Report) on: ` +
-        `${ident}${place ? `, ${place}` : ''}. ` +
-        `Verify parcel identity first; if it is not verified, return the verification block and discovery questions only (no scoring, valuation, comps, offer, or strategy).`;
+        `Run a Duke Report on: ${ident}${place ? `, ${place}` : ''}. ${compLine} ` +
+        `Verify parcel identity first. If it is not verified, return Local Area Context labeled "Local Area Context, Not Parcel Verified", the verification block, and discovery questions only — no parcel-specific scoring, valuation, offer, or strategy.`;
       const res = await apiPost<{ task?: { id: string } }>('/api/mission/tasks', {
-        title: `Duke Partial: ${ident}`.slice(0, 200),
+        title: `Duke Report (${compMode === 'landportal_credit' ? 'LandPortal Comps' : 'Redfin/Zillow'}): ${ident}`.slice(0, 200),
         prompt,
         assigned_agent: 'duke-due-diligence',
         priority: 5,
       });
-      setPartialQueued(res?.task?.id ? `Queued Duke Partial (task ${res.task.id}). Track it in Mission Control.` : 'Queued Duke Partial.');
+      setPartialQueued(res?.task?.id ? `Queued Duke Report (task ${res.task.id}). Track it in Mission Control.` : 'Queued Duke Report.');
     } catch (e: any) {
       setError(e?.message || String(e));
     } finally {
@@ -356,15 +377,37 @@ export function PropertyBoard() {
               <Pill tone={selected.verification_status === 'verified_property' ? 'done' : 'neutral'}>{selected.verification_status}</Pill>
               <span class="text-[14px] font-semibold text-[var(--color-text)]">{selected.active_input_address}</span>
               <span class="text-[10px] text-[var(--color-text-faint)]">card {selected.id}</span>
-              {/* Run Duke Partial only — no comp credit, no Full Report. Queues via Mission Control. */}
-              <button
-                type="button"
-                onClick={() => void runDukePartial()}
-                disabled={partialBusy}
-                class="ml-auto text-[11px] px-2.5 py-1 rounded-md bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
-              >
-                {partialBusy ? 'Queuing…' : 'Run Duke Partial'}
-              </button>
+              {/* Run Duke Report with a chosen comp source. Redfin/Zillow uses no
+                  comp credit; LandPortal Comps spends one LP comp credit for this
+                  run (explicit approval). No Partial-vs-Full split; no hidden spend. */}
+              <div class="ml-auto flex items-center gap-1.5">
+                <div class="flex items-center rounded-md overflow-hidden border border-[var(--color-border)] text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setCompMode('redfin_zillow')}
+                    class={['px-2 py-1', compMode === 'redfin_zillow' ? 'bg-[var(--color-elevated)] text-[var(--color-text)]' : 'text-[var(--color-text-muted)]'].join(' ')}
+                    title="Default comp source — no LandPortal comp credit"
+                  >
+                    Redfin/Zillow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCompMode('landportal_credit')}
+                    class={['px-2 py-1', compMode === 'landportal_credit' ? 'bg-[var(--color-elevated)] text-[var(--color-text)]' : 'text-[var(--color-text-muted)]'].join(' ')}
+                    title="Spends ONE LandPortal comp credit for this run"
+                  >
+                    LandPortal Comps (1 credit)
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void runDukeReport()}
+                  disabled={partialBusy}
+                  class="text-[11px] px-2.5 py-1 rounded-md bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
+                >
+                  {partialBusy ? 'Queuing…' : 'Run Duke Report'}
+                </button>
+              </div>
             </div>
             {partialQueued && <div class="text-[11px] text-[var(--color-text-muted)]">{partialQueued}</div>}
             {selected.summary && <p class="text-[12px] text-[var(--color-text-muted)]">{selected.summary}</p>}
@@ -393,14 +436,16 @@ export function PropertyBoard() {
                     {dealReview.hasVerifiedProperty && !dealReview.hasUnverifiedProperty ? 'verified' : 'research / unverified'}
                   </Pill>
                   {dealReview.latestReportStatus && (
-                    <Pill tone={dealReview.latestReportStatus === 'delivered' ? 'done' : dealReview.latestReportStatus === 'failed' ? 'failed' : 'neutral'}>
-                      Duke {dealReview.latestReportStatus === 'partial' ? 'Partial' : dealReview.latestReportStatus}
+                    <Pill tone={dealReview.latestReportStatus === 'failed' ? 'failed' : dealReview.hasVerifiedProperty && !dealReview.hasUnverifiedProperty ? 'done' : 'neutral'}>
+                      Duke Report
                     </Pill>
                   )}
-                  {/* Duke Partial is the default no-comp workflow; a Partial report never spends a comp credit. */}
-                  {dealReview.dukePartial?.noCompCreditUsed && dealReview.latestReportStatus && (
-                    <span class="text-[10px] text-[var(--color-text-faint)]">No comp credit used</span>
-                  )}
+                  {/* Comp source / status. Redfin/Zillow is the default no-credit path. */}
+                  <span class="text-[10px] text-[var(--color-text-faint)]">
+                    Comp: {dealReview.dukePartial?.compMode === 'landportal_credit' ? 'LandPortal' : 'Redfin/Zillow'}
+                    {dealReview.dukePartial?.compFallbackUsed ? ' (fell back to Redfin/Zillow)' : ''}
+                    {' · '}{dealReview.dukePartial?.compCreditUsed ? 'comp credit used' : 'no comp credit used'}
+                  </span>
                   <span class="text-[10px] text-[var(--color-text-faint)]">
                     {dealReview.propertyCount} propert{dealReview.propertyCount === 1 ? 'y' : 'ies'}/APN · {dealReview.compCount} comp{dealReview.compCount === 1 ? '' : 's'}
                   </span>
@@ -412,11 +457,43 @@ export function PropertyBoard() {
                   </div>
                 )}
 
+                {/* Local Area Context label when the parcel is not verified. */}
+                {dealReview.dukePartial?.localAreaContext?.label && (
+                  <div class="text-[10px] text-[var(--color-text-faint)] italic">{dealReview.dukePartial.localAreaContext.label} — {dealReview.dukePartial.localAreaContext.note}</div>
+                )}
+
+                {/* Evaluation engine — parcel-specific only when verified. */}
+                {dealReview.dukePartial?.evaluationEngine && (
+                  <div class="text-[11px] text-[var(--color-text-muted)]">
+                    <span class="uppercase tracking-wider text-[10px] text-[var(--color-text-faint)]">Evaluation engine</span>
+                    <div>{dealReview.dukePartial.evaluationStatus} — {dealReview.dukePartial.evaluationEngine.note}</div>
+                  </div>
+                )}
+
+                {/* Strategy matrix — parcel-specific only when verified. */}
+                {dealReview.dukePartial?.strategyMatrix?.parcelSpecific
+                  ? <DetailList title="Strategy matrix" items={dealReview.dukePartial.strategyMatrix.strategies.map((s) => `${s.label}: ${s.offerBand}${s.confirmed ? '' : ' (unconfirmed)'}`)} />
+                  : <div class="text-[10px] text-[var(--color-text-faint)]">Strategy matrix: {dealReview.dukePartial?.strategyMatrix?.note}</div>}
+
+                {/* Offer readiness — never shows offer guidance when blocked. */}
+                {dealReview.dukePartial?.offerReadiness && (
+                  <div class="text-[11px] text-[var(--color-text-muted)]">
+                    <span class="uppercase tracking-wider text-[10px] text-[var(--color-text-faint)]">Offer readiness</span>
+                    <div>{dealReview.dukePartial.offerReadiness.status} — {dealReview.dukePartial.offerReadiness.reason}</div>
+                    {dealReview.dukePartial.offerReadiness.missingFormulaWarning && (
+                      <div class="text-[var(--color-status-failed)]">Missing formula/rule: {dealReview.dukePartial.offerReadiness.missingFormulaWarning}</div>
+                    )}
+                    {dealReview.dukePartial.offerGuidance?.allowed && (
+                      <div>{dealReview.dukePartial.offerGuidance.note}</div>
+                    )}
+                  </div>
+                )}
+
                 {dealReview.dukePartial?.discoveryQuestions?.length > 0 && (
                   <DetailList title="Discovery questions" items={dealReview.dukePartial.discoveryQuestions} />
                 )}
-                {dealReview.dukePartial?.fullReportNote && (
-                  <div class="text-[10px] text-[var(--color-text-faint)]">{dealReview.dukePartial.fullReportNote}</div>
+                {dealReview.dukePartial?.compSourceNote && (
+                  <div class="text-[10px] text-[var(--color-text-faint)]">{dealReview.dukePartial.compSourceNote}</div>
                 )}
 
                 <div class="space-y-1">

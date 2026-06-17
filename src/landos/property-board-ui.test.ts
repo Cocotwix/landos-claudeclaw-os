@@ -124,55 +124,68 @@ describe('Property Board routing display metadata', () => {
   });
 });
 
-describe('Property Board Duke Partial status display', () => {
-  it('surfaces the Duke report status from the deal-card detail', () => {
-    expect(SRC).toMatch(/latestReportStatus/);
-    expect(SRC).toMatch(/Duke \{dealReview\.latestReportStatus === 'partial' \? 'Partial'/);
-  });
-
-  it('shows "No comp credit used" from the contract no-comp flag, not a fabricated value', () => {
-    expect(SRC).toMatch(/dukePartial\?\.noCompCreditUsed[\s\S]{0,160}No comp credit used/);
-  });
-
-  it('shows an explicit "Blocked before valuation / offer" gate when unverified', () => {
-    expect(SRC).toMatch(/hasUnverifiedProperty/);
-    expect(SRC).toMatch(/Blocked before valuation \/ offer/);
-    // Keep the existing guardrail wording too.
-    expect(SRC).toMatch(/before scoring, valuing, or offer guidance/i);
-  });
-
-  it('does not introduce any Full Report / comp-credit-spending action in the UI', () => {
-    expect(/lp_comp_report_create\s*\(/.test(SRC)).toBe(false);
-    expect(/lp_comp_report_get\s*\(/.test(SRC)).toBe(false);
-    expect(/Run Full Report/i.test(SRC)).toBe(false);
-  });
-});
-
-describe('Property Board Run Duke Partial action', () => {
-  it('exposes a Run Duke Partial button only (no Full Report)', () => {
-    expect(SRC).toMatch(/Run Duke Partial/);
+describe('Property Board Duke Report product model (not Partial vs Full)', () => {
+  it('exposes a single Run Duke Report action — no Partial-vs-Full main split, no Full Report button', () => {
+    expect(SRC).toMatch(/Run Duke Report/);
+    expect(/Run Duke Partial/.test(SRC)).toBe(false);
     expect(/Run Full Report/i.test(SRC)).toBe(false);
   });
 
-  it('queues the run via the existing mission task endpoint, assigned to Duke', () => {
+  it('offers a comp-source choice: Redfin/Zillow (default) and LandPortal Comps (1 credit)', () => {
+    expect(SRC).toMatch(/Redfin\/Zillow/);
+    expect(SRC).toMatch(/LandPortal Comps \(1 credit\)/);
+    // Default selection is the no-credit path.
+    expect(SRC).toMatch(/useState<[^>]*>\('redfin_zillow'\)/);
+  });
+
+  it('queues the run via the existing mission endpoint assigned to Duke (no new queue)', () => {
     expect(SRC).toMatch(/apiPost<[^>]*>\('\/api\/mission\/tasks'/);
     expect(SRC).toMatch(/assigned_agent:\s*'duke-due-diligence'/);
   });
 
-  it('builds a Partial-only, no-comp, no-Full-Report prompt', () => {
-    expect(SRC).toMatch(/Partial only, no comp credit, no Full Report/);
+  it('Redfin/Zillow prompt uses no LandPortal comp credit', () => {
+    expect(SRC).toMatch(/Redfin\/Zillow \(no LandPortal comp credit\)/);
+  });
+
+  it('LandPortal Comps prompt carries explicit one-credit approval + Redfin/Zillow fallback', () => {
+    expect(SRC).toMatch(/approve spending ONE LandPortal comp credit for THIS run only/);
+    expect(SRC).toMatch(/fall back to Redfin\/Zillow\/manual comps/);
+  });
+
+  it('every run verifies identity first and only allows labeled Local Area Context when unverified', () => {
     expect(SRC).toMatch(/Verify parcel identity first/);
+    expect(SRC).toMatch(/Local Area Context, Not Parcel Verified/);
   });
 
-  it('renders the standardized contract: discovery questions and full-report note', () => {
-    expect(SRC).toMatch(/dukePartial/);
+  it('shows comp source/status and credit-used / fallback from the contract (no fabricated value)', () => {
+    expect(SRC).toMatch(/dukePartial\?\.compMode === 'landportal_credit'/);
+    expect(SRC).toMatch(/dukePartial\?\.compCreditUsed \? 'comp credit used' : 'no comp credit used'/);
+    expect(SRC).toMatch(/compFallbackUsed/);
+  });
+
+  it('renders evaluation engine, strategy matrix, and offer readiness sections', () => {
+    expect(SRC).toMatch(/Evaluation engine/);
+    expect(SRC).toMatch(/Strategy matrix/);
+    expect(SRC).toMatch(/Offer readiness/);
+  });
+
+  it('never shows offer guidance unless the contract allows it', () => {
+    expect(SRC).toMatch(/dukePartial\.offerGuidance\?\.allowed/);
+  });
+
+  it('shows a Blocked before valuation / offer gate when unverified', () => {
+    expect(SRC).toMatch(/Blocked before valuation \/ offer/);
+    expect(SRC).toMatch(/before scoring, valuing, or offer guidance/i);
+  });
+
+  it('renders discovery questions and the comp-source note', () => {
     expect(SRC).toMatch(/discoveryQuestions/);
-    expect(SRC).toMatch(/fullReportNote/);
     expect(SRC).toMatch(/Discovery questions/);
+    expect(SRC).toMatch(/compSourceNote/);
   });
 
-  it('shows "No comp credit used" from the contract, not a fabricated value', () => {
-    expect(SRC).toMatch(/dukePartial\?\.noCompCreditUsed/);
-    expect(SRC).toMatch(/No comp credit used/);
+  it('does not call any LandPortal comp report tool from the UI (no hidden spend)', () => {
+    expect(/lp_comp_report_create\s*\(/.test(SRC)).toBe(false);
+    expect(/lp_comp_report_get\s*\(/.test(SRC)).toBe(false);
   });
 });
