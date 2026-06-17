@@ -45,6 +45,8 @@ import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import { persistDukeRunPostDelivery } from './landos/duke-persist-adapter.js';
 import { runDukePreflight } from './landos/duke-preflight.js';
+import { blockedPreflightToLanes } from './landos/duke-report-runner.js';
+import { renderDukeReportLanes } from './landos/duke-report-lanes.js';
 import {
   isLocked,
   lock,
@@ -1678,7 +1680,14 @@ async function processDashboardMessage(
           { event: 'duke_preflight_blocked', agentId: effectiveAgentId, elapsedMs, reason: preflight.reason },
           'duke_preflight_blocked',
         );
-        emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: preflight.message, source: 'dashboard' });
+        // Convert the blocked/timeout preflight into the Default Duke Report
+        // source lanes so a LandPortal timeout returns Local Area Context, Not
+        // Parcel Verified — never the thin one-line TIMEOUT_MESSAGE. Downstream
+        // comps/score/valuation/offer/strategy stay blocked; no comp credit.
+        const blockedReport = renderDukeReportLanes(
+          blockedPreflightToLanes(preflight, text, 'redfin_zillow', elapsedMs),
+        );
+        emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: blockedReport, source: 'dashboard' });
         persistDukeRunPostDelivery({
           agentId: effectiveAgentId,
           status: preflight.reason === 'lp_timeout' || preflight.reason === 'preflight_timeout' ? 'timeout' : 'failed',

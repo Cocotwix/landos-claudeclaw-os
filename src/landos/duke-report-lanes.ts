@@ -246,6 +246,31 @@ export function buildDukeReportLanes(input: DukeReportLanesInput): DukeReportLan
   };
 }
 
+/**
+ * Render the Default Duke Report source lanes into a compact, operator-readable
+ * report for the dashboard/chat surface. Pure string formatting — it only reads
+ * lane fields, so it never scores, values, comps, offers, or recommends strategy
+ * on its own, and emits no coordinate/proximity/map-pin language. When the
+ * parcel is unverified it leads with "Local Area Context, Not Parcel Verified".
+ */
+export function renderDukeReportLanes(report: DukeReportLanes): string {
+  const lines: string[] = [];
+  lines.push(
+    report.parcelVerified
+      ? `Duke Report — parcel VERIFIED${report.parcelIdentitySummary ? ` (${report.parcelIdentitySummary})` : ''}`
+      : `Duke Report — ${LOCAL_AREA_NOT_VERIFIED_LABEL}`,
+  );
+  lines.push('');
+  for (const l of report.lanes) {
+    lines.push(`${l.laneName}: ${l.status}`);
+    for (const f of l.findings) lines.push(`  ${f}`);
+    if (l.blockingReason) lines.push(`  ${l.blockingReason}`);
+  }
+  lines.push('');
+  lines.push(`Next: ${report.nextAction}`);
+  return lines.join('\n');
+}
+
 // ── County Deep Dive: on-demand second-layer workflow (NOT run by default) ─────
 
 export const COUNTY_DEEP_DIVE_CHECKLIST: readonly string[] = [

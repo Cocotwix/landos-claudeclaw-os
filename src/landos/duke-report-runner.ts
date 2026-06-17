@@ -181,23 +181,14 @@ export async function runDukeReportFromTask(
     // Not verified (blocked / timeout / skip): NO parcel-specific writeback.
     // Build the source-lane report so a LandPortal timeout never collapses the
     // output — the Local Area Data lane still contributes compact context.
-    const lpStatus: LandPortalLaneInput['status'] =
-      pre.type === 'blocked' && pre.reason === 'lp_timeout' ? 'timeout'
-      : pre.type === 'blocked' && pre.reason === 'multiple_candidates' ? 'multiple_candidates'
-      : pre.type === 'blocked' && pre.reason === 'preflight_error' ? 'error'
-      : 'not_verified';
-    const reason = pre.type === 'blocked' ? pre.message : 'No parcel identifier found in the task.';
-    const lanes = buildDukeReportLanes({
-      landPortal: { status: lpStatus, verified: false, durationMs, reason },
-      compMode: meta.compMode,
-      localAreaAnchor,
-    });
+    const lanes = blockedPreflightToLanes(pre, dukeText, meta.compMode, durationMs);
+    const lpTimedOut = lanes.lanes.find(l => l.laneId === 'landportal_exact_search')?.status === 'timeout';
     return {
       ...baseResult,
       status: 'completed',
       verified: false,
       blocked: true,
-      reportStatus: lpStatus === 'timeout' ? 'partial' : 'blocked',
+      reportStatus: lpTimedOut ? 'partial' : 'blocked',
       summary: lanes.summary,
       lanes,
     };
@@ -218,6 +209,33 @@ export async function runDukeReportFromTask(
       lanes,
     };
   }
+}
+
+/**
+ * Convert a non-verified preflight outcome (blocked timeout / multiple
+ * candidates / error / not-verified, or skip) into the Default Duke Report
+ * source lanes. Shared by the mission-task runner above AND the live
+ * dashboard/chat path so a LandPortal timeout returns Local Area Context, Not
+ * Parcel Verified — never the thin one-line TIMEOUT_MESSAGE. Pure: no network,
+ * no agent, no comp credit, no coordinate/proximity identification.
+ */
+export function blockedPreflightToLanes(
+  pre: Extract<DukePreflightOutcome, { type: 'blocked' }> | { type: 'skip' },
+  dukeText: string,
+  compMode: CompMode,
+  durationMs?: number,
+): DukeReportLanes {
+  const lpStatus: LandPortalLaneInput['status'] =
+    pre.type === 'blocked' && (pre.reason === 'lp_timeout' || pre.reason === 'preflight_timeout') ? 'timeout'
+    : pre.type === 'blocked' && pre.reason === 'multiple_candidates' ? 'multiple_candidates'
+    : pre.type === 'blocked' && pre.reason === 'preflight_error' ? 'error'
+    : 'not_verified';
+  const reason = pre.type === 'blocked' ? pre.message : 'No parcel identifier found in the task.';
+  return buildDukeReportLanes({
+    landPortal: { status: lpStatus, verified: false, durationMs, reason },
+    compMode,
+    localAreaAnchor: localAnchorFromText(dukeText),
+  });
 }
 
 /** Extract a "<County> County, <ST>"-style local anchor from the operator text

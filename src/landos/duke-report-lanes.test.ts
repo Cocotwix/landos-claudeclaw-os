@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildDukeReportLanes,
   buildCountyDeepDivePlaceholder,
+  renderDukeReportLanes,
   LANDPORTAL_VERIFICATION_TIMEOUT_MS,
   LANDWATCH_MIN_ACRES,
   LOCAL_AREA_NOT_VERIFIED_LABEL,
@@ -117,6 +118,33 @@ describe('No comp credits, no verification-by-market-site, no map/coordinate lan
     for (const r of variants) {
       expect(/geocod|proximity|nearest parcel|map pin|coordinate|street view|satellite|map bounds/i.test(JSON.stringify(r))).toBe(false);
     }
+  });
+});
+
+describe('renderDukeReportLanes (compact dashboard report)', () => {
+  it('leads with Local Area Context label and lists lane statuses on timeout', () => {
+    const out = renderDukeReportLanes(buildDukeReportLanes(baseInput({
+      landPortal: { status: 'timeout', verified: false, reason: 'LandPortal lookup did not respond in time.' },
+      localAreaAnchor: 'Clay County, TN',
+    })));
+    expect(out).toContain(LOCAL_AREA_NOT_VERIFIED_LABEL);
+    expect(out).toMatch(/LandPortal Exact Search: timeout/);
+    expect(out).toMatch(/Local Area Data: success/);
+    expect(out).toMatch(/Clay County, TN/);
+    expect(out).toMatch(/Strategy \/ Offer: blocked/);
+  });
+  it('renders a verified parcel header and no Local Area Context label', () => {
+    const out = renderDukeReportLanes(buildDukeReportLanes(baseInput({
+      landPortal: { status: 'success', verified: true, identitySummary: 'APN 08-2518, FIPS 37061' }, acres: 10,
+    })));
+    expect(out).toMatch(/parcel VERIFIED \(APN 08-2518, FIPS 37061\)/);
+    expect(out).not.toContain(LOCAL_AREA_NOT_VERIFIED_LABEL);
+  });
+  it('emits no coordinate/geocoder/proximity/map-pin/visual verification language', () => {
+    const out = renderDukeReportLanes(buildDukeReportLanes(baseInput({
+      landPortal: { status: 'timeout', verified: false }, localAreaAnchor: 'Clay County, TN',
+    })));
+    expect(/geocod|proximity|nearest parcel|map pin|coordinate|street view|satellite/i.test(out)).toBe(false);
   });
 });
 

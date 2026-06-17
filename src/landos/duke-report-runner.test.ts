@@ -10,8 +10,15 @@ import {
   isDukeReportTask,
   stripSentinel,
   runDukeReportFromTask,
+  blockedPreflightToLanes,
   type DukeReportRunDeps,
 } from './duke-report-runner.js';
+import { renderDukeReportLanes, LOCAL_AREA_NOT_VERIFIED_LABEL } from './duke-report-lanes.js';
+
+// The exact thin one-line failure the live dashboard used to surface on timeout.
+const RAW_TIMEOUT_MESSAGE =
+  'LandPortal lookup did not respond in time. Parcel not verified -- no scoring, valuation, or offer. Retry the address, or provide APN + county for direct lookup.';
+const laneById = (r: ReturnType<typeof blockedPreflightToLanes>, id: string) => r.lanes.find(l => l.laneId === id)!;
 
 const sentinel = (compMode: string, cardId: number, approval: boolean) =>
   `[[duke_report v1 compMode=${compMode} cardId=${cardId} lpCompCreditApproval=${approval} source=dashboard]]`;
@@ -182,6 +189,70 @@ describe('runDukeReportFromTask — comp credit + failures', () => {
       runDukePreflight: async () => ({ type: 'blocked', message: 'x', reason: 'y' }),
     }));
     expect(/geocod|proximity|nearest parcel|map pin|coordinate|centroid/i.test(JSON.stringify(r))).toBe(false);
+  });
+});
+
+describe('blockedPreflightToLanes — LandPortal timeout returns Source Lanes, not the thin message', () => {
+  // The live dashboard/chat path feeds a blocked timeout preflight here.
+  const timeoutPre = {
+    type: 'blocked' as const,
+    message: RAW_TIMEOUT_MESSAGE,
+    reason: 'lp_timeout',
+  };
+  const dukeText = 'Run a Duke Report on 731 Filter Plant Rd, Celina, Clay County, TN.';
+  const r = blockedPreflightToLanes(timeoutPre, dukeText, 'redfin_zillow', 180_000);
+  const rendered = renderDukeReportLanes(r);
+
+  it('does not return the raw thin TIMEOUT_MESSAGE', () => {
+    expect(rendered).not.toBe(RAW_TIMEOUT_MESSAGE);
+    expect(r.summary).not.toBe(RAW_TIMEOUT_MESSAGE);
+  });
+  it('rendered report includes per-lane statuses', () => {
+    expect(rendered).toMatch(/LandPortal Exact Search: timeout/);
+    expect(rendered).toMatch(/Redfin\/Zillow Comps: blocked/);
+    expect(rendered).toMatch(/Strategy \/ Offer: blocked/);
+  });
+  it('LandPortal lane status is timeout', () => {
+    expect(laneById(r, 'landportal_exact_search').status).toBe('timeout');
+  });
+  it('Local Area Data lane contributes when a county/state anchor exists', () => {
+    const la = laneById(r, 'local_area_data');
+    expect(la.status).toBe('success');
+    expect(la.findings.some(f => /Clay County, TN/.test(f))).toBe(true);
+    expect(rendered).toMatch(/Clay County, TN/);
+  });
+  it('final report includes exactly "Local Area Context, Not Parcel Verified"', () => {
+    expect(r.unverifiedLabel).toBe(LOCAL_AREA_NOT_VERIFIED_LABEL);
+    expect(rendered).toContain(LOCAL_AREA_NOT_VERIFIED_LABEL);
+  });
+  it('score/value/offer/strategy and Redfin/Zillow/LandWatch are blocked, not run', () => {
+    expect(r.parcelVerified).toBe(false);
+    expect(laneById(r, 'redfin_zillow_comps').status).toBe('blocked');
+    expect(laneById(r, 'landwatch').status).toBe('blocked');
+    expect(laneById(r, 'strategy_offer').status).toBe('blocked');
+    expect(laneById(r, 'strategy_offer').findings).toEqual([]); // no offer/strategy numbers emitted
+  });
+  it('compCreditUsed remains false', () => {
+    expect(r.compCreditUsed).toBe(false);
+    expect(r.lanes.every(l => l.compCreditUsed === false)).toBe(true);
+  });
+  it('emits no coordinate/geocoder/proximity/map-pin/visual verification language', () => {
+    expect(/geocod|proximity|nearest parcel|map pin|coordinate|centroid|street view|satellite/i.test(rendered)).toBe(false);
+  });
+  it('a skip outcome (no identifier) also yields the unverified Local Area report', () => {
+    const sr = blockedPreflightToLanes({ type: 'skip' }, 'some area question', 'redfin_zillow');
+    expect(sr.parcelVerified).toBe(false);
+    expect(sr.unverifiedLabel).toBe(LOCAL_AREA_NOT_VERIFIED_LABEL);
+    expect(sr.compCreditUsed).toBe(false);
+  });
+});
+
+describe('bot dashboard/chat path renders blocked preflight as Source Lanes', () => {
+  const SRC = fs.readFileSync(fileURLToPath(new URL('../bot.ts', import.meta.url)), 'utf-8');
+  it('imports the lane helpers and no longer emits the raw preflight.message on block', () => {
+    expect(SRC).toMatch(/blockedPreflightToLanes/);
+    expect(SRC).toMatch(/renderDukeReportLanes/);
+    expect(SRC).not.toMatch(/content:\s*preflight\.message/);
   });
 });
 
