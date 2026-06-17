@@ -117,9 +117,45 @@ describe('Intake panel hard business rules', () => {
     expect(PANEL).toMatch(/dealCardPersistencePlan\.rule/);
   });
 
-  it('never calls paid LandPortal comp tools and uses no coordinate/proximity language', () => {
+  it('never calls paid LandPortal comp tools and uses no coordinate/proximity identity language', () => {
     expect(/lp_comp_report_create\s*\(/.test(PANEL)).toBe(false);
     expect(/lp_comp_report_get\s*\(/.test(PANEL)).toBe(false);
-    expect(/geocod|proximity|nearest parcel|map pin|coordinate/i.test(PANEL)).toBe(false);
+    // The GIS cutoff text (server-supplied) may mention coordinate/proximity as a
+    // STOP condition, but the UI source must not introduce its own banned phrases.
+    expect(/geocod|nearest parcel|map pin|satellite|street view/i.test(PANEL)).toBe(false);
+  });
+});
+
+describe('Intake panel source-adapter / Market Pulse section (Sprint 6A)', () => {
+  it('renders a Source Adapters / Market Pulse section', () => {
+    expect(PANEL).toMatch(/Source Adapters \/ Market Pulse/);
+  });
+
+  it('shows adapter readiness, the parcel fallback ladder, and the LandPortal failure plan', () => {
+    expect(PANEL).toMatch(/adapterReadiness\.map/);
+    expect(PANEL).toMatch(/parcelFallbackLadder\.map/);
+    expect(PANEL).toMatch(/landportalFailureFallbackPlan\.map/);
+  });
+
+  it('surfaces the GIS cutoff rule from the plan (not hardcoded prose)', () => {
+    expect(PANEL).toMatch(/sourceAdapter\.gisCutoff\.rule/);
+  });
+
+  it('shows Market Pulse status, the Local Area Context label, and on-demand scope', () => {
+    expect(PANEL).toMatch(/sourceAdapter\.marketPulse\.status/);
+    expect(PANEL).toMatch(/sourceAdapter\.marketPulse\.localAreaContextLabel/);
+    expect(PANEL).toMatch(/onDemandScope/);
+    expect(PANEL).toMatch(/no bulk datasets/i);
+  });
+
+  it('shows seller ask as seller_stated and never an offer-range basis', () => {
+    expect(PANEL).toMatch(/sourceAdapter\.sellerAsk\.label/);
+    expect(PANEL).toMatch(/never anchors the calculated offer range/);
+  });
+
+  it('shows the third-party / open-source security posture (report-only candidates)', () => {
+    expect(PANEL).toMatch(/thirdPartySecurity/);
+    expect(PANEL).toMatch(/No third-party code installed or executed/);
+    expect(PANEL).toMatch(/report-only and require Tyler approval/);
   });
 });

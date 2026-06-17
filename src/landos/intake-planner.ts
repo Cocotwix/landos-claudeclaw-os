@@ -15,6 +15,7 @@ import { extractPropertyArgs, looksLikePropertyInput } from './duke-preflight.js
 import { routeDukeRequest } from './duke-router.js';
 import { selectModel } from './model-router.js';
 import { departmentRegistrySummary } from './department-registry.js';
+import { buildSourceAdapterPlan } from './source-adapters.js';
 import type {
   StrategyCandidate,
   UnderwritingResult,
@@ -508,6 +509,16 @@ export function planLandosIntake(intake: LandOSIntake): WorkerDispatchPlan {
     'Each worker lane carries its intended model tier; lowest capable tier preferred, escalation requires a reason, paid APIs gated separately.',
     { modelRouting: selectModel({ taskType: 'routing' }) });
 
+  // ── Source adapter registry + Market Pulse (Sprint 6A, read-only) ────────
+  // On-demand source lookup plan for the current subject/area. No live calls,
+  // no installs, no third-party code, no paid/comp tools. Market Pulse stays
+  // separate from parcel verification; seller ask is seller_stated only.
+  const sourceAdapter = buildSourceAdapterPlan({
+    text: intake.text,
+    hasParcelIdentity: dukeFresh,
+    parcelVerified: suVerified,
+  });
+
   return {
     intake,
     classification: cls,
@@ -535,6 +546,7 @@ export function planLandosIntake(intake: LandOSIntake): WorkerDispatchPlan {
     extensibilityNote:
       'Departments and agents are first-class registry citizens. Future additions declare capabilities, required inputs, ' +
       'blocked conditions, permissions, model policy, and output contracts — no rewrite of the intake/orchestrator core.',
+    sourceAdapter,
     executionMode: 'read_only_plan',
   };
 }

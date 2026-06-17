@@ -86,7 +86,50 @@ interface Plan {
     operational: boolean;
   }>;
   extensibilityNote: string;
+  sourceAdapter: SourceAdapterPlan;
   executionMode: string;
+}
+
+// Sprint 6A: source-adapter registry + Market Pulse contract (read-only).
+interface SourceAdapterPlan {
+  onDemandScope: { allowed: string[]; bulkDatasetsForbidden: boolean; rule: string };
+  adapterReadiness: Array<{
+    id: string;
+    label: string;
+    kind: string;
+    availability: string;
+    canVerifyParcelIdentity: boolean;
+    canProduceMarketPulse: boolean;
+  }>;
+  parcelFallbackLadder: Array<{ rank: number; adapterId: string; availability: string; role: string }>;
+  landportalFailureFallbackPlan: Array<{ adapterId: string; status: string; reason: string; truthLabel: string }>;
+  gisCutoff: { rule: string; conditions: string[]; preferAssessorOverGis: boolean };
+  marketPulse: {
+    eligible: boolean;
+    status: string;
+    areaScope: string;
+    signalsCatalog: string[];
+    truthLabel: string;
+    reason: string;
+    localAreaContextLabel?: string;
+  };
+  parcelVerification: {
+    verificationStatus: string;
+    parcelVerified: boolean;
+    truthLabel: string;
+    localAreaContextLabel?: string;
+    dataGaps: string[];
+  };
+  sellerAsk: { sellerAskUsd?: number; label: string; usableForOfferRange: boolean; note: string };
+  thirdPartySecurity: {
+    thirdPartyCodeInstalled: boolean;
+    thirdPartyCodeExecuted: boolean;
+    thirdPartyCodeImportedOrVendored: boolean;
+    policy: string;
+    candidates: Array<{ name: string; purpose: string }>;
+    securityReviewItems: string[];
+  };
+  note: string;
 }
 
 // Status label -> color treatment. Covers planned/blocked/not_available/
@@ -393,6 +436,109 @@ export function IntakePlanner() {
                   routing tier: {plan.modelRouting.modelRouting.tier} · {plan.modelRouting.modelRouting.availability}
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Source Adapters / Market Pulse (Sprint 6A) */}
+          <div>
+            <SectionTitle>Source Adapters / Market Pulse</SectionTitle>
+            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-3">
+              {/* On-demand scope */}
+              <div class="text-[10px] text-[var(--color-text-faint)]">
+                On-demand only · {plan.sourceAdapter.onDemandScope.allowed.join(' · ')} · no bulk datasets / parcel warehouse
+              </div>
+
+              {/* Adapter readiness */}
+              <div>
+                <div class="text-[11px] font-medium text-[var(--color-text)] mb-1.5">Adapter readiness</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                  {plan.sourceAdapter.adapterReadiness.map((a) => (
+                    <div key={a.id} class="flex items-center gap-2 text-[11px]">
+                      <span class="text-[var(--color-text-muted)] truncate">{a.label}</span>
+                      <span class="ml-auto"><StatusBadge status={a.availability} /></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Parcel verification fallback ladder */}
+              <div>
+                <div class="text-[11px] font-medium text-[var(--color-text)] mb-1.5">Parcel verification fallback ladder</div>
+                <ol class="space-y-1">
+                  {plan.sourceAdapter.parcelFallbackLadder.map((l) => (
+                    <li key={l.adapterId} class="flex items-center gap-2 text-[11px]">
+                      <span class="font-mono text-[var(--color-text-faint)]">{l.rank}.</span>
+                      <span class="text-[var(--color-text-muted)]">{l.role}</span>
+                      <span class="ml-auto"><StatusBadge status={l.availability} /></span>
+                    </li>
+                  ))}
+                </ol>
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-1.5">
+                  LandPortal fails → {plan.sourceAdapter.landportalFailureFallbackPlan.map((s) => s.adapterId).join(' → ')} → stop if still unverified.
+                </div>
+              </div>
+
+              {/* Parcel verification status / label */}
+              <div class="flex items-center gap-2 text-[11px] flex-wrap">
+                <span class="text-[var(--color-text)]">Parcel verification</span>
+                <StatusBadge status={plan.sourceAdapter.parcelVerification.verificationStatus} />
+                {plan.sourceAdapter.parcelVerification.localAreaContextLabel && (
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[color-mix(in_srgb,var(--color-status-failed)_40%,transparent)] text-[var(--color-status-failed)]">
+                    {plan.sourceAdapter.parcelVerification.localAreaContextLabel}
+                  </span>
+                )}
+              </div>
+
+              {/* GIS cutoff */}
+              <div class="border-t border-[var(--color-border)] pt-2">
+                <div class="text-[11px] font-medium text-[var(--color-text)]">GIS cutoff rule</div>
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{plan.sourceAdapter.gisCutoff.rule}</div>
+              </div>
+
+              {/* Market Pulse */}
+              <div class="border-t border-[var(--color-border)] pt-2">
+                <div class="flex items-center gap-2 text-[11px]">
+                  <span class="text-[var(--color-text)]">Market Pulse</span>
+                  <span class="text-[var(--color-text-faint)]">({plan.sourceAdapter.marketPulse.areaScope})</span>
+                  <span class="ml-auto"><StatusBadge status={plan.sourceAdapter.marketPulse.status} /></span>
+                </div>
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{plan.sourceAdapter.marketPulse.reason}</div>
+                {plan.sourceAdapter.marketPulse.localAreaContextLabel && (
+                  <div class="text-[10px] text-[var(--color-status-failed)] mt-0.5">
+                    {plan.sourceAdapter.marketPulse.localAreaContextLabel} · separate from parcel verification
+                  </div>
+                )}
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-1 font-mono break-words">
+                  signals: {plan.sourceAdapter.marketPulse.signalsCatalog.join(', ')}
+                </div>
+              </div>
+
+              {/* Seller ask */}
+              <div class="border-t border-[var(--color-border)] pt-2">
+                <div class="flex items-center gap-2 text-[11px]">
+                  <span class="text-[var(--color-text)]">Seller ask</span>
+                  <StatusBadge status={plan.sourceAdapter.sellerAsk.label} />
+                  <span class="text-[10px] text-[var(--color-text-faint)]">never anchors the calculated offer range</span>
+                </div>
+              </div>
+
+              {/* Open-source / third-party security */}
+              <div class="border-t border-[var(--color-border)] pt-2">
+                <div class="flex items-center gap-2 text-[11px]">
+                  <span class="text-[var(--color-text)]">Third-party / open-source</span>
+                  <span class="ml-auto">
+                    <StatusBadge status={plan.sourceAdapter.thirdPartySecurity.thirdPartyCodeInstalled ? 'blocked' : 'not_connected'} />
+                  </span>
+                </div>
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-0.5">
+                  No third-party code installed or executed. Candidates are report-only and require Tyler approval + security review.
+                </div>
+                {plan.sourceAdapter.thirdPartySecurity.candidates.length > 0 && (
+                  <div class="text-[10px] text-[var(--color-text-faint)] mt-1">
+                    candidates: {plan.sourceAdapter.thirdPartySecurity.candidates.map((c) => c.name).join(' · ')}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

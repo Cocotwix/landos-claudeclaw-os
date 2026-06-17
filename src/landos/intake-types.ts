@@ -16,6 +16,11 @@
 // intake type. See department-registry.ts and model-router.ts for the data and
 // the deterministic selectors that consume these types.
 
+// Sprint 6A: the read-only source-adapter / Market Pulse plan is contributed by
+// source-adapters.ts. Imported as a type only (erased at compile) so this
+// contract layer stays runtime-free and there is no import cycle.
+import type { SourceAdapterPlan } from './source-adapters.js';
+
 // ─────────────────────────────────────────────────────────────────────────
 // 4 / 5. Transport-agnostic intake
 // ─────────────────────────────────────────────────────────────────────────
@@ -604,6 +609,12 @@ export interface WorkerDispatchPlan {
   /** Department registry summary + extensibility plan. */
   departmentRegistrySummary: Array<{ id: string; label: string; lifecycle: AgentLifecycleStatus; operational: boolean }>;
   extensibilityNote: string;
+
+  /** Sprint 6A: read-only source-adapter registry + Market Pulse contract.
+   *  Source readiness, on-demand scope, parcel fallback ladder, LandPortal
+   *  failure fallback, GIS cutoff rule, Market Pulse eligibility (separate from
+   *  parcel verification), seller-ask context, and open-source security status. */
+  sourceAdapter: SourceAdapterPlan;
 
   /** No live agent execution; no DB writes; no fake market data. */
   executionMode: 'read_only_plan';
