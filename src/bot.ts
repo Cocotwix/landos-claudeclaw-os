@@ -45,7 +45,7 @@ import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import { persistDukeRunPostDelivery } from './landos/duke-persist-adapter.js';
 import { runDukePreflight } from './landos/duke-preflight.js';
-import { blockedPreflightToLanes } from './landos/duke-report-runner.js';
+import { blockedPreflightToLanes, renderDukeUnverifiedTimeoutReport } from './landos/duke-report-runner.js';
 import { renderDukeReportLanes } from './landos/duke-report-lanes.js';
 import {
   isLocked,
@@ -1795,9 +1795,14 @@ async function processDashboardMessage(
       const quotaNote = quotaStatus.suspended
         ? ' Memory consolidation is currently paused due to Gemini quota/rate limits.'
         : '';
+      // A hard agent-run timeout (result.text === null) on Duke must NOT surface
+      // the thin one-line TIMEOUT_MESSAGE. Route it through the canonical Default
+      // Duke Report source lanes so the dashboard still returns Local Area
+      // Context, Not Parcel Verified (timeout kept only as an internal lane
+      // reason). A user-initiated stop (result.text !== null) stays "Stopped.".
       const msg = result.text === null
         ? (effectiveAgentId === 'duke-due-diligence'
-            ? 'LandPortal lookup did not respond in time. Parcel not verified -- no scoring, valuation, or offer. Retry the address, or provide APN + county for direct lookup.'
+            ? renderDukeUnverifiedTimeoutReport(text, 'redfin_zillow', elapsedMs)
             : `Timed out after ${Math.round(agentTimeoutMs / 1000)}s [${effectiveAgentId}].${quotaNote} Check logs for details or try a shorter prompt.`)
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });

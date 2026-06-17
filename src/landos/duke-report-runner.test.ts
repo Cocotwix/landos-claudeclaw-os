@@ -11,6 +11,7 @@ import {
   stripSentinel,
   runDukeReportFromTask,
   blockedPreflightToLanes,
+  renderDukeUnverifiedTimeoutReport,
   type DukeReportRunDeps,
 } from './duke-report-runner.js';
 import { renderDukeReportLanes, LOCAL_AREA_NOT_VERIFIED_LABEL } from './duke-report-lanes.js';
@@ -260,12 +261,84 @@ describe('blockedPreflightToLanes — LandPortal timeout returns Source Lanes, n
   });
 });
 
+describe('blockedPreflightToLanes — zero-candidate / not-verified returns Source Lanes', () => {
+  // The dashboard "skip"/no-match path: LandPortal returned no single parcel.
+  const r = blockedPreflightToLanes(
+    { type: 'blocked', message: 'Parcel not verified -- no scoring, valuation, or offer.', reason: 'not_verified' },
+    'Owner: Cheryl Sann, Clay County, TN',
+    'redfin_zillow',
+  );
+  const rendered = renderDukeReportLanes(r);
+  it('renders the unverified Source Lanes, not the raw thin message', () => {
+    expect(rendered).not.toBe(RAW_TIMEOUT_MESSAGE);
+    expect(rendered).toContain(LOCAL_AREA_NOT_VERIFIED_LABEL);
+    expect(laneById(r, 'landportal_exact_search').status).toBe('blocked');
+  });
+  it('blocks score/value/offer/strategy and uses 0 comp credits', () => {
+    expect(r.parcelVerified).toBe(false);
+    expect(laneById(r, 'strategy_offer').status).toBe('blocked');
+    expect(laneById(r, 'redfin_zillow_comps').status).toBe('blocked');
+    expect(r.compCreditUsed).toBe(false);
+  });
+});
+
+describe('renderDukeUnverifiedTimeoutReport — live dashboard agent-timeout path', () => {
+  // This is the path that actually emitted the bare one-line failure: the Duke
+  // agent run aborts on the dashboard ceiling (preflight returned skip, so LP
+  // MCP stayed available). The Cheryl Sann / Clay County TN case.
+  const dukeText = 'Cheryl Sann\nAddress: 051   012.05 — Clay County, TN';
+  const rendered = renderDukeUnverifiedTimeoutReport(dukeText, 'redfin_zillow', 120_000);
+
+  it('NEVER returns the raw thin TIMEOUT_MESSAGE as the whole answer', () => {
+    expect(rendered).not.toBe(RAW_TIMEOUT_MESSAGE);
+    expect(rendered).not.toContain(RAW_TIMEOUT_MESSAGE);
+  });
+  it('leads with Local Area Context, Not Parcel Verified', () => {
+    expect(rendered).toContain(LOCAL_AREA_NOT_VERIFIED_LABEL);
+  });
+  it('emits the LandPortal Exact Search lane as timed out', () => {
+    expect(rendered).toMatch(/LandPortal Exact Search: timeout/);
+  });
+  it('emits the Verification Captain decision', () => {
+    expect(rendered).toMatch(/Verification Captain:/);
+  });
+  it('emits the Local Area Data snapshot fields (growth + active + sold + sources)', () => {
+    expect(rendered).toMatch(/Clay County, TN/);
+    expect(rendered).toMatch(/Annual growth: unavailable \| Source: /);
+    expect(rendered).toMatch(/Active land listings: unavailable/);
+    expect(rendered).toMatch(/Active land listings source: /);
+    expect(rendered).toMatch(/Land sold last 6 months: unavailable/);
+    expect(rendered).toMatch(/Land sold last 6 months source: /);
+  });
+  it('runs no score, valuation, offer, or strategy recommendation', () => {
+    expect(rendered).toMatch(/Redfin\/Zillow Comps: blocked/);
+    expect(rendered).toMatch(/Strategy \/ Offer: blocked/);
+    expect(rendered).not.toMatch(/Expected Value:\s*\$/);
+    expect(rendered).not.toMatch(/offer of \$/i);
+  });
+  it('uses 0 comp credits', () => {
+    expect(rendered).not.toMatch(/comp credit (used|spent)/i);
+  });
+  it('emits no coordinate/geocoder/proximity/map-pin/visual/satellite verification language', () => {
+    expect(/geocod|proximity|nearest parcel|map pin|coordinate|centroid|street view|satellite/i.test(rendered)).toBe(false);
+  });
+});
+
 describe('bot dashboard/chat path renders blocked preflight as Source Lanes', () => {
   const SRC = fs.readFileSync(fileURLToPath(new URL('../bot.ts', import.meta.url)), 'utf-8');
   it('imports the lane helpers and no longer emits the raw preflight.message on block', () => {
     expect(SRC).toMatch(/blockedPreflightToLanes/);
     expect(SRC).toMatch(/renderDukeReportLanes/);
     expect(SRC).not.toMatch(/content:\s*preflight\.message/);
+  });
+  it('routes the Duke agent-timeout abort branch through the canonical Source Lanes renderer', () => {
+    expect(SRC).toMatch(/renderDukeUnverifiedTimeoutReport/);
+  });
+  it('no longer contains the raw one-line timeout sentence as a live string literal', () => {
+    // The whole raw failure sentence must not exist anywhere in the live bot
+    // source — it can only ever appear as an internal lane reason, never as a
+    // returned string. duke-preflight owns the constant; bot.ts must not.
+    expect(SRC).not.toContain('LandPortal lookup did not respond in time. Parcel not verified -- no scoring, valuation, or offer. Retry the address, or provide APN + county for direct lookup.');
   });
 });
 

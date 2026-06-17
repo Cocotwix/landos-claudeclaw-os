@@ -22,6 +22,7 @@ import type { DukePreflightOutcome } from './duke-preflight.js';
 import type { DukeDashboardRunInfo } from './duke-persist-adapter.js';
 import {
   buildDukeReportLanes,
+  renderDukeReportLanes,
   LANDPORTAL_VERIFICATION_TIMEOUT_MS,
   type DukeReportLanes,
   type LandPortalLaneInput,
@@ -236,6 +237,36 @@ export function blockedPreflightToLanes(
     compMode,
     localAreaAnchor: localAnchorFromText(dukeText),
   });
+}
+
+/**
+ * Canonical renderer for a Duke dashboard run that aborts/times out BEFORE the
+ * parcel is verified (the agent-run ceiling, not a preflight block). The live
+ * dashboard chat path MUST call this instead of returning a bare one-line
+ * timeout sentence: a hung run still yields the structured Default Duke Report
+ * source lanes (Local Area Context, Not Parcel Verified) with the timeout kept
+ * only as an internal LandPortal-lane reason. Pure: no network, no agent, no
+ * comp credit, no coordinate/proximity identification. `compMode` defaults to
+ * the safe Redfin/Zillow lane (never a comp-credit path).
+ */
+export function renderDukeUnverifiedTimeoutReport(
+  dukeText: string,
+  compMode: CompMode = 'redfin_zillow',
+  durationMs?: number,
+): string {
+  const lanes = buildDukeReportLanes({
+    landPortal: {
+      status: 'timeout',
+      verified: false,
+      durationMs,
+      // Internal detail only — never the whole final answer. The lane's own
+      // blockingReason states the 3-minute ceiling; this stays terse.
+      reason: 'Duke run did not complete within the dashboard time limit before LandPortal verified parcel identity.',
+    },
+    compMode,
+    localAreaAnchor: localAnchorFromText(dukeText),
+  });
+  return renderDukeReportLanes(lanes);
 }
 
 /** Extract a "<County> County, <ST>"-style local anchor from the operator text
