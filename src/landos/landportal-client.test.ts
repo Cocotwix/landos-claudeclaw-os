@@ -15,6 +15,8 @@ import {
   lpApiVersion,
   apnSearchVariants,
   ownerSearchVariants,
+  buildDukeSearchTrace,
+  type LpResolveResult,
 } from './landportal-client.js';
 import { runDukePreflight } from './duke-preflight.js';
 
@@ -866,5 +868,128 @@ describe('v1 APN identity gate (flag unset) — never verifies the wrong same-co
     const r = await lpResolveForPreflight({ apn: '051   012.05', fips: '47031' }, 10_000);
     expect(r.verified).toBe(false);
     expect(calls.some(c => c.includes('query=05101205'))).toBe(true); // the variant was tried
+  });
+});
+
+describe('deterministic search trace — apnVariants + searchAttempts (v1, mocked fetch)', () => {
+  const hadVer = Object.prototype.hasOwnProperty.call(process.env, 'LANDPORTAL_API_VERSION');
+  const origVer = process.env.LANDPORTAL_API_VERSION;
+  const hadTok = Object.prototype.hasOwnProperty.call(process.env, 'LP_JWT_TOKEN');
+  const origTok = process.env.LP_JWT_TOKEN;
+  const origFetch = global.fetch;
+  let calls: string[];
+
+  beforeEach(() => { delete process.env.LANDPORTAL_API_VERSION; process.env.LP_JWT_TOKEN = 'test-token'; calls = []; });
+  afterEach(() => {
+    global.fetch = origFetch;
+    if (hadVer) process.env.LANDPORTAL_API_VERSION = origVer; else delete process.env.LANDPORTAL_API_VERSION;
+    if (hadTok) process.env.LP_JWT_TOKEN = origTok; else delete process.env.LP_JWT_TOKEN;
+    vi.restoreAllMocks();
+  });
+  function res(body: unknown): Response {
+    return { ok: true, status: 200, statusText: 'HTTP 200', text: async () => JSON.stringify(body) } as Response;
+  }
+
+  it('records a parcelnumb attempt for every variant (incl. 051-012.05) before declaring zero', async () => {
+    // Every variant misses -> not_verified, but each search was actually made.
+    global.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input); calls.push(url);
+      if (url.includes('/search')) return res({ data: [] });
+      return res({ meta: {}, data: { property: null } });
+    }) as unknown as typeof fetch;
+
+    const r = await lpResolveForPreflight({ apn: '051   012.05', fips: '47031', state: 'TN' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.status).toBe('not_verified');
+    // Variants generated + every required form present.
+    expect(r.apnVariants).toEqual(expect.arrayContaining(['051 012.05', '051-012.05', '05101205']));
+    // Each attempt recorded as a parcelnumb search with a result count.
+    const attempts = r.searchAttempts ?? [];
+    expect(attempts.length).toBeGreaterThanOrEqual(3);
+    expect(attempts.every(a => a.type === 'parcelnumb')).toBe(true);
+    expect(attempts.every(a => a.resultCount === 0)).toBe(true);
+    const queries = attempts.map(a => a.query);
+    expect(queries).toContain('051-012.05'); // the exact UI form was sent
+    expect(queries).toContain('05101205');
+    // Zero-candidate output names the variants tried.
+    expect(r.match_notes).toMatch(/variants tried/i);
+    expect(r.match_notes).toMatch(/051-012\.05/);
+  });
+
+  it('does NOT emit zero-candidate when a later variant returns a candidate', async () => {
+    // First variant ("051 012.05" with a space) misses; the dash form verifies.
+    global.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input); calls.push(url);
+      if (url.includes('/search')) {
+        if (url.includes('query=051-012.05')) return res({ data: [{ propertyid: '900', fips: '47031', apn: '051-012.05' }] });
+        return res({ data: [] });
+      }
+      return res({ meta: { requests_left: '9' }, data: { property: { propertyid: '900', apn: '051-012.05', fips: '47031', situsfullstreetaddress: 'VIRGIL CROSS RD', situscounty: 'Clay County', situsstate: 'TN' } } });
+    }) as unknown as typeof fetch;
+
+    const r = await lpResolveForPreflight({ apn: '051   012.05', fips: '47031', state: 'TN' }, 10_000);
+    expect(r.verified).toBe(true);
+    expect(r.status).toBe('verified');
+    expect(r.apn).toBe('051-012.05');
+    // The hyphenated variant search is recorded in the trace.
+    expect((r.searchAttempts ?? []).some(a => a.query === '051-012.05')).toBe(true);
+  });
+
+  it('distinguishes a property-data DETAIL failure from zero search candidates', async () => {
+    // Search finds a single parcel, but property-data returns no property.
+    global.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input); calls.push(url);
+      if (url.includes('/search')) return res({ data: [{ propertyid: '900', fips: '47031', apn: '051-012.05' }] });
+      return res({ meta: {}, data: { property: null } }); // detail failure
+    }) as unknown as typeof fetch;
+
+    const r = await lpResolveForPreflight({ apn: '051   012.05', fips: '47031' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.match_notes).toMatch(/no property data returned/i); // detail failure, not zero candidates
+    expect(r.match_notes).not.toMatch(/No results found for APN/);
+  });
+});
+
+describe('buildDukeSearchTrace (pure, secret-free)', () => {
+  const zeroResult: LpResolveResult = {
+    verified: false, status: 'not_verified', propertyid: null, fips: '47031',
+    apn: null, situs_address: null, owner: null,
+    match_notes: 'No results found for APN "051 012.05". Exact-format variants tried (5): 051 012.05, 051-012.05, 051/012.05, 051012.05, 05101205.',
+    candidates: [],
+    apnVariants: ['051 012.05', '051-012.05', '051/012.05', '051012.05', '05101205'],
+    searchAttempts: [
+      { type: 'parcelnumb', query: '051 012.05', state: 'TN', fips: '47031', resultCount: 0 },
+      { type: 'parcelnumb', query: '051-012.05', state: 'TN', fips: '47031', resultCount: 0 },
+    ],
+  };
+
+  it('exposes parsed input, variants, attempts, no selection, and 0 comp credits on a miss', () => {
+    const t = buildDukeSearchTrace({ apn: '051   012.05', owner: 'Cheryl Sann', county: 'Clay', state: 'TN' }, zeroResult);
+    expect(t.parsedInput).toMatchObject({ apn: '051   012.05', owner: 'Cheryl Sann', county: 'Clay', state: 'TN', lpUrl: false });
+    expect(t.apnVariants).toContain('051-012.05');
+    expect(t.searchAttempts.map(a => a.query)).toContain('051-012.05');
+    expect(t.selectedCandidate).toBeNull();
+    expect(t.rejectionReasons.length).toBeGreaterThan(0);
+    expect(t.verificationStatus).toBe('not_verified');
+    expect(t.compCreditsUsed).toBe(0);
+  });
+
+  it('populates the selected candidate only when the parcel verified', () => {
+    const verified: LpResolveResult = {
+      verified: true, status: 'verified', propertyid: '900', fips: '47031',
+      apn: '051-012.05', situs_address: 'VIRGIL CROSS RD', owner: 'SANN CHERYL',
+      match_notes: 'Parcel resolved via apn_search.', candidates: [],
+    };
+    const t = buildDukeSearchTrace({ apn: '051   012.05', state: 'TN' }, verified);
+    expect(t.selectedCandidate).toMatchObject({ propertyid: '900', apn: '051-012.05' });
+    expect(t.rejectionReasons).toEqual([]);
+    expect(t.verificationStatus).toBe('verified');
+  });
+
+  it('never carries coordinates, proximity, comp-credit spend, or secrets', () => {
+    const t = buildDukeSearchTrace({ apn: '051 012.05' }, zeroResult);
+    const blob = JSON.stringify(t);
+    expect(/lat|lng|coordinate|proximity|geocod|nearest parcel|centroid|comp credit|Bearer|LP_JWT_TOKEN/i.test(blob)).toBe(false);
+    expect(t.compCreditsUsed).toBe(0);
   });
 });

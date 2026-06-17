@@ -108,6 +108,18 @@ export interface LpPropertySummary {
   similars_most_recent_year: string;
 }
 
+/** One recorded exact-search attempt (deterministic trace). Never a coordinate
+ *  or proximity query; only identity searches (parcelnumb/owner/address/id). */
+export interface LpSearchAttempt {
+  type: 'parcelnumb' | 'owner' | 'address' | 'propertyid_fips' | 'lp_url';
+  query: string;
+  state?: string | null;
+  county?: string | null;
+  fips?: string | null;
+  /** Number of candidates the search returned, or null when the call errored. */
+  resultCount: number | null;
+}
+
 export interface LpResolveResult {
   verified: boolean;
   status: 'verified' | 'not_verified' | 'multiple_candidates' | 'ambiguous_fips' | 'lookup_timeout' | 'error' | 'point_candidate';
@@ -121,6 +133,62 @@ export interface LpResolveResult {
   match_notes: string;
   property_summary?: LpPropertySummary;
   candidates?: Array<Record<string, unknown>>;
+  /** APN format variants generated for exact search (search keys only). */
+  apnVariants?: string[];
+  /** Ordered record of each exact-search attempt actually made. */
+  searchAttempts?: LpSearchAttempt[];
+}
+
+/** Structured, secret-free Duke search trace. Exposes WHAT the deterministic
+ *  engine parsed, the APN variants it generated, every search attempt it made,
+ *  the selected candidate, why others were rejected, and the verification status.
+ *  Never contains tokens, coordinates, proximity, or comp-credit spend. */
+export interface DukeSearchTrace {
+  parsedInput: {
+    owner: string | null;
+    apn: string | null;
+    county: string | null;
+    state: string | null;
+    fips: string | null;
+    address: string | null;
+    lpUrl: boolean;
+  };
+  apnVariants: string[];
+  searchAttempts: LpSearchAttempt[];
+  selectedCandidate: { propertyid: string | null; fips: string | null; apn: string | null; situs_address: string | null; owner: string | null } | null;
+  rejectionReasons: string[];
+  verificationStatus: LpResolveResult['status'];
+  /** The default report never spends a comp credit. Always 0 here. */
+  compCreditsUsed: 0;
+}
+
+/**
+ * Build the deterministic Duke search trace from the parsed args + the resolver
+ * result. Pure: derives only from already-computed values. The selected
+ * candidate is populated only when the parcel verified; otherwise the resolver's
+ * match_notes is surfaced as the rejection reason (zero candidates, mismatch,
+ * timeout, etc.). Exposes no secrets, coordinates, or proximity data.
+ */
+export function buildDukeSearchTrace(args: LpResolveArgs, result: LpResolveResult): DukeSearchTrace {
+  return {
+    parsedInput: {
+      owner: args.owner ?? null,
+      apn: args.apn ?? null,
+      county: args.county ?? null,
+      state: args.state ?? null,
+      fips: args.fips ?? null,
+      address: args.address ?? null,
+      lpUrl: !!args.lp_url,
+    },
+    apnVariants: result.apnVariants ?? (args.apn ? apnSearchVariants(args.apn) : []),
+    searchAttempts: result.searchAttempts ?? [],
+    selectedCandidate: result.verified
+      ? { propertyid: result.propertyid, fips: result.fips, apn: result.apn, situs_address: result.situs_address, owner: result.owner }
+      : null,
+    rejectionReasons: result.verified ? [] : [result.match_notes].filter(Boolean),
+    verificationStatus: result.status,
+    compCreditsUsed: 0,
+  };
 }
 
 // ── LP HTTP layer ─────────────────────────────────────────────────────────────
@@ -396,21 +464,31 @@ async function resolveByApnSearch(
   opts: { fips?: string; state?: string },
   signal: AbortSignal,
 ): Promise<LpResolveResult> {
+  const variants = apnSearchVariants(apn);
+  const attempts: LpSearchAttempt[] = [];
+  // Attach the full variant list + recorded attempts to every return path so the
+  // deterministic trace shows exactly what was tried before any verdict.
+  const withTrace = (r: LpResolveResult): LpResolveResult => ({ ...r, apnVariants: variants, searchAttempts: attempts });
   let lastDetail: LpResolveResult | null = null;
   const tried: string[] = [];
-  for (const variant of apnSearchVariants(apn)) {
+  for (const variant of variants) {
     tried.push(variant);
-    const res = await resolveByApnSearchSingle(variant, apn, opts, signal);
-    if (res.verified || res.status === 'multiple_candidates' || res.status === 'error') return res;
-    if (res.status === 'lookup_timeout') return res;
+    const res = await resolveByApnSearchSingle(variant, apn, opts, signal, attempts);
+    if (res.verified || res.status === 'multiple_candidates' || res.status === 'error') return withTrace(res);
+    if (res.status === 'lookup_timeout') return withTrace(res);
     lastDetail = res;
   }
-  return lastDetail ?? {
+  // Zero-candidate output ALWAYS names the exact variants tried so a miss is
+  // never indistinguishable from "never searched". The hyphenated form is in
+  // this list, proving 051-012.05 was attempted before declaring zero.
+  const triedNote = `Exact-format variants tried (${tried.length}): ${tried.join(', ')}.`;
+  const base: LpResolveResult = lastDetail ?? {
     verified: false, status: 'not_verified', propertyid: null,
     fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
-    match_notes: `No results found for APN "${apn}" after exact-format variants (${tried.length} tried).`,
+    match_notes: `No results found for APN "${apn}".`,
     candidates: [],
   };
+  return withTrace({ ...base, match_notes: `${base.match_notes} ${triedNote}` });
 }
 
 async function resolveByApnSearchSingle(
@@ -418,12 +496,14 @@ async function resolveByApnSearchSingle(
   apn: string,
   opts: { fips?: string; state?: string },
   signal: AbortSignal,
+  attempts?: LpSearchAttempt[],
 ): Promise<LpResolveResult> {
   const params = new URLSearchParams({ type: 'parcelnumb', query });
   if (opts.fips) params.set('fips', opts.fips);
   if (opts.state) params.set('state', opts.state);
   const searchResult = await lpFetch(`/search?${params}`, {}, signal) as Record<string, unknown>;
   if (searchResult.error) {
+    attempts?.push({ type: 'parcelnumb', query, state: opts.state ?? null, fips: opts.fips ?? null, resultCount: null });
     return {
       verified: false, status: 'error', propertyid: null,
       fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
@@ -432,6 +512,7 @@ async function resolveByApnSearchSingle(
     };
   }
   const items = extractSearchItems(searchResult);
+  attempts?.push({ type: 'parcelnumb', query, state: opts.state ?? null, fips: opts.fips ?? null, resultCount: items.length });
   if (items.length === 0) {
     return {
       verified: false, status: 'not_verified', propertyid: null,
@@ -501,6 +582,8 @@ async function resolveByOwnerSearch(
 ): Promise<LpResolveResult> {
   const reqCounty = countyNorm(opts.county);
   const canGate = !!opts.fips || !!reqCounty; // never verify statewide-only owner results
+  const attempts: LpSearchAttempt[] = [];
+  const withTrace = (r: LpResolveResult): LpResolveResult => ({ ...r, searchAttempts: [...(r.searchAttempts ?? []), ...attempts] });
   let lastDetail: LpResolveResult | null = null;
   for (const variant of ownerSearchVariants(owner)) {
     const params = new URLSearchParams({ type: 'owner', query: variant });
@@ -508,49 +591,51 @@ async function resolveByOwnerSearch(
     if (opts.state) params.set('state', opts.state);
     const searchResult = await lpFetch(`/search?${params}`, {}, signal) as Record<string, unknown>;
     if (searchResult.error) {
-      return {
+      attempts.push({ type: 'owner', query: variant, state: opts.state ?? null, county: opts.county ?? null, fips: opts.fips ?? null, resultCount: null });
+      return withTrace({
         verified: false, status: 'error', propertyid: null,
         fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
         match_notes: `Owner search failed: ${(searchResult.body as Record<string, unknown>)?.message ?? searchResult.http_status}`,
         candidates: [],
-      };
+      });
     }
     let items = extractSearchItems(searchResult);
     // County/FIPS gate: never accept owner matches from another county.
     if (opts.fips) items = items.filter((it) => String(it.fips ?? '') === opts.fips);
     else if (reqCounty) items = items.filter((it) => countyNorm(String(it.county ?? '')) === reqCounty);
+    attempts.push({ type: 'owner', query: variant, state: opts.state ?? null, county: opts.county ?? null, fips: opts.fips ?? null, resultCount: items.length });
     if (items.length === 0) continue;
     if (!canGate) {
       // State-only owner search returned results but cannot be county-filtered;
       // do NOT verify a statewide match. Surface a wrapper gap (recall only).
-      return {
+      return withTrace({
         verified: false, status: 'not_verified', propertyid: null,
         fips: null, apn: null, situs_address: null, owner: null,
         match_notes: `Owner "${owner}" returned statewide results in ${opts.state ?? 'the state'}; a county or FIPS is required to verify (owner search cannot be county-filtered statewide). Parcel not verified -- recall only.`,
         candidates: items.slice(0, 5).map(formatCandidate),
-      };
+      });
     }
     if (items.length > 1) {
-      return {
+      return withTrace({
         verified: false, status: 'multiple_candidates', propertyid: null,
         fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
         match_notes: `${items.length} parcels matched owner "${owner}" in this county. Provide APN or street address to confirm the correct parcel.`,
         candidates: items.slice(0, 5).map(formatCandidate),
-      };
+      });
     }
     const m = items[0];
     if (!m.propertyid || !m.fips) { lastDetail = null; continue; }
     const raw = await lpFetch(`/property-data?propertyid=${m.propertyid}&fips=${m.fips}`, {}, signal);
     const res = buildResolverResult(raw, { source: 'owner_search', fips: m.fips as string });
-    if (res.verified) return res;
+    if (res.verified) return withTrace(res);
     lastDetail = res;
   }
-  return lastDetail ?? {
+  return withTrace(lastDetail ?? {
     verified: false, status: 'not_verified', propertyid: null,
     fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
     match_notes: `No parcel found for owner "${owner}"${opts.fips ? ` in FIPS ${opts.fips}` : opts.county ? ` in ${opts.county} County` : ''} after exact-search name variants. Parcel not verified.`,
     candidates: [],
-  };
+  });
 }
 
 function median(arr: number[]): number {

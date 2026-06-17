@@ -50,6 +50,67 @@ function extractCounty(text: string): string | undefined {
   return county && county.length >= 2 ? county : undefined;
 }
 
+// Words that disqualify a line from being a bare owner name.
+const OWNER_NAME_STOPWORDS =
+  /\b(county|state|apn|fips|address|parcel|propertyid|property|road|rd|street|st|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|highway|hwy|acres?|llc|inc|trust|estate|stats?|report|due|diligence|what|how|why|where|when)\b/i;
+
+/**
+ * Recover a bare owner name from the FIRST non-empty line (e.g. "Cheryl Sann"
+ * on its own line, the live dashboard format) when no "Owner:" label is present.
+ * Deliberately strict: 2-3 alphabetic tokens, title-case OR all-caps, no digits,
+ * no street/label/location/question words. It is only ever USED when another
+ * identifier (APN or county/state) is also present, so a lone name never
+ * resolves. Never identifies via coordinates/proximity.
+ */
+function extractBareOwnerName(text: string): string | undefined {
+  const firstLine = text.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0) ?? '';
+  // 2-3 tokens of letters/apostrophe/hyphen/period only.
+  if (!/^[A-Za-z][A-Za-z'’.\-]*(?:\s+[A-Za-z][A-Za-z'’.\-]*){1,2}$/.test(firstLine)) return undefined;
+  if (OWNER_NAME_STOPWORDS.test(firstLine)) return undefined;
+  const tokens = firstLine.split(/\s+/);
+  const titleCase = tokens.every(t => /^[A-Z][a-z'’.\-]*$/.test(t));
+  const allCaps = tokens.every(t => /^[A-Z'’.\-]{2,}$/.test(t));
+  if (!titleCase && !allCaps) return undefined;
+  return firstLine.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Validate + normalize a parcel-number-shaped string into a search key (e.g.
+ * "051   012.05" -> "051 012.05"). Rejects plain street numbers, acreage, years,
+ * and MM-DD-YYYY dates. Requires >= 5 digits AND a parcel separator (dash, dot,
+ * slash, or two space-separated numeric groups) so it cannot eat a house number.
+ */
+function pickApnShape(raw: string | null | undefined): string | undefined {
+  const v = (raw ?? '').trim();
+  if (!v) return undefined;
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(v)) return undefined; // MM-DD-YYYY
+  if (v.replace(/[^0-9]/g, '').length < 5) return undefined;
+  const hasParcelSep = /[-./]/.test(v) || /\d\s+\d/.test(v);
+  if (!hasParcelSep) return undefined;
+  return v.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Extract a parcel-number-shaped APN even when it is labeled "Address:"/"Parcel:"
+ * or appears bare, and the dash-only patterns above did not catch it. The live
+ * dashboard sends the APN under an "Address:" label (e.g. "Address: 051   012.05").
+ * Digits/separators only (no letters) so a street name is never captured.
+ */
+function extractApnShaped(text: string): string | undefined {
+  // Prefer an explicitly-labeled value; the class is digits + separators only, so
+  // a label followed by a street ("Address: 731 Filter Plant Rd") stops at the
+  // street name and is then rejected by pickApnShape (too few digits / no sep).
+  const labeled = text.match(/\b(?:address|parcel(?:\s*(?:id|no|number|#))?)[:\s]+([0-9][0-9 .\/\-]*)/i)?.[1];
+  const bare =
+    text.match(/\b\d{2,6}(?:[ \t]+\d{1,6}){1,4}(?:\.\d{1,4})?\b/)?.[0] ??
+    text.match(/\b\d{2,6}\.\d{1,4}\b/)?.[0];
+  for (const cand of [labeled, bare]) {
+    const apn = pickApnShape(cand);
+    if (apn) return apn;
+  }
+  return undefined;
+}
+
 // Street-type keywords used to detect likely property address inputs.
 const STREET_TYPE_RE =
   /(?:^|[,;\n])\s*\d+[A-Za-z]?\s+[A-Za-z]\w*(?:\s+\w+)*?\s+(?:road|rd|street|st|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|way|place|pl|highway|hwy|parkway|pkwy|circle|cir|loop|trail|trl|pike|route|terrace|ter)\b/i;
@@ -98,7 +159,9 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   const lpUrlMatch = text.match(/https?:\/\/(?:www\.)?landportal\.com[^\s\]<>"]+/i);
   if (lpUrlMatch) return { lp_url: lpUrlMatch[0] };
 
-  const owner = extractOwner(text);
+  // Label-based owner first; fall back to a bare first-line name (live dashboard
+  // format puts the owner on its own line with no "Owner:" label).
+  const owner = extractOwner(text) ?? extractBareOwnerName(text);
   const county = extractCounty(text);
 
   // Explicit APN keyword: "APN: 12-345-678", "APN 12-345-678", or multi-segment
@@ -124,6 +187,16 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
       const fips = extractLabeledFips(text);
       return { apn, ...(owner ? { owner } : {}), ...(county ? { county } : {}), ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
     }
+  }
+
+  // Parcel-number-shaped APN that the dash-only patterns missed, including the
+  // live dashboard form where the APN is under an "Address:" label (e.g.
+  // "Address: 051   012.05"). Treated as an APN, never a street address.
+  const apnShaped = extractApnShaped(text);
+  if (apnShaped) {
+    const state = extractState(text);
+    const fips = extractLabeledFips(text);
+    return { apn: apnShaped, ...(owner ? { owner } : {}), ...(county ? { county } : {}), ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
   }
 
   // Owner + county/state (no APN/address): a valid exact-search input. County is

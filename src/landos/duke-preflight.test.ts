@@ -214,6 +214,40 @@ describe('extractPropertyArgs', () => {
   it('returns null for a street address with no city or state', () => {
     expect(extractPropertyArgs('57 Church Road')).toBeNull();
   });
+
+  // ── Live dashboard format (the Cheryl Sann root cause) ───────────────────────
+  // "<bare owner line>\nAddress: <APN with spaces/decimal> — <County> County, ST"
+  describe('bare owner line + Address-labeled APN (live dashboard format)', () => {
+    const LIVE = 'Cheryl Sann\nAddress: 051   012.05 — Clay County, TN';
+
+    it('extracts owner, APN, county, and state from the exact failing input', () => {
+      const r = extractPropertyArgs(LIVE);
+      expect(r).toMatchObject({ apn: '051 012.05', owner: 'Cheryl Sann', county: 'Clay', state: 'TN' });
+      expect(r?.fips).toBeUndefined();
+    });
+
+    it('treats the Address-labeled parcel number as an APN, never a street address', () => {
+      const r = extractPropertyArgs(LIVE);
+      expect(r?.apn).toBe('051 012.05');
+      expect(r?.address).toBeUndefined();
+    });
+
+    it('a bare owner name with no APN/county/state still does NOT resolve', () => {
+      expect(extractPropertyArgs('Cheryl Sann')).toBeNull();
+    });
+
+    it('does not regress area-only / follow-up / question inputs into a bare-owner match', () => {
+      expect(extractPropertyArgs('What are the county stats for Chatham County, NC?')).toBeNull();
+      expect(extractPropertyArgs('Add area stats to the previous report')).toBeNull();
+      expect(extractPropertyArgs('12 acres in Chatham County NC')).toBeNull();
+    });
+
+    it('a street address under an "Address:" label is still parsed as an address, not an APN', () => {
+      const r = extractPropertyArgs('Address: 731 Filter Plant Rd, Sparta, NC');
+      expect(r?.apn).toBeUndefined();
+      expect(r).toMatchObject({ address: '731 Filter Plant Rd', city: 'Sparta', state: 'NC' });
+    });
+  });
 });
 
 // ── runDukePreflight ──────────────────────────────────────────────────────────
@@ -225,6 +259,17 @@ describe('runDukePreflight', () => {
     const outcome = await runDukePreflight('County stats for Chatham County NC', ALLOWLIST, 10_000);
     expect(outcome.type).toBe('skip');
     expect(mockLp).not.toHaveBeenCalled();
+  });
+
+  it('the live dashboard format no longer SKIPS -- it reaches the deterministic LP engine', async () => {
+    // Root cause: this input used to return skip -> freeform agent invented its
+    // own "zero results". Now it parses an identity and runs the LP engine.
+    mockLp.mockResolvedValue(VERIFIED);
+    const outcome = await runDukePreflight('Cheryl Sann\nAddress: 051   012.05 — Clay County, TN', ALLOWLIST, 10_000);
+    expect(mockLp).toHaveBeenCalledTimes(1);
+    const [calledArgs] = mockLp.mock.calls[0];
+    expect(calledArgs).toMatchObject({ apn: '051 012.05', owner: 'Cheryl Sann', county: 'Clay', state: 'TN' });
+    expect(outcome.type).toBe('verified');
   });
 
   it('blocks property-ish input with no parseable address/state -- does not call LP', async () => {

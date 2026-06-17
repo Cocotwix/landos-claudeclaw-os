@@ -13,7 +13,10 @@ import {
   LOCAL_AREA_NOT_VERIFIED_LABEL,
   MARKET_COUNT_UNAVAILABLE_SOURCE,
   MARKET_COUNT_SOURCE_PRIORITY,
+  computeLocalMarketSupport,
+  MARKET_SUPPORT_MIN_SOLD_PASS,
   type DukeReportLanesInput,
+  type LandSoldRecord,
 } from './duke-report-lanes.js';
 
 const baseInput = (over: Partial<DukeReportLanesInput> = {}): DukeReportLanesInput => ({
@@ -270,6 +273,79 @@ describe('Local Area Data — compact unverified market snapshot', () => {
       localAreaMarket: { activeLandListings: { count: 14, source: 'Redfin' }, annualGrowth: { value: 2, type: 'population', source: 'Census' } },
     }));
     expect(/geocod|proximity|nearest parcel|map pin|coordinate|street view|satellite|centroid/i.test(JSON.stringify(r))).toBe(false);
+  });
+});
+
+describe('Local Market Support verdict — PASS / THIN / FAIL (decision-grade)', () => {
+  const localFindings = (over: Partial<DukeReportLanesInput> = {}) =>
+    laneOf(buildDukeReportLanes(baseInput({ localAreaAnchor: 'Clay County, TN', ...over })), 'local_area_data').findings;
+  const joined = (over: Partial<DukeReportLanesInput> = {}) => localFindings(over).join('\n');
+  const priced = (rows: Array<[number, number]>): LandSoldRecord[] =>
+    rows.map(([acres, pricePerAcre]) => ({ acres, pricePerAcre, source: 'county sold records' }));
+
+  it('FAIL when no usable sold/listing data exists (never neutral)', () => {
+    const s = computeLocalMarketSupport(undefined);
+    expect(s.verdict).toBe('FAIL');
+    expect(s.reason).toMatch(/no usable local sold\/listing data/i);
+    // And the rendered lane surfaces the FAIL verdict.
+    expect(joined()).toMatch(/Local Market Support: FAIL/);
+    expect(joined()).toMatch(/Local Market Support reason: no usable local sold\/listing data/i);
+  });
+
+  it('THIN when the usable sold sample is weak (below the PASS threshold)', () => {
+    const s = computeLocalMarketSupport({ soldRecords: priced([[3, 1000], [6, 1200]]) });
+    expect(s.verdict).toBe('THIN');
+    expect(s.reason).toMatch(/weak|need >=/i);
+    expect(joined({ localAreaMarket: { soldRecords: priced([[3, 1000], [6, 1200]]) } })).toMatch(/Local Market Support: THIN/);
+  });
+
+  it('PASS with a sufficient priced sold sample + computes median, range, and acre bands', () => {
+    const records = priced([[2, 1000], [3, 1100], [6, 1200], [12, 1300], [30, 1400]]);
+    const s = computeLocalMarketSupport({ soldRecords: records });
+    expect(s.verdict).toBe('PASS');
+    expect(records.length).toBeGreaterThanOrEqual(MARKET_SUPPORT_MIN_SOLD_PASS);
+    expect(s.medianPpa).toBe(1200);
+    expect(s.ppaMin).toBe(1000);
+    expect(s.ppaMax).toBe(1400);
+    // Acre bands only for bands that actually have data.
+    expect(s.bands.find(b => b.label === '1-5 ac')).toMatchObject({ count: 2, medianPpa: 1050 });
+    expect(s.bands.find(b => b.label === '5-10 ac')).toMatchObject({ count: 1, medianPpa: 1200 });
+    expect(s.bands.some(b => b.label === '0-1 ac')).toBe(false);
+  });
+
+  it('renders median $/acre, $/acre range, acre-band buckets, and 6mo+12mo counts', () => {
+    const out = joined({
+      localAreaMarket: {
+        activeLandListings: { count: 14, source: 'Redfin' },
+        soldLandLast6Months: { count: 6, source: 'Zillow' },
+        soldLandLast12Months: { count: 13, source: 'Zillow' },
+        soldRecords: priced([[2, 1000], [3, 1100], [6, 1200], [12, 1300], [30, 1400]]),
+      },
+    });
+    expect(out).toMatch(/Median sold price per acre: \$1,200\/ac/);
+    expect(out).toMatch(/Sold price per acre range: \$1,000–\$1,400\/ac/);
+    expect(out).toMatch(/Acre-band buckets: .*1-5 ac: 2 sold/);
+    expect(out).toMatch(/Land sold last 12 months: 13/);
+    expect(out).toMatch(/Local Market Support: PASS/);
+  });
+
+  it('an unverified parcel with FAIL market support still produces no score/value/offer/strategy', () => {
+    const r = buildDukeReportLanes(baseInput({ localAreaAnchor: 'Clay County, TN' }));
+    expect(r.parcelVerified).toBe(false);
+    expect(laneOf(r, 'local_area_data').findings).toContain('Local Market Support: FAIL');
+    expect(laneOf(r, 'strategy_offer').status).toBe('blocked');
+    expect(laneOf(r, 'strategy_offer').findings).toEqual([]);
+    expect(laneOf(r, 'redfin_zillow_comps').status).toBe('blocked');
+    const rendered = renderDukeReportLanes(r);
+    expect(rendered).not.toMatch(/Expected Value \$|offer of \$|% of EV/i);
+  });
+
+  it('market-support verdict + bands emit no coordinate/proximity/visual language', () => {
+    const r = buildDukeReportLanes(baseInput({
+      localAreaAnchor: 'Clay County, TN',
+      localAreaMarket: { soldRecords: priced([[2, 1000], [3, 1100], [6, 1200], [12, 1300], [30, 1400]]) },
+    }));
+    expect(/geocod|proximity|nearest parcel|map pin|coordinate|centroid|street view|satellite/i.test(JSON.stringify(r))).toBe(false);
   });
 });
 

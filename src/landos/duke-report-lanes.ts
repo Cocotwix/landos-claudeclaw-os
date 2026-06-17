@@ -67,13 +67,117 @@ export interface AnnualGrowth {
   source: string;
 }
 
+/** A single sold-land record (context only). Used to compute median price per
+ *  acre, the price-per-acre range, and acre-band buckets. Pure: nothing fetched.
+ *  Never used to verify parcel identity. */
+export interface LandSoldRecord {
+  acres: number;
+  pricePerAcre: number;
+  source?: string;
+  /** How many months ago it sold (used to bucket 6mo vs 12mo windows). */
+  monthsAgo?: number;
+}
+
 /** Optional, caller-supplied local market data for the Local Area Data lane.
  *  Everything defaults to clearly-labeled "unavailable" — the pure lane never
  *  fetches anything and never invents a count. */
 export interface LocalAreaMarketInput {
   activeLandListings?: MarketCount;
   soldLandLast6Months?: MarketCount;
+  /** 12-month sold count, used as a fallback when the 6-month sample is thin. */
+  soldLandLast12Months?: MarketCount;
   annualGrowth?: AnnualGrowth;
+  /** Raw sold-land records for computing $/acre median, range, and acre bands. */
+  soldRecords?: LandSoldRecord[];
+}
+
+/** Minimum usable sold sample (records with a real $/acre) for a PASS verdict. */
+export const MARKET_SUPPORT_MIN_SOLD_PASS = 5;
+
+export type MarketSupportVerdict = 'PASS' | 'THIN' | 'FAIL';
+
+/** Acre bands for bucketing sold $/acre where data exists. */
+export const ACRE_BANDS: ReadonlyArray<{ label: string; min: number; max: number }> = [
+  { label: '0-1 ac', min: 0, max: 1 },
+  { label: '1-5 ac', min: 1, max: 5 },
+  { label: '5-10 ac', min: 5, max: 10 },
+  { label: '10-20 ac', min: 10, max: 20 },
+  { label: '20-50 ac', min: 20, max: 50 },
+  { label: '50+ ac', min: 50, max: Infinity },
+];
+
+export interface LocalMarketSupport {
+  verdict: MarketSupportVerdict;
+  reason: string;
+  activeCount: number | null;
+  soldCount6: number | null;
+  soldCount12: number | null;
+  medianPpa: number | null;
+  ppaMin: number | null;
+  ppaMax: number | null;
+  /** Per-band median $/acre + count, only for bands that have data. */
+  bands: Array<{ label: string; count: number; medianPpa: number }>;
+  ppaSource: string;
+}
+
+function medianOf(nums: number[]): number {
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/**
+ * Compute a decision-grade local market-support read from caller-supplied
+ * context. Pure: it fetches nothing and invents nothing. Verdict rules:
+ *   FAIL — no usable active-listing OR sold data from approved sources.
+ *   THIN — some data, but the usable sold sample is below the PASS threshold.
+ *   PASS — usable sold sample (records carrying a real $/acre) >= the threshold.
+ * $/acre median, range, and acre bands are computed ONLY from real sold records;
+ * they are never derived from coordinates, proximity, or the subject parcel.
+ */
+export function computeLocalMarketSupport(market: LocalAreaMarketInput | null | undefined): LocalMarketSupport {
+  const active = normCount(market?.activeLandListings);
+  const sold6 = normCount(market?.soldLandLast6Months);
+  const sold12 = normCount(market?.soldLandLast12Months);
+  const records = (market?.soldRecords ?? []).filter(
+    r => Number.isFinite(r.acres) && r.acres > 0 && Number.isFinite(r.pricePerAcre) && r.pricePerAcre > 0,
+  );
+
+  const ppas = records.map(r => r.pricePerAcre);
+  const medianPpa = ppas.length ? Math.round(medianOf(ppas)) : null;
+  const ppaMin = ppas.length ? Math.round(Math.min(...ppas)) : null;
+  const ppaMax = ppas.length ? Math.round(Math.max(...ppas)) : null;
+  const ppaSource = records.find(r => r.source?.trim())?.source?.trim()
+    ?? (ppas.length ? 'supplied sold records' : MARKET_COUNT_UNAVAILABLE_SOURCE);
+
+  const bands = ACRE_BANDS.map(b => {
+    const inBand = records.filter(r => r.acres >= b.min && r.acres < b.max);
+    return { label: b.label, count: inBand.length, medianPpa: inBand.length ? Math.round(medianOf(inBand.map(r => r.pricePerAcre))) : 0 };
+  }).filter(b => b.count > 0);
+
+  // Effective usable sold sample: prefer the real $/acre-bearing records; else a
+  // supplied 6mo, else a supplied 12mo count.
+  const usableSold = records.length || (sold6.count ?? 0) || (sold12.count ?? 0);
+  const hasAnyData = active.count !== null || sold6.count !== null || sold12.count !== null || records.length > 0;
+
+  let verdict: MarketSupportVerdict;
+  let reason: string;
+  if (!hasAnyData) {
+    verdict = 'FAIL';
+    reason = 'no usable local sold/listing data available from approved sources';
+  } else if (records.length >= MARKET_SUPPORT_MIN_SOLD_PASS) {
+    verdict = 'PASS';
+    reason = `${records.length} usable sold records with $/acre (>= ${MARKET_SUPPORT_MIN_SOLD_PASS}); median and range computed from real solds`;
+  } else {
+    verdict = 'THIN';
+    reason = `usable sold sample is weak (${usableSold} sold, ${records.length} with $/acre; need >= ${MARKET_SUPPORT_MIN_SOLD_PASS} priced solds for PASS)`;
+  }
+
+  return {
+    verdict, reason,
+    activeCount: active.count, soldCount6: sold6.count, soldCount12: sold12.count,
+    medianPpa, ppaMin, ppaMax, bands, ppaSource,
+  };
 }
 
 export type LaneStatus = 'success' | 'blocked' | 'timeout' | 'not_available' | 'skipped' | 'failed';
@@ -220,13 +324,18 @@ function buildLocalAreaLane(
     });
   }
 
-  // Unverified with no anchor: nothing to anchor market context to.
+  // Unverified with no anchor: nothing to anchor market context to. With no
+  // anchor and no data, local market support is FAIL (never neutral).
   if (!hasAnchor) {
     return lane({
       laneId: 'local_area_data', laneName: 'Local Area Data', sourceType: 'local_area',
       canVerifyParcel: false,
       status: 'not_available',
-      findings: [LOCAL_AREA_NOT_VERIFIED_LABEL],
+      findings: [
+        LOCAL_AREA_NOT_VERIFIED_LABEL,
+        'Local Market Support: FAIL',
+        'Local Market Support reason: no county/state anchor and no usable local sold/listing data available from approved sources',
+      ],
       nextAction: 'Provide a county/state anchor for local market context, then verify parcel identity via exact APN, address, or owner in an official county or LandPortal source.',
     });
   }
@@ -246,6 +355,20 @@ function buildLocalAreaLane(
     ? `${areaText}: ${haveActive ? `${active.count} active` : 'active count unavailable'}, ${haveSold ? `${sold.count} sold in the last 6 months` : 'sold count unavailable'} (land listings, market context only — parcel not verified).`
     : `Land market counts for ${areaText} are unavailable from current default sources. Treat as context only; no parcel was verified.`;
 
+  // ── Decision-grade market-support read (PASS / THIN / FAIL) ─────────────────
+  const support = computeLocalMarketSupport(market);
+  const sold12 = normCount(market?.soldLandLast12Months);
+  const [sold12CountLine, sold12SourceLine] = countLines('Land sold last 12 months', sold12);
+  const ppaMedianLine = support.medianPpa !== null
+    ? `Median sold price per acre: $${support.medianPpa.toLocaleString('en-US')}/ac | Source: ${support.ppaSource}`
+    : `Median sold price per acre: unavailable | Source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`;
+  const ppaRangeLine = support.ppaMin !== null && support.ppaMax !== null
+    ? `Sold price per acre range: $${support.ppaMin.toLocaleString('en-US')}–$${support.ppaMax.toLocaleString('en-US')}/ac | Source: ${support.ppaSource}`
+    : `Sold price per acre range: unavailable | Source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`;
+  const bandLine = support.bands.length
+    ? `Acre-band buckets: ${support.bands.map(b => `${b.label}: ${b.count} sold, median $${b.medianPpa.toLocaleString('en-US')}/ac`).join('; ')}`
+    : `Acre-band buckets: unavailable (no usable sold $/acre records)`;
+
   return lane({
     laneId: 'local_area_data', laneName: 'Local Area Data', sourceType: 'local_area',
     canVerifyParcel: false,
@@ -258,10 +381,20 @@ function buildLocalAreaLane(
       activeSourceLine,
       soldCountLine,
       soldSourceLine,
+      sold12CountLine,
+      sold12SourceLine,
+      ppaMedianLine,
+      ppaRangeLine,
+      bandLine,
       `Market read: ${marketRead}`,
       `Source status: ${sourceStatus}`,
+      `Local Market Support: ${support.verdict}`,
+      `Local Market Support reason: ${support.reason}`,
     ],
-    warnings: ['Local Area, Redfin/Zillow, and other market sources are context only and can never verify parcel identity.'],
+    warnings: [
+      'Local Area, Redfin/Zillow, and other market sources are context only and can never verify parcel identity.',
+      ...(support.verdict === 'FAIL' ? ['Local Market Support: FAIL — no usable local sold/listing data; market support is not decision-grade.'] : []),
+    ],
     nextAction: 'Verify parcel identity via exact APN, address, or owner in an official county or LandPortal source. For market counts run market scout or a manual Redfin/Zillow check; for assessor/tax/GIS/zoning detail run a County Deep Dive (on demand).',
   });
 }
