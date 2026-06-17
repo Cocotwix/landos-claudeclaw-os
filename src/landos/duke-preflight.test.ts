@@ -142,6 +142,29 @@ describe('extractPropertyArgs', () => {
     expect(r).toMatchObject({ apn: '12-345-6789', state: 'NC' });
   });
 
+  it('extracts a multi-segment APN with internal whitespace/decimal (051   012.05)', () => {
+    const r = extractPropertyArgs('Owner: Cheryl Sann APN 051   012.05 Clay County TN FIPS 47031');
+    expect(r).toMatchObject({ apn: '051 012.05', owner: 'Cheryl Sann', state: 'TN', fips: '47031' });
+  });
+
+  it('attaches owner to an APN input so the resolver can fall back to owner search', () => {
+    const r = extractPropertyArgs('APN 12-345-678, owner: Cheryl Sann, NC');
+    expect(r?.apn).toBe('12-345-678');
+    expect(r?.owner).toBe('Cheryl Sann');
+  });
+
+  it('extracts owner + county/state when no APN/address is present (owner-only path)', () => {
+    const r = extractPropertyArgs('Owner: Cheryl Sann, Clay County TN, FIPS 47031');
+    expect(r).toMatchObject({ owner: 'Cheryl Sann', state: 'TN', fips: '47031' });
+    expect(r?.apn).toBeUndefined();
+  });
+
+  it('owner-only input preserves county (Clay) + state (TN) when FIPS is absent', () => {
+    const r = extractPropertyArgs('Owner: Cheryl Sann, Clay County TN');
+    expect(r).toMatchObject({ owner: 'Cheryl Sann', county: 'Clay', state: 'TN' });
+    expect(r?.fips).toBeUndefined();
+  });
+
   it('does not match date-like patterns as APN', () => {
     const r = extractPropertyArgs('Sold on 06-14-2026 in NC');
     expect(r).toBeNull();

@@ -98,6 +98,14 @@ describe('buildDukePartialContract — unverified blocks parcel-specific work', 
     expect(c.localAreaContext.allowed).toBe(true);
     expect(c.localAreaContext.label).toBe(LOCAL_AREA_CONTEXT_LABEL);
   });
+
+  it('unverified provides county assessor/GIS recovery steps and a recovery next action', () => {
+    const c = buildDukePartialContract({ ...base, hasUnverifiedProperty: true });
+    expect(c.discoveryQuestions.some((q) => /county assessor \/ GIS/i.test(q))).toBe(true);
+    expect(c.nextBestAction).toMatch(/county assessor \/ GIS/i);
+    // Recovery is search guidance, never parcel-specific valuation/offer.
+    expect(/\$\s?\d|offer band|MAO/i.test(JSON.stringify({ d: c.discoveryQuestions, n: c.nextBestAction }))).toBe(false);
+  });
 });
 
 describe('buildDukePartialContract — comp source / credit behavior', () => {

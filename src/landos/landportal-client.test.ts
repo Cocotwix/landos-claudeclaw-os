@@ -13,6 +13,8 @@ import {
   apnMatchKey,
   addressStrongMatch,
   lpApiVersion,
+  apnSearchVariants,
+  ownerSearchVariants,
 } from './landportal-client.js';
 import { runDukePreflight } from './duke-preflight.js';
 
@@ -188,6 +190,34 @@ describe('lpResolveForPreflight LP-URL exact lookup (mocked fetch)', () => {
 });
 
 // ── Identity matching (H: fuzzy address, I: APN punctuation) ──────────────────
+
+describe('apnSearchVariants (exact-search recovery, never changes core digits)', () => {
+  it('generates safe format variants for "051   012.05" including the digits-only form', () => {
+    const v = apnSearchVariants('051   012.05');
+    expect(v).toContain('051   012.05');   // exactly as given
+    expect(v).toContain('051 012.05');     // collapsed whitespace
+    expect(v).toContain('051-012.05');     // dashes
+    expect(v).toContain('051/012.05');     // slashes
+    expect(v).toContain('051012.05');      // whitespace removed (keeps dot)
+    expect(v).toContain('05101205');       // decimal/punctuation-stripped digits
+  });
+  it('handles dashed/plain APNs and dedupes; empty input -> []', () => {
+    expect(apnSearchVariants('08-2518')).toContain('08-2518');
+    expect(apnSearchVariants('08-2518')).toContain('082518');
+    expect(apnSearchVariants('')).toEqual([]);
+  });
+});
+
+describe('ownerSearchVariants (name forms only, never broadens beyond name)', () => {
+  it('generates safe variants for "Cheryl Sann"', () => {
+    const v = ownerSearchVariants('Cheryl Sann');
+    expect(v).toEqual(expect.arrayContaining(['Cheryl Sann', 'Sann Cheryl', 'CHERYL SANN', 'SANN CHERYL', 'Sann', 'SANN']));
+  });
+  it('single-token owner just adds uppercase; empty -> []', () => {
+    expect(ownerSearchVariants('Sann')).toEqual(expect.arrayContaining(['Sann', 'SANN']));
+    expect(ownerSearchVariants('')).toEqual([]);
+  });
+});
 
 describe('apnMatchKey / APN normalization (tolerant-but-strict)', () => {
   it('I. tolerates dashes vs spaces vs decimals and ++ placeholders (same core digits)', () => {
@@ -405,13 +435,106 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     expect(calls.length).toBe(1);
   });
 
-  it('E. zero results -> unverified exact-lookup miss', async () => {
+  it('E. zero results -> unverified miss, after trying safe APN format variants', async () => {
     install(() => jsonRes(200, searchBody([])));
     const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
     expect(r.verified).toBe(false);
     expect(r.status).toBe('not_verified');
-    expect(r.match_notes).toMatch(/miss|No LandPortal v2 result/i);
-    expect(calls.length).toBe(1);
+    expect(r.match_notes).toMatch(/miss|No LandPortal v2 result|variants/i);
+    // Recovery: more than one format variant is attempted before giving up.
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls[0]).toContain('parcelnumb=08-2518');
+    expect(calls.some(c => c.includes('parcelnumb=082518'))).toBe(true); // digits-only variant
+  });
+
+  it('Cheryl-Sann case: APN variants miss, then owner+FIPS verifies (no coordinates)', async () => {
+    install(url => {
+      // APN searches all miss; owner search returns one parcel in the right county.
+      if (url.includes('parcelnumb=')) return jsonRes(200, searchBody([]));
+      if (url.includes('owner=') && isDetail(url) === false && !url.includes('/v2/properties/')) {
+        return jsonRes(200, searchBody([feature({ property_id: '900', apn: '051-012.05', fips: '47031', street_address: 'RURAL', city: 'CELINA', state: 'TN' })]));
+      }
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 900, apn: '051-012.05', fips: '47031', street_address: 'RURAL', city: 'CELINA', state: 'TN' }));
+      return jsonRes(200, searchBody([]));
+    });
+    const r = await lpResolveForPreflight({ apn: '051   012.05', owner: 'Cheryl Sann', fips: '47031', state: 'TN' }, 10_000);
+    expect(calls.some(c => /parcelnumb=05101205|parcelnumb=051012\.05/.test(c))).toBe(true); // APN variants tried
+    expect(calls.some(c => c.includes('owner='))).toBe(true);                                 // owner fallback attempted
+    expect(r.verified).toBe(true);
+    expect(r.fips).toBe('47031');
+  });
+
+  it('owner search rejects candidates from a different county (FIPS gate)', async () => {
+    install(url => {
+      if (url.includes('owner=')) return jsonRes(200, searchBody([feature({ property_id: '901', apn: 'X', fips: '47999', street_address: 'Y' })]));
+      return jsonRes(200, searchBody([]));
+    });
+    const r = await lpResolveForPreflight({ owner: 'Cheryl Sann', fips: '47031', state: 'TN' }, 10_000);
+    expect(r.verified).toBe(false); // county/FIPS mismatch filtered out -> not verified
+  });
+
+  it('owner search with multiple county-matching parcels returns multiple_candidates (no auto-select)', async () => {
+    install(url => {
+      if (url.includes('owner=')) return jsonRes(200, searchBody([
+        feature({ property_id: '1', apn: 'A', fips: '47031' }),
+        feature({ property_id: '2', apn: 'B', fips: '47031' }),
+      ]));
+      return jsonRes(200, searchBody([]));
+    });
+    const r = await lpResolveForPreflight({ owner: 'Cheryl Sann', fips: '47031', state: 'TN' }, 10_000);
+    expect(r.status).toBe('multiple_candidates');
+    expect(r.verified).toBe(false);
+  });
+
+  it('APN candidate in the WRONG FIPS is rejected before any detail lookup (requested FIPS preserved)', async () => {
+    install(url => {
+      // Search returns the requested APN but in a different county.
+      if (url.includes('parcelnumb=')) return jsonRes(200, searchBody([feature({ property_id: '500', apn: '08-2518', fips: '99999' })]));
+      return jsonRes(200, detailBody({ property_id: 500, apn: '08-2518', fips: '99999' }));
+    });
+    const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(calls.some(c => isDetail(c))).toBe(false); // never even fetched the wrong-county detail
+  });
+
+  it('detail FIPS is gated against the REQUESTED FIPS, not the candidate FIPS', async () => {
+    install(url => {
+      // Candidate has no FIPS (passes the candidate gate), but detail is wrong county.
+      if (url.includes('parcelnumb=')) return jsonRes(200, searchBody([feature({ property_id: '501', apn: '08-2518' })]));
+      return jsonRes(200, detailBody({ property_id: 501, apn: '08-2518', fips: '99999' }));
+    });
+    const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.match_notes).toMatch(/FIPS mismatch/i);
+  });
+
+  it('owner + county (no FIPS): county-gates candidates and verifies a single county match', async () => {
+    install(url => {
+      if (url.includes('owner=')) return jsonRes(200, searchBody([feature({ property_id: '600', apn: '051-012.05', fips: '47031', county: 'Clay County', street_address: 'RURAL', state: 'TN' })]));
+      if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 600, apn: '051-012.05', fips: '47031', county: 'Clay County', street_address: 'RURAL', state: 'TN' }));
+      return jsonRes(200, searchBody([]));
+    });
+    const r = await lpResolveForPreflight({ owner: 'Cheryl Sann', county: 'Clay', state: 'TN' }, 10_000);
+    expect(r.verified).toBe(true);
+  });
+
+  it('owner + county (no FIPS): a different-county result is filtered, not verified', async () => {
+    install(url => {
+      if (url.includes('owner=')) return jsonRes(200, searchBody([feature({ property_id: '601', apn: 'X', fips: '47999', county: 'Pickett County' })]));
+      return jsonRes(200, searchBody([]));
+    });
+    const r = await lpResolveForPreflight({ owner: 'Cheryl Sann', county: 'Clay', state: 'TN' }, 10_000);
+    expect(r.verified).toBe(false);
+  });
+
+  it('owner state-only (no county/FIPS) is recall-only and cannot verify statewide', async () => {
+    install(url => {
+      if (url.includes('owner=')) return jsonRes(200, searchBody([feature({ property_id: '700', apn: 'Z', fips: '47001', county: 'Anderson County' })]));
+      return jsonRes(200, searchBody([]));
+    });
+    const r = await lpResolveForPreflight({ owner: 'Cheryl Sann', state: 'TN' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.match_notes).toMatch(/recall only|statewide/i);
   });
 
   it('F. 401/403/429 surface safely with request_id and no token leak', async () => {
@@ -693,5 +816,55 @@ describe('lpApiVersion selector', () => {
       process.env.LANDPORTAL_API_VERSION = val;
       expect(lpApiVersion(), `value "${val}"`).toBe('v2');
     }
+  });
+});
+
+describe('v1 APN identity gate (flag unset) — never verifies the wrong same-county parcel', () => {
+  const hadVer = Object.prototype.hasOwnProperty.call(process.env, 'LANDPORTAL_API_VERSION');
+  const origVer = process.env.LANDPORTAL_API_VERSION;
+  const hadTok = Object.prototype.hasOwnProperty.call(process.env, 'LP_JWT_TOKEN');
+  const origTok = process.env.LP_JWT_TOKEN;
+  const origFetch = global.fetch;
+  let calls: string[];
+
+  beforeEach(() => { delete process.env.LANDPORTAL_API_VERSION; process.env.LP_JWT_TOKEN = 'test-token'; calls = []; });
+  afterEach(() => {
+    global.fetch = origFetch;
+    if (hadVer) process.env.LANDPORTAL_API_VERSION = origVer; else delete process.env.LANDPORTAL_API_VERSION;
+    if (hadTok) process.env.LP_JWT_TOKEN = origTok; else delete process.env.LP_JWT_TOKEN;
+    vi.restoreAllMocks();
+  });
+  function res(body: unknown): Response {
+    return { ok: true, status: 200, statusText: 'HTTP 200', text: async () => JSON.stringify(body) } as Response;
+  }
+  // v1 search returns {data:[items]}; property-data returns {meta,data:{property:{...}}}.
+  function install(searchItems: Array<Record<string, unknown>>, propertyApn: string, propertyFips = '37061') {
+    global.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input); calls.push(url);
+      if (url.includes('/search')) return res({ data: searchItems });
+      return res({ meta: { requests_left: '9' }, data: { property: { propertyid: '800', apn: propertyApn, fips: propertyFips, situsfullstreetaddress: '1 RURAL RD' } } });
+    }) as unknown as typeof fetch;
+  }
+
+  it('same-FIPS but DIFFERENT-APN single result must NOT verify', async () => {
+    install([{ propertyid: '800', fips: '37061', apn: '08-2518' }], '99-9999', '37061');
+    const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(r.match_notes).toMatch(/does not match the submitted APN/i);
+  });
+
+  it('same-FIPS and matching normalized APN CAN verify', async () => {
+    install([{ propertyid: '800', fips: '37061', apn: '08-2518' }], '08-2518', '37061');
+    const r = await lpResolveForPreflight({ apn: '08-2518', fips: '37061' }, 10_000);
+    expect(r.verified).toBe(true);
+    expect(r.apn).toBe('08-2518');
+  });
+
+  it('digits-only variant "05101205" cannot verify a different parcel APN', async () => {
+    // Variant search may hit a parcel, but its real APN differs -> rejected.
+    install([{ propertyid: '800', fips: '47031', apn: '999-000' }], '999-000', '47031');
+    const r = await lpResolveForPreflight({ apn: '051   012.05', fips: '47031' }, 10_000);
+    expect(r.verified).toBe(false);
+    expect(calls.some(c => c.includes('query=05101205'))).toBe(true); // the variant was tried
   });
 });

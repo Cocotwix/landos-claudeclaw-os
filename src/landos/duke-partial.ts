@@ -145,6 +145,14 @@ export const IDENTITY_DISCOVERY_QUESTIONS: readonly string[] = [
   'Is there a LandPortal property ID or exact situs address to confirm a single parcel?',
 ];
 
+// Unverified Local Area Context recovery steps (exact-search only — never
+// coordinates/proximity/nearest-parcel). Surfaced when identity is not verified.
+export const LOCAL_AREA_RECOVERY_STEPS: readonly string[] = [
+  'Run the county assessor / GIS / tax site exact-search by APN, then by owner name + county.',
+  'Confirm the exact APN format the county uses (dashes, spaces, decimals) and the situs address.',
+  'Pull county/city planning or zoning records for the parcel once an exact match is found.',
+];
+
 // Real LandOS strategy params from the offer engine — never invented here.
 // Real LandOS strategy params from the offer engine — never invented here.
 const STRATEGY_MATRIX_ROWS: StrategyMatrixRow[] = (() => {
@@ -230,7 +238,9 @@ export function buildDukePartialContract(input: DukePartialContractInput): DukeP
     ? 'Parcel identity not fully verified. No parcel-specific scoring, valuation, comps, offer, or strategy until APN + county/state/FIPS (or LandPortal property ID + FIPS) confirms a single parcel.'
     : null;
 
-  const discoveryQuestions = blocked ? [...IDENTITY_DISCOVERY_QUESTIONS] : [];
+  // When blocked, surface identity questions AND the county assessor/GIS exact-
+  // search recovery steps so a thin/empty Local Area Context is never the end state.
+  const discoveryQuestions = blocked ? [...IDENTITY_DISCOVERY_QUESTIONS, ...LOCAL_AREA_RECOVERY_STEPS] : [];
 
   // Local Area Context is always allowed; it is only LABELED non-parcel-verified
   // when identity is not verified, and is never treated as parcel facts.
@@ -300,7 +310,7 @@ export function buildDukePartialContract(input: DukePartialContractInput): DukeP
 
   const persistedNext = firstAction(input.nextActions);
   const nextBestAction = persistedNext ?? (blocked
-    ? discoveryQuestions[0] ?? null
+    ? LOCAL_AREA_RECOVERY_STEPS[0] // county assessor/GIS exact-search recovery
     : 'Run a comp source (Redfin/Zillow default, or LandPortal Comps) to compute Expected Value.');
 
   const dueDiligenceSummary = (input.latestWriteback ?? '').trim() ||

@@ -34,6 +34,22 @@ function extractLabeledFips(text: string): string | undefined {
   return m?.[1];
 }
 
+// Owner name after an explicit "Owner:" / "owner -" label. Stops at a comma,
+// a double space, a newline, or the next labeled field (APN/county/state/FIPS).
+function extractOwner(text: string): string | undefined {
+  const m = text.match(/\bowner[:\s-]+([A-Za-z][A-Za-z.'\- ]*?)(?=\s{2,}|,|\n|\bapn\b|\bcounty\b|\bstate\b|\bfips\b|$)/i);
+  const owner = m?.[1]?.replace(/\s+/g, ' ').trim();
+  return owner && owner.length >= 2 ? owner : undefined;
+}
+
+// County name preceding the word "County" (e.g. "Clay County" -> "Clay"). Kept
+// so owner search can be county-gated even when no FIPS is supplied.
+function extractCounty(text: string): string | undefined {
+  const m = text.match(/\b([A-Za-z][A-Za-z.'\- ]*?)\s+County\b/i);
+  const county = m?.[1]?.replace(/\s+/g, ' ').trim();
+  return county && county.length >= 2 ? county : undefined;
+}
+
 // Street-type keywords used to detect likely property address inputs.
 const STREET_TYPE_RE =
   /(?:^|[,;\n])\s*\d+[A-Za-z]?\s+[A-Za-z]\w*(?:\s+\w+)*?\s+(?:road|rd|street|st|avenue|ave|boulevard|blvd|drive|dr|lane|ln|court|ct|way|place|pl|highway|hwy|parkway|pkwy|circle|cir|loop|trail|trl|pike|route|terrace|ter)\b/i;
@@ -82,12 +98,18 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   const lpUrlMatch = text.match(/https?:\/\/(?:www\.)?landportal\.com[^\s\]<>"]+/i);
   if (lpUrlMatch) return { lp_url: lpUrlMatch[0] };
 
-  // Explicit APN keyword: "APN: 12-345-678" or "APN 12-345-678"
-  const apnKw = text.match(/\bapn[:\s]+([0-9][0-9A-Za-z\-./]+)/i)?.[1]?.trim();
+  const owner = extractOwner(text);
+  const county = extractCounty(text);
+
+  // Explicit APN keyword: "APN: 12-345-678", "APN 12-345-678", or multi-segment
+  // forms with internal whitespace/decimals like "APN 051   012.05".
+  const apnKw = text.match(/\bapn[:\s]+([0-9][0-9A-Za-z./\-]*(?:\s+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
+    ?.replace(/\s+/g, ' ').trim();
   if (apnKw) {
     const state = extractState(text);
     const fips = extractLabeledFips(text);
-    return { apn: apnKw, ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
+    // Attach owner + county so the resolver can fall back to owner + county/state search.
+    return { apn: apnKw, ...(owner ? { owner } : {}), ...(county ? { county } : {}), ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
   }
 
   // APN-like numeric pattern: two or more dash-separated numeric segments
@@ -100,7 +122,17 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
     if (!/^\d{1,2}-\d{1,2}-\d{4}$/.test(apn)) {
       const state = extractState(text);
       const fips = extractLabeledFips(text);
-      return { apn, ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
+      return { apn, ...(owner ? { owner } : {}), ...(county ? { county } : {}), ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
+    }
+  }
+
+  // Owner + county/state (no APN/address): a valid exact-search input. County is
+  // preserved even without FIPS so owner search is never silently statewide.
+  if (owner) {
+    const state = extractState(text);
+    const fips = extractLabeledFips(text);
+    if (state || fips || county) {
+      return { owner, ...(county ? { county } : {}), ...(state ? { state } : {}), ...(fips ? { fips } : {}) };
     }
   }
 

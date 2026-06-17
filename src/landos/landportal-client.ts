@@ -55,6 +55,11 @@ export interface LpResolveArgs {
   propertyid?: string;
   lp_url?: string;
   zip?: string;
+  /** Owner name for owner + county/state exact search (recovery path). */
+  owner?: string;
+  /** County name (without FIPS). Used to gate owner search when FIPS is absent
+   *  so a known county is never silently broadened to a statewide match. */
+  county?: string;
   /** Coordinates for candidate-only point discovery (v2). Never used as final
    *  verification: a point-derived parcel must be confirmed by APN/address. */
   point?: { latitude: number; longitude: number };
@@ -335,18 +340,92 @@ export function buildLpUrlGapMessage(parsed: ParsedLpUrl): string {
 }
 
 /** Resolve a parcel by APN exact search (+ optional fips/state scoping). */
+// ── Exact-search recovery variants (never coordinates/proximity) ──────────────
+
+/**
+ * Safe APN format variants for exact search. Generates the common formats LP /
+ * county indexes may store WITHOUT changing the core digits. e.g. "051   012.05"
+ * -> ["051   012.05","051 012.05","051-012.05","051/012.05","051012.05","05101205"].
+ * The digits-only variant (e.g. "05101205") is a SEARCH variant only — a parcel
+ * is still accepted only when the returned APN/county/FIPS identity matches.
+ */
+export function apnSearchVariants(raw: string | null | undefined): string[] {
+  const base = (raw ?? '').trim();
+  if (!base) return [];
+  const collapsed = base.replace(/\s+/g, ' ').trim();
+  const out = new Set<string>();
+  out.add(base);                                 // exactly as given
+  out.add(collapsed);                            // collapsed whitespace
+  out.add(collapsed.replace(/\s+/g, '-'));       // dash-separated
+  out.add(collapsed.replace(/\s+/g, '/'));       // slash-separated
+  out.add(collapsed.replace(/\s+/g, ''));        // whitespace removed (keeps dot)
+  const digitsOnly = base.replace(/[^0-9]/g, '');// decimal/punctuation-stripped digits
+  if (digitsOnly.length >= 4) out.add(digitsOnly);
+  return [...out].filter((v) => v.length >= 2);  // LP search minimum is 2 chars
+}
+
+/**
+ * Safe owner-name search variants for exact search, constrained to the known
+ * county/state by the caller. e.g. "Cheryl Sann" -> ["Cheryl Sann","Sann Cheryl",
+ * "CHERYL SANN","SANN CHERYL","Sann","SANN"]. Never broadens beyond name forms.
+ */
+export function ownerSearchVariants(owner: string | null | undefined): string[] {
+  const base = (owner ?? '').replace(/\s+/g, ' ').trim();
+  if (!base) return [];
+  const out = new Set<string>();
+  out.add(base);
+  const toks = base.split(' ').filter(Boolean);
+  if (toks.length >= 2) {
+    const swapped = [...toks].reverse().join(' ');
+    out.add(swapped);
+    out.add(base.toUpperCase());
+    out.add(swapped.toUpperCase());
+    const last = toks[toks.length - 1];
+    out.add(last);
+    out.add(last.toUpperCase());
+  } else {
+    out.add(base.toUpperCase());
+  }
+  return [...out].filter((v) => v.length >= 2);
+}
+
+/** Resolve by APN, trying safe format variants before declaring a miss. Stops at
+ *  the first variant that definitively verifies or returns multiple candidates. */
 async function resolveByApnSearch(
   apn: string,
   opts: { fips?: string; state?: string },
   signal: AbortSignal,
 ): Promise<LpResolveResult> {
-  const params = new URLSearchParams({ type: 'parcelnumb', query: apn });
+  let lastDetail: LpResolveResult | null = null;
+  const tried: string[] = [];
+  for (const variant of apnSearchVariants(apn)) {
+    tried.push(variant);
+    const res = await resolveByApnSearchSingle(variant, apn, opts, signal);
+    if (res.verified || res.status === 'multiple_candidates' || res.status === 'error') return res;
+    if (res.status === 'lookup_timeout') return res;
+    lastDetail = res;
+  }
+  return lastDetail ?? {
+    verified: false, status: 'not_verified', propertyid: null,
+    fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+    match_notes: `No results found for APN "${apn}" after exact-format variants (${tried.length} tried).`,
+    candidates: [],
+  };
+}
+
+async function resolveByApnSearchSingle(
+  query: string,
+  apn: string,
+  opts: { fips?: string; state?: string },
+  signal: AbortSignal,
+): Promise<LpResolveResult> {
+  const params = new URLSearchParams({ type: 'parcelnumb', query });
   if (opts.fips) params.set('fips', opts.fips);
   if (opts.state) params.set('state', opts.state);
   const searchResult = await lpFetch(`/search?${params}`, {}, signal) as Record<string, unknown>;
   if (searchResult.error) {
     return {
-      verified: false, status: 'not_verified', propertyid: null,
+      verified: false, status: 'error', propertyid: null,
       fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
       match_notes: `APN search failed: ${(searchResult.body as Record<string, unknown>)?.message ?? searchResult.http_status}`,
       candidates: [],
@@ -376,11 +455,102 @@ async function resolveByApnSearch(
       match_notes: 'APN search returned result without propertyid or fips.', candidates: [],
     };
   }
+  // County/FIPS identity gate: never accept a parcel from a different county.
+  if (opts.fips && String(match.fips) !== opts.fips) {
+    return {
+      verified: false, status: 'not_verified', propertyid: null,
+      fips: opts.fips, apn: null, situs_address: null, owner: null,
+      match_notes: `APN matched a parcel in FIPS ${match.fips}, not the expected FIPS ${opts.fips}. Parcel not verified.`,
+      candidates: [],
+    };
+  }
   const raw = await lpFetch(
     `/property-data?propertyid=${match.propertyid}&fips=${match.fips}`,
     {}, signal,
   );
-  return buildResolverResult(raw, { source: 'apn_search', fips: match.fips as string });
+  const res = buildResolverResult(raw, { source: 'apn_search', fips: match.fips as string });
+  // Strict APN identity gate: buildResolverResult defaults verified=true, so a
+  // broad variant (e.g. digits-only "05101205") could otherwise verify a same-FIPS
+  // but different-APN parcel. Only accept when the returned parcel's APN matches
+  // the submitted APN (normalized). A variant is search-only, never proof.
+  if (res.verified && !apnMatches(apn, res.apn)) {
+    return {
+      ...res,
+      verified: false,
+      status: 'not_verified',
+      match_notes: `APN search returned a parcel with APN "${res.apn}" (FIPS ${match.fips}) that does not match the submitted APN "${apn}". Parcel not verified.`,
+    };
+  }
+  return res;
+}
+
+/** Normalize a county name for comparison: "Clay County" / "Clay" -> "CLAY". */
+function countyNorm(c: string | null | undefined): string {
+  return (c ?? '').toUpperCase().replace(/\bCOUNTY\b/g, '').replace(/[^A-Z0-9]/g, '').trim();
+}
+
+/** Resolve by owner name + county/state, trying safe name variants constrained
+ *  to the known county/FIPS. Accepts only a single county-matching parcel. When
+ *  only a county name (no FIPS) is known, owner+state search is treated as RECALL
+ *  and candidates are county-gated; a known county is never broadened to statewide
+ *  verification. State-only (no county/FIPS) cannot verify (wrapper gap). */
+async function resolveByOwnerSearch(
+  owner: string,
+  opts: { fips?: string; state?: string; county?: string },
+  signal: AbortSignal,
+): Promise<LpResolveResult> {
+  const reqCounty = countyNorm(opts.county);
+  const canGate = !!opts.fips || !!reqCounty; // never verify statewide-only owner results
+  let lastDetail: LpResolveResult | null = null;
+  for (const variant of ownerSearchVariants(owner)) {
+    const params = new URLSearchParams({ type: 'owner', query: variant });
+    if (opts.fips) params.set('fips', opts.fips);
+    if (opts.state) params.set('state', opts.state);
+    const searchResult = await lpFetch(`/search?${params}`, {}, signal) as Record<string, unknown>;
+    if (searchResult.error) {
+      return {
+        verified: false, status: 'error', propertyid: null,
+        fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+        match_notes: `Owner search failed: ${(searchResult.body as Record<string, unknown>)?.message ?? searchResult.http_status}`,
+        candidates: [],
+      };
+    }
+    let items = extractSearchItems(searchResult);
+    // County/FIPS gate: never accept owner matches from another county.
+    if (opts.fips) items = items.filter((it) => String(it.fips ?? '') === opts.fips);
+    else if (reqCounty) items = items.filter((it) => countyNorm(String(it.county ?? '')) === reqCounty);
+    if (items.length === 0) continue;
+    if (!canGate) {
+      // State-only owner search returned results but cannot be county-filtered;
+      // do NOT verify a statewide match. Surface a wrapper gap (recall only).
+      return {
+        verified: false, status: 'not_verified', propertyid: null,
+        fips: null, apn: null, situs_address: null, owner: null,
+        match_notes: `Owner "${owner}" returned statewide results in ${opts.state ?? 'the state'}; a county or FIPS is required to verify (owner search cannot be county-filtered statewide). Parcel not verified -- recall only.`,
+        candidates: items.slice(0, 5).map(formatCandidate),
+      };
+    }
+    if (items.length > 1) {
+      return {
+        verified: false, status: 'multiple_candidates', propertyid: null,
+        fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+        match_notes: `${items.length} parcels matched owner "${owner}" in this county. Provide APN or street address to confirm the correct parcel.`,
+        candidates: items.slice(0, 5).map(formatCandidate),
+      };
+    }
+    const m = items[0];
+    if (!m.propertyid || !m.fips) { lastDetail = null; continue; }
+    const raw = await lpFetch(`/property-data?propertyid=${m.propertyid}&fips=${m.fips}`, {}, signal);
+    const res = buildResolverResult(raw, { source: 'owner_search', fips: m.fips as string });
+    if (res.verified) return res;
+    lastDetail = res;
+  }
+  return lastDetail ?? {
+    verified: false, status: 'not_verified', propertyid: null,
+    fips: opts.fips ?? null, apn: null, situs_address: null, owner: null,
+    match_notes: `No parcel found for owner "${owner}"${opts.fips ? ` in FIPS ${opts.fips}` : opts.county ? ` in ${opts.county} County` : ''} after exact-search name variants. Parcel not verified.`,
+    candidates: [],
+  };
 }
 
 function median(arr: number[]): number {
@@ -623,9 +793,23 @@ export async function lpResolveForPreflight(
       return buildResolverResult(raw, { source: 'propertyid_fips', fips: args.fips });
     }
 
-    // Path 3: APN search
+    // Path 3: APN search (format variants), with an owner + county/state fallback.
     if (args.apn) {
-      return resolveByApnSearch(args.apn, { fips: args.fips, state: args.state }, ac.signal);
+      const apnRes = await resolveByApnSearch(args.apn, { fips: args.fips, state: args.state }, ac.signal);
+      if (apnRes.verified || apnRes.status === 'multiple_candidates' || apnRes.status === 'error' || apnRes.status === 'lookup_timeout') {
+        return apnRes;
+      }
+      if (args.owner && (args.fips || args.county || args.state)) {
+        const ownerRes = await resolveByOwnerSearch(args.owner, { fips: args.fips, state: args.state, county: args.county }, ac.signal);
+        if (ownerRes.verified || ownerRes.status === 'multiple_candidates') return ownerRes;
+        return { ...apnRes, match_notes: `${apnRes.match_notes} Owner search ("${args.owner}") also did not verify.` };
+      }
+      return apnRes;
+    }
+
+    // Path 3b: owner + county/state exact search (no APN provided).
+    if (args.owner && (args.fips || args.county || args.state)) {
+      return resolveByOwnerSearch(args.owner, { fips: args.fips, state: args.state, county: args.county }, ac.signal);
     }
 
     // Path 4: Address + city + state + fips
@@ -1036,24 +1220,90 @@ async function resolveV2ByApn(
   opts: { fips?: string; state?: string },
   signal: AbortSignal,
 ): Promise<LpResolveResult> {
-  const params = new URLSearchParams({ parcelnumb: apn });
-  if (opts.fips) params.set('fips', opts.fips);
-  else if (opts.state) params.set('state', opts.state);
-  const body = await lpV2Fetch(`/v2/properties?${params}`, signal);
-  if (isV2Error(body)) return v2ErrorToResult(body);
-  const features = v2SearchFeatures(body);
-  if (features.length === 0) {
-    return v2NotVerified(opts.fips ?? null, `No LandPortal v2 result for APN ${apn}${opts.fips ? ` (FIPS ${opts.fips})` : ''}. Exact lookup miss -- parcel not verified, no scoring, valuation, or offer.`);
+  // Tyler's submitted FIPS is the identity gate. It is NEVER replaced by a
+  // search candidate's FIPS — a matching APN in the wrong county must reject.
+  const requestedFips = opts.fips;
+  let lastDetail: LpResolveResult | null = null;
+  const tried: string[] = [];
+  for (const variant of apnSearchVariants(apn)) {
+    tried.push(variant);
+    const params = new URLSearchParams({ parcelnumb: variant });
+    if (opts.fips) params.set('fips', opts.fips);
+    else if (opts.state) params.set('state', opts.state);
+    const body = await lpV2Fetch(`/v2/properties?${params}`, signal);
+    if (isV2Error(body)) return v2ErrorToResult(body);
+    let features = v2SearchFeatures(body);
+    // County/FIPS gate on candidates: when a FIPS was requested, drop any
+    // candidate whose FIPS is present and different (wrong county).
+    if (requestedFips) {
+      features = features.filter(f => {
+        const cf = v2str(v2FeatureProps(f)?.fips);
+        return cf === '' || cf === requestedFips;
+      });
+    }
+    if (features.length === 0) continue;
+    const apnMatched = features.filter(f => apnMatches(apn, v2str(v2FeatureProps(f)?.apn)));
+    const pool = apnMatched.length ? apnMatched : features;
+    if (pool.length > 1) return v2Multiple(pool, requestedFips ?? null, `APN ${apn}`);
+    const props = v2FeatureProps(pool[0]);
+    if (!props?.property_id) continue;
+    // Gate the detail lookup/verification with the REQUESTED FIPS (fall back to
+    // the candidate's only when no FIPS was requested). resolveV2ByPropertyId
+    // then rejects if the detail's FIPS differs from this gate.
+    const gateFips = requestedFips || v2str(props.fips) || '';
+    const res = await resolveV2ByPropertyId(v2str(props.property_id), gateFips, { apn }, signal);
+    if (res.verified) return res;
+    lastDetail = res; // single candidate did not verify (e.g. FIPS/APN mismatch) — try next variant
   }
-  const apnMatched = features.filter(f => apnMatches(apn, v2str(v2FeatureProps(f)?.apn)));
-  const pool = apnMatched.length ? apnMatched : features;
-  if (pool.length > 1) return v2Multiple(pool, opts.fips ?? null, `APN ${apn}`);
-  const props = v2FeatureProps(pool[0]);
-  if (!props?.property_id) {
-    return v2NotVerified(opts.fips ?? null, 'LandPortal v2 search result missing property_id. Parcel not verified.');
+  return lastDetail ?? v2NotVerified(
+    opts.fips ?? null,
+    `No LandPortal v2 result for APN ${apn}${opts.fips ? ` (FIPS ${opts.fips})` : ''} after exact-format variants (${tried.length} tried). Exact lookup miss -- parcel not verified, no scoring, valuation, or offer.`,
+  );
+}
+
+/** v2 owner + county/state exact search, trying safe name variants constrained
+ *  to the known county/FIPS. Accepts only a single county-matching parcel. */
+async function resolveV2ByOwner(
+  owner: string,
+  opts: { fips?: string; state?: string; county?: string },
+  signal: AbortSignal,
+): Promise<LpResolveResult> {
+  const requestedFips = opts.fips;
+  const reqCounty = countyNorm(opts.county);
+  const canGate = !!requestedFips || !!reqCounty; // never verify statewide-only owner results
+  let lastDetail: LpResolveResult | null = null;
+  for (const variant of ownerSearchVariants(owner)) {
+    const params = new URLSearchParams({ owner: variant });
+    if (opts.fips) params.set('fips', opts.fips);
+    else if (opts.state) params.set('state', opts.state);
+    const body = await lpV2Fetch(`/v2/properties?${params}`, signal);
+    if (isV2Error(body)) return v2ErrorToResult(body);
+    let features = v2SearchFeatures(body);
+    // County/FIPS gate: prefer FIPS; else use the returned county name (recall).
+    if (requestedFips) features = features.filter(f => v2str(v2FeatureProps(f)?.fips) === requestedFips);
+    else if (reqCounty) features = features.filter(f => countyNorm(v2str(v2FeatureProps(f)?.county)) === reqCounty);
+    if (features.length === 0) continue;
+    if (!canGate) {
+      return v2NotVerified(
+        null,
+        `Owner "${owner}" returned statewide results in ${opts.state ?? 'the state'}; a county or FIPS is required to verify (owner search cannot be county-filtered statewide). Parcel not verified -- recall only.`,
+        features.slice(0, 5).map(formatV2Candidate),
+      );
+    }
+    if (features.length > 1) return v2Multiple(features, requestedFips ?? null, `owner "${owner}"`);
+    const props = v2FeatureProps(features[0]);
+    if (!props?.property_id) continue;
+    // Gate detail with the REQUESTED FIPS when known; the candidate is already
+    // county/FIPS-filtered above, so its FIPS is safe when no FIPS was requested.
+    const gateFips = requestedFips || v2str(props.fips) || '';
+    const res = await resolveV2ByPropertyId(v2str(props.property_id), gateFips, {}, signal);
+    if (res.verified) return res;
+    lastDetail = res;
   }
-  const fips = v2str(props.fips) || opts.fips || '';
-  return resolveV2ByPropertyId(v2str(props.property_id), fips, { apn }, signal);
+  return lastDetail ?? v2NotVerified(
+    requestedFips ?? null,
+    `No LandPortal v2 parcel for owner "${owner}"${requestedFips ? ` in FIPS ${requestedFips}` : opts.county ? ` in ${opts.county} County` : ''} after exact-search name variants. Parcel not verified.`,
+  );
 }
 
 async function resolveV2ByAddress(args: LpResolveArgs, signal: AbortSignal): Promise<LpResolveResult> {
@@ -1209,9 +1459,23 @@ async function lpResolveForPreflightV2(args: LpResolveArgs, timeoutMs: number): 
       return await resolveV2ByPropertyId(args.propertyid, args.fips, {}, ac.signal);
     }
 
-    // Path 3: APN (+ FIPS or state).
+    // Path 3: APN (format variants), with an owner + county/state fallback.
     if (args.apn) {
-      return await resolveV2ByApn(args.apn, { fips: args.fips, state: args.state }, ac.signal);
+      const apnRes = await resolveV2ByApn(args.apn, { fips: args.fips, state: args.state }, ac.signal);
+      if (apnRes.verified || apnRes.status === 'multiple_candidates' || apnRes.status === 'error' || apnRes.status === 'lookup_timeout') {
+        return apnRes;
+      }
+      if (args.owner && (args.fips || args.county || args.state)) {
+        const ownerRes = await resolveV2ByOwner(args.owner, { fips: args.fips, state: args.state, county: args.county }, ac.signal);
+        if (ownerRes.verified || ownerRes.status === 'multiple_candidates') return ownerRes;
+        return { ...apnRes, match_notes: `${apnRes.match_notes} Owner search ("${args.owner}") also did not verify.` };
+      }
+      return apnRes;
+    }
+
+    // Path 3b: owner + county/state exact search (no APN provided).
+    if (args.owner && (args.fips || args.county || args.state)) {
+      return await resolveV2ByOwner(args.owner, { fips: args.fips, state: args.state, county: args.county }, ac.signal);
     }
 
     // Path 4: address search. v2 supports address without FIPS, so a full
