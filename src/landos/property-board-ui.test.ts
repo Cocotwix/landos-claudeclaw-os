@@ -123,3 +123,27 @@ describe('Property Board routing display metadata', () => {
     expect(/geocod|proximity|nearest parcel|map pin|coordinate/i.test(SRC)).toBe(false);
   });
 });
+
+describe('Property Board Duke Partial status display', () => {
+  it('surfaces the Duke report status from the deal-card detail', () => {
+    expect(SRC).toMatch(/latestReportStatus/);
+    expect(SRC).toMatch(/Duke \{dealReview\.latestReportStatus === 'partial' \? 'Partial'/);
+  });
+
+  it('shows "No comp credit used" only for a Partial report', () => {
+    expect(SRC).toMatch(/latestReportStatus === 'partial'[\s\S]{0,160}No comp credit used/);
+  });
+
+  it('shows an explicit "Blocked before valuation / offer" gate when unverified', () => {
+    expect(SRC).toMatch(/hasUnverifiedProperty/);
+    expect(SRC).toMatch(/Blocked before valuation \/ offer/);
+    // Keep the existing guardrail wording too.
+    expect(SRC).toMatch(/before scoring, valuing, or offer guidance/i);
+  });
+
+  it('does not introduce any Full Report / comp-credit-spending action in the UI', () => {
+    expect(/lp_comp_report_create\s*\(/.test(SRC)).toBe(false);
+    expect(/lp_comp_report_get\s*\(/.test(SRC)).toBe(false);
+    expect(/Run Full Report/i.test(SRC)).toBe(false);
+  });
+});

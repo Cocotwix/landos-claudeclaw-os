@@ -458,6 +458,50 @@ describe('Deal Card review rollups', () => {
   });
 });
 
+describe('Duke report status surfacing (Partial default, no comp)', () => {
+  it('persists and surfaces a Partial report status on the deal card', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '12 Partial Way, Lexington SC',
+      apn: 'P-1',
+      county: 'Lexington',
+      verified: true,
+      verificationSource: 'county assessor record',
+      reportStatus: 'partial',
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.latestReportStatus).toBe('partial');
+  });
+
+  it('surfaces null report status when none was recorded (legacy/empty ref)', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '14 NoStatus Rd, Lexington SC',
+      apn: 'P-2',
+      county: 'Lexington',
+      verified: true,
+      verificationSource: 'county assessor record',
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.latestReportStatus).toBeNull();
+  });
+
+  it('ignores an unrecognized ref value rather than surfacing it as a status', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '16 Bogus Rd, Lexington SC',
+      apn: 'P-3',
+      county: 'Lexington',
+      verified: true,
+      verificationSource: 'county assessor record',
+      // @ts-expect-error intentionally invalid to prove read-side validation
+      reportStatus: 'not_a_real_status',
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.latestReportStatus).toBeNull();
+  });
+});
+
 describe('Multi-APN Deal Card idempotency / reuse on rerun', () => {
   const sameInput = () => ({
     entity: 'TY_LAND_BIZ' as const,

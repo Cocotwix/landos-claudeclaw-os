@@ -119,6 +119,16 @@ function defaultReportStatus(status: DukeRunStatus): DukeReportStatus {
   return 'failed';
 }
 
+// Deal Card writeback default. A successful dashboard Duke run is a PARTIAL
+// report by default (no comp credit). 'delivered' is reserved for an explicit
+// Full Report (comp-credit approved) or an explicit reportStatus override.
+// Non-success statuses map the same as the parcel-persist default.
+function defaultDealReportStatus(status: DukeRunStatus): DukeReportStatus {
+  if (status === 'success') return 'partial';
+  if (status === 'timeout') return 'not_generated';
+  return 'failed';
+}
+
 function firstLine(text: string): string {
   const line = text.split('\n').find((l) => l.trim().length > 0) ?? '';
   return line.trim().slice(0, 200);
@@ -192,6 +202,7 @@ export function buildDealWritebackInput(info: DukeDashboardRunInfo): import('./d
     risks: block?.risks,
     nextActions: block?.nextActions,
     sourceLinks,
+    reportStatus: block?.reportStatus ?? defaultDealReportStatus(info.status),
   };
 }
 
@@ -225,6 +236,7 @@ export function buildMultiDealWritebackInput(info: DukeDashboardRunInfo): MultiP
       recordOwnerName: p.recordOwnerName ?? block?.recordOwnerName,
       risks: p.risks,
       nextActions: p.nextActions,
+      reportStatus: block?.reportStatus ?? defaultDealReportStatus(info.status),
       sourceLinks: (p.sourceLinks ?? [])
         .filter((s) => s && typeof s.url === 'string' && s.url.trim() && !isInsideRepo(s.url))
         .map((s) => ({ fact: s.fact ?? 'source', url: s.url as string })),

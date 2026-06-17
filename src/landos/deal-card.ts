@@ -48,6 +48,10 @@ import {
   isProximityVerificationSource,
   type PropertyCardRow,
 } from './property-card.js';
+import { REPORT_STATUSES, type DukeReportStatus } from './duke-persist.js';
+
+/** Reverse lookup so a persisted report-status string can be validated on read. */
+const REPORT_STATUS_SET = new Set<string>(REPORT_STATUSES as readonly string[]);
 
 // Score / value / offer language that must NEVER appear in an unverified /
 // research Deal Card summary. Risks, data gaps, identity status, source links,
@@ -398,6 +402,9 @@ export interface DealCardDetail extends DealCardRow {
   compCount: number;
   /** Latest Duke writeback activity summary across linked properties. */
   latestWriteback: string | null;
+  /** Latest Duke report status (delivered | partial | failed | not_generated),
+   *  or null if none recorded. Partial is the default no-comp Duke workflow. */
+  latestReportStatus: string | null;
 }
 
 /**
@@ -476,6 +483,7 @@ export function getDealCard(id: number): DealCardDetail | undefined {
   }
   let nextActions: Array<Record<string, unknown>> = [];
   let latestWriteback: string | null = null;
+  let latestReportStatus: string | null = null;
   let compCount = 0;
   if (cardIds.length) {
     const placeholders = cardIds.map(() => '?').join(',');
@@ -483,9 +491,11 @@ export function getDealCard(id: number): DealCardDetail | undefined {
       `SELECT * FROM landos_card_next_action WHERE card_id IN (${placeholders}) AND status = 'open' ORDER BY created_at DESC, id DESC`,
     ).all(...cardIds) as Array<Record<string, unknown>>;
     const wb = db.prepare(
-      `SELECT summary FROM landos_card_activity WHERE card_id IN (${placeholders}) AND kind = 'duke_deal_writeback' ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).get(...cardIds) as { summary: string } | undefined;
+      `SELECT summary, ref FROM landos_card_activity WHERE card_id IN (${placeholders}) AND kind = 'duke_deal_writeback' ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(...cardIds) as { summary: string; ref: string } | undefined;
     latestWriteback = wb?.summary ?? null;
+    // Only surface a recognized report status; ignore legacy/empty ref values.
+    latestReportStatus = wb && REPORT_STATUS_SET.has(wb.ref) ? wb.ref : null;
   }
   compCount = (db.prepare('SELECT COUNT(*) AS n FROM landos_comp WHERE deal_card_id = ?').get(id) as { n: number }).n;
 
@@ -504,6 +514,7 @@ export function getDealCard(id: number): DealCardDetail | undefined {
     nextActions,
     compCount,
     latestWriteback,
+    latestReportStatus,
   };
 }
 
@@ -536,6 +547,9 @@ export interface DukeDealWritebackInput {
   nextActions?: string[];
   /** Source evidence links: { fact, url }. Stored on the property card. */
   sourceLinks?: Array<{ fact: string; url: string }>;
+  /** Duke report status for this run (default Partial). Display only; persisted
+   *  on the writeback activity ref so the dashboard can show it. */
+  reportStatus?: DukeReportStatus;
 }
 
 export interface DukeDealWritebackResult {
@@ -568,6 +582,7 @@ export interface DukeParcelWriteback {
   risks?: string[];
   nextActions?: string[];
   sourceLinks?: Array<{ fact: string; url: string }>;
+  reportStatus?: DukeReportStatus;
 }
 
 /** Upsert ONE property card from a parcel writeback, with the defensive
@@ -648,6 +663,9 @@ function attachParcelExtras(
     agentId: ctx.agentId ?? 'duke-due-diligence',
     kind: 'duke_deal_writeback',
     summary: safeSummary || (parcelVerified ? 'Verified Duke run linked to deal' : 'Research Duke run linked to deal'),
+    // Persist the Duke report status (Partial by default) in the existing ref
+    // column so the dashboard can surface it. No schema change.
+    ref: p.reportStatus ?? '',
   });
 }
 

@@ -47,6 +47,7 @@ interface DealReview {
   nextActions: any[];
   compCount: number;
   latestWriteback: string | null;
+  latestReportStatus: string | null;
   combinedAcreage: { acres: number; verified: boolean; label: string };
   propertyCards: any[];
 }
@@ -339,6 +340,15 @@ export function PropertyBoard() {
                   <Pill tone={dealReview.hasVerifiedProperty && !dealReview.hasUnverifiedProperty ? 'done' : 'neutral'}>
                     {dealReview.hasVerifiedProperty && !dealReview.hasUnverifiedProperty ? 'verified' : 'research / unverified'}
                   </Pill>
+                  {dealReview.latestReportStatus && (
+                    <Pill tone={dealReview.latestReportStatus === 'delivered' ? 'done' : dealReview.latestReportStatus === 'failed' ? 'failed' : 'neutral'}>
+                      Duke {dealReview.latestReportStatus === 'partial' ? 'Partial' : dealReview.latestReportStatus}
+                    </Pill>
+                  )}
+                  {/* Duke Partial is the default no-comp workflow; a Partial report never spends a comp credit. */}
+                  {dealReview.latestReportStatus === 'partial' && (
+                    <span class="text-[10px] text-[var(--color-text-faint)]">No comp credit used</span>
+                  )}
                   <span class="text-[10px] text-[var(--color-text-faint)]">
                     {dealReview.propertyCount} propert{dealReview.propertyCount === 1 ? 'y' : 'ies'}/APN · {dealReview.compCount} comp{dealReview.compCount === 1 ? '' : 's'}
                   </span>
@@ -346,7 +356,7 @@ export function PropertyBoard() {
 
                 {dealReview.hasUnverifiedProperty && (
                   <div class="text-[11px] text-[var(--color-status-failed)] bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] rounded-md px-2 py-1.5">
-                    Research / unverified parcel(s) present. Confirm APN + county/state/FIPS, or LandPortal property ID + FIPS, before scoring, valuing, or offer guidance.
+                    <span class="font-medium">Blocked before valuation / offer.</span> Research / unverified parcel(s) present. Confirm APN + county/state/FIPS, or LandPortal property ID + FIPS, before scoring, valuing, or offer guidance.
                   </div>
                 )}
 

@@ -4,9 +4,11 @@ import { _initTestLandosDb, getLandosDb } from './db.js';
 import {
   buildDukePersistPayload,
   persistDukeRunPostDelivery,
+  buildDealWritebackInput,
   buildMultiDealWritebackInput,
   type DukeDashboardRunInfo,
 } from './duke-persist-adapter.js';
+import { upsertDealCardFromDukeRun, getDealCard } from './deal-card.js';
 
 beforeEach(() => {
   _initTestLandosDb();
@@ -37,6 +39,37 @@ const PERSIST_BLOCK = [
       { fact: 'flood zone', value: 'unknown', label: 'Needs verification' },
     ],
     reportStatus: 'delivered',
+  }),
+  '```',
+].join('\n');
+
+// A successful run with a verified parcel but NO explicit reportStatus — the
+// normal no-comp dashboard case that must default to a Partial report.
+const PERSIST_BLOCK_NO_STATUS = [
+  '```landos-persist',
+  JSON.stringify({
+    parcel: {
+      apn: '08-2518',
+      fips: '37061',
+      county: 'Duplin',
+      state: 'NC',
+      address: '3832 S NC 50 Hwy, Chinquapin, NC',
+      verified: true,
+      verificationSource: 'lp_property_data record match (APN + FIPS)',
+    },
+    summary: 'Preliminary no-comp pass; verified parcel identity.',
+  }),
+  '```',
+].join('\n');
+
+// Two verified parcels, neither carrying an explicit reportStatus.
+const MULTI_BLOCK_NO_STATUS = [
+  '```landos-persist',
+  JSON.stringify({
+    parcels: [
+      { apn: 'A-1', fips: '37061', county: 'Duplin', state: 'NC', address: '1 A Rd, Chinquapin NC', verified: true, verificationSource: 'county assessor record' },
+      { apn: 'A-2', fips: '37061', county: 'Duplin', state: 'NC', address: '2 A Rd, Chinquapin NC', verified: true, verificationSource: 'county assessor record' },
+    ],
   }),
   '```',
 ].join('\n');
@@ -387,6 +420,43 @@ describe('Multi-APN Deal Card writeback (live hook)', () => {
 
   it('buildMultiDealWritebackInput returns null when fewer than 2 parcels', () => {
     expect(buildMultiDealWritebackInput(successInfo({ responseText: FAKE_REPORT + PERSIST_BLOCK }))).toBeNull();
+  });
+});
+
+describe('Duke deal writeback defaults to Partial (no-comp) for successful runs', () => {
+  it('buildDealWritebackInput defaults a successful no-status run to partial', () => {
+    const input = buildDealWritebackInput(successInfo({ responseText: FAKE_REPORT + PERSIST_BLOCK_NO_STATUS }))!;
+    expect(input.reportStatus).toBe('partial');
+  });
+
+  it('preserves an explicit reportStatus override (delivered) over the partial default', () => {
+    const input = buildDealWritebackInput(successInfo({ responseText: FAKE_REPORT + PERSIST_BLOCK }))!;
+    expect(input.reportStatus).toBe('delivered');
+  });
+
+  it('maps non-success runs the same as before (failed / not_generated)', () => {
+    const failed = buildDealWritebackInput(successInfo({ status: 'failed', responseText: FAKE_REPORT + PERSIST_BLOCK_NO_STATUS }))!;
+    expect(failed.reportStatus).toBe('failed');
+    const timeout = buildDealWritebackInput(successInfo({ status: 'timeout', responseText: FAKE_REPORT + PERSIST_BLOCK_NO_STATUS }))!;
+    expect(timeout.reportStatus).toBe('not_generated');
+  });
+
+  it('multi-parcel writeback defaults each parcel to partial when no status given', () => {
+    const input = buildMultiDealWritebackInput(successInfo({ responseText: FAKE_REPORT + MULTI_BLOCK_NO_STATUS }))!;
+    expect(input.parcels.length).toBe(2);
+    expect(input.parcels.every((p) => p.reportStatus === 'partial')).toBe(true);
+  });
+
+  it('surfaces as latestReportStatus=partial end-to-end (default path, no comp credit)', () => {
+    const input = buildDealWritebackInput(successInfo({ responseText: FAKE_REPORT + PERSIST_BLOCK_NO_STATUS }))!;
+    const res = upsertDealCardFromDukeRun(input)!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.latestReportStatus).toBe('partial');
+  });
+
+  it('keeps the parcel-persist payload status unchanged (delivered) for success', () => {
+    // The parcel-persist layer is a separate concern and must not flip to partial.
+    expect(buildDukePersistPayload(successInfo()).reportStatus).toBe('delivered');
   });
 });
 
