@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { Send, RotateCcw } from 'lucide-preact';
+import { Send, RotateCcw, Search } from 'lucide-preact';
 import { apiPost } from '@/lib/api';
 
 // LandOS Intake / Orchestration panel. The dashboard-first entry into the
@@ -132,6 +132,48 @@ interface SourceAdapterPlan {
   note: string;
 }
 
+// Sprint 6B/6C: Duke verification result + deal-card update plan.
+interface DukeVerification {
+  status: string;
+  parcelVerified: boolean;
+  verificationSource?: string;
+  identity?: {
+    apn?: string;
+    fips?: string;
+    propertyId?: string;
+    situsAddress?: string;
+    city?: string;
+    county?: string;
+    state?: string;
+    owner?: string;
+    acres?: number;
+  };
+  sourceAttempts: Array<{ source: string; status: string; reason: string; truthLabel: string }>;
+  dataGaps: string[];
+  localAreaContextLabel?: string;
+  marketPulseEligible: boolean;
+  strategyUnderwritingBlocked: boolean;
+  summary: string;
+}
+
+interface DealCardUpdatePlan {
+  identityReference: { address?: string; apn?: string; ownerCountyState?: string; dealCardId?: number };
+  matchStatus: string;
+  matchReason: string;
+  timeline: Array<{ eventType: string; label: string; truthLabel: string; summary: string; source?: string }>;
+  memoryEntries: Array<{ key: string; truthLabel: string; value?: string; source?: string; note?: string }>;
+  storageIntent: { willStoreNow: boolean; asLabels: string[]; reason: string };
+  persistedNow: boolean;
+  requiresMigration: boolean;
+  migrationNote?: string;
+  rule: string;
+}
+
+interface DukeVerificationResponse {
+  verification: DukeVerification;
+  dealCardUpdatePlan: DealCardUpdatePlan;
+}
+
 // Status label -> color treatment. Covers planned/blocked/not_available/
 // not_applicable/supported/available plus the other contract statuses.
 function statusClass(status: string): string {
@@ -141,16 +183,30 @@ function statusClass(status: string): string {
     case 'available':
     case 'connected':
     case 'recommended':
+    case 'verified_fact':
+    case 'parcel_verified':
+    case 'exact_match':
       return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
     case 'blocked':
+    case 'unverified':
+    case 'not_verified':
       return 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
     case 'not_available':
     case 'unsupported':
     case 'not_connected':
     case 'pass_no_offer':
+    case 'data_gap':
+    case 'timeout':
+    case 'local_area_context_not_parcel_verified':
+    case 'ambiguous_needs_clarification':
       return 'text-[var(--color-status-failed)] border-[color-mix(in_srgb,var(--color-status-failed)_40%,transparent)]';
     case 'requested':
     case 'pending':
+    case 'seller_stated':
+    case 'attempted_lookup':
+    case 'needs_verification':
+    case 'market_context':
+    case 'create_new':
       return 'text-[var(--color-text)] border-[var(--color-border)]';
     case 'not_applicable':
     case 'not_requested':
@@ -204,6 +260,9 @@ export function IntakePlanner() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [dukeLoading, setDukeLoading] = useState(false);
+  const [dukeError, setDukeError] = useState<string | null>(null);
+  const [duke, setDuke] = useState<DukeVerificationResponse | null>(null);
 
   async function run() {
     const trimmed = text.trim();
@@ -221,6 +280,9 @@ export function IntakePlanner() {
       if (parcelVerified) body.context = { parcelVerified: true };
       const res = await apiPost<{ plan: Plan }>('/api/landos/intake', body);
       setPlan(res.plan);
+      // A fresh plan invalidates any prior Duke verification result.
+      setDuke(null);
+      setDukeError(null);
     } catch (err: any) {
       setError(err?.message || String(err));
       setPlan(null);
@@ -229,11 +291,29 @@ export function IntakePlanner() {
     }
   }
 
+  async function runDuke() {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    try {
+      setDukeLoading(true);
+      setDukeError(null);
+      const res = await apiPost<DukeVerificationResponse>('/api/landos/intake/duke-verification', { text: trimmed });
+      setDuke(res);
+    } catch (err: any) {
+      setDukeError(err?.message || String(err));
+      setDuke(null);
+    } finally {
+      setDukeLoading(false);
+    }
+  }
+
   function reset() {
     setText('');
     setParcelVerified(false);
     setPlan(null);
     setError(null);
+    setDuke(null);
+    setDukeError(null);
   }
 
   // Hard business rules surfaced as banners (the planner enforces them; the UI
@@ -574,6 +654,117 @@ export function IntakePlanner() {
             <span>Execution mode</span>
             <StatusBadge status={plan.executionMode} />
             <span class="text-[var(--color-text-faint)]">read-only plan — nothing executed, stored, or charged.</span>
+          </div>
+
+          {/* ── Duke Execution Bridge (Sprint 6B/6C) ───────────────────── */}
+          <div class="border-t border-[var(--color-border)] pt-4">
+            <div class="flex items-center gap-3 flex-wrap">
+              <SectionTitle>Duke Parcel Verification</SectionTitle>
+              <button
+                type="button"
+                disabled={dukeLoading}
+                onClick={runDuke}
+                class="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium text-[var(--color-text)] border border-[var(--color-border)] bg-[var(--color-elevated)] hover:opacity-90 disabled:opacity-40"
+              >
+                <Search size={12} /> {dukeLoading ? 'Verifying…' : 'Run Duke parcel verification'}
+              </button>
+            </div>
+            <div class="text-[10px] text-[var(--color-text-faint)] mb-2">
+              Runs the safe Duke verification path only (bounded LandPortal exact lookup). No comp credit, no GIS scraping, no CRM writes.
+            </div>
+
+            {dukeError && (
+              <div class="border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] rounded-lg px-4 py-2.5">
+                <div class="text-[var(--color-status-failed)] text-[12px] font-medium mb-0.5">Verification failed</div>
+                <div class="text-[var(--color-text-muted)] text-[12px] font-mono">{dukeError}</div>
+              </div>
+            )}
+
+            {duke && (
+              <div class="space-y-3">
+                {/* Verification status */}
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Verification</span>
+                    <StatusBadge status={duke.verification.status} />
+                    {duke.verification.localAreaContextLabel && (
+                      <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[color-mix(in_srgb,var(--color-status-failed)_40%,transparent)] text-[var(--color-status-failed)]">
+                        {duke.verification.localAreaContextLabel}
+                      </span>
+                    )}
+                  </div>
+                  <div class="text-[11px] text-[var(--color-text-muted)]">{duke.verification.summary}</div>
+
+                  {/* Verified identity fields (named source only) */}
+                  {duke.verification.parcelVerified && duke.verification.identity && (
+                    <div class="text-[11px] text-[var(--color-text)] grid grid-cols-2 gap-x-4 gap-y-0.5 border-t border-[var(--color-border)] pt-2">
+                      {duke.verification.identity.apn && <div>APN: {duke.verification.identity.apn}</div>}
+                      {duke.verification.identity.situsAddress && <div>Address: {duke.verification.identity.situsAddress}</div>}
+                      {duke.verification.identity.owner && <div>Owner: {duke.verification.identity.owner}</div>}
+                      {(duke.verification.identity.county || duke.verification.identity.state) && (
+                        <div>County/State: {[duke.verification.identity.county, duke.verification.identity.state].filter(Boolean).join(', ')}</div>
+                      )}
+                      {typeof duke.verification.identity.acres === 'number' && <div>Acres: {duke.verification.identity.acres}</div>}
+                      {duke.verification.verificationSource && <div>Source: {duke.verification.verificationSource}</div>}
+                    </div>
+                  )}
+
+                  {/* Unverified -> gate stays on */}
+                  {duke.verification.strategyUnderwritingBlocked && (
+                    <div class="text-[10px] text-[var(--color-status-failed)] border-t border-[var(--color-border)] pt-2">
+                      Strategy and Underwriting remain blocked until parcel identity is verified by a named source.
+                    </div>
+                  )}
+
+                  {/* Source attempts */}
+                  {duke.verification.sourceAttempts.length > 0 && (
+                    <div class="border-t border-[var(--color-border)] pt-2">
+                      <div class="text-[10px] text-[var(--color-text-faint)] mb-1">Source attempts</div>
+                      {duke.verification.sourceAttempts.map((a, i) => (
+                        <div key={i} class="flex items-center gap-2 text-[11px]">
+                          <span class="text-[var(--color-text-muted)] truncate">{a.source}</span>
+                          <span class="ml-auto"><StatusBadge status={a.status} /></span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Data gaps */}
+                  {duke.verification.dataGaps.length > 0 && (
+                    <div class="text-[10px] text-[var(--color-text-faint)] font-mono">
+                      data gaps: {duke.verification.dataGaps.join(', ')}
+                    </div>
+                  )}
+                </div>
+
+                {/* Deal Card Update / Timeline Plan */}
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Deal Card Update Plan</span>
+                    <span class="ml-auto"><StatusBadge status={duke.dealCardUpdatePlan.matchStatus} /></span>
+                  </div>
+                  <div class="text-[10px] text-[var(--color-text-faint)]">{duke.dealCardUpdatePlan.matchReason}</div>
+
+                  <div class="space-y-1.5">
+                    {duke.dealCardUpdatePlan.timeline.map((t, i) => (
+                      <div key={i} class="flex items-start gap-2 text-[11px]">
+                        <span class="text-[var(--color-text-muted)] flex-1 min-w-0">{t.label}</span>
+                        <span class="ml-auto"><StatusBadge status={t.truthLabel} /></span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div class="text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border)] pt-2">
+                    {duke.dealCardUpdatePlan.rule}
+                  </div>
+                  {duke.dealCardUpdatePlan.requiresMigration && (
+                    <div class="text-[10px] text-[var(--color-text-faint)]">
+                      Not persisted this sprint. {duke.dealCardUpdatePlan.migrationNote}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

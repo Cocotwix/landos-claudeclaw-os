@@ -159,3 +159,40 @@ describe('Intake panel source-adapter / Market Pulse section (Sprint 6A)', () =>
     expect(PANEL).toMatch(/report-only and require Tyler approval/);
   });
 });
+
+describe('Intake panel Duke execution bridge (Sprint 6B/6C)', () => {
+  it('has a Run Duke parcel verification button wired to the bridge route', () => {
+    expect(PANEL).toMatch(/Run Duke parcel verification/);
+    expect(PANEL).toMatch(/apiPost<[^>]*>\('\/api\/landos\/intake\/duke-verification'/);
+    expect(PANEL).toMatch(/function runDuke/);
+  });
+
+  it('shows loading and error states for the verification call', () => {
+    expect(PANEL).toMatch(/Verifying…/);
+    expect(PANEL).toMatch(/Verification failed/);
+  });
+
+  it('shows identity fields only when verified, and the Local Area Context label when not', () => {
+    expect(PANEL).toMatch(/verification\.parcelVerified && duke\.verification\.identity/);
+    expect(PANEL).toMatch(/verification\.localAreaContextLabel/);
+    expect(PANEL).toMatch(/identity\.apn/);
+    expect(PANEL).toMatch(/identity\.owner/);
+  });
+
+  it('keeps Strategy/Underwriting blocked messaging on unverified results', () => {
+    expect(PANEL).toMatch(/strategyUnderwritingBlocked/);
+    expect(PANEL).toMatch(/Strategy and Underwriting remain blocked/);
+  });
+
+  it('renders source attempts and data gaps', () => {
+    expect(PANEL).toMatch(/sourceAttempts\.map/);
+    expect(PANEL).toMatch(/dataGaps\.join/);
+  });
+
+  it('renders a Deal Card Update Plan section with truth-labeled timeline entries', () => {
+    expect(PANEL).toMatch(/Deal Card Update Plan/);
+    expect(PANEL).toMatch(/dealCardUpdatePlan\.timeline\.map/);
+    expect(PANEL).toMatch(/StatusBadge status=\{t\.truthLabel\}/);
+    expect(PANEL).toMatch(/dealCardUpdatePlan\.migrationNote/);
+  });
+});

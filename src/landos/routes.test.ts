@@ -206,6 +206,44 @@ describe('LandOS routes — intake orchestrator auth', () => {
   });
 });
 
+describe('LandOS routes — Duke execution bridge auth + safety', () => {
+  // Use non-identity text so the route takes the preflight "skip" path and makes
+  // NO live LandPortal call (verification never starts without an identifier).
+  const NO_IDENTITY = { text: 'what should we do with this?' };
+
+  it('rejects POST /api/landos/intake/duke-verification without a token', async () => {
+    const res = await app.request('/api/landos/intake/duke-verification', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(NO_IDENTITY),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts the route with ?token= and returns a read-only verification result', async () => {
+    const res = await post('/api/landos/intake/duke-verification', NO_IDENTITY);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.verification.executionMode).toBe('duke_verification_read_only');
+    expect(body.verification.parcelVerified).toBe(false);
+    expect(body.verification.strategyUnderwritingBlocked).toBe(true);
+    expect(body.dealCardUpdatePlan.persistedNow).toBe(false);
+  });
+
+  it('a coordinate-pair input is never verified (no coordinate parcel identity)', async () => {
+    const res = await post('/api/landos/intake/duke-verification', { text: '34.0522, -118.2437' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.verification.parcelVerified).toBe(false);
+    expect(body.verification.identity).toBeUndefined();
+  });
+
+  it('requires text', async () => {
+    const res = await post('/api/landos/intake/duke-verification', {});
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('LandOS routes — offer scenarios', () => {
   it('evaluates strategies and labels DRAFT output', async () => {
     const res = await post('/api/landos/strategies/evaluate', { expectedValueUsd: 100000 });

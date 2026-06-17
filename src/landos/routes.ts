@@ -47,6 +47,10 @@ import {
   updateLeadJob,
 } from './property-card.js';
 import { routeDukeRequest } from './duke-router.js';
+import { runDukePreflight } from './duke-preflight.js';
+import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
+import { buildDukeVerificationResult } from './duke-verification-bridge.js';
+import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { planLandosIntake } from './intake-planner.js';
 import { departmentRegistrySummary } from './department-registry.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
@@ -658,6 +662,26 @@ export function registerLandosRoutes(app: Hono): void {
         : undefined,
     };
     return c.json({ plan: planLandosIntake(intake) });
+  });
+
+  // ── Duke Execution Bridge (Sprint 6B/6C) ───────────────────────────────
+  // Runs Duke's EXISTING safe parcel-verification path (runDukePreflight: a
+  // bounded LandPortal exact resolve — NOT a comp credit, NOT the full agent,
+  // NOT GIS scraping) for the current intake input, and returns a structured
+  // verification result plus a read-only Deal Card Update/Timeline plan. Never
+  // verifies via coordinates/proximity, never spends a comp credit, never
+  // mutates CRM/external systems, and persists nothing this sprint.
+  app.post('/api/landos/intake/duke-verification', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const sellerAskUsd = num(body.sellerAskUsd);
+    // The existing safe Duke verification path. Empty allowlist: parcel data is
+    // resolved by the bounded LandPortal exact lookup only; no MCP/agent fan-out.
+    const pre = await runDukePreflight(text, [], LANDPORTAL_VERIFICATION_TIMEOUT_MS);
+    const verification = buildDukeVerificationResult(pre, text);
+    const dealCardUpdatePlan = buildDealCardUpdatePlan({ verification, intakeText: text, sellerAskUsd });
+    return c.json({ verification, dealCardUpdatePlan });
   });
 
   // Department registry summary (deeper capability/model-policy registry).
