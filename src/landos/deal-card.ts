@@ -49,6 +49,7 @@ import {
   type PropertyCardRow,
 } from './property-card.js';
 import { REPORT_STATUSES, type DukeReportStatus } from './duke-persist.js';
+import { buildDukePartialContract, type DukePartialContract } from './duke-partial.js';
 
 /** Reverse lookup so a persisted report-status string can be validated on read. */
 const REPORT_STATUS_SET = new Set<string>(REPORT_STATUSES as readonly string[]);
@@ -405,6 +406,8 @@ export interface DealCardDetail extends DealCardRow {
   /** Latest Duke report status (delivered | partial | failed | not_generated),
    *  or null if none recorded. Partial is the default no-comp Duke workflow. */
   latestReportStatus: string | null;
+  /** Standardized Duke Partial output contract derived from the fields above. */
+  dukePartial: DukePartialContract;
 }
 
 /**
@@ -515,6 +518,14 @@ export function getDealCard(id: number): DealCardDetail | undefined {
     compCount,
     latestWriteback,
     latestReportStatus,
+    dukePartial: buildDukePartialContract({
+      latestReportStatus,
+      hasVerifiedProperty,
+      hasUnverifiedProperty,
+      risks,
+      nextActions,
+      latestWriteback,
+    }),
   };
 }
 

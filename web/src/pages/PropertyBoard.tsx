@@ -48,6 +48,16 @@ interface DealReview {
   compCount: number;
   latestWriteback: string | null;
   latestReportStatus: string | null;
+  dukePartial: {
+    reportStatus: string;
+    verificationStatus: string;
+    parcelVerificationSummary: string;
+    blockedReason: string | null;
+    nextBestAction: string | null;
+    discoveryQuestions: string[];
+    noCompCreditUsed: boolean;
+    fullReportNote: string;
+  };
   combinedAcreage: { acres: number; verified: boolean; label: string };
   propertyCards: any[];
 }
@@ -128,9 +138,40 @@ export function PropertyBoard() {
     price: '', priceKind: 'sale', saleOrListDate: '', acres: '', notes: '', status: 'manual_unverified',
   };
   const [compForm, setCompForm] = useState<Record<string, string>>({ ...emptyComp });
+  const [partialBusy, setPartialBusy] = useState(false);
+  const [partialQueued, setPartialQueued] = useState<string | null>(null);
 
   function compField(k: string, v: string) {
     setCompForm((f) => ({ ...f, [k]: v }));
+  }
+
+  // Run Duke Partial: queue a Partial-only, no-comp due-diligence pass for the
+  // selected card via the existing mission task system. Never requests a Full
+  // Report and never spends a comp credit.
+  async function runDukePartial() {
+    if (!selected) return;
+    setPartialBusy(true);
+    setPartialQueued(null);
+    setError(null);
+    try {
+      const ident = selected.apn ? `APN ${selected.apn}` : (selected.active_input_address || '(no identifier)');
+      const place = [selected.county, selected.state].filter(Boolean).join(', ');
+      const prompt =
+        `Run a Duke Partial due-diligence pass (Partial only, no comp credit, no Full Report) on: ` +
+        `${ident}${place ? `, ${place}` : ''}. ` +
+        `Verify parcel identity first; if it is not verified, return the verification block and discovery questions only (no scoring, valuation, comps, offer, or strategy).`;
+      const res = await apiPost<{ task?: { id: string } }>('/api/mission/tasks', {
+        title: `Duke Partial: ${ident}`.slice(0, 200),
+        prompt,
+        assigned_agent: 'duke-due-diligence',
+        priority: 5,
+      });
+      setPartialQueued(res?.task?.id ? `Queued Duke Partial (task ${res.task.id}). Track it in Mission Control.` : 'Queued Duke Partial.');
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setPartialBusy(false);
+    }
   }
 
   async function load() {
@@ -158,6 +199,7 @@ export function PropertyBoard() {
       setSelected(res.card);
       setShowCompForm(false);
       setCompForm({ ...emptyComp });
+      setPartialQueued(null);
       await loadComps(id);
     } catch (e: any) {
       setError(e?.message || String(e));
@@ -314,7 +356,17 @@ export function PropertyBoard() {
               <Pill tone={selected.verification_status === 'verified_property' ? 'done' : 'neutral'}>{selected.verification_status}</Pill>
               <span class="text-[14px] font-semibold text-[var(--color-text)]">{selected.active_input_address}</span>
               <span class="text-[10px] text-[var(--color-text-faint)]">card {selected.id}</span>
+              {/* Run Duke Partial only — no comp credit, no Full Report. Queues via Mission Control. */}
+              <button
+                type="button"
+                onClick={() => void runDukePartial()}
+                disabled={partialBusy}
+                class="ml-auto text-[11px] px-2.5 py-1 rounded-md bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
+              >
+                {partialBusy ? 'Queuing…' : 'Run Duke Partial'}
+              </button>
             </div>
+            {partialQueued && <div class="text-[11px] text-[var(--color-text-muted)]">{partialQueued}</div>}
             {selected.summary && <p class="text-[12px] text-[var(--color-text-muted)]">{selected.summary}</p>}
 
             <div class="flex flex-wrap items-center gap-3 text-[11px] text-[var(--color-text-muted)]">
@@ -346,7 +398,7 @@ export function PropertyBoard() {
                     </Pill>
                   )}
                   {/* Duke Partial is the default no-comp workflow; a Partial report never spends a comp credit. */}
-                  {dealReview.latestReportStatus === 'partial' && (
+                  {dealReview.dukePartial?.noCompCreditUsed && dealReview.latestReportStatus && (
                     <span class="text-[10px] text-[var(--color-text-faint)]">No comp credit used</span>
                   )}
                   <span class="text-[10px] text-[var(--color-text-faint)]">
@@ -358,6 +410,13 @@ export function PropertyBoard() {
                   <div class="text-[11px] text-[var(--color-status-failed)] bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] rounded-md px-2 py-1.5">
                     <span class="font-medium">Blocked before valuation / offer.</span> Research / unverified parcel(s) present. Confirm APN + county/state/FIPS, or LandPortal property ID + FIPS, before scoring, valuing, or offer guidance.
                   </div>
+                )}
+
+                {dealReview.dukePartial?.discoveryQuestions?.length > 0 && (
+                  <DetailList title="Discovery questions" items={dealReview.dukePartial.discoveryQuestions} />
+                )}
+                {dealReview.dukePartial?.fullReportNote && (
+                  <div class="text-[10px] text-[var(--color-text-faint)]">{dealReview.dukePartial.fullReportNote}</div>
                 )}
 
                 <div class="space-y-1">

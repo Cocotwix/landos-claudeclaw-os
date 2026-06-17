@@ -130,8 +130,8 @@ describe('Property Board Duke Partial status display', () => {
     expect(SRC).toMatch(/Duke \{dealReview\.latestReportStatus === 'partial' \? 'Partial'/);
   });
 
-  it('shows "No comp credit used" only for a Partial report', () => {
-    expect(SRC).toMatch(/latestReportStatus === 'partial'[\s\S]{0,160}No comp credit used/);
+  it('shows "No comp credit used" from the contract no-comp flag, not a fabricated value', () => {
+    expect(SRC).toMatch(/dukePartial\?\.noCompCreditUsed[\s\S]{0,160}No comp credit used/);
   });
 
   it('shows an explicit "Blocked before valuation / offer" gate when unverified', () => {
@@ -145,5 +145,34 @@ describe('Property Board Duke Partial status display', () => {
     expect(/lp_comp_report_create\s*\(/.test(SRC)).toBe(false);
     expect(/lp_comp_report_get\s*\(/.test(SRC)).toBe(false);
     expect(/Run Full Report/i.test(SRC)).toBe(false);
+  });
+});
+
+describe('Property Board Run Duke Partial action', () => {
+  it('exposes a Run Duke Partial button only (no Full Report)', () => {
+    expect(SRC).toMatch(/Run Duke Partial/);
+    expect(/Run Full Report/i.test(SRC)).toBe(false);
+  });
+
+  it('queues the run via the existing mission task endpoint, assigned to Duke', () => {
+    expect(SRC).toMatch(/apiPost<[^>]*>\('\/api\/mission\/tasks'/);
+    expect(SRC).toMatch(/assigned_agent:\s*'duke-due-diligence'/);
+  });
+
+  it('builds a Partial-only, no-comp, no-Full-Report prompt', () => {
+    expect(SRC).toMatch(/Partial only, no comp credit, no Full Report/);
+    expect(SRC).toMatch(/Verify parcel identity first/);
+  });
+
+  it('renders the standardized contract: discovery questions and full-report note', () => {
+    expect(SRC).toMatch(/dukePartial/);
+    expect(SRC).toMatch(/discoveryQuestions/);
+    expect(SRC).toMatch(/fullReportNote/);
+    expect(SRC).toMatch(/Discovery questions/);
+  });
+
+  it('shows "No comp credit used" from the contract, not a fabricated value', () => {
+    expect(SRC).toMatch(/dukePartial\?\.noCompCreditUsed/);
+    expect(SRC).toMatch(/No comp credit used/);
   });
 });

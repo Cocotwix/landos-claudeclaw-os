@@ -500,6 +500,37 @@ describe('Duke report status surfacing (Partial default, no comp)', () => {
     const detail = getDealCard(res.dealCardId)!;
     expect(detail.latestReportStatus).toBeNull();
   });
+
+  it('exposes a standardized dukePartial contract (verified, no comp credit)', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '20 Contract Way, Lexington SC',
+      apn: 'P-4',
+      county: 'Lexington',
+      verified: true,
+      verificationSource: 'county assessor record',
+      reportStatus: 'partial',
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.dukePartial.verificationStatus).toBe('verified');
+    expect(detail.dukePartial.reportStatus).toBe('partial');
+    expect(detail.dukePartial.blockedReason).toBeNull();
+    expect(detail.dukePartial.noCompCreditUsed).toBe(true);
+    expect(detail.dukePartial.discoveryQuestions).toEqual([]);
+  });
+
+  it('dukePartial blocks an unverified deal with discovery questions', () => {
+    const res = upsertDealCardFromDukeRun({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '22 Unverified Rd, Lexington SC',
+      verified: false,
+    })!;
+    const detail = getDealCard(res.dealCardId)!;
+    expect(detail.dukePartial.verificationStatus).toBe('unverified');
+    expect(detail.dukePartial.reportStatus).toBe('blocked');
+    expect(detail.dukePartial.blockedReason).toBeTruthy();
+    expect(detail.dukePartial.discoveryQuestions.length).toBeGreaterThan(0);
+  });
 });
 
 describe('Multi-APN Deal Card idempotency / reuse on rerun', () => {
