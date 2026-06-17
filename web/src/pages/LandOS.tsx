@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { Check, X, Landmark } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { IntakePlanner } from '@/components/IntakePlanner';
 import { apiGet, apiPost } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -41,6 +42,7 @@ interface Overview {
 }
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
+type LandosView = 'overview' | 'intake';
 
 // Module sections of the OS spine. count keys map to getOverview() output.
 const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
@@ -58,6 +60,7 @@ const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
 ];
 
 export function LandOS() {
+  const [view, setView] = useState<LandosView>('overview');
   const [entity, setEntity] = useState<EntityFilter>('all');
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -100,22 +103,31 @@ export function LandOS() {
         title="LandOS"
         actions={
           <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">
-            {data ? `${data.pendingApprovals} pending approval${data.pendingApprovals === 1 ? '' : 's'}` : ''}
+            {view === 'overview' && data ? `${data.pendingApprovals} pending approval${data.pendingApprovals === 1 ? '' : 's'}` : ''}
           </span>
         }
         tabs={
           <>
-            <Tab label="All entities" active={entity === 'all'} onClick={() => setEntity('all')} />
-            <Tab label="Land Ally" active={entity === 'LAND_ALLY'} onClick={() => setEntity('LAND_ALLY')} />
-            <Tab label="Ty's Land Biz" active={entity === 'TY_LAND_BIZ'} onClick={() => setEntity('TY_LAND_BIZ')} />
+            <Tab label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
+            <Tab label="Intake Planner" active={view === 'intake'} onClick={() => setView('intake')} />
+            {view === 'overview' && (
+              <>
+                <span class="mx-1 h-4 w-px bg-[var(--color-border)]" />
+                <Tab label="All entities" active={entity === 'all'} onClick={() => setEntity('all')} />
+                <Tab label="Land Ally" active={entity === 'LAND_ALLY'} onClick={() => setEntity('LAND_ALLY')} />
+                <Tab label="Ty's Land Biz" active={entity === 'TY_LAND_BIZ'} onClick={() => setEntity('TY_LAND_BIZ')} />
+              </>
+            )}
           </>
         }
       />
 
-      {error && <PageState error={error} />}
-      {loading && !data && <PageState loading />}
+      {view === 'intake' && <IntakePlanner />}
 
-      {data && (
+      {view === 'overview' && error && <PageState error={error} />}
+      {view === 'overview' && loading && !data && <PageState loading />}
+
+      {view === 'overview' && data && (
         <div class="flex-1 overflow-y-auto px-6 py-4 space-y-6">
           {/* Module section cards */}
           <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
