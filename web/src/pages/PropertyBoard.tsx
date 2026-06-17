@@ -178,7 +178,13 @@ export function PropertyBoard() {
       const compLine = compMode === 'landportal_credit'
         ? 'Comp source: LandPortal Comps. I approve spending ONE LandPortal comp credit for THIS run only. If the comp credit is unavailable, exhausted, blocked, or the comp report fails, fall back to Redfin/Zillow/manual comps and clearly label the comp source/quality.'
         : 'Comp source: Redfin/Zillow (no LandPortal comp credit).';
+      // Deterministic machine-readable header the scheduler's Duke Report runner
+      // parses (comp mode, card id, and one-run LP comp-credit approval). Only the
+      // LandPortal Comps path carries approval; the dashboard never spends a credit.
+      const lpApproval = compMode === 'landportal_credit';
+      const sentinel = `[[duke_report v1 compMode=${compMode} cardId=${selected.id} lpCompCreditApproval=${lpApproval} source=dashboard]]`;
       const prompt =
+        `${sentinel}\n` +
         `Run a Duke Report on: ${ident}${place ? `, ${place}` : ''}. ${compLine} ` +
         `Verify parcel identity first. If it is not verified, return Local Area Context labeled "Local Area Context, Not Parcel Verified", the verification block, and discovery questions only — no parcel-specific scoring, valuation, offer, or strategy.`;
       const res = await apiPost<{ task?: { id: string } }>('/api/mission/tasks', {

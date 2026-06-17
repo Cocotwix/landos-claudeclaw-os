@@ -188,4 +188,11 @@ describe('Property Board Duke Report product model (not Partial vs Full)', () =>
     expect(/lp_comp_report_create\s*\(/.test(SRC)).toBe(false);
     expect(/lp_comp_report_get\s*\(/.test(SRC)).toBe(false);
   });
+
+  it('queues a structured Duke Report sentinel the scheduler runner can parse', () => {
+    // Deterministic machine-readable header (not fragile prose parsing).
+    expect(SRC).toMatch(/\[\[duke_report v1 compMode=\$\{compMode\} cardId=\$\{selected\.id\} lpCompCreditApproval=\$\{lpApproval\}/);
+    // Approval is the LandPortal Comps selection only.
+    expect(SRC).toMatch(/const lpApproval = compMode === 'landportal_credit'/);
+  });
 });

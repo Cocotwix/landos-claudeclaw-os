@@ -17,6 +17,9 @@ import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
+import { runDukePreflight } from './landos/duke-preflight.js';
+import { persistDukeRunPostDelivery } from './landos/duke-persist-adapter.js';
+import { isDukeReportTask, runDukeReportFromTask } from './landos/duke-report-runner.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -166,6 +169,35 @@ async function runDueMissionTasks(): Promise<void> {
     }, 5_000);
 
     try {
+      // Dashboard "Run Duke Report" tasks run through Duke's REAL preflight +
+      // standardized writeback flow (not the generic runAgent path). Guarded by
+      // isDukeReportTask so all other mission tasks are unaffected.
+      if (isDukeReportTask(mission)) {
+        const res = await runDukeReportFromTask(mission, {
+          runDukePreflight,
+          // Use the allowlist the runner supplies (the preflight-filtered one for
+          // a verified run — LandPortal MCP excluded), not the original allowlist.
+          runAgent: (p, allowlist) => runAgent(p, undefined, () => {}, undefined, undefined, abortController, undefined, allowlist ?? agentMcpAllowlist),
+          persistDukeRunPostDelivery,
+          mcpAllowlist: agentMcpAllowlist,
+          timeoutMs: TASK_TIMEOUT_MS,
+        });
+        clearTimeout(timeout);
+        clearInterval(cancelPoll);
+        if (cancelledByUser) {
+          logger.info({ missionId: mission.id }, 'Duke Report mission task cancelled by user');
+        } else {
+          completeMissionTask(mission.id, res.summary, res.status, res.error);
+          logger.info({ missionId: mission.id, verified: res.verified, reportStatus: res.reportStatus }, 'Duke Report mission task finished');
+          try {
+            await sender('Duke Report "' + mission.title + '": ' + res.summary);
+          } catch (sendErr) {
+            logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send Duke Report notification');
+          }
+        }
+        return;
+      }
+
       const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
       clearTimeout(timeout);
       clearInterval(cancelPoll);
