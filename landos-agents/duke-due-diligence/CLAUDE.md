@@ -122,7 +122,7 @@ Run this ladder in order, stopping as soon as the parcel is definitively verifie
 1. **Retry once.** Re-run the same exact-address `lp_resolve_property` lookup one time only, and only if still within the runtime budget (the Fast Default 2-minute / 3-minute maximum). Never retry more than once. Never change the identifier to coordinates or any prohibited input.
 2. **County assessor / GIS exact-address fallback.** If the retry also times out, run the bounded exact-address recovery from `duke-unconfirmed-parcel.md` (Step 2 disambiguation pass): exact address plus county/state against county assessor or county GIS, only if reachable through the normal allowed tool/web path. This is exact-address verification only -- never coordinates, nearest parcel, or proximity.
 3. **Local Area Context, Not Parcel Verified.** If the parcel is still not definitively verified, return `Local Area Context, Not Parcel Verified`. Use only the location anchor from Tyler's input (for example city/county/state from the submitted address). Do not identify or infer a specific parcel from area context. Include bounded area context only if a reliable anchor and area data (cache or one allowed area search) exist.
-4. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+4. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the Duke Report."
 
 Every timeout response must clearly state what Duke tried (timed out, retried once, checked county/GIS if available, still not definitive) and clearly state that no score, valuation, or offer was produced because parcel identity was not verified.
 
@@ -149,7 +149,7 @@ Run this ladder in order, stopping as soon as the parcel is definitively verifie
 
 1. **County assessor / GIS exact-address recovery.** If a county/state anchor exists, run the bounded exact-address recovery from `duke-unconfirmed-parcel.md` (Step 2 disambiguation pass): exact or partial address plus county/state against county assessor or county GIS, only if reachable through the normal allowed tool/web path. Exact-address verification only -- never coordinates, nearest parcel, or proximity. If this clearly ties the exact address to a single APN, proceed to the verified Fast Default report.
 2. **Local Area Context, Not Parcel Verified.** If county/GIS exact-address lookup cannot verify a single parcel (failed or unavailable), return `Local Area Context, Not Parcel Verified`. Use only the city/county/state anchor from Tyler's input for market/local context. Do not identify or infer a specific parcel from area context.
-3. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+3. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the Duke Report."
 
 Every zero-candidate response must clearly state what Duke tried and clearly distinguish: (a) LandPortal zero-candidate / address-format mismatch, (b) county/GIS exact-address recovery failed or unavailable, (c) Local Area Context, Not Parcel Verified, (d) the one next action. State that no score, valuation, or offer was produced because parcel identity was not verified.
 

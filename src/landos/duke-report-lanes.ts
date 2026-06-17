@@ -26,6 +26,56 @@ export const LANDPORTAL_VERIFICATION_TIMEOUT_MS = 3 * 60 * 1000;
 export const LANDWATCH_MIN_ACRES = 50;
 export const LOCAL_AREA_NOT_VERIFIED_LABEL = 'Local Area Context, Not Parcel Verified';
 
+/** Shown when a market count cannot be pulled from any default source. */
+export const MARKET_COUNT_UNAVAILABLE_SOURCE = 'unavailable from current default sources';
+
+/**
+ * Preferred source order for land-specific active/sold counts. Redfin and Zillow
+ * are tried first when the workflow supports them; otherwise a clearly-labeled
+ * better local/public land source may be used (never blended silently, never
+ * relabeled as Redfin/Zillow). These sources are MARKET CONTEXT ONLY and can
+ * never verify parcel identity.
+ */
+export const MARKET_COUNT_SOURCE_PRIORITY = [
+  'Redfin',
+  'Zillow',
+  'local MLS public search',
+  'county/local public listing portal',
+  'Realtor.com land search',
+  'LandWatch market listings',
+] as const;
+
+/** A land-listing count with the source it came from. count === null => unavailable. */
+export interface MarketCount {
+  /** Land-specific count, or null when unavailable. Never a home/housing count. */
+  count: number | null;
+  /** Source name for the count, or the unavailable-source label when count is null. */
+  source: string;
+  /** True only when the count deliberately blends multiple sources (all listed). */
+  blended?: boolean;
+  /** Every source that fed a blended count (required when blended === true). */
+  blendedSources?: string[];
+}
+
+/** Annual growth context for the local area. Labeled by TYPE and source; never a bare number. */
+export interface AnnualGrowth {
+  /** Percent (e.g. 1.8 for 1.8%), or null when unavailable. */
+  value: number | null;
+  /** What the number means. 'unavailable' when value is null. */
+  type: 'population' | 'market_price' | 'unavailable';
+  /** Source/status label, e.g. "Census / cached source" or the unavailable label. */
+  source: string;
+}
+
+/** Optional, caller-supplied local market data for the Local Area Data lane.
+ *  Everything defaults to clearly-labeled "unavailable" — the pure lane never
+ *  fetches anything and never invents a count. */
+export interface LocalAreaMarketInput {
+  activeLandListings?: MarketCount;
+  soldLandLast6Months?: MarketCount;
+  annualGrowth?: AnnualGrowth;
+}
+
 export type LaneStatus = 'success' | 'blocked' | 'timeout' | 'not_available' | 'skipped' | 'failed';
 export type LaneSourceType = 'landportal' | 'local_area' | 'verification' | 'redfin_zillow' | 'landwatch' | 'strategy';
 
@@ -64,6 +114,9 @@ export interface DukeReportLanesInput {
   compMode: CompMode;
   /** County/state anchor from the operator input (local context only). */
   localAreaAnchor?: string | null;
+  /** Optional market data for the Local Area Data snapshot (context only).
+   *  Omitted/partial fields render as clearly-labeled "unavailable". */
+  localAreaMarket?: LocalAreaMarketInput | null;
   /** Verified parcel acreage when known (for the LandWatch > 50 ac gate). */
   acres?: number | null;
 }
@@ -92,6 +145,125 @@ function lane(partial: Partial<DukeLaneResult> & Pick<DukeLaneResult, 'laneId' |
     compCreditUsed: false,
     ...partial,
   };
+}
+
+function sourceRank(source: string): number {
+  const i = MARKET_COUNT_SOURCE_PRIORITY.findIndex(s => s.toLowerCase() === source.trim().toLowerCase());
+  return i === -1 ? MARKET_COUNT_SOURCE_PRIORITY.length : i;
+}
+
+/**
+ * Pick the single best-ranked REAL land count from supplied candidates, honoring
+ * the Redfin > Zillow > local/public > other order. Candidates with a null/NaN
+ * count are dropped — this never invents a count and never blends. Returns an
+ * unavailable MarketCount when nothing usable was supplied. Pure.
+ */
+export function selectPreferredMarketCount(
+  candidates: ReadonlyArray<{ source: string; count: number | null }>,
+): MarketCount {
+  const valid = candidates.filter(
+    c => typeof c.count === 'number' && Number.isFinite(c.count) && c.count >= 0 && !!c.source.trim(),
+  );
+  if (!valid.length) return { count: null, source: MARKET_COUNT_UNAVAILABLE_SOURCE };
+  valid.sort((a, b) => sourceRank(a.source) - sourceRank(b.source));
+  return { count: valid[0].count, source: valid[0].source.trim() };
+}
+
+/** Normalize a possibly-missing MarketCount to an explicit unavailable record. */
+function normCount(c: MarketCount | undefined): MarketCount {
+  if (c && typeof c.count === 'number' && Number.isFinite(c.count) && c.count >= 0) return c;
+  return { count: null, source: MARKET_COUNT_UNAVAILABLE_SOURCE };
+}
+
+/** Render one count + its source as two findings lines (count line, source line). */
+function countLines(label: string, c: MarketCount): [string, string] {
+  if (c.count === null) {
+    return [`${label}: unavailable`, `${label} source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`];
+  }
+  const blended = c.blended && c.blendedSources?.length;
+  const countText = blended ? `${c.count} (blended count)` : `${c.count}`;
+  const sourceText = blended ? `blended — ${c.blendedSources!.join(', ')}` : c.source.trim();
+  return [`${label}: ${countText}`, `${label} source: ${sourceText}`];
+}
+
+/** Render the annual-growth line, always labeling TYPE and source (never bare). */
+function growthLine(g: AnnualGrowth | undefined): string {
+  if (!g || g.value === null || g.type === 'unavailable' || !Number.isFinite(g.value as number)) {
+    return `Annual growth: unavailable | Source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`;
+  }
+  const kind = g.type === 'population' ? 'Annual population growth' : 'Annual market price growth';
+  return `${kind}: ${g.value}% | Source: ${g.source.trim() || MARKET_COUNT_UNAVAILABLE_SOURCE}`;
+}
+
+/**
+ * Build the compact Local Area Data lane (unverified market snapshot). Pure
+ * string assembly over caller-supplied context — it fetches nothing, invents no
+ * count, scores/values/offers nothing, and never verifies identity. Every count
+ * carries a source; missing data is labeled "unavailable", not guessed.
+ */
+function buildLocalAreaLane(
+  parcelVerified: boolean,
+  anchor: string | null,
+  market: LocalAreaMarketInput | null | undefined,
+): DukeLaneResult {
+  const hasAnchor = !!(anchor && anchor.trim());
+  const areaText = hasAnchor ? anchor!.trim() : 'not provided';
+
+  // Verified parcels show the real parcel block elsewhere; keep this lane terse.
+  if (parcelVerified) {
+    return lane({
+      laneId: 'local_area_data', laneName: 'Local Area Data', sourceType: 'local_area',
+      canVerifyParcel: false,
+      status: hasAnchor ? 'success' : 'not_available',
+      findings: hasAnchor ? [`Local area: ${areaText}`] : [],
+      nextAction: 'For assessor/tax/GIS/zoning/utilities detail, run a County Deep Dive (on demand) — not part of the Duke Report.',
+    });
+  }
+
+  // Unverified with no anchor: nothing to anchor market context to.
+  if (!hasAnchor) {
+    return lane({
+      laneId: 'local_area_data', laneName: 'Local Area Data', sourceType: 'local_area',
+      canVerifyParcel: false,
+      status: 'not_available',
+      findings: [LOCAL_AREA_NOT_VERIFIED_LABEL],
+      nextAction: 'Provide a county/state anchor for local market context, then verify parcel identity via exact APN, address, or owner in an official county or LandPortal source.',
+    });
+  }
+
+  // Unverified WITH an anchor: emit the compact market snapshot.
+  const active = normCount(market?.activeLandListings);
+  const sold = normCount(market?.soldLandLast6Months);
+  const [activeCountLine, activeSourceLine] = countLines('Active land listings', active);
+  const [soldCountLine, soldSourceLine] = countLines('Land sold last 6 months', sold);
+
+  const haveActive = active.count !== null;
+  const haveSold = sold.count !== null;
+  const sourceStatus: 'success' | 'partial' | 'not_available' =
+    haveActive && haveSold ? 'success' : (haveActive || haveSold) ? 'partial' : 'not_available';
+
+  const marketRead = (haveActive || haveSold)
+    ? `${areaText}: ${haveActive ? `${active.count} active` : 'active count unavailable'}, ${haveSold ? `${sold.count} sold in the last 6 months` : 'sold count unavailable'} (land listings, market context only — parcel not verified).`
+    : `Land market counts for ${areaText} are unavailable from current default sources. Treat as context only; no parcel was verified.`;
+
+  return lane({
+    laneId: 'local_area_data', laneName: 'Local Area Data', sourceType: 'local_area',
+    canVerifyParcel: false,
+    status: 'success', // the lane successfully produced compact context
+    findings: [
+      LOCAL_AREA_NOT_VERIFIED_LABEL,
+      `Area: ${areaText}`,
+      growthLine(market?.annualGrowth),
+      activeCountLine,
+      activeSourceLine,
+      soldCountLine,
+      soldSourceLine,
+      `Market read: ${marketRead}`,
+      `Source status: ${sourceStatus}`,
+    ],
+    warnings: ['Local Area, Redfin/Zillow, and other market sources are context only and can never verify parcel identity.'],
+    nextAction: 'Verify parcel identity via exact APN, address, or owner in an official county or LandPortal source. For market counts run market scout or a manual Redfin/Zillow check; for assessor/tax/GIS/zoning detail run a County Deep Dive (on demand).',
+  });
 }
 
 /**
@@ -127,21 +299,12 @@ export function buildDukeReportLanes(input: DukeReportLanesInput): DukeReportLan
     durationMs: lp.durationMs,
   });
 
-  // ── Lane 2: Local Area Data (quick, non-verifying, compact) ─────────────────
-  const hasAnchor = !!(input.localAreaAnchor && input.localAreaAnchor.trim());
-  const localAreaFindings = hasAnchor
-    ? [`Local area: ${input.localAreaAnchor!.trim()}`, ...(parcelVerified ? [] : [LOCAL_AREA_NOT_VERIFIED_LABEL])]
-    : (parcelVerified ? [] : [LOCAL_AREA_NOT_VERIFIED_LABEL]);
-  const localAreaLane = lane({
-    laneId: 'local_area_data',
-    laneName: 'Local Area Data',
-    sourceType: 'local_area',
-    canVerifyParcel: false,
-    // Returns compact context when an anchor exists; otherwise nothing to show.
-    status: hasAnchor ? 'success' : 'not_available',
-    findings: localAreaFindings,
-    nextAction: 'For assessor/tax/GIS/zoning/utilities detail, run a County Deep Dive (on demand) — not part of the default report.',
-  });
+  // ── Lane 2: Local Area Data (quick, non-verifying, compact market snapshot) ──
+  const localAreaLane = buildLocalAreaLane(
+    parcelVerified,
+    input.localAreaAnchor ?? null,
+    input.localAreaMarket ?? null,
+  );
 
   // ── Lane 3: Verification Captain (final decision; LandPortal-only) ──────────
   const verificationCaptainLane = lane({

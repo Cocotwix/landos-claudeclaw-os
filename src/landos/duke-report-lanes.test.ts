@@ -7,9 +7,12 @@ import {
   buildDukeReportLanes,
   buildCountyDeepDivePlaceholder,
   renderDukeReportLanes,
+  selectPreferredMarketCount,
   LANDPORTAL_VERIFICATION_TIMEOUT_MS,
   LANDWATCH_MIN_ACRES,
   LOCAL_AREA_NOT_VERIFIED_LABEL,
+  MARKET_COUNT_UNAVAILABLE_SOURCE,
+  MARKET_COUNT_SOURCE_PRIORITY,
   type DukeReportLanesInput,
 } from './duke-report-lanes.js';
 
@@ -145,6 +148,155 @@ describe('renderDukeReportLanes (compact dashboard report)', () => {
       landPortal: { status: 'timeout', verified: false }, localAreaAnchor: 'Clay County, TN',
     })));
     expect(/geocod|proximity|nearest parcel|map pin|coordinate|street view|satellite/i.test(out)).toBe(false);
+  });
+});
+
+describe('Local Area Data — compact unverified market snapshot', () => {
+  const localFindings = (over: Partial<DukeReportLanesInput> = {}) =>
+    laneOf(buildDukeReportLanes(baseInput({ localAreaAnchor: 'Clay County, TN', ...over })), 'local_area_data').findings;
+  const joined = (over: Partial<DukeReportLanesInput> = {}) => localFindings(over).join('\n');
+
+  it('leads with the exact "Local Area Context, Not Parcel Verified" label and the area name', () => {
+    const f = localFindings();
+    expect(f[0]).toBe(LOCAL_AREA_NOT_VERIFIED_LABEL);
+    expect(f.some(x => /^Area: Clay County, TN$/.test(x))).toBe(true);
+  });
+
+  it('includes an annual growth field — unavailable placeholder when no data', () => {
+    expect(joined()).toMatch(new RegExp(`Annual growth: unavailable \\| Source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`));
+  });
+
+  it('annual growth labels TYPE and source when available (population)', () => {
+    const out = joined({ localAreaMarket: { annualGrowth: { value: 1.8, type: 'population', source: 'Census / cached source' } } });
+    expect(out).toMatch(/Annual population growth: 1\.8% \| Source: Census \/ cached source/);
+    expect(out).not.toMatch(/Annual growth: unavailable/);
+  });
+
+  it('annual growth labels market-price type + source when supplied', () => {
+    const out = joined({ localAreaMarket: { annualGrowth: { value: 4.2, type: 'market_price', source: 'Zillow' } } });
+    expect(out).toMatch(/Annual market price growth: 4\.2% \| Source: Zillow/);
+  });
+
+  it('includes active + sold land count fields with unavailable placeholders by default', () => {
+    const out = joined();
+    expect(out).toMatch(/Active land listings: unavailable/);
+    expect(out).toMatch(new RegExp(`Active land listings source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`));
+    expect(out).toMatch(/Land sold last 6 months: unavailable/);
+    expect(out).toMatch(new RegExp(`Land sold last 6 months source: ${MARKET_COUNT_UNAVAILABLE_SOURCE}`));
+    expect(out).toMatch(/Source status: not_available/);
+  });
+
+  it('every supplied count carries its source; Redfin/Zillow are preferred labels', () => {
+    const out = joined({
+      localAreaMarket: {
+        activeLandListings: { count: 14, source: 'Redfin' },
+        soldLandLast6Months: { count: 6, source: 'Zillow' },
+      },
+    });
+    expect(out).toMatch(/Active land listings: 14/);
+    expect(out).toMatch(/Active land listings source: Redfin/);
+    expect(out).toMatch(/Land sold last 6 months: 6/);
+    expect(out).toMatch(/Land sold last 6 months source: Zillow/);
+    expect(out).toMatch(/Source status: success/);
+  });
+
+  it('supports fallback source labels without pretending they are Redfin/Zillow', () => {
+    const out = joined({
+      localAreaMarket: {
+        activeLandListings: { count: 9, source: 'local MLS public search' },
+        soldLandLast6Months: { count: 3, source: 'LandWatch market listings' },
+      },
+    });
+    expect(out).toMatch(/Active land listings source: local MLS public search/);
+    expect(out).toMatch(/Land sold last 6 months source: LandWatch market listings/);
+    expect(out).not.toMatch(/source: Redfin/);
+    expect(out).not.toMatch(/source: Zillow/);
+  });
+
+  it('partial data yields a partial source status, not a fabricated count', () => {
+    const out = joined({ localAreaMarket: { activeLandListings: { count: 4, source: 'Redfin' } } });
+    expect(out).toMatch(/Active land listings: 4/);
+    expect(out).toMatch(/Land sold last 6 months: unavailable/);
+    expect(out).toMatch(/Source status: partial/);
+  });
+
+  it('marks a blended count explicitly with all sources listed', () => {
+    const out = joined({
+      localAreaMarket: { activeLandListings: { count: 20, source: 'blended', blended: true, blendedSources: ['Redfin', 'Zillow'] } },
+    });
+    expect(out).toMatch(/Active land listings: 20 \(blended count\)/);
+    expect(out).toMatch(/Active land listings source: blended — Redfin, Zillow/);
+  });
+
+  it('never invents a count: no bare digits appear in any unavailable count field', () => {
+    const f = localFindings();
+    const countLines = f.filter(x => /(Active land listings|Land sold last 6 months):/.test(x));
+    for (const line of countLines) expect(line).toMatch(/: unavailable$/);
+  });
+
+  it('an unverified report produces no score/value/offer/strategy/comp conclusion', () => {
+    const r = buildDukeReportLanes(baseInput({ localAreaAnchor: 'Clay County, TN' }));
+    expect(r.parcelVerified).toBe(false);
+    expect(laneOf(r, 'strategy_offer').status).toBe('blocked');
+    expect(laneOf(r, 'strategy_offer').findings).toEqual([]);
+    expect(laneOf(r, 'redfin_zillow_comps').status).toBe('blocked');
+    const rendered = renderDukeReportLanes(r);
+    expect(rendered).not.toMatch(/worth \$|Expected Value \$|offer \$|% of EV/i);
+  });
+
+  it('does not emit the old "full Fast Default report" wording', () => {
+    const rendered = renderDukeReportLanes(buildDukeReportLanes(baseInput({ localAreaAnchor: 'Clay County, TN' })));
+    expect(rendered).not.toMatch(/full Fast Default report/i);
+    expect(rendered).not.toMatch(/Want the full report/i);
+  });
+
+  it('market sources can never verify identity (Redfin/Zillow/LandWatch/Realtor.com)', () => {
+    const r = buildDukeReportLanes(baseInput({
+      localAreaAnchor: 'Clay County, TN',
+      localAreaMarket: {
+        activeLandListings: { count: 14, source: 'Redfin' },
+        soldLandLast6Months: { count: 6, source: 'LandWatch market listings' },
+      },
+    }));
+    expect(r.parcelVerified).toBe(false);
+    expect(laneOf(r, 'local_area_data').canVerifyParcel).toBe(false);
+    expect(laneOf(r, 'local_area_data').verifiedParcelIdentity).toBe(false);
+    expect(laneOf(r, 'verification_captain').verifiedParcelIdentity).toBe(false);
+  });
+
+  it('emits no coordinate/geocoder/proximity/map-pin/visual language with market data present', () => {
+    const r = buildDukeReportLanes(baseInput({
+      localAreaAnchor: 'Clay County, TN',
+      localAreaMarket: { activeLandListings: { count: 14, source: 'Redfin' }, annualGrowth: { value: 2, type: 'population', source: 'Census' } },
+    }));
+    expect(/geocod|proximity|nearest parcel|map pin|coordinate|street view|satellite|centroid/i.test(JSON.stringify(r))).toBe(false);
+  });
+});
+
+describe('selectPreferredMarketCount — Redfin > Zillow > local/public order', () => {
+  it('picks the highest-priority real count regardless of input order', () => {
+    const got = selectPreferredMarketCount([
+      { source: 'LandWatch market listings', count: 3 },
+      { source: 'Redfin', count: 11 },
+      { source: 'Zillow', count: 8 },
+    ]);
+    expect(got).toEqual({ count: 11, source: 'Redfin' });
+  });
+
+  it('falls back to a labeled local/public source without pretending it is Redfin/Zillow', () => {
+    const got = selectPreferredMarketCount([{ source: 'local MLS public search', count: 7 }]);
+    expect(got).toEqual({ count: 7, source: 'local MLS public search' });
+  });
+
+  it('returns unavailable (never invents) when no usable count is supplied', () => {
+    expect(selectPreferredMarketCount([])).toEqual({ count: null, source: MARKET_COUNT_UNAVAILABLE_SOURCE });
+    expect(selectPreferredMarketCount([{ source: 'Redfin', count: null }])).toEqual({ count: null, source: MARKET_COUNT_UNAVAILABLE_SOURCE });
+  });
+
+  it('priority list keeps Redfin and Zillow ahead of fallbacks', () => {
+    expect(MARKET_COUNT_SOURCE_PRIORITY[0]).toBe('Redfin');
+    expect(MARKET_COUNT_SOURCE_PRIORITY[1]).toBe('Zillow');
+    expect(MARKET_COUNT_SOURCE_PRIORITY).toContain('LandWatch market listings');
   });
 });
 

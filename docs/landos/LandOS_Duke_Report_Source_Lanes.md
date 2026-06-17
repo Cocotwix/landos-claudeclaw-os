@@ -17,9 +17,24 @@ the lane layer itself.
    3-minute ceiling** (`LANDPORTAL_VERIFICATION_TIMEOUT_MS`). Timeout → lane
    status `timeout` (never a whole-report collapse). Uses the strengthened
    APN/owner exact-search fallback; no coordinates/proximity/point/geocoder.
-2. **Local Area Data** — quick, compact, **non-verifying**. Returns county/state
-   context only. When unverified it carries the label **"Local Area Context, Not
-   Parcel Verified"**. Not a deep county-government lane.
+2. **Local Area Data** — quick, compact, **non-verifying** market snapshot. When
+   unverified it leads with the label **"Local Area Context, Not Parcel
+   Verified"** and emits a compact snapshot: area name, annual growth (typed +
+   sourced, or `unavailable`), active land listing count + source, sold land
+   (last 6 months) count + source, a plain-English market read, a market source
+   status (`success | partial | not_available`), and the next action to verify
+   identity. It fetches nothing on its own and never invents a count — missing
+   data is labeled `unavailable from current default sources`, not guessed. Not a
+   deep county-government lane.
+
+   **Land-count source order** (`MARKET_COUNT_SOURCE_PRIORITY`,
+   `selectPreferredMarketCount`): Redfin → Zillow → local MLS public search →
+   county/local public listing portal → Realtor.com land search → LandWatch
+   market listings → `unavailable`. Counts are land-specific only (never home
+   sales presented as land), every count carries its source, fallback sources are
+   labeled as themselves (never relabeled Redfin/Zillow), and a blended count is
+   shown only when explicitly marked with all sources listed. These counts are
+   market context only when the parcel is unverified — none can verify identity.
 3. **Verification Captain** — final decision. Consumes **only** the LandPortal
    lane (and, when implemented, official county/assessor/GIS exact records).
    Never verifies from local area / Redfin / Zillow / LandWatch / visuals / map

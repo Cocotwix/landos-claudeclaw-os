@@ -111,7 +111,7 @@ This is a "Parcel Not Verified" state, not a confirmed LP coverage gap. Keep eve
 
 1. **County assessor / GIS exact-address recovery.** If a county/state anchor exists, run the bounded exact-address recovery from `duke-unconfirmed-parcel.md` (Step 2 disambiguation pass): exact or partial address + county/state against county assessor or county GIS, only if reachable through the normal allowed path. Exact-address verification only -- never coordinates or proximity. If this clearly ties the exact address to a single APN, proceed to verified Fast Default.
 2. **Local Area Context, Not Parcel Verified.** If county/GIS exact-address lookup cannot verify a single parcel (failed or unavailable), return `Local Area Context, Not Parcel Verified` using only the city/county/state anchor from Tyler's input for market/local context. Never identify or infer a parcel from area context.
-3. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+3. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the Duke Report."
 
 State plainly what Duke tried, distinguishing: (a) LandPortal zero-candidate / address-format mismatch, (b) county/GIS exact-address recovery failed or unavailable, (c) Local Area Context, Not Parcel Verified, (d) the one next action. State that no score, valuation, or offer was produced because parcel identity was not verified. Emit the `landos-persist` block with `status: "success"`, `reportStatus: "partial"`, `verificationStatus: "not_verified"`, and `parcel.verified: false`.
 
@@ -122,7 +122,7 @@ A timeout is a first-class unverified state, not a parcel mismatch. Keep every p
 1. **Retry once.** Re-run the same exact-address `lp_resolve_property` lookup one time only, and only if still within the runtime budget. Never retry more than once.
 2. **County assessor / GIS exact-address fallback.** If the retry also times out, run the bounded exact-address disambiguation pass from `duke-unconfirmed-parcel.md` (exact address + county/state against county assessor or county GIS, only if reachable through the normal allowed path). Exact-address verification only -- never coordinates or proximity.
 3. **Local Area Context, Not Parcel Verified.** If still not definitively verified, return `Local Area Context, Not Parcel Verified` using only the location anchor from Tyler's input. Do not identify or infer a parcel from area context.
-4. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the full Fast Default report."
+4. **One next action.** End with exactly one next action: "Send the APN + county, or owner name + county, and I will verify the parcel and run the Duke Report."
 
 State plainly what Duke tried and that no score, valuation, or offer was produced because parcel identity was not verified. Emit the `landos-persist` block with `status: "timeout"`, `reportStatus: "partial"`, `verificationStatus: "not_verified"`, and `parcel.verified: false`.
 
@@ -427,7 +427,7 @@ Do NOT include in Fast Default Report:
 
 Close after the landos-persist block with:
 
-> Want the full report with county checklist, Ace handoff, and area stats? Just ask.
+> Want a County Deep Dive (county checklist, Ace handoff, area stats)? Just ask.
 
 ---
 

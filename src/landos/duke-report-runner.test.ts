@@ -221,6 +221,19 @@ describe('blockedPreflightToLanes — LandPortal timeout returns Source Lanes, n
     expect(la.findings.some(f => /Clay County, TN/.test(f))).toBe(true);
     expect(rendered).toMatch(/Clay County, TN/);
   });
+  it('Local Area Data lane emits the compact market snapshot (growth + counts + sources)', () => {
+    const f = laneById(r, 'local_area_data').findings.join('\n');
+    expect(f).toMatch(/Annual growth: unavailable \| Source: unavailable from current default sources/);
+    expect(f).toMatch(/Active land listings: unavailable/);
+    expect(f).toMatch(/Active land listings source: unavailable from current default sources/);
+    expect(f).toMatch(/Land sold last 6 months: unavailable/);
+    expect(f).toMatch(/Land sold last 6 months source: unavailable from current default sources/);
+    expect(f).toMatch(/Source status: not_available/);
+  });
+  it('does not emit the old "full Fast Default report" wording', () => {
+    expect(rendered).not.toMatch(/full Fast Default report/i);
+    expect(rendered).not.toMatch(/Want the full report/i);
+  });
   it('final report includes exactly "Local Area Context, Not Parcel Verified"', () => {
     expect(r.unverifiedLabel).toBe(LOCAL_AREA_NOT_VERIFIED_LABEL);
     expect(rendered).toContain(LOCAL_AREA_NOT_VERIFIED_LABEL);
