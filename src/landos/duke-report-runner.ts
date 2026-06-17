@@ -20,6 +20,12 @@
 
 import type { DukePreflightOutcome } from './duke-preflight.js';
 import type { DukeDashboardRunInfo } from './duke-persist-adapter.js';
+import {
+  buildDukeReportLanes,
+  LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+  type DukeReportLanes,
+  type LandPortalLaneInput,
+} from './duke-report-lanes.js';
 
 export type CompMode = 'redfin_zillow' | 'landportal_credit';
 
@@ -93,6 +99,23 @@ export interface DukeReportRunResult {
   compCreditUsed: boolean;
   summary: string;
   error?: string;
+  /** Default Duke Report source lanes (verification + downstream gating). */
+  lanes?: DukeReportLanes;
+}
+
+/** Parse verified acreage from the preflight parcel block (lot_size_acres), if present. */
+function acresFromParcelBlock(parcelBlock: string): number | null {
+  const m = parcelBlock.match(/"lot_size_acres"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/);
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Parse a compact identity summary (APN/FIPS) from the parcel block, if present. */
+function identityFromParcelBlock(parcelBlock: string): string | null {
+  const apn = parcelBlock.match(/"apn"\s*:\s*"([^"]+)"/)?.[1];
+  const fips = parcelBlock.match(/"fips"\s*:\s*"([^"]+)"/)?.[1];
+  const bits = [apn ? `APN ${apn}` : '', fips ? `FIPS ${fips}` : ''].filter(Boolean);
+  return bits.length ? bits.join(', ') : null;
 }
 
 /**
@@ -106,8 +129,11 @@ export async function runDukeReportFromTask(
   const meta = parseDukeReportTask(task.prompt) ?? {
     type: 'duke_report' as const, compMode: 'redfin_zillow' as CompMode, cardId: null, lpCompCreditApproval: false, source: 'dashboard',
   };
-  const timeoutMs = deps.timeoutMs ?? 120_000;
+  // LandPortal exact search gets up to a 3-minute verification ceiling. A slow
+  // LandPortal lane must never collapse the whole report.
+  const landPortalTimeoutMs = Math.min(deps.timeoutMs ?? LANDPORTAL_VERIFICATION_TIMEOUT_MS, LANDPORTAL_VERIFICATION_TIMEOUT_MS);
   const dukeText = stripSentinel(task.prompt);
+  const localAreaAnchor = localAnchorFromText(dukeText);
 
   const baseResult = {
     compMode: meta.compMode,
@@ -116,7 +142,9 @@ export async function runDukeReportFromTask(
   };
 
   try {
-    const pre = await deps.runDukePreflight(dukeText, deps.mcpAllowlist, timeoutMs);
+    const started = Date.now();
+    const pre = await deps.runDukePreflight(dukeText, deps.mcpAllowlist, landPortalTimeoutMs);
+    const durationMs = Date.now() - started;
 
     if (pre.type === 'verified') {
       // Parcel verified: inject the verified parcel block, run Duke with the
@@ -131,6 +159,12 @@ export async function runDukeReportFromTask(
         status,
         responseText: run.text ?? '',
       });
+      const lanes = buildDukeReportLanes({
+        landPortal: { status: 'success', verified: true, durationMs, identitySummary: identityFromParcelBlock(pre.parcelBlock) },
+        compMode: meta.compMode,
+        localAreaAnchor,
+        acres: acresFromParcelBlock(pre.parcelBlock),
+      });
       return {
         ...baseResult,
         status: 'completed',
@@ -139,30 +173,60 @@ export async function runDukeReportFromTask(
         reportStatus: run.aborted ? 'failed' : 'partial',
         summary: run.aborted
           ? 'Duke Report run aborted/timed out after a verified parcel.'
-          : (run.text?.trim().slice(0, 200) || 'Duke Report completed on a verified parcel.'),
+          : (run.text?.trim().slice(0, 200) || lanes.summary),
+        lanes,
       };
     }
 
-    // Not verified (blocked or skip): NO parcel-specific writeback. Local Area
-    // Context is allowed but explicitly labeled not parcel-verified.
+    // Not verified (blocked / timeout / skip): NO parcel-specific writeback.
+    // Build the source-lane report so a LandPortal timeout never collapses the
+    // output — the Local Area Data lane still contributes compact context.
+    const lpStatus: LandPortalLaneInput['status'] =
+      pre.type === 'blocked' && pre.reason === 'lp_timeout' ? 'timeout'
+      : pre.type === 'blocked' && pre.reason === 'multiple_candidates' ? 'multiple_candidates'
+      : pre.type === 'blocked' && pre.reason === 'preflight_error' ? 'error'
+      : 'not_verified';
     const reason = pre.type === 'blocked' ? pre.message : 'No parcel identifier found in the task.';
+    const lanes = buildDukeReportLanes({
+      landPortal: { status: lpStatus, verified: false, durationMs, reason },
+      compMode: meta.compMode,
+      localAreaAnchor,
+    });
     return {
       ...baseResult,
       status: 'completed',
       verified: false,
       blocked: true,
-      reportStatus: 'blocked',
-      summary: `Parcel not verified — blocked before valuation/offer. ${reason} Any market research is Local Area Context, Not Parcel Verified.`,
+      reportStatus: lpStatus === 'timeout' ? 'partial' : 'blocked',
+      summary: lanes.summary,
+      lanes,
     };
   } catch (err) {
+    const lanes = buildDukeReportLanes({
+      landPortal: { status: 'error', verified: false, reason: (err as Error)?.message ?? 'run error' },
+      compMode: meta.compMode,
+      localAreaAnchor,
+    });
     return {
       ...baseResult,
       status: 'failed',
       verified: false,
       blocked: true,
       reportStatus: 'failed',
-      summary: 'Duke Report run failed before completing.',
+      summary: lanes.summary,
       error: (err as Error)?.message ?? String(err),
+      lanes,
     };
   }
+}
+
+/** Extract a "<County> County, <ST>"-style local anchor from the operator text
+ *  for the Local Area Data lane (context only — never used to verify identity). */
+function localAnchorFromText(text: string): string | null {
+  const county = text.match(/\b([A-Za-z][A-Za-z.'\- ]*?)\s+County\b/i)?.[1]?.trim();
+  const state = (text.match(/\b([A-Z]{2})\b/g) ?? []).slice(-1)[0];
+  if (county && state) return `${county} County, ${state}`;
+  if (county) return `${county} County`;
+  if (state) return state;
+  return null;
 }
