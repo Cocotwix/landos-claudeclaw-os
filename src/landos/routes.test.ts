@@ -161,6 +161,51 @@ describe('LandOS routes — rules, playbooks, research', () => {
   });
 });
 
+describe('LandOS routes — intake orchestrator auth', () => {
+  const INTAKE_BODY = { transport: 'manual_api', text: 'APN: 051-012-05, Colleton County, SC' };
+
+  it('accepts POST /api/landos/intake with the ?token= query param (same mechanism as other dashboard routes)', async () => {
+    const res = await post('/api/landos/intake', INTAKE_BODY);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.plan).toBeTypeOf('object');
+    expect(body.plan.classification.classification).toBe('parcel_level');
+  });
+
+  it('rejects POST /api/landos/intake without a token', async () => {
+    const res = await app.request('/api/landos/intake', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(INTAKE_BODY),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects POST /api/landos/intake when the token is sent as a header instead of the query param', async () => {
+    // Reproduces the 401 seen from the browser console: the dashboard auth
+    // middleware reads c.req.query('token') only — Authorization/x-dashboard-token
+    // headers are ignored. The fix is to send ?token=, not a header.
+    const res = await app.request('/api/landos/intake', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TOKEN}`,
+        'x-dashboard-token': TOKEN,
+      },
+      body: JSON.stringify(INTAKE_BODY),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('gates /api/landos/intake identically to an existing dashboard route', async () => {
+    // Same auth behavior as a known-good route: no token -> 401 for both.
+    const intakeNoToken = await app.request('/api/landos/intake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(INTAKE_BODY) });
+    const overviewNoToken = await app.request('/api/landos/overview');
+    expect(intakeNoToken.status).toBe(overviewNoToken.status);
+    expect(intakeNoToken.status).toBe(401);
+  });
+});
+
 describe('LandOS routes — offer scenarios', () => {
   it('evaluates strategies and labels DRAFT output', async () => {
     const res = await post('/api/landos/strategies/evaluate', { expectedValueUsd: 100000 });
