@@ -2,7 +2,7 @@
 // src/dashboard.contract.test.ts: Hono app.request(), no real port, token
 // auth from src/test-env-setup.ts, in-memory DBs.
 
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Hono } from 'hono';
 
 import { _initTestDatabase } from '../db.js';
@@ -206,6 +206,34 @@ describe('LandOS routes — intake orchestrator auth', () => {
   });
 });
 
+describe('SPA shell is served no-store (stale-bundle regression)', () => {
+  // Root cause of "the new button does nothing": the SPA HTML shell was cached
+  // by the browser while assets are content-hashed + immutable, pinning the user
+  // to an old bundle. The shell MUST be no-store so new frontend builds load.
+  it('GET / sets Cache-Control: no-store on the SPA shell', async () => {
+    const res = await app.request('/');
+    expect(res.status).toBe(200);
+    expect((res.headers.get('cache-control') ?? '').toLowerCase()).toContain('no-store');
+  });
+
+  it('GET a SPA deep link (/landos) sets Cache-Control: no-store', async () => {
+    const res = await app.request('/landos');
+    expect(res.status).toBe(200);
+    expect((res.headers.get('cache-control') ?? '').toLowerCase()).toContain('no-store');
+  });
+
+  it('hashed assets stay immutable (only the shell is no-store)', async () => {
+    // Sanity: the immutable policy on /assets/* is correct and unchanged.
+    const res = await app.request('/');
+    const html = await res.text();
+    const m = html.match(/assets\/[A-Za-z0-9_.-]+\.js/);
+    if (m) {
+      const asset = await app.request('/' + m[0]);
+      expect((asset.headers.get('cache-control') ?? '').toLowerCase()).toContain('immutable');
+    }
+  });
+});
+
 describe('LandOS routes — Duke execution bridge auth + safety', () => {
   // Use non-identity text so the route takes the preflight "skip" path and makes
   // NO live LandPortal call (verification never starts without an identifier).
@@ -230,9 +258,7 @@ describe('LandOS routes — Duke execution bridge auth + safety', () => {
     expect(body.dealCardUpdatePlan.persistedNow).toBe(false);
   });
 
-  it('returns the FULL contract shape the UI renders (regression: endpoint wired + shaped)', async () => {
-    // If this route is missing/misshaped, the dashboard button appears to do
-    // nothing. Assert both top-level objects and the arrays the UI maps over.
+  it('returns the FULL product contract shape the UI renders (verification + analysis + ace + market + deal)', async () => {
     const res = await post('/api/landos/intake/duke-verification', NO_IDENTITY);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
@@ -240,6 +266,11 @@ describe('LandOS routes — Duke execution bridge auth + safety', () => {
     expect(body.verification.status).toBeTypeOf('string');
     expect(Array.isArray(body.verification.sourceAttempts)).toBe(true);
     expect(Array.isArray(body.verification.dataGaps)).toBe(true);
+    expect(body.dukeAnalysis).toBeTypeOf('object');
+    expect(body.dukeAnalysis.strategyStatus).toBe('blocked_unverified_parcel');
+    expect(body.acePrep).toBeTypeOf('object');
+    expect(Array.isArray(body.acePrep.questions)).toBe(true);
+    expect(body.marketPulse).toBeTypeOf('object');
     expect(body.dealCardUpdatePlan).toBeTypeOf('object');
     expect(body.dealCardUpdatePlan.matchStatus).toBeTypeOf('string');
     expect(Array.isArray(body.dealCardUpdatePlan.timeline)).toBe(true);
@@ -253,9 +284,82 @@ describe('LandOS routes — Duke execution bridge auth + safety', () => {
     expect(body.verification.identity).toBeUndefined();
   });
 
+  it('a FULL street address is a valid identifier — never no_parcel_identifier_in_input', async () => {
+    // 731 Filter Plant Dr, Fayetteville, NC 28301 parses to an address with no
+    // FIPS -> LandPortal returns ambiguous_fips offline (no network). The route
+    // must attempt the lookup and report needs-county/FIPS, not "no identifier".
+    const res = await post('/api/landos/intake/duke-verification', { text: '731 Filter Plant Dr, Fayetteville, NC 28301' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.verification.dataGaps).not.toContain('no_parcel_identifier_in_input');
+    expect(body.verification.dataGaps).toContain('needs_county_or_fips');
+    expect(body.verification.sourceAttempts[0].status).not.toBe('skipped');
+    expect(body.verification.parcelVerified).toBe(false);
+    expect(body.verification.strategyUnderwritingBlocked).toBe(true);
+    // Market Pulse v1 runs as labeled local-area context.
+    expect(body.marketPulse.eligible).toBe(true);
+    expect(body.marketPulse.label).toBe('Local Area Context, Not Parcel Verified');
+    const pop = body.marketPulse.signals.find((s: any) => s.signal === 'population_growth_direction');
+    expect(pop.status).toBe('source_available');
+    expect(pop.sourceUrl).toMatch(/census\.gov/);
+  });
+
   it('requires text', async () => {
     const res = await post('/api/landos/intake/duke-verification', {});
     expect(res.status).toBe(400);
+  });
+});
+
+describe('LandOS routes — Duke property data (propertyid + FIPS, non-comp)', () => {
+  // Proves the propertyid+FIPS path bypasses /search, pulls /property-data, and
+  // returns a verified dashboard contract with normalized property data. global
+  // fetch is stubbed (no real network / no real token / no comp credit).
+  const PROP_BODY = { text: 'propertyid 173393466, FIPS 47031' };
+  let fetchCalls: string[] = [];
+
+  beforeEach(() => {
+    fetchCalls = [];
+    process.env.LP_JWT_TOKEN = 'test-fake-token'; // fake; the stub ignores it
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      fetchCalls.push(String(url));
+      const property = {
+        propertyid: '173393466', apn: '076-022.02', situsfullstreetaddress: '123 Smoke Rd',
+        situscity: 'Manchester', situsstate: 'TN', situszip5: '37355', situscounty: 'Coffee',
+        ownername1full: 'Smoke Owner LLC', landusecodedescription: 'Vacant', lotsizeacres: '12.5',
+        road_frontage: '210', land_locked: 'false', wetlands_cover_percentage: '3', fema_cover_percentage: '0',
+        buildability_total_perc: '88', buildability_area: '11', slope_average: '4',
+        markettotalvalue: '60000', tlp_estimate: '75000', tlp_ppa: '6000',
+      };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: { property }, meta: { requests_left: '100' } }) } as unknown as Response;
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.LP_JWT_TOKEN;
+  });
+
+  it('bypasses /search, pulls /property-data, and returns normalized verified property data', async () => {
+    const res = await post('/api/landos/intake/duke-verification', PROP_BODY);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.verification.parcelVerified).toBe(true);
+    expect(body.verification.propertyData.sourceName).toBe('LandPortal');
+    expect(body.verification.propertyData.identity.propertyId).toBe('173393466');
+    expect(body.verification.propertyData.identity.fips).toBe('47031');
+    expect(body.verification.propertyData.landFacts.acres).toBe(12.5);
+    expect(body.verification.propertyData.valuation.marketTotal).toBe(60000);
+    expect(body.dukeAnalysis.strategyStatus).toBe('ready_for_preliminary_review');
+    expect(body.acePrep.status).toBe('ready');
+    // Market Pulse derives local area from VERIFIED county/state (no area words
+    // in a propertyid+FIPS input) — Coffee County, TN, not "unknown area".
+    expect(body.marketPulse.eligible).toBe(true);
+    expect(body.marketPulse.localArea.descriptor).toMatch(/Coffee/);
+    expect(body.marketPulse.localArea.descriptor).toMatch(/TN/);
+    // Bypassed search: hit /property-data, never /search.
+    expect(fetchCalls.some((u) => u.includes('/property-data'))).toBe(true);
+    expect(fetchCalls.some((u) => u.includes('/search'))).toBe(false);
+    // Never a comp report tool / comp credit.
+    expect(fetchCalls.some((u) => /comp_report|comp-report|lp_comp/.test(u))).toBe(false);
   });
 });
 

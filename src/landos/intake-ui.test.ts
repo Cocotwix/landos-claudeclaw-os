@@ -160,51 +160,92 @@ describe('Intake panel source-adapter / Market Pulse section (Sprint 6A)', () =>
   });
 });
 
-describe('Intake panel Duke execution bridge (Sprint 6B/6C)', () => {
+describe('Intake panel Duke due diligence result', () => {
   it('has a Run Duke parcel verification button wired to the bridge route', () => {
     expect(PANEL).toMatch(/Run Duke parcel verification/);
     expect(PANEL).toMatch(/apiPost<[^>]*>\('\/api\/landos\/intake\/duke-verification'/);
     expect(PANEL).toMatch(/function runDuke/);
+    expect(PANEL).toMatch(/onClick=\{\(\) => void runDuke\(\)\}/);
   });
 
-  it('acts on the text that produced the plan and never silently no-ops (root-cause regression)', () => {
-    // The action must use the captured plan input, not only the live textarea,
-    // and must surface an error instead of a bare `return` when input is empty.
+  it('acts on the text that produced the plan and never silently no-ops', () => {
     expect(PANEL).toMatch(/setPlanText/);
     expect(PANEL).toMatch(/const input = \(planText \|\| text\)\.trim\(\)/);
     expect(PANEL).toMatch(/setDukeError\('Run an intake plan first/);
-    // The old silent guard must be gone.
     expect(/const trimmed = text\.trim\(\);\s*if \(!trimmed\) return;/.test(PANEL)).toBe(false);
   });
 
-  it('shows an explicit loading panel (not just the button label) plus an error state', () => {
+  it('shows an explicit loading panel and error state', () => {
     expect(PANEL).toMatch(/dukeLoading && \(/);
     expect(PANEL).toMatch(/Running Duke parcel verification…/);
     expect(PANEL).toMatch(/Verifying…/);
     expect(PANEL).toMatch(/Verification failed/);
   });
 
-  it('shows identity fields only when verified, and the Local Area Context label when not', () => {
-    expect(PANEL).toMatch(/verification\.parcelVerified && duke\.verification\.identity/);
+  it('has NO temporary diagnostics in the final UI (no dvb marker, click counter, or stage line)', () => {
+    expect(/data-duke-build|dvb-\d/.test(PANEL)).toBe(false);
+    expect(/data-duke-diag|Duke action:|dukeClicks|dukeStage|onDukeClick/.test(PANEL)).toBe(false);
+  });
+
+  it('renders rich verified property data: identity, facts, valuation, similars', () => {
+    expect(PANEL).toMatch(/parcelVerified && duke\.verification\.propertyData/);
+    expect(PANEL).toMatch(/Identity &amp; Owner/);
+    expect(PANEL).toMatch(/Property Facts/);
+    expect(PANEL).toMatch(/Valuation \(LandPortal\)/);
+    expect(PANEL).toMatch(/Similar Sales/);
+    expect(PANEL).toMatch(/propertyData\.identity\.propertyId/);
+    expect(PANEL).toMatch(/propertyData\.landFacts\.acres/);
+    expect(PANEL).toMatch(/propertyData\.valuation\.marketTotal/);
+    expect(PANEL).toMatch(/Source: \{duke\.verification\.propertyData\.sourceName\}/);
+  });
+
+  it('renders Strategy/Underwriting readiness with flags, candidates, and the $10k baseline', () => {
+    expect(PANEL).toMatch(/Strategy \/ Underwriting Readiness/);
+    expect(PANEL).toMatch(/dukeAnalysis\.strategyStatus/);
+    expect(PANEL).toMatch(/dukeAnalysis\.greenFlags/);
+    expect(PANEL).toMatch(/dukeAnalysis\.redFlags/);
+    expect(PANEL).toMatch(/dukeAnalysis\.strategyCandidates\.map/);
+    expect(PANEL).toMatch(/offerReadiness\.minNetProfitBaselineUsd/);
+  });
+
+  it('renders Ace seller discovery prep as questions', () => {
+    expect(PANEL).toMatch(/Ace Seller Discovery Prep/);
+    expect(PANEL).toMatch(/acePrep\.questions\.map/);
+  });
+
+  it('shows the Local Area Context label and the next required identifier when unverified', () => {
     expect(PANEL).toMatch(/verification\.localAreaContextLabel/);
-    expect(PANEL).toMatch(/identity\.apn/);
-    expect(PANEL).toMatch(/identity\.owner/);
+    expect(PANEL).toMatch(/verification\.nextAction/);
+    expect(PANEL).toMatch(/Strategy and Underwriting blocked/);
   });
 
-  it('keeps Strategy/Underwriting blocked messaging on unverified results', () => {
-    expect(PANEL).toMatch(/strategyUnderwritingBlocked/);
-    expect(PANEL).toMatch(/Strategy and Underwriting remain blocked/);
+  it('shows a supersede banner and suppresses the stale unverified banner once Duke verifies', () => {
+    // When a Duke execution result exists, a banner clarifies it supersedes the
+    // read-only plan; and the read-only "Parcel unverified" guard banner is
+    // suppressed once the execution result is verified.
+    expect(PANEL).toMatch(/supersedes the read-only plan status/);
+    expect(PANEL).toMatch(/strategyBlocked && !duke\?\.verification\.parcelVerified/);
   });
 
-  it('renders source attempts and data gaps', () => {
+  it('renders source attempts and source-returned data gaps', () => {
     expect(PANEL).toMatch(/sourceAttempts\.map/);
-    expect(PANEL).toMatch(/dataGaps\.join/);
+    expect(PANEL).toMatch(/propertyData\.dataGaps\.join/);
   });
 
-  it('renders a Deal Card Update Plan section with truth-labeled timeline entries', () => {
+  it('renders the Deal Card Update Plan with truth-labeled timeline entries', () => {
     expect(PANEL).toMatch(/Deal Card Update Plan/);
     expect(PANEL).toMatch(/dealCardUpdatePlan\.timeline\.map/);
     expect(PANEL).toMatch(/StatusBadge status=\{t\.truthLabel\}/);
     expect(PANEL).toMatch(/dealCardUpdatePlan\.migrationNote/);
+  });
+
+  it('renders the Market Pulse v1 panel with label, signals, and safe source links', () => {
+    expect(PANEL).toMatch(/Market Pulse v1/);
+    expect(PANEL).toMatch(/marketPulse\.label/);
+    expect(PANEL).toMatch(/marketPulse\.signals\.map/);
+    expect(PANEL).toMatch(/StatusBadge status=\{s\.status\}/);
+    expect(PANEL).toMatch(/s\.sourceUrl[\s\S]{0,260}target="_blank"[\s\S]{0,80}rel="noopener noreferrer"/);
+    expect(PANEL).toMatch(/marketPulse\.disclaimer/);
+    expect(PANEL).toMatch(/marketPulse\.generatedAt/);
   });
 });

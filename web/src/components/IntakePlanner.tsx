@@ -132,7 +132,28 @@ interface SourceAdapterPlan {
   note: string;
 }
 
-// Sprint 6B/6C: Duke verification result + deal-card update plan.
+// Duke due diligence result contract.
+interface DukePropertyData {
+  sourceName: string;
+  generatedAt: string;
+  identity: {
+    propertyId?: string; fips?: string; apn?: string; county?: string; state?: string;
+    situsAddress?: string; owner?: string; mailingAddress?: string;
+  };
+  landFacts: {
+    acres?: number; roadFrontageFt?: number; landLocked?: string; nearWater?: string;
+    wetlandsPct?: number; femaPct?: number; buildabilityPct?: number; buildableAcres?: number;
+    slopeAvgDeg?: number; buildingAreaSqft?: number; landUse?: string;
+  };
+  valuation: {
+    assessedTotal?: number; assessedLand?: number; marketTotal?: number; marketLand?: number;
+    tlpEstimate?: number; tlpPpa?: number; priceAcreCounty?: number;
+  };
+  similars: { count?: number; ppaMin?: number; ppaMax?: number; ppaMedian?: number; mostRecentYear?: string };
+  dataGaps: string[];
+  note: string;
+}
+
 interface DukeVerification {
   status: string;
   parcelVerified: boolean;
@@ -148,12 +169,32 @@ interface DukeVerification {
     owner?: string;
     acres?: number;
   };
+  propertyData?: DukePropertyData;
   sourceAttempts: Array<{ source: string; status: string; reason: string; truthLabel: string }>;
   dataGaps: string[];
+  nextAction?: string;
   localAreaContextLabel?: string;
   marketPulseEligible: boolean;
   strategyUnderwritingBlocked: boolean;
   summary: string;
+}
+
+interface DukeAnalysis {
+  parcelVerified: boolean;
+  strategyStatus: string;
+  greenFlags: string[];
+  redFlags: string[];
+  anomalyFlags: string[];
+  dataGaps: string[];
+  strategyCandidates: Array<{ strategy: string; rationale: string }>;
+  offerReadiness: { status: string; formulaSource: string; minNetProfitBaselineUsd: number; note: string };
+  note: string;
+}
+
+interface AcePrep {
+  status: string;
+  questions: Array<{ category: string; question: string }>;
+  note: string;
 }
 
 interface DealCardUpdatePlan {
@@ -169,8 +210,29 @@ interface DealCardUpdatePlan {
   rule: string;
 }
 
+interface MarketPulseV1 {
+  eligible: boolean;
+  localArea: { city?: string; county?: string; state?: string; descriptor: string };
+  parcelVerified: boolean;
+  label: string;
+  signals: Array<{
+    signal: string;
+    status: string;
+    sourceName?: string;
+    sourceUrl?: string;
+    note: string;
+    approvalNeeded?: string;
+  }>;
+  generatedAt: string;
+  reason: string;
+  disclaimer: string;
+}
+
 interface DukeVerificationResponse {
   verification: DukeVerification;
+  dukeAnalysis: DukeAnalysis;
+  acePrep: AcePrep;
+  marketPulse: MarketPulseV1;
   dealCardUpdatePlan: DealCardUpdatePlan;
 }
 
@@ -186,10 +248,14 @@ function statusClass(status: string): string {
     case 'verified_fact':
     case 'parcel_verified':
     case 'exact_match':
+    case 'source_available':
+    case 'ready_for_preliminary_review':
+    case 'ready':
       return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
     case 'blocked':
     case 'unverified':
     case 'not_verified':
+    case 'blocked_unverified_parcel':
       return 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
     case 'not_available':
     case 'unsupported':
@@ -207,12 +273,29 @@ function statusClass(status: string): string {
     case 'needs_verification':
     case 'market_context':
     case 'create_new':
+    case 'blocked_needs_more_data':
+    case 'preliminary':
       return 'text-[var(--color-text)] border-[var(--color-border)]';
     case 'not_applicable':
     case 'not_requested':
     default: // not_applicable, not_requested, none, etc. — neutral
       return 'text-[var(--color-text-faint)] border-[var(--color-border)]';
   }
+}
+
+// Renders "label: value" or, when the source returned nothing, a dim data gap.
+function Field({ label, value }: { label: string; value: string | number | undefined | null }) {
+  const has = value !== undefined && value !== null && value !== '';
+  return (
+    <div class="text-[11px]">
+      <span class="text-[var(--color-text-faint)]">{label}: </span>
+      {has ? (
+        <span class="text-[var(--color-text)]">{value}</span>
+      ) : (
+        <span class="text-[var(--color-text-faint)] italic">data gap</span>
+      )}
+    </div>
+  );
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -391,8 +474,26 @@ export function IntakePlanner() {
 
       {plan && (
         <div class="space-y-5">
-          {/* Guard banners — hard business rules made visible */}
-          {strategyBlocked && (
+          {/* When a Duke execution result exists, it is the current source of
+              truth — make clear it supersedes the read-only plan status below. */}
+          {duke && (
+            <div class={`rounded-lg px-4 py-2.5 border ${
+              duke.verification.parcelVerified
+                ? 'border-[var(--color-status-done)] bg-[color-mix(in_srgb,var(--color-status-done)_8%,transparent)]'
+                : 'border-[var(--color-border)] bg-[var(--color-elevated)]'
+            }`}>
+              <div class={`text-[12px] font-medium ${duke.verification.parcelVerified ? 'text-[var(--color-status-done)]' : 'text-[var(--color-text)]'}`}>
+                {duke.verification.parcelVerified
+                  ? 'Duke execution verified this parcel — the verified result below supersedes the read-only plan status.'
+                  : 'Read-only plan shown. The Duke execution result below is the current result.'}
+              </div>
+            </div>
+          )}
+
+          {/* Guard banners — hard business rules from the READ-ONLY plan. Once a
+              Duke execution result verifies the parcel, the stale "unverified"
+              banner is suppressed so it cannot contradict the verified result. */}
+          {strategyBlocked && !duke?.verification.parcelVerified && (
             <div class="border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] rounded-lg px-4 py-2.5">
               <div class="text-[var(--color-status-failed)] text-[12px] font-medium">
                 Parcel unverified — Strategy and Underwriting are blocked
@@ -677,7 +778,7 @@ export function IntakePlanner() {
               <button
                 type="button"
                 disabled={dukeLoading}
-                onClick={runDuke}
+                onClick={() => void runDuke()}
                 class="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium text-[var(--color-text)] border border-[var(--color-border)] bg-[var(--color-elevated)] hover:opacity-90 disabled:opacity-40"
               >
                 <Search size={12} /> {dukeLoading ? 'Verifying…' : 'Run Duke parcel verification'}
@@ -702,10 +803,10 @@ export function IntakePlanner() {
 
             {duke && !dukeLoading && (
               <div class="space-y-3">
-                {/* Verification status */}
+                {/* Verification header */}
                 <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Verification</span>
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Duke Due Diligence Result</span>
                     <StatusBadge status={duke.verification.status} />
                     {duke.verification.localAreaContextLabel && (
                       <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[color-mix(in_srgb,var(--color-status-failed)_40%,transparent)] text-[var(--color-status-failed)]">
@@ -715,24 +816,17 @@ export function IntakePlanner() {
                   </div>
                   <div class="text-[11px] text-[var(--color-text-muted)]">{duke.verification.summary}</div>
 
-                  {/* Verified identity fields (named source only) */}
-                  {duke.verification.parcelVerified && duke.verification.identity && (
-                    <div class="text-[11px] text-[var(--color-text)] grid grid-cols-2 gap-x-4 gap-y-0.5 border-t border-[var(--color-border)] pt-2">
-                      {duke.verification.identity.apn && <div>APN: {duke.verification.identity.apn}</div>}
-                      {duke.verification.identity.situsAddress && <div>Address: {duke.verification.identity.situsAddress}</div>}
-                      {duke.verification.identity.owner && <div>Owner: {duke.verification.identity.owner}</div>}
-                      {(duke.verification.identity.county || duke.verification.identity.state) && (
-                        <div>County/State: {[duke.verification.identity.county, duke.verification.identity.state].filter(Boolean).join(', ')}</div>
-                      )}
-                      {typeof duke.verification.identity.acres === 'number' && <div>Acres: {duke.verification.identity.acres}</div>}
-                      {duke.verification.verificationSource && <div>Source: {duke.verification.verificationSource}</div>}
+                  {/* Next required identifier / action when not verified */}
+                  {!duke.verification.parcelVerified && duke.verification.nextAction && (
+                    <div class="text-[11px] text-[var(--color-text)] border-t border-[var(--color-border)] pt-2">
+                      <span class="text-[var(--color-text-faint)]">Next: </span>{duke.verification.nextAction}
                     </div>
                   )}
 
-                  {/* Unverified -> gate stays on */}
+                  {/* Gate echo */}
                   {duke.verification.strategyUnderwritingBlocked && (
                     <div class="text-[10px] text-[var(--color-status-failed)] border-t border-[var(--color-border)] pt-2">
-                      Strategy and Underwriting remain blocked until parcel identity is verified by a named source.
+                      Strategy and Underwriting blocked — no valuation, scoring, or offer until parcel identity is verified by a named source.
                     </div>
                   )}
 
@@ -741,20 +835,148 @@ export function IntakePlanner() {
                     <div class="border-t border-[var(--color-border)] pt-2">
                       <div class="text-[10px] text-[var(--color-text-faint)] mb-1">Source attempts</div>
                       {duke.verification.sourceAttempts.map((a, i) => (
-                        <div key={i} class="flex items-center gap-2 text-[11px]">
-                          <span class="text-[var(--color-text-muted)] truncate">{a.source}</span>
+                        <div key={i} class="flex items-start gap-2 text-[11px]">
+                          <div class="flex-1 min-w-0">
+                            <span class="text-[var(--color-text-muted)]">{a.source}</span>
+                            <div class="text-[10px] text-[var(--color-text-faint)]">{a.reason}</div>
+                          </div>
                           <span class="ml-auto"><StatusBadge status={a.status} /></span>
                         </div>
                       ))}
                     </div>
                   )}
+                </div>
 
-                  {/* Data gaps */}
-                  {duke.verification.dataGaps.length > 0 && (
-                    <div class="text-[10px] text-[var(--color-text-faint)] font-mono">
-                      data gaps: {duke.verification.dataGaps.join(', ')}
+                {/* ── Verified property data (LandPortal, non-comp) ───────── */}
+                {duke.verification.parcelVerified && duke.verification.propertyData && (
+                  <>
+                    {/* Identity & owner */}
+                    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                      <div class="flex items-center gap-2">
+                        <span class="text-[12px] font-semibold text-[var(--color-text)]">Identity &amp; Owner</span>
+                        <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">
+                          Source: {duke.verification.propertyData.sourceName} · {duke.verification.propertyData.generatedAt}
+                        </span>
+                      </div>
+                      <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-0.5">
+                        <Field label="Property ID" value={duke.verification.propertyData.identity.propertyId} />
+                        <Field label="FIPS" value={duke.verification.propertyData.identity.fips} />
+                        <Field label="APN" value={duke.verification.propertyData.identity.apn} />
+                        <Field label="County" value={duke.verification.propertyData.identity.county} />
+                        <Field label="State" value={duke.verification.propertyData.identity.state} />
+                        <Field label="Situs" value={duke.verification.propertyData.identity.situsAddress} />
+                        <Field label="Owner" value={duke.verification.propertyData.identity.owner} />
+                        <Field label="Mailing" value={duke.verification.propertyData.identity.mailingAddress} />
+                      </div>
+                    </div>
+
+                    {/* Property facts */}
+                    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                      <span class="text-[12px] font-semibold text-[var(--color-text)]">Property Facts</span>
+                      <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-0.5">
+                        <Field label="Acres" value={duke.verification.propertyData.landFacts.acres} />
+                        <Field label="Road frontage (ft)" value={duke.verification.propertyData.landFacts.roadFrontageFt} />
+                        <Field label="Landlocked" value={duke.verification.propertyData.landFacts.landLocked} />
+                        <Field label="Near water" value={duke.verification.propertyData.landFacts.nearWater} />
+                        <Field label="Wetlands %" value={duke.verification.propertyData.landFacts.wetlandsPct} />
+                        <Field label="FEMA %" value={duke.verification.propertyData.landFacts.femaPct} />
+                        <Field label="Buildability %" value={duke.verification.propertyData.landFacts.buildabilityPct} />
+                        <Field label="Buildable acres" value={duke.verification.propertyData.landFacts.buildableAcres} />
+                        <Field label="Slope avg (°)" value={duke.verification.propertyData.landFacts.slopeAvgDeg} />
+                        <Field label="Structures (sqft)" value={duke.verification.propertyData.landFacts.buildingAreaSqft} />
+                        <Field label="Land use" value={duke.verification.propertyData.landFacts.landUse} />
+                      </div>
+                    </div>
+
+                    {/* Valuation */}
+                    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                      <span class="text-[12px] font-semibold text-[var(--color-text)]">Valuation (LandPortal)</span>
+                      <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-0.5">
+                        <Field label="Assessed total" value={duke.verification.propertyData.valuation.assessedTotal} />
+                        <Field label="Assessed land" value={duke.verification.propertyData.valuation.assessedLand} />
+                        <Field label="Market total" value={duke.verification.propertyData.valuation.marketTotal} />
+                        <Field label="Market land" value={duke.verification.propertyData.valuation.marketLand} />
+                        <Field label="TLP estimate" value={duke.verification.propertyData.valuation.tlpEstimate} />
+                        <Field label="TLP $/acre" value={duke.verification.propertyData.valuation.tlpPpa} />
+                        <Field label="County $/acre" value={duke.verification.propertyData.valuation.priceAcreCounty} />
+                      </div>
+                      <div class="text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border)] pt-2">
+                        Valuation fields are as returned by LandPortal. Not an offer; offer math requires a selected strategy + costs/risk.
+                      </div>
+                    </div>
+
+                    {/* Embedded similar sales (no comp credit) */}
+                    {typeof duke.verification.propertyData.similars.count === 'number' && duke.verification.propertyData.similars.count > 0 && (
+                      <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                        <span class="text-[12px] font-semibold text-[var(--color-text)]">Similar Sales (embedded · no comp credit)</span>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-0.5">
+                          <Field label="Count" value={duke.verification.propertyData.similars.count} />
+                          <Field label="$/acre min" value={duke.verification.propertyData.similars.ppaMin} />
+                          <Field label="$/acre median" value={duke.verification.propertyData.similars.ppaMedian} />
+                          <Field label="$/acre max" value={duke.verification.propertyData.similars.ppaMax} />
+                          <Field label="Most recent year" value={duke.verification.propertyData.similars.mostRecentYear} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Data gaps from the source */}
+                    {duke.verification.propertyData.dataGaps.length > 0 && (
+                      <div class="text-[10px] text-[var(--color-text-faint)] font-mono">
+                        data gaps: {duke.verification.propertyData.dataGaps.join(', ')}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── Duke analysis (flags + strategy readiness) ─────────── */}
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Strategy / Underwriting Readiness</span>
+                    <span class="ml-auto"><StatusBadge status={duke.dukeAnalysis.strategyStatus} /></span>
+                  </div>
+                  {duke.dukeAnalysis.greenFlags.length > 0 && (
+                    <div class="text-[11px]"><span class="text-[var(--color-status-done)]">Green flags:</span> {duke.dukeAnalysis.greenFlags.join(' · ')}</div>
+                  )}
+                  {duke.dukeAnalysis.redFlags.length > 0 && (
+                    <div class="text-[11px]"><span class="text-[var(--color-status-failed)]">Red flags:</span> {duke.dukeAnalysis.redFlags.join(' · ')}</div>
+                  )}
+                  {duke.dukeAnalysis.anomalyFlags.length > 0 && (
+                    <div class="text-[11px] text-[var(--color-text-muted)]">Anomalies: {duke.dukeAnalysis.anomalyFlags.join(' · ')}</div>
+                  )}
+                  {duke.dukeAnalysis.strategyCandidates.length > 0 && (
+                    <div class="border-t border-[var(--color-border)] pt-2">
+                      <div class="text-[10px] text-[var(--color-text-faint)] mb-1">Likely strategy candidates</div>
+                      <div class="space-y-1">
+                        {duke.dukeAnalysis.strategyCandidates.map((s, i) => (
+                          <div key={i} class="text-[11px]">
+                            <span class="text-[var(--color-text)]">{s.strategy}</span>
+                            <span class="text-[var(--color-text-faint)]"> — {s.rationale}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
+                  <div class="text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border)] pt-2">
+                    Offer readiness: {duke.dukeAnalysis.offerReadiness.status} · min net profit baseline ${duke.dukeAnalysis.offerReadiness.minNetProfitBaselineUsd.toLocaleString()}. {duke.dukeAnalysis.offerReadiness.note}
+                  </div>
+                  <div class="text-[10px] text-[var(--color-text-muted)]">{duke.dukeAnalysis.note}</div>
+                </div>
+
+                {/* ── Ace seller discovery prep ──────────────────────────── */}
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Ace Seller Discovery Prep</span>
+                    <span class="ml-auto"><StatusBadge status={duke.acePrep.status} /></span>
+                  </div>
+                  <div class="space-y-1">
+                    {duke.acePrep.questions.map((q, i) => (
+                      <div key={i} class="text-[11px]">
+                        <span class="text-[var(--color-text-faint)]">{q.category}: </span>
+                        <span class="text-[var(--color-text)]">{q.question}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div class="text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border)] pt-2">{duke.acePrep.note}</div>
                 </div>
 
                 {/* Deal Card Update / Timeline Plan */}
@@ -782,6 +1004,61 @@ export function IntakePlanner() {
                       Not persisted this sprint. {duke.dealCardUpdatePlan.migrationNote}
                     </div>
                   )}
+                </div>
+
+                {/* Market Pulse v1 — separate local-area panel. Never verifies
+                    the parcel; never fabricates market numbers. */}
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Market Pulse v1</span>
+                    {duke.marketPulse.localArea.descriptor && (
+                      <span class="text-[var(--color-text-faint)] text-[11px]">({duke.marketPulse.localArea.descriptor})</span>
+                    )}
+                    <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full border border-[color-mix(in_srgb,var(--color-status-failed)_40%,transparent)] text-[var(--color-status-failed)]">
+                      {duke.marketPulse.label}
+                    </span>
+                  </div>
+                  <div class="text-[10px] text-[var(--color-text-faint)]">{duke.marketPulse.reason}</div>
+
+                  {!duke.marketPulse.eligible ? (
+                    <div class="text-[11px] text-[var(--color-text-muted)]">
+                      Not eligible: provide city + state or county + state for local-area context.
+                    </div>
+                  ) : (
+                    <div class="space-y-1.5">
+                      {duke.marketPulse.signals.map((s, i) => (
+                        <div key={i} class="flex items-start gap-2 text-[11px]">
+                          <div class="flex-1 min-w-0">
+                            <div class="text-[var(--color-text-muted)]">{s.signal}</div>
+                            {s.sourceUrl ? (
+                              <a
+                                href={s.sourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="text-[10px] text-[var(--color-text-faint)] underline break-all"
+                              >
+                                {s.sourceName || s.sourceUrl}
+                              </a>
+                            ) : (
+                              <div class="text-[10px] text-[var(--color-text-faint)]">
+                                {s.approvalNeeded || s.note}
+                              </div>
+                            )}
+                          </div>
+                          <span class="ml-auto"><StatusBadge status={s.status} /></span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {duke.marketPulse.disclaimer && (
+                    <div class="text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border)] pt-2">
+                      {duke.marketPulse.disclaimer}
+                    </div>
+                  )}
+                  <div class="text-[9px] text-[var(--color-text-faint)] font-mono">
+                    generated {duke.marketPulse.generatedAt}
+                  </div>
                 </div>
               </div>
             )}

@@ -477,7 +477,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // window.location, falling back to sessionStorage. Serving this
     // unauthenticated means a token-stripped URL still loads the app
     // instead of showing raw 401 JSON.
+    //
+    // no-store is REQUIRED: the shell references content-hashed, immutable
+    // asset bundles. If the browser caches this HTML, it keeps loading the
+    // OLD bundle hash forever and new frontend builds never reach the user
+    // (even after a server restart / hard refresh). Always revalidate the shell.
     const html = fs.readFileSync(newDashboardIndex, 'utf-8');
+    c.header('Cache-Control', 'no-store');
     return c.html(html);
   });
 
@@ -4001,7 +4007,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!fs.existsSync(newDashboardIndex)) {
       return c.text('Dashboard not built. Run `npm run build`.', 503);
     }
+    // SPA deep-link entry (e.g. /landos). Same no-store rule as `/`: the shell
+    // must never be cached or it pins the browser to a stale, content-hashed
+    // bundle and new frontend code never loads.
     const html = fs.readFileSync(newDashboardIndex, 'utf-8');
+    c.header('Cache-Control', 'no-store');
     return c.html(html);
   });
 

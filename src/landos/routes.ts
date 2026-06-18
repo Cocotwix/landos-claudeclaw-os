@@ -6,6 +6,7 @@
 
 import type { Hono } from 'hono';
 
+import { logger } from '../logger.js';
 import { DEPARTMENTS } from './departments.js';
 import {
   GATED_ACTION_TYPES,
@@ -47,10 +48,14 @@ import {
   updateLeadJob,
 } from './property-card.js';
 import { routeDukeRequest } from './duke-router.js';
-import { runDukePreflight } from './duke-preflight.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
-import { buildDukeVerificationResult } from './duke-verification-bridge.js';
+import { runDukeVerification } from './duke-verification-bridge.js';
+import { lpResolveForPreflight } from './landportal-client.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
+import { buildMarketPulseV1 } from './market-pulse.js';
+import { buildDukeAnalysis } from './duke-analysis.js';
+import { buildAcePrep } from './ace-prep.js';
+import { extractAreaSignals } from './source-adapters.js';
 import { planLandosIntake } from './intake-planner.js';
 import { departmentRegistrySummary } from './department-registry.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
@@ -674,14 +679,55 @@ export function registerLandosRoutes(app: Hono): void {
   app.post('/api/landos/intake/duke-verification', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const text = str(body.text);
+    // Safe instrumentation: prove the route is hit. No secrets/tokens/PII — only
+    // a boolean and a length. (The full text is operator input, not logged.)
+    logger.info(
+      { event: 'duke_verification_request', route: '/api/landos/intake/duke-verification', hasText: !!text, textLen: (text ?? '').length },
+      'duke_verification_request',
+    );
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const sellerAskUsd = num(body.sellerAskUsd);
-    // The existing safe Duke verification path. Empty allowlist: parcel data is
-    // resolved by the bounded LandPortal exact lookup only; no MCP/agent fan-out.
-    const pre = await runDukePreflight(text, [], LANDPORTAL_VERIFICATION_TIMEOUT_MS);
-    const verification = buildDukeVerificationResult(pre, text);
+    // Parse the parcel identifier and attempt the bounded LandPortal exact
+    // lookup (never a comp tool/credit, never coordinates). A full street
+    // address is a valid identifier and is mapped truthfully (e.g. needs
+    // county/FIPS), never "no parcel identifier".
+    const verification = await runDukeVerification(text, {
+      resolve: lpResolveForPreflight,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+    });
+    // Duke first-pass analysis (flags + strategy candidates/readiness) from the
+    // verified property data. Unverified -> blocked, no fabricated offers.
+    const dukeAnalysis = buildDukeAnalysis({
+      parcelVerified: verification.parcelVerified,
+      propertyData: verification.propertyData,
+      dataGaps: verification.dataGaps,
+    });
+    // Ace seller discovery prep — questions, never facts.
+    const acePrep = buildAcePrep({
+      parcelVerified: verification.parcelVerified,
+      redFlags: dukeAnalysis.redFlags,
+      anomalyFlags: dukeAnalysis.anomalyFlags,
+      dataGaps: dukeAnalysis.dataGaps,
+    });
     const dealCardUpdatePlan = buildDealCardUpdatePlan({ verification, intakeText: text, sellerAskUsd });
-    return c.json({ verification, dealCardUpdatePlan });
+    // Market Pulse v1: labeled local-area context when city/county + state is
+    // known, even if the parcel is unverified. No fabricated market numbers.
+    // Prefer the county/state returned by verified LandPortal property data
+    // (a parcel input like propertyid+FIPS has no area words in the text). This
+    // uses the source's county/state name — never coordinates/proximity.
+    const area = extractAreaSignals(text);
+    const verifiedId = verification.propertyData?.identity;
+    const marketPulse = buildMarketPulseV1({
+      city: area.city,
+      county: verifiedId?.county ?? area.county,
+      state: verifiedId?.state ?? area.state,
+      parcelVerified: verification.parcelVerified,
+    });
+    logger.info(
+      { event: 'duke_verification_result', status: verification.status, parcelVerified: verification.parcelVerified, dataGaps: verification.dataGaps, strategyStatus: dukeAnalysis.strategyStatus, marketPulseEligible: marketPulse.eligible },
+      'duke_verification_result',
+    );
+    return c.json({ verification, dukeAnalysis, acePrep, marketPulse, dealCardUpdatePlan });
   });
 
   // Department registry summary (deeper capability/model-policy registry).
