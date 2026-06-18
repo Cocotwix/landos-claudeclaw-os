@@ -260,6 +260,11 @@ export function IntakePlanner() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
+  // The exact text that produced the current plan. The Duke verification button
+  // must act on THIS input (what the displayed plan represents), not whatever is
+  // currently in the textarea — otherwise an edited/cleared textarea makes the
+  // button silently do nothing.
+  const [planText, setPlanText] = useState('');
   const [dukeLoading, setDukeLoading] = useState(false);
   const [dukeError, setDukeError] = useState<string | null>(null);
   const [duke, setDuke] = useState<DukeVerificationResponse | null>(null);
@@ -280,6 +285,8 @@ export function IntakePlanner() {
       if (parcelVerified) body.context = { parcelVerified: true };
       const res = await apiPost<{ plan: Plan }>('/api/landos/intake', body);
       setPlan(res.plan);
+      // Remember the input this plan was built from so the Duke button uses it.
+      setPlanText(trimmed);
       // A fresh plan invalidates any prior Duke verification result.
       setDuke(null);
       setDukeError(null);
@@ -292,12 +299,18 @@ export function IntakePlanner() {
   }
 
   async function runDuke() {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+    // Act on the text that produced the displayed plan; fall back to the live
+    // textarea. Never silently no-op: an empty input shows a clear error.
+    const input = (planText || text).trim();
+    if (!input) {
+      setDukeError('Run an intake plan first, then run Duke parcel verification.');
+      setDuke(null);
+      return;
+    }
     try {
       setDukeLoading(true);
       setDukeError(null);
-      const res = await apiPost<DukeVerificationResponse>('/api/landos/intake/duke-verification', { text: trimmed });
+      const res = await apiPost<DukeVerificationResponse>('/api/landos/intake/duke-verification', { text: input });
       setDuke(res);
     } catch (err: any) {
       setDukeError(err?.message || String(err));
@@ -311,6 +324,7 @@ export function IntakePlanner() {
     setText('');
     setParcelVerified(false);
     setPlan(null);
+    setPlanText('');
     setError(null);
     setDuke(null);
     setDukeError(null);
@@ -673,14 +687,20 @@ export function IntakePlanner() {
               Runs the safe Duke verification path only (bounded LandPortal exact lookup). No comp credit, no GIS scraping, no CRM writes.
             </div>
 
-            {dukeError && (
+            {dukeLoading && (
+              <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-2.5 text-[12px] text-[var(--color-text-muted)]">
+                Running Duke parcel verification… bounded LandPortal exact lookup, this can take a moment.
+              </div>
+            )}
+
+            {dukeError && !dukeLoading && (
               <div class="border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] rounded-lg px-4 py-2.5">
                 <div class="text-[var(--color-status-failed)] text-[12px] font-medium mb-0.5">Verification failed</div>
                 <div class="text-[var(--color-text-muted)] text-[12px] font-mono">{dukeError}</div>
               </div>
             )}
 
-            {duke && (
+            {duke && !dukeLoading && (
               <div class="space-y-3">
                 {/* Verification status */}
                 <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">

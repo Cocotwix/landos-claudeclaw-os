@@ -230,6 +230,21 @@ describe('LandOS routes — Duke execution bridge auth + safety', () => {
     expect(body.dealCardUpdatePlan.persistedNow).toBe(false);
   });
 
+  it('returns the FULL contract shape the UI renders (regression: endpoint wired + shaped)', async () => {
+    // If this route is missing/misshaped, the dashboard button appears to do
+    // nothing. Assert both top-level objects and the arrays the UI maps over.
+    const res = await post('/api/landos/intake/duke-verification', NO_IDENTITY);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.verification).toBeTypeOf('object');
+    expect(body.verification.status).toBeTypeOf('string');
+    expect(Array.isArray(body.verification.sourceAttempts)).toBe(true);
+    expect(Array.isArray(body.verification.dataGaps)).toBe(true);
+    expect(body.dealCardUpdatePlan).toBeTypeOf('object');
+    expect(body.dealCardUpdatePlan.matchStatus).toBeTypeOf('string');
+    expect(Array.isArray(body.dealCardUpdatePlan.timeline)).toBe(true);
+  });
+
   it('a coordinate-pair input is never verified (no coordinate parcel identity)', async () => {
     const res = await post('/api/landos/intake/duke-verification', { text: '34.0522, -118.2437' });
     expect(res.status).toBe(200);

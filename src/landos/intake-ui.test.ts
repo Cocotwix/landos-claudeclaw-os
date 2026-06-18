@@ -167,7 +167,19 @@ describe('Intake panel Duke execution bridge (Sprint 6B/6C)', () => {
     expect(PANEL).toMatch(/function runDuke/);
   });
 
-  it('shows loading and error states for the verification call', () => {
+  it('acts on the text that produced the plan and never silently no-ops (root-cause regression)', () => {
+    // The action must use the captured plan input, not only the live textarea,
+    // and must surface an error instead of a bare `return` when input is empty.
+    expect(PANEL).toMatch(/setPlanText/);
+    expect(PANEL).toMatch(/const input = \(planText \|\| text\)\.trim\(\)/);
+    expect(PANEL).toMatch(/setDukeError\('Run an intake plan first/);
+    // The old silent guard must be gone.
+    expect(/const trimmed = text\.trim\(\);\s*if \(!trimmed\) return;/.test(PANEL)).toBe(false);
+  });
+
+  it('shows an explicit loading panel (not just the button label) plus an error state', () => {
+    expect(PANEL).toMatch(/dukeLoading && \(/);
+    expect(PANEL).toMatch(/Running Duke parcel verification…/);
     expect(PANEL).toMatch(/Verifying…/);
     expect(PANEL).toMatch(/Verification failed/);
   });

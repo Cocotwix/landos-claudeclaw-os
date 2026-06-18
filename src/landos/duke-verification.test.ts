@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
-import { buildDukeVerificationResult } from './duke-verification-bridge.js';
+import { buildDukeVerificationResult, resolveDukeVerificationInput } from './duke-verification-bridge.js';
 import type { DukePreflightOutcome } from './duke-preflight.js';
 
 function verifiedOutcome(payload: Record<string, unknown>): DukePreflightOutcome {
@@ -100,6 +100,27 @@ describe('skip / no identity', () => {
     expect(r.parcelVerified).toBe(false);
     expect(r.identity).toBeUndefined();
     expect(r.strategyUnderwritingBlocked).toBe(true);
+  });
+});
+
+describe('Duke verification input resolver (the "button does nothing" regression)', () => {
+  it('uses the text that produced the displayed plan, not the live textarea', () => {
+    const r = resolveDukeVerificationInput('APN: 051-012-05, Colleton County, SC', 'half-typed new query');
+    expect(r.error).toBeUndefined();
+    expect(r.input).toBe('APN: 051-012-05, Colleton County, SC');
+  });
+
+  it('falls back to the live textarea when there is no plan text yet', () => {
+    const r = resolveDukeVerificationInput('', '123 Oak Rd, Lexington County SC');
+    expect(r.input).toBe('123 Oak Rd, Lexington County SC');
+    expect(r.error).toBeUndefined();
+  });
+
+  it('never silently no-ops: empty input returns an explicit error', () => {
+    const r = resolveDukeVerificationInput('', '   ');
+    expect(r.input).toBe('');
+    expect(r.error).toBeTypeOf('string');
+    expect(r.error).toMatch(/Run an intake plan first/i);
   });
 });
 

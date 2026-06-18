@@ -68,6 +68,28 @@ export interface DukeVerificationResult {
 
 const LANDPORTAL_SOURCE = 'LandPortal exact lookup';
 
+/**
+ * Resolve the text the "Run Duke parcel verification" button should send. The
+ * Duke section is shown only once a read-only plan exists, so the action must
+ * use the SAME input that produced that plan (`planText`), falling back to the
+ * live textarea only if needed. It NEVER silently no-ops: an empty input returns
+ * an explicit error message so the UI can show it instead of doing nothing.
+ *
+ * Pure + deterministic so the regression is unit-testable without a browser.
+ */
+export function resolveDukeVerificationInput(
+  planText: string | null | undefined,
+  liveText: string | null | undefined,
+): { input: string; error?: string } {
+  const fromPlan = (planText ?? '').trim();
+  const fromLive = (liveText ?? '').trim();
+  const input = fromPlan || fromLive;
+  if (!input) {
+    return { input: '', error: 'Run an intake plan first, then run Duke parcel verification.' };
+  }
+  return { input };
+}
+
 /** Parse the JSON payload embedded in a verified preflight parcel block. */
 function parseVerifiedParcelBlock(block: string): Record<string, unknown> {
   const start = block.indexOf('{');
