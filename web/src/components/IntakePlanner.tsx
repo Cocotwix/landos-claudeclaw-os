@@ -150,6 +150,11 @@ interface DukePropertyData {
     tlpEstimate?: number; tlpPpa?: number; priceAcreCounty?: number;
   };
   similars: { count?: number; ppaMin?: number; ppaMax?: number; ppaMedian?: number; mostRecentYear?: string };
+  similarSales: Array<{
+    saleYear?: string; salePrice?: number; acres?: number; pricePerAcre?: number;
+    apn?: string; propertyId?: string; addressOrCounty?: string;
+  }>;
+  similarRowsAvailable: boolean;
   dataGaps: string[];
   note: string;
 }
@@ -906,9 +911,9 @@ export function IntakePlanner() {
                     </div>
 
                     {/* Embedded similar sales (no comp credit) */}
-                    {typeof duke.verification.propertyData.similars.count === 'number' && duke.verification.propertyData.similars.count > 0 && (
+                    {((typeof duke.verification.propertyData.similars.count === 'number' && duke.verification.propertyData.similars.count > 0) || duke.verification.propertyData.similarRowsAvailable) && (
                       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
-                        <span class="text-[12px] font-semibold text-[var(--color-text)]">Similar Sales (embedded · no comp credit)</span>
+                        <span class="text-[12px] font-semibold text-[var(--color-text)]">Similar Sales / Embedded Comps (no comp credit)</span>
                         <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-0.5">
                           <Field label="Count" value={duke.verification.propertyData.similars.count} />
                           <Field label="$/acre min" value={duke.verification.propertyData.similars.ppaMin} />
@@ -916,6 +921,30 @@ export function IntakePlanner() {
                           <Field label="$/acre max" value={duke.verification.propertyData.similars.ppaMax} />
                           <Field label="Most recent year" value={duke.verification.propertyData.similars.mostRecentYear} />
                         </div>
+
+                        {duke.verification.propertyData.similarRowsAvailable ? (
+                          <div class="border-t border-[var(--color-border)] pt-2 space-y-1">
+                            <div class="text-[10px] text-[var(--color-text-faint)]">Individual rows · source: LandPortal property_data embedded similar sales</div>
+                            {/* Header row */}
+                            <div class="grid grid-cols-6 gap-x-2 text-[9px] text-[var(--color-text-faint)] uppercase tracking-wide">
+                              <span>Year</span><span>Price</span><span>$/acre</span><span>Acres</span><span>APN</span><span>Prop ID</span>
+                            </div>
+                            {duke.verification.propertyData.similarSales.map((row, i) => (
+                              <div key={i} class="grid grid-cols-6 gap-x-2 text-[11px] text-[var(--color-text)]">
+                                <span>{row.saleYear ?? '—'}</span>
+                                <span>{typeof row.salePrice === 'number' ? `$${row.salePrice.toLocaleString()}` : '—'}</span>
+                                <span>{typeof row.pricePerAcre === 'number' ? `$${Math.round(row.pricePerAcre).toLocaleString()}` : '—'}</span>
+                                <span>{row.acres ?? '—'}</span>
+                                <span class="truncate">{row.apn ?? '—'}</span>
+                                <span class="truncate">{row.propertyId ?? '—'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div class="text-[10px] text-[var(--color-text-faint)] border-t border-[var(--color-border)] pt-2">
+                            Only aggregate embedded similar-sales stats were returned by non-comp LandPortal property_data. Individual comp rows require an approved comp report credit or another approved source.
+                          </div>
+                        )}
                       </div>
                     )}
 

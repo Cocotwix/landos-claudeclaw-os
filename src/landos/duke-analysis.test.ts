@@ -11,6 +11,8 @@ function pd(over: Partial<DukePropertyData['landFacts']> = {}, valOver: Partial<
     landFacts: { acres: 12.5, roadFrontageFt: 210, landLocked: 'false', buildabilityPct: 85, wetlandsPct: 2, femaPct: 0, slopeAvgDeg: 4, ...over },
     valuation: { marketTotal: 60000, tlpEstimate: 75000, ...valOver },
     similars: { count: 3 },
+    similarSales: [],
+    similarRowsAvailable: false,
     dataGaps: [],
     truthLabel: 'verified_fact',
     note: 'test',

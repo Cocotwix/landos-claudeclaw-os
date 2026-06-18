@@ -33,6 +33,16 @@ describe('eligibility + labeling', () => {
     const mp = buildMarketPulseV1({ city: 'Fayetteville', state: 'NC', parcelVerified: true, nowIso: NOW });
     expect(mp.label).toBe('Parcel Verified');
   });
+
+  it('uses verified county/state as local area (propertyid+FIPS unknown-area regression)', () => {
+    // A propertyid+FIPS input has no area words; the route passes the verified
+    // LandPortal county/state. Market Pulse must resolve Coffee County, TN — not
+    // "unknown area".
+    const mp = buildMarketPulseV1({ county: 'Coffee', state: 'TN', parcelVerified: true, nowIso: NOW });
+    expect(mp.eligible).toBe(true);
+    expect(mp.localArea.descriptor).toBe('Coffee County, TN');
+    expect(mp.localArea.descriptor).not.toMatch(/unknown area/);
+  });
 });
 
 describe('safe sources + no fabrication', () => {

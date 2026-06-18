@@ -51,6 +51,17 @@ export interface DukeSimilars {
   mostRecentYear?: string;
 }
 
+/** One individual embedded similar-sale row (from non-comp property_data). */
+export interface DukeSimilarSaleRow {
+  saleYear?: string;
+  salePrice?: number;
+  acres?: number;
+  pricePerAcre?: number;
+  apn?: string;
+  propertyId?: string;
+  addressOrCounty?: string;
+}
+
 export interface DukePropertyData {
   sourceName: 'LandPortal';
   /** Set at lookup time. */
@@ -59,6 +70,11 @@ export interface DukePropertyData {
   landFacts: DukeLandFacts;
   valuation: DukeValuation;
   similars: DukeSimilars;
+  /** Individual embedded similar-sale rows (no comp credit). Empty when only
+   *  aggregate stats were returned. */
+  similarSales: DukeSimilarSaleRow[];
+  /** True only when individual rows are actually present in property_data. */
+  similarRowsAvailable: boolean;
   /** Field keys returned empty by the source (missing, not fabricated). */
   dataGaps: string[];
   /** Truth label for every populated field: from a named source. */
@@ -138,6 +154,20 @@ export function normalizeFromLpSummary(
   };
   if (!(similars.count && similars.count > 0)) gaps.push('similars');
 
+  // Individual embedded rows, if the non-comp response carried them.
+  const similarSales: DukeSimilarSaleRow[] = Array.isArray(summary.similar_sales)
+    ? summary.similar_sales.map((r) => ({
+        saleYear: nstr(r.saleYear),
+        salePrice: nnum(r.salePrice),
+        acres: nnum(r.acres),
+        pricePerAcre: nnum(r.pricePerAcre),
+        apn: nstr(r.apn),
+        propertyId: nstr(r.propertyId),
+        addressOrCounty: nstr(r.addressOrCounty),
+      }))
+    : [];
+  const similarRowsAvailable = similarSales.length > 0;
+
   return {
     sourceName: 'LandPortal',
     generatedAt: opts.nowIso ?? new Date().toISOString(),
@@ -145,6 +175,8 @@ export function normalizeFromLpSummary(
     landFacts,
     valuation,
     similars,
+    similarSales,
+    similarRowsAvailable,
     dataGaps: gaps,
     truthLabel: 'verified_fact',
     note: 'LandPortal non-comp property data. Similar sales are embedded in property_data and consume no comp credit. Coordinates are not used for identity.',

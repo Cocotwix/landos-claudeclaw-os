@@ -199,6 +199,19 @@ describe('Intake panel Duke due diligence result', () => {
     expect(PANEL).toMatch(/Source: \{duke\.verification\.propertyData\.sourceName\}/);
   });
 
+  it('renders individual embedded comp rows when present, else a clear aggregate-only limitation note', () => {
+    expect(PANEL).toMatch(/Similar Sales \/ Embedded Comps/);
+    expect(PANEL).toMatch(/propertyData\.similarRowsAvailable/);
+    expect(PANEL).toMatch(/propertyData\.similarSales\.map/);
+    expect(PANEL).toMatch(/LandPortal property_data embedded similar sales/);
+    expect(PANEL).toMatch(/Only aggregate embedded similar-sales stats were returned/);
+    expect(PANEL).toMatch(/require an approved comp report credit or another approved source/);
+  });
+
+  it('never references a paid comp report tool in the non-comp path', () => {
+    expect(/lp_comp_report_create|lp_comp_report_get/.test(PANEL)).toBe(false);
+  });
+
   it('renders Strategy/Underwriting readiness with flags, candidates, and the $10k baseline', () => {
     expect(PANEL).toMatch(/Strategy \/ Underwriting Readiness/);
     expect(PANEL).toMatch(/dukeAnalysis\.strategyStatus/);

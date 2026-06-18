@@ -106,6 +106,22 @@ export interface LpPropertySummary {
   similars_ppa_max: string;
   similars_ppa_median: string;
   similars_most_recent_year: string;
+  /** Individual similar-sale rows EMBEDDED in the non-comp property_data
+   *  response (parsed from `property.similars`). No comp credit consumed. Empty
+   *  when only aggregate stats were returned. */
+  similar_sales: LpSimilarSale[];
+}
+
+/** One embedded similar-sale row from the non-comp property_data response. Only
+ *  fields actually present are populated. Never coordinates. */
+export interface LpSimilarSale {
+  saleYear?: string;
+  salePrice?: number;
+  acres?: number;
+  pricePerAcre?: number;
+  apn?: string;
+  propertyId?: string;
+  addressOrCounty?: string;
 }
 
 /** One recorded exact-search attempt (deterministic trace). Never a coordinate
@@ -669,6 +685,7 @@ function buildPropertySummary(body: unknown): {
   let simPpaMedian = '';
   let simRecentYear = '';
   let priceAcreCounty = '';
+  let simSales: LpSimilarSale[] = [];
 
   if (p.similars) {
     try {
@@ -688,6 +705,10 @@ function buildPropertySummary(body: unknown): {
           .filter((y): y is number => typeof y === 'number' && y > 0);
         if (years.length) simRecentYear = String(Math.max(...years));
         priceAcreCounty = String(sims[0]?.price_acre_county ?? '');
+        // Surface the INDIVIDUAL embedded rows (already in this non-comp
+        // response). Defensive key mapping; only populated fields are kept;
+        // coordinates are never included.
+        simSales = (sims as Array<Record<string, unknown>>).map(mapEmbeddedSimilar).filter(hasAnySimilarField);
       }
     } catch { /* ignore similars parse errors */ }
   }
@@ -738,8 +759,34 @@ function buildPropertySummary(body: unknown): {
       similars_ppa_max:          simPpaMax,
       similars_ppa_median:       simPpaMedian,
       similars_most_recent_year: simRecentYear,
+      similar_sales:             simSales,
     },
   };
+}
+
+const simNum = (v: unknown): number | undefined => {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = typeof v === 'number' ? v : Number(String(v).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+const simStr = (v: unknown): string | undefined => (v === undefined || v === null || v === '' ? undefined : String(v));
+
+/** Map one raw embedded similar-sale row to LpSimilarSale, covering common
+ *  LandPortal key variants. Never reads lat/lng. */
+function mapEmbeddedSimilar(s: Record<string, unknown>): LpSimilarSale {
+  return {
+    saleYear: simStr(s.sold_year ?? s.year ?? s.sale_year),
+    salePrice: simNum(s.sold_price ?? s.sale_price ?? s.price ?? s.mls_price ?? s.saleprice ?? s.amount),
+    acres: simNum(s.acres ?? s.lot_size_acres ?? s.calc_acres ?? s.lotsizeacres),
+    pricePerAcre: simNum(s.price_acres ?? s.mls_priceperacre ?? s.price_per_acre ?? s.priceperacre),
+    apn: simStr(s.apn ?? s.parcelnumb),
+    propertyId: simStr(s.propertyid ?? s.property_id ?? s.id),
+    addressOrCounty: simStr(s.situsfullstreetaddress ?? s.address ?? s.situs ?? s.situscounty ?? s.county),
+  };
+}
+
+function hasAnySimilarField(r: LpSimilarSale): boolean {
+  return !!(r.saleYear || r.salePrice || r.acres || r.pricePerAcre || r.apn || r.propertyId || r.addressOrCounty);
 }
 
 function buildResolverResult(
@@ -1108,7 +1155,7 @@ function summaryFromV2(p: Record<string, unknown>): LpPropertySummary {
     lat: v2str(p.latitude), lng: v2str(p.longitude), municipality: '',
     mailing_address: '', mailing_city: '', mailing_state: '',
     similars_count: '', similars_ppa_min: '', similars_ppa_max: '',
-    similars_ppa_median: '', similars_most_recent_year: '',
+    similars_ppa_median: '', similars_most_recent_year: '', similar_sales: [],
   };
 }
 

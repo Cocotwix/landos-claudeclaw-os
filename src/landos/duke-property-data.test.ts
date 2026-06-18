@@ -14,7 +14,7 @@ function summary(over: Partial<LpPropertySummary> = {}): LpPropertySummary {
     tlp_estimate: '75000', tlp_ppa: '6000', price_acre_county: '5800', lat: '35.0', lng: '-86.0',
     municipality: '', mailing_address: 'PO Box 1', mailing_city: 'Manchester', mailing_state: 'TN',
     similars_count: '4', similars_ppa_min: '4000', similars_ppa_max: '9000', similars_ppa_median: '6000',
-    similars_most_recent_year: '2024',
+    similars_most_recent_year: '2024', similar_sales: [],
   };
   return { ...base, ...over };
 }
@@ -51,6 +51,30 @@ describe('normalizeFromLpSummary', () => {
     expect(d.dataGaps).toContain('roadFrontageFt');
     expect(d.dataGaps).toContain('tlpEstimate');
     expect(d.dataGaps).toContain('similars');
+  });
+
+  it('surfaces individual embedded similar-sale rows when present (no comp credit)', () => {
+    const d = normalizeFromLpSummary(
+      summary({
+        similar_sales: [
+          { saleYear: '2024', salePrice: 45000, acres: 5, pricePerAcre: 9000, apn: '076-001.00', addressOrCounty: 'Coffee' },
+          { saleYear: '2023', pricePerAcre: 6000 },
+        ],
+      }),
+      { fips: '47031' },
+    );
+    expect(d.similarRowsAvailable).toBe(true);
+    expect(d.similarSales.length).toBe(2);
+    expect(d.similarSales[0].salePrice).toBe(45000);
+    expect(d.similarSales[0].pricePerAcre).toBe(9000);
+    expect(d.similarSales[0].apn).toBe('076-001.00');
+  });
+
+  it('reports aggregate-only similars (no individual rows) so the UI can show the limitation', () => {
+    const d = normalizeFromLpSummary(summary({ similars_count: '7', similar_sales: [] }), { fips: '47031' });
+    expect(d.similars.count).toBe(7);
+    expect(d.similarRowsAvailable).toBe(false);
+    expect(d.similarSales.length).toBe(0);
   });
 
   it('never surfaces coordinates (lat/lng) in the contract', () => {

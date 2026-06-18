@@ -37,7 +37,7 @@ const VERIFIED: LpResolveResult = {
     lat: '36.5', lng: '-81.1', municipality: '', mailing_address: '123 Elm St',
     mailing_city: 'Sparta', mailing_state: 'NC', similars_count: '4',
     similars_ppa_min: '9000', similars_ppa_max: '13000',
-    similars_ppa_median: '11000', similars_most_recent_year: '2024',
+    similars_ppa_median: '11000', similars_most_recent_year: '2024', similar_sales: [],
   } as LpResolveResult['property_summary'],
   candidates: [],
 };

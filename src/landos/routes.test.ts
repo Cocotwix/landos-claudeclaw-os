@@ -329,6 +329,11 @@ describe('LandOS routes — Duke property data (propertyid + FIPS, non-comp)', (
         road_frontage: '210', land_locked: 'false', wetlands_cover_percentage: '3', fema_cover_percentage: '0',
         buildability_total_perc: '88', buildability_area: '11', slope_average: '4',
         markettotalvalue: '60000', tlp_estimate: '75000', tlp_ppa: '6000',
+        // Individual embedded similar-sale rows in the non-comp response.
+        similars: JSON.stringify([
+          { sold_year: 2024, sold_price: 45000, price_acres: 9000, apn: '076-001.00', propertyid: '999001' },
+          { sold_year: 2023, price_acres: 6000 },
+        ]),
       };
       return { ok: true, status: 200, text: async () => JSON.stringify({ data: { property }, meta: { requests_left: '100' } }) } as unknown as Response;
     });
@@ -355,6 +360,11 @@ describe('LandOS routes — Duke property data (propertyid + FIPS, non-comp)', (
     expect(body.marketPulse.eligible).toBe(true);
     expect(body.marketPulse.localArea.descriptor).toMatch(/Coffee/);
     expect(body.marketPulse.localArea.descriptor).toMatch(/TN/);
+    // Individual embedded similar-sale rows are surfaced (no comp credit).
+    expect(body.verification.propertyData.similarRowsAvailable).toBe(true);
+    expect(body.verification.propertyData.similarSales.length).toBe(2);
+    expect(body.verification.propertyData.similarSales[0].salePrice).toBe(45000);
+    expect(body.verification.propertyData.similarSales[0].apn).toBe('076-001.00');
     // Bypassed search: hit /property-data, never /search.
     expect(fetchCalls.some((u) => u.includes('/property-data'))).toBe(true);
     expect(fetchCalls.some((u) => u.includes('/search'))).toBe(false);
