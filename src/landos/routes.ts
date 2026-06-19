@@ -72,6 +72,7 @@ import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealC
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
+import { getDealCardReport, runDealCardReport } from './deal-card-report.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
@@ -787,6 +788,36 @@ export function registerLandosRoutes(app: Hono): void {
       updatedBy: str(body.updatedBy),
     };
     const result = upsertDealCardMarket(id, patch);
+    if (!result) return c.json({ error: 'deal card not found' }, 404);
+    return c.json(result);
+  });
+
+  // ── Deal Card DD + Market + Strategy operational report ─────────────────
+  // The operational workflow: from one Deal Card action it runs the EXISTING
+  // safe, non-credit LandPortal exact resolve (NEVER a comp credit, NEVER a comp
+  // report tool), structures Market Research source targets, applies the existing
+  // Strategy logic, updates the three worksheets (non-destructively), and
+  // persists a practical local report that survives reload. No fabricated parcel
+  // facts/comps/demand/pricing/EVs/offers; no external CRM/GHL; no secret read.
+  app.get('/api/landos/deal-cards/:id/report', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ report: getDealCardReport(id) });
+  });
+
+  app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    // Wire the REAL bounded non-credit LandPortal exact resolver. This is the
+    // same safe path the Duke verification route uses — not a comp tool/credit.
+    const result = await runDealCardReport(id, {
+      resolve: lpResolveForPreflight,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+      actor: str(body.actor) ?? 'tyler/report',
+    });
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     return c.json(result);
   });

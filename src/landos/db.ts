@@ -177,6 +177,23 @@ export const MARKET_SOURCE_CONFIDENCE = [
 ] as const;
 export type MarketSourceConfidence = (typeof MARKET_SOURCE_CONFIDENCE)[number];
 
+// DD + Market + Strategy operational report status for a Deal Card. The report
+// is the operational workflow that runs safe (non-credit) parcel verification,
+// structures Market Research source targets, applies Strategy logic, and updates
+// the three worksheets. 'not_run' is the honest default; 'complete_with_gaps' is
+// the normal outcome when data gaps remain (e.g. parcel not source-verified or a
+// market lane still needs manual research); 'blocked' means the safe lookup could
+// not run (e.g. LandPortal unavailable); 'failed' is an unexpected engine error.
+export const DEAL_CARD_REPORT_STATUSES = [
+  'not_run',
+  'running',
+  'complete',
+  'complete_with_gaps',
+  'blocked',
+  'failed',
+] as const;
+export type DealCardReportStatus = (typeof DEAL_CARD_REPORT_STATUSES)[number];
+
 // Comp source labels. GIS is intentionally NOT a comp source — county/GIS is
 // for parcel verification and legal facts, never the first-pass comp engine.
 export const COMP_SOURCE_LABELS = [
@@ -904,6 +921,40 @@ function createLandosSchema(db: Database.Database): void {
       updated_at                    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_landos_deal_card_market ON landos_deal_card_market(deal_card_id);
+
+    -- DD + Market + Strategy operational report for a Deal Card (one row per
+    -- deal; latest report). The operational workflow runs the existing SAFE,
+    -- non-credit LandPortal exact resolve (NEVER a comp credit, NEVER a comp
+    -- report tool), structures Market Research source targets, applies the
+    -- existing Strategy logic, updates the three worksheets, and persists a
+    -- practical local report that survives reload. Structured columns power the
+    -- list/badge view; the full structured report is stored in report_json. No
+    -- fabricated parcel facts, comps, demand, pricing, EVs, or offers are stored.
+    -- Lives in store/landos.db (gitignored) — never property-specific work
+    -- product in the repo.
+    CREATE TABLE IF NOT EXISTS landos_deal_card_report (
+      id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id                INTEGER NOT NULL UNIQUE REFERENCES landos_deal_card(id),
+      report_status               TEXT NOT NULL DEFAULT 'not_run'
+                                  CHECK (report_status IN (${inList(DEAL_CARD_REPORT_STATUSES)})),
+      parcel_verification_status  TEXT NOT NULL DEFAULT '',
+      parcel_verified             INTEGER NOT NULL DEFAULT 0,
+      dd_summary                  TEXT NOT NULL DEFAULT '',
+      market_summary              TEXT NOT NULL DEFAULT '',
+      strategy_summary            TEXT NOT NULL DEFAULT '',
+      most_viable_strategy        TEXT NOT NULL DEFAULT '',
+      offer_readiness             TEXT NOT NULL DEFAULT 'not_reviewed'
+                                  CHECK (offer_readiness IN (${inList(STRATEGY_OFFER_READINESS)})),
+      -- Credit usage is always explicit: the non-credit exact resolve may be used;
+      -- a comp credit is NEVER used by this workflow.
+      landportal_noncredit_used   INTEGER NOT NULL DEFAULT 0,
+      comp_credit_used            INTEGER NOT NULL DEFAULT 0,
+      report_json                 TEXT NOT NULL DEFAULT '{}',
+      updated_by                  TEXT NOT NULL DEFAULT '',
+      created_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_report ON landos_deal_card_report(deal_card_id);
 
     -- Batch lead-intake jobs. One row per pasted lead; isolated parcel state.
     CREATE TABLE IF NOT EXISTS landos_lead_job (

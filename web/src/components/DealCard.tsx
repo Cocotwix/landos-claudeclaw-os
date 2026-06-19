@@ -190,6 +190,71 @@ interface MarketForm {
   notes: string;
 }
 
+// DD + Market + Strategy operational report (mirrors DealCardReportView in
+// src/landos/deal-card-report.ts). Read-only here: it is produced by the backend
+// workflow that runs the safe non-credit parcel resolve, structures Market
+// Research source targets, applies Strategy logic, and updates the worksheets.
+interface ReportSourceRow {
+  source: string;
+  kind: 'parcel_exact' | 'market_pulse';
+  status: string;
+  detail: string;
+  compCreditUsed: boolean;
+}
+
+interface ReportView {
+  exists: boolean;
+  reportStatus: string;
+  parcelVerificationStatus: string;
+  parcelVerified: boolean;
+  ddSummary: string;
+  marketSummary: string;
+  strategySummary: string;
+  mostViableStrategy: string;
+  offerReadiness: string;
+  sourceTable: ReportSourceRow[];
+  dataGaps: string[];
+  riskFlags: string[];
+  countyVerificationChecklist: string[];
+  marketFollowUpChecklist: string[];
+  strategyBlockers: string[];
+  nextConfirmations: string[];
+  preCallStrategyNotes: string;
+  creditUsage: { landportalNonCreditUsed: boolean; compCreditUsed: boolean; note: string };
+  generatedAt: number | null;
+  updatedBy: string;
+}
+
+// Human-readable report status.
+function reportStatusText(status?: string): string {
+  switch (status) {
+    case 'running': return 'Running';
+    case 'complete': return 'Complete';
+    case 'complete_with_gaps': return 'Complete with gaps';
+    case 'blocked': return 'Blocked';
+    case 'failed': return 'Failed';
+    case 'not_run':
+    default: return 'Not run';
+  }
+}
+
+// Report status badge. Complete reads as accent; blocked/failed as failed;
+// everything else neutral so an un-run report never looks finished.
+function ReportStatusBadge({ status }: { status?: string }) {
+  const good = status === 'complete';
+  const bad = status === 'blocked' || status === 'failed';
+  const cls = good
+    ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+    : bad
+      ? 'border-[var(--color-status-failed)] text-[var(--color-status-failed)]'
+      : 'border-[var(--color-border)] text-[var(--color-text-muted)]';
+  return (
+    <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${cls}`}>
+      Report: {reportStatusText(status)}
+    </span>
+  );
+}
+
 interface PropertyCardLite {
   id: number;
   active_input_address?: string | null;
@@ -480,12 +545,50 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
   const [marketError, setMarketError] = useState<string | null>(null);
   const [marketWarnings, setMarketWarnings] = useState<string[]>([]);
 
+  // DD + Market + Strategy operational report state. Loaded alongside the open
+  // deal; produced by the backend workflow (read-only here).
+  const [report, setReport] = useState<ReportView | null>(null);
+  const [reportRunning, setReportRunning] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportWarnings, setReportWarnings] = useState<string[]>([]);
+
   async function loadMarket(id: number) {
     try {
       const res = await apiGet<{ market: MarketView }>(`/api/landos/deal-cards/${id}/market`);
       setMarket(res.market);
     } catch {
       setMarket(null);
+    }
+  }
+
+  async function loadReport(id: number) {
+    try {
+      const res = await apiGet<{ report: ReportView }>(`/api/landos/deal-cards/${id}/report`);
+      setReport(res.report);
+    } catch {
+      setReport(null);
+    }
+  }
+
+  // Run the operational report. After it completes, re-load the report AND the
+  // three worksheets (the workflow updates them) so the panel shows exactly what
+  // persisted. Never spends a comp credit; the backend enforces that.
+  async function runReport() {
+    if (!deal) return;
+    setReportRunning(true);
+    setReportError(null);
+    setReportWarnings([]);
+    try {
+      const res = await apiPost<{ report: ReportView; warnings: string[] }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
+      setReport(res.report);
+      setReportWarnings(Array.isArray(res.warnings) ? res.warnings : []);
+      await loadDd(deal.id);
+      await loadStrategy(deal.id);
+      await loadMarket(deal.id);
+    } catch (err: any) {
+      setReportError(err?.message || String(err));
+    } finally {
+      setReportRunning(false);
     }
   }
 
@@ -517,17 +620,21 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
       setStrategyWarnings([]);
       setMarketEditing(false);
       setMarketWarnings([]);
+      setReportError(null);
+      setReportWarnings([]);
       const res = await apiGet<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       await loadDd(id);
       await loadStrategy(id);
       await loadMarket(id);
+      await loadReport(id);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
       setDd(null);
       setStrategy(null);
       setMarket(null);
+      setReport(null);
     } finally {
       setLoading(false);
     }
@@ -954,6 +1061,121 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
               <span>Verification: {prop?.verification_status || 'unverified'}</span>
             </div>
           </div>
+
+          {/* 1b. DD + Market + Strategy operational report */}
+          <Section title="DD + Market + Strategy Report">
+            <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+              <div class="flex items-center gap-2 flex-wrap">
+                <ReportStatusBadge status={report?.reportStatus} />
+                {report?.exists && (
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                    {report.parcelVerificationStatus}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void runReport()}
+                disabled={reportRunning}
+                class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+              >
+                {reportRunning ? 'Running…' : report?.exists ? 'Re-run DD + Market + Strategy Report' : 'Run DD + Market + Strategy Report'}
+              </button>
+            </div>
+
+            {reportError && <div class="text-[11px] text-[var(--color-status-failed)] mb-2">{reportError}</div>}
+            {reportWarnings.length > 0 && (
+              <div class="mb-2 rounded-md border border-[var(--color-status-failed)] p-2 space-y-0.5">
+                {reportWarnings.map((w) => (
+                  <div key={w} class="text-[11px] text-[var(--color-status-failed)]">{w}</div>
+                ))}
+              </div>
+            )}
+
+            {!report?.exists && (
+              <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3">
+                No report run yet. Click <span class="text-[var(--color-accent)]">Run DD + Market + Strategy Report</span> to run the safe non-credit parcel lookup, structure Market Research source targets, apply Strategy logic, and update the three worksheets. It never spends a comp credit and never fabricates parcel facts, comps, demand, pricing, or offers.
+              </div>
+            )}
+
+            {report?.exists && (
+              <div class="space-y-3">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Due Diligence + Research</div>
+                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.ddSummary || '—'}</p>
+                  </div>
+                  <div>
+                    <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Market Research</div>
+                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.marketSummary || '—'}</p>
+                  </div>
+                  <div>
+                    <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Strategy</div>
+                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.strategySummary || '—'}</p>
+                    <div class="mt-1 flex flex-wrap items-center gap-2">
+                      <StrategyReadinessBadge status={report.offerReadiness} />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+                  <Field label="Most viable strategy" value={report.mostViableStrategy || undefined} />
+                  <Field label="Offer readiness" value={readinessText(report.offerReadiness)} />
+                </div>
+
+                {/* Source table — every source, its status, and credit usage. */}
+                <div>
+                  <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Source table</div>
+                  {report.sourceTable.length === 0 ? (
+                    <Placeholder text="No sources recorded" />
+                  ) : (
+                    <div class="space-y-1">
+                      {report.sourceTable.map((row) => (
+                        <div key={row.source} class="flex items-start justify-between gap-2 border border-[var(--color-border)] rounded px-2 py-1">
+                          <div class="min-w-0">
+                            <div class="text-[12px] text-[var(--color-text)] truncate">{row.source}</div>
+                            <div class="text-[10px] text-[var(--color-text-faint)] break-words">{row.detail}</div>
+                          </div>
+                          <div class="flex flex-col items-end gap-1 shrink-0">
+                            <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{row.status}</span>
+                            <span class="text-[9px] text-[var(--color-text-faint)]">{row.compCreditUsed ? 'comp credit' : 'no comp credit'}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <DdList title="Data gaps" items={report.dataGaps} empty="No data gaps recorded" />
+                <DdList title="Risk flags" items={report.riskFlags} empty="No risk flags recorded" />
+                <DdList title="County / manual verification checklist" items={report.countyVerificationChecklist} empty="No verification items" />
+                <DdList title="Market follow-up checklist" items={report.marketFollowUpChecklist} empty="No market follow-ups" />
+                <DdList title="Strategy blockers" items={report.strategyBlockers} empty="No blockers recorded" />
+                <DdList title="Next confirmations" items={report.nextConfirmations} empty="No confirmations recorded" />
+
+                {report.preCallStrategyNotes && (
+                  <div>
+                    <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Pre-call strategy notes</div>
+                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.preCallStrategyNotes}</p>
+                  </div>
+                )}
+
+                <div class="rounded-md border border-[var(--color-border)] p-2">
+                  <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Credit usage</div>
+                  <div class="text-[12px] text-[var(--color-text)]">
+                    LandPortal non-credit tools: {report.creditUsage.landportalNonCreditUsed ? 'used' : 'not used'}.{' '}
+                    Comp-credit tools: not used.
+                  </div>
+                  <div class="text-[10px] text-[var(--color-text-faint)] mt-1">{report.creditUsage.note}</div>
+                </div>
+
+                <div class="text-[10px] text-[var(--color-text-faint)]">
+                  Operational report. Departments stay separate (DD property-level, Market market-level, Strategy decision-level). No parcel fact is Verified without a named source; no comps, demand, pricing, EVs, or offers are fabricated.
+                  {report.generatedAt ? <> Last run {formatRelativeTime(report.generatedAt)}{report.updatedBy ? ` by ${report.updatedBy}` : ''}.</> : null}
+                </div>
+              </div>
+            )}
+          </Section>
 
           {/* 2. Imagery panel — supporting context only, never parcel identity */}
           <Section title="Imagery">
