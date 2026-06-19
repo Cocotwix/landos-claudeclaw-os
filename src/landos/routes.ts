@@ -71,7 +71,8 @@ import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
-import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness } from './db.js';
+import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
+import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
   DEAL_CARD_STATUSES,
@@ -719,6 +720,73 @@ export function registerLandosRoutes(app: Hono): void {
       updatedBy: str(body.updatedBy),
     };
     const result = upsertDealCardStrategy(id, patch);
+    if (!result) return c.json({ error: 'deal card not found' }, 404);
+    return c.json(result);
+  });
+
+  // ── Deal Card Market Research worksheet (manual/local; market-level only) ──
+  // A safe local landing place for the Market Research leg. MARKET-LEVEL context
+  // only: target area, county/city/region notes, demand notes (with honest
+  // demand labels), active/sold/days-on-market context notes, county growth /
+  // planning notes, exit-strategy support notes, source links + confidence, data
+  // gaps, and risk flags. This is NOT property-level DD and never verifies parcel
+  // identity. No comps, actives, solds, days-on-market, demand, or pricing are
+  // computed or fabricated. No external CRM/GHL, no paid/LandPortal calls.
+  app.get('/api/landos/deal-cards/:id/market', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({
+      market: getDealCardMarket(id),
+      demandLabels: MARKET_DEMAND_LABELS,
+      sourceConfidenceLabels: MARKET_SOURCE_CONFIDENCE,
+    });
+  });
+
+  app.put('/api/landos/deal-cards/:id/market', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const demand = (v: unknown): MarketDemandLabel | undefined =>
+      (MARKET_DEMAND_LABELS as readonly string[]).includes(str(v) ?? '') ? (v as MarketDemandLabel) : undefined;
+    const confidence = (v: unknown): MarketSourceConfidence | undefined =>
+      (MARKET_SOURCE_CONFIDENCE as readonly string[]).includes(str(v) ?? '') ? (v as MarketSourceConfidence) : undefined;
+    const strList = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+    const linkList = (v: unknown): DealCardSourceLink[] | undefined =>
+      Array.isArray(v)
+        ? v
+            .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && typeof (x as Record<string, unknown>).url === 'string')
+            .map((x) => ({ label: str(x.label) ?? '', url: String(x.url) }))
+        : undefined;
+    const patch: DealCardMarketPatch = {
+      marketReviewStatus: demand(body.marketReviewStatus),
+      targetAreaLabel: str(body.targetAreaLabel),
+      countyCityRegionNotes: str(body.countyCityRegionNotes),
+      buyerDemandNotes: str(body.buyerDemandNotes),
+      buyerDemandLabel: demand(body.buyerDemandLabel),
+      activeListingNotes: str(body.activeListingNotes),
+      soldCompContextNotes: str(body.soldCompContextNotes),
+      daysOnMarketNotes: str(body.daysOnMarketNotes),
+      manufacturedHomeDemandNotes: str(body.manufacturedHomeDemandNotes),
+      manufacturedHomeDemandLabel: demand(body.manufacturedHomeDemandLabel),
+      subdivisionDemandNotes: str(body.subdivisionDemandNotes),
+      subdivisionDemandLabel: demand(body.subdivisionDemandLabel),
+      infillLotDemandNotes: str(body.infillLotDemandNotes),
+      infillLotDemandLabel: demand(body.infillLotDemandLabel),
+      ruralAcreageDemandNotes: str(body.ruralAcreageDemandNotes),
+      ruralAcreageDemandLabel: demand(body.ruralAcreageDemandLabel),
+      countyGrowthPlanningNotes: str(body.countyGrowthPlanningNotes),
+      exitStrategySupportNotes: str(body.exitStrategySupportNotes),
+      sourceLinks: linkList(body.sourceLinks),
+      sourceConfidence: confidence(body.sourceConfidence),
+      dataGaps: strList(body.dataGaps),
+      riskFlags: strList(body.riskFlags),
+      notes: str(body.notes),
+      updatedBy: str(body.updatedBy),
+    };
+    const result = upsertDealCardMarket(id, patch);
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     return c.json(result);
   });

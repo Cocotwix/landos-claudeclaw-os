@@ -136,6 +136,60 @@ interface StrategyForm {
   notes: string;
 }
 
+// Market Research demand labels + source-confidence labels (mirror
+// MARKET_DEMAND_LABELS / MARKET_SOURCE_CONFIDENCE in src/landos/db.ts; the
+// backend re-validates and enforces the honest-conclusion guardrails). Demand
+// defaults to 'not_reviewed' and is never auto-advanced.
+const MARKET_DEMAND_LABELS = [
+  'not_reviewed', 'needs_research', 'weak_demand', 'moderate_demand',
+  'strong_demand', 'mixed_uncertain',
+] as const;
+const MARKET_SOURCE_CONFIDENCE = [
+  'unknown', 'low', 'medium', 'high', 'needs_research',
+] as const;
+
+interface MarketView {
+  exists: boolean;
+  marketReviewStatus: string;
+  targetAreaLabel: string;
+  countyCityRegionNotes: string;
+  buyerDemandNotes: string; buyerDemandLabel: string;
+  activeListingNotes: string;
+  soldCompContextNotes: string;
+  daysOnMarketNotes: string;
+  manufacturedHomeDemandNotes: string; manufacturedHomeDemandLabel: string;
+  subdivisionDemandNotes: string; subdivisionDemandLabel: string;
+  infillLotDemandNotes: string; infillLotDemandLabel: string;
+  ruralAcreageDemandNotes: string; ruralAcreageDemandLabel: string;
+  countyGrowthPlanningNotes: string;
+  exitStrategySupportNotes: string;
+  sourceLinks: DdSourceLink[];
+  sourceConfidence: string;
+  dataGaps: string[]; riskFlags: string[];
+  notes: string; updatedBy: string; updatedAt: number | null;
+}
+
+interface MarketForm {
+  marketReviewStatus: string;
+  targetAreaLabel: string;
+  countyCityRegionNotes: string;
+  buyerDemandNotes: string; buyerDemandLabel: string;
+  activeListingNotes: string;
+  soldCompContextNotes: string;
+  daysOnMarketNotes: string;
+  manufacturedHomeDemandNotes: string; manufacturedHomeDemandLabel: string;
+  subdivisionDemandNotes: string; subdivisionDemandLabel: string;
+  infillLotDemandNotes: string; infillLotDemandLabel: string;
+  ruralAcreageDemandNotes: string; ruralAcreageDemandLabel: string;
+  countyGrowthPlanningNotes: string;
+  exitStrategySupportNotes: string;
+  sourceLinksText: string;
+  sourceConfidence: string;
+  dataGapsText: string;
+  riskFlagsText: string;
+  notes: string;
+}
+
 interface PropertyCardLite {
   id: number;
   active_input_address?: string | null;
@@ -302,6 +356,71 @@ function StrategyNote({ label, value }: { label: string; value?: string }) {
   );
 }
 
+// Human-readable market demand label.
+function demandText(label?: string): string {
+  switch (label) {
+    case 'weak_demand': return 'Weak demand';
+    case 'moderate_demand': return 'Moderate demand';
+    case 'strong_demand': return 'Strong demand';
+    case 'mixed_uncertain': return 'Mixed / uncertain';
+    case 'needs_research': return 'Needs research';
+    case 'not_reviewed':
+    default: return 'Not reviewed';
+  }
+}
+
+// Human-readable source-confidence label.
+function sourceConfidenceText(label?: string): string {
+  switch (label) {
+    case 'low': return 'Low';
+    case 'medium': return 'Medium';
+    case 'high': return 'High';
+    case 'needs_research': return 'Needs research';
+    case 'unknown':
+    default: return 'Unknown';
+  }
+}
+
+// A demand pill. Only 'strong_demand' reads as an accent (positive) cue; every
+// other label reads as neutral so an unreviewed lane never looks like a verified
+// market conclusion. Market demand is never a comp, price, or value.
+function MarketDemandBadge({ label, prefix }: { label?: string; prefix?: string }) {
+  const strong = label === 'strong_demand';
+  const cls = strong
+    ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+    : 'border-[var(--color-border)] text-[var(--color-text-muted)]';
+  return (
+    <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${cls} whitespace-nowrap`}>
+      {prefix ? `${prefix}: ` : ''}{demandText(label)}
+    </span>
+  );
+}
+
+// A market demand lane: a note (or honest placeholder) plus its demand label.
+function MarketDemandLane({ label, note, demand }: { label: string; note?: string; demand?: string }) {
+  return (
+    <div class="mt-2">
+      <div class="flex items-center justify-between gap-2 mb-1">
+        <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+        <MarketDemandBadge label={demand} />
+      </div>
+      {note ? <span class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{note}</span> : <Placeholder text="Needs research" />}
+    </div>
+  );
+}
+
+// A read-only market context note row (listing / sold / days-on-market / growth /
+// region). Renders an honest placeholder when empty so a blank lane never looks
+// like a fabricated market fact.
+function MarketNote({ label, value }: { label: string; value?: string }) {
+  return (
+    <div class="mt-2">
+      <div class="text-[11px] text-[var(--color-text-muted)] mb-1">{label}</div>
+      {value ? <span class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{value}</span> : <Placeholder text="Not reviewed" />}
+    </div>
+  );
+}
+
 function DdList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
   return (
     <div class="mt-3">
@@ -352,6 +471,24 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
   const [strategyError, setStrategyError] = useState<string | null>(null);
   const [strategyWarnings, setStrategyWarnings] = useState<string[]>([]);
 
+  // Market Research worksheet state. Loaded alongside the open deal; edited inline
+  // via a separate sub-form (independent of the deal-level, DD, and Strategy forms).
+  const [market, setMarket] = useState<MarketView | null>(null);
+  const [marketEditing, setMarketEditing] = useState(false);
+  const [marketForm, setMarketForm] = useState<MarketForm | null>(null);
+  const [marketSaving, setMarketSaving] = useState(false);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [marketWarnings, setMarketWarnings] = useState<string[]>([]);
+
+  async function loadMarket(id: number) {
+    try {
+      const res = await apiGet<{ market: MarketView }>(`/api/landos/deal-cards/${id}/market`);
+      setMarket(res.market);
+    } catch {
+      setMarket(null);
+    }
+  }
+
   async function loadDd(id: number) {
     try {
       const res = await apiGet<{ dd: DdView }>(`/api/landos/deal-cards/${id}/dd`);
@@ -378,15 +515,19 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
       setDdWarnings([]);
       setStrategyEditing(false);
       setStrategyWarnings([]);
+      setMarketEditing(false);
+      setMarketWarnings([]);
       const res = await apiGet<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       await loadDd(id);
       await loadStrategy(id);
+      await loadMarket(id);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
       setDd(null);
       setStrategy(null);
+      setMarket(null);
     } finally {
       setLoading(false);
     }
@@ -522,6 +663,81 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
       setStrategyError(err?.message || String(err));
     } finally {
       setStrategySaving(false);
+    }
+  }
+
+  function startMarketEdit() {
+    const m = market;
+    setMarketError(null);
+    setMarketWarnings([]);
+    setMarketForm({
+      marketReviewStatus: m?.marketReviewStatus ?? 'not_reviewed',
+      targetAreaLabel: m?.targetAreaLabel ?? '',
+      countyCityRegionNotes: m?.countyCityRegionNotes ?? '',
+      buyerDemandNotes: m?.buyerDemandNotes ?? '', buyerDemandLabel: m?.buyerDemandLabel ?? 'not_reviewed',
+      activeListingNotes: m?.activeListingNotes ?? '',
+      soldCompContextNotes: m?.soldCompContextNotes ?? '',
+      daysOnMarketNotes: m?.daysOnMarketNotes ?? '',
+      manufacturedHomeDemandNotes: m?.manufacturedHomeDemandNotes ?? '', manufacturedHomeDemandLabel: m?.manufacturedHomeDemandLabel ?? 'not_reviewed',
+      subdivisionDemandNotes: m?.subdivisionDemandNotes ?? '', subdivisionDemandLabel: m?.subdivisionDemandLabel ?? 'not_reviewed',
+      infillLotDemandNotes: m?.infillLotDemandNotes ?? '', infillLotDemandLabel: m?.infillLotDemandLabel ?? 'not_reviewed',
+      ruralAcreageDemandNotes: m?.ruralAcreageDemandNotes ?? '', ruralAcreageDemandLabel: m?.ruralAcreageDemandLabel ?? 'not_reviewed',
+      countyGrowthPlanningNotes: m?.countyGrowthPlanningNotes ?? '',
+      exitStrategySupportNotes: m?.exitStrategySupportNotes ?? '',
+      sourceLinksText: (m?.sourceLinks ?? []).map((l) => (l.label ? `${l.label} | ${l.url}` : l.url)).join('\n'),
+      sourceConfidence: m?.sourceConfidence ?? 'unknown',
+      dataGapsText: (m?.dataGaps ?? []).join('\n'),
+      riskFlagsText: (m?.riskFlags ?? []).join('\n'),
+      notes: m?.notes ?? '',
+    });
+    setMarketEditing(true);
+  }
+
+  function setMarketFieldFn<K extends keyof MarketForm>(key: K, value: MarketForm[K]) {
+    setMarketForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  async function saveMarket() {
+    if (!deal || !marketForm) return;
+    setMarketSaving(true);
+    setMarketError(null);
+    try {
+      const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+      const sourceLinks = lines(marketForm.sourceLinksText).map((line) => {
+        const i = line.indexOf('|');
+        return i >= 0
+          ? { label: line.slice(0, i).trim(), url: line.slice(i + 1).trim() }
+          : { label: '', url: line };
+      }).filter((l) => l.url);
+      const payload = {
+        marketReviewStatus: marketForm.marketReviewStatus,
+        targetAreaLabel: marketForm.targetAreaLabel,
+        countyCityRegionNotes: marketForm.countyCityRegionNotes,
+        buyerDemandNotes: marketForm.buyerDemandNotes, buyerDemandLabel: marketForm.buyerDemandLabel,
+        activeListingNotes: marketForm.activeListingNotes,
+        soldCompContextNotes: marketForm.soldCompContextNotes,
+        daysOnMarketNotes: marketForm.daysOnMarketNotes,
+        manufacturedHomeDemandNotes: marketForm.manufacturedHomeDemandNotes, manufacturedHomeDemandLabel: marketForm.manufacturedHomeDemandLabel,
+        subdivisionDemandNotes: marketForm.subdivisionDemandNotes, subdivisionDemandLabel: marketForm.subdivisionDemandLabel,
+        infillLotDemandNotes: marketForm.infillLotDemandNotes, infillLotDemandLabel: marketForm.infillLotDemandLabel,
+        ruralAcreageDemandNotes: marketForm.ruralAcreageDemandNotes, ruralAcreageDemandLabel: marketForm.ruralAcreageDemandLabel,
+        countyGrowthPlanningNotes: marketForm.countyGrowthPlanningNotes,
+        exitStrategySupportNotes: marketForm.exitStrategySupportNotes,
+        sourceLinks,
+        sourceConfidence: marketForm.sourceConfidence,
+        dataGaps: lines(marketForm.dataGapsText),
+        riskFlags: lines(marketForm.riskFlagsText),
+        notes: marketForm.notes,
+      };
+      const res = await apiPut<{ market: MarketView; warnings: string[] }>(`/api/landos/deal-cards/${deal.id}/market`, payload);
+      // Re-load from the API so what we show is exactly what persisted.
+      await loadMarket(deal.id);
+      setMarketWarnings(Array.isArray(res.warnings) ? res.warnings : []);
+      setMarketEditing(false);
+    } catch (err: any) {
+      setMarketError(err?.message || String(err));
+    } finally {
+      setMarketSaving(false);
     }
   }
 
@@ -955,6 +1171,78 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
             )}
           </Section>
 
+          {/* 7c. Market Research worksheet — manual/local, market-level only, honest demand */}
+          <Section title="Market Research">
+            {!marketEditing && (
+              <>
+                <div class="flex items-center justify-between mb-2 gap-2">
+                  <MarketDemandBadge label={market?.marketReviewStatus} prefix="Market review" />
+                  <button
+                    type="button"
+                    onClick={startMarketEdit}
+                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
+                  >
+                    {market?.exists ? 'Edit Market Research' : 'Add Market Research'}
+                  </button>
+                </div>
+                {marketWarnings.length > 0 && (
+                  <div class="mb-2 rounded-md border border-[var(--color-status-failed)] p-2 space-y-0.5">
+                    {marketWarnings.map((w) => (
+                      <div key={w} class="text-[11px] text-[var(--color-status-failed)]">{w}</div>
+                    ))}
+                  </div>
+                )}
+                {!market?.exists && (
+                  <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3 mb-2">
+                    Market not reviewed yet. Click <span class="text-[var(--color-accent)]">Add Market Research</span> to capture target area, demand notes, active/sold/days-on-market context, county growth notes, source links, data gaps, and risk flags. Market-level context only, saved to the local LandOS store.
+                  </div>
+                )}
+                <MarketNote label="Target market / area" value={market?.targetAreaLabel} />
+                <MarketNote label="County / city / region notes" value={market?.countyCityRegionNotes} />
+
+                <div class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Demand (manual; never a comp or price)</div>
+                <MarketDemandLane label="Local buyer demand" note={market?.buyerDemandNotes} demand={market?.buyerDemandLabel} />
+                <MarketDemandLane label="Manufactured-home demand" note={market?.manufacturedHomeDemandNotes} demand={market?.manufacturedHomeDemandLabel} />
+                <MarketDemandLane label="Subdivision demand" note={market?.subdivisionDemandNotes} demand={market?.subdivisionDemandLabel} />
+                <MarketDemandLane label="Infill-lot demand" note={market?.infillLotDemandNotes} demand={market?.infillLotDemandLabel} />
+                <MarketDemandLane label="Rural acreage demand" note={market?.ruralAcreageDemandNotes} demand={market?.ruralAcreageDemandLabel} />
+
+                <div class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Listing / sold context (notes only; no comps computed)</div>
+                <MarketNote label="Active listing notes" value={market?.activeListingNotes} />
+                <MarketNote label="Sold comp context notes" value={market?.soldCompContextNotes} />
+                <MarketNote label="Days-on-market notes" value={market?.daysOnMarketNotes} />
+
+                <div class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Growth / planning &amp; exit support</div>
+                <MarketNote label="County growth / planning notes" value={market?.countyGrowthPlanningNotes} />
+                <MarketNote label="Exit strategy support notes" value={market?.exitStrategySupportNotes} />
+
+                <div class="mt-3 flex items-center gap-2">
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                    Source confidence: {sourceConfidenceText(market?.sourceConfidence)}
+                  </span>
+                </div>
+                <DdList title="Source links" items={(market?.sourceLinks ?? []).map((l) => (l.label ? `${l.label} — ${l.url}` : l.url))} empty="No source links yet" />
+                <DdList title="Data gaps" items={market?.dataGaps ?? []} empty="No data gaps recorded yet" />
+                <DdList title="Risk flags" items={market?.riskFlags ?? []} empty="No risk flags recorded yet" />
+                {market?.notes && <MarketNote label="Notes" value={market.notes} />}
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-3">
+                  Market Research is manual/local, market-level context only. It is separate from property-level DD and never verifies parcel identity. No comps, actives, solds, days-on-market, demand, or pricing are computed or fabricated; every demand level is a manual conclusion or stays Not reviewed / Needs research.
+                  {market?.exists && market.updatedAt ? <> Last updated {formatRelativeTime(market.updatedAt)}{market.updatedBy ? ` by ${market.updatedBy}` : ''}.</> : null}
+                </div>
+              </>
+            )}
+            {marketEditing && marketForm && (
+              <MarketEditForm
+                form={marketForm}
+                setField={setMarketFieldFn}
+                onSave={() => void saveMarket()}
+                onCancel={() => { setMarketEditing(false); setMarketError(null); }}
+                saving={marketSaving}
+                error={marketError}
+              />
+            )}
+          </Section>
+
           {/* 8. Documents / Activity / Quick Actions */}
           <Section title="Documents / Activity / Quick Actions">
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Documents</div>
@@ -1382,6 +1670,192 @@ function StrategyEditForm({
           class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
         >
           {saving ? 'Saving…' : 'Save Strategy'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Market Research worksheet edit form ─────────────────────────────────────
+// Manual/local, market-level entry only. This is separate from property-level DD
+// and never verifies parcel identity. No comps, actives, solds, days-on-market,
+// demand, or pricing are computed or fabricated: demand is a manual label that
+// the backend downgrades to needs_research without a supporting note. No CRM/GHL.
+function MarketEditForm({
+  form, setField, onSave, onCancel, saving, error,
+}: {
+  form: MarketForm;
+  setField: <K extends keyof MarketForm>(key: K, value: MarketForm[K]) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  error: string | null;
+}) {
+  const inputCls =
+    'w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12px] outline-none focus:border-[var(--color-accent)]';
+
+  // A labeled multi-line note field bound to one form key.
+  function NoteField({ label, valueKey, placeholder, rows = 2 }: { label: string; valueKey: keyof MarketForm; placeholder?: string; rows?: number }) {
+    return (
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+        <textarea
+          value={form[valueKey] as string}
+          rows={rows}
+          placeholder={placeholder}
+          onInput={(e) => setField(valueKey, (e.target as HTMLTextAreaElement).value as MarketForm[typeof valueKey])}
+          class={inputCls}
+        />
+      </label>
+    );
+  }
+
+  // A demand note paired with its honest demand-label picker. The backend
+  // downgrades a concrete rating to Needs research when its note is empty.
+  function DemandField({ label, noteKey, labelKey, placeholder }: { label: string; noteKey: keyof MarketForm; labelKey: keyof MarketForm; placeholder?: string }) {
+    return (
+      <label class="block">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+          <select
+            value={form[labelKey] as string}
+            onChange={(e) => setField(labelKey, (e.target as HTMLSelectElement).value as MarketForm[typeof labelKey])}
+            class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-1.5 py-1 text-[11px] outline-none focus:border-[var(--color-accent)]"
+            title="Demand label"
+          >
+            {MARKET_DEMAND_LABELS.map((l) => <option key={l} value={l}>{demandText(l)}</option>)}
+          </select>
+        </div>
+        <textarea
+          value={form[noteKey] as string}
+          rows={2}
+          placeholder={placeholder}
+          onInput={(e) => setField(noteKey, (e.target as HTMLTextAreaElement).value as MarketForm[typeof noteKey])}
+          class={inputCls}
+        />
+      </label>
+    );
+  }
+
+  return (
+    <div class="space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Manual market-level entry · saved to local LandOS store</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Market review status</span>
+          <select
+            value={form.marketReviewStatus}
+            onChange={(e) => setField('marketReviewStatus', (e.target as HTMLSelectElement).value)}
+            class={inputCls}
+          >
+            {MARKET_DEMAND_LABELS.map((l) => <option key={l} value={l}>{demandText(l)}</option>)}
+          </select>
+          <span class="text-[10px] text-[var(--color-text-faint)]">Market context only. Never a comp, price, or value.</span>
+        </label>
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Target market / area label</span>
+          <input
+            type="text"
+            value={form.targetAreaLabel}
+            placeholder="e.g. county / submarket label"
+            onInput={(e) => setField('targetAreaLabel', (e.target as HTMLInputElement).value)}
+            class={inputCls}
+          />
+        </label>
+      </div>
+
+      <NoteField label="County / city / region notes" valueKey="countyCityRegionNotes" />
+
+      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Demand (manual conclusions only)</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <DemandField label="Local buyer demand" noteKey="buyerDemandNotes" labelKey="buyerDemandLabel" placeholder="what you actually know; blank stays Needs research" />
+        <DemandField label="Manufactured-home demand" noteKey="manufacturedHomeDemandNotes" labelKey="manufacturedHomeDemandLabel" />
+        <DemandField label="Subdivision demand" noteKey="subdivisionDemandNotes" labelKey="subdivisionDemandLabel" />
+        <DemandField label="Infill-lot demand" noteKey="infillLotDemandNotes" labelKey="infillLotDemandLabel" />
+        <DemandField label="Rural acreage demand" noteKey="ruralAcreageDemandNotes" labelKey="ruralAcreageDemandLabel" />
+      </div>
+      <span class="text-[10px] text-[var(--color-text-faint)]">A demand rating without a note for that lane is downgraded to Needs research. Conclusions are never fabricated.</span>
+
+      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Listing / sold context (notes only)</div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <NoteField label="Active listing notes" valueKey="activeListingNotes" rows={3} />
+        <NoteField label="Sold comp context notes" valueKey="soldCompContextNotes" rows={3} />
+        <NoteField label="Days-on-market notes" valueKey="daysOnMarketNotes" rows={3} />
+      </div>
+      <span class="text-[10px] text-[var(--color-text-faint)]">These are manual notes only. No comps, actives, solds, or days-on-market are computed.</span>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <NoteField label="County growth / planning notes" valueKey="countyGrowthPlanningNotes" />
+        <NoteField label="Exit strategy support notes" valueKey="exitStrategySupportNotes" />
+      </div>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Source confidence</span>
+        <select
+          value={form.sourceConfidence}
+          onChange={(e) => setField('sourceConfidence', (e.target as HTMLSelectElement).value)}
+          class={inputCls}
+        >
+          {MARKET_SOURCE_CONFIDENCE.map((l) => <option key={l} value={l}>{sourceConfidenceText(l)}</option>)}
+        </select>
+        <span class="text-[10px] text-[var(--color-text-faint)]">High confidence requires at least one source link, or it is downgraded to Needs research.</span>
+      </label>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Source links (one per line · optional "label | url")</span>
+        <textarea
+          value={form.sourceLinksText}
+          rows={2}
+          placeholder={'County planning | https://...\nMarket report | https://...'}
+          onInput={(e) => setField('sourceLinksText', (e.target as HTMLTextAreaElement).value)}
+          class={inputCls}
+        />
+      </label>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Data gaps (one per line)</span>
+          <textarea
+            value={form.dataGapsText}
+            rows={3}
+            onInput={(e) => setField('dataGapsText', (e.target as HTMLTextAreaElement).value)}
+            class={inputCls}
+          />
+        </label>
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Risk flags (one per line)</span>
+          <textarea
+            value={form.riskFlagsText}
+            rows={3}
+            onInput={(e) => setField('riskFlagsText', (e.target as HTMLTextAreaElement).value)}
+            class={inputCls}
+          />
+        </label>
+      </div>
+
+      <NoteField label="Notes" valueKey="notes" />
+
+      {error && <div class="text-[11px] text-[var(--color-status-failed)]">{error}</div>}
+
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Save Market Research'}
         </button>
         <button
           type="button"

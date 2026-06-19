@@ -519,3 +519,74 @@ describe('LandOS routes — Deal Card DD/Research worksheet', () => {
     expect(p.status).toBe(404);
   });
 });
+
+describe('LandOS routes — Deal Card Market Research worksheet', () => {
+  async function put(path: string, body: unknown) {
+    return app.request(path + (path.includes('?') ? '&' : '?') + 'token=' + TOKEN, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  async function newDealId(): Promise<number> {
+    const create = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Market route deal' });
+    return ((await create.json()) as any).dealCard.id;
+  }
+
+  it('GET returns an honest empty worksheet plus label vocab', async () => {
+    const id = await newDealId();
+    const res = await get(`/api/landos/deal-cards/${id}/market`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.market.exists).toBe(false);
+    expect(body.market.marketReviewStatus).toBe('not_reviewed');
+    expect(body.demandLabels).toContain('strong_demand');
+    expect(body.demandLabels).toContain('needs_research');
+    expect(Array.isArray(body.sourceConfidenceLabels)).toBe(true);
+  });
+
+  it('PUT saves Market fields and a reload recovers them (persistence)', async () => {
+    const id = await newDealId();
+    const save = await put(`/api/landos/deal-cards/${id}/market`, {
+      marketReviewStatus: 'moderate_demand',
+      targetAreaLabel: 'Sample submarket',
+      buyerDemandNotes: 'Active local buyers per manual review',
+      buyerDemandLabel: 'strong_demand',
+      dataGaps: ['Confirm absorption'], riskFlags: ['Thin sold data'],
+    });
+    expect(save.status).toBe(200);
+
+    const reload = await get(`/api/landos/deal-cards/${id}/market`);
+    const market = ((await reload.json()) as any).market;
+    expect(market.exists).toBe(true);
+    expect(market.targetAreaLabel).toBe('Sample submarket');
+    expect(market.buyerDemandLabel).toBe('strong_demand');
+    expect(market.dataGaps).toEqual(['Confirm absorption']);
+    expect(market.riskFlags).toEqual(['Thin sold data']);
+  });
+
+  it('PUT downgrades a demand rating with no supporting note and returns a warning', async () => {
+    const id = await newDealId();
+    const save = await put(`/api/landos/deal-cards/${id}/market`, {
+      subdivisionDemandLabel: 'strong_demand',
+    });
+    const body = (await save.json()) as any;
+    expect(body.market.subdivisionDemandLabel).toBe('needs_research');
+    expect(body.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('PUT downgrades source confidence high without a source link', async () => {
+    const id = await newDealId();
+    const save = await put(`/api/landos/deal-cards/${id}/market`, { sourceConfidence: 'high' });
+    const body = (await save.json()) as any;
+    expect(body.market.sourceConfidence).toBe('needs_research');
+    expect(body.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('GET/PUT on a missing deal card returns 404', async () => {
+    const g = await get('/api/landos/deal-cards/999999/market');
+    expect(g.status).toBe(404);
+    const p = await put('/api/landos/deal-cards/999999/market', { targetAreaLabel: 'x' });
+    expect(p.status).toBe(404);
+  });
+});

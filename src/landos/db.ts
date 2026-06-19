@@ -149,6 +149,34 @@ export const STRATEGY_OFFER_READINESS = [
 ] as const;
 export type StrategyOfferReadiness = (typeof STRATEGY_OFFER_READINESS)[number];
 
+// Market Research demand labels for a Deal Card. Market-level context ONLY —
+// never a property-level fact and never a comp/price/value. Defaults to
+// 'not_reviewed' and is NEVER auto-advanced: a demand rating is only set by Tyler
+// from manually-entered notes. 'needs_research' is the honest "looked but no
+// basis yet" state. No demand level is ever fabricated.
+export const MARKET_DEMAND_LABELS = [
+  'not_reviewed',
+  'needs_research',
+  'weak_demand',
+  'moderate_demand',
+  'strong_demand',
+  'mixed_uncertain',
+] as const;
+export type MarketDemandLabel = (typeof MARKET_DEMAND_LABELS)[number];
+
+// Source-confidence label for a Deal Card Market Research worksheet. Honest
+// confidence in the manually-entered market sources. Defaults to 'unknown';
+// 'high' requires at least one named source link (enforced in
+// deal-card-market.ts) so confidence is never claimed without a source.
+export const MARKET_SOURCE_CONFIDENCE = [
+  'unknown',
+  'low',
+  'medium',
+  'high',
+  'needs_research',
+] as const;
+export type MarketSourceConfidence = (typeof MARKET_SOURCE_CONFIDENCE)[number];
+
 // Comp source labels. GIS is intentionally NOT a comp source — county/GIS is
 // for parcel verification and legal facts, never the first-pass comp engine.
 export const COMP_SOURCE_LABELS = [
@@ -828,6 +856,54 @@ function createLandosSchema(db: Database.Database): void {
       updated_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_landos_deal_card_strategy ON landos_deal_card_strategy(deal_card_id);
+
+    -- Market Research worksheet for a Deal Card (one row per deal). A safe local
+    -- landing place for the Market Research leg: MARKET-LEVEL context only,
+    -- manually entered. This is NOT property-level due diligence and never
+    -- verifies parcel identity. No comps, actives, solds, days-on-market, demand,
+    -- pricing, or county-growth facts are computed or fabricated here — every
+    -- value is a manual note or carries an honest demand label that defaults to
+    -- 'not_reviewed'. Demand/listing/sold/growth notes, source links, source
+    -- confidence, data gaps, and risk flags are kept in separate fields. Lives in
+    -- store/landos.db (gitignored) — never property-specific work product in repo.
+    CREATE TABLE IF NOT EXISTS landos_deal_card_market (
+      id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id                  INTEGER NOT NULL UNIQUE REFERENCES landos_deal_card(id),
+      market_review_status          TEXT NOT NULL DEFAULT 'not_reviewed'
+                                    CHECK (market_review_status IN (${inList(MARKET_DEMAND_LABELS)})),
+      target_area_label             TEXT NOT NULL DEFAULT '',
+      county_city_region_notes      TEXT NOT NULL DEFAULT '',
+      buyer_demand_notes            TEXT NOT NULL DEFAULT '',
+      buyer_demand_label            TEXT NOT NULL DEFAULT 'not_reviewed'
+                                    CHECK (buyer_demand_label IN (${inList(MARKET_DEMAND_LABELS)})),
+      active_listing_notes          TEXT NOT NULL DEFAULT '',
+      sold_comp_context_notes       TEXT NOT NULL DEFAULT '',
+      days_on_market_notes          TEXT NOT NULL DEFAULT '',
+      manufactured_home_demand_notes TEXT NOT NULL DEFAULT '',
+      manufactured_home_demand_label TEXT NOT NULL DEFAULT 'not_reviewed'
+                                    CHECK (manufactured_home_demand_label IN (${inList(MARKET_DEMAND_LABELS)})),
+      subdivision_demand_notes      TEXT NOT NULL DEFAULT '',
+      subdivision_demand_label      TEXT NOT NULL DEFAULT 'not_reviewed'
+                                    CHECK (subdivision_demand_label IN (${inList(MARKET_DEMAND_LABELS)})),
+      infill_lot_demand_notes       TEXT NOT NULL DEFAULT '',
+      infill_lot_demand_label       TEXT NOT NULL DEFAULT 'not_reviewed'
+                                    CHECK (infill_lot_demand_label IN (${inList(MARKET_DEMAND_LABELS)})),
+      rural_acreage_demand_notes    TEXT NOT NULL DEFAULT '',
+      rural_acreage_demand_label    TEXT NOT NULL DEFAULT 'not_reviewed'
+                                    CHECK (rural_acreage_demand_label IN (${inList(MARKET_DEMAND_LABELS)})),
+      county_growth_planning_notes  TEXT NOT NULL DEFAULT '',
+      exit_strategy_support_notes   TEXT NOT NULL DEFAULT '',
+      source_links                  TEXT NOT NULL DEFAULT '[]',
+      source_confidence             TEXT NOT NULL DEFAULT 'unknown'
+                                    CHECK (source_confidence IN (${inList(MARKET_SOURCE_CONFIDENCE)})),
+      data_gaps                     TEXT NOT NULL DEFAULT '[]',
+      risk_flags                    TEXT NOT NULL DEFAULT '[]',
+      notes                         TEXT NOT NULL DEFAULT '',
+      updated_by                    TEXT NOT NULL DEFAULT '',
+      created_at                    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at                    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_market ON landos_deal_card_market(deal_card_id);
 
     -- Batch lead-intake jobs. One row per pasted lead; isolated parcel state.
     CREATE TABLE IF NOT EXISTS landos_lead_job (
