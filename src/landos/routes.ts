@@ -69,6 +69,8 @@ import {
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
+import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
+import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, type DdFieldLabel, type DdParcelIdentityStatus } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
   DEAL_CARD_STATUSES,
@@ -602,6 +604,73 @@ export function registerLandosRoutes(app: Hono): void {
     });
     if (!updated) return c.json({ error: 'not found' }, 404);
     return c.json({ dealCard: getDealCard(id) });
+  });
+
+  // ── Deal Card DD/Research worksheet (manual/local; labeled confidence) ──
+  // A safe local landing place for the Due Diligence + Research leg. Every
+  // parcel fact carries a confidence label; parcel identity defaults to
+  // local-area-context and is never inferred from coordinates/proximity. No
+  // external CRM/GHL, no paid/LandPortal calls.
+  app.get('/api/landos/deal-cards/:id/dd', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({
+      dd: getDealCardDd(id),
+      fieldLabels: DD_FIELD_LABELS,
+      parcelIdentityStatuses: DD_PARCEL_IDENTITY_STATUSES,
+    });
+  });
+
+  app.put('/api/landos/deal-cards/:id/dd', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const ddLabel = (v: unknown): DdFieldLabel | undefined =>
+      (DD_FIELD_LABELS as readonly string[]).includes(str(v) ?? '') ? (v as DdFieldLabel) : undefined;
+    const identity = (v: unknown): DdParcelIdentityStatus | undefined =>
+      (DD_PARCEL_IDENTITY_STATUSES as readonly string[]).includes(str(v) ?? '') ? (v as DdParcelIdentityStatus) : undefined;
+    const strList = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+    const linkList = (v: unknown): DealCardSourceLink[] | undefined =>
+      Array.isArray(v)
+        ? v
+            .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && typeof (x as Record<string, unknown>).url === 'string')
+            .map((x) => ({ label: str(x.label) ?? '', url: String(x.url) }))
+        : undefined;
+    // acreage may be explicitly cleared (null) or set to a number.
+    const acreage =
+      'acreage' in body ? (body.acreage === null ? null : num(body.acreage) ?? null) : undefined;
+    const patch: DealCardDdPatch = {
+      parcelIdentityStatus: identity(body.parcelIdentityStatus),
+      apn: str(body.apn),
+      apnLabel: ddLabel(body.apnLabel),
+      county: str(body.county),
+      state: str(body.state),
+      locationLabel: ddLabel(body.locationLabel),
+      acreage,
+      acreageLabel: ddLabel(body.acreageLabel),
+      zoning: str(body.zoning),
+      zoningLabel: ddLabel(body.zoningLabel),
+      accessStatus: str(body.accessStatus),
+      accessLabel: ddLabel(body.accessLabel),
+      utilitiesStatus: str(body.utilitiesStatus),
+      utilitiesLabel: ddLabel(body.utilitiesLabel),
+      floodStatus: str(body.floodStatus),
+      floodLabel: ddLabel(body.floodLabel),
+      wetlandsStatus: str(body.wetlandsStatus),
+      wetlandsLabel: ddLabel(body.wetlandsLabel),
+      roadFrontageNotes: str(body.roadFrontageNotes),
+      sourceLinks: linkList(body.sourceLinks),
+      dataGaps: strList(body.dataGaps),
+      riskFlags: strList(body.riskFlags),
+      notes: str(body.notes),
+      updatedBy: str(body.updatedBy),
+    };
+    const result = upsertDealCardDd(id, patch);
+    if (!result) return c.json({ error: 'deal card not found' }, 404);
+    return c.json(result);
   });
 
   // ── Comps (manual + automated). Never verifies parcel identity. ─────

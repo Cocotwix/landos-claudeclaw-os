@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { PageState } from '@/components/PageState';
-import { apiGet, apiPost, apiPatch } from '@/lib/api';
+import { apiGet, apiPost, apiPatch, apiPut } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
 // Deal Card panel — a usable list/open/create/edit/save/reload flow over the
@@ -39,6 +39,54 @@ const EMPTY_FORM: DealForm = {
   entity: 'TY_LAND_BIZ', title: '', status: 'new', sellerNotes: '',
   askingPrice: '', combinedStrategy: '', packageNotes: '',
 };
+
+// DD/Research worksheet confidence labels + identity statuses (mirror
+// DD_FIELD_LABELS / DD_PARCEL_IDENTITY_STATUSES in src/landos/db.ts; the backend
+// re-validates and enforces the "Verified needs a source" guardrail).
+const DD_FIELD_LABELS = [
+  'Verified', 'Seller stated', 'Assumed', 'Unknown', 'Needs verification',
+  'Local Area Context, Not Parcel Verified',
+] as const;
+const DD_IDENTITY_STATUSES = [
+  'local_area_context_not_verified', 'seller_stated', 'address_only',
+  'apn_provided', 'source_verified', 'unknown',
+] as const;
+
+interface DdSourceLink { label: string; url: string }
+
+interface DdView {
+  exists: boolean;
+  parcelIdentityStatus: string;
+  apn: string; apnLabel: string;
+  county: string; state: string; locationLabel: string;
+  acreage: number | null; acreageLabel: string;
+  zoning: string; zoningLabel: string;
+  accessStatus: string; accessLabel: string;
+  utilitiesStatus: string; utilitiesLabel: string;
+  floodStatus: string; floodLabel: string;
+  wetlandsStatus: string; wetlandsLabel: string;
+  roadFrontageNotes: string;
+  sourceLinks: DdSourceLink[];
+  dataGaps: string[]; riskFlags: string[];
+  notes: string; updatedBy: string; updatedAt: number | null;
+}
+
+interface DdForm {
+  parcelIdentityStatus: string;
+  apn: string; apnLabel: string;
+  county: string; state: string; locationLabel: string;
+  acreage: string; acreageLabel: string;
+  zoning: string; zoningLabel: string;
+  accessStatus: string; accessLabel: string;
+  utilitiesStatus: string; utilitiesLabel: string;
+  floodStatus: string; floodLabel: string;
+  wetlandsStatus: string; wetlandsLabel: string;
+  roadFrontageNotes: string;
+  sourceLinksText: string;
+  dataGapsText: string;
+  riskFlagsText: string;
+  notes: string;
+}
 
 interface PropertyCardLite {
   id: number;
@@ -115,6 +163,71 @@ function Field({ label, value }: { label: string; value?: string | number | null
   );
 }
 
+// Human-readable parcel identity status + the verification color cue.
+function identityStatusText(status?: string): string {
+  switch (status) {
+    case 'source_verified': return 'Source verified';
+    case 'apn_provided': return 'APN provided (needs source)';
+    case 'address_only': return 'Address only (needs source)';
+    case 'seller_stated': return 'Seller stated';
+    case 'unknown': return 'Unknown';
+    case 'local_area_context_not_verified':
+    default: return 'Local Area Context, Not Parcel Verified';
+  }
+}
+
+function DdIdentityBadge({ status }: { status?: string }) {
+  const verified = status === 'source_verified';
+  const cls = verified
+    ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+    : 'border-[var(--color-border)] text-[var(--color-text-muted)]';
+  return (
+    <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${cls}`}>
+      Identity: {identityStatusText(status)}
+    </span>
+  );
+}
+
+// A small confidence-label pill. 'Verified' is the only "trusted" cue; every
+// other label reads as not-yet-verified so research data never looks verified.
+function DdLabelPill({ label }: { label?: string }) {
+  if (!label) return null;
+  const verified = label === 'Verified';
+  const cls = verified
+    ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+    : 'border-[var(--color-border)] text-[var(--color-text-faint)]';
+  return <span class={`ml-2 text-[9px] px-1 py-0.5 rounded-full border ${cls} whitespace-nowrap`}>{label}</span>;
+}
+
+// A DD field row: value (or a missing placeholder) plus its confidence label.
+function LabeledField({ label, value, confidence }: { label: string; value?: string | number | null; confidence?: string }) {
+  const has = value !== undefined && value !== null && value !== '';
+  return (
+    <div class="flex justify-between items-center gap-3 py-0.5">
+      <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+      <span class="flex items-center text-right">
+        {has ? <span class="text-[12px] text-[var(--color-text)]">{value}</span> : <Placeholder text="Missing" />}
+        <DdLabelPill label={confidence} />
+      </span>
+    </div>
+  );
+}
+
+function DdList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  return (
+    <div class="mt-3">
+      <div class="text-[11px] text-[var(--color-text-muted)] mb-1">{title}</div>
+      {items.length === 0 ? (
+        <Placeholder text={empty} />
+      ) : (
+        <ul class="list-disc pl-4 space-y-0.5">
+          {items.map((it) => <li key={it} class="text-[12px] text-[var(--color-text)] break-words">{it}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function DealCard({ dealCardId }: { dealCardId?: number }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -132,17 +245,107 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // DD/Research worksheet state. Loaded alongside the open deal; edited inline
+  // via a separate sub-form (independent of the deal-level create/edit form).
+  const [dd, setDd] = useState<DdView | null>(null);
+  const [ddEditing, setDdEditing] = useState(false);
+  const [ddForm, setDdForm] = useState<DdForm | null>(null);
+  const [ddSaving, setDdSaving] = useState(false);
+  const [ddError, setDdError] = useState<string | null>(null);
+  const [ddWarnings, setDdWarnings] = useState<string[]>([]);
+
+  async function loadDd(id: number) {
+    try {
+      const res = await apiGet<{ dd: DdView }>(`/api/landos/deal-cards/${id}/dd`);
+      setDd(res.dd);
+    } catch {
+      setDd(null);
+    }
+  }
+
   async function load(id: number) {
     try {
       setLoading(true);
       setError(null);
+      setDdEditing(false);
+      setDdWarnings([]);
       const res = await apiGet<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
+      await loadDd(id);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
+      setDd(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  function startDdEdit() {
+    const d = dd;
+    setDdError(null);
+    setDdWarnings([]);
+    setDdForm({
+      parcelIdentityStatus: d?.parcelIdentityStatus ?? 'local_area_context_not_verified',
+      apn: d?.apn ?? '', apnLabel: d?.apnLabel ?? 'Unknown',
+      county: d?.county ?? '', state: d?.state ?? '', locationLabel: d?.locationLabel ?? 'Unknown',
+      acreage: d?.acreage != null ? String(d.acreage) : '', acreageLabel: d?.acreageLabel ?? 'Unknown',
+      zoning: d?.zoning ?? '', zoningLabel: d?.zoningLabel ?? 'Unknown',
+      accessStatus: d?.accessStatus ?? '', accessLabel: d?.accessLabel ?? 'Unknown',
+      utilitiesStatus: d?.utilitiesStatus ?? '', utilitiesLabel: d?.utilitiesLabel ?? 'Unknown',
+      floodStatus: d?.floodStatus ?? '', floodLabel: d?.floodLabel ?? 'Unknown',
+      wetlandsStatus: d?.wetlandsStatus ?? '', wetlandsLabel: d?.wetlandsLabel ?? 'Unknown',
+      roadFrontageNotes: d?.roadFrontageNotes ?? '',
+      sourceLinksText: (d?.sourceLinks ?? []).map((l) => (l.label ? `${l.label} | ${l.url}` : l.url)).join('\n'),
+      dataGapsText: (d?.dataGaps ?? []).join('\n'),
+      riskFlagsText: (d?.riskFlags ?? []).join('\n'),
+      notes: d?.notes ?? '',
+    });
+    setDdEditing(true);
+  }
+
+  function setDdField<K extends keyof DdForm>(key: K, value: DdForm[K]) {
+    setDdForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  async function saveDd() {
+    if (!deal || !ddForm) return;
+    setDdSaving(true);
+    setDdError(null);
+    try {
+      const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+      const sourceLinks = lines(ddForm.sourceLinksText).map((line) => {
+        const i = line.indexOf('|');
+        return i >= 0
+          ? { label: line.slice(0, i).trim(), url: line.slice(i + 1).trim() }
+          : { label: '', url: line };
+      }).filter((l) => l.url);
+      const payload = {
+        parcelIdentityStatus: ddForm.parcelIdentityStatus,
+        apn: ddForm.apn, apnLabel: ddForm.apnLabel,
+        county: ddForm.county, state: ddForm.state, locationLabel: ddForm.locationLabel,
+        acreage: ddForm.acreage.trim() === '' ? null : Number(ddForm.acreage),
+        acreageLabel: ddForm.acreageLabel,
+        zoning: ddForm.zoning, zoningLabel: ddForm.zoningLabel,
+        accessStatus: ddForm.accessStatus, accessLabel: ddForm.accessLabel,
+        utilitiesStatus: ddForm.utilitiesStatus, utilitiesLabel: ddForm.utilitiesLabel,
+        floodStatus: ddForm.floodStatus, floodLabel: ddForm.floodLabel,
+        wetlandsStatus: ddForm.wetlandsStatus, wetlandsLabel: ddForm.wetlandsLabel,
+        roadFrontageNotes: ddForm.roadFrontageNotes,
+        sourceLinks,
+        dataGaps: lines(ddForm.dataGapsText),
+        riskFlags: lines(ddForm.riskFlagsText),
+        notes: ddForm.notes,
+      };
+      const res = await apiPut<{ dd: DdView; warnings: string[] }>(`/api/landos/deal-cards/${deal.id}/dd`, payload);
+      // Re-load from the API so what we show is exactly what persisted.
+      await loadDd(deal.id);
+      setDdWarnings(Array.isArray(res.warnings) ? res.warnings : []);
+      setDdEditing(false);
+    } catch (err: any) {
+      setDdError(err?.message || String(err));
+    } finally {
+      setDdSaving(false);
     }
   }
 
@@ -407,6 +610,73 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
             </div>
           </Section>
 
+          {/* 4b. Due Diligence / Research worksheet — manual/local, labeled */}
+          <Section title="Due Diligence / Research">
+            {!ddEditing && (
+              <>
+                <div class="flex items-center justify-between mb-2">
+                  <DdIdentityBadge status={dd?.parcelIdentityStatus} />
+                  <button
+                    type="button"
+                    onClick={startDdEdit}
+                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
+                  >
+                    {dd?.exists ? 'Edit DD/Research' : 'Add DD/Research'}
+                  </button>
+                </div>
+                {ddWarnings.length > 0 && (
+                  <div class="mb-2 rounded-md border border-[var(--color-status-failed)] p-2 space-y-0.5">
+                    {ddWarnings.map((w) => (
+                      <div key={w} class="text-[11px] text-[var(--color-status-failed)]">{w}</div>
+                    ))}
+                  </div>
+                )}
+                {!dd?.exists && (
+                  <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3 mb-2">
+                    No DD/Research data captured yet. Click <span class="text-[var(--color-accent)]">Add DD/Research</span> to enter parcel identity, land data, source links, data gaps, and risk flags. Saved to the local LandOS store.
+                  </div>
+                )}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+                  <LabeledField label="APN / Parcel ID" value={dd?.apn} confidence={dd?.apnLabel} />
+                  <LabeledField label="County / State" value={[dd?.county, dd?.state].filter(Boolean).join(', ')} confidence={dd?.locationLabel} />
+                  <LabeledField label="Acreage" value={dd?.acreage ?? undefined} confidence={dd?.acreageLabel} />
+                  <LabeledField label="Zoning / land use" value={dd?.zoning} confidence={dd?.zoningLabel} />
+                  <LabeledField label="Access" value={dd?.accessStatus} confidence={dd?.accessLabel} />
+                  <LabeledField label="Utilities" value={dd?.utilitiesStatus} confidence={dd?.utilitiesLabel} />
+                  <LabeledField label="Flood" value={dd?.floodStatus} confidence={dd?.floodLabel} />
+                  <LabeledField label="Wetlands" value={dd?.wetlandsStatus} confidence={dd?.wetlandsLabel} />
+                </div>
+                <div class="mt-3">
+                  <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Road / frontage notes</div>
+                  {dd?.roadFrontageNotes ? <span class="text-[12px] text-[var(--color-text)]">{dd.roadFrontageNotes}</span> : <Placeholder />}
+                </div>
+                <DdList title="Source links" items={(dd?.sourceLinks ?? []).map((l) => (l.label ? `${l.label} — ${l.url}` : l.url))} empty="No source links yet" />
+                <DdList title="Data gaps" items={dd?.dataGaps ?? []} empty="No data gaps recorded yet" />
+                <DdList title="Risk flags" items={dd?.riskFlags ?? []} empty="No risk flags recorded yet" />
+                {dd?.notes && (
+                  <div class="mt-3">
+                    <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Notes</div>
+                    <span class="text-[12px] text-[var(--color-text)]">{dd.notes}</span>
+                  </div>
+                )}
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-3">
+                  DD/Research is manual/local. Every fact carries a confidence label and is never shown as verified without a named source. Parcel identity comes from exact-source records only, never from imagery or coordinates.
+                  {dd?.exists && dd.updatedAt ? <> Last updated {formatRelativeTime(dd.updatedAt)}{dd.updatedBy ? ` by ${dd.updatedBy}` : ''}.</> : null}
+                </div>
+              </>
+            )}
+            {ddEditing && ddForm && (
+              <DdEditForm
+                form={ddForm}
+                setField={setDdField}
+                onSave={() => void saveDd()}
+                onCancel={() => { setDdEditing(false); setDdError(null); }}
+                saving={ddSaving}
+                error={ddError}
+              />
+            )}
+          </Section>
+
           {/* 5. Owner / Seller */}
           <Section title="Owner / Seller">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
@@ -614,5 +884,173 @@ function DealForm({
         <span class="text-[10px] text-[var(--color-text-faint)]">CRM / GHL push is not connected and stays approval-gated.</span>
       </div>
     </section>
+  );
+}
+
+// ── DD/Research worksheet edit form ─────────────────────────────────────────
+// Manual/local entry only. Every parcel fact picks a confidence label; the
+// backend downgrades any 'Verified' field that has no source link. Parcel
+// identity comes from exact-source records only, never imagery. No CRM/GHL.
+function DdEditForm({
+  form, setField, onSave, onCancel, saving, error,
+}: {
+  form: DdForm;
+  setField: <K extends keyof DdForm>(key: K, value: DdForm[K]) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  error: string | null;
+}) {
+  const inputCls =
+    'w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12px] outline-none focus:border-[var(--color-accent)]';
+  const labelCls =
+    'bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-1.5 py-1.5 text-[11px] outline-none focus:border-[var(--color-accent)]';
+
+  // A value input paired with its confidence-label picker.
+  function FieldWithLabel({
+    label, valueKey, labelKey, type = 'text', placeholder,
+  }: {
+    label: string;
+    valueKey: keyof DdForm;
+    labelKey: keyof DdForm;
+    type?: string;
+    placeholder?: string;
+  }) {
+    return (
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+        <div class="flex gap-1.5">
+          <input
+            type={type}
+            value={form[valueKey] as string}
+            placeholder={placeholder}
+            onInput={(e) => setField(valueKey, (e.target as HTMLInputElement).value as DdForm[typeof valueKey])}
+            class={inputCls}
+          />
+          <select
+            value={form[labelKey] as string}
+            onChange={(e) => setField(labelKey, (e.target as HTMLSelectElement).value as DdForm[typeof labelKey])}
+            class={labelCls}
+            title="Confidence label"
+          >
+            {DD_FIELD_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+      </label>
+    );
+  }
+
+  return (
+    <div class="space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Manual DD/Research entry · saved to local LandOS store</span>
+      </div>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Parcel identity status</span>
+        <select
+          value={form.parcelIdentityStatus}
+          onChange={(e) => setField('parcelIdentityStatus', (e.target as HTMLSelectElement).value)}
+          class={inputCls}
+        >
+          {DD_IDENTITY_STATUSES.map((s) => <option key={s} value={s}>{identityStatusText(s)}</option>)}
+        </select>
+      </label>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <FieldWithLabel label="APN / Parcel ID" valueKey="apn" labelKey="apnLabel" placeholder="e.g. 000-000-000" />
+        <FieldWithLabel label="County / State" valueKey="county" labelKey="locationLabel" placeholder="county" />
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">State</span>
+          <input
+            type="text"
+            value={form.state}
+            placeholder="ST"
+            onInput={(e) => setField('state', (e.target as HTMLInputElement).value)}
+            class={inputCls}
+          />
+        </label>
+        <FieldWithLabel label="Acreage" valueKey="acreage" labelKey="acreageLabel" type="number" placeholder="optional" />
+        <FieldWithLabel label="Zoning / land use" valueKey="zoning" labelKey="zoningLabel" placeholder="optional" />
+        <FieldWithLabel label="Access" valueKey="accessStatus" labelKey="accessLabel" placeholder="e.g. road frontage / easement / unknown" />
+        <FieldWithLabel label="Utilities" valueKey="utilitiesStatus" labelKey="utilitiesLabel" placeholder="e.g. power at road / none / unknown" />
+        <FieldWithLabel label="Flood" valueKey="floodStatus" labelKey="floodLabel" placeholder="e.g. Zone X / partial / unknown" />
+        <FieldWithLabel label="Wetlands" valueKey="wetlandsStatus" labelKey="wetlandsLabel" placeholder="e.g. none mapped / present / unknown" />
+      </div>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Road / frontage notes</span>
+        <textarea
+          value={form.roadFrontageNotes}
+          rows={2}
+          onInput={(e) => setField('roadFrontageNotes', (e.target as HTMLTextAreaElement).value)}
+          class={inputCls}
+        />
+      </label>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Source links (one per line · optional "label | url")</span>
+        <textarea
+          value={form.sourceLinksText}
+          rows={2}
+          placeholder={'County GIS | https://...\nAssessor | https://...'}
+          onInput={(e) => setField('sourceLinksText', (e.target as HTMLTextAreaElement).value)}
+          class={inputCls}
+        />
+        <span class="text-[10px] text-[var(--color-text-faint)]">A field can only stay "Verified" when at least one source link is present.</span>
+      </label>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Data gaps (one per line)</span>
+          <textarea
+            value={form.dataGapsText}
+            rows={3}
+            onInput={(e) => setField('dataGapsText', (e.target as HTMLTextAreaElement).value)}
+            class={inputCls}
+          />
+        </label>
+        <label class="block">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Risk flags (one per line)</span>
+          <textarea
+            value={form.riskFlagsText}
+            rows={3}
+            onInput={(e) => setField('riskFlagsText', (e.target as HTMLTextAreaElement).value)}
+            class={inputCls}
+          />
+        </label>
+      </div>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Notes</span>
+        <textarea
+          value={form.notes}
+          rows={2}
+          onInput={(e) => setField('notes', (e.target as HTMLTextAreaElement).value)}
+          class={inputCls}
+        />
+      </label>
+
+      {error && <div class="text-[11px] text-[var(--color-status-failed)]">{error}</div>}
+
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Save DD/Research'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }

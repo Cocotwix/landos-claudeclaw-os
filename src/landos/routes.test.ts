@@ -460,3 +460,62 @@ describe('LandOS routes — Deal Card create/edit/save/reload/update', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('LandOS routes — Deal Card DD/Research worksheet', () => {
+  async function put(path: string, body: unknown) {
+    return app.request(path + (path.includes('?') ? '&' : '?') + 'token=' + TOKEN, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  async function newDealId(): Promise<number> {
+    const create = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'DD route deal' });
+    return ((await create.json()) as any).dealCard.id;
+  }
+
+  it('GET returns an honest empty worksheet plus label vocab', async () => {
+    const id = await newDealId();
+    const res = await get(`/api/landos/deal-cards/${id}/dd`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.dd.exists).toBe(false);
+    expect(body.dd.parcelIdentityStatus).toBe('local_area_context_not_verified');
+    expect(body.fieldLabels).toContain('Local Area Context, Not Parcel Verified');
+    expect(Array.isArray(body.parcelIdentityStatuses)).toBe(true);
+  });
+
+  it('PUT saves DD fields and a reload recovers them (persistence)', async () => {
+    const id = await newDealId();
+    const save = await put(`/api/landos/deal-cards/${id}/dd`, {
+      apn: '555-001', apnLabel: 'Seller stated',
+      county: 'Sample County', state: 'TX', acreage: 35,
+      dataGaps: ['Confirm access'], riskFlags: ['No survey'],
+    });
+    expect(save.status).toBe(200);
+
+    const reload = await get(`/api/landos/deal-cards/${id}/dd`);
+    const dd = ((await reload.json()) as any).dd;
+    expect(dd.exists).toBe(true);
+    expect(dd.apn).toBe('555-001');
+    expect(dd.apnLabel).toBe('Seller stated');
+    expect(dd.acreage).toBe(35);
+    expect(dd.dataGaps).toEqual(['Confirm access']);
+    expect(dd.riskFlags).toEqual(['No survey']);
+  });
+
+  it('PUT enforces the Verified-needs-a-source guardrail and returns a warning', async () => {
+    const id = await newDealId();
+    const save = await put(`/api/landos/deal-cards/${id}/dd`, { apn: '9', apnLabel: 'Verified' });
+    const body = (await save.json()) as any;
+    expect(body.dd.apnLabel).toBe('Needs verification');
+    expect(body.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('GET/PUT on a missing deal card returns 404', async () => {
+    const g = await get('/api/landos/deal-cards/999999/dd');
+    expect(g.status).toBe(404);
+    const p = await put('/api/landos/deal-cards/999999/dd', { apn: 'x' });
+    expect(p.status).toBe(404);
+  });
+});

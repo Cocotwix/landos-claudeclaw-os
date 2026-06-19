@@ -109,6 +109,34 @@ export type DealPropertyRole = (typeof DEAL_PROPERTY_ROLES)[number];
 export const CONTIGUITY_STATUSES = ['unknown', 'seller_stated', 'source_confirmed'] as const;
 export type ContiguityStatus = (typeof CONTIGUITY_STATUSES)[number];
 
+// Due Diligence / Research worksheet field confidence labels. A DD field carries
+// a label so manually-entered research data NEVER masquerades as a verified
+// parcel fact. Mirrors FACT_LABELS plus the explicit local-area-context label.
+// 'Verified' requires a named source link (enforced in deal-card-dd.ts).
+export const DD_FIELD_LABELS = [
+  'Verified',
+  'Seller stated',
+  'Assumed',
+  'Unknown',
+  'Needs verification',
+  'Local Area Context, Not Parcel Verified',
+] as const;
+export type DdFieldLabel = (typeof DD_FIELD_LABELS)[number];
+
+// Parcel identity status for a Deal Card DD worksheet. Defaults to
+// local-area-context: parcel identity is NEVER assumed verified and is never
+// inferred from coordinates, proximity, map pins, or nearest parcel.
+// 'source_verified' requires a named source link (enforced in deal-card-dd.ts).
+export const DD_PARCEL_IDENTITY_STATUSES = [
+  'local_area_context_not_verified',
+  'seller_stated',
+  'address_only',
+  'apn_provided',
+  'source_verified',
+  'unknown',
+] as const;
+export type DdParcelIdentityStatus = (typeof DD_PARCEL_IDENTITY_STATUSES)[number];
+
 // Comp source labels. GIS is intentionally NOT a comp source — county/GIS is
 // for parcel verification and legal facts, never the first-pass comp engine.
 export const COMP_SOURCE_LABELS = [
@@ -715,6 +743,45 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_landos_comp_deal ON landos_comp(deal_card_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_landos_comp_card ON landos_comp(card_id, created_at DESC);
+
+    -- Due Diligence / Research worksheet for a Deal Card (one row per deal).
+    -- A safe local landing place for manually-entered DD/Research data. Every
+    -- parcel fact carries a confidence label so research data is never shown as a
+    -- verified fact; parcel identity defaults to local-area-context and is never
+    -- inferred from coordinates/proximity/map pins. Lives in store/landos.db
+    -- (gitignored) — never property-specific work product in the repo.
+    CREATE TABLE IF NOT EXISTS landos_deal_card_dd (
+      id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id             INTEGER NOT NULL UNIQUE REFERENCES landos_deal_card(id),
+      parcel_identity_status   TEXT NOT NULL DEFAULT 'local_area_context_not_verified'
+                               CHECK (parcel_identity_status IN (${inList(DD_PARCEL_IDENTITY_STATUSES)})),
+      apn                      TEXT NOT NULL DEFAULT '',
+      apn_label                TEXT NOT NULL DEFAULT 'Unknown' CHECK (apn_label IN (${inList(DD_FIELD_LABELS)})),
+      county                   TEXT NOT NULL DEFAULT '',
+      state                    TEXT NOT NULL DEFAULT '',
+      location_label           TEXT NOT NULL DEFAULT 'Unknown' CHECK (location_label IN (${inList(DD_FIELD_LABELS)})),
+      acreage                  REAL,
+      acreage_label            TEXT NOT NULL DEFAULT 'Unknown' CHECK (acreage_label IN (${inList(DD_FIELD_LABELS)})),
+      zoning                   TEXT NOT NULL DEFAULT '',
+      zoning_label             TEXT NOT NULL DEFAULT 'Unknown' CHECK (zoning_label IN (${inList(DD_FIELD_LABELS)})),
+      access_status            TEXT NOT NULL DEFAULT '',
+      access_label             TEXT NOT NULL DEFAULT 'Unknown' CHECK (access_label IN (${inList(DD_FIELD_LABELS)})),
+      utilities_status         TEXT NOT NULL DEFAULT '',
+      utilities_label          TEXT NOT NULL DEFAULT 'Unknown' CHECK (utilities_label IN (${inList(DD_FIELD_LABELS)})),
+      flood_status             TEXT NOT NULL DEFAULT '',
+      flood_label              TEXT NOT NULL DEFAULT 'Unknown' CHECK (flood_label IN (${inList(DD_FIELD_LABELS)})),
+      wetlands_status          TEXT NOT NULL DEFAULT '',
+      wetlands_label           TEXT NOT NULL DEFAULT 'Unknown' CHECK (wetlands_label IN (${inList(DD_FIELD_LABELS)})),
+      road_frontage_notes      TEXT NOT NULL DEFAULT '',
+      source_links             TEXT NOT NULL DEFAULT '[]',
+      data_gaps                TEXT NOT NULL DEFAULT '[]',
+      risk_flags               TEXT NOT NULL DEFAULT '[]',
+      notes                    TEXT NOT NULL DEFAULT '',
+      updated_by               TEXT NOT NULL DEFAULT '',
+      created_at               INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at               INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_dd ON landos_deal_card_dd(deal_card_id);
 
     -- Batch lead-intake jobs. One row per pasted lead; isolated parcel state.
     CREATE TABLE IF NOT EXISTS landos_lead_job (
