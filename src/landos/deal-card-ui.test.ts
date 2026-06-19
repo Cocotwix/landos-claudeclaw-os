@@ -100,6 +100,41 @@ describe('Deal Card panel — create/edit/save (Checkpoint 3)', () => {
   });
 });
 
+describe('Deal Card panel — list / open flow (Final Foundation)', () => {
+  it('fetches the saved-cards list from the list route on mount', () => {
+    // List route is the bare collection path (no :id), via a refreshList helper.
+    expect(SRC).toMatch(/apiGet<[^>]*>\('\/api\/landos\/deal-cards'\)/);
+    expect(SRC).toMatch(/async function refreshList\(\)/);
+    expect(SRC).toMatch(/else void refreshList\(\)/);
+  });
+
+  it('renders a Saved Deal Cards list and opens a row via load(id)', () => {
+    expect(SRC).toMatch(/Saved Deal Cards/);
+    expect(SRC).toMatch(/cards\.map/);
+    expect(SRC).toMatch(/void load\(c\.id\)/);
+  });
+
+  it('highlights the currently selected card in the list', () => {
+    expect(SRC).toMatch(/deal\?\.id === c\.id/);
+  });
+
+  it('shows an honest empty state when there are no saved cards', () => {
+    expect(SRC).toMatch(/No Deal Cards yet/);
+    // Empty state distinguishes "none exist" from a fabricated/zero row.
+    expect(SRC).toMatch(/cards\.length === 0/);
+  });
+
+  it('refreshes the list after create and after edit (saved card is openable)', () => {
+    // Two refreshList() calls in save(): one on the create path, one on edit.
+    expect((SRC.match(/await refreshList\(\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('offers a back-to-list control to deselect the open card', () => {
+    expect(SRC).toMatch(/function backToList\(\)/);
+    expect(SRC).toMatch(/← Deal Cards/);
+  });
+});
+
 describe('Deal Card panel — safety', () => {
   it('reads from the existing deal-card detail route only', () => {
     expect(SRC).toMatch(/apiGet<[^>]*>\(`\/api\/landos\/deal-cards\/\$\{id\}`\)/);

@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'preact/hooks';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost, apiPatch } from '@/lib/api';
+import { formatRelativeTime } from '@/lib/format';
 
-// Deal Card panel — section coverage PLUS approval-gated create/edit/save of the
-// deal-level fields. Data comes from /api/landos/deal-cards/:id (detail); writes
-// go to POST /api/landos/deal-cards (create) and PATCH /api/landos/deal-cards/:id
-// (update). After any write we re-load the same id from the API, which both
-// proves persistence/reload and guarantees we update one record (no duplicates).
+// Deal Card panel — a usable list/open/create/edit/save/reload flow over the
+// deal-level fields. Data comes from /api/landos/deal-cards (list) and
+// /api/landos/deal-cards/:id (detail); writes go to POST /api/landos/deal-cards
+// (create) and PATCH /api/landos/deal-cards/:id (update). After any write we
+// re-load the same id from the API (proves persistence + keeps us on one record,
+// no duplicate) AND refresh the list so a saved card is visible to open again.
 //
 // Deal-level fields only live here (title, stage, seller notes, asking price,
 // strategy, package notes). Parcel identity/verification is never edited here.
@@ -74,6 +76,16 @@ interface DealCardDetail {
   people?: PersonLite[];
 }
 
+// A row in the saved-cards list (the list route returns the flat deal row).
+interface DealCardListItem {
+  id: number;
+  entity: string | null;
+  title: string;
+  status: string;
+  asking_price: number | null;
+  updated_at: number;
+}
+
 function entityBadge(entity: string | null): string {
   if (entity === 'LAND_ALLY') return 'Land Ally';
   if (entity === 'TY_LAND_BIZ') return 'My Business';
@@ -104,13 +116,17 @@ function Field({ label, value }: { label: string; value?: string | number | null
 }
 
 export function DealCard({ dealCardId }: { dealCardId?: number }) {
-  const [idInput, setIdInput] = useState<string>(dealCardId ? String(dealCardId) : '');
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Create/edit state. mode 'view' renders the read-only panels; 'create' and
-  // 'edit' render the deal-level form. saving/saveError gate the Save button.
+  // Saved-cards list state. The list is the primary open flow: fetched on mount
+  // (unless we were handed a specific dealCardId) and refreshed after any write.
+  const [cards, setCards] = useState<DealCardListItem[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+
+  // Create/edit state. mode 'view' renders the list + read-only panels; 'create'
+  // and 'edit' render the deal-level form. saving/saveError gate the Save button.
   const [mode, setMode] = useState<'view' | 'create' | 'edit'>('view');
   const [form, setForm] = useState<DealForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -130,7 +146,23 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
     }
   }
 
-  useEffect(() => { if (dealCardId) void load(dealCardId); }, [dealCardId]);
+  // Refresh the saved-cards list. Failures surface as a list error but never
+  // block the detail/create flow, and never fabricate rows.
+  async function refreshList() {
+    try {
+      setListError(null);
+      const res = await apiGet<{ dealCards: DealCardListItem[] }>('/api/landos/deal-cards');
+      setCards(Array.isArray(res.dealCards) ? res.dealCards : []);
+    } catch (err: any) {
+      setListError(err?.message || String(err));
+      setCards([]);
+    }
+  }
+
+  useEffect(() => {
+    if (dealCardId) void load(dealCardId);
+    else void refreshList();
+  }, [dealCardId]);
 
   function setField<K extends keyof DealForm>(key: K, value: DealForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -162,6 +194,15 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
     setMode('view');
   }
 
+  // Return to the saved-cards list (deselect the open card). Refreshes the list
+  // so any just-saved edits to title/stage are reflected in the row.
+  function backToList() {
+    setDeal(null);
+    setError(null);
+    setMode('view');
+    void refreshList();
+  }
+
   // Build a write payload. Entity is only set on create (immutable after). An
   // empty asking price is omitted, never sent as 0.
   function payloadFromForm(isCreate: boolean): Record<string, unknown> {
@@ -187,9 +228,12 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
         // Re-load the same id from the API: proves the record persisted and is
         // recoverable, and keeps us on the one record (no duplicate creation).
         await load(res.dealCard.id);
+        // Refresh the list so the new card is openable again later.
+        await refreshList();
       } else if (mode === 'edit' && deal) {
         await apiPatch<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${deal.id}`, payloadFromForm(false));
         await load(deal.id);
+        await refreshList();
       }
       setMode('view');
     } catch (err: any) {
@@ -205,25 +249,16 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
 
   return (
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-      {/* Toolbar: load-by-id + create a new Deal Card. */}
+      {/* Toolbar: back-to-list (when a card is open) + create a new Deal Card. */}
       <div class="flex flex-wrap items-center gap-2">
-        {!dealCardId && (
-          <>
-            <input
-              type="text"
-              value={idInput}
-              onInput={(e) => setIdInput((e.target as HTMLInputElement).value)}
-              placeholder="Deal Card id"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12px] w-32 outline-none focus:border-[var(--color-accent)]"
-            />
-            <button
-              type="button"
-              onClick={() => { const n = Number(idInput); if (Number.isFinite(n) && n > 0) void load(n); }}
-              class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
-            >
-              Load
-            </button>
-          </>
+        {mode === 'view' && deal && !dealCardId && (
+          <button
+            type="button"
+            onClick={backToList}
+            class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
+          >
+            ← Deal Cards
+          </button>
         )}
         {mode === 'view' && (
           <>
@@ -260,13 +295,47 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
         />
       )}
 
+      {/* Saved Deal Cards list — the primary open flow. Shown in view mode when no
+          specific card is open and we are not embedded against a single id. */}
+      {mode === 'view' && !dealCardId && !deal && (
+        <Section title="Saved Deal Cards">
+          {listError && <div class="text-[11px] text-[var(--color-status-failed)]">{listError}</div>}
+          {cards === null && !listError && <div class="text-[12px] text-[var(--color-text-muted)]">Loading…</div>}
+          {cards !== null && cards.length === 0 && (
+            <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-4">
+              No Deal Cards yet. Click <span class="text-[var(--color-accent)]">New Deal Card</span> to create your first one. It saves to the local LandOS store and will show up here.
+            </div>
+          )}
+          {cards !== null && cards.length > 0 && (
+            <div class="space-y-1.5">
+              {cards.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => void load(c.id)}
+                  class={`w-full text-left rounded-md border px-3 py-2 hover:bg-[var(--color-elevated)] ${
+                    deal?.id === c.id ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'
+                  }`}
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="text-[12px] font-medium truncate">{c.title || `Deal #${c.id}`}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                      {entityBadge(c.entity)}
+                    </span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                      {c.status}
+                    </span>
+                    <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">#{c.id} · {formatRelativeTime(c.updated_at)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
       {mode === 'view' && error && <PageState error={error} />}
       {mode === 'view' && loading && !deal && <PageState loading />}
-      {mode === 'view' && !deal && !loading && !error && (
-        <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-4">
-          Load a Deal Card by id, or create a New Deal Card.
-        </div>
-      )}
 
       {mode === 'view' && deal && (
         <>
