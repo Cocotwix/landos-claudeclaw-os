@@ -66,6 +66,40 @@ describe('Deal Card panel — required sections', () => {
   });
 });
 
+describe('Deal Card panel — create/edit/save (Checkpoint 3)', () => {
+  it('renders New / Edit / Save / Cancel controls', () => {
+    expect(SRC).toMatch(/New Deal Card/);
+    expect(SRC).toMatch(/Edit/);
+    expect(SRC).toMatch(/saving \? 'Saving…' : 'Save'/);
+    expect(SRC).toMatch(/Cancel/);
+  });
+
+  it('creates via POST and updates via PATCH on the deal-cards routes', () => {
+    expect(SRC).toMatch(/apiPost<[^>]*>\('\/api\/landos\/deal-cards'/);
+    expect(SRC).toMatch(/apiPatch<[^>]*>\(`\/api\/landos\/deal-cards\/\$\{deal\.id\}`/);
+  });
+
+  it('re-loads the saved card by id after any write (persistence + no duplicate)', () => {
+    // Both create and edit paths call load(...) after the write.
+    expect(SRC).toMatch(/await load\(res\.dealCard\.id\)/);
+    expect(SRC).toMatch(/await load\(deal\.id\)/);
+  });
+
+  it('offers a stage picker and an entity choice for create', () => {
+    expect(SRC).toMatch(/DEAL_STAGES/);
+    expect(SRC).toMatch(/LAND_ALLY/);
+    expect(SRC).toMatch(/TY_LAND_BIZ/);
+    // Entity is immutable once a card exists.
+    expect(SRC).toMatch(/disabled=\{mode === 'edit'\}/);
+  });
+
+  it('keeps the write form deal-level only (no parcel-identity editing)', () => {
+    expect(SRC).toMatch(/Deal-level fields only/);
+    // The form must not edit APN / verification / FIPS / LandPortal id.
+    expect(/setField\(['"](apn|fips|verification|lpPropertyId|lpUrl)/i.test(SRC)).toBe(false);
+  });
+});
+
 describe('Deal Card panel — safety', () => {
   it('reads from the existing deal-card detail route only', () => {
     expect(SRC).toMatch(/apiGet<[^>]*>\(`\/api\/landos\/deal-cards\/\$\{id\}`\)/);

@@ -26,15 +26,30 @@ interface StructureResponse {
   legs: LegTile[];
 }
 
+// Live counts we can serve HONESTLY from existing endpoints today. Anything not
+// here stays "No live count yet" rather than a fabricated number.
+interface LiveCounts {
+  dealCards: number | null;
+  propertyCards: number | null;
+}
+
 function statusClass(status: LegStatus): string {
   if (status === 'active') return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
   if (status === 'shell') return 'text-[var(--color-text-muted)] border-[var(--color-border)]';
   return 'text-[var(--color-text-faint)] border-[var(--color-border)]';
 }
 
+// Map a leg id to a live count ONLY where a real endpoint already backs it.
+// Returns null when there is no honest live count for that leg yet.
+function legLiveCount(legId: string, counts: LiveCounts): number | null {
+  if (legId === 'due-diligence-research') return counts.propertyCards;
+  return null;
+}
+
 export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void }) {
   const [, setLocation] = useLocation();
   const [legs, setLegs] = useState<LegTile[] | null>(null);
+  const [counts, setCounts] = useState<LiveCounts>({ dealCards: null, propertyCards: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,6 +65,22 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
         if (alive) setError(err?.message || String(err));
       } finally {
         if (alive) setLoading(false);
+      }
+    })();
+    // Best-effort live counts. Failures leave counts null ("No live count yet"),
+    // never a fabricated number, and never block the page.
+    (async () => {
+      try {
+        const [deals, props] = await Promise.all([
+          apiGet<{ dealCards: unknown[] }>('/api/landos/deal-cards'),
+          apiGet<{ cards: unknown[] }>('/api/landos/property-cards'),
+        ]);
+        if (alive) setCounts({
+          dealCards: Array.isArray(deals.dealCards) ? deals.dealCards.length : null,
+          propertyCards: Array.isArray(props.cards) ? props.cards.length : null,
+        });
+      } catch {
+        /* leave counts null */
       }
     })();
     return () => { alive = false; };
@@ -73,7 +104,7 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
           onClick={() => (onOpenDealCards ? onOpenDealCards() : setLocation('/properties'))}
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
         >
-          <FileText size={13} /> Deal Cards
+          <FileText size={13} /> Deal Cards{counts.dealCards !== null ? ` (${counts.dealCards})` : ''}
         </button>
         <button
           type="button"
@@ -106,7 +137,9 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
       <div>
         <h2 class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Department Legs</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {(legs ?? []).map((leg) => (
+          {(legs ?? []).map((leg) => {
+            const lc = legLiveCount(leg.id, counts);
+            return (
             <div key={leg.id} class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3">
               <div class="flex items-center gap-2">
                 <Landmark size={14} class="text-[var(--color-text-faint)]" />
@@ -116,13 +149,18 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
                   {leg.status}
                 </span>
               </div>
-              <div class="text-[18px] font-semibold tabular-nums mt-2">—</div>
+              {lc !== null ? (
+                <div class="text-[18px] font-semibold tabular-nums mt-2">{lc}</div>
+              ) : (
+                <div class="text-[12px] text-[var(--color-text-faint)] mt-2">No live count yet</div>
+              )}
               <div class="text-[11px] text-[var(--color-text-muted)] mt-0.5">{leg.summaryMetricLabel}</div>
               {leg.dashboardRoute && (
                 <div class="text-[10px] text-[var(--color-text-faint)] mt-2 font-mono truncate">{leg.dashboardRoute}</div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

@@ -68,7 +68,7 @@ import {
 } from './landos-structure.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
-import { listDealCards, getDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
+import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
   DEAL_CARD_STATUSES,
@@ -557,6 +557,51 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(Number(c.req.param('id')));
     if (!deal) return c.json({ error: 'not found' }, 404);
     return c.json({ dealCard: deal });
+  });
+
+  // Create a Deal Card (operator-facing). Local file-backed SQLite only: no
+  // external CRM/GHL write, no paid calls, no parcel identity (that lives on
+  // Property Cards). Returns the full detail so the UI can render it directly.
+  app.post('/api/landos/deal-cards', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const entity = body.entity;
+    if (!isEntity(entity)) return c.json({ error: 'entity must be LAND_ALLY or TY_LAND_BIZ' }, 400);
+    const statusRaw = str(body.status);
+    if (statusRaw !== undefined && !(DEAL_CARD_STATUSES as readonly string[]).includes(statusRaw)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    const created = createDealCard({
+      entity,
+      title: str(body.title),
+      status: statusRaw as DealCardStatus | undefined,
+      sellerNotes: str(body.sellerNotes),
+      askingPrice: num(body.askingPrice),
+      combinedStrategy: str(body.combinedStrategy),
+      packageNotes: str(body.packageNotes),
+    });
+    return c.json({ dealCard: getDealCard(created.id) }, 201);
+  });
+
+  // Update an EXISTING Deal Card's deal-level fields. Same record (never a
+  // duplicate). Deal-level only — parcel identity/verification is untouched.
+  app.patch('/api/landos/deal-cards/:id', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const statusRaw = str(body.status);
+    if (statusRaw !== undefined && !(DEAL_CARD_STATUSES as readonly string[]).includes(statusRaw)) {
+      return c.json({ error: 'invalid status' }, 400);
+    }
+    const updated = updateDealCard(id, {
+      title: str(body.title),
+      status: statusRaw as DealCardStatus | undefined,
+      sellerNotes: str(body.sellerNotes),
+      askingPrice: num(body.askingPrice),
+      combinedStrategy: str(body.combinedStrategy),
+      packageNotes: str(body.packageNotes),
+    });
+    if (!updated) return c.json({ error: 'not found' }, 404);
+    return c.json({ dealCard: getDealCard(id) });
   });
 
   // ── Comps (manual + automated). Never verifies parcel identity. ─────

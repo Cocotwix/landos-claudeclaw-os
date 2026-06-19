@@ -394,3 +394,69 @@ describe('LandOS routes — offer scenarios', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('LandOS routes — Deal Card create/edit/save/reload/update', () => {
+  it('creates a Deal Card via POST and reads it back via GET (reload)', async () => {
+    const create = await post('/api/landos/deal-cards', {
+      entity: 'TY_LAND_BIZ', title: 'Generic seller lead', sellerNotes: 'placeholder note',
+    });
+    expect(create.status).toBe(201);
+    const created = (await create.json()) as any;
+    const id = created.dealCard.id;
+    expect(id).toBeGreaterThan(0);
+    expect(created.dealCard.title).toBe('Generic seller lead');
+
+    // "Reload": fresh GET hits the DB and recovers the saved card.
+    const reload = await get(`/api/landos/deal-cards/${id}`);
+    expect(reload.status).toBe(200);
+    const reloaded = (await reload.json()) as any;
+    expect(reloaded.dealCard.title).toBe('Generic seller lead');
+    expect(reloaded.dealCard.seller_notes).toBe('placeholder note');
+    expect(reloaded.dealCard.entity).toBe('TY_LAND_BIZ');
+    expect(reloaded.dealCard.status).toBe('new');
+  });
+
+  it('rejects a create with no/invalid entity', async () => {
+    const res = await post('/api/landos/deal-cards', { title: 'no entity' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an invalid status on create', async () => {
+    const res = await post('/api/landos/deal-cards', { entity: 'LAND_ALLY', status: 'bogus' });
+    expect(res.status).toBe(400);
+  });
+
+  it('updates the SAME card via PATCH (no duplicate) and persists across reload', async () => {
+    const create = await post('/api/landos/deal-cards', { entity: 'LAND_ALLY', title: 'Before' });
+    const id = ((await create.json()) as any).dealCard.id;
+
+    const before = await get('/api/landos/deal-cards');
+    const beforeCount = ((await before.json()) as any).dealCards.length;
+
+    const patch = await app.request(`/api/landos/deal-cards/${id}?token=${TOKEN}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'After', status: 'researching', askingPrice: 42000 }),
+    });
+    expect(patch.status).toBe(200);
+
+    const reload = await get(`/api/landos/deal-cards/${id}`);
+    const reloaded = (await reload.json()) as any;
+    expect(reloaded.dealCard.title).toBe('After');
+    expect(reloaded.dealCard.status).toBe('researching');
+    expect(reloaded.dealCard.asking_price).toBe(42000);
+
+    // No duplicate record was created by the update.
+    const after = await get('/api/landos/deal-cards');
+    expect(((await after.json()) as any).dealCards.length).toBe(beforeCount);
+  });
+
+  it('PATCH of a missing card returns 404', async () => {
+    const res = await app.request(`/api/landos/deal-cards/999999?token=${TOKEN}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'ghost' }),
+    });
+    expect(res.status).toBe(404);
+  });
+});
