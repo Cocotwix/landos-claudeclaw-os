@@ -137,6 +137,18 @@ export const DD_PARCEL_IDENTITY_STATUSES = [
 ] as const;
 export type DdParcelIdentityStatus = (typeof DD_PARCEL_IDENTITY_STATUSES)[number];
 
+// Strategy worksheet offer-readiness labels for a Deal Card. Strategy is NEVER
+// auto-ready: it defaults to 'not_reviewed' and only Tyler (or a future strategy
+// workflow) advances it. These are honest status labels, not offer guidance.
+export const STRATEGY_OFFER_READINESS = [
+  'not_reviewed',
+  'needs_confirmation',
+  'blocked',
+  'ready_for_offer',
+  'pass',
+] as const;
+export type StrategyOfferReadiness = (typeof STRATEGY_OFFER_READINESS)[number];
+
 // Comp source labels. GIS is intentionally NOT a comp source — county/GIS is
 // for parcel verification and legal facts, never the first-pass comp engine.
 export const COMP_SOURCE_LABELS = [
@@ -782,6 +794,40 @@ function createLandosSchema(db: Database.Database): void {
       updated_at               INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_landos_deal_card_dd ON landos_deal_card_dd(deal_card_id);
+
+    -- Strategy worksheet for a Deal Card (one row per deal). A safe local landing
+    -- place for the Strategy leg: manual/local strategy analysis only. Strategy
+    -- is NEVER a verified fact and NEVER a final offer. Distinct exit strategies
+    -- keep distinct note fields (quick flip, subdivide, land-home package,
+    -- improved/mobile-home value-add, teardown/land-only, pass) and are never
+    -- collapsed into one generic range. offer_readiness defaults to 'not_reviewed'.
+    -- No offer math, no comps, no EVs are computed here. Lives in store/landos.db
+    -- (gitignored) — never property-specific work product in the repo.
+    CREATE TABLE IF NOT EXISTS landos_deal_card_strategy (
+      id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id                INTEGER NOT NULL UNIQUE REFERENCES landos_deal_card(id),
+      offer_readiness             TEXT NOT NULL DEFAULT 'not_reviewed'
+                                  CHECK (offer_readiness IN (${inList(STRATEGY_OFFER_READINESS)})),
+      strategy_candidates         TEXT NOT NULL DEFAULT '[]',
+      blockers                    TEXT NOT NULL DEFAULT '[]',
+      next_confirmations          TEXT NOT NULL DEFAULT '[]',
+      current_recommendation      TEXT NOT NULL DEFAULT '',
+      most_viable_strategy        TEXT NOT NULL DEFAULT '',
+      pre_call_strategy_notes     TEXT NOT NULL DEFAULT '',
+      quick_flip_notes            TEXT NOT NULL DEFAULT '',
+      subdivide_notes             TEXT NOT NULL DEFAULT '',
+      land_home_package_notes     TEXT NOT NULL DEFAULT '',
+      improved_value_add_notes    TEXT NOT NULL DEFAULT '',
+      teardown_land_only_notes    TEXT NOT NULL DEFAULT '',
+      pass_no_offer_reason        TEXT NOT NULL DEFAULT '',
+      risk_adjusted_notes         TEXT NOT NULL DEFAULT '',
+      target_profit_note          TEXT NOT NULL DEFAULT '',
+      notes                       TEXT NOT NULL DEFAULT '',
+      updated_by                  TEXT NOT NULL DEFAULT '',
+      created_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at                  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_strategy ON landos_deal_card_strategy(deal_card_id);
 
     -- Batch lead-intake jobs. One row per pasted lead; isolated parcel state.
     CREATE TABLE IF NOT EXISTS landos_lead_job (

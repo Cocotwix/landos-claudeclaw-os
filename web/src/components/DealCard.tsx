@@ -88,6 +88,54 @@ interface DdForm {
   notes: string;
 }
 
+// Strategy worksheet offer-readiness labels (mirror STRATEGY_OFFER_READINESS in
+// src/landos/db.ts; the backend re-validates). Strategy defaults to 'not_reviewed'
+// and is never auto-advanced.
+const STRATEGY_READINESS = [
+  'not_reviewed', 'needs_confirmation', 'blocked', 'ready_for_offer', 'pass',
+] as const;
+
+interface StrategyView {
+  exists: boolean;
+  offerReadiness: string;
+  strategyCandidates: string[];
+  blockers: string[];
+  nextConfirmations: string[];
+  currentRecommendation: string;
+  mostViableStrategy: string;
+  preCallStrategyNotes: string;
+  quickFlipNotes: string;
+  subdivideNotes: string;
+  landHomePackageNotes: string;
+  improvedValueAddNotes: string;
+  teardownLandOnlyNotes: string;
+  passNoOfferReason: string;
+  riskAdjustedNotes: string;
+  targetProfitNote: string;
+  notes: string;
+  updatedBy: string;
+  updatedAt: number | null;
+}
+
+interface StrategyForm {
+  offerReadiness: string;
+  strategyCandidatesText: string;
+  blockersText: string;
+  nextConfirmationsText: string;
+  currentRecommendation: string;
+  mostViableStrategy: string;
+  preCallStrategyNotes: string;
+  quickFlipNotes: string;
+  subdivideNotes: string;
+  landHomePackageNotes: string;
+  improvedValueAddNotes: string;
+  teardownLandOnlyNotes: string;
+  passNoOfferReason: string;
+  riskAdjustedNotes: string;
+  targetProfitNote: string;
+  notes: string;
+}
+
 interface PropertyCardLite {
   id: number;
   active_input_address?: string | null;
@@ -213,6 +261,47 @@ function LabeledField({ label, value, confidence }: { label: string; value?: str
   );
 }
 
+// Human-readable offer-readiness label.
+function readinessText(status?: string): string {
+  switch (status) {
+    case 'ready_for_offer': return 'Ready for offer';
+    case 'needs_confirmation': return 'Needs confirmation';
+    case 'blocked': return 'Blocked';
+    case 'pass': return 'Pass';
+    case 'not_reviewed':
+    default: return 'Not reviewed';
+  }
+}
+
+// Offer-readiness badge. Only 'ready_for_offer' reads as an accent (advanced)
+// state; every other label reads as not-yet-ready so strategy never looks
+// offer-ready until Tyler advances it.
+function StrategyReadinessBadge({ status }: { status?: string }) {
+  const ready = status === 'ready_for_offer';
+  const blocked = status === 'blocked' || status === 'pass';
+  const cls = ready
+    ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+    : blocked
+      ? 'border-[var(--color-status-failed)] text-[var(--color-status-failed)]'
+      : 'border-[var(--color-border)] text-[var(--color-text-muted)]';
+  return (
+    <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${cls}`}>
+      Offer readiness: {readinessText(status)}
+    </span>
+  );
+}
+
+// A read-only strategy note row. Renders an honest placeholder when empty so a
+// blank strategy lane never looks analyzed.
+function StrategyNote({ label, value }: { label: string; value?: string }) {
+  return (
+    <div class="mt-2">
+      <div class="text-[11px] text-[var(--color-text-muted)] mb-1">{label}</div>
+      {value ? <span class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{value}</span> : <Placeholder text="Not reviewed" />}
+    </div>
+  );
+}
+
 function DdList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
   return (
     <div class="mt-3">
@@ -254,6 +343,15 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
   const [ddError, setDdError] = useState<string | null>(null);
   const [ddWarnings, setDdWarnings] = useState<string[]>([]);
 
+  // Strategy worksheet state. Loaded alongside the open deal; edited inline via a
+  // separate sub-form (independent of the deal-level and DD forms).
+  const [strategy, setStrategy] = useState<StrategyView | null>(null);
+  const [strategyEditing, setStrategyEditing] = useState(false);
+  const [strategyForm, setStrategyForm] = useState<StrategyForm | null>(null);
+  const [strategySaving, setStrategySaving] = useState(false);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
+  const [strategyWarnings, setStrategyWarnings] = useState<string[]>([]);
+
   async function loadDd(id: number) {
     try {
       const res = await apiGet<{ dd: DdView }>(`/api/landos/deal-cards/${id}/dd`);
@@ -263,19 +361,32 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
     }
   }
 
+  async function loadStrategy(id: number) {
+    try {
+      const res = await apiGet<{ strategy: StrategyView }>(`/api/landos/deal-cards/${id}/strategy`);
+      setStrategy(res.strategy);
+    } catch {
+      setStrategy(null);
+    }
+  }
+
   async function load(id: number) {
     try {
       setLoading(true);
       setError(null);
       setDdEditing(false);
       setDdWarnings([]);
+      setStrategyEditing(false);
+      setStrategyWarnings([]);
       const res = await apiGet<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       await loadDd(id);
+      await loadStrategy(id);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
       setDd(null);
+      setStrategy(null);
     } finally {
       setLoading(false);
     }
@@ -346,6 +457,71 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
       setDdError(err?.message || String(err));
     } finally {
       setDdSaving(false);
+    }
+  }
+
+  function startStrategyEdit() {
+    const s = strategy;
+    setStrategyError(null);
+    setStrategyWarnings([]);
+    setStrategyForm({
+      offerReadiness: s?.offerReadiness ?? 'not_reviewed',
+      strategyCandidatesText: (s?.strategyCandidates ?? []).join('\n'),
+      blockersText: (s?.blockers ?? []).join('\n'),
+      nextConfirmationsText: (s?.nextConfirmations ?? []).join('\n'),
+      currentRecommendation: s?.currentRecommendation ?? '',
+      mostViableStrategy: s?.mostViableStrategy ?? '',
+      preCallStrategyNotes: s?.preCallStrategyNotes ?? '',
+      quickFlipNotes: s?.quickFlipNotes ?? '',
+      subdivideNotes: s?.subdivideNotes ?? '',
+      landHomePackageNotes: s?.landHomePackageNotes ?? '',
+      improvedValueAddNotes: s?.improvedValueAddNotes ?? '',
+      teardownLandOnlyNotes: s?.teardownLandOnlyNotes ?? '',
+      passNoOfferReason: s?.passNoOfferReason ?? '',
+      riskAdjustedNotes: s?.riskAdjustedNotes ?? '',
+      targetProfitNote: s?.targetProfitNote ?? '',
+      notes: s?.notes ?? '',
+    });
+    setStrategyEditing(true);
+  }
+
+  function setStrategyFieldFn<K extends keyof StrategyForm>(key: K, value: StrategyForm[K]) {
+    setStrategyForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  async function saveStrategy() {
+    if (!deal || !strategyForm) return;
+    setStrategySaving(true);
+    setStrategyError(null);
+    try {
+      const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+      const payload = {
+        offerReadiness: strategyForm.offerReadiness,
+        strategyCandidates: lines(strategyForm.strategyCandidatesText),
+        blockers: lines(strategyForm.blockersText),
+        nextConfirmations: lines(strategyForm.nextConfirmationsText),
+        currentRecommendation: strategyForm.currentRecommendation,
+        mostViableStrategy: strategyForm.mostViableStrategy,
+        preCallStrategyNotes: strategyForm.preCallStrategyNotes,
+        quickFlipNotes: strategyForm.quickFlipNotes,
+        subdivideNotes: strategyForm.subdivideNotes,
+        landHomePackageNotes: strategyForm.landHomePackageNotes,
+        improvedValueAddNotes: strategyForm.improvedValueAddNotes,
+        teardownLandOnlyNotes: strategyForm.teardownLandOnlyNotes,
+        passNoOfferReason: strategyForm.passNoOfferReason,
+        riskAdjustedNotes: strategyForm.riskAdjustedNotes,
+        targetProfitNote: strategyForm.targetProfitNote,
+        notes: strategyForm.notes,
+      };
+      const res = await apiPut<{ strategy: StrategyView; warnings: string[] }>(`/api/landos/deal-cards/${deal.id}/strategy`, payload);
+      // Re-load from the API so what we show is exactly what persisted.
+      await loadStrategy(deal.id);
+      setStrategyWarnings(Array.isArray(res.warnings) ? res.warnings : []);
+      setStrategyEditing(false);
+    } catch (err: any) {
+      setStrategyError(err?.message || String(err));
+    } finally {
+      setStrategySaving(false);
     }
   }
 
@@ -719,6 +895,66 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
             <div class="mt-2"><div class="text-[11px] text-[var(--color-text-muted)] mb-1">Next confirmations</div><Placeholder /></div>
           </Section>
 
+          {/* 7b. Strategy worksheet — manual/local, honest offer-readiness, distinct exits */}
+          <Section title="Strategy">
+            {!strategyEditing && (
+              <>
+                <div class="flex items-center justify-between mb-2">
+                  <StrategyReadinessBadge status={strategy?.offerReadiness} />
+                  <button
+                    type="button"
+                    onClick={startStrategyEdit}
+                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
+                  >
+                    {strategy?.exists ? 'Edit Strategy' : 'Add Strategy'}
+                  </button>
+                </div>
+                {strategyWarnings.length > 0 && (
+                  <div class="mb-2 rounded-md border border-[var(--color-status-failed)] p-2 space-y-0.5">
+                    {strategyWarnings.map((w) => (
+                      <div key={w} class="text-[11px] text-[var(--color-status-failed)]">{w}</div>
+                    ))}
+                  </div>
+                )}
+                {!strategy?.exists && (
+                  <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3 mb-2">
+                    Strategy not reviewed yet. Click <span class="text-[var(--color-accent)]">Add Strategy</span> to capture candidates, a recommendation, the most viable exit, blockers, next confirmations, and per-strategy notes. Saved to the local LandOS store.
+                  </div>
+                )}
+                <StrategyNote label="Current recommendation" value={strategy?.currentRecommendation} />
+                <StrategyNote label="Most viable strategy" value={strategy?.mostViableStrategy} />
+                <DdList title="Strategy candidates" items={strategy?.strategyCandidates ?? []} empty="No strategy candidates yet" />
+                <DdList title="Blockers" items={strategy?.blockers ?? []} empty="No blockers recorded yet" />
+                <DdList title="Next confirmations" items={strategy?.nextConfirmations ?? []} empty="No confirmations recorded yet" />
+                <div class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Distinct exit notes</div>
+                <StrategyNote label="Quick flip" value={strategy?.quickFlipNotes} />
+                <StrategyNote label="Subdivide" value={strategy?.subdivideNotes} />
+                <StrategyNote label="Land-home package" value={strategy?.landHomePackageNotes} />
+                <StrategyNote label="Improved-property / mobile-home value-add" value={strategy?.improvedValueAddNotes} />
+                <StrategyNote label="Teardown / land-only fallback" value={strategy?.teardownLandOnlyNotes} />
+                <StrategyNote label="Pass / no-offer reason" value={strategy?.passNoOfferReason} />
+                <StrategyNote label="Pre-call strategy notes" value={strategy?.preCallStrategyNotes} />
+                <StrategyNote label="Risk-adjusted notes" value={strategy?.riskAdjustedNotes} />
+                <StrategyNote label="Target profit note" value={strategy?.targetProfitNote} />
+                {strategy?.notes && <StrategyNote label="Notes" value={strategy.notes} />}
+                <div class="text-[10px] text-[var(--color-text-faint)] mt-3">
+                  Strategy is manual/local analysis, never a verified fact and never a final offer. Exits stay distinct and no offer, comp, or EV is calculated here. Offer readiness defaults to Not reviewed until Tyler or a future strategy workflow advances it.
+                  {strategy?.exists && strategy.updatedAt ? <> Last updated {formatRelativeTime(strategy.updatedAt)}{strategy.updatedBy ? ` by ${strategy.updatedBy}` : ''}.</> : null}
+                </div>
+              </>
+            )}
+            {strategyEditing && strategyForm && (
+              <StrategyEditForm
+                form={strategyForm}
+                setField={setStrategyFieldFn}
+                onSave={() => void saveStrategy()}
+                onCancel={() => { setStrategyEditing(false); setStrategyError(null); }}
+                saving={strategySaving}
+                error={strategyError}
+              />
+            )}
+          </Section>
+
           {/* 8. Documents / Activity / Quick Actions */}
           <Section title="Documents / Activity / Quick Actions">
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Documents</div>
@@ -1041,6 +1277,111 @@ function DdEditForm({
           class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
         >
           {saving ? 'Saving…' : 'Save DD/Research'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Strategy worksheet edit form ────────────────────────────────────────────
+// Manual/local strategy analysis only. Distinct exit strategies keep distinct
+// note fields and are never collapsed into one generic offer range. Offer
+// readiness is an honest status label, never an offer. No offer/comp/EV math and
+// no CRM/GHL.
+function StrategyEditForm({
+  form, setField, onSave, onCancel, saving, error,
+}: {
+  form: StrategyForm;
+  setField: <K extends keyof StrategyForm>(key: K, value: StrategyForm[K]) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  error: string | null;
+}) {
+  const inputCls =
+    'w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12px] outline-none focus:border-[var(--color-accent)]';
+
+  // A labeled multi-line note field bound to one form key.
+  function NoteField({ label, valueKey, placeholder, rows = 2 }: { label: string; valueKey: keyof StrategyForm; placeholder?: string; rows?: number }) {
+    return (
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+        <textarea
+          value={form[valueKey] as string}
+          rows={rows}
+          placeholder={placeholder}
+          onInput={(e) => setField(valueKey, (e.target as HTMLTextAreaElement).value as StrategyForm[typeof valueKey])}
+          class={inputCls}
+        />
+      </label>
+    );
+  }
+
+  return (
+    <div class="space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Manual strategy entry · saved to local LandOS store</span>
+      </div>
+
+      <label class="block">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Offer readiness</span>
+        <select
+          value={form.offerReadiness}
+          onChange={(e) => setField('offerReadiness', (e.target as HTMLSelectElement).value)}
+          class={inputCls}
+        >
+          {STRATEGY_READINESS.map((s) => <option key={s} value={s}>{readinessText(s)}</option>)}
+        </select>
+        <span class="text-[10px] text-[var(--color-text-faint)]">Strategy is never auto-ready. This is an honest status, not an offer.</span>
+      </label>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <NoteField label="Current recommendation" valueKey="currentRecommendation" placeholder="best current read; not a final offer" />
+        <NoteField label="Most viable strategy" valueKey="mostViableStrategy" placeholder="single most viable exit" />
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <NoteField label="Strategy candidates (one per line)" valueKey="strategyCandidatesText" rows={3} placeholder={'Quick flip\nSubdivide'} />
+        <NoteField label="Blockers (one per line)" valueKey="blockersText" rows={3} />
+        <NoteField label="Next confirmations (one per line)" valueKey="nextConfirmationsText" rows={3} />
+      </div>
+
+      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Distinct exit notes</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <NoteField label="Quick flip notes" valueKey="quickFlipNotes" />
+        <NoteField label="Subdivide notes" valueKey="subdivideNotes" />
+        <NoteField label="Land-home package notes" valueKey="landHomePackageNotes" />
+        <NoteField label="Improved-property / mobile-home value-add notes" valueKey="improvedValueAddNotes" />
+        <NoteField label="Teardown / land-only fallback notes" valueKey="teardownLandOnlyNotes" />
+        <NoteField label="Pass / no-offer reason" valueKey="passNoOfferReason" />
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <NoteField label="Pre-call strategy notes" valueKey="preCallStrategyNotes" />
+        <NoteField label="Risk-adjusted notes" valueKey="riskAdjustedNotes" />
+      </div>
+
+      <NoteField label="Target profit note (free-text note, not a calculated offer)" valueKey="targetProfitNote" />
+      <NoteField label="Notes" valueKey="notes" />
+
+      {error && <div class="text-[11px] text-[var(--color-status-failed)]">{error}</div>}
+
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Save Strategy'}
         </button>
         <button
           type="button"

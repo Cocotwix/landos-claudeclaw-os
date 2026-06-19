@@ -70,7 +70,8 @@ import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type Respon
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
-import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, type DdFieldLabel, type DdParcelIdentityStatus } from './db.js';
+import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
+import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
   DEAL_CARD_STATUSES,
@@ -669,6 +670,55 @@ export function registerLandosRoutes(app: Hono): void {
       updatedBy: str(body.updatedBy),
     };
     const result = upsertDealCardDd(id, patch);
+    if (!result) return c.json({ error: 'deal card not found' }, 404);
+    return c.json(result);
+  });
+
+  // ── Deal Card Strategy worksheet (manual/local; honest readiness) ──────
+  // A safe local landing place for the Strategy leg. Manual/local strategy
+  // analysis only: candidates, recommendation, most viable exit, blockers, next
+  // confirmations, distinct per-strategy notes, and an honest offer-readiness
+  // label that defaults to 'not_reviewed'. Computes no offer/comp/EV and keeps
+  // every exit strategy distinct. No external CRM/GHL, no paid/LandPortal calls.
+  app.get('/api/landos/deal-cards/:id/strategy', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({
+      strategy: getDealCardStrategy(id),
+      offerReadinessLabels: STRATEGY_OFFER_READINESS,
+    });
+  });
+
+  app.put('/api/landos/deal-cards/:id/strategy', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const readiness = (v: unknown): StrategyOfferReadiness | undefined =>
+      (STRATEGY_OFFER_READINESS as readonly string[]).includes(str(v) ?? '') ? (v as StrategyOfferReadiness) : undefined;
+    const strList = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+    const patch: DealCardStrategyPatch = {
+      offerReadiness: readiness(body.offerReadiness),
+      strategyCandidates: strList(body.strategyCandidates),
+      blockers: strList(body.blockers),
+      nextConfirmations: strList(body.nextConfirmations),
+      currentRecommendation: str(body.currentRecommendation),
+      mostViableStrategy: str(body.mostViableStrategy),
+      preCallStrategyNotes: str(body.preCallStrategyNotes),
+      quickFlipNotes: str(body.quickFlipNotes),
+      subdivideNotes: str(body.subdivideNotes),
+      landHomePackageNotes: str(body.landHomePackageNotes),
+      improvedValueAddNotes: str(body.improvedValueAddNotes),
+      teardownLandOnlyNotes: str(body.teardownLandOnlyNotes),
+      passNoOfferReason: str(body.passNoOfferReason),
+      riskAdjustedNotes: str(body.riskAdjustedNotes),
+      targetProfitNote: str(body.targetProfitNote),
+      notes: str(body.notes),
+      updatedBy: str(body.updatedBy),
+    };
+    const result = upsertDealCardStrategy(id, patch);
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     return c.json(result);
   });
