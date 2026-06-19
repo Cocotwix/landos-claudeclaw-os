@@ -3,6 +3,8 @@ import { Check, X, Landmark } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { IntakePlanner } from '@/components/IntakePlanner';
+import { CommandHome } from '@/components/CommandHome';
+import { DealCard } from '@/components/DealCard';
 import { apiGet, apiPost } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -42,7 +44,7 @@ interface Overview {
 }
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
-type LandosView = 'overview' | 'intake';
+type LandosView = 'overview' | 'intake' | 'command' | 'dealcard';
 
 // Module sections of the OS spine. count keys map to getOverview() output.
 const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
@@ -108,8 +110,10 @@ export function LandOS() {
         }
         tabs={
           <>
+            <Tab label="Command" active={view === 'command'} onClick={() => setView('command')} />
             <Tab label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
             <Tab label="Intake Planner" active={view === 'intake'} onClick={() => setView('intake')} />
+            <Tab label="Deal Card" active={view === 'dealcard'} onClick={() => setView('dealcard')} />
             {view === 'overview' && (
               <>
                 <span class="mx-1 h-4 w-px bg-[var(--color-border)]" />
@@ -122,6 +126,8 @@ export function LandOS() {
         }
       />
 
+      {view === 'command' && <CommandHome onOpenDealCards={() => setView('dealcard')} />}
+      {view === 'dealcard' && <DealCard />}
       {view === 'intake' && <IntakePlanner />}
 
       {view === 'overview' && error && <PageState error={error} />}

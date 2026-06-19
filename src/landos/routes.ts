@@ -58,6 +58,14 @@ import { buildAcePrep } from './ace-prep.js';
 import { extractAreaSignals } from './source-adapters.js';
 import { planLandosIntake } from './intake-planner.js';
 import { departmentRegistrySummary } from './department-registry.js';
+import {
+  landosStructureSummary,
+  SHARED_SURFACES,
+  SHARED_RECORDS,
+  INTERFACE_LAYERS,
+  WAR_ROOM_ROUTING_CONTRACT,
+  warRoomPreservation,
+} from './landos-structure.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
@@ -97,6 +105,20 @@ export function registerLandosRoutes(app: Hono): void {
   });
 
   app.get('/api/landos/departments', (c) => c.json({ departments: DEPARTMENTS }));
+
+  // LandOS-wide structure: department leg tiles + shared surfaces/records/
+  // interface layers + War Room preservation/routing contract. Read-only
+  // metadata from the structure spine; no DB, no secrets, no external calls.
+  app.get('/api/landos/structure', (c) =>
+    c.json({
+      legs: landosStructureSummary(),
+      sharedSurfaces: SHARED_SURFACES,
+      sharedRecords: SHARED_RECORDS,
+      interfaceLayers: INTERFACE_LAYERS,
+      warRoom: warRoomPreservation(),
+      warRoomRouting: WAR_ROOM_ROUTING_CONTRACT,
+    }),
+  );
 
   // ── Record lists (entity filterable) ───────────────────────────────
   app.get('/api/landos/leads', (c) => {

@@ -1,29 +1,45 @@
 # LandOS Handover
 
 **Project:** LandOS
-**Current Status:** Phase 1 Build Memory Spine
+**Current Status:** LandOS Command + Deal Card + Department Leg Foundation sprint.
 
 ## Active Plans
 
 | Plan | Status | Notes |
 |------|--------|-------|
-| Phase 1 Build Memory Spine | Active | Memory-only sprint; no feature code changes in scope. |
+| Phase 1 Build Memory Spine | Done | Committed d8d99e4. |
+| Command + Deal Card + Department Leg Foundation | Active | LandOS-wide structural spine; reuse/harden, do not rebuild existing machinery. |
 
 ## Current Branch / State
 
-Current branch/state is unknown unless discovered by `git status` during the session.
+Branch main. Working tree was clean at sprint start. The prior messy
+department-specific work is safely stashed as
+stash@{0} landos-duke-overarchitecture-hold and is NOT touched in this sprint.
 
 ## Session Log
 
-### Session 1 - Phase 1 Memory Spine
-- **Context:** LandOS build memory structure is being added.
-- **Completed:** New memory files and LandOS command docs.
-- **Known issue:** Current dirty Duke sprint exists and is not ready to commit.
-- **Next:** Finish the memory spine, then start the orchestrator sprint.
+### Session 2 - Command + Deal Card + Department Leg Foundation
+- **Context:** Sprint asked for LandOS Command home, department leg registry +
+  tiles, War Room routing connection (preserving Mark's page), full Deal Card
+  with local save/update, DD+Research and Strategy legs writing to Deal Card,
+  CRM/Acquisition/GHL shell, voice-ready contract, storage policy, routing v1.
+- **Key finding:** Most of the deeper machinery already exists and is mature
+  (deal-card SQLite persistence, planLandosIntake orchestrator, two registries,
+  .gitignore storage enforcement). The genuinely missing piece was a unified,
+  tested LandOS-wide structure layer. Decision: add a thin taxonomy/contract
+  spine that references existing registry IDs instead of duplicating them.
+- **Checkpoint 1 (this session):** landos-structure.ts (+test), storage-policy.ts
+  (+test), command-contract.ts (+test). Pure TypeScript, no UI changes, no
+  commits.
+- **Next:** Checkpoint 2 UI/wiring (Command home tiles, War Room non-destructive
+  connection entry point, Deal Card layout-section coverage + save/reload test
+  hardening).
 
 ## What's Next
 
-1. Finish the memory spine.
-2. Stabilize the LandOS memory/orchestrator direction.
-3. Move to the LandOS Main orchestrator and department app registry sprint.
-
+1. Finish/verify Checkpoint 1 (typecheck + vitest + build).
+2. Checkpoint 2: render Command home tiles from landosStructureSummary(); add a
+   minimal additive War Room -> LandOS routing entry point WITHOUT altering the
+   existing War Room cards; harden Deal Card create/edit/save/reload/update tests
+   and confirm layout-section coverage.
+3. Then move into deeper per-leg buildout only as separately scoped sprints.

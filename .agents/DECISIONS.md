@@ -14,4 +14,11 @@ These are durable defaults until Tyler changes them.
 | Assessor and official record are highest-confidence for official property facts. | Official records outrank convenient lookup. |
 | Redfin/Zillow sold context is area-level market context and should continue when LandPortal fails. | Market context should not be blocked by one source. |
 | Paid comp credits require explicit approval. | Cost control stays explicit. |
+| LandOS structure has four categories: department legs, shared surfaces, shared records, interface layers. | Not every concept is a department; War Room/Deal Cards/Voice are not legs. |
+| The structure layer references existing department-registry.ts IDs, never duplicates them. | Avoid competing registries and ID churn. |
+| Market Research is a separate leg from Due Diligence + Research. | Property-level DD and market-level research are different lanes. |
+| CRM/Acquisition/GHL is one planned shell leg with a future integration contract; GHL is not connected. | Replaceable CRM leg, never LandOS foundation; no fake sync. |
+| Voice is an interface layer over Command and War Room, not a department. | Voice is I/O, not business logic. |
+| Mark/ClaudeClaw's existing War Room page and cards are canonical and preserved. | War Room work is additive routing only, never a redesign. |
+| Large property reports/media/transcripts/datasets stay out of repo and laptop; storage uses adapters. | Laptop is the control center, not the warehouse. |
 
