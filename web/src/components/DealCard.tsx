@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'preact/hooks';
 import { PageState } from '@/components/PageState';
+import { ModelControl } from '@/components/ModelControl';
 import { apiGet, apiPost, apiPatch, apiPut } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+
+type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
+
+// Land Score (100-pt rubric) + supporting imagery, computed on demand.
+interface LandScoreFactorView { id: string; label: string; maxPoints: number; points: number; dataGap: boolean; basis: string; }
+interface LandScoreView { score: number; maxScore: number; verdict: string; factors: LandScoreFactorView[]; dataGaps: string[]; flags: string[]; confidence: string; note: string; }
+interface ImageryView { label: string; notCaptured: boolean; note: string; description?: { text: string } }
 
 // Deal Card panel — a usable list/open/create/edit/save/reload flow over the
 // deal-level fields. Data comes from /api/landos/deal-cards (list) and
@@ -501,7 +509,7 @@ function DdList({ title, items, empty }: { title: string; items: string[]; empty
   );
 }
 
-export function DealCard({ dealCardId }: { dealCardId?: number }) {
+export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; entity?: EntityFilter }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -551,6 +559,41 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportWarnings, setReportWarnings] = useState<string[]>([]);
+
+  // Land Score + supporting imagery — computed ON DEMAND (a Land Score click
+  // triggers a bounded NON-CREDIT LandPortal resolve; never scored from
+  // unverified data; imagery is supporting context only, never identity).
+  const [landScore, setLandScore] = useState<LandScoreView | null>(null);
+  const [landScoreNote, setLandScoreNote] = useState('');
+  const [landScoreLoading, setLandScoreLoading] = useState(false);
+  const [imagery, setImagery] = useState<ImageryView | null>(null);
+  const [imageryLoading, setImageryLoading] = useState(false);
+
+  async function computeLandScore(id: number) {
+    setLandScoreLoading(true);
+    try {
+      const res = await apiGet<{ landScore: LandScoreView | null; note: string }>(`/api/landos/deal-cards/${id}/land-score`);
+      setLandScore(res.landScore);
+      setLandScoreNote(res.note || '');
+    } catch (err: any) {
+      setLandScore(null);
+      setLandScoreNote(err?.message || String(err));
+    } finally {
+      setLandScoreLoading(false);
+    }
+  }
+
+  async function captureCardImagery(id: number) {
+    setImageryLoading(true);
+    try {
+      const res = await apiPost<{ imagery: ImageryView }>(`/api/landos/deal-cards/${id}/imagery`, {});
+      setImagery(res.imagery);
+    } catch {
+      setImagery(null);
+    } finally {
+      setImageryLoading(false);
+    }
+  }
 
   async function loadMarket(id: number) {
     try {
@@ -622,6 +665,9 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
       setMarketWarnings([]);
       setReportError(null);
       setReportWarnings([]);
+      setLandScore(null);
+      setLandScoreNote('');
+      setImagery(null);
       const res = await apiGet<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       await loadDd(id);
@@ -1073,14 +1119,18 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => void runReport()}
-                disabled={reportRunning}
-                class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
-              >
-                {reportRunning ? 'Running…' : report?.exists ? 'Re-run DD + Market + Strategy Report' : 'Run DD + Market + Strategy Report'}
-              </button>
+              <div class="flex items-center gap-2 flex-wrap">
+                {/* Point-of-action model picker: the report run is a model-backed action. */}
+                <ModelControl entity={entity} scopeKind="department" scopeKey="research_due_diligence" taskType="strategy_reasoning" orientation="reasoning_oriented" label="Report model" />
+                <button
+                  type="button"
+                  onClick={() => void runReport()}
+                  disabled={reportRunning}
+                  class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+                >
+                  {reportRunning ? 'Running…' : report?.exists ? 'Re-run DD + Market + Strategy Report' : 'Run DD + Market + Strategy Report'}
+                </button>
+              </div>
             </div>
 
             {reportError && <div class="text-[11px] text-[var(--color-status-failed)] mb-2">{reportError}</div>}
@@ -1179,15 +1229,62 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
 
           {/* 2. Imagery panel — supporting context only, never parcel identity */}
           <Section title="Imagery">
-            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
-              {['Satellite', 'Street', 'Terrain', 'Plat', 'Survey'].map((kind) => (
-                <div key={kind} class="rounded border border-dashed border-[var(--color-border)] p-3 text-center">
-                  <div class="text-[11px] text-[var(--color-text-muted)]">{kind}</div>
-                  <div class="text-[10px] text-[var(--color-text-faint)] mt-1">Visual/source image not captured yet</div>
-                </div>
-              ))}
+            <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+              <span class="text-[9px] text-[var(--color-text-faint)]">{imagery?.label || 'Supporting context — not identity verification'}</span>
+              <button
+                type="button"
+                onClick={() => void captureCardImagery(deal.id)}
+                disabled={imageryLoading}
+                class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+              >
+                {imageryLoading ? 'Capturing…' : 'Capture supporting imagery'}
+              </button>
             </div>
-            <div class="text-[10px] text-[var(--color-text-faint)] mt-2">Imagery is supporting context only; it never verifies parcel identity.</div>
+            <div class="text-[12px] text-[var(--color-text-muted)]">
+              {!imagery
+                ? <Placeholder text="visual not captured yet" />
+                : imagery.notCaptured
+                  ? 'visual not captured yet'
+                  : (imagery.description?.text || imagery.note)}
+            </div>
+            <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
+              Imagery is supporting context only; it never verifies parcel identity. Local Playwright capture is an install-gated drop-in; until it is wired, captures return "visual not captured yet".
+            </div>
+          </Section>
+
+          {/* 2b. Land Score — 100-pt rubric from VERIFIED LandPortal attributes only */}
+          <Section title="Land Score">
+            <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+              <span class="text-[10px] text-[var(--color-text-faint)]">Computed on demand from a bounded non-credit LandPortal resolve. Never scored from unverified data.</span>
+              <button
+                type="button"
+                onClick={() => void computeLandScore(deal.id)}
+                disabled={landScoreLoading}
+                class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+              >
+                {landScoreLoading ? 'Scoring…' : landScore ? 'Refresh Land Score' : 'Compute Land Score'}
+              </button>
+            </div>
+            {!landScore && landScoreNote && <div class="text-[11px] text-[var(--color-text-muted)]">{landScoreNote}</div>}
+            {!landScore && !landScoreNote && <Placeholder text="Not computed yet" />}
+            {landScore && (
+              <div>
+                <div class="flex items-center gap-2 flex-wrap mb-2">
+                  <span class="text-[16px] font-semibold tabular-nums">{landScore.score}<span class="text-[var(--color-text-faint)]">/{landScore.maxScore}</span></span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{landScore.verdict}</span>
+                  <span class="text-[10px] text-[var(--color-text-faint)]">confidence: {landScore.confidence}</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+                  {landScore.factors.map((f) => (
+                    <div key={f.id} class="flex items-center justify-between gap-2 py-0.5">
+                      <span class="text-[11px] text-[var(--color-text-muted)]">{f.label}{f.dataGap && <span class="text-[var(--color-status-failed)]"> · data gap</span>}</span>
+                      <span class="text-[11px] tabular-nums text-[var(--color-text)]">{f.points}/{f.maxPoints}</span>
+                    </div>
+                  ))}
+                </div>
+                <DdList title="Flags" items={landScore.flags} empty="No flags" />
+              </div>
+            )}
           </Section>
 
           {/* 3. Deal Economics */}
@@ -1291,18 +1388,35 @@ export function DealCard({ dealCardId }: { dealCardId?: number }) {
             )}
           </Section>
 
-          {/* 5. Owner / Seller */}
-          <Section title="Owner / Seller">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
-              <Field label="Owner name" value={owner?.name ?? undefined} />
-              <Field label="Seller / lead name" value={seller?.name ?? undefined} />
-              <Field label="Owner type" value={owner?.authority_status ?? undefined} />
-              <Field label="Mailing address" value={owner?.mailing_address ?? seller?.mailing_address ?? undefined} />
-              <Field label="Phone" value={owner?.phone ?? seller?.phone ?? undefined} />
-              <Field label="Email" value={owner?.email ?? seller?.email ?? undefined} />
-              <Field label="Motivation" />
-              <Field label="Lead source" />
-              <Field label="Ownership duration" />
+          {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) */}
+          <Section title="Contacts">
+            {(!deal.people || deal.people.length === 0) ? (
+              <Placeholder text="No contacts captured yet" />
+            ) : (
+              <div class="space-y-2">
+                {deal.people.map((p, i) => (
+                  <div key={i} class="rounded-md border border-[var(--color-border)] p-2">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-[12px] font-medium text-[var(--color-text)]">{p.name || 'Unnamed'}</span>
+                      {p.role && <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{p.role}</span>}
+                      {p.authority_status && <span class="text-[10px] text-[var(--color-text-faint)]">{p.authority_status}</span>}
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-x-4 mt-1">
+                      <Field label="Phone" value={p.phone ?? undefined} />
+                      <Field label="Email" value={p.email ?? undefined} />
+                      <Field label="Mailing" value={p.mailing_address ?? undefined} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {owner && seller && owner.name && seller.name && owner.name.trim().toLowerCase() !== seller.name.trim().toLowerCase() && (
+              <div class="text-[11px] text-[var(--color-text-muted)] mt-2 border-t border-[var(--color-border)] pt-2">
+                Owner on record: {owner.name} / Lead: {seller.name} — do not match (possible inherited/pre-transfer).
+              </div>
+            )}
+            <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
+              Multiple names/roles per property are supported (e.g. inherited leads with several heirs). Contact data is local; no external CRM read/write.
             </div>
           </Section>
 

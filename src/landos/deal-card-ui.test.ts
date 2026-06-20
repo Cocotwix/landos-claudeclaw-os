@@ -12,9 +12,10 @@ const SRC = fs.readFileSync(
 describe('Deal Card panel — required sections', () => {
   const SECTIONS = [
     'Imagery',
+    'Land Score',
     'Deal Economics',
     'Land Data / DD Facts',
-    'Owner / Seller',
+    'Contacts',
     'Communication Summary',
     'Exit Strategy Analysis',
     'Documents / Activity / Quick Actions',
@@ -45,7 +46,8 @@ describe('Deal Card panel — required sections', () => {
 
   it('treats imagery as supporting context only, never parcel identity', () => {
     expect(SRC).toMatch(/never verifies parcel identity/);
-    expect(SRC).toMatch(/Visual\/source image not captured yet/);
+    expect(SRC).toMatch(/visual not captured yet/);
+    expect(SRC).toMatch(/Supporting context — not identity verification/);
   });
 
   it('renders the quick-action shell with all six actions, disabled/approval-gated', () => {

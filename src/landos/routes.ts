@@ -17,11 +17,22 @@ import {
   decideApproval,
   getLandosDb,
   getOverview,
+  getModelPreferences,
+  setModelPreference,
+  resetModelPreference,
   landosAudit,
   listApprovals,
   listLandosAudit,
   listRows,
+  type ModelPreferenceScopeKind,
 } from './db.js';
+import {
+  MODEL_REGISTRY,
+  getModel,
+  suggestModelForOrientation,
+} from './model-providers.js';
+import { computeLandScoreFromPropertyData } from './land-score.js';
+import { captureImagery } from './imagery-capture.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -110,6 +121,58 @@ export function registerLandosRoutes(app: Hono): void {
   });
 
   app.get('/api/landos/departments', (c) => c.json({ departments: DEPARTMENTS }));
+
+  // ── Neutral model registry + facts-based suggestions + sticky overrides ──
+  // Read-only metadata: registry facts, the current per-orientation suggestion,
+  // and the user's stored sticky overrides. No model call, no secrets.
+  const MODEL_SCOPE_KINDS: readonly ModelPreferenceScopeKind[] = ['task_type', 'department', 'sub_agent'];
+
+  app.get('/api/landos/models', (c) => {
+    const entity = entityParam(c.req.query('entity'));
+    return c.json({
+      registry: MODEL_REGISTRY,
+      suggestions: {
+        task_oriented: suggestModelForOrientation('task_oriented'),
+        reasoning_oriented: suggestModelForOrientation('reasoning_oriented'),
+      },
+      preferences: getModelPreferences(entity),
+    });
+  });
+
+  // Set a sticky override. The model id MUST be a registered model (never an
+  // arbitrary/invented id). The override always wins for its scope until reset.
+  app.post('/api/landos/models/override', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const scopeKind = str(body.scopeKind);
+    const scopeKey = str(body.scopeKey);
+    const modelId = str(body.modelId);
+    const taskType = str(body.taskType) ?? '';
+    const entity = entityParam(str(body.entity));
+    if (!scopeKind || !(MODEL_SCOPE_KINDS as readonly string[]).includes(scopeKind)) {
+      return c.json({ error: `scopeKind must be one of ${MODEL_SCOPE_KINDS.join(', ')}` }, 400);
+    }
+    if (!scopeKey) return c.json({ error: 'scopeKey is required' }, 400);
+    if (!modelId || !getModel(modelId)) {
+      return c.json({ error: 'modelId must be a registered model id' }, 400);
+    }
+    setModelPreference({ entity, scopeKind: scopeKind as ModelPreferenceScopeKind, scopeKey, taskType, modelId });
+    return c.json({ ok: true, preference: { entity: entity ?? '', scopeKind, scopeKey, taskType, modelId } });
+  });
+
+  // Reset a sticky override (one-click "reset to suggestion").
+  app.post('/api/landos/models/override/reset', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const scopeKind = str(body.scopeKind);
+    const scopeKey = str(body.scopeKey);
+    const taskType = str(body.taskType) ?? '';
+    const entity = entityParam(str(body.entity));
+    if (!scopeKind || !(MODEL_SCOPE_KINDS as readonly string[]).includes(scopeKind)) {
+      return c.json({ error: `scopeKind must be one of ${MODEL_SCOPE_KINDS.join(', ')}` }, 400);
+    }
+    if (!scopeKey) return c.json({ error: 'scopeKey is required' }, 400);
+    const removed = resetModelPreference({ entity, scopeKind: scopeKind as ModelPreferenceScopeKind, scopeKey, taskType });
+    return c.json({ ok: true, removed });
+  });
 
   // LandOS-wide structure: department leg tiles + shared surfaces/records/
   // interface layers + War Room preservation/routing contract. Read-only
@@ -1008,11 +1071,209 @@ export function registerLandosRoutes(app: Hono): void {
       state: verifiedId?.state ?? area.state,
       parcelVerified: verification.parcelVerified,
     });
+    // Land Score (100-pt rubric) from the VERIFIED LandPortal attributes only.
+    // Unverified -> null (never scored from unverified/inferred data). Pure +
+    // deterministic; missing source fields score 0 as loud data gaps, never faked.
+    const landScore =
+      verification.parcelVerified && verification.propertyData
+        ? computeLandScoreFromPropertyData(verification.propertyData)
+        : null;
+    // Best-effort SUPPORTING imagery (never identity). Stub returns
+    // "visual not captured yet" instantly; live Playwright is install-gated.
+    // Never throws out of the endpoint.
+    let imagery = null;
+    try {
+      imagery = await captureImagery({
+        address: verifiedId?.situsAddress,
+        apn: verifiedId?.apn,
+        county: verifiedId?.county ?? area.county,
+        state: verifiedId?.state ?? area.state,
+      });
+    } catch {
+      imagery = null;
+    }
     logger.info(
-      { event: 'duke_verification_result', status: verification.status, parcelVerified: verification.parcelVerified, dataGaps: verification.dataGaps, strategyStatus: dukeAnalysis.strategyStatus, marketPulseEligible: marketPulse.eligible },
+      { event: 'duke_verification_result', status: verification.status, parcelVerified: verification.parcelVerified, dataGaps: verification.dataGaps, strategyStatus: dukeAnalysis.strategyStatus, marketPulseEligible: marketPulse.eligible, landScored: !!landScore, imageryCaptured: imagery ? !imagery.notCaptured : false },
       'duke_verification_result',
     );
-    return c.json({ verification, dukeAnalysis, acePrep, marketPulse, dealCardUpdatePlan });
+    return c.json({ verification, dukeAnalysis, acePrep, marketPulse, dealCardUpdatePlan, landScore, imagery });
+  });
+
+  // Verified-ONLY Deal Card creation. Re-runs the SAME bounded non-credit
+  // verification server-side (never trusts a client 'verified' flag). Creates a
+  // property card + Deal Card and populates the worksheets via the existing
+  // report workflow ONLY when parcel identity is source-verified; otherwise it
+  // returns the "Local Area Context — Not Parcel Verified" result and NO card.
+  app.post('/api/landos/deal-cards/from-verification', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const entity = str(body.entity);
+    if (!isEntity(entity)) return c.json({ error: 'entity must be LAND_ALLY or TY_LAND_BIZ' }, 400);
+    const sellerAskUsd = num(body.sellerAskUsd);
+
+    const verification = await runDukeVerification(text, {
+      resolve: lpResolveForPreflight,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+    });
+
+    // UNVERIFIED -> local area context only, NO Deal Card (fail loud, never fake).
+    if (!verification.parcelVerified || !verification.propertyData) {
+      const area = extractAreaSignals(text);
+      const idu = verification.propertyData?.identity;
+      const marketPulse = buildMarketPulseV1({
+        city: area.city,
+        county: idu?.county ?? area.county,
+        state: idu?.state ?? area.state,
+        parcelVerified: false,
+      });
+      return c.json({
+        created: false,
+        parcelVerified: false,
+        reason: 'Local Area Context — Not Parcel Verified',
+        verification,
+        marketPulse,
+      });
+    }
+
+    // VERIFIED -> upsert the property card from the verified identity, then
+    // find-or-create its Deal Card. Identity comes ONLY from the verified
+    // LandPortal source — never imagery/coordinates.
+    const pid = verification.propertyData.identity;
+    const acres = verification.propertyData.landFacts.acres;
+    const ownerOnRecord = pid.owner;
+    const { card } = upsertCardFromDukeRun({
+      entity,
+      agentId: 'duke-due-diligence',
+      activeInputAddress: pid.situsAddress || text.trim(),
+      county: pid.county,
+      state: pid.state,
+      apn: pid.apn,
+      lpPropertyId: pid.propertyId,
+      fips: pid.fips,
+      owner: ownerOnRecord,
+      acres: typeof acres === 'number' ? acres : undefined,
+      verified: true,
+      verificationSource: 'LandPortal exact (non-credit)',
+      summary: verification.propertyData.note,
+    });
+    const dealCardId = ensureDealCardForProperty({
+      cardId: card.id,
+      entity,
+      title: pid.situsAddress || pid.apn || `Deal ${card.id}`,
+    });
+
+    // Populate DD/Market/Strategy via the EXISTING safe non-credit report
+    // workflow (same path as Run Report). Best-effort: a populate failure never
+    // loses the verified Deal Card.
+    let reportWarnings: string[] = [];
+    try {
+      const rep = (await runDealCardReport(dealCardId, {
+        resolve: lpResolveForPreflight,
+        timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+        actor: 'tyler/from-verification',
+      })) as { warnings?: string[] } | null;
+      if (rep && Array.isArray(rep.warnings)) reportWarnings = rep.warnings;
+    } catch {
+      reportWarnings = ['Worksheet population deferred — run the report from the Deal Card.'];
+    }
+
+    const landScore = computeLandScoreFromPropertyData(verification.propertyData);
+
+    // Owner-mismatch is a NOTE, not a failure (possible inherited/pre-transfer).
+    const lead = str(body.leadName);
+    const ownerNote =
+      lead && ownerOnRecord && lead.trim().toLowerCase() !== ownerOnRecord.trim().toLowerCase()
+        ? `Owner on record: ${ownerOnRecord} / Lead: ${lead} — do not match (possible inherited/pre-transfer).`
+        : null;
+
+    return c.json({
+      created: true,
+      parcelVerified: true,
+      dealCardId,
+      propertyCardId: card.id,
+      landScore,
+      ownerNote,
+      sellerAskUsd: sellerAskUsd ?? null,
+      reportWarnings,
+    });
+  });
+
+  // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded
+  // NON-CREDIT LandPortal resolve and scores the 100-pt rubric from the verified
+  // attributes. Never spends a comp credit, never scores unverified data.
+  app.get('/api/landos/deal-cards/:id/land-score', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const prop = deal.propertyCards?.[0] as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null } | undefined;
+    const lookup = prop?.active_input_address || prop?.apn || deal.title;
+    if (!lookup) {
+      return c.json({ landScore: null, parcelVerified: false, note: 'No parcel identifier on this Deal Card to resolve.' });
+    }
+    const verification = await runDukeVerification(lookup, {
+      resolve: lpResolveForPreflight,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+    });
+    if (!verification.parcelVerified || !verification.propertyData) {
+      return c.json({ landScore: null, parcelVerified: false, note: 'Parcel not source-verified — Land Score not computed (never scored from unverified data).' });
+    }
+    return c.json({ landScore: computeLandScoreFromPropertyData(verification.propertyData), parcelVerified: true, note: '' });
+  });
+
+  // On-demand SUPPORTING imagery for a Deal Card. Stub returns
+  // "visual not captured yet"; live local Playwright is install-gated. Imagery
+  // is supporting context only and NEVER verifies parcel identity.
+  app.post('/api/landos/deal-cards/:id/imagery', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const prop = deal.propertyCards?.[0] as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null } | undefined;
+    const imagery = await captureImagery({
+      address: prop?.active_input_address ?? undefined,
+      apn: prop?.apn ?? undefined,
+      county: prop?.county ?? undefined,
+      state: prop?.state ?? undefined,
+    });
+    return c.json({ imagery });
+  });
+
+  // Cost Control Board: ACTUAL recorded model spend, aggregated by department
+  // (workflow), provider, runtime (derived via MODEL_REGISTRY), and model.
+  // Numbers only, no labels. Reads recorded spend — never an estimate/suggestion.
+  app.get('/api/landos/cost-board', (c) => {
+    const rows = getLandosDb()
+      .prepare('SELECT agent_id, provider, model, workflow, input_tokens, output_tokens, est_cost_usd FROM landos_model_call')
+      .all() as Array<{ agent_id: string; provider: string; model: string; workflow: string; input_tokens: number; output_tokens: number; est_cost_usd: number }>;
+
+    const dept = new Map<string, { usd: number; calls: number }>();
+    const prov = new Map<string, { usd: number; calls: number }>();
+    const modelAgg = new Map<string, { usd: number; calls: number }>();
+    const runtime: Record<'local' | 'cloud' | 'unknown', number> = { local: 0, cloud: 0, unknown: 0 };
+    let totalUsd = 0;
+    for (const r of rows) {
+      const usd = Number(r.est_cost_usd) || 0;
+      totalUsd += usd;
+      const d = r.workflow || r.agent_id || 'unattributed';
+      const dd = dept.get(d) ?? { usd: 0, calls: 0 }; dd.usd += usd; dd.calls += 1; dept.set(d, dd);
+      const pp = prov.get(r.provider || 'unknown') ?? { usd: 0, calls: 0 }; pp.usd += usd; pp.calls += 1; prov.set(r.provider || 'unknown', pp);
+      const mm = modelAgg.get(r.model || 'unknown') ?? { usd: 0, calls: 0 }; mm.usd += usd; mm.calls += 1; modelAgg.set(r.model || 'unknown', mm);
+      const rt = getModel(r.model)?.runtime ?? 'unknown';
+      runtime[rt] = (runtime[rt] ?? 0) + usd;
+    }
+    const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+    const list = (m: Map<string, { usd: number; calls: number }>, key: string) =>
+      [...m.entries()].map(([k, v]) => ({ [key]: k, usd: round6(v.usd), calls: v.calls })).sort((a, b) => b.usd - a.usd);
+    return c.json({
+      totalUsd: round6(totalUsd),
+      totalCalls: rows.length,
+      byRuntime: { local: round6(runtime.local), cloud: round6(runtime.cloud), unknown: round6(runtime.unknown) },
+      byDepartment: list(dept, 'department'),
+      byProvider: list(prov, 'provider'),
+      byModel: list(modelAgg, 'modelId'),
+    });
   });
 
   // Department registry summary (deeper capability/model-policy registry).

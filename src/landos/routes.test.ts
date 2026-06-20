@@ -7,7 +7,7 @@ import type { Hono } from 'hono';
 
 import { _initTestDatabase } from '../db.js';
 import { buildDashboardApp } from '../dashboard.js';
-import { _initTestLandosDb, getLandosDb } from './db.js';
+import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
 
 const TOKEN = 'test-contract-token';
 
@@ -38,6 +38,63 @@ describe('LandOS routes — auth', () => {
   it('rejects /api/landos/overview without a token', async () => {
     const res = await app.request('/api/landos/overview');
     expect(res.status).toBe(401);
+  });
+});
+
+describe('LandOS routes — cost board (actual recorded spend)', () => {
+  it('aggregates recorded model_call rows by department/provider/runtime/model — never a fake number', async () => {
+    logModelCall({ agentId: 'duke', provider: 'anthropic', model: 'claude', taskClass: 'strategy', estCostUsd: 0.02, workflow: 'research_due_diligence', inputTokens: 1000, outputTokens: 500 });
+    logModelCall({ agentId: 'duke', provider: 'google', model: 'gemma-4-e4b', taskClass: 'parse', estCostUsd: 0, workflow: 'research_due_diligence' });
+    const res = await get('/api/landos/cost-board');
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as any;
+    expect(b.totalCalls).toBe(2);
+    expect(b.totalUsd).toBeCloseTo(0.02, 6);
+    // Runtime derived from the neutral registry: claude=cloud, gemma=local.
+    expect(b.byRuntime.cloud).toBeCloseTo(0.02, 6);
+    expect(b.byRuntime.local).toBe(0);
+    // Records the ACTUAL model that ran (claude), not a suggestion.
+    expect(b.byModel.find((m: any) => m.modelId === 'claude').usd).toBeCloseTo(0.02, 6);
+    expect(b.byDepartment.find((d: any) => d.department === 'research_due_diligence').calls).toBe(2);
+  });
+
+  it('returns an honest empty board when no spend is recorded (no fabricated rows)', async () => {
+    const res = await get('/api/landos/cost-board');
+    const b = (await res.json()) as any;
+    expect(b.totalCalls).toBe(0);
+    expect(b.totalUsd).toBe(0);
+    expect(b.byModel).toEqual([]);
+  });
+});
+
+describe('LandOS routes — verified-gate (Deal Card only after verified identity)', () => {
+  it('REJECTS creation when the parcel is unverified — even if the client claims verified:true — and writes NO card', async () => {
+    // Non-identifier text => runDukeVerification returns unverified WITHOUT any
+    // LandPortal call (no network). The endpoint never reads a client 'verified'
+    // flag; it re-verifies server-side, so a lying flag cannot create a card.
+    const res = await post('/api/landos/deal-cards/from-verification', {
+      text: 'tell me something interesting about clouds',
+      entity: 'TY_LAND_BIZ',
+      verified: true, // lying client flag — must be ignored
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.created).toBe(false);
+    expect(body.parcelVerified).toBe(false);
+    expect(body.reason).toMatch(/Local Area Context — Not Parcel Verified/);
+
+    // NO Deal Card and NO property card were written.
+    const deals = (await (await get('/api/landos/deal-cards')).json()) as any;
+    expect(deals.dealCards).toHaveLength(0);
+    const props = (await (await get('/api/landos/property-cards')).json()) as any;
+    expect(props.cards).toHaveLength(0);
+  });
+
+  it('rejects an invalid entity and writes no card', async () => {
+    const res = await post('/api/landos/deal-cards/from-verification', { text: 'anything', entity: 'NOPE' });
+    expect(res.status).toBe(400);
+    const deals = (await (await get('/api/landos/deal-cards')).json()) as any;
+    expect(deals.dealCards).toHaveLength(0);
   });
 });
 

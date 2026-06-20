@@ -5,6 +5,8 @@ import { PageState } from '@/components/PageState';
 import { IntakePlanner } from '@/components/IntakePlanner';
 import { CommandHome } from '@/components/CommandHome';
 import { DealCard } from '@/components/DealCard';
+import { Acquire } from '@/components/Acquire';
+import { CostBoard } from '@/components/CostBoard';
 import { apiGet, apiPost } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -44,7 +46,7 @@ interface Overview {
 }
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
-type LandosView = 'overview' | 'intake' | 'command' | 'dealcard';
+type LandosView = 'overview' | 'acquire' | 'intake' | 'command' | 'dealcard' | 'costcontrol';
 
 // Module sections of the OS spine. count keys map to getOverview() output.
 const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
@@ -64,6 +66,7 @@ const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
 export function LandOS() {
   const [view, setView] = useState<LandosView>('overview');
   const [entity, setEntity] = useState<EntityFilter>('all');
+  const [selectedDealCardId, setSelectedDealCardId] = useState<number | undefined>(undefined);
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,24 +114,25 @@ export function LandOS() {
         tabs={
           <>
             <Tab label="Command" active={view === 'command'} onClick={() => setView('command')} />
+            <Tab label="Acquire" active={view === 'acquire'} onClick={() => setView('acquire')} />
             <Tab label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
             <Tab label="Intake Planner" active={view === 'intake'} onClick={() => setView('intake')} />
-            <Tab label="Deal Card" active={view === 'dealcard'} onClick={() => setView('dealcard')} />
-            {view === 'overview' && (
-              <>
-                <span class="mx-1 h-4 w-px bg-[var(--color-border)]" />
-                <Tab label="All entities" active={entity === 'all'} onClick={() => setEntity('all')} />
-                <Tab label="Land Ally" active={entity === 'LAND_ALLY'} onClick={() => setEntity('LAND_ALLY')} />
-                <Tab label="Ty's Land Biz" active={entity === 'TY_LAND_BIZ'} onClick={() => setEntity('TY_LAND_BIZ')} />
-              </>
-            )}
+            <Tab label="Deal Card" active={view === 'dealcard'} onClick={() => { setSelectedDealCardId(undefined); setView('dealcard'); }} />
+            <Tab label="Cost Control" active={view === 'costcontrol'} onClick={() => setView('costcontrol')} />
+            {/* Entity context — cross-tab: switches Acquire tagging, Overview counts, Cost Control scope. */}
+            <span class="mx-1 h-4 w-px bg-[var(--color-border)]" />
+            <Tab label="All entities" active={entity === 'all'} onClick={() => setEntity('all')} />
+            <Tab label="Land Ally" active={entity === 'LAND_ALLY'} onClick={() => setEntity('LAND_ALLY')} />
+            <Tab label="Solo Biz" active={entity === 'TY_LAND_BIZ'} onClick={() => setEntity('TY_LAND_BIZ')} />
           </>
         }
       />
 
-      {view === 'command' && <CommandHome onOpenDealCards={() => setView('dealcard')} />}
-      {view === 'dealcard' && <DealCard />}
+      {view === 'command' && <CommandHome onOpenDealCards={() => { setSelectedDealCardId(undefined); setView('dealcard'); }} />}
+      {view === 'acquire' && <Acquire entity={entity} onOpenDealCard={(id) => { setSelectedDealCardId(id); setView('dealcard'); }} />}
+      {view === 'dealcard' && <DealCard dealCardId={selectedDealCardId} entity={entity} />}
       {view === 'intake' && <IntakePlanner />}
+      {view === 'costcontrol' && <CostBoard entity={entity} />}
 
       {view === 'overview' && error && <PageState error={error} />}
       {view === 'overview' && loading && !data && <PageState loading />}
