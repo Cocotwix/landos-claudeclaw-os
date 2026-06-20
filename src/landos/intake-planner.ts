@@ -506,7 +506,7 @@ export function planLandosIntake(intake: LandOSIntake): WorkerDispatchPlan {
 
   // ── Model routing summary lane ──────────────────────────────────────────
   const modelRouting = lane('Model Routing', 'planned' as const,
-    'Each worker lane carries its intended model tier; lowest capable tier preferred, escalation requires a reason, paid APIs gated separately.',
+    'Each worker lane carries its intended task route; task-oriented work prefers the local/open-source slot, escalation requires a reason, paid APIs gated separately.',
     { modelRouting: selectModel({ taskType: 'routing' }) });
 
   // ── Source adapter registry + Market Pulse (Sprint 6A, read-only) ────────

@@ -147,14 +147,14 @@ describe('parcel verification gating (Strategy / Underwriting)', () => {
     expect(p.underwriting.status).toBe('planned');
   });
 
-  it('unverified parcel does not allow expensive strategy reasoning tier', () => {
+  it('unverified parcel does not allow property-specific strategy reasoning route', () => {
     const p = planLandosIntake(intake(FULL_ADDRESS));
-    expect(p.strategy.modelRouting!.tier).not.toBe('strong_reasoning');
+    expect(p.strategy.modelRouting!.route).not.toBe('reasoning_oriented');
   });
 
-  it('verified parcel uses strong reasoning for strategy', () => {
+  it('verified parcel uses reasoning-oriented routing for strategy', () => {
     const p = planLandosIntake(intake('what should we do with this?', { context: { parcelVerified: true } }));
-    expect(p.strategy.modelRouting!.tier).toBe('strong_reasoning');
+    expect(p.strategy.modelRouting!.route).toBe('reasoning_oriented');
   });
 });
 
@@ -302,7 +302,7 @@ describe('model routing + extensibility + safety language', () => {
   it('includes a model route in the worker dispatch plan', () => {
     const p = planLandosIntake(intake(APN_COUNTY));
     expect(p.modelRouting.status).toBe('planned');
-    expect(p.dukeParcelVerification.modelRouting!.tier).toBe('deterministic_code');
+    expect(p.dukeParcelVerification.modelRouting!.route).toBe('deterministic_code');
   });
 
   it('exposes future department/agent support via the registry summary', () => {

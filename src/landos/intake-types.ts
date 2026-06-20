@@ -136,7 +136,8 @@ export interface WorkerLane<S extends string = string> {
   reason: string;
   /** Sub-route / worker hint (e.g. Duke route, Ace mode). */
   route?: string;
-  /** Intended model routing for this lane (lowest capable tier preferred). */
+  /** Intended task route for this lane (task-oriented work prefers the local/
+   *  open-source slot; the concrete model is a facts-based suggestion). */
   modelRouting?: ModelRoutingDecision;
 }
 
@@ -416,8 +417,12 @@ export interface DepartmentBuildoutInterviewPlan {
 
 export interface DepartmentModelPolicy {
   departmentId: string;
-  defaultTier: ModelTier;
-  escalationTier?: ModelTier;
+  defaultRoute: TaskRoute;
+  escalationRoute?: TaskRoute;
+  /** Configured default model id: a plain default at the BOTTOM of the
+   *  resolution order, not a ranking. Task-oriented departments default to the
+   *  local/open-source slot. */
+  defaultModelId?: string;
   maxTokenBudget?: number;
 }
 
@@ -433,32 +438,36 @@ export interface DepartmentRegistryEntry {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 2. Model router / cost-control policy
+// 2. Model routing / cost-control policy (neutral, facts-based)
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Abstract, vendor-neutral tiers. 'deterministic_code' means NO LLM is used
- *  (parsing/calculation done in code). 'human_approval_required' is a gate, not
- *  a model. Future model aliases map onto these tiers without code rewrites. */
-export const MODEL_TIERS = [
+/** How a task is routed, expressed as objective facts — NOT a quality ladder.
+ *  'deterministic_code' means NO LLM is used (parsing/calculation in code).
+ *  'task_oriented' vs 'reasoning_oriented' is the KIND of work, never a ranking.
+ *  'web_capable' / 'long_context' are capability requirements.
+ *  'local_open_source' names the local/open-source slot.
+ *  'approval_required' is a gate, not a model. New models slot onto these routes
+ *  by registry facts without code rewrites; no route implies a "better" model. */
+export const TASK_ROUTES = [
   'deterministic_code',
-  'cheap_fast',
-  'standard_reasoning',
-  'strong_reasoning',
-  'tool_web_capable',
+  'task_oriented',
+  'reasoning_oriented',
+  'web_capable',
   'long_context',
-  'local_or_open_source',
-  'human_approval_required',
+  'local_open_source',
+  'approval_required',
 ] as const;
-export type ModelTier = (typeof MODEL_TIERS)[number];
+export type TaskRoute = (typeof TASK_ROUTES)[number];
 
-/** Optional model aliases. Not vendor-locked; resolved later from config. */
+/** The KIND of work a task is. Drives the facts-based default suggestion,
+ *  never a quality ranking. */
+export type TaskOrientation = 'task_oriented' | 'reasoning_oriented';
+
+/** Optional capability/role aliases. Not vendor-locked; resolved from config. */
 export const MODEL_ALIASES = [
-  'cheap_fast',
-  'standard_reasoning',
-  'strong_reasoning',
+  'local_open_source',
   'web_research',
   'forge_diagnostics',
-  'local_fallback',
 ] as const;
 export type ModelAlias = (typeof MODEL_ALIASES)[number];
 
@@ -467,10 +476,10 @@ export type TokenBudgetClass = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
 export interface ModelCapabilityRequirement {
   needsWebBrowsing: boolean;
   needsLongContext: boolean;
-  /** Deterministic code task: no LLM tier needed. */
+  /** Deterministic code task: no LLM route needed. */
   deterministic: boolean;
-  /** Minimum reasoning depth the task genuinely requires. */
-  reasoningDepth: 'none' | 'low' | 'medium' | 'high';
+  /** The KIND of cognition the task is, not how "good" a model must be. */
+  orientation: TaskOrientation;
 }
 
 export interface ModelSelectionReason {
@@ -482,8 +491,10 @@ export interface ModelSelectionReason {
 
 export interface ModelEscalationRule {
   allowed: boolean;
-  /** Tier to escalate to when a real trigger fires. */
-  toTier?: ModelTier;
+  /** Route to move to when a real trigger fires. MUST differ from the base
+   *  route (an orientation change, or 'approval_required') — escalation never
+   *  no-ops into the same route. */
+  toRoute?: TaskRoute;
   /** A reason is REQUIRED whenever escalation is taken. */
   reason?: string;
   requiresTylerApproval: boolean;
@@ -510,24 +521,24 @@ export interface ModelUsageEstimate {
 }
 
 export interface ModelFallbackPolicy {
-  /** Tier to fall back to if the chosen tier/model is unavailable. */
-  fallbackTier: ModelTier;
+  /** Route to fall back to if the chosen route/model is unavailable. */
+  fallbackRoute: TaskRoute;
   /** If true and nothing is available, return not_available — never fake it. */
   blockIfUnavailable: boolean;
 }
 
 export interface AgentModelPolicy {
   agentId: string;
-  defaultTier: ModelTier;
+  defaultRoute: TaskRoute;
   escalation: ModelEscalationRule;
   maxTokenBudget?: number;
-  /** Paid API / web requirement gating stays SEPARATE from tier selection. */
+  /** Paid API / web requirement gating stays SEPARATE from route selection. */
   paidApiRequiresApproval: boolean;
 }
 
 export interface WorkerModelPolicy {
   workerId: string;
-  defaultTier: ModelTier;
+  defaultRoute: TaskRoute;
   escalation: ModelEscalationRule;
   /** True when the worker's job is deterministic (prefers code over an LLM). */
   deterministicPreferred: boolean;
@@ -535,7 +546,7 @@ export interface WorkerModelPolicy {
 
 /** The output of the deterministic model router for a single task. */
 export interface ModelRoutingDecision {
-  tier: ModelTier;
+  route: TaskRoute;
   alias?: ModelAlias;
   reason: ModelSelectionReason;
   escalation: ModelEscalationRule;
@@ -543,20 +554,23 @@ export interface ModelRoutingDecision {
   costBudget: CostBudgetPolicy;
   usageEstimate: ModelUsageEstimate;
   fallback: ModelFallbackPolicy;
-  /** Paid API/tool gating stays separate from model tier. */
+  /** Paid API/tool gating stays separate from route selection. */
   paidApiGated: boolean;
   /** If a required model/tool is unavailable: report it, never fake success. */
   availability: 'available' | 'not_available' | 'blocked';
 }
 
 export interface ModelRouterPolicy {
-  /** Always prefer the lowest capable tier. */
-  preferLowestCapableTier: true;
-  /** Deterministic tasks never select an LLM tier. */
+  /** Task-oriented work defaults to the local/open-source slot (a cost/privacy/
+   *  local-runtime rule, never a quality ranking). */
+  preferLocalOpenSourceForTaskOriented: true;
+  /** Deterministic tasks never select an LLM route. */
   deterministicUsesCode: true;
   /** Model routing must never override hard safety rules. */
   safetyOverridesRouting: true;
-  tiers: readonly ModelTier[];
+  /** Every suggestion is overridable by the user (sticky). */
+  suggestionsOverridable: true;
+  routes: readonly TaskRoute[];
   aliases: readonly ModelAlias[];
 }
 

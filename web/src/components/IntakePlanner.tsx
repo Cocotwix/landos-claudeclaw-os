@@ -17,7 +17,7 @@ interface Lane {
   status: string;
   reason: string;
   route?: string;
-  modelRouting?: { tier: string; availability: string };
+  modelRouting?: { route: string; availability: string };
 }
 interface PersistenceTarget {
   key: string;
@@ -312,7 +312,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // One worker lane row. Shows lane name, status badge, reason, optional route
-// and intended model tier (cost shown, not spent).
+// and intended task route (cost shown, not spent).
 function LaneRow({ lane }: { lane: Lane }) {
   return (
     <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3">
@@ -325,7 +325,7 @@ function LaneRow({ lane }: { lane: Lane }) {
         <div class="text-[10px] text-[var(--color-text-faint)] mt-1.5 font-mono flex flex-wrap gap-x-3 gap-y-0.5">
           {lane.route && <span>route: {lane.route}</span>}
           {lane.modelRouting && (
-            <span>model: {lane.modelRouting.tier} · {lane.modelRouting.availability}</span>
+            <span>model: {lane.modelRouting.route} · {lane.modelRouting.availability}</span>
           )}
         </div>
       )}
@@ -633,7 +633,7 @@ export function IntakePlanner() {
               <div class="text-[11px] text-[var(--color-text-muted)]">{plan.modelRouting.reason}</div>
               {plan.modelRouting.modelRouting && (
                 <div class="text-[10px] text-[var(--color-text-faint)] mt-1 font-mono">
-                  routing tier: {plan.modelRouting.modelRouting.tier} · {plan.modelRouting.modelRouting.availability}
+                  routing route: {plan.modelRouting.modelRouting.route} · {plan.modelRouting.modelRouting.availability}
                 </div>
               )}
             </div>

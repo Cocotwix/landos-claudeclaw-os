@@ -1,34 +1,37 @@
-// LandOS Model Router and cost-control policy — pure, deterministic.
+// LandOS model router and cost-control policy — pure, deterministic.
 //
-// Picks an abstract model TIER for a task. It does not call any model, does not
-// hard-code a vendor, and never overrides a hard safety rule. The whole point
-// is to stop every agent/workflow defaulting to the strongest/most expensive
-// model: prefer the lowest capable tier, escalate only with a reason, and gate
-// paid APIs separately from tier selection.
+// Classifies a task by OBJECTIVE FACTS and returns a neutral ROUTE. Routes are
+// neutral peers: 'task_oriented' vs 'reasoning_oriented' is the KIND of work,
+// not a quality ladder, and no route implies a "better" model. It makes no live
+// model call, hard-codes no vendor, and never overrides a hard safety rule.
 //
-// Deterministic parsing/calculation tasks return tier 'deterministic_code'
-// (NO LLM). If a required model/tool is unavailable the decision reports
-// availability 'not_available' — it never fakes success.
+// The concrete model behind a route is a SUGGESTION the user can override
+// (sticky) — see model-providers.ts (suggestModelForOrientation / resolveModel).
+//
+// Deterministic parsing/calculation returns 'deterministic_code' (NO LLM). If a
+// required tool is unavailable the decision reports availability 'not_available'
+// — it never fakes success. Paid-API/web gating stays SEPARATE from the route.
 
 import type {
-  ModelTier,
+  TaskRoute,
   ModelAlias,
   ModelRoutingDecision,
   ModelRouterPolicy,
   TokenBudgetClass,
   ModelEscalationRule,
 } from './intake-types.js';
-import { MODEL_TIERS, MODEL_ALIASES } from './intake-types.js';
+import { TASK_ROUTES, MODEL_ALIASES } from './intake-types.js';
 
 export const MODEL_ROUTER_POLICY: ModelRouterPolicy = {
-  preferLowestCapableTier: true,
+  preferLocalOpenSourceForTaskOriented: true,
   deterministicUsesCode: true,
   safetyOverridesRouting: true,
-  tiers: MODEL_TIERS,
+  suggestionsOverridable: true,
+  routes: TASK_ROUTES,
   aliases: MODEL_ALIASES,
 };
 
-/** The kind of work a task is. Drives the default tier. */
+/** The kind of work a task is. Drives the default route. */
 export type RouterTaskType =
   | 'classification'
   | 'routing'
@@ -60,7 +63,7 @@ export interface RouterTaskInput {
   requiresLongContext?: boolean;
   /** Risk level of the underlying action. */
   riskLevel?: 'low' | 'medium' | 'high';
-  /** Whether escalation to a stronger tier is allowed for this task. */
+  /** Whether escalation to a different route is allowed for this task. */
   escalationAllowed?: boolean;
   /** Only relevant for strategy/underwriting: are parcel facts verified? */
   parcelVerified?: boolean;
@@ -79,7 +82,7 @@ const DETERMINISTIC: Set<RouterTaskType> = new Set([
   'finance_calc',
 ]);
 
-const CHEAP_FAST: Set<RouterTaskType> = new Set([
+const TASK_ORIENTED: Set<RouterTaskType> = new Set([
   'classification',
   'routing',
   'status_formatting',
@@ -88,39 +91,43 @@ const CHEAP_FAST: Set<RouterTaskType> = new Set([
   'summarization',
 ]);
 
-function aliasForTier(tier: ModelTier): ModelAlias | undefined {
-  switch (tier) {
-    case 'cheap_fast':
-      return 'cheap_fast';
-    case 'standard_reasoning':
-      return 'standard_reasoning';
-    case 'strong_reasoning':
-      return 'strong_reasoning';
-    case 'tool_web_capable':
+function aliasForRoute(route: TaskRoute, taskType: RouterTaskType): ModelAlias | undefined {
+  if (taskType === 'forge_diagnostics' || taskType === 'forge_build_planning') return 'forge_diagnostics';
+  switch (route) {
+    case 'web_capable':
       return 'web_research';
-    case 'local_or_open_source':
-      return 'local_fallback';
+    case 'task_oriented':
+    case 'local_open_source':
+      return 'local_open_source';
     default:
       return undefined;
   }
 }
 
-function budgetForTier(tier: ModelTier): TokenBudgetClass {
-  switch (tier) {
+function budgetForRoute(route: TaskRoute): TokenBudgetClass {
+  switch (route) {
     case 'deterministic_code':
       return 'tiny';
-    case 'cheap_fast':
+    case 'task_oriented':
+    case 'local_open_source':
+    case 'approval_required':
       return 'small';
-    case 'standard_reasoning':
-      return 'medium';
     case 'long_context':
       return 'xlarge';
-    case 'strong_reasoning':
-    case 'tool_web_capable':
+    case 'reasoning_oriented':
+    case 'web_capable':
       return 'large';
     default:
       return 'small';
   }
+}
+
+/** A meaningful, neutral escalation terminal that NEVER no-ops into the same
+ *  route: reasoning-oriented work escalates to the approval gate; everything
+ *  else escalates by changing orientation to reasoning-oriented (which actually
+ *  changes the candidate set). */
+function escalationTargetFor(base: TaskRoute): TaskRoute {
+  return base === 'reasoning_oriented' ? 'approval_required' : 'reasoning_oriented';
 }
 
 const NO_ESCALATION: ModelEscalationRule = { allowed: false, requiresTylerApproval: false };
@@ -130,17 +137,20 @@ const NO_ESCALATION: ModelEscalationRule = { allowed: false, requiresTylerApprov
  *
  * Rules (in order):
  *   1. Hard safety: paid/higher-cost approval gating is separate and never
- *      overridden by tier selection.
+ *      overridden by route selection.
  *   2. Deterministic tasks -> 'deterministic_code' (no LLM).
  *   3. Long-context requirement -> 'long_context'.
- *   4. Web/tool requirement -> 'tool_web_capable' (availability honored).
- *   5. Cheap/fast task types -> 'cheap_fast'.
- *   6. Strategy/underwriting reasoning -> 'strong_reasoning' ONLY when parcel
- *      facts are verified; otherwise 'blocked' (no expensive reasoning on an
- *      unverified parcel).
- *   7. Forge/security -> 'strong_reasoning'.
- *   8. Seller prep -> 'standard_reasoning'; negotiation strategy -> 'strong'.
- *   9. War room -> 'standard_reasoning' default.
+ *   4. Web/tool requirement -> 'web_capable' (availability honored).
+ *   5. Task-oriented task types -> 'task_oriented' (local/open-source preferred).
+ *   6. Strategy/negotiation -> 'reasoning_oriented' ONLY when parcel facts are
+ *      verified; unverified strategy -> 'approval_required' (blocked).
+ *   7. Forge/security -> 'reasoning_oriented'.
+ *   8. Seller prep -> 'task_oriented' (escalates to reasoning for negotiation).
+ *   9. War room -> 'reasoning_oriented' default (escalates to approval gate).
+ *
+ * Escalation, when taken, always carries a reason and a toRoute that DIFFERS
+ * from the base route (no no-op). The concrete model behind the chosen route is
+ * a facts-based suggestion the user can override.
  */
 export function selectModel(input: RouterTaskInput): ModelRoutingDecision {
   const {
@@ -154,121 +164,117 @@ export function selectModel(input: RouterTaskInput): ModelRoutingDecision {
     toolAvailable = true,
   } = input;
 
-  let tier: ModelTier = 'cheap_fast';
+  let route: TaskRoute = 'task_oriented';
   let driver = 'default';
-  let detail = 'No specific signal; lowest capable tier.';
+  let detail = 'No specific signal; task-oriented routing (local/open-source preferred).';
   let availability: ModelRoutingDecision['availability'] = 'available';
   let escalation: ModelEscalationRule = NO_ESCALATION;
-  // Paid API / web tool use is gated separately from the model tier.
+  // Paid API / web tool use is gated separately from the route.
   const paidApiGated = requiresWeb || requiresApprovalForHigherCost;
 
   if (DETERMINISTIC.has(taskType)) {
-    tier = 'deterministic_code';
+    route = 'deterministic_code';
     driver = 'deterministic';
     detail = 'Deterministic parsing/calculation runs in code, not an LLM.';
   } else if (taskType === 'parcel_verification') {
-    // Duke verifies via deterministic tools + exact sources first; an LLM tier
-    // is only used to summarize/explain anomalies.
-    tier = 'deterministic_code';
+    // Duke verifies via deterministic tools + exact sources first; a model is
+    // only used to summarize/explain anomalies.
+    route = 'deterministic_code';
     driver = 'deterministic_exact_source';
     detail =
       'Parcel verification uses deterministic tools and exact sources first. ' +
-      'LLM reasoning is reserved for summary/anomaly explanation only.';
+      'Model reasoning is reserved for summary/anomaly explanation only.';
   } else if (requiresLongContext) {
-    tier = 'long_context';
+    route = 'long_context';
     driver = 'long_context';
     detail = 'Task requires a large context window.';
   } else if (taskType === 'market_research' || requiresWeb) {
-    tier = 'tool_web_capable';
+    route = 'web_capable';
     driver = 'web_required';
     detail = 'Task requires web/tool-capable browsing or a source adapter.';
     availability = toolAvailable ? 'available' : 'not_available';
-  } else if (CHEAP_FAST.has(taskType)) {
-    tier = 'cheap_fast';
-    driver = 'cheap_fast_task';
-    detail = 'Classification/routing/formatting/monitoring uses the cheap fast tier.';
+  } else if (TASK_ORIENTED.has(taskType)) {
+    route = 'task_oriented';
+    driver = 'task_oriented';
+    detail = 'Execution work (classification/routing/formatting/monitoring/summarizing): task-oriented routing, local/open-source preferred.';
     if (taskType === 'ai_watcher_monitor' && escalationAllowed) {
       escalation = {
         allowed: true,
-        toTier: 'standard_reasoning',
-        reason: 'Escalate only when a real failure is detected.',
+        toRoute: 'reasoning_oriented',
+        reason: 'Escalate to reasoning-oriented routing only when a real failure is detected.',
         requiresTylerApproval: false,
       };
     }
   } else if (taskType === 'strategy_reasoning' || taskType === 'negotiation_strategy') {
     if (!parcelVerified && taskType === 'strategy_reasoning') {
-      tier = 'human_approval_required';
+      route = 'approval_required';
       driver = 'blocked_unverified_parcel';
-      detail = 'Parcel identity unverified: expensive strategy reasoning is blocked.';
+      detail = 'Parcel identity unverified: property-specific strategy routing is blocked pending verification/approval.';
       availability = 'blocked';
     } else {
-      tier = 'strong_reasoning';
+      route = 'reasoning_oriented';
       driver = taskType === 'negotiation_strategy' ? 'complex_negotiation' : 'verified_strategy';
       detail =
         taskType === 'negotiation_strategy'
-          ? 'Complex negotiation strategy warrants strong reasoning.'
-          : 'Strategy reasoning on verified parcel facts warrants strong reasoning.';
+          ? 'Complex negotiation strategy: reasoning-oriented routing (model chosen later by objective facts).'
+          : 'Strategy reasoning on verified parcel facts: reasoning-oriented routing (model chosen later by objective facts).';
     }
   } else if (taskType === 'forge_diagnostics' || taskType === 'forge_build_planning') {
-    tier = 'strong_reasoning';
+    route = 'reasoning_oriented';
     driver = 'forge';
-    detail = 'Forge diagnostics/build planning warrants strong reasoning (approval gates still apply).';
+    detail = 'Forge diagnostics/build planning: reasoning-oriented routing (approval gates still apply).';
   } else if (taskType === 'security_risk_analysis') {
-    tier = 'strong_reasoning';
+    route = 'reasoning_oriented';
     driver = 'security';
-    detail = 'Security risk analysis warrants strong reasoning; secrets/destructive actions stay hard-gated.';
+    detail = 'Security risk analysis: reasoning-oriented routing; secrets/destructive actions stay hard-gated.';
   } else if (taskType === 'seller_prep') {
-    tier = 'standard_reasoning';
+    route = 'task_oriented';
     driver = 'seller_prep';
-    detail = 'Seller prep uses standard reasoning.';
+    detail = 'Seller prep/drafting: task-oriented routing.';
     if (escalationAllowed) {
       escalation = {
         allowed: true,
-        toTier: 'strong_reasoning',
-        reason: 'Escalate for complex negotiation strategy only.',
+        toRoute: 'reasoning_oriented',
+        reason: 'Escalate to reasoning-oriented routing for complex negotiation strategy only.',
         requiresTylerApproval: false,
       };
     }
   } else if (taskType === 'war_room_discussion') {
-    tier = 'standard_reasoning';
+    route = 'reasoning_oriented';
     driver = 'war_room';
-    detail = 'War Room defaults to standard reasoning; stronger only when Tyler opens it or the topic requires it.';
+    detail = 'War Room: reasoning-oriented routing; broader/closed-model capability only when Tyler opens it.';
     if (escalationAllowed) {
       escalation = {
         allowed: true,
-        toTier: 'strong_reasoning',
-        reason: 'High-level decision support when Tyler explicitly escalates.',
+        toRoute: 'approval_required',
+        reason: 'Higher-cost/closed-model decision support requires Tyler to open it.',
         requiresTylerApproval: true,
       };
     }
-  } else if (taskType === 'summarization') {
-    tier = 'cheap_fast';
-    driver = 'summarization';
-    detail = 'Summarization uses the cheap fast tier.';
   }
 
-  // High risk with escalation allowed gets a documented escalation path (a
-  // reason is always required when escalation is taken).
-  if (riskLevel === 'high' && escalationAllowed && !escalation.allowed && tier !== 'deterministic_code') {
+  // High risk with escalation allowed gets a documented escalation path with a
+  // reason and a route that actually differs from the base (never a no-op).
+  if (riskLevel === 'high' && escalationAllowed && !escalation.allowed && route !== 'deterministic_code') {
     escalation = {
       allowed: true,
-      toTier: 'strong_reasoning',
-      reason: 'High-risk task: escalate to strong reasoning with a documented reason.',
+      toRoute: escalationTargetFor(route),
+      reason: 'High-risk task: escalate with a documented reason and an expanded routing requirement.',
       requiresTylerApproval: requiresApprovalForHigherCost,
     };
   }
 
-  const budgetClass = input.budgetClass ?? budgetForTier(tier);
+  const budgetClass = input.budgetClass ?? budgetForRoute(route);
 
   return {
-    tier,
-    alias: aliasForTier(tier),
+    route,
+    alias: aliasForRoute(route, taskType),
     reason: { driver, detail },
     escalation,
     tokenBudget: { budgetClass },
     costBudget: { approvalOverBudget: requiresApprovalForHigherCost },
     usageEstimate: { budgetClass },
-    fallback: { fallbackTier: 'local_or_open_source', blockIfUnavailable: true },
+    fallback: { fallbackRoute: 'local_open_source', blockIfUnavailable: true },
     paidApiGated,
     availability,
   };

@@ -567,6 +567,27 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_landos_model_call_time ON landos_model_call(created_at DESC);
 
+    -- Sticky model preferences (user overrides of the facts-based suggestion).
+    -- Resolution order: sticky override > task-orientation suggestion >
+    -- configured default. entity '' = applies across entities. task_type '' =
+    -- applies to all task types within a department/sub_agent scope. A reset is
+    -- a DELETE of the matching row (resolution falls back to the suggestion).
+    CREATE TABLE IF NOT EXISTS landos_model_preference (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity      TEXT NOT NULL DEFAULT '',
+      scope_kind  TEXT NOT NULL
+                  CHECK (scope_kind IN ('task_type','department','sub_agent')),
+      scope_key   TEXT NOT NULL,
+      task_type   TEXT NOT NULL DEFAULT '',
+      model_id    TEXT NOT NULL,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_landos_model_pref_scope
+      ON landos_model_preference(entity, scope_kind, scope_key, task_type);
+    CREATE INDEX IF NOT EXISTS idx_landos_model_pref_lookup
+      ON landos_model_preference(scope_kind, scope_key);
+
     CREATE TABLE IF NOT EXISTS landos_cost_record (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       entity      TEXT,
@@ -1274,6 +1295,65 @@ export function logCostRecord(opts: {
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(opts.entity ?? null, opts.category, opts.description ?? '', opts.amountUsd, opts.refTable ?? '', opts.refId ?? null);
   return result.lastInsertRowid as number;
+}
+
+// ── Sticky model preferences ─────────────────────────────────────────
+
+export type ModelPreferenceScopeKind = 'task_type' | 'department' | 'sub_agent';
+
+export interface ModelPreferenceRow {
+  entity: string;
+  scopeKind: ModelPreferenceScopeKind;
+  scopeKey: string;
+  taskType: string;
+  modelId: string;
+}
+
+/** Set (upsert) a sticky model override for a scope. entity '' = cross-entity;
+ *  taskType '' = all task types within a department/sub_agent scope. Idempotent
+ *  on the (entity, scope_kind, scope_key, task_type) unique key. */
+export function setModelPreference(opts: {
+  entity?: string;
+  scopeKind: ModelPreferenceScopeKind;
+  scopeKey: string;
+  taskType?: string;
+  modelId: string;
+}): void {
+  const now = Math.floor(Date.now() / 1000);
+  getLandosDb()
+    .prepare(
+      `INSERT INTO landos_model_preference (entity, scope_kind, scope_key, task_type, model_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(entity, scope_kind, scope_key, task_type)
+       DO UPDATE SET model_id = excluded.model_id, updated_at = excluded.updated_at`,
+    )
+    .run(opts.entity ?? '', opts.scopeKind, opts.scopeKey, opts.taskType ?? '', opts.modelId, now, now);
+}
+
+/** Read sticky overrides. With an entity, returns cross-entity ('') rows plus
+ *  that entity's rows (both apply); without one, returns all rows. */
+export function getModelPreferences(entity?: string): ModelPreferenceRow[] {
+  const db = getLandosDb();
+  const rows = (entity
+    ? db.prepare(`SELECT entity, scope_kind, scope_key, task_type, model_id FROM landos_model_preference WHERE entity = '' OR entity = ? ORDER BY id`).all(entity)
+    : db.prepare(`SELECT entity, scope_kind, scope_key, task_type, model_id FROM landos_model_preference ORDER BY id`).all()) as Array<{
+    entity: string; scope_kind: ModelPreferenceScopeKind; scope_key: string; task_type: string; model_id: string;
+  }>;
+  return rows.map((r) => ({ entity: r.entity, scopeKind: r.scope_kind, scopeKey: r.scope_key, taskType: r.task_type, modelId: r.model_id }));
+}
+
+/** Reset (delete) a sticky override, falling resolution back to the suggestion.
+ *  Returns true when a row was removed. */
+export function resetModelPreference(opts: {
+  entity?: string;
+  scopeKind: ModelPreferenceScopeKind;
+  scopeKey: string;
+  taskType?: string;
+}): boolean {
+  const result = getLandosDb()
+    .prepare(`DELETE FROM landos_model_preference WHERE entity = ? AND scope_kind = ? AND scope_key = ? AND task_type = ?`)
+    .run(opts.entity ?? '', opts.scopeKind, opts.scopeKey, opts.taskType ?? '');
+  return result.changes > 0;
 }
 
 // ── Generic list/count helpers for the dashboard ─────────────────────

@@ -22,12 +22,12 @@ const noEscalation: ModelEscalationRule = { allowed: false, requiresTylerApprova
 
 function agentModelPolicy(
   agentId: string,
-  defaultTier: AgentModelPolicy['defaultTier'],
+  defaultRoute: AgentModelPolicy['defaultRoute'],
   opts: Partial<AgentModelPolicy> = {},
 ): AgentModelPolicy {
   return {
     agentId,
-    defaultTier,
+    defaultRoute,
     escalation: opts.escalation ?? noEscalation,
     maxTokenBudget: opts.maxTokenBudget,
     paidApiRequiresApproval: opts.paidApiRequiresApproval ?? true,
@@ -64,8 +64,8 @@ const DUKE: AgentRegistryEntry = {
     requiresWebBrowsing: false,
     modelPolicy: {
       workerId: 'duke-due-diligence',
-      defaultTier: 'deterministic_code',
-      escalation: { allowed: true, toTier: 'standard_reasoning', reason: 'Summarize/explain anomalies only.', requiresTylerApproval: false },
+      defaultRoute: 'deterministic_code',
+      escalation: { allowed: true, toRoute: 'reasoning_oriented', reason: 'Summarize/explain anomalies only.', requiresTylerApproval: false },
       deterministicPreferred: true,
     },
   },
@@ -80,7 +80,7 @@ const DUKE: AgentRegistryEntry = {
     requiresApprovalFor: ['landportal_comp_report', 'comp_credit_use'],
   },
   modelPolicy: agentModelPolicy('duke-due-diligence', 'deterministic_code', {
-    escalation: { allowed: true, toTier: 'standard_reasoning', reason: 'Summary/anomaly explanation only.', requiresTylerApproval: false },
+    escalation: { allowed: true, toRoute: 'reasoning_oriented', reason: 'Summary/anomaly explanation only.', requiresTylerApproval: false },
   }),
 };
 
@@ -89,7 +89,7 @@ function shellAgent(
   name: string,
   role: string,
   departmentId: string,
-  defaultTier: AgentModelPolicy['defaultTier'],
+  defaultRoute: AgentModelPolicy['defaultRoute'],
   lifecycle: AgentRegistryEntry['lifecycle'] = 'shell',
 ): AgentRegistryEntry {
   return {
@@ -114,9 +114,9 @@ function shellAgent(
       requiresWebBrowsing: false,
       modelPolicy: {
         workerId: agentId,
-        defaultTier,
+        defaultRoute,
         escalation: noEscalation,
-        deterministicPreferred: defaultTier === 'deterministic_code',
+        deterministicPreferred: defaultRoute === 'deterministic_code',
       },
     },
     permissions: {
@@ -129,7 +129,7 @@ function shellAgent(
       canReadSecrets: false,
       requiresApprovalFor: ['risky_actions'],
     },
-    modelPolicy: agentModelPolicy(agentId, defaultTier),
+    modelPolicy: agentModelPolicy(agentId, defaultRoute),
   };
 }
 
@@ -145,7 +145,7 @@ const COMMON_BUILDOUT_TOPICS = [
   'automations',
   'safety_gates',
   'training_knowledge_sources',
-  'model_tier_default_policy',
+  'model_default_policy',
   'cost_token_budgets',
 ];
 
@@ -156,9 +156,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Seller discovery prep and communication (Ace). Seller-facing drafts only; Tyler sends.',
     capability: { departmentId: 'acquisition', operational: false, capabilities: ['seller_discovery_prep', 'seller_communication_prep'] },
-    agents: [shellAgent('acquisition-copilot', 'Ace', 'Seller discovery prep and communication', 'acquisition', 'standard_reasoning', 'operational')],
+    agents: [shellAgent('acquisition-copilot', 'Ace', 'Seller discovery prep and communication', 'acquisition', 'reasoning_oriented', 'operational')],
     buildoutInterview: { departmentId: 'acquisition', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'acquisition', defaultTier: 'standard_reasoning', escalationTier: 'strong_reasoning' },
+    modelPolicy: { departmentId: 'acquisition', defaultRoute: 'reasoning_oriented', escalationRoute: 'approval_required' },
   },
   {
     id: 'research_due_diligence',
@@ -183,7 +183,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     },
     agents: [DUKE],
     buildoutInterview: { departmentId: 'research_due_diligence', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'research_due_diligence', defaultTier: 'deterministic_code', escalationTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'research_due_diligence', defaultRoute: 'deterministic_code', escalationRoute: 'reasoning_oriented' },
   },
   {
     id: 'strategy',
@@ -191,9 +191,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Exit strategy, deal structure, and final strategic recommendation — only when verified facts support it. Paired with Underwriting.',
     capability: { departmentId: 'strategy', operational: false, capabilities: ['exit_strategy', 'deal_structure', 'final_recommendation'] },
-    agents: [shellAgent('strategy', 'Strategy', 'Exit strategy and final recommendation', 'strategy', 'strong_reasoning')],
+    agents: [shellAgent('strategy', 'Strategy', 'Exit strategy and final recommendation', 'strategy', 'reasoning_oriented')],
     buildoutInterview: { departmentId: 'strategy', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'strategy', defaultTier: 'standard_reasoning', escalationTier: 'strong_reasoning' },
+    modelPolicy: { departmentId: 'strategy', defaultRoute: 'reasoning_oriented', escalationRoute: 'approval_required' },
   },
   {
     id: 'underwriting',
@@ -203,7 +203,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     capability: { departmentId: 'underwriting', operational: false, capabilities: ['run_numbers', 'validate_strategy', 'max_allowable_offer'] },
     agents: [shellAgent('underwriting', 'Underwriting', 'Runs and validates deal numbers', 'underwriting', 'deterministic_code')],
     buildoutInterview: { departmentId: 'underwriting', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'underwriting', defaultTier: 'deterministic_code', escalationTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'underwriting', defaultRoute: 'deterministic_code', escalationRoute: 'reasoning_oriented' },
   },
   {
     id: 'marketing',
@@ -211,9 +211,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Campaign and lead-source performance. No live ad changes without approval.',
     capability: { departmentId: 'marketing', operational: false, capabilities: ['campaign_records', 'lead_source_performance'] },
-    agents: [shellAgent('mia-marketing', 'Mia', 'Marketing and lead gen', 'marketing', 'cheap_fast')],
+    agents: [shellAgent('mia-marketing', 'Mia', 'Marketing and lead gen', 'marketing', 'task_oriented')],
     buildoutInterview: { departmentId: 'marketing', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'marketing', defaultTier: 'cheap_fast', escalationTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'marketing', defaultRoute: 'task_oriented', escalationRoute: 'reasoning_oriented', defaultModelId: 'gemma-4-e4b' },
   },
   {
     id: 'dispositions',
@@ -221,9 +221,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Buyer research, exit prep, listing strategy.',
     capability: { departmentId: 'dispositions', operational: false, capabilities: ['buyer_research', 'exit_prep', 'listing_strategy'] },
-    agents: [shellAgent('drew-dispositions', 'Drew', 'Dispositions', 'dispositions', 'standard_reasoning')],
+    agents: [shellAgent('drew-dispositions', 'Drew', 'Dispositions', 'dispositions', 'reasoning_oriented')],
     buildoutInterview: { departmentId: 'dispositions', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'dispositions', defaultTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'dispositions', defaultRoute: 'reasoning_oriented' },
   },
   {
     id: 'transaction_coordinating',
@@ -231,9 +231,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Signed-deal-through-closing coordination: title/closing checklist, deadlines, seller documents.',
     capability: { departmentId: 'transaction_coordinating', operational: false, capabilities: ['closing_checklist', 'deadline_tracking'] },
-    agents: [shellAgent('transaction-coordination', 'TC', 'Transaction coordination', 'transaction_coordinating', 'cheap_fast')],
+    agents: [shellAgent('transaction-coordination', 'TC', 'Transaction coordination', 'transaction_coordinating', 'task_oriented')],
     buildoutInterview: { departmentId: 'transaction_coordinating', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'transaction_coordinating', defaultTier: 'cheap_fast', escalationTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'transaction_coordinating', defaultRoute: 'task_oriented', escalationRoute: 'reasoning_oriented', defaultModelId: 'gemma-4-e4b' },
   },
   {
     id: 'finance_bookkeeping',
@@ -243,7 +243,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     capability: { departmentId: 'finance_bookkeeping', operational: false, capabilities: ['cost_tracking', 'deal_economics', 'bookkeeping_hooks'] },
     agents: [shellAgent('finn-finance-risk', 'Finn', 'Finance and bookkeeping', 'finance_bookkeeping', 'deterministic_code')],
     buildoutInterview: { departmentId: 'finance_bookkeeping', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'finance_bookkeeping', defaultTier: 'deterministic_code', escalationTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'finance_bookkeeping', defaultRoute: 'deterministic_code', escalationRoute: 'reasoning_oriented' },
   },
   {
     id: 'crm_manager',
@@ -251,9 +251,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Monitors and routes CRM/GHL workflow health. Never modifies GHL without approval.',
     capability: { departmentId: 'crm_manager', operational: false, capabilities: ['pipeline_hygiene', 'lead_attribution', 'automation_health'] },
-    agents: [shellAgent('crm-manager', 'CRM Manager', 'CRM/GHL success management', 'crm_manager', 'cheap_fast')],
+    agents: [shellAgent('crm-manager', 'CRM Manager', 'CRM/GHL success management', 'crm_manager', 'task_oriented')],
     buildoutInterview: { departmentId: 'crm_manager', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'crm_manager', defaultTier: 'cheap_fast' },
+    modelPolicy: { departmentId: 'crm_manager', defaultRoute: 'task_oriented', defaultModelId: 'gemma-4-e4b' },
   },
   {
     id: 'ai_watcher_qa',
@@ -261,9 +261,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Monitors agent outputs for failures; escalates and creates diagnostic tasks for Forge. Cheap monitoring, escalate only on real failure.',
     capability: { departmentId: 'ai_watcher_qa', operational: false, capabilities: ['output_monitoring', 'failure_detection', 'escalation_to_forge'] },
-    agents: [shellAgent('ai-watcher', 'Watcher', 'AI output QA and monitoring', 'ai_watcher_qa', 'cheap_fast')],
+    agents: [shellAgent('ai-watcher', 'Watcher', 'AI output QA and monitoring', 'ai_watcher_qa', 'task_oriented')],
     buildoutInterview: { departmentId: 'ai_watcher_qa', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'ai_watcher_qa', defaultTier: 'cheap_fast', escalationTier: 'standard_reasoning' },
+    modelPolicy: { departmentId: 'ai_watcher_qa', defaultRoute: 'task_oriented', escalationRoute: 'reasoning_oriented', defaultModelId: 'gemma-4-e4b' },
   },
   {
     id: 'security_cybersecurity',
@@ -271,9 +271,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Repo/package/MCP review, secrets hygiene, risk analysis. Strong reasoning for analysis; hard gates for secrets/destructive actions.',
     capability: { departmentId: 'security_cybersecurity', operational: false, capabilities: ['security_review', 'secrets_hygiene', 'risk_analysis'] },
-    agents: [shellAgent('security', 'Security', 'Security and cybersecurity review', 'security_cybersecurity', 'strong_reasoning')],
+    agents: [shellAgent('security', 'Security', 'Security and cybersecurity review', 'security_cybersecurity', 'reasoning_oriented')],
     buildoutInterview: { departmentId: 'security_cybersecurity', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'security_cybersecurity', defaultTier: 'standard_reasoning', escalationTier: 'strong_reasoning' },
+    modelPolicy: { departmentId: 'security_cybersecurity', defaultRoute: 'reasoning_oriented', escalationRoute: 'approval_required' },
   },
   {
     id: 'ceo_war_room',
@@ -281,9 +281,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Visible group collaboration with Tyler present for strategy debates and high-level decisions. Separate from hidden inter-agent collaboration.',
     capability: { departmentId: 'ceo_war_room', operational: false, capabilities: ['group_decision_support', 'operator_meetings'] },
-    agents: [shellAgent('war-room', 'War Room', 'Visible multi-agent decision room', 'ceo_war_room', 'standard_reasoning')],
+    agents: [shellAgent('war-room', 'War Room', 'Visible multi-agent decision room', 'ceo_war_room', 'reasoning_oriented')],
     buildoutInterview: { departmentId: 'ceo_war_room', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'ceo_war_room', defaultTier: 'standard_reasoning', escalationTier: 'strong_reasoning' },
+    modelPolicy: { departmentId: 'ceo_war_room', defaultRoute: 'reasoning_oriented', escalationRoute: 'approval_required' },
   },
   {
     id: 'forge_builder_diagnostics',
@@ -320,7 +320,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
           requiresWebBrowsing: false,
           modelPolicy: {
             workerId: 'forge',
-            defaultTier: 'strong_reasoning',
+            defaultRoute: 'reasoning_oriented',
             escalation: noEscalation,
             deterministicPreferred: false,
           },
@@ -335,11 +335,11 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
           canReadSecrets: false,
           requiresApprovalFor: ['commit', 'push', 'delete', 'read_env', 'mutate_crm', 'paid_api'],
         },
-        modelPolicy: agentModelPolicy('forge', 'strong_reasoning'),
+        modelPolicy: agentModelPolicy('forge', 'reasoning_oriented'),
       },
     ],
     buildoutInterview: { departmentId: 'forge_builder_diagnostics', topics: COMMON_BUILDOUT_TOPICS },
-    modelPolicy: { departmentId: 'forge_builder_diagnostics', defaultTier: 'strong_reasoning' },
+    modelPolicy: { departmentId: 'forge_builder_diagnostics', defaultRoute: 'reasoning_oriented' },
   },
 ];
 

@@ -57,9 +57,9 @@ describe('required core department registry', () => {
   it('Duke is not replaced by a placeholder and uses deterministic-first model policy', () => {
     const duke = getAgent('duke-due-diligence')!;
     expect(duke.role.toLowerCase()).toContain('parcel');
-    expect(duke.modelPolicy.defaultTier).toBe('deterministic_code');
-    // Duke does not default to an expensive freeform model.
-    expect(duke.modelPolicy.defaultTier).not.toBe('strong_reasoning');
+    expect(duke.modelPolicy.defaultRoute).toBe('deterministic_code');
+    // Duke does not default to a reasoning-oriented model.
+    expect(duke.modelPolicy.defaultRoute).not.toBe('reasoning_oriented');
   });
 
   it('shell departments are registered but marked non-operational', () => {
@@ -71,9 +71,9 @@ describe('required core department registry', () => {
   it('every department carries a buildout interview plan and a model policy', () => {
     for (const d of DEPARTMENT_REGISTRY) {
       expect(d.buildoutInterview.topics.length).toBeGreaterThan(0);
-      expect(d.buildoutInterview.topics).toContain('model_tier_default_policy');
+      expect(d.buildoutInterview.topics).toContain('model_default_policy');
       expect(d.buildoutInterview.topics).toContain('cost_token_budgets');
-      expect(d.modelPolicy.defaultTier).toBeTruthy();
+      expect(d.modelPolicy.defaultRoute).toBeTruthy();
     }
   });
 });
@@ -89,7 +89,7 @@ describe('future agent / department extensibility contracts', () => {
     expect(typeof forge.capability.requiresTylerApprovalForRisk).toBe('boolean');
     expect(typeof forge.capability.canUsePaidApis).toBe('boolean');
     expect(forge.permissions.requiresApprovalFor).toContain('commit');
-    expect(forge.modelPolicy.defaultTier).toBe('strong_reasoning');
+    expect(forge.modelPolicy.defaultRoute).toBe('reasoning_oriented');
   });
 
   it('a future department can be represented without changing the core registry shape', () => {
@@ -102,7 +102,7 @@ describe('future agent / department extensibility contracts', () => {
       capability: { departmentId: 'legal_review', operational: false, capabilities: ['contract_review'] },
       agents: [],
       buildoutInterview: { departmentId: 'legal_review', topics: ['purpose'] },
-      modelPolicy: { departmentId: 'legal_review', defaultTier: 'standard_reasoning' as const },
+      modelPolicy: { departmentId: 'legal_review', defaultRoute: 'reasoning_oriented' as const },
     };
     // Type-compatible with the registry entries; no core rewrite needed.
     expect([...DEPARTMENT_REGISTRY, future].length).toBe(DEPARTMENT_REGISTRY.length + 1);
