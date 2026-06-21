@@ -207,4 +207,39 @@ describe('makeRedfinTwoStageProvider', () => {
     expect(res.status).toBe('error');
     expect(res.note).toMatch(/none invented/);
   });
+
+  it('sends the VERIFIED actor input contract: searchUrls to search, detailUrls to detail, and flows search->detail->comp', async () => {
+    const seen: { search?: any; detail?: any } = {};
+    const provider = makeRedfinTwoStageProvider({
+      searchActorId: 's', detailActorId: 'd',
+      runner: {
+        async run(actorId, input) {
+          if (actorId === 's') { seen.search = input; return [{ url: '/ST/x/home/1' }]; }
+          seen.detail = input; return [REC_PRICED];
+        },
+      },
+    });
+    const res = await provider.retrieve(QUERY, OPTS);
+    // Search stage: requestListSources `searchUrls`, NOT the rejected `startUrls`.
+    expect(Array.isArray(seen.search.searchUrls)).toBe(true);
+    expect(seen.search.searchUrls[0].url).toMatch(/^https:\/\/www\.redfin\.com\//);
+    expect(seen.search.startUrls).toBeUndefined();
+    expect(typeof seen.search.maxResults).toBe('number');
+    // Detail stage: `detailUrls` array of URL strings, NOT `startUrls`.
+    expect(Array.isArray(seen.detail.detailUrls)).toBe(true);
+    expect(seen.detail.detailUrls[0]).toMatch(/home\/1/);
+    expect(seen.detail.startUrls).toBeUndefined();
+    // Search response flowed into Detail and produced a comp.
+    expect(res.status).toBe('connected');
+    expect(res.comps.length).toBe(1);
+  });
+});
+
+describe('searchUrlFor / locality — actor-accepted map-search URL form', () => {
+  it('builds the verified zipcode+viewport URL when a ZIP is known', async () => {
+    const { searchUrlFor, viewportFor } = await import('../comp-search-params.js');
+    const vp = viewportFor({ lat: 31.5, lng: -83.78 }, 2);
+    expect(searchUrlFor(vp, '31781')).toMatch(/^https:\/\/www\.redfin\.com\/zipcode\/31781\/filter\/viewport=/);
+    expect(searchUrlFor(vp)).toMatch(/^https:\/\/www\.redfin\.com\/\?viewport=/);
+  });
 });

@@ -329,15 +329,20 @@ const DEFAULT_MAX_COMPS = 5;
 /** Hard cap on detail enrichments per run (protects the time + spend budget). */
 const DETAIL_FETCH_CAP = 25;
 
+/** Cap on rows requested from the search actor (named, not magic). */
+const SEARCH_MAX_RESULTS = 25;
+
 function defaultBuildSearchInput(plan: CompSearchPlan): unknown {
-  // tri_angle/redfin-search takes a viewport URL. The plan produces it from the
-  // trusted centroid + current radius. Shape is best-effort; verify live.
-  return { startUrls: [{ url: plan.searchUrl }], viewport: plan.viewport, radiusMiles: plan.radiusMiles };
+  // VERIFIED contract (tri_angle/redfin-search input schema): the field is
+  // `searchUrls` (requestListSources array of {url}) + `maxResults` — NOT
+  // `startUrls`. The URL must be a Redfin map-search URL (viewport form).
+  return { searchUrls: [{ url: plan.searchUrl }], maxResults: SEARCH_MAX_RESULTS };
 }
 
 function defaultBuildDetailInput(urls: string[]): unknown {
-  // tri_angle/redfin-detail enriches a list of listing URLs.
-  return { startUrls: urls.map((u) => ({ url: u })) };
+  // VERIFIED contract (tri_angle/redfin-detail input schema): the field is
+  // `detailUrls` (array of listing URLs) — NOT `startUrls`.
+  return { detailUrls: urls };
 }
 
 /** Pull candidate detail URLs out of Stage-1 search rows (each row carries a url). */

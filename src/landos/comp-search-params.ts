@@ -112,12 +112,16 @@ function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
 }
 
-/** Best-effort Redfin viewport search URL. The exact city-scoped path needs a
- *  region id we do not have offline; this generic viewport URL is what the
- *  search actor consumes. Documented as verify-live. */
-export function searchUrlFor(vp: Viewport): string {
+/** Redfin map-search URL in the form the tri_angle/redfin-search actor accepts
+ *  (verified from its input-schema prefill):
+ *    /zipcode/{zip}/filter/viewport=N:S:E:W,no-outline   (when a ZIP is known)
+ *    /?viewport=N:S:E:W,no-outline                        (fallback)
+ *  The viewport is a comp SEARCH AREA (market bounds), never parcel identity. */
+export function searchUrlFor(vp: Viewport, zip?: string): string {
   const v = `${vp.north}:${vp.south}:${vp.east}:${vp.west}`;
-  return `https://www.redfin.com/?viewport=${encodeURIComponent(v)},no-outline`;
+  const z = (zip ?? '').match(/\d{5}/)?.[0];
+  if (z) return `https://www.redfin.com/zipcode/${z}/filter/viewport=${v},no-outline`;
+  return `https://www.redfin.com/?viewport=${v},no-outline`;
 }
 
 /**
@@ -230,7 +234,7 @@ export function planCompSearch(query: CompQuery, opts: PlanCompSearchOpts = {}):
   const ladder = radiusLadder(start);
   const steps: CompSearchStep[] = ladder.map((radiusMiles) => {
     const viewport = viewportFor(centroid, radiusMiles);
-    return { radiusMiles, viewport, searchUrl: searchUrlFor(viewport) };
+    return { radiusMiles, viewport, searchUrl: searchUrlFor(viewport, query.zip) };
   });
   const tierLabel = tier === 'A'
     ? 'parcel pinned (APN->coords), tight radius'
