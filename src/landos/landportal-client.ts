@@ -1261,9 +1261,17 @@ export function addressStrongMatch(
   const s = normalizeStreet(seller.address);
   const l = normalizeStreet(lp.street_address);
 
-  // House number must agree when both sides have one.
-  if (s.number && l.number && s.number !== l.number) {
-    return { match: false, reason: `house number mismatch (${s.number} vs ${l.number})` };
+  // House number must match EXACTLY when the seller supplied one. A candidate
+  // with a different number — or with NO house number at all (i.e. the road
+  // record, not the specific parcel) — is rejected. This prevents a supplied
+  // "472 West Rd" from matching bare "West Rd" road parcels.
+  if (s.number) {
+    if (!l.number) {
+      return { match: false, reason: `house number supplied (${s.number}) but candidate has none ("${l.street}") — road record, not the parcel` };
+    }
+    if (s.number !== l.number) {
+      return { match: false, reason: `house number mismatch (${s.number} vs ${l.number})` };
+    }
   }
   // Street must be exact or safely fuzzy; a different road is an immediate reject.
   if (!streetSimilar(s.street, l.street)) {

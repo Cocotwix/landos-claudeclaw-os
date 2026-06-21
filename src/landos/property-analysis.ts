@@ -23,6 +23,9 @@ import { extractPropertyArgs } from './duke-preflight.js';
 import { extractAreaSignals } from './source-adapters.js';
 import { mapResolveToVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
 import { lpResolveForPreflight, lpApiVersion, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
+import { planResolver, smallestNextIdentifier, type IntakeFields, type ResolverPathId } from './resolver-planner.js';
+import { correctionCandidates, normalizeAddress, type AddressCorrectionCandidate } from './address-normalize.js';
+import { makeCompSearchArea, compSearchAreaLocality, type CompSearchArea } from './comp-search-area.js';
 import { buildMarketPulseV1, type MarketPulseV1 } from './market-pulse.js';
 import { preflightLiveData, resolveLiveDataEnv, type CapabilityReadiness } from './live-data-preflight.js';
 import {
@@ -72,6 +75,15 @@ export interface SourceRow {
 
 export interface PropertyAnalysisResult {
   input: string;
+  /** Original submitted input (preserved verbatim alongside any correction). */
+  originalInput: string;
+  /** The deterministic resolver path selected from supplied identifiers. */
+  resolverPath: ResolverPathId;
+  resolverReason: string;
+  /** Bounded, ranked typo-correction candidates considered (with validation flags). */
+  correctionCandidates: AddressCorrectionCandidate[];
+  /** Smallest useful extra identifier to request when unverified/ambiguous. */
+  smallestNextIdentifier?: string;
   reportTimestamp: string;
   /** Top-of-result badges. */
   verified: VerifiedBadge;
@@ -95,11 +107,35 @@ export interface PropertyAnalysisResult {
   marketPulse: MarketPulseV1;
   redfinComps: {
     ran: boolean;
+    /** Whether the lane started from supplied locality (concurrent) or a verified
+     *  source locality (dependent release), or is waiting. */
+    startedFrom: 'supplied_address' | 'verified_address' | 'waiting';
     readiness: { ready: boolean; reason: string };
+    /** Actual Apify actor calls made by this lane (the zero-comp diagnostic). */
+    apifyCallCount: number;
+    /** Subject-property comps — populated ONLY after parcel verification. */
     comps: RetrievedComp[];
+    /** Area-level provisional comps (held; never subject/valuation input unverified). */
+    provisionalComps: RetrievedComp[];
+    /** True when results are held as area-level only (parcel unverified). */
+    provisional: boolean;
     needsVerification: NeedsVerificationComp[];
+    /** True only when the LIVE Redfin provider was wired (not the stub). */
+    compsLive: boolean;
+    /** Actual Redfin provider status (not_connected/connected/no_comps/error/timeout). */
+    providerStatus?: string;
+    /** Zero-comp diagnosis by actual provider status, never assumed. */
+    zeroCompClassification: 'has_comps' | 'lane_never_ran' | 'genuine_empty' | 'provider_error' | 'not_ready' | 'waiting';
     note: string;
+    /** Set when the lane could not start from the current actor contract. */
+    waitingReason?: string;
     terminalState?: string;
+  };
+  /** Async lane execution summary (proves concurrency vs dependent release). */
+  lanes: {
+    resolver: { ran: boolean };
+    marketPulse: { ran: boolean };
+    redfin: { started: boolean; startedFrom: 'supplied_address' | 'verified_address' | 'waiting'; concurrentWithResolver: boolean; apifyCallCount: number };
   };
   compInclusionExclusionNotes: string[];
   strategyMatrix: StrategyScenario[];
@@ -157,7 +193,7 @@ function median(nums: number[]): number | null {
  */
 export async function runPropertyAnalysis(
   rawInput: string,
-  opts: { entity?: LandosEntity } = {},
+  opts: { entity?: LandosEntity; fields?: Partial<IntakeFields>; maxCorrectionCandidates?: number } = {},
   deps: PropertyAnalysisDeps = {},
 ): Promise<PropertyAnalysisResult> {
   const input = (rawInput ?? '').trim();
@@ -172,9 +208,152 @@ export async function runPropertyAnalysis(
   const sourceTable: SourceRow[] = [];
 
   // ── Parse + Local Market Pulse (started from city/state, before verification) ──
+  // ── Flexible intake -> resolver plan (strongest exact path; no field mandatory)
   const area = extractAreaSignals(input);
-  const marketPulse = mkMarketPulse({ city: area.city, county: area.county, state: area.state, parcelVerified: false, nowIso });
+  const parsed = extractPropertyArgs(input) ?? {};
+  const fields: IntakeFields = {
+    address: opts.fields?.address ?? parsed.address ?? undefined,
+    city: opts.fields?.city ?? parsed.city ?? area.city,
+    state: opts.fields?.state ?? parsed.state ?? area.state,
+    zip: opts.fields?.zip ?? parsed.zip,
+    county: opts.fields?.county ?? parsed.county ?? area.county,
+    fips: opts.fields?.fips ?? parsed.fips,
+    apn: opts.fields?.apn ?? parsed.apn,
+    owner: opts.fields?.owner ?? parsed.owner,
+    propertyId: opts.fields?.propertyId ?? parsed.propertyid,
+  };
+  const plan = planResolver(fields);
+
+  // Bounded, ranked typo-correction candidates (address paths only). Each tried
+  // candidate counts against the provider-call ceiling.
+  const maxCorr = Math.max(0, opts.maxCorrectionCandidates ?? 3);
+  const corrections: AddressCorrectionCandidate[] = fields.address ? correctionCandidates(fields.address, { cap: maxCorr }) : [];
+  const maxCalls = PROPERTY_ANALYSIS_MAX_PROVIDER_CALLS;
+
+  // ── Concurrent lanes: Market Pulse (city/state, available now) || Resolver ───
   statuses.push('Running Local Market Pulse');
+  statuses.push('Checking parcel identity');
+  const marketPulsePromise = Promise.resolve().then(() =>
+    mkMarketPulse({ city: fields.city, county: fields.county, state: fields.state, parcelVerified: false, nowIso }),
+  );
+
+  const resolverPromise = (async (): Promise<{ resolveResult: LpResolveResult | null; verification: DukeVerificationResult; validated: AddressCorrectionCandidate | null }> => {
+    if (plan.path === 'none') {
+      return { resolveResult: null, verification: mapResolveToVerification({ text: input, hasIdentifierInput: false, resolve: null, unavailable: false }), validated: null };
+    }
+    // Attempt the planned args first; only if not verified, try corrected address
+    // variants (deterministic, capped). The first uniquely-verified wins.
+    const attempts: Array<{ args: LpResolveArgs; correction?: AddressCorrectionCandidate }> = [{ args: plan.args }];
+    if (plan.addressAvailableNow && fields.address) {
+      const baseNorm = normalizeAddress(fields.address);
+      for (const cand of corrections) {
+        if (normalizeAddress(cand.corrected) === baseNorm) continue; // skip the no-op normalized form
+        attempts.push({ args: { ...plan.args, address: cand.corrected }, correction: cand });
+      }
+    }
+    let firstResult: LpResolveResult | null = null;
+    let verifiedResult: LpResolveResult | null = null;
+    let validated: AddressCorrectionCandidate | null = null;
+    let lpErr = false;
+    for (const att of attempts) {
+      if (providerCalls.length >= maxCalls) break; // hard ceiling (incl. correction fan-out)
+      let res: LpResolveResult | null = null;
+      for (let attempt = 0; attempt < 2 && !res; attempt++) {
+        if (providerCalls.length >= maxCalls) break;
+        try {
+          res = await resolve(att.args, timeoutMs);
+          providerCalls.push({ source: `LandPortal ${apiVersion}`, kind: att.correction ? 'exact_verification(corrected)' : 'exact_verification', rows: res.verified ? 1 : 0, spendUsd: 0 });
+          logCost({ category: 'landportal_v2_verification', description: `LandPortal ${apiVersion} exact verification (non-credit)${att.correction ? ' [corrected]' : ''}`, amountUsd: 0 });
+        } catch { lpErr = true; }
+      }
+      if (res) {
+        if (!firstResult) firstResult = res;
+        if (res.verified) { verifiedResult = res; if (att.correction) validated = { ...att.correction, validatedBySource: true }; break; }
+      }
+    }
+    const finalResult = verifiedResult ?? firstResult;
+    const verification = mapResolveToVerification({ text: input, hasIdentifierInput: true, resolve: finalResult, unavailable: lpErr && !finalResult });
+    return { resolveResult: finalResult, verification, validated };
+  })();
+
+  // ── Provisional Redfin lane — STARTS CONCURRENTLY for usable address input ───
+  // For a usable street address/city/state/ZIP it starts immediately (it does NOT
+  // wait for verification). It uses a COMP-SEARCH-AREA (structurally walled from
+  // parcel identity), so a coordinate-free locality (ZIP/city) search-area lets the
+  // existing actor run now. For non-address input it auto-releases once the resolver
+  // returns a source locality. Subject-comp inclusion stays gated on verification.
+  const onSpend = (cc: ProviderCall) => {
+    providerCalls.push(cc);
+    logCost({ category: 'apify_comp_actor', description: `${cc.source} ${cc.kind} returned ${cc.rows} row(s)`, amountUsd: cc.spendUsd });
+  };
+  const apifyCount = () => providerCalls.filter((c) => /apify/i.test(c.source)).length;
+  const suppliedArea = makeCompSearchArea({ address: fields.address, city: fields.city, state: fields.state, zip: fields.zip }, 'supplied');
+
+  interface RedfinLaneOut {
+    started: boolean;
+    startedFrom: 'supplied_address' | 'verified_address' | 'waiting';
+    readiness: { ready: boolean; reason: string };
+    apifyCallCount: number;
+    /** True only when registerLiveProviders actually wired the LIVE Redfin provider
+     *  (not the stub). False = wiring gap. */
+    compsLive: boolean;
+    /** Actual Redfin provider status from retrieveComps: not_connected = stub/never
+     *  ran; connected/no_comps = actor attempted; error/timeout = attempted+failed. */
+    providerStatus?: string;
+    provisionalComps: RetrievedComp[];
+    needsVerification: NeedsVerificationComp[];
+    note: string;
+    providerNotes: string[];
+    waitingReason?: string;
+  }
+
+  const runRedfinLane = async (area: CompSearchArea, startedFrom: 'supplied_address' | 'verified_address'): Promise<RedfinLaneOut> => {
+    const readiness = deps.compsReadiness ? await deps.compsReadiness() : (await preflightLiveData({ env: resolveLiveDataEnv() })).comps;
+    const rd = { ready: readiness.ready, reason: readiness.reason };
+    if (!readiness.ready) {
+      return { started: false, startedFrom, readiness: rd, apifyCallCount: 0, compsLive: false, provisionalComps: [], needsVerification: [], note: `Live Comps not ready: ${readiness.reason}`, providerNotes: [] };
+    }
+    if (providerCalls.length >= maxCalls) {
+      return { started: false, startedFrom, readiness: rd, apifyCallCount: 0, compsLive: false, provisionalComps: [], needsVerification: [], note: 'Provider-call ceiling reached before comps.', providerNotes: [] };
+    }
+    const before = apifyCount();
+    const loc = compSearchAreaLocality(area); // locality ONLY — never identity
+    const query: CompQuery = { address: loc.address, city: loc.city, state: loc.state, zip: loc.zip, lookupDateIso: nowIso };
+    try {
+      const reg = deps.buildCompRegistry ? await deps.buildCompRegistry(onSpend) : await liveRegistry(onSpend);
+      if (providerCalls.length > maxCalls) {
+        return { started: true, startedFrom, readiness: rd, apifyCallCount: apifyCount() - before, compsLive: reg.compsLive, provisionalComps: [], needsVerification: [], note: 'Provider-call ceiling exceeded during comp lane; aborted (no fabricated comps).', providerNotes: [] };
+      }
+      const res = await retrieveComps(query, { registry: reg.registry, sourceTimeoutMs: timeoutMs });
+      const providerNotes: string[] = [];
+      for (const p of res.providers) providerNotes.push(`${p.providerId}: ${p.status} — ${p.note}`);
+      for (const e of res.excluded) providerNotes.push(`excluded: ${e.reason}`);
+      const providerStatus = res.providers.find((p) => p.providerId === 'redfin')?.status;
+      return { started: true, startedFrom, readiness: rd, apifyCallCount: apifyCount() - before, compsLive: reg.compsLive, providerStatus, provisionalComps: res.comps, needsVerification: res.needsVerification, note: reg.compsLive ? res.note : `Live Redfin not wired (stub): ${reg.reason}`, providerNotes };
+    } catch {
+      return { started: true, startedFrom, readiness: rd, apifyCallCount: apifyCount() - before, compsLive: false, provisionalComps: [], needsVerification: [], note: 'Redfin comp lane failed (provider error).', providerNotes: [] };
+    }
+  };
+
+  const redfinConcurrent = !!(suppliedArea && plan.addressAvailableNow);
+  const redfinPromise: Promise<RedfinLaneOut> = (async () => {
+    if (redfinConcurrent) return runRedfinLane(suppliedArea!, 'supplied_address'); // CONCURRENT start
+    // Non-address identifier: release only after the resolver returns a locality.
+    const rOut = await resolverPromise;
+    const id = rOut.verification.identity;
+    const verifiedArea = makeCompSearchArea({ address: id?.situsAddress, city: id?.city, state: id?.state }, 'verified_source');
+    if (verifiedArea) return runRedfinLane(verifiedArea, 'verified_address');
+    return { started: false, startedFrom: 'waiting', readiness: { ready: false, reason: 'no source-returned locality' }, apifyCallCount: 0, compsLive: false, provisionalComps: [], needsVerification: [], note: 'Redfin lane waiting: no source-returned address/locality to build a comp-search area.', providerNotes: [], waitingReason: 'current actor needs a ZIP/city or street to build a search area; none supplied or source-returned yet' };
+  })();
+
+  const [marketPulse, resolverOut, redfinLane] = await Promise.all([marketPulsePromise, resolverPromise, redfinPromise]);
+  const resolveResult = resolverOut.resolveResult;
+  const verification = resolverOut.verification;
+  if (resolverOut.validated) {
+    const i = corrections.findIndex((c) => c.corrected === resolverOut.validated!.corrected);
+    if (i >= 0) corrections[i] = resolverOut.validated;
+  }
+
   for (const s of marketPulse.signals) {
     sourceTable.push({
       category: `market:${s.signal}`,
@@ -186,28 +365,6 @@ export async function runPropertyAnalysis(
     });
   }
   if (!marketPulse.eligible) statuses.push('Local Market Pulse unavailable');
-
-  // ── Parcel identity: LandPortal exact verification (1 attempt + 1 retry) ──────
-  statuses.push('Checking parcel identity');
-  const args = extractPropertyArgs(input);
-  let resolveResult: LpResolveResult | null = null;
-  let verification: DukeVerificationResult;
-
-  if (!args) {
-    verification = mapResolveToVerification({ text: input, hasIdentifierInput: false, resolve: null, unavailable: false });
-  } else {
-    let lpErr = false;
-    for (let attempt = 0; attempt < 2 && !resolveResult; attempt++) {
-      try {
-        resolveResult = await resolve(args, timeoutMs);
-        logCost({ category: 'landportal_v2_verification', description: `LandPortal ${apiVersion} exact verification (non-credit) attempt ${attempt + 1}`, amountUsd: 0 });
-        providerCalls.push({ source: `LandPortal ${apiVersion}`, kind: 'exact_verification', rows: resolveResult.verified ? 1 : 0, spendUsd: 0 });
-      } catch {
-        lpErr = true; // one retry, then give up honestly
-      }
-    }
-    verification = mapResolveToVerification({ text: input, hasIdentifierInput: true, resolve: resolveResult, unavailable: lpErr || !resolveResult });
-  }
 
   const parcelVerified = verification.parcelVerified;
   if (!parcelVerified) statuses.push('Parcel identity not verified');
@@ -228,82 +385,58 @@ export async function runPropertyAnalysis(
     });
   }
 
-  // ── Live Comps — ONLY after verified identity AND readiness passes ────────────
-  let redfinComps: PropertyAnalysisResult['redfinComps'] = {
-    ran: false,
-    readiness: { ready: false, reason: 'not attempted' },
-    comps: [],
-    needsVerification: [],
-    note: 'Comps not attempted.',
-  };
-  const compNotes: string[] = [];
+  // ── Comps: subject-inclusion is gated on verification; provisional held otherwise
+  statuses.push('Checking Live Comps readiness');
+  if (redfinLane.started) statuses.push('Collecting Redfin sold comps');
 
-  if (parcelVerified) {
-    statuses.push('Checking Live Comps readiness');
-    const readiness = deps.compsReadiness
-      ? await deps.compsReadiness()
-      : (await preflightLiveData({ env: resolveLiveDataEnv() })).comps;
-    redfinComps.readiness = { ready: readiness.ready, reason: readiness.reason };
+  // Zero-comp diagnosis by ACTUAL provider status (not just success-count): a stub
+  // registry or not_connected provider = the lane never ran (wiring gap); an
+  // attempted actor that returned nothing = genuine empty; a thrown actor =
+  // provider_error. Never assumed empty.
+  let zeroCompClassification: PropertyAnalysisResult['redfinComps']['zeroCompClassification'];
+  if (!redfinLane.readiness.ready) zeroCompClassification = 'not_ready';
+  else if (redfinLane.startedFrom === 'waiting') zeroCompClassification = 'waiting';
+  else if (redfinLane.provisionalComps.length > 0) zeroCompClassification = 'has_comps';
+  else if (!redfinLane.compsLive || redfinLane.providerStatus === 'not_connected') zeroCompClassification = 'lane_never_ran';
+  else if (redfinLane.providerStatus === 'error' || redfinLane.providerStatus === 'timeout') zeroCompClassification = 'provider_error';
+  else zeroCompClassification = 'genuine_empty';
 
-    if (!readiness.ready) {
-      redfinComps.note = `Live Comps not ready: ${readiness.reason}`;
-      redfinComps.terminalState = 'Live Comps not ready';
-      statuses.push('Live Comps not ready');
-    } else {
-      statuses.push('Collecting Redfin sold comps');
-      const onSpend = (c: ProviderCall) => {
-        providerCalls.push(c);
-        logCost({ category: 'apify_comp_actor', description: `${c.source} ${c.kind} returned ${c.rows} row(s)`, amountUsd: c.spendUsd });
-      };
-      try {
-        const reg = deps.buildCompRegistry
-          ? await deps.buildCompRegistry(onSpend)
-          : await liveRegistry(onSpend);
-        if (providerCalls.length >= PROPERTY_ANALYSIS_MAX_PROVIDER_CALLS) {
-          redfinComps.note = 'Provider-call ceiling reached before comps; aborted that lane.';
-          redfinComps.terminalState = 'No usable comps returned';
-        } else {
-          // Comp SEARCH centroid from the verified parcel's coordinates (search
-          // area only — identity already established by the named source).
-          const centroid = resolveResult?.property_summary
-            ? coordsFromSummary(resolveResult.property_summary)
-            : null;
-          const acres = verification.propertyData?.landFacts.acres;
-          const query: CompQuery = {
-            address: verification.identity?.situsAddress,
-            apn: verification.identity?.apn,
-            county: verification.identity?.county,
-            state: verification.identity?.state,
-            acres: typeof acres === 'number' ? acres : undefined,
-            ...(centroid ? { centroid, centroidTier: 'A' as const } : {}),
-            lookupDateIso: nowIso,
-          };
-          const res = await retrieveComps(query, { registry: reg.registry, sourceTimeoutMs: timeoutMs });
-          redfinComps = {
-            ran: true,
-            readiness: { ready: true, reason: readiness.reason },
-            comps: res.comps,
-            needsVerification: res.needsVerification,
-            note: res.note,
-          };
-          for (const p of res.providers) compNotes.push(`${p.providerId}: ${p.status} — ${p.note}`);
-          for (const e of res.excluded) compNotes.push(`excluded: ${e.reason}`);
-          for (const nv of res.needsVerification) compNotes.push(`verify in underwriting: ${(nv.verifyTags ?? []).join('; ')}`);
-          if (res.comps.length === 0) {
-            redfinComps.terminalState = 'No usable comps returned';
-            statuses.push('No usable comps returned');
-          }
-          for (const c of res.comps) {
-            sourceTable.push({ category: 'redfin_sold_comp', source: c.sourceLabel, status: 'sold', timestamp: c.saleDateIso, confidence: 'reported', note: c.sourceUrl });
-          }
-        }
-      } catch {
-        redfinComps.note = 'Redfin comp lane failed (provider error).';
-        redfinComps.terminalState = 'Live Comps failed';
-        statuses.push('Live Comps failed');
-      }
-    }
+  // Provisional area comps become SUBJECT comps only after exact verification.
+  const subjectComps: RetrievedComp[] = parcelVerified ? redfinLane.provisionalComps : [];
+  const compNotes: string[] = [...redfinLane.providerNotes];
+  for (const nv of redfinLane.needsVerification) compNotes.push(`verify in underwriting: ${(nv.verifyTags ?? []).join('; ')}`);
+  if (!parcelVerified && redfinLane.provisionalComps.length > 0) {
+    compNotes.push(`${redfinLane.provisionalComps.length} provisional area-level comp(s) held — NOT subject-property comps (parcel unverified).`);
   }
+  const classNote =
+    zeroCompClassification === 'lane_never_ran' ? ' [lane never ran — live Redfin not wired (stub/wiring gap), NOT an empty market]'
+      : zeroCompClassification === 'provider_error' ? ' [Redfin actor attempted but errored/timed out — NOT an empty market]'
+        : zeroCompClassification === 'genuine_empty' ? ' [Redfin actor ran and returned 0 rows — genuine empty; suspicious for a rural market]'
+          : '';
+  let terminalState: string | undefined;
+  if (!redfinLane.readiness.ready) { terminalState = 'Live Comps not ready'; statuses.push('Live Comps not ready'); }
+  else if (parcelVerified && subjectComps.length === 0) { terminalState = 'No usable comps returned'; statuses.push('No usable comps returned'); }
+
+  for (const c of subjectComps) {
+    sourceTable.push({ category: 'redfin_sold_comp', source: c.sourceLabel, status: 'sold', timestamp: c.saleDateIso, confidence: 'reported', note: c.sourceUrl });
+  }
+
+  const redfinComps: PropertyAnalysisResult['redfinComps'] = {
+    ran: redfinLane.started,
+    startedFrom: redfinLane.startedFrom,
+    readiness: redfinLane.readiness,
+    apifyCallCount: redfinLane.apifyCallCount,
+    comps: subjectComps,
+    provisionalComps: redfinLane.provisionalComps,
+    provisional: !parcelVerified && redfinLane.provisionalComps.length > 0,
+    needsVerification: redfinLane.needsVerification,
+    compsLive: redfinLane.compsLive,
+    providerStatus: redfinLane.providerStatus,
+    zeroCompClassification,
+    note: redfinLane.note + classNote,
+    waitingReason: redfinLane.waitingReason,
+    terminalState,
+  };
 
   // ── Strategy lanes + underwriting readiness ──────────────────────────────────
   statuses.push('Analyzing strategy lanes');
@@ -372,6 +505,11 @@ export async function runPropertyAnalysis(
 
   return {
     input,
+    originalInput: input,
+    resolverPath: plan.path,
+    resolverReason: plan.reason,
+    correctionCandidates: corrections,
+    smallestNextIdentifier: parcelVerified ? undefined : smallestNextIdentifier(fields),
     reportTimestamp: nowIso,
     verified: parcelVerified ? 'Verified' : 'Not Verified',
     verdict,
@@ -401,6 +539,16 @@ export async function runPropertyAnalysis(
     providerCallCount: providerCalls.length,
     actualSpendUsd,
     dealCard,
+    lanes: {
+      resolver: { ran: true },
+      marketPulse: { ran: true },
+      redfin: {
+        started: redfinLane.started,
+        startedFrom: redfinLane.startedFrom,
+        concurrentWithResolver: redfinConcurrent,
+        apifyCallCount: redfinLane.apifyCallCount,
+      },
+    },
   };
 }
 

@@ -27,6 +27,17 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
   L.push(`Report timestamp: ${r.reportTimestamp}`);
   L.push(`Progress/terminal states: ${r.statuses.join(' → ')}`);
 
+  L.push(h('Intake & Resolver'));
+  L.push(kv('Original input', r.originalInput));
+  L.push(kv('Resolver path', `${r.resolverPath} — ${r.resolverReason}`));
+  if (r.correctionCandidates.length) {
+    L.push('**Typo-correction candidates (capped, ranked):**');
+    for (const c of r.correctionCandidates) {
+      L.push(`- "${c.corrected}" — ${c.reason} (conf ${c.confidence.toFixed(2)})${c.validatedBySource ? ' · VALIDATED by named source' : ''}`);
+    }
+  }
+  if (r.smallestNextIdentifier) L.push(kv('Smallest next identifier', r.smallestNextIdentifier));
+
   L.push(h('Parcel Verification'));
   L.push(kv('Status', r.parcelVerification.status));
   L.push(kv('Verified', r.parcelVerification.parcelVerified));
@@ -68,8 +79,14 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
   if (r.marketPulse.disclaimer) L.push(`\n> ${r.marketPulse.disclaimer}`);
 
   L.push(h('Redfin Sold Comps'));
-  L.push(kv('Ran', r.redfinComps.ran));
+  L.push(kv('Lane started', `${r.redfinComps.ran} (from ${r.redfinComps.startedFrom}, concurrent with resolver: ${r.lanes.redfin.concurrentWithResolver})`));
   L.push(kv('Readiness', `${r.redfinComps.readiness.ready} — ${r.redfinComps.readiness.reason}`));
+  L.push(kv('Live provider wired (compsLive)', r.redfinComps.compsLive));
+  L.push(kv('Provider status', r.redfinComps.providerStatus ?? '—'));
+  L.push(kv('Actual Apify call count', r.redfinComps.apifyCallCount));
+  L.push(kv('Zero-comp classification', r.redfinComps.zeroCompClassification));
+  if (r.redfinComps.provisional) L.push(kv('Provisional (area-level, NOT subject)', r.redfinComps.provisionalComps.length));
+  if (r.redfinComps.waitingReason) L.push(kv('Waiting reason', r.redfinComps.waitingReason));
   if (r.redfinComps.terminalState) L.push(kv('Terminal state', r.redfinComps.terminalState));
   L.push(kv('Note', r.redfinComps.note));
   if (r.redfinComps.comps.length) {

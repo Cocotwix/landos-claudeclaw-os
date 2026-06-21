@@ -52,6 +52,8 @@ export type CompProviderStatus =
 export interface CompQuery {
   address?: string;
   apn?: string;
+  city?: string;
+  zip?: string;
   county?: string;
   state?: string;
   /** Subject acreage: drives LandWatch addition and off-target filtering. */

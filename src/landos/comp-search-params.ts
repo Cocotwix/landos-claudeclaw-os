@@ -37,10 +37,11 @@ const EARTH_RADIUS_MILES = 3958.7613;
 /** Approx miles per degree latitude; longitude scaled by cos(lat). */
 const MILES_PER_DEG_LAT = 69.0;
 
-/** A single search step: a radius and the viewport/URL to search at that radius. */
+/** A single search step: a radius and the viewport/URL to search at that radius.
+ *  viewport is null for a coordinate-free locality (ZIP/city) area search. */
 export interface CompSearchStep {
   radiusMiles: number;
-  viewport: Viewport;
+  viewport: Viewport | null;
   searchUrl: string;
 }
 
@@ -119,6 +120,24 @@ export function searchUrlFor(vp: Viewport): string {
   return `https://www.redfin.com/?viewport=${encodeURIComponent(v)},no-outline`;
 }
 
+/**
+ * COORDINATE-FREE locality search-area URL for the Redfin search actor. Built ONLY
+ * from ZIP or city/state — never from coordinates, a parcel, or proximity. This is
+ * a one-way MARKET-RESEARCH input: it can seed a provisional comp search area but
+ * can NEVER identify or verify a parcel. Returns null when no locality is usable.
+ */
+export function localitySearchUrl(area: { city?: string; state?: string; zip?: string }): string | null {
+  const zip = (area.zip ?? '').match(/\d{5}/)?.[0];
+  if (zip) return `https://www.redfin.com/zipcode/${zip}`;
+  const city = (area.city ?? '').trim();
+  const state = (area.state ?? '').trim();
+  if (city && state) {
+    const citySlug = city.replace(/\s+/g, '-');
+    return `https://www.redfin.com/city/${encodeURIComponent(state.toUpperCase())}/${encodeURIComponent(citySlug)}`;
+  }
+  return null;
+}
+
 /** The ceiling-capped radius ladder starting at startRadius. */
 export function radiusLadder(startRadius: number): number[] {
   return RADIUS_STEPS_MILES.filter((r) => r >= startRadius && r <= RADIUS_CEILING_MILES);
@@ -169,10 +188,31 @@ export function planCompSearch(query: CompQuery, opts: PlanCompSearchOpts = {}):
   const tier: 'A' | 'B' | null = supplied ? opts.tier ?? query.centroidTier ?? 'B' : null;
 
   if (!supplied || !Number.isFinite(supplied.lat) || !Number.isFinite(supplied.lng)) {
+    // No trusted centroid. Fall back to a COORDINATE-FREE locality (ZIP/city)
+    // search-area when one is available, so the provisional Redfin lane can still
+    // START from address/city/state/ZIP. This area is market-research only and is
+    // NEVER used to identify or verify a parcel (no coordinates involved).
+    const localityUrl = localitySearchUrl({ city: query.city, state: query.state, zip: query.zip });
+    if (localityUrl) {
+      const step: CompSearchStep = { radiusMiles: 0, viewport: null, searchUrl: localityUrl };
+      return {
+        centroid: null,
+        tier: 'B',
+        tierLabel: AREA_LEVEL_TAG,
+        areaLevel: true,
+        identity,
+        steps: [step],
+        radiusMiles: 0,
+        viewport: null,
+        searchUrl: localityUrl,
+        thin: false,
+        reason: `Tier B locality area search (coordinate-free, from ${query.zip ? 'ZIP' : 'city/state'}). Area-level market research only — never parcel identity.`,
+      };
+    }
     return {
       centroid: null,
       tier: null,
-      tierLabel: 'no trusted centroid (APN->coords or area centroid required)',
+      tierLabel: 'no trusted centroid or locality (ZIP/city/state) to search from',
       areaLevel: false,
       identity,
       steps: [],
@@ -180,7 +220,7 @@ export function planCompSearch(query: CompQuery, opts: PlanCompSearchOpts = {}):
       viewport: null,
       searchUrl: '',
       thin: false,
-      reason: 'no trusted centroid available (LandPortal APN->coords or ZIP/county centroid required); a location is never invented',
+      reason: 'no trusted centroid AND no ZIP/city/state locality available; a location is never invented',
     };
   }
 

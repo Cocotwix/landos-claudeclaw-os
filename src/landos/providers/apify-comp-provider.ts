@@ -378,13 +378,15 @@ export function makeRedfinTwoStageProvider(deps: RedfinTwoStageDeps): CompProvid
     supportsApnOnly: false,
     async retrieve(query: CompQuery, opts): Promise<CompProviderResult> {
       const searchPlan = plan(query);
-      if (!searchPlan.centroid || searchPlan.steps.length === 0) {
+      // Run whenever there is at least one search step — a coordinate centroid OR a
+      // coordinate-free locality (ZIP/city) area. No steps at all -> graceful no_comps.
+      if (searchPlan.steps.length === 0) {
         return {
           providerId: id,
           status: 'no_comps',
           comps: [],
           needsVerification: [],
-          note: `Redfin two-stage: ${searchPlan.reason} — no trusted centroid to search from (none invented)`,
+          note: `Redfin two-stage: ${searchPlan.reason} — no search area to start from (none invented)`,
         };
       }
 
@@ -408,6 +410,9 @@ export function makeRedfinTwoStageProvider(deps: RedfinTwoStageDeps): CompProvid
             signal: opts.signal,
           });
         } catch (err) {
+          // An errored/timed-out actor call is still a real CALL ATTEMPT — count it
+          // so a provider error is never mistaken for "lane never ran".
+          deps.onSpend?.({ actorId: deps.searchActorId, stage: 'search', rows: 0 });
           const status: CompProviderStatus = isTimeout(err) ? 'timeout' : 'error';
           return errorResult(id, status, `Stage-1 search actor ${deps.searchActorId} ${status} at ${step.radiusMiles}mi: ${msg(err)} — no comps (none invented)`);
         }
@@ -426,6 +431,7 @@ export function makeRedfinTwoStageProvider(deps: RedfinTwoStageDeps): CompProvid
             signal: opts.signal,
           });
         } catch (err) {
+          deps.onSpend?.({ actorId: deps.detailActorId, stage: 'detail', rows: 0 }); // errored call still counts as an attempt
           const status: CompProviderStatus = isTimeout(err) ? 'timeout' : 'error';
           return errorResult(id, status, `Stage-2 detail actor ${deps.detailActorId} ${status}: ${msg(err)} — no comps (none invented)`);
         }

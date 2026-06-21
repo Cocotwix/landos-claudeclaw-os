@@ -100,25 +100,26 @@ describe('runPropertyAnalysis — unverified parcel', () => {
     }));
     expect(r.verified).toBe('Not Verified');
     expect(r.parcelVerification.status).toMatch(/local_area_context|unverified/);
-    expect(r.redfinComps.ran).toBe(false);
-    expect(r.providerCalls.filter((c) => /Apify/.test(c.source))).toHaveLength(0); // comps never ran
+    // Provisional comps MAY have run, but they never become SUBJECT comps,
+    // valuation, or a Deal Card while unverified.
+    expect(r.redfinComps.comps).toHaveLength(0); // subject comps gated off
     expect(upserted).toBe(false);
     expect(r.dealCard.created).toBe(false);
     expect(r.offerReadiness).toBe('Blocked');
     expect(r.statuses).toContain('Parcel identity not verified');
   });
 
-  it('comps do NOT run before verified identity (no comp provider calls, $0)', async () => {
-    const calls: ProviderCall[] = [];
-    const r = await runPropertyAnalysis(POULAN, {}, baseDeps({
-      resolve: async () => ambiguousResolve(),
-      buildCompRegistry: async (onSpend) => { onSpend({ source: 'Apify', kind: 'search', rows: 1, spendUsd: 1 }); return { registry: [fakeRedfin(SOLD_COMPS)], compsLive: true, reason: 'x' }; },
-      logCost: (o) => calls.push({ source: o.category, kind: 'log', rows: 0, spendUsd: o.amountUsd }),
-    }));
-    expect(r.redfinComps.ran).toBe(false);
-    expect(r.actualSpendUsd).toBe(0);
-    // buildCompRegistry must not have been invoked at all (no apify cost logged).
-    expect(calls.some((c) => c.source === 'apify_comp_actor')).toBe(false);
+  it('provisional Redfin findings never verify the parcel or become subject comps/Deal Card', async () => {
+    const r = await runPropertyAnalysis(POULAN, {}, baseDeps({ resolve: async () => ambiguousResolve() }));
+    // The provisional lane DID run concurrently for the usable address...
+    expect(r.redfinComps.ran).toBe(true);
+    expect(r.redfinComps.provisionalComps.length).toBeGreaterThan(0);
+    expect(r.redfinComps.provisional).toBe(true); // held as area-level only
+    // ...but it changed nothing about identity, subject comps, valuation, or Deal Card.
+    expect(r.verified).toBe('Not Verified');
+    expect(r.redfinComps.comps).toHaveLength(0);
+    expect(r.underwriting.expectedValueUsd).toBeNull();
+    expect(r.dealCard.created).toBe(false);
   });
 });
 
@@ -175,6 +176,50 @@ describe('runPropertyAnalysis — honesty + safety invariants', () => {
     expect(json).not.toMatch(/Bearer\s|authorization|APIFY_TOKEN|LP_JWT_TOKEN|DASHBOARD_TOKEN/i);
   });
 
+  it('flexible intake: APN + county/state selects apn_locality and releases dependent comps after resolve', async () => {
+    const r = await runPropertyAnalysis('', { fields: { apn: '00830-054-000', county: 'Worth', state: 'GA' } }, baseDeps());
+    expect(r.resolverPath).toBe('apn_locality');
+    expect(r.verified).toBe('Verified');
+    // Comps released only after the resolver returned a source address (dependent lane).
+    expect(r.redfinComps.ran).toBe(true);
+  });
+
+  it('flexible intake: owner + city/state selects owner_city_state', async () => {
+    const r = await runPropertyAnalysis('', { fields: { owner: 'Carroll Margaret R', city: 'Poulan', state: 'GA' } }, baseDeps());
+    expect(r.resolverPath).toBe('owner_city_state');
+  });
+
+  it('a corrected address verifies ONLY through a uniquely-matching named-source record', async () => {
+    // Resolver verifies only when the CORRECTED address ("472 WISE RD") is sent.
+    const r = await runPropertyAnalysis('472 QWISE Rd, Poulan, GA 31781', { maxCorrectionCandidates: 5 }, baseDeps({
+      resolve: async (args) => {
+        const addr = (args.address ?? '').toUpperCase().replace(/[.,]/g, '').replace(/\s+/g, ' ').trim();
+        if (addr === '472 WISE RD') {
+          return { verified: true, status: 'verified', propertyid: 'PID-9', fips: '13321', apn: 'APN-9', situs_address: '472 WISE RD', city: 'Poulan', state: 'GA', owner: 'X', match_notes: 'exact', property_summary: summary({ situs_address: '472 WISE RD', apn: 'APN-9', propertyid: 'PID-9' }), candidates: [] };
+        }
+        return { verified: false, status: 'multiple_candidates', propertyid: null, fips: null, apn: null, situs_address: null, owner: null, match_notes: 'ambiguous', candidates: [] };
+      },
+    }));
+    expect(r.verified).toBe('Verified');
+    const validated = r.correctionCandidates.find((c) => c.validatedBySource);
+    expect(validated).toBeTruthy();
+    expect(validated!.corrected.toUpperCase()).toContain('WISE RD');
+  });
+
+  it('correction fan-out is capped and counts against the provider-call ceiling (no unbounded lookups)', async () => {
+    let calls = 0;
+    const r = await runPropertyAnalysis('472 QWISE Rd, Poulan, GA 31781', { maxCorrectionCandidates: 3 }, baseDeps({
+      resolve: async () => { calls++; return { verified: false, status: 'multiple_candidates', propertyid: null, fips: null, apn: null, situs_address: null, owner: null, match_notes: 'ambiguous', candidates: [] }; },
+    }));
+    // LP resolve fan-out (planned + corrected variants) is bounded, never unbounded.
+    expect(calls).toBeGreaterThan(1);
+    expect(calls).toBeLessThanOrEqual(1 + 3);
+    // Each LP attempt counts against the provider-call total (corrections are not free).
+    expect(r.providerCallCount).toBeGreaterThanOrEqual(calls);
+    expect(r.verified).toBe('Not Verified');
+    expect(r.smallestNextIdentifier).toBeTruthy();
+  });
+
   it('honors the provider-call ceiling defensively', async () => {
     const r = await runPropertyAnalysis(POULAN, {}, baseDeps({
       buildCompRegistry: async (onSpend) => {
@@ -184,5 +229,53 @@ describe('runPropertyAnalysis — honesty + safety invariants', () => {
     }));
     // Ceiling tripped -> comps lane aborted honestly, no fabricated comps.
     expect(r.redfinComps.comps).toHaveLength(0);
+  });
+});
+
+describe('runPropertyAnalysis — async lanes + zero-comp diagnosis', () => {
+  it('usable address input starts resolver, Market Pulse, and provisional Redfin CONCURRENTLY', async () => {
+    const r = await runPropertyAnalysis(POULAN, {}, baseDeps());
+    expect(r.lanes.resolver.ran).toBe(true);
+    expect(r.lanes.marketPulse.ran).toBe(true);
+    expect(r.lanes.redfin.started).toBe(true);
+    expect(r.lanes.redfin.concurrentWithResolver).toBe(true);
+    expect(r.lanes.redfin.startedFrom).toBe('supplied_address');
+    expect(r.lanes.redfin.apifyCallCount).toBeGreaterThan(0); // lane actually ran
+  });
+
+  it('APN/non-address input releases Redfin ONLY after the resolver returns a source locality', async () => {
+    const r = await runPropertyAnalysis('', { fields: { apn: 'X', county: 'Worth', state: 'GA' } }, baseDeps());
+    expect(r.verified).toBe('Verified');
+    expect(r.lanes.redfin.concurrentWithResolver).toBe(false);
+    expect(r.redfinComps.startedFrom).toBe('verified_address');
+    expect(r.redfinComps.ran).toBe(true);
+  });
+
+  it('non-address input with no source locality exposes a precise waiting reason (no false concurrency)', async () => {
+    const r = await runPropertyAnalysis('', { fields: { owner: 'Carroll', county: 'Worth', state: 'GA' } }, baseDeps({
+      resolve: async () => ({ verified: true, status: 'verified', propertyid: 'P', fips: '13321', apn: 'A', situs_address: null, city: null, state: null, owner: 'Carroll', match_notes: 'ok', property_summary: summary({ situs_address: '', city: '', state: '' }), candidates: [] }),
+    }));
+    expect(r.redfinComps.startedFrom).toBe('waiting');
+    expect(r.redfinComps.waitingReason).toBeTruthy();
+  });
+
+  it('zero comps with >=1 Apify call is classified genuine_empty (suspicious), not lane_never_ran', async () => {
+    const r = await runPropertyAnalysis(POULAN, {}, baseDeps({
+      buildCompRegistry: async (onSpend) => { onSpend({ source: 'Apify search', kind: 'search', rows: 0, spendUsd: 0 }); return { registry: [fakeRedfin([])], compsLive: true, reason: 'live' }; },
+    }));
+    expect(r.redfinComps.apifyCallCount).toBeGreaterThan(0);
+    expect(r.redfinComps.zeroCompClassification).toBe('genuine_empty');
+  });
+
+  it('a stub/un-wired live registry is classified lane_never_ran (wiring gap), not empty market', async () => {
+    const stubRedfin: CompProvider = {
+      id: 'redfin', label: 'Redfin', supportsAddress: true, supportsApnOnly: false,
+      async retrieve() { return { providerId: 'redfin', status: 'not_connected', comps: [], needsVerification: [], note: 'comp provider not yet connected' }; },
+    };
+    const r = await runPropertyAnalysis(POULAN, {}, baseDeps({
+      buildCompRegistry: async () => ({ registry: [stubRedfin], compsLive: false, reason: 'stub: live Redfin not wired' }),
+    }));
+    expect(r.redfinComps.compsLive).toBe(false);
+    expect(r.redfinComps.zeroCompClassification).toBe('lane_never_ran');
   });
 });
