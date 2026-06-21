@@ -33,6 +33,18 @@ interface LiveCounts {
   propertyCards: number | null;
 }
 
+// Status-only Live Comps readiness (booleans + zeros). Mirrors the safe payload
+// from GET /api/landos/live-comps/preflight. No secret values, no actor names.
+interface LiveCompsStatus {
+  liveCompsEnabled: boolean;
+  apifyTokenPresent: boolean;
+  redfinSearchActorPresent: boolean;
+  redfinDetailActorPresent: boolean;
+  redfinCompsReady: boolean;
+  providerCallsMade: number;
+  spendUsd: number;
+}
+
 function statusClass(status: LegStatus): string {
   if (status === 'active') return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
   if (status === 'shell') return 'text-[var(--color-text-muted)] border-[var(--color-border)]';
@@ -50,6 +62,7 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
   const [, setLocation] = useLocation();
   const [legs, setLegs] = useState<LegTile[] | null>(null);
   const [counts, setCounts] = useState<LiveCounts>({ dealCards: null, propertyCards: null });
+  const [liveComps, setLiveComps] = useState<LiveCompsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +94,16 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
         });
       } catch {
         /* leave counts null */
+      }
+    })();
+    // Best-effort Live Comps readiness (status-only booleans). Failure leaves it
+    // null ("No status yet"); it never blocks the page and never shows a value.
+    (async () => {
+      try {
+        const s = await apiGet<LiveCompsStatus>('/api/landos/live-comps/preflight');
+        if (alive) setLiveComps(s);
+      } catch {
+        /* leave liveComps null */
       }
     })();
     return () => { alive = false; };
@@ -130,6 +153,42 @@ export function CommandHome({ onOpenDealCards }: { onOpenDealCards?: () => void 
         <h2 class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Action Center</h2>
         <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-4">
           Urgent items surfaced by department legs will appear here. No live alerts yet.
+        </div>
+      </div>
+
+      {/* Live Comps Status — status-only readiness (no secrets, no provider call) */}
+      <div>
+        <h2 class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Live Comps Status</h2>
+        <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 max-w-md">
+          {liveComps === null ? (
+            <div class="text-[12px] text-[var(--color-text-faint)]">No status yet</div>
+          ) : (
+            <>
+              <div class="flex items-center gap-2">
+                <span class="text-[13px] font-medium">Live Redfin Comps</span>
+                <span class={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full border ${liveComps.redfinCompsReady ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-text-muted)] border-[var(--color-border)]'}`}>
+                  {liveComps.redfinCompsReady ? 'Ready' : 'Not Ready'}
+                </span>
+              </div>
+              <div class="mt-2 space-y-1">
+                {[
+                  ['Live comps enabled', liveComps.liveCompsEnabled],
+                  ['Apify token present', liveComps.apifyTokenPresent],
+                  ['Redfin search actor present', liveComps.redfinSearchActorPresent],
+                  ['Redfin detail actor present', liveComps.redfinDetailActorPresent],
+                ].map(([label, ok]) => (
+                  <div key={label as string} class="flex items-center justify-between text-[12px]">
+                    <span class="text-[var(--color-text-muted)]">{label}</span>
+                    <span class={ok ? 'text-[var(--color-status-done)]' : 'text-[var(--color-text-faint)]'}>{ok ? 'yes' : 'no'}</span>
+                  </div>
+                ))}
+              </div>
+              <div class="mt-2 pt-2 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-faint)] flex gap-4">
+                <span>Provider calls: {liveComps.providerCallsMade}</span>
+                <span>Spend: ${liveComps.spendUsd.toFixed(2)}</span>
+              </div>
+            </>
+          )}
         </div>
       </div>
 

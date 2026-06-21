@@ -33,6 +33,11 @@ import {
 } from './model-providers.js';
 import { computeLandScoreFromPropertyData } from './land-score.js';
 import { captureImagery } from './imagery-capture.js';
+import {
+  preflightLiveData,
+  LIVE_DATA_ENV_KEYS,
+  type LiveDataPreflight,
+} from './live-data-preflight.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -104,6 +109,41 @@ function entityParam(raw: string | undefined): string | undefined {
   return (LANDOS_ENTITIES as readonly string[]).includes(raw) ? raw : undefined;
 }
 
+/**
+ * Status-only, dashboard-safe view of Live Comps readiness. Pure: maps the
+ * existing preflight output to BOOLEANS only. It NEVER returns or contains a
+ * secret value, actor slug, env key name, reason string, or the missing array —
+ * each *Present field is derived purely from preflight missing-key MEMBERSHIP.
+ * providerCallsMade and spendUsd are always 0 by construction (this path never
+ * calls a provider and never spends).
+ */
+export interface LiveCompsReadinessStatus {
+  liveCompsEnabled: boolean;
+  apifyTokenPresent: boolean;
+  redfinSearchActorPresent: boolean;
+  redfinDetailActorPresent: boolean;
+  redfinCompsReady: boolean;
+  providerCallsMade: 0;
+  spendUsd: 0;
+}
+
+export function liveCompsReadinessStatus(preflight: LiveDataPreflight): LiveCompsReadinessStatus {
+  const missing = preflight.comps.missing;
+  // A key is "present" when it is NOT named in the preflight missing list. The
+  // flag's missing entry is suffixed (e.g. "LANDOS_LIVE_COMPS (set to 1 ...)"),
+  // so match an exact key OR a "<key> " prefix. No value is ever read here.
+  const present = (key: string): boolean => !missing.some((m) => m === key || m.startsWith(key + ' '));
+  return {
+    liveCompsEnabled: present(LIVE_DATA_ENV_KEYS.liveComps),
+    apifyTokenPresent: present(LIVE_DATA_ENV_KEYS.apifyToken),
+    redfinSearchActorPresent: present(LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor),
+    redfinDetailActorPresent: present(LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor),
+    redfinCompsReady: preflight.comps.ready,
+    providerCallsMade: 0,
+    spendUsd: 0,
+  };
+}
+
 export function registerLandosRoutes(app: Hono): void {
   app.get('/api/landos/overview', (c) => {
     const entity = entityParam(c.req.query('entity'));
@@ -121,6 +161,16 @@ export function registerLandosRoutes(app: Hono): void {
   });
 
   app.get('/api/landos/departments', (c) => c.json({ departments: DEPARTMENTS }));
+
+  // ── Live Comps readiness (status-only; NO secrets, NO provider call) ──────
+  // Lets Tyler confirm from the dashboard whether local Live Comps is configured
+  // and ready. Returns BOOLEANS only via liveCompsReadinessStatus(); it never
+  // reads/returns a token, actor id, key name, length, or reason. preflightLiveData
+  // makes no external call, instantiates no Apify client, and spends nothing.
+  app.get('/api/landos/live-comps/preflight', async (c) => {
+    const preflight = await preflightLiveData({ env: process.env });
+    return c.json(liveCompsReadinessStatus(preflight));
+  });
 
   // ── Neutral model registry + facts-based suggestions + sticky overrides ──
   // Read-only metadata: registry facts, the current per-orientation suggestion,
