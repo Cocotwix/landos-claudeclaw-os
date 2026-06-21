@@ -14,8 +14,8 @@ import {
 const ALL_COMP_ENV = {
   [LIVE_DATA_ENV_KEYS.liveComps]: '1',
   [LIVE_DATA_ENV_KEYS.apifyToken]: 'tok',
-  [LIVE_DATA_ENV_KEYS.apifyRedfinActor]: 'user/redfin',
-  [LIVE_DATA_ENV_KEYS.apifyZillowActor]: 'user/zillow',
+  [LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor]: 'user/redfin-search',
+  [LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor]: 'user/redfin-detail',
 };
 
 const reachableGemma = async () => ({ reachable: true, modelPresent: true });
@@ -29,8 +29,8 @@ describe('Step 0 preflight — comps gating (Apify per-source)', () => {
     // Exact missing items are named (live provider must NOT be registered).
     expect(p.comps.missing.some((m) => m.includes(LIVE_DATA_ENV_KEYS.liveComps))).toBe(true);
     expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyToken);
-    expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyRedfinActor);
-    expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyZillowActor);
+    expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor);
+    expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor);
     expect(p.comps.reason).toMatch(/DISABLED/);
   });
 
@@ -40,8 +40,38 @@ describe('Step 0 preflight — comps gating (Apify per-source)', () => {
     const p = await preflightLiveData({ env, probeGemma: downGemma });
     expect(p.comps.ready).toBe(false);
     expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyToken);
-    expect(p.comps.missing).not.toContain(LIVE_DATA_ENV_KEYS.apifyRedfinActor);
+    expect(p.comps.missing).not.toContain(LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor);
     expect(p.comps.usesStub).toBe(true);
+  });
+
+  it('missing APIFY_REDFIN_SEARCH_ACTOR fails loud (names it exactly, keeps the stub)', async () => {
+    const env = { ...ALL_COMP_ENV };
+    delete (env as Record<string, string>)[LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor];
+    const p = await preflightLiveData({ env, probeGemma: downGemma });
+    expect(p.comps.ready).toBe(false);
+    expect(p.comps.usesStub).toBe(true);
+    expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor);
+    expect(p.comps.missing).not.toContain(LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor);
+    expect(p.comps.reason).toMatch(/APIFY_REDFIN_SEARCH_ACTOR/);
+  });
+
+  it('missing APIFY_REDFIN_DETAIL_ACTOR fails loud (names it exactly, keeps the stub)', async () => {
+    const env = { ...ALL_COMP_ENV };
+    delete (env as Record<string, string>)[LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor];
+    const p = await preflightLiveData({ env, probeGemma: downGemma });
+    expect(p.comps.ready).toBe(false);
+    expect(p.comps.usesStub).toBe(true);
+    expect(p.comps.missing).toContain(LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor);
+    expect(p.comps.reason).toMatch(/APIFY_REDFIN_DETAIL_ACTOR/);
+  });
+
+  it('the only accepted comp keys are TOKEN + SEARCH_ACTOR + DETAIL_ACTOR (no single/zillow variant)', () => {
+    // No-underscore / single-actor / zillow variants do not exist on the contract.
+    expect(LIVE_DATA_ENV_KEYS.apifyToken).toBe('APIFY_TOKEN');
+    expect(LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor).toBe('APIFY_REDFIN_SEARCH_ACTOR');
+    expect(LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor).toBe('APIFY_REDFIN_DETAIL_ACTOR');
+    expect((LIVE_DATA_ENV_KEYS as Record<string, string>).apifyRedfinActor).toBeUndefined();
+    expect((LIVE_DATA_ENV_KEYS as Record<string, string>).apifyZillowActor).toBeUndefined();
   });
 
   it('all comp keys + flag present: ready, no missing items, stub not used', async () => {

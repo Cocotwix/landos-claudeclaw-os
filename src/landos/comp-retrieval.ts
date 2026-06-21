@@ -58,6 +58,12 @@ export interface CompQuery {
   acres?: number;
   /** ISO lookup date; the 12-month window is measured back from here. Defaults to now. */
   lookupDateIso?: string;
+  /** Trusted centroid for the density-adaptive search (see comp-search-params).
+   *  Coordinates are an OUTPUT of an authoritative match — never identity input.
+   *  Absent -> the live provider returns a graceful no_comps (never invented). */
+  centroid?: { lat: number; lng: number } | null;
+  /** Tier of the supplied centroid: 'A' parcel-pinned (tight), 'B' area-level. */
+  centroidTier?: 'A' | 'B';
 }
 
 export interface RetrievedComp {
@@ -76,6 +82,9 @@ export interface CompProviderResult {
   providerId: CompProviderId;
   status: CompProviderStatus;
   comps: RetrievedComp[];
+  /** Kept-but-unverified comps (missing price/date/URL), loudly tagged. Never
+   *  counted as verifiable comps; surfaced so nothing is silently dropped. */
+  needsVerification?: NeedsVerificationComp[];
   note: string;
 }
 
@@ -94,12 +103,44 @@ export interface ExcludedComp {
   reason: string;
 }
 
+/**
+ * A comp we KEEP but cannot fully verify yet — state-agnostic. When a row is
+ * missing a sold price, a sold date, or a clickable source URL, it is NOT
+ * silently dropped and NOT guessed: it is kept here and loudly tagged
+ * "verify in underwriting". Carries the richer detail fields so downstream
+ * underwriting (in-park exclusion, dual-exit) can reason about it.
+ */
+export interface NeedsVerificationComp {
+  sourceUrl: string;
+  sourceLabel: CompProviderId;
+  soldPriceUsd: number | null;
+  soldDateIso: string | null;
+  /** Captured for context only — NEVER used as the sold price. */
+  listPriceUsd: number | null;
+  acres: number | null;
+  lotSizeSqft: number | null;
+  apn: string | null;
+  county: string | null;
+  state: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  daysOnMarket: number | null;
+  propertyTypeCode: number | null;
+  addressDesc?: string;
+  distanceMiles?: number | null;
+  /** Loud, surfaced reasons this comp needs underwriting verification. */
+  verifyTags: string[];
+}
+
 export interface CompRetrievalResult {
   /** True only when at least one verifiable comp (with a URL) survived. */
   hasComps: boolean;
   comps: RetrievedComp[];
   /** Off-target / stale / URL-less comps, with the reason they were dropped. */
   excluded: ExcludedComp[];
+  /** Kept-but-unverified comps (missing price/date/URL), loudly tagged
+   *  "verify in underwriting". Aggregated across providers; never invented. */
+  needsVerification: NeedsVerificationComp[];
   providers: Array<{ providerId: CompProviderId; status: CompProviderStatus; kept: number; note: string }>;
   lookupDateIso: string;
   /** Loud, honest summary. Says plainly when nothing verifiable was found. */
@@ -273,6 +314,7 @@ export async function retrieveComps(
   const providerSummaries: CompRetrievalResult['providers'] = [];
   const allKept: RetrievedComp[] = [];
   const allExcluded: ExcludedComp[] = [];
+  const allNeedsVerification: NeedsVerificationComp[] = [];
   let partial = false;
 
   for (const p of providers) {
@@ -291,6 +333,7 @@ export async function retrieveComps(
     const { kept, excluded } = filterComps(res.comps, query, lookupDateIso);
     allKept.push(...kept);
     allExcluded.push(...excluded);
+    if (res.needsVerification && res.needsVerification.length > 0) allNeedsVerification.push(...res.needsVerification);
     providerSummaries.push({ providerId: p.id, status: res.status, kept: kept.length, note: res.note });
   }
 
@@ -304,6 +347,7 @@ export async function retrieveComps(
     hasComps,
     comps: allKept,
     excluded: allExcluded,
+    needsVerification: allNeedsVerification,
     providers: providerSummaries,
     lookupDateIso,
     note,

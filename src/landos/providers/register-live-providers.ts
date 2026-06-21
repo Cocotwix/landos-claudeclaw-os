@@ -1,9 +1,14 @@
 // LandOS live-provider registration — the single gated swap point.
 //
 // Consults preflightLiveData() and, ONLY when the comps capability is fully
-// ready, swaps the Redfin/Zillow stub providers for live Apify-backed ones.
-// Everything else (LandWatch, LandPortal, and ALL imagery) stays exactly as it
-// was — imagery is intentionally untouched this leg.
+// ready, swaps the Redfin stub for the live two-stage tri_angle provider
+// (tri_angle/redfin-search -> tri_angle/redfin-detail). Everything else
+// (Zillow, LandWatch, LandPortal, and ALL imagery) stays on its stub.
+//
+// Why Zillow stays stubbed THIS leg: there is no validated Zillow detail payload
+// shape (the fixture is tri_angle/redfin-detail only). Wiring Zillow "live" would
+// mean parsing a guessed shape — which would fabricate. We fail loud instead and
+// keep the honest stub until a validated Zillow shape + fixture exist.
 //
 // No call sites are changed by this module. Callers opt in by using the returned
 // registry with retrieveComps(); until they do, the honest stubs remain in force.
@@ -18,10 +23,12 @@ import {
   type LiveDataPreflight,
 } from '../live-data-preflight.js';
 import {
-  makeApifyCompProvider,
+  makeRedfinTwoStageProvider,
   makeDefaultApifyRunner,
   type ApifyRunner,
+  type ApifySpendHook,
 } from './apify-comp-provider.js';
+import { logCostRecord } from '../db.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -34,22 +41,40 @@ export interface RegisterLiveProvidersDeps {
   makeRunner?: (token: string) => ApifyRunner;
   /** Starting registry to swap into. Defaults to the all-stub registry. */
   baseRegistry?: CompProvider[];
+  /** Cost-logging hook (real actor id only — never credentials). Defaults to
+   *  landos_cost_record. Injected in tests. */
+  onSpend?: ApifySpendHook;
 }
 
 export interface RegisterLiveProvidersResult {
   /** Drop-in registry for retrieveComps(): live where ready, stub elsewhere. */
   registry: CompProvider[];
-  /** True only when the live Apify comp providers were actually wired in. */
+  /** True only when the live Redfin two-stage comp provider was wired in. */
   compsLive: boolean;
   /** Loud, honest reason — mirrors the preflight reason on any gap. */
   reason: string;
 }
 
+/** Default spend logger: records the fact of a paid Apify actor call (actual
+ *  actor id, stage, row count) to landos_cost_record. NEVER logs credentials.
+ *  Cost is recorded at $0 here (per-run pricing is reconciled separately); the
+ *  point is an auditable record that the paid actor ran. */
+function defaultOnSpend(): ApifySpendHook {
+  return (ev) => {
+    logCostRecord({
+      category: 'apify_comp_actor',
+      description: `Apify ${ev.stage} actor ${ev.actorId} returned ${ev.rows} row(s)`,
+      amountUsd: 0,
+      refTable: 'landos_comp',
+    });
+  };
+}
+
 /**
- * Build the comp provider registry, swapping Redfin/Zillow stubs for live Apify
- * providers ONLY when preflightLiveData() reports comps ready. On any gap the
- * honest stub stays and the preflight reason is surfaced verbatim. Imagery is
- * not part of this leg and is never touched here.
+ * Build the comp provider registry, swapping the Redfin stub for the live
+ * two-stage tri_angle provider ONLY when preflightLiveData() reports comps ready.
+ * On any gap the honest stub stays and the preflight reason is surfaced verbatim.
+ * Zillow/LandWatch/LandPortal and all imagery are never touched here.
  */
 export async function registerLiveProviders(
   deps: RegisterLiveProvidersDeps = {},
@@ -67,28 +92,29 @@ export async function registerLiveProviders(
   }
 
   const token = (env[LIVE_DATA_ENV_KEYS.apifyToken] ?? '').trim();
-  const redfinActor = (env[LIVE_DATA_ENV_KEYS.apifyRedfinActor] ?? '').trim();
-  const zillowActor = (env[LIVE_DATA_ENV_KEYS.apifyZillowActor] ?? '').trim();
+  // Two-stage actors come ONLY from their explicit env keys. No single-actor
+  // variant, NO default actor id, NO fallback — a missing id keeps the stub.
+  const searchActor = (env[LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor] ?? '').trim();
+  const detailActor = (env[LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor] ?? '').trim();
+
   // preflight.comps.ready already guarantees these are present; re-check so a
   // ready signal can never produce a provider pointed at an empty actor id.
-  if (!token || !redfinActor || !zillowActor) {
+  if (!token || !searchActor || !detailActor) {
     return {
       registry,
       compsLive: false,
-      reason: 'comp retrieval DISABLED: preflight reported ready but token/actor id was empty at registration. Honest stub stays connected.',
+      reason: `comp retrieval DISABLED: preflight reported ready but a required Apify value was empty at registration (need ${LIVE_DATA_ENV_KEYS.apifyToken}, ${LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor}, ${LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor}). Honest stub stays connected.`,
     };
   }
 
   const runner = makeRunner(token);
-  const live: Record<string, CompProvider> = {
-    redfin: makeApifyCompProvider('redfin', { actorId: redfinActor, runner }),
-    zillow: makeApifyCompProvider('zillow', { actorId: zillowActor, runner }),
-  };
+  const onSpend = deps.onSpend ?? defaultOnSpend();
+  const liveRedfin = makeRedfinTwoStageProvider({ searchActorId: searchActor, detailActorId: detailActor, runner, onSpend });
 
-  const swapped = registry.map((p) => live[p.id] ?? p);
+  const swapped = registry.map((p) => (p.id === 'redfin' ? liveRedfin : p));
   return {
     registry: swapped,
     compsLive: true,
-    reason: 'Live comp retrieval wired (Apify Redfin/Zillow). LandWatch/LandPortal and all imagery remain on their stubs.',
+    reason: `Live Redfin two-stage comp retrieval wired (${searchActor} -> ${detailActor}). Zillow stays stubbed (no validated Zillow detail shape this leg); LandWatch/LandPortal and all imagery remain on their stubs.`,
   };
 }

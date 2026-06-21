@@ -23,8 +23,11 @@ import path from 'path';
 /** The env keys the live data paths read. (Definitions only — no .env edit.) */
 export const LIVE_DATA_ENV_KEYS = {
   apifyToken: 'APIFY_TOKEN',
-  apifyRedfinActor: 'APIFY_REDFIN_ACTOR',
-  apifyZillowActor: 'APIFY_ZILLOW_ACTOR',
+  // Two-stage tri_angle Redfin flow. BOTH are REQUIRED for comps to go live;
+  // there is NO single-actor variant and NO default/fallback actor id. A missing
+  // one fails the preflight loud and keeps the honest stub.
+  apifyRedfinSearchActor: 'APIFY_REDFIN_SEARCH_ACTOR',
+  apifyRedfinDetailActor: 'APIFY_REDFIN_DETAIL_ACTOR',
   liveComps: 'LANDOS_LIVE_COMPS',
   liveImagery: 'LANDOS_LIVE_IMAGERY',
   ollamaHost: 'OLLAMA_HOST',
@@ -140,15 +143,15 @@ export async function preflightLiveData(deps: PreflightDeps = {}): Promise<LiveD
   const compsMissing: string[] = [];
   if (!flagOn(env[LIVE_DATA_ENV_KEYS.liveComps])) compsMissing.push(`${LIVE_DATA_ENV_KEYS.liveComps} (set to 1 to enable)`);
   if (!present(env[LIVE_DATA_ENV_KEYS.apifyToken])) compsMissing.push(LIVE_DATA_ENV_KEYS.apifyToken);
-  if (!present(env[LIVE_DATA_ENV_KEYS.apifyRedfinActor])) compsMissing.push(LIVE_DATA_ENV_KEYS.apifyRedfinActor);
-  if (!present(env[LIVE_DATA_ENV_KEYS.apifyZillowActor])) compsMissing.push(LIVE_DATA_ENV_KEYS.apifyZillowActor);
+  if (!present(env[LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor])) compsMissing.push(LIVE_DATA_ENV_KEYS.apifyRedfinSearchActor);
+  if (!present(env[LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor])) compsMissing.push(LIVE_DATA_ENV_KEYS.apifyRedfinDetailActor);
   const compsReady = compsMissing.length === 0;
   const comps: CapabilityReadiness = {
     capability: 'comps',
     ready: compsReady,
     missing: compsMissing,
     reason: compsReady
-      ? 'Live comp retrieval ready (Apify Redfin/Zillow actors configured).'
+      ? 'Live comp retrieval ready (Apify tri_angle redfin-search + redfin-detail actors configured).'
       : `comp retrieval DISABLED: missing ${compsMissing.join(', ')}. Honest stub stays connected ("comp provider not yet connected").`,
     usesStub: !compsReady,
   };

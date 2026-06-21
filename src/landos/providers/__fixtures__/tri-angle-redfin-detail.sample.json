@@ -1,0 +1,85 @@
+[
+  {
+    "_fixtureNote": "SANITIZED synthetic fixture. All values are fabricated. Preserves the tri_angle/redfin-detail nested SHAPE and behaviors only (sold vs list vs AVM, epoch-ms dates, sqft lot size, propertyType ints, URL-required). Contains NO real property identifiers.",
+    "scraperInput": "https://www.redfin.com/ST/Sampletown/100-Example-Rd-00000/home/10000001",
+    "addressSectionInfo": {
+      "status": { "displayValue": "Active", "definition": "Listed for sale.", "longerDefinitionToken": "active" },
+      "priceInfo": { "amount": 199000, "label": "Price", "displayLevel": 1, "dataSourceId": 0 },
+      "latestPriceInfo": { "amount": 199000, "label": "Price", "displayLevel": 1, "dataSourceId": 0 },
+      "streetAddress": {
+        "streetNumber": "100",
+        "directionalPrefix": "",
+        "streetName": "Example",
+        "streetType": "Rd",
+        "directionalSuffix": "",
+        "unitType": "",
+        "unitValue": "",
+        "assembledAddress": "100 Example Rd"
+      },
+      "latLong": { "latitude": 40.0, "longitude": -90.0 },
+      "city": "Sampletown",
+      "state": "ST",
+      "lotSize": 217800,
+      "apn": "SANITIZED-APN-0001",
+      "cumulativeDaysOnMarket": 78,
+      "avmInfo": { "displayLevel": 1, "propertyId": 0, "predictedValue": 183500 },
+      "propertyType": 8,
+      "url": "/ST/Sampletown/100-Example-Rd-00000/home/10000001"
+    },
+    "mediaBrowserInfo": { "streetView": { "latLong": { "latitude": 40.0, "longitude": -90.0 } }, "photos": [] },
+    "mainHouseInfo": {
+      "url": "/ST/Sampletown/100-Example-Rd-00000/home/10000001",
+      "streetAddress": "100 Example Rd",
+      "fullStreetAddress": "100 Example Rd, Sampletown, ST 00000",
+      "selectedAmenities": [{ "displayText": "Owned land, deeded lot, real property" }],
+      "listingRemarks": "Sample listing remarks. Synthetic text for fixture only."
+    },
+    "avmInfo": {
+      "lastSoldPrice": 240000,
+      "lastSoldDate": 1739232000000,
+      "predictedValue": 183500,
+      "latLong": { "latitude": 40.0, "longitude": -90.0 },
+      "priceInfo": { "amount": 199000, "label": "Price", "displayLevel": 1, "dataSourceId": 0 }
+    },
+    "comparables": [
+      { "url": "/ST/Sampletown/1-Noise-Ave-00000/home/90000001", "propertyType": 6, "state": "ST", "priceInfo": { "amount": 0 } }
+    ],
+    "similarListings": { "homes": [] },
+    "historicalData": {
+      "saleHistory": [{ "salePrice": 240000, "saleDate": 1739232000000 }]
+    },
+    "regionName": "00000",
+    "assembledAddress": "100 Example Rd",
+    "pointOfInterestList": []
+  },
+  {
+    "_fixtureNote": "SANITIZED synthetic fixture, price-absent land record (no sale history, no last-sold). Drives the 'verify in underwriting' tag path.",
+    "scraperInput": "https://www.redfin.com/ST/Othertown/200-Sample-Ln-00000/home/10000002",
+    "addressSectionInfo": {
+      "status": { "displayValue": "For Sale", "definition": "Listed for sale.", "longerDefinitionToken": "active" },
+      "priceInfo": { "amount": 95000, "label": "Price", "displayLevel": 1, "dataSourceId": 0 },
+      "streetAddress": { "streetNumber": "200", "streetName": "Sample", "streetType": "Ln", "assembledAddress": "200 Sample Ln" },
+      "latLong": { "latitude": 41.0, "longitude": -91.0 },
+      "city": "Othertown",
+      "state": "ST",
+      "lotSize": 89297,
+      "apn": "SANITIZED-APN-0002",
+      "cumulativeDaysOnMarket": 12,
+      "propertyType": 8,
+      "url": "/ST/Othertown/200-Sample-Ln-00000/home/10000002"
+    },
+    "mainHouseInfo": {
+      "url": "/ST/Othertown/200-Sample-Ln-00000/home/10000002",
+      "fullStreetAddress": "200 Sample Ln, Othertown, ST 00000",
+      "selectedAmenities": [],
+      "listingRemarks": ""
+    },
+    "avmInfo": { "predictedValue": 90000 },
+    "comparables": [],
+    "similarListings": { "homes": [] },
+    "historicalData": { "saleHistory": [] },
+    "regionName": "00000",
+    "assembledAddress": "200 Sample Ln",
+    "pointOfInterestList": []
+  }
+]

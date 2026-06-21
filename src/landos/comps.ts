@@ -238,6 +238,28 @@ export function addComp(input: AddCompInput): CompRow {
   return getComp(id)!;
 }
 
+/**
+ * Delete a single comp by id. Used by the Deal Card delete-comp-and-rerun flow:
+ * removal is explicit and audited; there is NO backfill and NO re-search. Returns
+ * true when a row was removed. Logs the override to the audit trail.
+ */
+export function deleteComp(id: number, opts: { actor?: string; reason?: string } = {}): boolean {
+  const db = getLandosDb();
+  const existing = getComp(id);
+  if (!existing) return false;
+  const res = db.prepare('DELETE FROM landos_comp WHERE id = ?').run(id);
+  const removed = (res.changes ?? 0) > 0;
+  if (removed) {
+    landosAudit(
+      opts.actor ?? 'tyler/manual',
+      'comp_deleted',
+      `deal ${existing.deal_card_id} comp ${id} removed (${existing.source_label})${opts.reason ? `: ${opts.reason}` : ''}; offer recomputed off survivors (no backfill, no re-search)`,
+      { entity: existing.entity as LandosEntity, refTable: 'landos_comp', refId: id },
+    );
+  }
+  return removed;
+}
+
 export function listComps(opts: { dealCardId?: number; cardId?: number; limit?: number } = {}): CompRow[] {
   const db = getLandosDb();
   const limit = Math.min(opts.limit ?? 200, 500);
