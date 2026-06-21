@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { PROJECT_ROOT } from '../config.js';
+import { readEnvFile } from '../env.js';
 
 // ── Token reader ─────────────────────────────────────────────────────────────
 // Reads a named token from the process environment or, as a fallback, the
@@ -1046,9 +1047,40 @@ export async function lpResolveForPreflight(
 
 const LP_V2_BASE = 'https://api.landportal.com';
 
-/** Returns 'v2' only when the feature flag is explicitly set; defaults to 'v1'. */
-export function lpApiVersion(): 'v1' | 'v2' {
-  return (process.env.LANDPORTAL_API_VERSION ?? '').trim().toLowerCase() === 'v2' ? 'v2' : 'v1';
+export interface LpApiVersionDeps {
+  /** Process environment to consult (an explicit value here takes precedence). */
+  processEnv?: Record<string, string | undefined>;
+  /** Injected approved local-config reader (tests pass a fake; default reads .env
+   *  via the approved readEnvFile helper). */
+  readEnv?: (keys: string[]) => Record<string, string>;
+}
+
+/**
+ * Resolve the LandPortal API version flag from the approved config source.
+ *
+ * Precedence: an explicitly-set, non-empty `process.env.LANDPORTAL_API_VERSION`
+ * wins (an explicit `v1` also wins); otherwise the approved local `.env` resolver
+ * (readEnvFile) supplies it. Absent everywhere -> the existing safe `v1` default.
+ *
+ * This closes the gap where the flag lived in `.env` but never reached the
+ * process (the app loads `.env` via readEnvFile, not into process.env). Returns
+ * ONLY 'v1' | 'v2' — never a secret, never a logged value. Hermetic tests
+ * (LANDOS_DISABLE_DOTENV_FALLBACK) skip the `.env` read entirely.
+ */
+export function lpApiVersion(deps: LpApiVersionDeps = {}): 'v1' | 'v2' {
+  const processEnv = deps.processEnv ?? process.env;
+  const exported = (processEnv.LANDPORTAL_API_VERSION ?? '').trim();
+  if (exported) return exported.toLowerCase() === 'v2' ? 'v2' : 'v1';
+  // Hermetic guard (same one the v2 token reader uses): never touch the on-disk
+  // .env in tests, so a developer's real config can neither satisfy nor leak.
+  if (processEnv.LANDOS_DISABLE_DOTENV_FALLBACK) return 'v1';
+  let fromFile = '';
+  try {
+    fromFile = ((deps.readEnv ?? readEnvFile)(['LANDPORTAL_API_VERSION'])['LANDPORTAL_API_VERSION'] ?? '').trim();
+  } catch {
+    fromFile = '';
+  }
+  return fromFile.toLowerCase() === 'v2' ? 'v2' : 'v1';
 }
 
 interface LpV2FetchError {
