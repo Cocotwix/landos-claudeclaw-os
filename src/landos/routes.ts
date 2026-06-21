@@ -39,6 +39,8 @@ import {
   LIVE_DATA_ENV_KEYS,
   type LiveDataPreflight,
 } from './live-data-preflight.js';
+import { runPropertyAnalysis } from './property-analysis.js';
+import { savePropertyAnalysisReport } from './property-analysis-report.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -1250,6 +1252,79 @@ export function registerLandosRoutes(app: Hono): void {
       sellerAskUsd: sellerAskUsd ?? null,
       reportWarnings,
     });
+  });
+
+  // ── One-button Property Analysis (the normal dashboard path) ───────────────
+  // Tyler enters an address/APN/owner+county and clicks Run Property Analysis.
+  // This single click authorizes the approved non-credit LandPortal verification
+  // + approved Apify/Redfin comp/market work. It runs the full chain
+  // (verify -> DD facts -> Market Pulse -> Live Comps readiness -> Redfin comps ->
+  // strategy/underwriting -> verified Deal Card -> Markdown + local PDF), logs
+  // actual provider calls + spend, and persists the report under the gitignored
+  // store/ dir (never the repo). No cost-confirmation modal for normal runs.
+  app.post('/api/landos/property-analysis', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const entity = isEntity(str(body.entity)) ? (str(body.entity) as LandosEntity) : undefined;
+    logger.info(
+      { event: 'property_analysis_request', hasText: !!text, textLen: text.length, hasEntity: !!entity },
+      'property_analysis_request',
+    );
+
+    const result = await runPropertyAnalysis(text, { entity }, {
+      resolve: lpResolveForPreflight,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+      // Verified-only Deal Card upsert from the named-source identity (never a
+      // client 'verified' flag; identity never from coordinates).
+      upsertDealCard: entity
+        ? (v, ent, input) => {
+            const pid = v.identity ?? {};
+            const acres = v.propertyData?.landFacts.acres;
+            const { card } = upsertCardFromDukeRun({
+              entity: ent,
+              agentId: 'duke-due-diligence',
+              activeInputAddress: pid.situsAddress || input.trim(),
+              county: pid.county,
+              state: pid.state,
+              apn: pid.apn,
+              lpPropertyId: pid.propertyId,
+              fips: pid.fips,
+              owner: pid.owner,
+              acres: typeof acres === 'number' ? acres : undefined,
+              verified: true,
+              verificationSource: v.verificationSource ?? 'LandPortal exact (non-credit)',
+              summary: v.propertyData?.note ?? v.summary,
+            });
+            const dealCardId = ensureDealCardForProperty({
+              cardId: card.id,
+              entity: ent,
+              title: pid.situsAddress || pid.apn || `Deal ${card.id}`,
+            });
+            return { dealCardId, propertyCardId: card.id };
+          }
+        : undefined,
+    });
+
+    // Persist Markdown (+ local PDF when pdfkit is installed) under store/.
+    let report = { markdownPath: '', pdfPath: null as string | null, pdfReason: '' };
+    try {
+      report = await savePropertyAnalysisReport(result);
+    } catch (err) {
+      report = { markdownPath: '', pdfPath: null, pdfReason: `report persistence failed: ${(err as Error)?.message ?? 'unknown'}` };
+    }
+
+    logger.info(
+      {
+        event: 'property_analysis_result',
+        verified: result.verified, verdict: result.verdict, offerReadiness: result.offerReadiness,
+        providerCalls: result.providerCallCount, spendUsd: result.actualSpendUsd,
+        compsRan: result.redfinComps.ran, compCount: result.redfinComps.comps.length,
+        pdf: !!report.pdfPath,
+      },
+      'property_analysis_result',
+    );
+    return c.json({ result, report });
   });
 
   // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded
