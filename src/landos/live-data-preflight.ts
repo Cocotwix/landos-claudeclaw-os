@@ -20,6 +20,8 @@
 import fs from 'fs';
 import path from 'path';
 
+import { readEnvFile } from '../env.js';
+
 /** The env keys the live data paths read. (Definitions only — no .env edit.) */
 export const LIVE_DATA_ENV_KEYS = {
   apifyToken: 'APIFY_TOKEN',
@@ -43,6 +45,41 @@ export const GEMMA_NORMALIZER_MODEL_DEFAULT = 'gemma-4-e4b';
 export const CAPTURE_VISUAL_SCRIPT_REL = 'landos-agents/duke-due-diligence/scripts/capture-visual.js';
 
 type Env = Record<string, string | undefined>;
+
+export interface ResolveLiveDataEnvDeps {
+  /** Process environment to consult (genuinely-exported values win). */
+  processEnv?: Env;
+  /** Injected .env reader (tests pass a fake; default is the approved readEnvFile). */
+  readEnv?: (keys: string[]) => Record<string, string>;
+  /** Force-skip the .env file read (hermetic tests). Defaults to the
+   *  LANDOS_DISABLE_DOTENV_FALLBACK flag — same guard the LandPortal client uses. */
+  disableDotenvFallback?: boolean;
+}
+
+/**
+ * Resolve the live-data env from the project's APPROVED config source.
+ *
+ * Precedence: a genuinely-exported, non-empty process.env value wins; otherwise
+ * the value comes from the .env file via readEnvFile(). This mirrors how every
+ * other secret in the codebase is read and PRESERVES the security design — it
+ * returns a fresh in-memory object and NEVER writes to process.env, so secrets
+ * are not exported to spawned child agents. Hermetic tests
+ * (LANDOS_DISABLE_DOTENV_FALLBACK) skip the .env read entirely so a developer's
+ * real secrets can neither satisfy nor leak into a test.
+ */
+export function resolveLiveDataEnv(deps: ResolveLiveDataEnvDeps = {}): Env {
+  const keys = Object.values(LIVE_DATA_ENV_KEYS) as string[];
+  const processEnv: Env = deps.processEnv ?? process.env;
+  const disable = deps.disableDotenvFallback ?? !!processEnv.LANDOS_DISABLE_DOTENV_FALLBACK;
+  const fromFile = disable ? {} : (deps.readEnv ?? readEnvFile)(keys);
+
+  const merged: Env = { ...fromFile };
+  for (const key of keys) {
+    const exported = processEnv[key];
+    if (typeof exported === 'string' && exported.trim().length > 0) merged[key] = exported;
+  }
+  return merged;
+}
 
 function flagOn(v: string | undefined): boolean {
   return v === '1' || v === 'true' || v === 'yes';

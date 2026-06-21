@@ -19,6 +19,7 @@ import {
 } from '../comp-retrieval.js';
 import {
   preflightLiveData,
+  resolveLiveDataEnv,
   LIVE_DATA_ENV_KEYS,
   type LiveDataPreflight,
 } from '../live-data-preflight.js';
@@ -79,7 +80,10 @@ function defaultOnSpend(): ApifySpendHook {
 export async function registerLiveProviders(
   deps: RegisterLiveProvidersDeps = {},
 ): Promise<RegisterLiveProvidersResult> {
-  const env = deps.env ?? process.env;
+  // Resolve from the APPROVED config source (.env via readEnvFile; exported
+  // process.env wins) so live retrieval sees the same keys the status card does,
+  // WITHOUT exporting secrets into process.env. Tests inject deps.env directly.
+  const env = deps.env ?? resolveLiveDataEnv();
   const runPreflight = deps.preflight ?? (() => preflightLiveData({ env }));
   const makeRunner = deps.makeRunner ?? makeDefaultApifyRunner;
   const registry = [...(deps.baseRegistry ?? defaultCompRegistry())];

@@ -35,6 +35,7 @@ import { computeLandScoreFromPropertyData } from './land-score.js';
 import { captureImagery } from './imagery-capture.js';
 import {
   preflightLiveData,
+  resolveLiveDataEnv,
   LIVE_DATA_ENV_KEYS,
   type LiveDataPreflight,
 } from './live-data-preflight.js';
@@ -168,7 +169,9 @@ export function registerLandosRoutes(app: Hono): void {
   // reads/returns a token, actor id, key name, length, or reason. preflightLiveData
   // makes no external call, instantiates no Apify client, and spends nothing.
   app.get('/api/landos/live-comps/preflight', async (c) => {
-    const preflight = await preflightLiveData({ env: process.env });
+    // Resolve config from the APPROVED source (.env via readEnvFile, exported
+    // process.env wins) WITHOUT putting secrets into process.env. Status-only.
+    const preflight = await preflightLiveData({ env: resolveLiveDataEnv() });
     return c.json(liveCompsReadinessStatus(preflight));
   });
 
