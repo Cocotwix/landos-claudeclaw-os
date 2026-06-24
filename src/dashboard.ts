@@ -253,12 +253,35 @@ const CLIENT_MSG_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3
  * without standing up a real server. Production callers should use
  * `startDashboard` instead, which builds the app then serves it.
  */
+// Constant-time dashboard-token comparison (adopted from upstream security
+// hardening #51). Prevents timing side-channels on the URL token. Returns false
+// on length mismatch (timingSafeEqual throws otherwise) and on any error.
+function tokensMatch(provided: string, expected: string): boolean {
+  if (!expected || !provided) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+}
+
+// Opt-in CORS origin allowlist (adopted from upstream security hardening #51).
+// Default is UNCHANGED ('*') for back-compat; set DASHBOARD_CORS_ORIGINS to a
+// comma-separated list to restrict Access-Control-Allow-Origin to those origins.
+const DASHBOARD_CORS_ORIGINS = (process.env.DASHBOARD_CORS_ORIGINS ?? '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+function resolveCorsOrigin(reqOrigin: string | undefined): string | null {
+  if (DASHBOARD_CORS_ORIGINS.length === 0) return '*'; // unchanged default
+  if (reqOrigin && DASHBOARD_CORS_ORIGINS.includes(reqOrigin)) return reqOrigin;
+  return null; // not allowlisted -> omit the header (deny)
+}
+
 export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
 
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
   app.use('*', async (c, next) => {
-    c.header('Access-Control-Allow-Origin', '*');
+    const origin = resolveCorsOrigin(c.req.header('Origin'));
+    if (origin) c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
@@ -361,7 +384,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       return;
     }
     const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
+    if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     await next();
@@ -372,7 +395,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // by legacy fallbacks that DO embed the token in the page source.
   function requireToken(c: any): Response | null {
     const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
+    if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401) as Response;
     }
     return null;
@@ -4090,7 +4113,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         // Without this, anyone who can reach the dashboard port could
         // proxy into the local Pipecat War Room socket with no auth.
         const token = url.searchParams.get('token');
-        if (!DASHBOARD_TOKEN || token !== DASHBOARD_TOKEN) {
+        if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;
