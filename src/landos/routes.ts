@@ -43,6 +43,8 @@ import { runPropertyAnalysis } from './property-analysis.js';
 import { savePropertyAnalysisReport } from './property-analysis-report.js';
 import { rosterSummary } from './agent-roster.js';
 import { orgChart } from './executive-orchestrator.js';
+import { routeByCapability, type JobRequirements } from './capability-router.js';
+import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS } from './model-capabilities.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -247,6 +249,34 @@ export function registerLandosRoutes(app: Hono): void {
     if (!scopeKey) return c.json({ error: 'scopeKey is required' }, 400);
     const removed = resetModelPreference({ entity, scopeKind: scopeKind as ModelPreferenceScopeKind, scopeKey, taskType });
     return c.json({ ok: true, removed });
+  });
+
+  // Capability-based model router (read-only scaffold). Exposes capability
+  // profiles + dimensions, and a DETERMINISTIC routing preview. No model call,
+  // no secrets, no .env. Availability for the preview comes from the request
+  // (defaulting to all profiled models) so the operator can see how routing
+  // would resolve a job's required capabilities.
+  app.get('/api/landos/model-router/capabilities', (c) =>
+    c.json({ dimensions: CAPABILITY_DIMENSIONS, models: MODEL_CAPABILITIES }));
+
+  app.post('/api/landos/model-router/preview', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const needs = (body.needs && typeof body.needs === 'object') ? (body.needs as JobRequirements['needs']) : {};
+    const availableModelIds = Array.isArray(body.availableModelIds)
+      ? (body.availableModelIds as string[])
+      : MODEL_CAPABILITIES.map((m) => m.modelId);
+    const req: JobRequirements = {
+      needs,
+      stakes: str(body.stakes) as JobRequirements['stakes'],
+      ambiguity: str(body.ambiguity) as JobRequirements['ambiguity'],
+      estimatedConfidence: typeof body.estimatedConfidence === 'number' ? body.estimatedConfidence : undefined,
+      modality: str(body.modality) as JobRequirements['modality'],
+      nuanceSensitive: body.nuanceSensitive === true,
+      inputQuality: str(body.inputQuality) as JobRequirements['inputQuality'],
+      operatorOverrideModelId: str(body.operatorOverrideModelId),
+    };
+    const decision = routeByCapability(req, { available: (id) => availableModelIds.includes(id) });
+    return c.json({ decision });
   });
 
   // LandOS-wide structure: department leg tiles + shared surfaces/records/
