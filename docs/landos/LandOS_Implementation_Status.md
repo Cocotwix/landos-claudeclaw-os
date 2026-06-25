@@ -4,7 +4,52 @@ Tracking doc for LandOS build blocks. No secrets, no deal data.
 Master doctrine: `LandOS_Master_Architecture_Directive.md`.
 Current block definition: `LandOS_OS_Spine_v1_Build_Block.md`.
 
-Last updated: 2026-06-12 (OS Spine v1).
+Last updated: 2026-06-25 (CP3–CP6: Knowledge layer + data providers).
+
+## Current state — 2026-06-25
+
+**Pushed commit:** `79dad13435b03312849746af9558cd8b2b3eb30d`
+(`LandOS: R2-ready KnowledgeStore, Realie adapter, and knowledge dashboard`)
+
+### Repo status
+- `origin/main` is at `79dad13435b03312849746af9558cd8b2b3eb30d`.
+- Local `main` is synced (0 ahead / 0 behind).
+- Only known untracked file: `landos-agents/acquisition-copilot/.no-avatar` (pre-existing, unrelated, not staged).
+
+### Completed sections (cumulative)
+- LandOS shell and architecture foundation
+- Safe upstream ClaudeClaw adoption
+- SDK 0.3 migration
+- Memory isolation + shared memory tier
+- Provider abstraction
+- Model router / capability scoring / execution environments
+- Live execution service with safe mode
+- Grunt helpers
+- Deal Card workflow lane backend
+- Operational Underwriting
+- R2-ready KnowledgeStore (config-gated; local-fs default, lazy R2 SDK)
+- Realie.ai live-ready adapter (behind the provider layer; never fabricates)
+- Knowledge ingestion shell (deterministic, roster-validated, raw_training only)
+- Knowledge dashboard tab + read-only status/manifest/scorecard routes
+
+### Verification (this block)
+- `npx vitest run src/landos` → **1233 tests / 92 files green**, 0 failures
+- `npx tsc --noEmit` → clean
+- `npm run build` (vite + tsc) → succeeds
+- No `.env` touched · no paid/live calls · no secrets in the diff
+
+### Remaining setup Tyler must add later
+1. **R2 env keys:** `LANDOS_R2_ACCOUNT_ID`, `LANDOS_R2_ACCESS_KEY_ID`, `LANDOS_R2_SECRET_ACCESS_KEY`, `LANDOS_R2_BUCKET` (optional `LANDOS_R2_ENDPOINT`, `LANDOS_KNOWLEDGE_BACKEND=r2|local|auto`).
+2. **Install `@aws-sdk/client-s3`** once approved (not installed; `auto` falls back to local-fs, forced `r2` fails loud until present).
+3. **Realie API key + endpoint confirmation:** set `REALIE_API_KEY` (optional `REALIE_API_BASE`) and confirm the real lookup path (assumed `GET {base}/parcels/lookup`, bearer auth) before the first live call.
+4. **Restart the dashboard** process to pick up the new routes + Knowledge tab (live restart not performed).
+
+### Deferred by design (not bugs)
+- Embeddings / indexing over ingested manifests (shell is deterministic intake only).
+- Live market-data adapters feeding the County Scorecard (metrics stay `unavailable`, never fabricated).
+- Approval-gated promotion of raw training → agent instruction (promotion guard returns false by design).
+- Live Realie calls until credentials + endpoint are confirmed.
+- Live R2 until credentials + SDK install are approved.
 
 ## OS Spine v1 — BUILT
 
