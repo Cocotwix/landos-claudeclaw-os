@@ -102,21 +102,28 @@ export class GeminiClient implements ModelClient {
 // ── Ollama (local; serves Gemma open-source weights) ──────────────────────────
 export class OllamaClient implements ModelClient {
   readonly provider = 'ollama';
-  constructor(private opts: { host?: string; serves?: string[] } = {}) {
+  constructor(private opts: { host?: string; serves?: string[]; modelMap?: Record<string, string> } = {}) {
     this.serves = opts.serves ?? ['gemma-4-e4b', 'gemma-4-12b-q4'];
   }
   private serves: string[];
   servesModel(modelId: string) { return this.serves.includes(modelId); }
   available() { return !!this.opts.host; }
+  /** Translate a LandOS-internal model id to the real Ollama tag. The internal
+   *  ids (e.g. 'gemma-4-12b-q4') are NOT valid Ollama tags; the host serves tags
+   *  like 'gemma4:12b'. Falls back to the id itself when unmapped. */
+  ollamaTagFor(modelId: string): string {
+    return this.opts.modelMap?.[modelId] ?? modelId;
+  }
   async complete(modelId: string, req: CompletionRequest): Promise<CompletionResult> {
     if (!this.opts.host) throw new Error('ollama host not configured');
+    const tag = this.ollamaTagFor(modelId);
     const prompt = req.system ? `${req.system}\n\n${req.prompt}` : req.prompt;
     const res = await fetch(`${this.opts.host.replace(/\/$/, '')}/api/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: modelId, prompt, stream: false }),
+      body: JSON.stringify({ model: tag, prompt, stream: false }),
     });
-    if (!res.ok) throw new Error(`ollama HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`ollama HTTP ${res.status} for tag "${tag}"`);
     const j: any = await res.json();
     return { text: j.response ?? '', modelId };
   }

@@ -13,7 +13,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
-  LANDOS_LIVE_ROUTING, OPENAI_API_KEY, OPENROUTER_API_KEY, OLLAMA_HOST,
+  OPENAI_API_KEY, OPENROUTER_API_KEY,
   LM_STUDIO_URL, VLLM_URL, GOOGLE_API_KEY,
 } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -26,8 +26,12 @@ import {
 } from './model-execution.js';
 import { resolveOverride, type OverrideStore } from './model-override.js';
 import { telemetryFromDecision, recordRouterDecision, InMemoryTelemetrySink, type TelemetrySink } from './router-telemetry.js';
+import { resolveLiveRouting, resolveOllamaHost, resolveOllamaModelMap } from './router-runtime-config.js';
 
-export function liveRoutingEnabled(): boolean { return LANDOS_LIVE_ROUTING; }
+/** Effective live-routing flag: persisted operator setting wins, else the env
+ *  flag (see router-runtime-config.ts). Single source of truth for the dashboard
+ *  status, the live execution path, and the grunt path. */
+export function liveRoutingEnabled(): boolean { return resolveLiveRouting().enabled; }
 
 /** Config policy: high-stakes pins Claude (operator-set, not hardcoded in routing). */
 export const HIGH_STAKES_POLICY = { highStakesModelId: 'claude' } as const;
@@ -52,12 +56,18 @@ const defaultClaudeRunner: ClaudeRunner = async (modelId, req) => {
 /** Build the live registry from config. Clients are constructed with config
  *  values (never logged); a provider with no credential is simply omitted. */
 export function buildRegistryFromConfig(claudeRunner: ClaudeRunner = defaultClaudeRunner): ProviderRegistry {
+  // Ollama host + model-tag map come from the runtime resolver (persisted setting
+  // over env), so an operator can enable/point Ollama without a .env edit and the
+  // execution path sends the REAL Ollama tag (e.g. 'gemma4:12b'), not the
+  // internal id. An empty host means the provider is simply not installed.
+  const ollamaHost = resolveOllamaHost().host;
+  const ollamaModelMap = resolveOllamaModelMap();
   return buildProviderRegistry({
     anthropic: new ClaudeClient(claudeRunner),
     openai: OPENAI_API_KEY ? new OpenAICompatibleClient({ provider: 'openai', apiKey: OPENAI_API_KEY, serves: ['gpt'] }) : undefined,
     openrouter: OPENROUTER_API_KEY ? new OpenAICompatibleClient({ provider: 'openrouter', apiKey: OPENROUTER_API_KEY, serves: ['gpt'] }) : undefined,
     google: GOOGLE_API_KEY ? new GeminiClient({ apiKeyPresent: true }) : undefined,
-    ollama: OLLAMA_HOST ? new OllamaClient({ host: OLLAMA_HOST }) : undefined,
+    ollama: ollamaHost ? new OllamaClient({ host: ollamaHost, modelMap: ollamaModelMap }) : undefined,
     lmstudio: LM_STUDIO_URL ? new OpenAICompatibleClient({ provider: 'lmstudio', baseURL: LM_STUDIO_URL, local: true, serves: ['gemma-4-e4b', 'gemma-4-12b-q4'] }) : undefined,
     vllm: VLLM_URL ? new OpenAICompatibleClient({ provider: 'vllm', baseURL: VLLM_URL, local: true, serves: ['gemma-4-e4b', 'gemma-4-12b-q4'] }) : undefined,
   });

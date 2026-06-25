@@ -51,7 +51,8 @@ import { routeByCapability, type JobRequirements } from './capability-router.js'
 import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS, getCapabilityEntry } from './model-capabilities.js';
 import { sourcedProfileFor } from './capability-scoring.js';
 import { buildProviderRegistry } from './provider-registry.js';
-import { liveRoutingEnabled, buildRegistryFromConfig } from './model-router-service.js';
+import { buildRegistryFromConfig } from './model-router-service.js';
+import { resolveLiveRouting, resolveOllamaHost, setLiveRouting, setOllamaHost } from './router-runtime-config.js';
 import { GRUNT_HELPERS } from './grunt-helpers.js';
 import { computeDealLane, type DealLaneSnapshot } from './deal-lane.js';
 import { runUnderwriting, type UnderwritingStrategyLane } from './underwriting-agent.js';
@@ -292,14 +293,39 @@ export function registerLandosRoutes(app: Hono): void {
   // from the config-built registry. Read-only; no .env values exposed.
   app.get('/api/landos/model-router/status', (c) => {
     const registry = buildRegistryFromConfig();
+    const live = resolveLiveRouting();
+    const ollama = resolveOllamaHost();
     return c.json({
-      liveRouting: liveRoutingEnabled(),
-      safeMode: !liveRoutingEnabled(),
+      liveRouting: live.enabled,
+      liveRoutingSource: live.source,
+      safeMode: !live.enabled,
       highStakesDefault: 'claude',
-      providerPresence: PROVIDER_PRESENCE,
+      // Effective provider presence: ollama reflects the RESOLVED host (setting or
+      // env), not just the boot-time env const, so the dashboard matches reality.
+      providerPresence: { ...PROVIDER_PRESENCE, ollama: !!ollama.host },
+      ollamaHostConfigured: !!ollama.host,
+      ollamaHostSource: ollama.source,
       environments: registry.describe(),
       helpers: GRUNT_HELPERS,
     });
+  });
+
+  // Operator controls for live routing + the local Ollama host (persisted via
+  // dashboard_settings; survives restart — this is the durable enable path that
+  // .env-only config lacked). No secrets; booleans/host only.
+  app.post('/api/landos/model-router/live-routing', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400);
+    setLiveRouting(body.enabled);
+    return c.json({ ok: true, liveRouting: resolveLiveRouting() });
+  });
+  app.post('/api/landos/model-router/ollama-host', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof body.host !== 'string') return c.json({ error: 'host (string) is required' }, 400);
+    const host = body.host.trim();
+    if (host && !/^https?:\/\//i.test(host)) return c.json({ error: 'host must be an http(s) URL or empty to clear' }, 400);
+    setOllamaHost(host);
+    return c.json({ ok: true, ollamaHost: resolveOllamaHost() });
   });
 
   // Manual override controls (persistent via dashboard_settings). modelId must be

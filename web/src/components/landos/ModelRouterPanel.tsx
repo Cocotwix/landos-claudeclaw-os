@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { apiGet } from '@/lib/api';
+import { apiGet, apiPost } from '@/lib/api';
 import { PageState } from '@/components/PageState';
 
 // Read-only model-router visibility: safe-mode flag, provider presence (booleans
@@ -15,9 +15,12 @@ interface ProviderNode {
 interface EnvNode { environment: { id: string; label: string; kind: string; execution: string }; providers: ProviderNode[] }
 interface RouterStatus {
   liveRouting: boolean;
+  liveRoutingSource?: string;
   safeMode: boolean;
   highStakesDefault: string;
   providerPresence: Record<string, boolean>;
+  ollamaHostConfigured?: boolean;
+  ollamaHostSource?: string;
   environments: EnvNode[];
   helpers?: Array<{ id: string; label: string }>;
 }
@@ -30,6 +33,12 @@ export function ModelRouterPanel() {
   const [s, setS] = useState<RouterStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    const r = await apiGet<RouterStatus>('/api/landos/model-router/status');
+    setS(r);
+  }
 
   useEffect(() => {
     let alive = true;
@@ -41,6 +50,14 @@ export function ModelRouterPanel() {
     return () => { alive = false; };
   }, []);
 
+  async function toggleLive() {
+    if (!s) return;
+    setBusy(true);
+    try { await apiPost('/api/landos/model-router/live-routing', { enabled: !s.liveRouting }); await refresh(); }
+    catch (e: any) { setError(e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
   if (error) return <PageState error={error} />;
   if (loading && !s) return <PageState loading />;
   if (!s) return null;
@@ -48,12 +65,28 @@ export function ModelRouterPanel() {
   return (
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-6">
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-        <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Model Router</div>
-        <div class="text-[14px] font-semibold mt-0.5">
-          {s.liveRouting ? 'Live multi-provider routing: ON' : 'Safe mode (Claude-only): ON'}
+        <div class="flex items-center gap-3">
+          <div class="flex-1">
+            <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Model Router</div>
+            <div class="text-[14px] font-semibold mt-0.5">
+              {s.liveRouting ? 'Live multi-provider routing: ON' : 'Safe mode (Claude-only): ON'}
+            </div>
+            <div class="text-[11px] text-[var(--color-text-muted)] mt-1">
+              High-stakes default: <span class="font-mono">{s.highStakesDefault}</span> · low-risk grunt-work routes to the best available model when live routing is enabled.
+              {s.liveRoutingSource && <span class="text-[var(--color-text-faint)]"> · source: {s.liveRoutingSource}</span>}
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={toggleLive}
+            class="shrink-0 px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+          >
+            {s.liveRouting ? 'Switch to Safe Mode' : 'Enable Live Routing'}
+          </button>
         </div>
-        <div class="text-[11px] text-[var(--color-text-muted)] mt-1">
-          High-stakes default: <span class="font-mono">{s.highStakesDefault}</span> · low-risk grunt-work routes to the best available model when live routing is enabled.
+        <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
+          Ollama host: {s.ollamaHostConfigured ? `configured (${s.ollamaHostSource})` : 'not configured'} — set it via POST /api/landos/model-router/ollama-host. High-stakes always stays on Claude regardless of this toggle.
         </div>
       </div>
 
