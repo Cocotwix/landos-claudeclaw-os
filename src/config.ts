@@ -18,6 +18,11 @@ const envConfig = readEnvFile([
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
   'CLAUDECLAW_STORE_DIR',
+  'CLAUDE_MODEL_OPUS',
+  'CLAUDE_MODEL_SONNET',
+  'CLAUDE_MODEL_HAIKU',
+  'DEFAULT_CLAUDE_MODEL',
+  'CLAUDECLAW_USE_ANTHROPIC_API_KEY',
   'LANDOS_AGENTS_DIR',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
@@ -244,6 +249,18 @@ export const SMART_ROUTING_ENABLED =
   (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
 export const SMART_ROUTING_CHEAP_MODEL =
   process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
+
+// Canonical Claude model aliases (single source of truth, env-overridable).
+// Used by the provider engine and the LandOS model-router default.
+export const CLAUDE_MODEL_OPUS =
+  process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-4-8';
+export const CLAUDE_MODEL_SONNET =
+  process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-6';
+export const CLAUDE_MODEL_HAIKU =
+  process.env.CLAUDE_MODEL_HAIKU || envConfig.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5';
+// Default Claude model when no provider/agent model is configured (fresh installs).
+export const DEFAULT_CLAUDE_MODEL =
+  process.env.DEFAULT_CLAUDE_MODEL || envConfig.DEFAULT_CLAUDE_MODEL || CLAUDE_MODEL_OPUS;
 
 // Cost footer on every response.
 // compact = model only, verbose = model + tokens, cost = model + $, full = everything

@@ -279,6 +279,15 @@ const SDK_SECRET_NAME_PATTERNS = [
 ] as const;
 
 const SDK_AUTH_VARS = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const;
+// CLAUDE_CODE_OAUTH_TOKEN is the explicit subscription/OAuth auth override and is
+// always allowed through to the SDK subprocess. ANTHROPIC_API_KEY is NOT, by
+// default (#52): a stale/invalid external API key must not silently override an
+// existing Claude subscription login. Opt in via CLAUDECLAW_USE_ANTHROPIC_API_KEY=true.
+const SDK_ALWAYS_ALLOW_AUTH_VARS = ['CLAUDE_CODE_OAUTH_TOKEN'] as const;
+
+function wantsAnthropicApiKeyAuth(): boolean {
+  return (process.env.CLAUDECLAW_USE_ANTHROPIC_API_KEY ?? '').toLowerCase() === 'true';
+}
 
 /**
  * Return a scrubbed env dict suitable for passing to `query({ env, ... })`.
@@ -289,18 +298,26 @@ const SDK_AUTH_VARS = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const;
 export function getScrubbedSdkEnv(
   authSecrets?: Partial<Record<typeof SDK_AUTH_VARS[number], string>>,
 ): Record<string, string | undefined> {
+  const processAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
   const env: Record<string, string | undefined> = { ...process.env };
 
   for (const k of SDK_DROP_VARS_NESTED_CLAUDE) delete env[k];
   for (const k of SDK_DROP_VARS_SECRETS) delete env[k];
 
   // Pattern-based drop. Walk a snapshot of keys so we can mutate the
-  // dict during iteration.
+  // dict during iteration. Only CLAUDE_CODE_OAUTH_TOKEN is unconditionally
+  // preserved; ANTHROPIC_API_KEY falls through the _API_KEY$ pattern and is
+  // dropped unless explicitly opted in below.
   for (const key of Object.keys(env)) {
-    if ((SDK_AUTH_VARS as readonly string[]).includes(key)) continue;
+    if ((SDK_ALWAYS_ALLOW_AUTH_VARS as readonly string[]).includes(key)) continue;
     if (SDK_SECRET_NAME_PATTERNS.some((re) => re.test(key))) {
       delete env[key];
     }
+  }
+
+  // Opt-in restore of ANTHROPIC_API_KEY (dropped above) for API-key auth.
+  if (wantsAnthropicApiKeyAuth() && processAnthropicApiKey) {
+    env.ANTHROPIC_API_KEY = processAnthropicApiKey;
   }
 
   // Re-inject auth secrets the caller explicitly opted to allow. Without
@@ -308,7 +325,9 @@ export function getScrubbedSdkEnv(
   if (authSecrets) {
     for (const k of SDK_AUTH_VARS) {
       const v = authSecrets[k];
-      if (v) env[k] = v;
+      if (!v) continue;
+      if (k === 'ANTHROPIC_API_KEY' && !wantsAnthropicApiKeyAuth()) continue;
+      env[k] = v;
     }
   }
 
