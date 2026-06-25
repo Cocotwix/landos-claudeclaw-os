@@ -425,6 +425,8 @@ export function initDatabase(): void {
   db.pragma('busy_timeout = 5000');
   createSchema(db);
   runMigrations(db);
+  // Memory isolation (#96): one-time detect prior multi-agent installs.
+  stampMemoryIsolationMigration(db);
 
   // Restrict database file permissions (owner-only read/write)
   try {
@@ -667,6 +669,15 @@ function runMigrations(database: Database.Database): void {
   if (!memColsPost.some((c: { name: string }) => c.name === 'pinned')) {
     database.exec(`ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
     logger.info('Migration: added pinned column to memories table');
+  }
+
+  // Memory isolation (#96): add the explicit shared tier. shared = 1 means a
+  // memory is recalled by ANY agent on the chat; shared = 0 (default) keeps it
+  // private to its agent_id. Existing rows default to 0 — nothing is shared
+  // retroactively. Recall queries use (agent_id = ? OR shared = 1).
+  if (!memColsPost.some((c: { name: string }) => c.name === 'shared')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN shared INTEGER NOT NULL DEFAULT 0`);
+    logger.info('Migration: added shared column to memories table');
   }
 
   // Mission Control: migrate assigned_agent from NOT NULL to nullable (allow unassigned tasks)
@@ -917,7 +928,7 @@ export function searchMemories(
   // the worst case, interpret attacker-controlled characters as query
   // operators. Belt-and-braces on top of extractKeywords' own filtering.
   const ftsQuery = keywords.map((w) => `"${w.replace(/"/g, '')}"*`).join(' OR ');
-  const ftsAgentClause = agentId ? ' AND memories.agent_id = ?' : '';
+  const ftsAgentClause = agentId ? ' AND (memories.agent_id = ? OR memories.shared = 1)' : '';
   const ftsParams: unknown[] = [ftsQuery, chatId];
   if (agentId) ftsParams.push(agentId);
   ftsParams.push(limit);
@@ -943,7 +954,7 @@ export function searchMemories(
     likeParams.push(pattern, pattern, pattern, pattern);
   }
 
-  const likeAgentClause = agentId ? ' AND agent_id = ?' : '';
+  const likeAgentClause = agentId ? ' AND (agent_id = ? OR shared = 1)' : '';
   const likeAllParams: unknown[] = [chatId, ...likeParams];
   if (agentId) likeAllParams.push(agentId);
   likeAllParams.push(limit);
@@ -993,7 +1004,7 @@ export function getMemoriesWithEmbeddings(
   agentId?: string,
 ): Array<{ id: number; embedding: number[]; summary: string; importance: number }> {
   const sql = agentId
-    ? 'SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND agent_id = ? AND embedding IS NOT NULL AND superseded_by IS NULL'
+    ? 'SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND (agent_id = ? OR shared = 1) AND embedding IS NOT NULL AND superseded_by IS NULL'
     : 'SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND embedding IS NOT NULL AND superseded_by IS NULL';
   const params = agentId ? [chatId, agentId] : [chatId];
   const rows = db
@@ -1015,7 +1026,7 @@ export function getRecentHighImportanceMemories(
   if (agentId) {
     return db
       .prepare(
-        `SELECT * FROM memories WHERE chat_id = ? AND agent_id = ? AND importance >= 0.5
+        `SELECT * FROM memories WHERE chat_id = ? AND (agent_id = ? OR shared = 1) AND importance >= 0.5
          ORDER BY accessed_at DESC LIMIT ?`,
       )
       .all(chatId, agentId, limit) as Memory[];
@@ -2907,6 +2918,95 @@ export function setDashboardSetting(key: string, value: string): void {
     `INSERT INTO dashboard_settings (key, value, updated_at) VALUES (?, ?, strftime('%s','now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
   ).run(key, value);
+}
+
+// ── Memory isolation (#96): recall mode + shared tier + migration stamp ──────
+//
+// Recall is per-agent by default ('isolated'): an agent recalls its own memories
+// plus the explicit shared tier (shared = 1). Existing multi-agent installs can
+// opt back into cross-agent recall ('shared') via setMemoryRecallMode. The env
+// seed MEMORY_RECALL_MODE sets the default before any dashboard toggle exists.
+
+export type MemoryRecallMode = 'isolated' | 'shared';
+const MEMORY_RECALL_MODE_KEY = 'memory_recall_mode';
+const MEMORY_MIGRATION_NOTICE_KEY = 'memory_migration_notice';
+const MEMORY_ISOLATION_STAMPED_KEY = 'memory_isolation_migrated';
+const MEMORY_RECALL_MODE_ENV: MemoryRecallMode =
+  (process.env.MEMORY_RECALL_MODE === 'shared' ? 'shared' : 'isolated');
+
+export function getMemoryRecallMode(): MemoryRecallMode {
+  const stored = getDashboardSetting(MEMORY_RECALL_MODE_KEY);
+  if (stored === 'shared') return 'shared';
+  if (stored === 'isolated') return 'isolated';
+  return MEMORY_RECALL_MODE_ENV;
+}
+
+export function setMemoryRecallMode(mode: MemoryRecallMode): void {
+  setDashboardSetting(MEMORY_RECALL_MODE_KEY, mode);
+}
+
+export function getMemoryMigrationNotice(): 'pending' | 'sent' | null {
+  const v = getDashboardSetting(MEMORY_MIGRATION_NOTICE_KEY);
+  return v === 'pending' || v === 'sent' ? v : null;
+}
+
+export function setMemoryMigrationNotice(state: 'pending' | 'sent'): void {
+  setDashboardSetting(MEMORY_MIGRATION_NOTICE_KEY, state);
+}
+
+/** Mark a memory as shared (recalled by any agent) or private to its agent. */
+export function setMemoryShared(memoryId: number, shared: boolean): void {
+  db.prepare('UPDATE memories SET shared = ? WHERE id = ?').run(shared ? 1 : 0, memoryId);
+}
+
+/**
+ * One-time detection: did this install exist with MORE THAN ONE agent before the
+ * #96 isolation change landed? Those users had cross-agent recall as their lived
+ * behaviour, so we flag a one-time notice offering opt-back-in. The stamp marker
+ * is claimed ATOMICALLY (INSERT ... ON CONFLICT DO NOTHING): only the process
+ * that inserts it evaluates the notice, so concurrent agents can't re-nag.
+ */
+export function stampMemoryIsolationMigration(database: Database.Database = db): void {
+  const claim = database
+    .prepare(
+      `INSERT INTO dashboard_settings (key, value, updated_at)
+       VALUES (?, '1', strftime('%s','now')) ON CONFLICT(key) DO NOTHING`,
+    )
+    .run(MEMORY_ISOLATION_STAMPED_KEY);
+  if (claim.changes === 0) return;
+
+  const row = database
+    .prepare(`SELECT COUNT(DISTINCT agent_id) AS n FROM memories`)
+    .get() as { n: number };
+  if ((row?.n ?? 0) > 1) {
+    database
+      .prepare(
+        `INSERT INTO dashboard_settings (key, value, updated_at) VALUES (?, 'pending', strftime('%s','now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(MEMORY_MIGRATION_NOTICE_KEY);
+  }
+}
+
+/**
+ * Migrate an arbitrary ClaudeClaw database file to the current schema, in place.
+ * Opens dbPath with the same pragmas as initDatabase(), then applies createSchema
+ * (IF NOT EXISTS), runMigrations (idempotent ADD COLUMN) and the isolation stamp
+ * on that handle. Does NOT depend on STORE_DIR and does NOT touch the process-wide
+ * `db` connection, so tooling can upgrade a snapshot without disturbing a running
+ * instance. Idempotent; the connection is always closed, even on error.
+ */
+export function migrateDbFile(dbPath: string): void {
+  const database = new Database(dbPath);
+  try {
+    database.pragma('journal_mode = WAL');
+    database.pragma('busy_timeout = 5000');
+    createSchema(database);
+    runMigrations(database);
+    stampMemoryIsolationMigration(database);
+  } finally {
+    database.close();
+  }
 }
 
 export function getAllDashboardSettings(): Record<string, string> {

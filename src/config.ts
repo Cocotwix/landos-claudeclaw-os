@@ -17,6 +17,7 @@ const envConfig = readEnvFile([
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
+  'CLAUDECLAW_STORE_DIR',
   'LANDOS_AGENTS_DIR',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
@@ -103,7 +104,16 @@ const __dirname = path.dirname(__filename);
 // The SDK uses this as cwd, which causes Claude Code to load our CLAUDE.md
 // and all global skills from ~/.claude/skills/ via settingSources.
 export const PROJECT_ROOT = path.resolve(__dirname, '..');
-export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
+
+// STORE_DIR holds the SQLite database, PID locks and avatars. Defaults to
+// PROJECT_ROOT/store. Set CLAUDECLAW_STORE_DIR (env or .env) to relocate it
+// (e.g. onto a faster/encrypted volume); ~ is expanded. Default is unchanged
+// when the variable is absent (#108).
+const rawStoreDir =
+  process.env.CLAUDECLAW_STORE_DIR || envConfig.CLAUDECLAW_STORE_DIR || '';
+export const STORE_DIR = rawStoreDir
+  ? path.resolve(expandHome(rawStoreDir))
+  : path.resolve(PROJECT_ROOT, 'store');
 
 // ── External config directory ────────────────────────────────────────
 // Personal config files (CLAUDE.md, agent.yaml, agent CLAUDE.md) can live

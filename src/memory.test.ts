@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./db.js', () => ({
   searchMemories: vi.fn(),
   getRecentHighImportanceMemories: vi.fn(),
+  getMemoryRecallMode: vi.fn(() => 'isolated'),
   getOtherAgentActivity: vi.fn(() => []),
   getConsolidationsWithEmbeddings: vi.fn(() => []),
   touchMemory: vi.fn(),
