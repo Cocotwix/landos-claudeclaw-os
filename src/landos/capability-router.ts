@@ -64,18 +64,23 @@ export interface RouteDecision {
 }
 
 export interface RouteOptions {
-  /** Availability predicate (from the execution layer / config). Default: only
-   *  Claude is wired/available, reflecting the current install. */
+  /** Availability predicate, normally from the provider registry. Default: NOTHING
+   *  is assumed available (provider-neutral) — callers inject real availability. */
   available?: (modelId: string) => boolean;
   /** "Close enough" delta: a local model within this of the best closed model on
    *  the required capabilities is preferred. */
   closeEnough?: number;
   /** Confidence below this escalates. */
   lowConfidence?: number;
+  /** Optional business/operator policy. The router stays vendor-neutral; a policy
+   *  may pin a preferred high-stakes model (must be available) without hardcoding
+   *  any vendor in the routing logic. */
+  policy?: { highStakesModelId?: string };
 }
 
-const DEFAULT_AVAILABLE = (id: string) => id === 'claude';
-const HIGH_STAKES_DEFAULT = 'claude';
+// Provider-neutral default: assume nothing is available until the provider
+// registry says so. No vendor is hardcoded anywhere in routing.
+const DEFAULT_AVAILABLE = (_id: string) => false;
 
 function requiredDims(needs: Partial<CapabilityProfile>): CapabilityDimension[] {
   const dims = Object.keys(needs) as CapabilityDimension[];
@@ -142,15 +147,20 @@ export function routeByCapability(req: JobRequirements, opts: RouteOptions = {})
   const bestAvailable = (pool: RouteCandidate[]): RouteCandidate | undefined =>
     [...pool].sort((a, b) => b.score - a.score)[0];
 
-  // 2. High-stakes -> Claude default (hard rule: not replaced until approved).
+  // 2. High-stakes -> strongest AVAILABLE model on the required capabilities
+  //    (merit, not a hardcoded vendor). A business/operator policy MAY pin a
+  //    preferred high-stakes model via opts.policy.highStakesModelId (must be
+  //    available); otherwise the highest-scoring available model is chosen.
   if (req.stakes === 'high') {
-    if (available(HIGH_STAKES_DEFAULT)) {
-      notes.push('high-stakes job -> closed reasoning default (Claude)');
-      return { ...base(HIGH_STAKES_DEFAULT), source: 'escalated', available: true, escalated: true, escalationReason: 'high stakes (financial/legal/business risk)' };
+    const policyId = opts.policy?.highStakesModelId;
+    if (policyId && available(policyId)) {
+      notes.push(`high-stakes job -> policy-preferred model "${policyId}"`);
+      return { ...base(policyId), source: 'escalated', available: true, escalated: true, escalationReason: 'high stakes (operator/business policy)' };
     }
-    const fb = bestAvailable(candidates.filter((c) => c.available));
-    notes.push('high-stakes job but Claude unavailable — fell back to best available');
-    return { ...base(fb?.modelId ?? null), escalated: true, escalationReason: 'high stakes; Claude unavailable' };
+    const pool = eligible.length ? eligible : candidates.filter((c) => c.available);
+    const strong = bestAvailable(pool);
+    notes.push('high-stakes job -> strongest available model by required capability (no vendor hardcode)');
+    return { ...base(strong?.modelId ?? null), source: strong ? 'escalated' : 'fallback', available: !!strong, escalated: !!strong, escalationReason: strong ? 'high stakes (financial/legal/business risk)' : undefined };
   }
 
   // 3. Confidence / ambiguity / media-nuance escalation. (Long-context is handled

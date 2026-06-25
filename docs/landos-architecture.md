@@ -117,14 +117,71 @@ comps never become subject comps until verification.
 
 ## 6. Provider abstraction
 
-- **Model providers** — tiered routing (local‑first, cloud fallback). Migrates
-  onto the ClaudeClaw provider engine in Pass 3; until then the existing
-  model‑router / neutral model system stands.
+- **Model Router (core service)** — see §6a. Provider‑agnostic, capability‑driven.
 - **Data providers** — `data-registry.ts` exposes `parcel | comps | crm | market`
   adapters, each normalizing to one internal schema. The current **LandPortal**
   integration is *wrapped* as the `parcel` adapter; a **Realie.ai** adapter stub
   sits behind the same interface, selectable by config — no agent/workflow change
   to swap. No live/paid calls are made from a stub.
+
+## 6a. Model Router — core OS service (provider‑agnostic)
+
+The Model Router is foundational infrastructure alongside Executive Agent, Deal
+Cards, Memory, Knowledge, and Workflow. Every department/agent routes through it.
+It is **provider‑neutral** — no vendor (Claude/GPT/Gemini/Gemma/DeepSeek/Qwen/
+Llama/future) is ever assumed permanently "best." Layered abstraction:
+
+```
+Execution Environment → Provider → Model → Capability Profile → Model Router → Executive Agent
+```
+
+- **Execution Environment** (`execution-environment.ts`) — runtime substrate:
+  Local(Ollama), Cloud, OpenRouter, LM Studio, vLLM, MCP, future. The router never
+  asks *where* a model runs — only whether it is available, healthy, capable,
+  appropriate, and configured.
+- **Provider registry** (`provider-registry.ts`) — the single abstraction the
+  router (and War Room) talk to. Each provider is a descriptor wrapping a
+  credential‑injected `ModelClient` adapter (`model-execution.ts`) with status
+  (installed / configured / reachable / healthy / enabled / auth) under its
+  environment. Adding a provider = one descriptor; routing logic is untouched.
+- **Capability profiles with provenance** (`model-capabilities.ts` +
+  `capability-scoring.ts`) — every capability carries `{ effectiveScore,
+  confidence, lastUpdated, sources[] }`. Sources: provider metadata, provider
+  docs, public benchmark, LandOS seeded, LandOS observed, operator override.
+  LandOS never invents capabilities. Scores blend 30% provider / 20% benchmark /
+  50% observed, shifting toward observed (and `heuristic → measured`) as real
+  history accrues. **Operator satisfaction is a separate track** from technical
+  performance (a model can be strong yet get rewritten often).
+- **Router** (`capability-router.ts`) — decides on capabilities + confidence +
+  cost + latency + privacy + execution environment + operator preference +
+  business rules + manual overrides. Prefers local/open‑source when it meets the
+  required capability (Gemma‑4 is a capable multimodal model for audio/OCR/vision/
+  extraction/summarization grunt‑work); escalates to stronger models only on
+  high‑stakes / can't‑meet / low‑confidence / nuance / poor‑quality. High‑stakes
+  picks the strongest *available* model by merit (a config **policy** may pin a
+  preferred high‑stakes model — Claude today — without hardcoding any vendor).
+- **Manual override** (`model-override.ts`) — global / per‑agent / per‑task /
+  one‑time + reset; always wins; unavailable selection is **reported, never
+  silently substituted**.
+- **Learning seam** (`router-telemetry.ts`) — captures environment, provider,
+  model, task, required capabilities, confidence, runtime, latency, cost,
+  escalations, fallbacks, overrides, operator feedback, corrections, acceptance.
+  Adaptive routing can be enabled later without redesign (no autonomous learning
+  yet). Benchmarking standardized LandOS workloads feeds the `landos_observed`
+  source over time.
+- **AI Tech Researcher (`ai_bot`)** monitors the landscape (models, docs, pricing,
+  context, benchmarks, open‑source, inference engines, execution environments) and
+  **recommends** updates; the router/provider layer owns the profiles + decisions.
+  No separate AI department.
+
+### War Room reconciliation
+War Room's live voice loop (Python Pipecat + **Gemini Live**) remains a
+specialized real‑time speech‑to‑speech path, but its model/provider is **not
+separate infrastructure**: Google/Gemini is a first‑class provider in the shared
+provider registry (`cloud` environment), so War Room and the router share one
+execution‑environment registry, provider registry, capability database, routing
+intelligence, and override system. War Room's substantive work already delegates
+to the Claude agent, which routes through this layer. No duplicate AI stack.
 
 ---
 

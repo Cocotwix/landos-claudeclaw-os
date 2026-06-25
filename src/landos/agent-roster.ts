@@ -125,7 +125,7 @@ export const AGENT_ROSTER: readonly AgentDef[] = [
   },
   {
     key: 'ai_bot', name: 'AI Tech Researcher', group: 'intelligence',
-    role: 'Monitors the AI landscape against the current stack; surfaces better local/agentic/audio/RAG/cost options. Recommends only.',
+    role: 'Monitors the AI landscape for the Model Router / Provider Layer: new model releases, official provider docs, capability/pricing/context-window changes, benchmark updates, open-source releases, local-AI improvements, new inference engines, and new execution environments. RECOMMENDS capability-profile and provider updates to the model-router/provider layer (which owns the profiles and routing decisions). This role IS the AI-intelligence function — there is no separate department. Recommends only; never switches providers without approval.',
     defaultTier: 'tier2', attachment: 'business',
     knowledgePath: 'agents/ai_bot/knowledge', memoryPath: 'agents/ai_bot/memory',
     status: 'planned',

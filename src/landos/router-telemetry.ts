@@ -9,6 +9,10 @@ import type { RouteDecision } from './capability-router.js';
 
 export interface RouterTelemetryRecord {
   ts: number;
+  /** Execution environment + provider the model ran in (provenance of the run). */
+  executionEnvironment?: string;
+  provider?: string;
+  runtime?: 'local' | 'cloud';
   modelUsed: string | null;
   taskType?: string;
   requiredCapabilities: string[];
@@ -24,7 +28,11 @@ export interface RouterTelemetryRecord {
   latencyMs?: number;
   costUsd?: number;
   confidence?: number;
+  /** Operator feedback loop (feeds the separate operator-satisfaction track). */
   outputAccepted?: boolean | null;
+  operatorFeedback?: string;
+  corrections?: number;
+  regenerationRequired?: boolean;
 }
 
 export interface TelemetrySink {
@@ -45,10 +53,18 @@ export class InMemoryTelemetrySink implements TelemetrySink {
 /** Build a telemetry record from a routing decision + optional outcome fields. */
 export function telemetryFromDecision(
   decision: RouteDecision,
-  extra: { taskType?: string; stakes?: RouterTelemetryRecord['stakes']; overrideReason?: string; latencyMs?: number; costUsd?: number; confidence?: number; outputAccepted?: boolean | null } = {},
+  extra: {
+    taskType?: string; stakes?: RouterTelemetryRecord['stakes']; overrideReason?: string;
+    executionEnvironment?: string; provider?: string; runtime?: 'local' | 'cloud';
+    latencyMs?: number; costUsd?: number; confidence?: number;
+    outputAccepted?: boolean | null; operatorFeedback?: string; corrections?: number; regenerationRequired?: boolean;
+  } = {},
 ): RouterTelemetryRecord {
   return {
     ts: Date.now(),
+    executionEnvironment: extra.executionEnvironment,
+    provider: extra.provider,
+    runtime: extra.runtime,
     modelUsed: decision.chosenModelId,
     taskType: extra.taskType,
     requiredCapabilities: decision.requiredDimensions,
@@ -64,6 +80,9 @@ export function telemetryFromDecision(
     costUsd: extra.costUsd,
     confidence: extra.confidence,
     outputAccepted: extra.outputAccepted ?? null,
+    operatorFeedback: extra.operatorFeedback,
+    corrections: extra.corrections,
+    regenerationRequired: extra.regenerationRequired,
   };
 }
 

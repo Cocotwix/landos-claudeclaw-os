@@ -45,6 +45,8 @@ import { rosterSummary } from './agent-roster.js';
 import { orgChart } from './executive-orchestrator.js';
 import { routeByCapability, type JobRequirements } from './capability-router.js';
 import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS } from './model-capabilities.js';
+import { sourcedProfileFor } from './capability-scoring.js';
+import { buildProviderRegistry } from './provider-registry.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -257,7 +259,22 @@ export function registerLandosRoutes(app: Hono): void {
   // (defaulting to all profiled models) so the operator can see how routing
   // would resolve a job's required capabilities.
   app.get('/api/landos/model-router/capabilities', (c) =>
-    c.json({ dimensions: CAPABILITY_DIMENSIONS, models: MODEL_CAPABILITIES }));
+    c.json({
+      dimensions: CAPABILITY_DIMENSIONS,
+      models: MODEL_CAPABILITIES,
+      // Provenance: every capability traces to its sources (seeded baseline here;
+      // provider-metadata / benchmark / observed / override layer on later).
+      provenance: MODEL_CAPABILITIES.map((m) => ({ modelId: m.modelId, sourced: sourcedProfileFor(m.modelId, m.profile) })),
+    }));
+
+  // Execution-environment -> provider -> model tree with status (read-only).
+  // No credentials are injected here, so providers show as not-installed/
+  // not-configured — the structure + the shared registry are what's exposed.
+  // No .env, no secrets, no network probe.
+  app.get('/api/landos/model-router/environments', (c) => {
+    const registry = buildProviderRegistry();
+    return c.json({ environments: registry.describe() });
+  });
 
   app.post('/api/landos/model-router/preview', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
