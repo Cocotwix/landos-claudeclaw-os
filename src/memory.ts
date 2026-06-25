@@ -4,6 +4,7 @@ import {
   decayMemories,
   getConsolidationsWithEmbeddings,
   getLastMemorySaveTime,
+  getMemoryRecallMode,
   getOtherAgentActivity,
   getRecentConsolidations,
   getRecentHighImportanceMemories,
@@ -72,6 +73,15 @@ export async function buildMemoryContext(
     strictAgentId,
     warRoomBridge,
   } = opts;
+
+  // Memory isolation (#96): recall (Layers 1 & 2) is scoped to the calling agent
+  // plus the explicit shared tier (shared = 1) by default. In 'shared' mode the
+  // scope is dropped (undefined => no agent filter) so recall spans every agent
+  // on the chat — the pre-#96 behaviour, opt-in per install. strictAgentId (war
+  // room) and the default agentId resolve to the same recall scope. Read per-turn
+  // so toggling takes effect without a restart.
+  const recallAgentId =
+    getMemoryRecallMode() === 'shared' ? undefined : (strictAgentId ?? agentId);
   const seen = new Set<number>();
   const summaryMap = new Map<number, string>();
   const memLines: string[] = [];
@@ -95,7 +105,7 @@ export async function buildMemoryContext(
   // NOTE: We do NOT touch memories here. The feedback loop (evaluateMemoryRelevance)
   // is the only thing that should boost salience/accessed_at. Touching at retrieval
   // creates a positive feedback loop where noise stays fresh forever.
-  const searched = searchMemories(chatId, userMessage, 5, queryEmbedding, strictAgentId);
+  const searched = searchMemories(chatId, userMessage, 5, queryEmbedding, recallAgentId);
   for (const mem of searched) {
     seen.add(mem.id);
     summaryMap.set(mem.id, mem.summary);
@@ -105,7 +115,7 @@ export async function buildMemoryContext(
   }
 
   // Layer 2: recent high-importance memories (deduplicated)
-  const recent = getRecentHighImportanceMemories(chatId, 5, strictAgentId);
+  const recent = getRecentHighImportanceMemories(chatId, 5, recallAgentId);
   for (const mem of recent) {
     if (seen.has(mem.id)) continue;
     seen.add(mem.id);

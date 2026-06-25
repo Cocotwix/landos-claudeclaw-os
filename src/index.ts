@@ -114,7 +114,14 @@ function acquireLock(): void {
 }
 
 function releaseLock(): void {
-  try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
+  // Stale-lock protection (#102): only remove the pidfile if it still points at
+  // US. After this process was superseded (acquireLock kills the old PID and
+  // rewrites the file), a late shutdown handler here must NOT delete the new
+  // owner's pidfile — that would silently disable the new instance's lock.
+  try {
+    const owner = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
+    if (owner === process.pid) fs.unlinkSync(PID_FILE);
+  } catch { /* ignore */ }
 }
 
 async function main(): Promise<void> {

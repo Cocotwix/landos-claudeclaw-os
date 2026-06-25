@@ -17,6 +17,12 @@ const envConfig = readEnvFile([
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
+  'CLAUDECLAW_STORE_DIR',
+  'CLAUDE_MODEL_OPUS',
+  'CLAUDE_MODEL_SONNET',
+  'CLAUDE_MODEL_HAIKU',
+  'DEFAULT_CLAUDE_MODEL',
+  'CLAUDECLAW_USE_ANTHROPIC_API_KEY',
   'LANDOS_AGENTS_DIR',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
@@ -103,7 +109,16 @@ const __dirname = path.dirname(__filename);
 // The SDK uses this as cwd, which causes Claude Code to load our CLAUDE.md
 // and all global skills from ~/.claude/skills/ via settingSources.
 export const PROJECT_ROOT = path.resolve(__dirname, '..');
-export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
+
+// STORE_DIR holds the SQLite database, PID locks and avatars. Defaults to
+// PROJECT_ROOT/store. Set CLAUDECLAW_STORE_DIR (env or .env) to relocate it
+// (e.g. onto a faster/encrypted volume); ~ is expanded. Default is unchanged
+// when the variable is absent (#108).
+const rawStoreDir =
+  process.env.CLAUDECLAW_STORE_DIR || envConfig.CLAUDECLAW_STORE_DIR || '';
+export const STORE_DIR = rawStoreDir
+  ? path.resolve(expandHome(rawStoreDir))
+  : path.resolve(PROJECT_ROOT, 'store');
 
 // ── External config directory ────────────────────────────────────────
 // Personal config files (CLAUDE.md, agent.yaml, agent CLAUDE.md) can live
@@ -234,6 +249,18 @@ export const SMART_ROUTING_ENABLED =
   (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
 export const SMART_ROUTING_CHEAP_MODEL =
   process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
+
+// Canonical Claude model aliases (single source of truth, env-overridable).
+// Used by the provider engine and the LandOS model-router default.
+export const CLAUDE_MODEL_OPUS =
+  process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-4-8';
+export const CLAUDE_MODEL_SONNET =
+  process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-6';
+export const CLAUDE_MODEL_HAIKU =
+  process.env.CLAUDE_MODEL_HAIKU || envConfig.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5';
+// Default Claude model when no provider/agent model is configured (fresh installs).
+export const DEFAULT_CLAUDE_MODEL =
+  process.env.DEFAULT_CLAUDE_MODEL || envConfig.DEFAULT_CLAUDE_MODEL || CLAUDE_MODEL_OPUS;
 
 // Cost footer on every response.
 // compact = model only, verbose = model + tokens, cost = model + $, full = everything

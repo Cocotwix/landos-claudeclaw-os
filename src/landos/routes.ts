@@ -41,6 +41,8 @@ import {
 } from './live-data-preflight.js';
 import { runPropertyAnalysis } from './property-analysis.js';
 import { savePropertyAnalysisReport } from './property-analysis-report.js';
+import { rosterSummary } from './agent-roster.js';
+import { orgChart } from './executive-orchestrator.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -164,6 +166,24 @@ export function registerLandosRoutes(app: Hono): void {
   });
 
   app.get('/api/landos/departments', (c) => c.json({ departments: DEPARTMENTS }));
+
+  // ── Org chart: Executive Agent + 14-agent roster + workflow (read-only) ─────
+  // Source-of-truth roster for the dashboard Org/Agents view. No secrets, no
+  // model calls. Business metadata only.
+  app.get('/api/landos/org', (c) => {
+    const org = orgChart();
+    return c.json({
+      executive: { key: org.executive.key, name: org.executive.name, role: org.executive.role },
+      roster: rosterSummary(),
+      groups: Object.fromEntries(
+        Object.entries(org.groups).map(([g, list]) => [g, list.map((a) => a.key)]),
+      ),
+      workflow: {
+        primary: ['Lead', 'DD Report', 'Discovery Call', 'Underwriting', 'Offer'],
+        alternate: ['Lead', 'DD Report', 'Discovery Call', 'Deeper DD', 'Underwriting', 'Offer'],
+      },
+    });
+  });
 
   // ── Live Comps readiness (status-only; NO secrets, NO provider call) ──────
   // Lets Tyler confirm from the dashboard whether local Live Comps is configured

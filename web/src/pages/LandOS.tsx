@@ -4,6 +4,7 @@ import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { IntakePlanner } from '@/components/IntakePlanner';
 import { CommandHome } from '@/components/CommandHome';
+import { OrgRoster } from '@/components/landos/OrgRoster';
 import { DealCard } from '@/components/DealCard';
 import { Acquire } from '@/components/Acquire';
 import { CostBoard } from '@/components/CostBoard';
@@ -46,7 +47,7 @@ interface Overview {
 }
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
-type LandosView = 'overview' | 'acquire' | 'intake' | 'command' | 'dealcard' | 'costcontrol';
+type LandosView = 'overview' | 'acquire' | 'intake' | 'command' | 'dealcard' | 'costcontrol' | 'org';
 
 // Module sections of the OS spine. count keys map to getOverview() output.
 const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
@@ -114,6 +115,7 @@ export function LandOS() {
         tabs={
           <>
             <Tab label="Command" active={view === 'command'} onClick={() => setView('command')} />
+            <Tab label="Org / Agents" active={view === 'org'} onClick={() => setView('org')} />
             <Tab label="Acquire" active={view === 'acquire'} onClick={() => setView('acquire')} />
             <Tab label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
             <Tab label="Intake Planner" active={view === 'intake'} onClick={() => setView('intake')} />
@@ -129,6 +131,7 @@ export function LandOS() {
       />
 
       {view === 'command' && <CommandHome onOpenDealCards={() => { setSelectedDealCardId(undefined); setView('dealcard'); }} />}
+      {view === 'org' && <OrgRoster />}
       {view === 'acquire' && <Acquire entity={entity} onOpenDealCard={(id) => { setSelectedDealCardId(id); setView('dealcard'); }} />}
       {view === 'dealcard' && <DealCard dealCardId={selectedDealCardId} entity={entity} />}
       {view === 'intake' && <IntakePlanner />}
