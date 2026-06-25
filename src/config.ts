@@ -44,6 +44,13 @@ const envConfig = readEnvFile([
   'WARROOM_ENABLED',
   'WARROOM_PORT',
   'STREAM_STRATEGY',
+  'LANDOS_LIVE_ROUTING',
+  'OPENAI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OLLAMA_HOST',
+  'LM_STUDIO_URL',
+  'VLLM_URL',
+  'ANTHROPIC_API_KEY',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -261,6 +268,38 @@ export const CLAUDE_MODEL_HAIKU =
 // Default Claude model when no provider/agent model is configured (fresh installs).
 export const DEFAULT_CLAUDE_MODEL =
   process.env.DEFAULT_CLAUDE_MODEL || envConfig.DEFAULT_CLAUDE_MODEL || CLAUDE_MODEL_OPUS;
+
+// ── Model router: live multi-provider routing (safe mode) ─────────────
+// OFF by default: routing resolves to Claude only, preserving current behavior.
+// Set LANDOS_LIVE_ROUTING=1/true to let low-risk grunt-work execute on configured
+// local/cloud providers. High-stakes always stays on Claude regardless.
+export const LANDOS_LIVE_ROUTING =
+  ['1', 'true', 'yes', 'on'].includes((process.env.LANDOS_LIVE_ROUTING || envConfig.LANDOS_LIVE_ROUTING || '').toLowerCase());
+
+// Provider credential VALUES (consumed only to construct execution clients;
+// never logged/printed) and PRESENCE booleans (safe to expose to status/dashboard).
+export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || envConfig.OPENAI_API_KEY || '';
+export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || envConfig.OPENROUTER_API_KEY || '';
+export const OLLAMA_HOST = process.env.OLLAMA_HOST || envConfig.OLLAMA_HOST || '';
+export const LM_STUDIO_URL = process.env.LM_STUDIO_URL || envConfig.LM_STUDIO_URL || '';
+export const VLLM_URL = process.env.VLLM_URL || envConfig.VLLM_URL || '';
+const _anthropicApiKey = process.env.ANTHROPIC_API_KEY || envConfig.ANTHROPIC_API_KEY || '';
+const _oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
+
+/** Presence-only provider config (no secret values). For status/dashboard. */
+export const PROVIDER_PRESENCE = {
+  // Claude runs via the local ~/.claude session even without an env token, so it
+  // is considered configured by default; an explicit token/key strengthens it.
+  claude: true,
+  anthropic_api: !!_anthropicApiKey,
+  claude_oauth_token: !!_oauthToken,
+  openai: !!OPENAI_API_KEY,
+  openrouter: !!OPENROUTER_API_KEY,
+  ollama: !!OLLAMA_HOST,
+  lmstudio: !!LM_STUDIO_URL,
+  vllm: !!VLLM_URL,
+  google: !!GOOGLE_API_KEY,
+} as const;
 
 // Cost footer on every response.
 // compact = model only, verbose = model + tokens, cost = model + $, full = everything

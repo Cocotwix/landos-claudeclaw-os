@@ -41,28 +41,33 @@ export class ClaudeClient implements ModelClient {
   }
 }
 
-// ── OpenAI / OpenRouter (OpenAI-compatible) ───────────────────────────────────
+// ── OpenAI / OpenRouter / LM Studio / vLLM (all OpenAI-compatible) ─────────────
+// Cloud providers (openai/openrouter) are available when an API key is injected.
+// Local servers (lmstudio/vllm) are OpenAI-compatible and available when their
+// baseURL is injected (key optional — a dummy is sent).
 export class OpenAICompatibleClient implements ModelClient {
   readonly provider: string;
   constructor(
-    opts: { provider: 'openai' | 'openrouter'; apiKey?: string; baseURL?: string; defaultModelName?: string; serves?: string[] },
+    opts: { provider: string; apiKey?: string; baseURL?: string; defaultModelName?: string; serves?: string[]; local?: boolean },
   ) {
     this.provider = opts.provider;
     this.apiKey = opts.apiKey;
     this.baseURL = opts.baseURL;
+    this.local = opts.local === true;
     this.defaultModelName = opts.defaultModelName ?? (opts.provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini');
     this.serves = opts.serves ?? ['gpt'];
   }
   private apiKey?: string;
   private baseURL?: string;
+  private local: boolean;
   private defaultModelName: string;
   private serves: string[];
   servesModel(modelId: string) { return this.serves.includes(modelId); }
-  available() { return !!this.apiKey; }
+  available() { return this.local ? !!this.baseURL : !!this.apiKey; }
   async complete(modelId: string, req: CompletionRequest): Promise<CompletionResult> {
-    if (!this.apiKey) throw new Error(`${this.provider} api key not configured`);
+    if (!this.available()) throw new Error(`${this.provider} not configured`);
     const { default: OpenAI } = await import('openai');
-    const client = new OpenAI({ apiKey: this.apiKey, ...(this.baseURL ? { baseURL: this.baseURL } : {}) });
+    const client = new OpenAI({ apiKey: this.apiKey || 'local', ...(this.baseURL ? { baseURL: this.baseURL } : {}) });
     const params: any = {
       model: this.defaultModelName,
       messages: [

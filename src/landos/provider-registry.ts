@@ -10,6 +10,7 @@
 // configured + enabled, unless an explicit probe() is run by the operator.
 
 import { EXECUTION_ENVIRONMENTS, getExecutionEnvironment, type ExecutionEnvironment } from './execution-environment.js';
+import { getCapabilityEntry } from './model-capabilities.js';
 import type { ModelClient, CompletionRequest, CompletionResult } from './model-execution.js';
 
 export interface ProviderStatus {
@@ -81,8 +82,8 @@ export class ProviderRegistry {
     return p.client.complete(modelId, req);
   }
 
-  /** Structured EE -> provider -> model tree with status, for the dashboard. */
-  describe(): Array<{ environment: ExecutionEnvironment; providers: Array<{ descriptor: Omit<ProviderDescriptor, 'client'>; status: ProviderStatus }> }> {
+  /** Structured EE -> provider -> model (with capabilities) tree + status, for the dashboard. */
+  describe() {
     return this.envs.map((env) => ({
       environment: env,
       providers: this.providers
@@ -90,6 +91,10 @@ export class ProviderRegistry {
         .map((p) => ({
           descriptor: { id: p.id, environmentId: p.environmentId, kind: p.kind, label: p.label, execution: p.execution, servesModels: p.servesModels, enabled: p.enabled !== false },
           status: this.status(p),
+          models: p.servesModels.map((id) => {
+            const cap = getCapabilityEntry(id);
+            return { modelId: id, runtime: cap?.runtime ?? null, openSource: cap?.openSource ?? null, capabilities: cap?.profile ?? null };
+          }),
         })),
     }));
   }
@@ -106,10 +111,14 @@ export function buildProviderRegistry(clients: {
   openai?: ModelClient;
   google?: ModelClient;
   openrouter?: ModelClient;
+  lmstudio?: ModelClient;
+  vllm?: ModelClient;
 } = {}): ProviderRegistry {
   const providers: ProviderDescriptor[] = [
     { id: 'ollama', environmentId: 'local-ollama', kind: 'local-http', label: 'Ollama (local Gemma + open models)', execution: 'local', servesModels: ['gemma-4-e4b', 'gemma-4-12b-q4'], client: clients.ollama },
-    { id: 'anthropic', environmentId: 'cloud', kind: 'oauth', label: 'Anthropic (Claude)', execution: 'cloud', servesModels: ['claude'], client: clients.anthropic },
+    { id: 'lmstudio', environmentId: 'lmstudio', kind: 'openai-compat', label: 'LM Studio (local OpenAI-compatible)', execution: 'local', servesModels: ['gemma-4-e4b', 'gemma-4-12b-q4'], client: clients.lmstudio },
+    { id: 'vllm', environmentId: 'vllm', kind: 'openai-compat', label: 'vLLM (local OpenAI-compatible)', execution: 'local', servesModels: ['gemma-4-e4b', 'gemma-4-12b-q4'], client: clients.vllm },
+    { id: 'anthropic', environmentId: 'cloud', kind: 'oauth', label: 'Anthropic (Claude — OAuth/session or API)', execution: 'cloud', servesModels: ['claude'], client: clients.anthropic },
     { id: 'openai', environmentId: 'cloud', kind: 'api', label: 'OpenAI', execution: 'cloud', servesModels: ['gpt'], client: clients.openai },
     { id: 'google', environmentId: 'cloud', kind: 'api', label: 'Google (Gemini) — also the War Room voice provider', execution: 'cloud', servesModels: ['gemini'], client: clients.google },
     { id: 'openrouter', environmentId: 'openrouter', kind: 'openai-compat', label: 'OpenRouter', execution: 'cloud', servesModels: ['gpt'], client: clients.openrouter },

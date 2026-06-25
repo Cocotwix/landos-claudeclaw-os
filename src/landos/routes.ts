@@ -44,9 +44,13 @@ import { savePropertyAnalysisReport } from './property-analysis-report.js';
 import { rosterSummary } from './agent-roster.js';
 import { orgChart } from './executive-orchestrator.js';
 import { routeByCapability, type JobRequirements } from './capability-router.js';
-import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS } from './model-capabilities.js';
+import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS, getCapabilityEntry } from './model-capabilities.js';
 import { sourcedProfileFor } from './capability-scoring.js';
 import { buildProviderRegistry } from './provider-registry.js';
+import { liveRoutingEnabled, buildRegistryFromConfig } from './model-router-service.js';
+import { DashboardSettingsOverrideStore, resolveOverride, setOverride, resetOverride, type OverrideScope } from './model-override.js';
+import { PROVIDER_PRESENCE } from '../config.js';
+import { getDashboardSetting, setDashboardSetting } from '../db.js';
 import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './rubric.js';
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import {
@@ -274,6 +278,47 @@ export function registerLandosRoutes(app: Hono): void {
   app.get('/api/landos/model-router/environments', (c) => {
     const registry = buildProviderRegistry();
     return c.json({ environments: registry.describe() });
+  });
+
+  // Live model-router status: safe-mode flag, provider presence (booleans only —
+  // no secrets), and the EE->provider->model tree with REAL configured status
+  // from the config-built registry. Read-only; no .env values exposed.
+  app.get('/api/landos/model-router/status', (c) => {
+    const registry = buildRegistryFromConfig();
+    return c.json({
+      liveRouting: liveRoutingEnabled(),
+      safeMode: !liveRoutingEnabled(),
+      highStakesDefault: 'claude',
+      providerPresence: PROVIDER_PRESENCE,
+      environments: registry.describe(),
+    });
+  });
+
+  // Manual override controls (persistent via dashboard_settings). modelId must be
+  // a known model. Scopes: global | agent | task_type (one-time is per-request).
+  const overrideStore = () => new DashboardSettingsOverrideStore({ getDashboardSetting, setDashboardSetting });
+  app.get('/api/landos/model-router/override', (c) => {
+    const resolved = resolveOverride({ agentId: c.req.query('agentId'), taskType: c.req.query('taskType') }, overrideStore());
+    return c.json({ override: resolved });
+  });
+  app.post('/api/landos/model-router/override', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const scope = str(body.scope);
+    const key = str(body.key);
+    const modelId = str(body.modelId);
+    if (!scope || !['global', 'agent', 'task_type'].includes(scope)) return c.json({ error: 'scope must be global | agent | task_type' }, 400);
+    if (scope !== 'global' && !key) return c.json({ error: 'key (agentId or taskType) is required for this scope' }, 400);
+    if (!modelId || !getCapabilityEntry(modelId)) return c.json({ error: 'modelId must be a known model' }, 400);
+    setOverride(overrideStore(), scope as OverrideScope, key, modelId);
+    return c.json({ ok: true, override: { scope, key: key ?? null, modelId } });
+  });
+  app.post('/api/landos/model-router/override/reset', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const scope = str(body.scope);
+    const key = str(body.key);
+    if (!scope || !['global', 'agent', 'task_type'].includes(scope)) return c.json({ error: 'scope must be global | agent | task_type' }, 400);
+    resetOverride(overrideStore(), scope as OverrideScope, key);
+    return c.json({ ok: true });
   });
 
   app.post('/api/landos/model-router/preview', async (c) => {
