@@ -1,67 +1,113 @@
-// LandOS Underwriting Agent (uw_bot) — post-discovery offer approver (scaffold).
+// LandOS Underwriting Agent (uw_bot) — operational post-discovery offer approver.
 //
-// This is the ONLY agent that approves an offer to a seller, and it runs AFTER the
-// discovery call — never before. It synthesizes the verified Deal Card (DD facts +
-// comps + pre-call offer math) with the discovery-call summary and any new
-// disclosures into a final approved offer range + strategy + talking points.
+// The ONLY agent that approves an offer to a seller, and ONLY after the discovery
+// call. It synthesizes the VERIFIED Deal Card (DD facts + comps + pre-call offer
+// math) with the discovery-call summary, seller notes, known constraints, and the
+// strategy lanes into a final approved offer range + strategy + risks + talking
+// points, and emits a Deal Card event (underwriting_snapshot).
 //
-// SCAFFOLD: deterministic, no model call. It enforces the gates (parcel must be
-// verified; insufficient evidence -> needs deeper DD, never a fabricated offer)
-// and produces the decision record shape. Deep Tier-3 reasoning is wired in a
-// later pass. Output is a property-specific artifact -> attaches to the Deal Card
-// and persists under underwriting/{apn}/ in the knowledge layer.
+// HARD RULES enforced here:
+//  - Deterministic approver — NO model call approves an offer (a local model can
+//    never approve; high-stakes reasoning, if ever added, stays Claude/Tier-3).
+//  - No score/value/offer on an unverified parcel.
+//  - Never fabricates facts; missing facts are LABELED missing, not invented.
+//  - No legal/zoning certainty — those always land in requiredVerification.
 
 export type UnderwritingStatus = 'approved' | 'needs_deeper_dd' | 'blocked_unverified';
 
+export interface UnderwritingStrategyLane {
+  id: string;
+  label: string;
+  offerLowUsd: number | null;
+  offerHighUsd: number | null;
+  applicable: boolean;
+}
+
 export interface UnderwritingInput {
-  /** Parcel identity (APN or LandPortal id) — required to attach to a Deal Card. */
   apn?: string | null;
   parcelVerified: boolean;
-  /** Pre-call Expected Value from the DD report, if computed. */
   expectedValueUsd?: number | null;
-  /** Pre-call strategy lanes the DD report produced (labels only here). */
-  strategyLanes?: Array<{ id: string; label: string; offerLowUsd: number | null; offerHighUsd: number | null; applicable: boolean }>;
-  /** Discovery-call summary text (post-call). Absent => cannot underwrite yet. */
+  strategyLanes?: UnderwritingStrategyLane[];
   discoveryCallSummary?: string | null;
-  /** New facts the seller disclosed on the call (may change the picture). */
   newDisclosures?: string[];
+  sellerNotes?: string | null;
+  knownConstraints?: string[];
+  /** Whether comps / market facts are already attached to the Deal Card. */
+  compsAttached?: boolean;
+  marketFactsAttached?: boolean;
+}
+
+export interface DealCardEventPayload {
+  eventType: 'underwriting_snapshot';
+  summary: string;
+  /** Non-authoritative structured snapshot for attachment to the Deal Card. */
+  detail: Record<string, unknown>;
 }
 
 export interface UnderwritingDecision {
   status: UnderwritingStatus;
   apn: string | null;
-  /** Final approved offer range — ONLY present when status === 'approved'. */
   approvedOfferLowUsd: number | null;
   approvedOfferHighUsd: number | null;
+  /** Max offer ceiling (highest applicable lane high), when approved. */
+  maxOfferUsd: number | null;
   recommendedStrategy: string | null;
+  secondaryStrategy: string | null;
   talkingPoints: string[];
+  risks: string[];
+  dealKillers: string[];
+  requiredVerification: string[];
+  missingFacts: string[];
   reasons: string[];
-  /** Always attaches to the Deal Card (property-specific) when an apn exists. */
   attachesToDealCard: boolean;
-  /** Knowledge-layer key for the persisted decision record. */
   knowledgeKey: string | null;
-  executionMode: 'underwriting_scaffold';
+  /** Provenance of the approval — always the deterministic gate, never a model. */
+  approvedBy: 'deterministic_gate';
+  dealCardEvent: DealCardEventPayload | null;
+  executionMode: 'underwriting_operational';
+}
+
+const DEAL_KILLER_PATTERNS = [/no (legal )?access/i, /landlock/i, /wetland/i, /flood(way|plain)?/i, /\blien\b/i, /encroach/i, /contaminat/i, /clouded title/i];
+const VERIFY_PATTERNS = [/zoning/i, /legal/i, /easement/i, /access/i, /title/i, /flood/i, /wetland/i, /survey/i, /utilit/i, /septic/i, /\bperc\b/i, /setback/i];
+
+function classifyConstraint(c: string): { risk: boolean; dealKiller: boolean; verify: boolean } {
+  return {
+    dealKiller: DEAL_KILLER_PATTERNS.some((re) => re.test(c)),
+    verify: VERIFY_PATTERNS.some((re) => re.test(c)),
+    risk: true,
+  };
 }
 
 /**
- * Run the post-discovery underwriting decision. Deterministic scaffold. Gates:
- *  - unverified parcel        -> blocked (no score/value/offer).
- *  - no discovery-call summary -> needs deeper DD (underwriting is POST-call).
- *  - no usable EV/lanes        -> needs deeper DD (never invents an offer).
- * Otherwise approves a final range derived from the DD lanes (the deep Tier-3
- * judgment layer replaces this body in a later pass).
+ * Run the operational post-discovery underwriting decision. Deterministic. Gates:
+ *  unverified -> blocked; no discovery summary or insufficient evidence ->
+ *  needs_deeper_dd (never a fabricated offer). Otherwise approves from the
+ *  applicable strategy lanes and produces the full decision record + event.
  */
 export function runUnderwriting(input: UnderwritingInput): UnderwritingDecision {
   const apn = (input.apn && input.apn.trim()) || null;
+  const missingFacts: string[] = [];
+  if (!input.expectedValueUsd) missingFacts.push('expected value (DD)');
+  if (!input.compsAttached) missingFacts.push('comparable sales');
+  if (!input.marketFactsAttached) missingFacts.push('market metrics');
+
   const base = {
     apn,
     approvedOfferLowUsd: null as number | null,
     approvedOfferHighUsd: null as number | null,
+    maxOfferUsd: null as number | null,
     recommendedStrategy: null as string | null,
+    secondaryStrategy: null as string | null,
     talkingPoints: [] as string[],
+    risks: [] as string[],
+    dealKillers: [] as string[],
+    requiredVerification: [] as string[],
+    missingFacts,
     attachesToDealCard: !!apn,
     knowledgeKey: apn ? `underwriting/${apn}/uw_decision.json` : null,
-    executionMode: 'underwriting_scaffold' as const,
+    approvedBy: 'deterministic_gate' as const,
+    dealCardEvent: null as DealCardEventPayload | null,
+    executionMode: 'underwriting_operational' as const,
   };
 
   if (!input.parcelVerified) {
@@ -75,22 +121,51 @@ export function runUnderwriting(input: UnderwritingInput): UnderwritingDecision 
     return { ...base, status: 'needs_deeper_dd', reasons: ['Insufficient verified evidence (no Expected Value / no applicable strategy lane). Run deeper DD; never approve a fabricated offer.'] };
   }
 
-  // Approve from the best applicable lane (highest offer ceiling). Deterministic.
-  const best = applicable.reduce((a, b) => ((b.offerHighUsd ?? 0) > (a.offerHighUsd ?? 0) ? b : a));
-  const disclosureNote = (input.newDisclosures ?? []).length
-    ? `New disclosures considered: ${(input.newDisclosures ?? []).join('; ')}.`
-    : 'No new disclosures changed the picture.';
-  return {
-    ...base,
-    status: 'approved',
-    approvedOfferLowUsd: best.offerLowUsd,
-    approvedOfferHighUsd: best.offerHighUsd,
-    recommendedStrategy: best.label,
-    talkingPoints: [
-      `Lead with the ${best.label} strategy.`,
-      `Approved range $${(best.offerLowUsd ?? 0).toLocaleString()}–$${(best.offerHighUsd ?? 0).toLocaleString()} (post-discovery).`,
-      'If the seller resists, anchor to the DD facts surfaced on the Deal Card before adjusting.',
-    ],
+  // Rank applicable lanes by offer ceiling: primary = highest, secondary = next.
+  const ranked = [...applicable].sort((a, b) => (b.offerHighUsd ?? 0) - (a.offerHighUsd ?? 0));
+  const primary = ranked[0];
+  const secondary = ranked[1] ?? null;
+  const maxOfferUsd = primary.offerHighUsd ?? null;
+
+  // Risks / deal killers / required verification (deterministic, from constraints).
+  const risks: string[] = [];
+  const dealKillers: string[] = [];
+  const requiredVerification = new Set<string>(['Confirm legal access, zoning, and clean title before close (not assumed verified).']);
+  for (const c of input.knownConstraints ?? []) {
+    const cls = classifyConstraint(c);
+    if (cls.dealKiller) dealKillers.push(c); else if (cls.risk) risks.push(c);
+    if (cls.verify) requiredVerification.add(`Verify: ${c}`);
+  }
+  for (const f of missingFacts) requiredVerification.add(`Obtain ${f} before finalizing.`);
+
+  const status: UnderwritingStatus = dealKillers.length ? 'needs_deeper_dd' : 'approved';
+  if (status === 'needs_deeper_dd') {
+    return { ...base, status, risks, dealKillers, requiredVerification: [...requiredVerification],
+      reasons: [`Potential deal killer(s) present: ${dealKillers.join('; ')}. Resolve via deeper DD before approving an offer.`] };
+  }
+
+  const disclosureNote = (input.newDisclosures ?? []).length ? `New disclosures considered: ${(input.newDisclosures ?? []).join('; ')}.` : 'No new disclosures changed the picture.';
+  const talkingPoints = [
+    `Lead with the ${primary.label} strategy.`,
+    `Approved range $${(primary.offerLowUsd ?? 0).toLocaleString()}–$${(primary.offerHighUsd ?? 0).toLocaleString()} (post-discovery); do not exceed $${(maxOfferUsd ?? 0).toLocaleString()}.`,
+    secondary ? `Fallback: ${secondary.label}.` : 'No secondary strategy available.',
+    'Anchor to the DD facts on the Deal Card before adjusting; flag any unverified item as contingent.',
+  ];
+  const decision: UnderwritingDecision = {
+    ...base, status: 'approved',
+    approvedOfferLowUsd: primary.offerLowUsd, approvedOfferHighUsd: primary.offerHighUsd, maxOfferUsd,
+    recommendedStrategy: primary.label, secondaryStrategy: secondary?.label ?? null,
+    talkingPoints, risks, dealKillers, requiredVerification: [...requiredVerification],
     reasons: [`Verified parcel + discovery summary + applicable lane present. ${disclosureNote}`],
   };
+  decision.dealCardEvent = {
+    eventType: 'underwriting_snapshot',
+    summary: `Underwriting approved: ${primary.label}, $${(primary.offerLowUsd ?? 0).toLocaleString()}–$${(primary.offerHighUsd ?? 0).toLocaleString()} (max $${(maxOfferUsd ?? 0).toLocaleString()}). ${missingFacts.length ? 'Missing: ' + missingFacts.join(', ') + '.' : ''}`.trim(),
+    detail: {
+      recommendedStrategy: decision.recommendedStrategy, secondaryStrategy: decision.secondaryStrategy,
+      approvedOfferLowUsd: decision.approvedOfferLowUsd, approvedOfferHighUsd: decision.approvedOfferHighUsd, maxOfferUsd,
+      risks, dealKillers, requiredVerification: decision.requiredVerification, missingFacts, approvedBy: 'deterministic_gate',
+    },
+  };
+  return decision;
 }

@@ -48,6 +48,9 @@ import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS, getCapabilityEntry } from '.
 import { sourcedProfileFor } from './capability-scoring.js';
 import { buildProviderRegistry } from './provider-registry.js';
 import { liveRoutingEnabled, buildRegistryFromConfig } from './model-router-service.js';
+import { GRUNT_HELPERS } from './grunt-helpers.js';
+import { computeDealLane, type DealLaneSnapshot } from './deal-lane.js';
+import { runUnderwriting, type UnderwritingStrategyLane } from './underwriting-agent.js';
 import { DashboardSettingsOverrideStore, resolveOverride, setOverride, resetOverride, type OverrideScope } from './model-override.js';
 import { PROVIDER_PRESENCE } from '../config.js';
 import { getDashboardSetting, setDashboardSetting } from '../db.js';
@@ -291,6 +294,7 @@ export function registerLandosRoutes(app: Hono): void {
       highStakesDefault: 'claude',
       providerPresence: PROVIDER_PRESENCE,
       environments: registry.describe(),
+      helpers: GRUNT_HELPERS,
     });
   });
 
@@ -792,6 +796,52 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(Number(c.req.param('id')));
     if (!deal) return c.json({ error: 'not found' }, 404);
     return c.json({ dealCard: deal });
+  });
+
+  // Acquisition lane (Lead -> DD Report -> Discovery Call -> [Deeper DD] ->
+  // Underwriting -> Offer). Derived read-only from existing Deal Card state; no
+  // schema change. Discovery/underwriting/offer signals that aren't yet persisted
+  // can be previewed via query params; otherwise they show as pending.
+  app.get('/api/landos/deal-cards/:id/lane', (c) => {
+    const id = Number(c.req.param('id'));
+    const deal = getDealCard(id) as (Record<string, unknown> | undefined);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    let reportReady = false;
+    try { reportReady = !!getDealCardReport(id); } catch { reportReady = false; }
+    const snap: DealLaneSnapshot = {
+      hasCard: true,
+      ddReportReady: reportReady,
+      parcelVerified: deal.hasVerifiedProperty === true,
+      discoveryCallSummary: c.req.query('discoveryCallSummary') ?? null,
+      usingDeeperDd: c.req.query('usingDeeperDd') === '1',
+      deeperDdComplete: c.req.query('deeperDdComplete') === '1',
+      offerRecorded: c.req.query('offerRecorded') === '1',
+    };
+    return c.json({ lane: computeDealLane(snap) });
+  });
+
+  // Run operational underwriting for a Deal Card (post-discovery offer approver).
+  // Deterministic gate — NO model approves an offer; no paid calls. Server supplies
+  // parcelVerified; the operator/dashboard supplies post-call inputs in the body.
+  // Returns the decision + an underwriting_snapshot event (caller persists/attaches).
+  app.post('/api/landos/deal-cards/:id/underwrite', async (c) => {
+    const id = Number(c.req.param('id'));
+    const deal = getDealCard(id) as (Record<string, unknown> | undefined);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const decision = runUnderwriting({
+      apn: String(id),
+      parcelVerified: deal.hasVerifiedProperty === true,
+      expectedValueUsd: typeof body.expectedValueUsd === 'number' ? body.expectedValueUsd : null,
+      strategyLanes: Array.isArray(body.strategyLanes) ? (body.strategyLanes as UnderwritingStrategyLane[]) : [],
+      discoveryCallSummary: str(body.discoveryCallSummary) ?? null,
+      newDisclosures: Array.isArray(body.newDisclosures) ? (body.newDisclosures as string[]) : [],
+      sellerNotes: str(body.sellerNotes) ?? null,
+      knownConstraints: Array.isArray(body.knownConstraints) ? (body.knownConstraints as string[]) : [],
+      compsAttached: body.compsAttached === true,
+      marketFactsAttached: body.marketFactsAttached === true,
+    });
+    return c.json({ decision });
   });
 
   // Create a Deal Card (operator-facing). Local file-backed SQLite only: no

@@ -19,7 +19,11 @@ export const CAPABILITY_DIMENSIONS = [
   'researchDigestion',
   'vision',
   'audio',
+  'video',
   'speech',
+  'ocr',
+  'functionCalling',
+  'toolUse',
   'speed',
   'cost',
   'privacy',
@@ -56,7 +60,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapabilityEntry[] = [
     profile: profile({
       reasoning: 0.5, longContext: 0.3, structuredOutput: 0.6, coding: 0.5,
       classification: 0.8, extraction: 0.8, summarization: 0.8, researchDigestion: 0.7,
-      vision: 0, audio: 0, speech: 0,
+      vision: 0, audio: 0, video: 0, speech: 0, ocr: 0, functionCalling: 0.4, toolUse: 0.4,
       speed: 0.95, cost: 1, privacy: 1, localAvailability: 1, reliability: 0.8, confidenceCalibration: 0.6,
     }),
   },
@@ -65,7 +69,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapabilityEntry[] = [
     profile: profile({
       reasoning: 0.6, longContext: 0.35, structuredOutput: 0.65, coding: 0.55,
       classification: 0.82, extraction: 0.82, summarization: 0.82, researchDigestion: 0.75,
-      vision: 0.6, audio: 0.5, speech: 0.35,
+      vision: 0.6, audio: 0.5, video: 0.3, speech: 0.35, ocr: 0.5, functionCalling: 0.5, toolUse: 0.5,
       speed: 0.85, cost: 1, privacy: 1, localAvailability: 1, reliability: 0.8, confidenceCalibration: 0.6,
     }),
   },
@@ -74,7 +78,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapabilityEntry[] = [
     profile: profile({
       reasoning: 0.9, longContext: 0.85, structuredOutput: 0.9, coding: 0.9,
       classification: 0.85, extraction: 0.85, summarization: 0.85, researchDigestion: 0.85,
-      vision: 0.85, audio: 0.7, speech: 0.7,
+      vision: 0.85, audio: 0.7, video: 0.5, speech: 0.7, ocr: 0.8, functionCalling: 0.9, toolUse: 0.9,
       speed: 0.7, cost: 0.4, privacy: 0.3, localAvailability: 0, reliability: 0.9, confidenceCalibration: 0.8,
     }),
   },
@@ -83,7 +87,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapabilityEntry[] = [
     profile: profile({
       reasoning: 0.85, longContext: 0.95, structuredOutput: 0.85, coding: 0.8,
       classification: 0.85, extraction: 0.85, summarization: 0.85, researchDigestion: 0.85,
-      vision: 0.9, audio: 0.9, speech: 0.85,
+      vision: 0.9, audio: 0.9, video: 0.9, speech: 0.85, ocr: 0.85, functionCalling: 0.85, toolUse: 0.85,
       speed: 0.8, cost: 0.5, privacy: 0.3, localAvailability: 0, reliability: 0.85, confidenceCalibration: 0.75,
     }),
   },
@@ -92,7 +96,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapabilityEntry[] = [
     profile: profile({
       reasoning: 0.95, longContext: 0.95, structuredOutput: 0.9, coding: 0.9,
       classification: 0.85, extraction: 0.85, summarization: 0.88, researchDigestion: 0.9,
-      vision: 0.8, audio: 0.2, speech: 0,
+      vision: 0.8, audio: 0.2, video: 0.3, speech: 0, ocr: 0.75, functionCalling: 0.9, toolUse: 0.9,
       speed: 0.65, cost: 0.45, privacy: 0.3, localAvailability: 0, reliability: 0.95, confidenceCalibration: 0.85,
     }),
   },

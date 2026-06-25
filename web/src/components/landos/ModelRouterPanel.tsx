@@ -19,6 +19,7 @@ interface RouterStatus {
   highStakesDefault: string;
   providerPresence: Record<string, boolean>;
   environments: EnvNode[];
+  helpers?: Array<{ id: string; label: string }>;
 }
 
 function dot(ok: boolean) {
@@ -64,6 +65,17 @@ export function ModelRouterPanel() {
           ))}
         </div>
       </div>
+
+      {s.helpers && s.helpers.length > 0 && (
+        <div>
+          <h2 class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-2">
+            Router-enabled helpers <span class="text-[10px] normal-case">(draft output{s.liveRouting ? '' : ' — deterministic in safe mode'})</span>
+          </h2>
+          <div class="flex flex-wrap gap-x-3 gap-y-1 text-[12px]">
+            {s.helpers.map((h) => <span key={h.id}>{dot(s.liveRouting)} {h.label}</span>)}
+          </div>
+        </div>
+      )}
 
       {s.environments.map((env) => (
         <div key={env.environment.id}>
