@@ -49,3 +49,56 @@ describe('DataProviderRegistry — parcel abstraction', () => {
     expect(ids).toEqual(['landportal', 'realie']);
   });
 });
+
+describe('Realie.ai adapter — live-ready REST path (offline, injected fetch)', () => {
+  it('makes NO call when unconfigured (no key) and never fabricates', async () => {
+    let called = false;
+    const realie = makeRealieParcelAdapter({ env: {}, fetchImpl: async () => { called = true; return { ok: true, status: 200, json: async () => ({}) }; } });
+    const p = await realie.lookup({ address: '1 X', city: 'Y', state: 'GA' }, { timeoutMs: 1000 });
+    expect(called).toBe(false);
+    expect(p.status).toBe('not_configured');
+    expect(p.verified).toBe(false);
+  });
+
+  it('when configured, calls the REST endpoint with a bearer key and normalizes the match as needs_verification', async () => {
+    let seenUrl = '';
+    let seenAuth = '';
+    const realie = makeRealieParcelAdapter({
+      env: { [REALIE_ENV_KEY]: 'secret-key' },
+      fetchImpl: async (url, init) => {
+        seenUrl = url;
+        seenAuth = init?.headers?.authorization ?? '';
+        return { ok: true, status: 200, json: async () => ({ apn: 'APN-9', county: 'Worth', state: 'GA', acres: 5, owner: 'JANE' }) };
+      },
+    });
+    const p = await realie.lookup({ address: '472 West Rd', state: 'GA' }, { timeoutMs: 1000 });
+    expect(seenUrl).toContain('/parcels/lookup?');
+    expect(seenUrl).toContain('address=472+West+Rd');
+    expect(seenAuth).toBe('Bearer secret-key'); // key used, never returned to caller
+    expect(p.apn).toBe('APN-9');
+    expect(p.county).toBe('Worth');
+    expect(p.acres).toBe(5);
+    expect(p.verified).toBe(false); // external source is needs_verification, never auto-verified
+    expect(p.status).toBe('matched_needs_verification');
+  });
+
+  it('reports no_match (not a fabricated parcel) on an empty payload', async () => {
+    const realie = makeRealieParcelAdapter({
+      env: { [REALIE_ENV_KEY]: 'secret-key' },
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+    });
+    const p = await realie.lookup({ address: 'nowhere' }, { timeoutMs: 1000 });
+    expect(p.status).toBe('no_match');
+    expect(p.verified).toBe(false);
+  });
+
+  it('surfaces an HTTP error loudly without fabricating a parcel', async () => {
+    const realie = makeRealieParcelAdapter({
+      env: { [REALIE_ENV_KEY]: 'secret-key' },
+      fetchImpl: async () => ({ ok: false, status: 502, json: async () => ({}) }),
+    });
+    const p = await realie.lookup({ address: 'x' }, { timeoutMs: 1000 });
+    expect(p.status).toBe('error_502');
+    expect(p.verified).toBe(false);
+  });
+});

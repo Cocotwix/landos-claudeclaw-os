@@ -647,3 +647,40 @@ describe('LandOS routes — Deal Card Market Research worksheet', () => {
     expect(p.status).toBe(404);
   });
 });
+
+describe('LandOS routes — knowledge layer + data providers (presence-only)', () => {
+  it('knowledge/status reports backend selection + provider config without secret values', async () => {
+    const res = await get('/api/landos/knowledge/status');
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as any;
+    expect(['local-fs', 'r2']).toContain(b.knowledgeStore.selected);
+    expect(typeof b.knowledgeStore.reason).toBe('string');
+    // r2.missing carries env KEY NAMES only, never values
+    expect(Array.isArray(b.knowledgeStore.r2.missing)).toBe(true);
+    const ids = b.dataProviders.parcelProviders.map((p: any) => p.id).sort();
+    expect(ids).toEqual(['landportal', 'realie']);
+    const realie = b.dataProviders.parcelProviders.find((p: any) => p.id === 'realie');
+    expect(typeof realie.configured).toBe('boolean');
+    // No secret VALUE leaks into the payload (key NAMES like
+    // LANDOS_R2_SECRET_ACCESS_KEY are fine; an actual bearer/value is not).
+    expect(JSON.stringify(b)).not.toMatch(/Bearer\s+\S/i);
+  });
+
+  it('agent knowledge manifest: 404 for unknown agent, empty list for a known fresh agent', async () => {
+    const bad = await get('/api/landos/knowledge/agents/nope_bot');
+    expect(bad.status).toBe(404);
+    const ok = await get('/api/landos/knowledge/agents/market_bot');
+    expect(ok.status).toBe(200);
+    const b = (await ok.json()) as any;
+    expect(b.agentKey).toBe('market_bot');
+    expect(Array.isArray(b.items)).toBe(true);
+  });
+
+  it('market/scorecard returns a scorecard shape (metrics unavailable until a source connects)', async () => {
+    const res = await get('/api/landos/market/scorecard');
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as any;
+    expect(b.scorecard.version).toBe(1);
+    expect(Array.isArray(b.scorecard.counties)).toBe(true);
+  });
+});

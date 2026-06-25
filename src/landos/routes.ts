@@ -41,7 +41,11 @@ import {
 } from './live-data-preflight.js';
 import { runPropertyAnalysis } from './property-analysis.js';
 import { savePropertyAnalysisReport } from './property-analysis-report.js';
-import { rosterSummary } from './agent-roster.js';
+import { rosterSummary, getAgentDef } from './agent-roster.js';
+import { knowledgeStoreStatus, resolveKnowledgeStore } from './knowledge-store-r2.js';
+import { DataProviderRegistry, DEFAULT_DATA_SOURCES, REALIE_ENV_KEY } from './providers/data-registry.js';
+import { listAgentKnowledge } from './knowledge-ingestion.js';
+import { loadScorecard } from './market-research.js';
 import { orgChart } from './executive-orchestrator.js';
 import { routeByCapability, type JobRequirements } from './capability-router.js';
 import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS, getCapabilityEntry } from './model-capabilities.js';
@@ -1568,6 +1572,48 @@ export function registerLandosRoutes(app: Hono): void {
 
   // Department registry summary (deeper capability/model-policy registry).
   app.get('/api/landos/department-registry', (c) => c.json({ departments: departmentRegistrySummary() }));
+
+  // ── Knowledge layer + data-provider status (presence-only; NO secrets) ──────
+  // Surfaces the selected KnowledgeStore backend (local-fs vs R2) and the active
+  // data-provider config so the operator can see live-readiness from the
+  // dashboard. r2.missing names only env KEY NAMES, never values; provider
+  // `configured` is a boolean derived from key PRESENCE (process.env). No secret
+  // value, no network probe, and no connection is made by this endpoint.
+  app.get('/api/landos/knowledge/status', (c) => {
+    const ks = knowledgeStoreStatus();
+    const registry = new DataProviderRegistry();
+    const parcelProviders = registry.parcelProviders().map((p) => ({
+      id: p.id,
+      label: p.label,
+      configured: p.configured(), // presence-only boolean
+      active: p.id === registry.activeConfig().parcel,
+    }));
+    return c.json({
+      knowledgeStore: { selected: ks.selected, pref: ks.pref, reason: ks.reason, r2: { configured: ks.r2.configured, missing: ks.r2.missing, endpoint: ks.r2.endpoint } },
+      dataProviders: { config: DEFAULT_DATA_SOURCES, parcelProviders, realieEnvKey: REALIE_ENV_KEY },
+    });
+  });
+
+  // Agent knowledge manifest (read-only provenance for the ingestion shell).
+  // Validates the agent against the roster; lists raw_training items with their
+  // source/type/hash/timestamp — never content, never secrets. Uses the active
+  // backend (local-fs today, R2 once configured).
+  app.get('/api/landos/knowledge/agents/:agentKey', async (c) => {
+    const agentKey = c.req.param('agentKey');
+    if (!getAgentDef(agentKey)) return c.json({ error: 'unknown agent (not in roster)' }, 404);
+    const { store, backend } = await resolveKnowledgeStore();
+    const items = await listAgentKnowledge(agentKey, store);
+    return c.json({ agentKey, backend, count: items.length, items });
+  });
+
+  // County Scorecard (Market Research business intelligence; NOT a Deal Card
+  // output). Read-only; metrics are 'unavailable' until a market data source is
+  // connected — never fabricated.
+  app.get('/api/landos/market/scorecard', async (c) => {
+    const { store, backend } = await resolveKnowledgeStore();
+    const scorecard = await loadScorecard(store);
+    return c.json({ backend, scorecard });
+  });
 
   // ── Source Evidence Standard check ──────────────────────────────────
   app.post('/api/landos/source-evidence/check', async (c) => {

@@ -83,28 +83,109 @@ export function makeLandPortalParcelAdapter(deps: LandPortalParcelDeps = {}): Pa
   };
 }
 
-// ── Realie.ai parcel adapter (STUB behind the same interface) ─────────────────
+// ── Realie.ai parcel adapter (live-ready behind the same interface) ───────────
 
 export const REALIE_ENV_KEY = 'REALIE_API_KEY';
+/** Optional override; defaults to Realie's public parcel endpoint base. */
+export const REALIE_BASE_ENV_KEY = 'REALIE_API_BASE';
+const REALIE_DEFAULT_BASE = 'https://api.realie.ai/v1';
 
-export function makeRealieParcelAdapter(): ParcelProvider {
+/** Minimal fetch surface so tests inject a fake and no live/paid call is made. */
+export type FetchLike = (
+  url: string,
+  init?: { method?: string; headers?: Record<string, string> },
+) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+
+export interface RealieParcelDeps {
+  /** Injected in tests; default is the global fetch — only ever CALLED when the
+   *  adapter is configured (a key is present), so tests stay offline by default. */
+  fetchImpl?: FetchLike;
+  /** Env used for key/base resolution. Default process.env. Presence only. */
+  env?: Record<string, string | undefined>;
+}
+
+/** Normalize a Realie parcel payload into NormalizedParcel. Conservative: an
+ *  unrecognized/empty shape is reported unverified (never fabricated). */
+function normalizeRealie(raw: unknown): NormalizedParcel {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const apn = str(r.apn) ?? str(r.parcel_number);
+  const matched = !!(apn || str(r.property_id) || str(r.situs_address));
+  return {
+    verified: false, // external data source is needs-verification context, never auto-verified
+    source: 'Realie.ai',
+    status: matched ? 'matched_needs_verification' : 'no_match',
+    apn,
+    fips: str(r.fips) ?? str(r.county_fips),
+    propertyId: str(r.property_id) ?? str(r.id),
+    situsAddress: str(r.situs_address) ?? str(r.address),
+    city: str(r.city),
+    county: str(r.county),
+    state: str(r.state),
+    owner: str(r.owner) ?? str(r.owner_name),
+    acres: num(r.acres) ?? num(r.lot_size_acres),
+    note: matched
+      ? 'Realie.ai returned a parcel match. Labeled needs_verification (external source is context, not parcel verification).'
+      : 'Realie.ai returned no exact parcel match; no parcel fabricated.',
+  };
+}
+
+export function makeRealieParcelAdapter(deps: RealieParcelDeps = {}): ParcelProvider {
   return {
     id: 'realie',
     label: 'Realie.ai (parcel data)',
-    configured(env = process.env) {
+    configured(env = deps.env ?? process.env) {
       const v = env[REALIE_ENV_KEY];
       return typeof v === 'string' && v.trim().length > 0; // presence only
     },
-    async lookup(): Promise<NormalizedParcel> {
-      // Scaffold: no live/paid call. When REALIE_API_KEY exists, this adapter will
-      // call Realie's REST API and normalize to NormalizedParcel. Until then it
-      // fails loud (never fabricates a parcel).
-      return {
-        verified: false,
-        source: 'Realie.ai',
-        status: 'not_configured',
-        note: 'Realie.ai adapter is scaffolded but not configured (no REALIE_API_KEY). No live call made; no parcel fabricated.',
-      };
+    async lookup(args): Promise<NormalizedParcel> {
+      const env = deps.env ?? process.env;
+      const key = (env[REALIE_ENV_KEY] ?? '').trim();
+      if (!key) {
+        // Not configured: fail loud, make NO call, never fabricate a parcel.
+        return {
+          verified: false,
+          source: 'Realie.ai',
+          status: 'not_configured',
+          note: 'Realie.ai adapter is wired but not configured (no REALIE_API_KEY). No live call made; no parcel fabricated.',
+        };
+      }
+      // Configured: live-ready REST lookup (injected fetch in tests; never paid in tests).
+      const base = (env[REALIE_BASE_ENV_KEY] ?? REALIE_DEFAULT_BASE).trim().replace(/\/+$/, '');
+      const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+      const params = new URLSearchParams();
+      if (args.address) params.set('address', args.address);
+      if (args.city) params.set('city', args.city);
+      if (args.state) params.set('state', args.state);
+      if (args.zip) params.set('zip', args.zip);
+      if (args.apn) params.set('apn', args.apn);
+      if (args.county) params.set('county', args.county);
+      if (args.fips) params.set('fips', args.fips);
+      if (args.owner) params.set('owner', args.owner);
+      if (args.propertyId) params.set('property_id', args.propertyId);
+      try {
+        const res = await fetchImpl(`${base}/parcels/lookup?${params.toString()}`, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
+        });
+        if (!res.ok) {
+          return {
+            verified: false,
+            source: 'Realie.ai',
+            status: `error_${res.status}`,
+            note: `Realie.ai lookup failed (HTTP ${res.status}). No parcel fabricated.`,
+          };
+        }
+        return normalizeRealie(await res.json());
+      } catch (e: unknown) {
+        return {
+          verified: false,
+          source: 'Realie.ai',
+          status: 'error',
+          note: `Realie.ai lookup error: ${(e as Error)?.message ?? String(e)}. No parcel fabricated.`,
+        };
+      }
     },
   };
 }

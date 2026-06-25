@@ -49,7 +49,7 @@ export const R2_PATHS = {
   system: (name: string) => `system/${name}`,
 } as const;
 
-function safeKey(key: KnowledgeKey): string {
+export function safeKey(key: KnowledgeKey): string {
   // Forbid path traversal; keys are forward-slash, repo-relative-free.
   const norm = key.replace(/\\/g, '/').replace(/^\/+/, '');
   if (norm.split('/').some((seg) => seg === '..')) throw new Error(`unsafe knowledge key: ${key}`);
