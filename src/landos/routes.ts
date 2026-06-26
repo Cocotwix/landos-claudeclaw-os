@@ -87,7 +87,7 @@ import {
 import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification } from './duke-verification-bridge.js';
-import { lpResolveForPreflight } from './landportal-client.js';
+import { resolveParcelIdentityResult } from './parcel-capability.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
 import { buildDukeAnalysis } from './duke-analysis.js';
@@ -1124,7 +1124,7 @@ export function registerLandosRoutes(app: Hono): void {
     // Wire the REAL bounded non-credit LandPortal exact resolver. This is the
     // same safe path the Duke verification route uses — not a comp tool/credit.
     const result = await runDealCardReport(id, {
-      resolve: lpResolveForPreflight,
+      resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       actor: str(body.actor) ?? 'tyler/report',
     });
@@ -1287,7 +1287,7 @@ export function registerLandosRoutes(app: Hono): void {
     // address is a valid identifier and is mapped truthfully (e.g. needs
     // county/FIPS), never "no parcel identifier".
     const verification = await runDukeVerification(text, {
-      resolve: lpResolveForPreflight,
+      resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
     // Duke first-pass analysis (flags + strategy candidates/readiness) from the
@@ -1360,7 +1360,7 @@ export function registerLandosRoutes(app: Hono): void {
     const sellerAskUsd = num(body.sellerAskUsd);
 
     const verification = await runDukeVerification(text, {
-      resolve: lpResolveForPreflight,
+      resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
 
@@ -1416,7 +1416,7 @@ export function registerLandosRoutes(app: Hono): void {
     let reportWarnings: string[] = [];
     try {
       const rep = (await runDealCardReport(dealCardId, {
-        resolve: lpResolveForPreflight,
+        resolve: resolveParcelIdentityResult,
         timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
         actor: 'tyler/from-verification',
       })) as { warnings?: string[] } | null;
@@ -1465,7 +1465,7 @@ export function registerLandosRoutes(app: Hono): void {
     );
 
     const result = await runPropertyAnalysis(text, { entity }, {
-      resolve: lpResolveForPreflight,
+      resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       // Verified-only Deal Card upsert from the named-source identity (never a
       // client 'verified' flag; identity never from coordinates).
@@ -1533,7 +1533,7 @@ export function registerLandosRoutes(app: Hono): void {
       return c.json({ landScore: null, parcelVerified: false, note: 'No parcel identifier on this Deal Card to resolve.' });
     }
     const verification = await runDukeVerification(lookup, {
-      resolve: lpResolveForPreflight,
+      resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
     if (!verification.parcelVerified || !verification.propertyData) {

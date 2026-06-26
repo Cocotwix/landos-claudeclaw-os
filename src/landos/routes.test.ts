@@ -9,6 +9,17 @@ import { _initTestDatabase } from '../db.js';
 import { buildDashboardApp } from '../dashboard.js';
 import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
 
+// The live DD routes now default to the parcel-identity CAPABILITY. These route
+// tests exercise the verification BRIDGE mapping, so delegate the capability to
+// the real LandPortal resolver (its no-network arg-validation paths) for
+// deterministic, network-free behavior. Capability *selection* is covered by
+// parcel-capability.test.ts.
+vi.mock('./parcel-capability.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  const { lpResolveForPreflight } = await import('./landportal-client.js');
+  return { ...actual, resolveParcelIdentityResult: (args: unknown, t: unknown) => (lpResolveForPreflight as any)(args, t) };
+});
+
 const TOKEN = 'test-contract-token';
 
 let app: Hono;

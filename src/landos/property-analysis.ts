@@ -22,7 +22,8 @@
 import { extractPropertyArgs } from './duke-preflight.js';
 import { extractAreaSignals } from './source-adapters.js';
 import { mapResolveToVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
-import { lpResolveForPreflight, lpApiVersion, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
+import { lpApiVersion } from './landportal-client.js';
+import { resolveParcelIdentityResult, type LpResolveArgs, type LpResolveResult } from './parcel-capability.js';
 import { planResolver, smallestNextIdentifier, type IntakeFields, type ResolverPathId } from './resolver-planner.js';
 import { correctionCandidates, normalizeAddress, type AddressCorrectionCandidate } from './address-normalize.js';
 import { makeCompSearchArea, compSearchAreaLocality, type CompSearchArea } from './comp-search-area.js';
@@ -199,7 +200,9 @@ export async function runPropertyAnalysis(
   const input = (rawInput ?? '').trim();
   const timeoutMs = deps.timeoutMs ?? PROPERTY_ANALYSIS_TIMEOUT_MS;
   const nowIso = deps.nowIso ?? new Date().toISOString();
-  const resolve = deps.resolve ?? lpResolveForPreflight;
+  // Default to the parcel-identity CAPABILITY router (vendor-agnostic), not a
+  // hardcoded LandPortal client. Tests still inject deps.resolve directly.
+  const resolve = deps.resolve ?? resolveParcelIdentityResult;
   const apiVersion = (deps.apiVersion ?? lpApiVersion)();
   const mkMarketPulse = deps.marketPulse ?? buildMarketPulseV1;
   const logCost = deps.logCost ?? ((o) => logCostRecord({ category: o.category, description: o.description, amountUsd: o.amountUsd }));

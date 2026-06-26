@@ -3,13 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { extractPropertyArgs, looksLikePropertyInput, runDukePreflight } from './duke-preflight.js';
 import type { LpResolveResult } from './landportal-client.js';
 
-vi.mock('./landportal-client.js', () => ({
-  lpResolveForPreflight: vi.fn(),
-}));
-
-import { lpResolveForPreflight } from './landportal-client.js';
-
-const mockLp = lpResolveForPreflight as ReturnType<typeof vi.fn>;
+// Duke's DD gate now calls the parcel-identity CAPABILITY (vendor-agnostic), not
+// the LandPortal client directly. Mock the capability boundary; mockLp stands in
+// for whichever provider the router would have selected.
+const { mockLp } = vi.hoisted(() => ({ mockLp: vi.fn() }));
+vi.mock('./parcel-capability.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return {
+    ...actual,
+    resolveParcelIdentity: vi.fn(async (args: unknown, t: unknown) => ({
+      result: await mockLp(args, t),
+      provenance: { provider: 'landportal', fellBack: false, attempted: [], reason: 'test', sourceTimestamp: 't' },
+    })),
+  };
+});
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 

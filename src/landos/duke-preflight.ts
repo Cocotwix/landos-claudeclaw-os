@@ -1,5 +1,5 @@
 import { logger } from '../logger.js';
-import { lpResolveForPreflight, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
+import { resolveParcelIdentity, type LpResolveArgs, type LpResolveResult } from './parcel-capability.js';
 
 export type DukePreflightOutcome =
   | { type: 'skip' }
@@ -335,7 +335,15 @@ export async function runDukePreflight(
 
   let result: LpResolveResult;
   try {
-    result = await lpResolveForPreflight(args, timeoutMs);
+    // Capability call: the DD gate requests "verify parcel identity"; the router
+    // selects the configured provider (intended primary Realie, legacy fallback
+    // LandPortal) and reports provenance. No vendor is named here.
+    const outcome = await resolveParcelIdentity(args, timeoutMs);
+    result = outcome.result;
+    logger.info(
+      { event: 'duke_preflight_provider', provider: outcome.provenance.provider, fellBack: outcome.provenance.fellBack },
+      'duke_preflight_provider',
+    );
   } catch (err) {
     logger.warn(
       { event: 'duke_preflight_error', msg: (err as Error)?.message },
@@ -343,7 +351,7 @@ export async function runDukePreflight(
     );
     return {
       type: 'blocked',
-      message: 'LandPortal lookup error. Parcel not verified -- no scoring, valuation, or offer. Retry the address, or provide APN + county for direct lookup.',
+      message: 'Parcel lookup error. Parcel not verified -- no scoring, valuation, or offer. Retry the address, or provide APN + county for direct lookup.',
       reason: 'preflight_error',
     };
   }

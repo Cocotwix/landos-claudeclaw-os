@@ -45,6 +45,14 @@ function readLpV2Token(): string | null {
   return readTokenVar('LANDPORTAL_V2_TOKEN') ?? readLpToken();
 }
 
+/** Presence-only: true when a LandPortal token (v2 or v1) is configured. Never
+ *  reads, logs, or returns the value. Respects the hermetic .env guard, so tests
+ *  see it as unconfigured unless they set the env explicitly. Used by the parcel-
+ *  identity capability router to decide LandPortal availability as a FALLBACK. */
+export function landPortalConfigured(): boolean {
+  return !!readLpV2Token();
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface LpResolveArgs {
