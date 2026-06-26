@@ -1,0 +1,38 @@
+# 04 LandOS Architecture
+
+Owner: CC
+Update Rule: CC updates when the implementation architecture changes. Describe the **current** system accurately.
+
+> Implementation note: the Founder Vision describes a Python/FastAPI reference stack. The **current implementation is Node.js + TypeScript** (Hono dashboard API, better-sqlite3, vitest, `@anthropic-ai/claude-agent-sdk`, React/Preact + Vite web). Per governance, the Vision's stack names are implementation examples, not requirements — capabilities are stable, tech/providers are replaceable.
+
+## Pillars
+- **Dashboard-first local operating system.** Hono API mounted under token auth; React/Preact SPA (`/landos`) with tabs: Command, Org/Agents, Model Router, Acquire, Deal Card, Intake Planner, Cost Control, Knowledge.
+- **Deal Card-centered workflow.** Living record persisted in local SQLite (`store/landos.db`, gitignored) with labeled facts + provenance.
+- **Capability-based provider routing.** Business logic requests capabilities; providers are interchangeable adapters behind them.
+
+## Parcel identity capability (the DD spine)
+- `parcel-capability.ts` — `resolveParcelIdentity(args, timeoutMs, deps)` selects the configured provider (`LANDOS_PARCEL_PROVIDER`, default `realie`), falls back only to other configured providers, and returns the canonical result + **provenance** (provider, fellBack, attempted, reason, timestamp). No silent substitution; no provider → Needs Verification.
+- Providers behind it: **Realie** (`providers/data-registry.ts`, verified official contract, raw-key auth, address/parcelId endpoints, canonical normalization incl. 5-digit FIPS), **LandPortal** (legacy fallback, wraps the existing resolver), **County Records Browser** (placeholder, future official-record provider).
+- Live DD entry points (`duke-preflight.ts`, `property-analysis.ts`, dashboard routes) call the capability — **never a vendor client directly** (enforced by `parcel-capability-wiring.test.ts`).
+- **Coordinates** are never forwarded for subject identity; allowed only for supporting/comp workflows.
+
+## Model router
+- Provider-agnostic registry (`provider-registry.ts`) over execution environments; capability scoring + routing (`capability-router.ts`); execution clients (`model-execution.ts`: Claude via injected SDK runner, OpenAI/OpenRouter/LM Studio/vLLM OpenAI-compatible, Gemini, Ollama).
+- `model-router-service.ts` — safe-mode-aware execution: override → route by capability → execute → deterministic Claude fallback → telemetry. **Safe mode (Claude-only) is the default.**
+- `router-runtime-config.ts` — effective live-routing + Ollama host + internal-id→Ollama-tag map resolved as **persisted dashboard_settings → env → default** (single source of truth; survives restart). High-stakes pinned to Claude.
+
+## Knowledge layer
+- `knowledge-store.ts` (interface + `LocalFsKnowledgeStore`, default, no creds) and `knowledge-store-r2.ts` (R2/S3 backend, lazy SDK, config-gated selection, presence-only status). Path conventions under `R2_PATHS`.
+- `knowledge-ingestion.ts` — deterministic training/knowledge ingestion shell (sha256-addressed, roster-validated, manifest-tracked, `raw_training`, promotion blocked).
+
+## Cost / safety governance
+- `realie-trial-guard.ts` — manual, local, gitignored trial counter; pre-call confirmation + post-call record; never auto-invoked.
+- Approval/audit spine, rubric, offer engine, departments/agent roster (`db.ts`, `rubric.ts`, `offer-engine.ts`, `departments.ts`, `agent-roster.ts`). Cost + model-call logging tables.
+
+## Storage separation
+- **GitHub repo:** code + docs only (no business data, secrets, or property work product).
+- **Local machine:** running system, `store/landos.db`, `.env` secrets (gitignored), local model inference (Ollama).
+- **Cloudflare R2 (when keyed):** business knowledge/artifacts behind the `KnowledgeStore` interface.
+
+## Tech reality (current)
+Node 22 + TypeScript; Hono (dashboard API); better-sqlite3; React/Preact + Vite (web); vitest (1200+ tests); `@anthropic-ai/claude-agent-sdk` (Claude auth via local session); Ollama (local Gemma). Playwright is install-gated (imagery); no heavy browser-automation deps installed.
