@@ -28,6 +28,22 @@ export interface NormalizedParcel {
   state?: string | null;
   owner?: string | null;
   acres?: number | null;
+  // ── Extended canonical fields (additive/optional; populated when a provider
+  //    supplies them). Never required; older providers simply omit them. ──
+  zoning?: string | null;
+  fipsState?: string | null;
+  landArea?: number | null;
+  legalDesc?: string | null;
+  subdivision?: string | null;
+  // ── Provenance (preserved for every fact) ──
+  /** ISO timestamp the record was produced. */
+  timestamp?: string;
+  /** Confidence in the match. Exact official-id matches are 'high'. */
+  confidence?: 'high' | 'medium' | 'low' | 'none';
+  /** What we searched by (e.g. 'parcelId', 'address'). */
+  searchedIdentifier?: string;
+  /** What the record matched on (e.g. the returned parcelId). */
+  matchedIdentifier?: string | null;
   note: string;
 }
 
@@ -83,12 +99,26 @@ export function makeLandPortalParcelAdapter(deps: LandPortalParcelDeps = {}): Pa
   };
 }
 
-// ── Realie.ai parcel adapter (live-ready behind the same interface) ───────────
+// ── Realie.ai parcel adapter — matches the VERIFIED official API contract ─────
+//
+// Contract (docs.realie.ai, confirmed 2026-06):
+//   Base URL : https://app.realie.ai/api
+//   Address  : GET /public/property/address/   required: state, address
+//              (address = street line 1 only) optional: county, city, unitNumberStripped
+//   Parcel   : GET /public/property/parcelId/  required: state, county, parcelId
+//   Auth     : header  Authorization: <API_KEY>   (raw key — NOT Bearer)
+//   Response : { property: { parcelId, fipsCounty, ownerName, addressFull, city,
+//                state, zipCode, acres, zoningCode, county, fipsState, landArea,
+//                legalDesc, subdivision, ... } }
+//
+// Location/lat-long/nearest/map-pin endpoints are NEVER used for subject identity.
 
 export const REALIE_ENV_KEY = 'REALIE_API_KEY';
-/** Optional override; defaults to Realie's public parcel endpoint base. */
+/** Optional base override; defaults to the verified official base. */
 export const REALIE_BASE_ENV_KEY = 'REALIE_API_BASE';
-const REALIE_DEFAULT_BASE = 'https://api.realie.ai/v1';
+export const REALIE_DEFAULT_BASE = 'https://app.realie.ai/api';
+export const REALIE_ADDRESS_PATH = '/public/property/address/';
+export const REALIE_PARCEL_PATH = '/public/property/parcelId/';
 
 /** Minimal fetch surface so tests inject a fake and no live/paid call is made. */
 export type FetchLike = (
@@ -98,93 +128,138 @@ export type FetchLike = (
 
 export interface RealieParcelDeps {
   /** Injected in tests; default is the global fetch — only ever CALLED when the
-   *  adapter is configured (a key is present), so tests stay offline by default. */
+   *  adapter is configured (a key is present) AND sufficient exact identifiers
+   *  are provided, so tests stay offline by default and no credit is spent. */
   fetchImpl?: FetchLike;
   /** Env used for key/base resolution. Default process.env. Presence only. */
   env?: Record<string, string | undefined>;
+  /** ISO clock for provenance timestamps (tests inject a fixed value). */
+  now?: () => string;
 }
 
-/** Normalize a Realie parcel payload into NormalizedParcel. Conservative: an
- *  unrecognized/empty shape is reported unverified (never fabricated). */
-function normalizeRealie(raw: unknown): NormalizedParcel {
-  const r = (raw ?? {}) as Record<string, unknown>;
+/** Normalize a Realie `property` object into the canonical NormalizedParcel.
+ *  Reads ONLY the documented field names under `property`. An empty/garbled
+ *  payload is reported unverified (never fabricated). */
+function normalizeRealieProperty(
+  body: unknown,
+  ctx: { searchedIdentifier: string; matchedBy: 'parcelId' | 'address'; timestamp: string },
+): NormalizedParcel {
+  const root = (body ?? {}) as Record<string, unknown>;
+  const p = (root.property ?? {}) as Record<string, unknown>;
   const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
-  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-  const apn = str(r.apn) ?? str(r.parcel_number);
-  const matched = !!(apn || str(r.property_id) || str(r.situs_address));
-  return {
-    verified: false, // external data source is needs-verification context, never auto-verified
-    source: 'Realie.ai',
-    status: matched ? 'matched_needs_verification' : 'no_match',
-    apn,
-    fips: str(r.fips) ?? str(r.county_fips),
-    propertyId: str(r.property_id) ?? str(r.id),
-    situsAddress: str(r.situs_address) ?? str(r.address),
-    city: str(r.city),
-    county: str(r.county),
-    state: str(r.state),
-    owner: str(r.owner) ?? str(r.owner_name),
-    acres: num(r.acres) ?? num(r.lot_size_acres),
-    note: matched
-      ? 'Realie.ai returned a parcel match. Labeled needs_verification (external source is context, not parcel verification).'
-      : 'Realie.ai returned no exact parcel match; no parcel fabricated.',
+  const num = (v: unknown): number | null => {
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+    return Number.isFinite(n) ? n : null;
   };
+  const parcelId = str(p.parcelId);
+  const matched = !!(parcelId || str(p.addressFull) || str(p.ownerName));
+  if (!matched) {
+    return {
+      verified: false, source: 'Realie.ai', status: 'no_match',
+      timestamp: ctx.timestamp, confidence: 'none', searchedIdentifier: ctx.searchedIdentifier, matchedIdentifier: null,
+      note: 'Realie.ai returned no property; no parcel fabricated.',
+    };
+  }
+  return {
+    // Realie is an exact, official-record lookup (by parcelId or address) with NO
+    // proximity/nearest. A returned property is an authoritative exact match, so
+    // subject identity is Verified — never derived from coordinates.
+    verified: true,
+    source: 'Realie.ai',
+    status: 'verified',
+    apn: parcelId,
+    fips: str(p.fipsCounty),
+    propertyId: parcelId,
+    situsAddress: str(p.addressFull),
+    city: str(p.city),
+    county: str(p.county),
+    state: str(p.state),
+    owner: str(p.ownerName),
+    acres: num(p.acres),
+    zoning: str(p.zoningCode),
+    fipsState: str(p.fipsState),
+    landArea: num(p.landArea),
+    legalDesc: str(p.legalDesc),
+    subdivision: str(p.subdivision),
+    timestamp: ctx.timestamp,
+    confidence: 'high',
+    searchedIdentifier: ctx.searchedIdentifier,
+    matchedIdentifier: parcelId,
+    note: `Realie.ai exact ${ctx.matchedBy} match (official property record).`,
+  };
+}
+
+function unverified(status: string, note: string, now: string, searchedIdentifier: string): NormalizedParcel {
+  return { verified: false, source: 'Realie.ai', status, timestamp: now, confidence: 'none', searchedIdentifier, matchedIdentifier: null, note };
 }
 
 export function makeRealieParcelAdapter(deps: RealieParcelDeps = {}): ParcelProvider {
   return {
     id: 'realie',
-    label: 'Realie.ai (parcel data)',
+    label: 'Realie.ai (official property/parcel records)',
     configured(env = deps.env ?? process.env) {
       const v = env[REALIE_ENV_KEY];
       return typeof v === 'string' && v.trim().length > 0; // presence only
     },
     async lookup(args): Promise<NormalizedParcel> {
       const env = deps.env ?? process.env;
+      const now = (deps.now ?? (() => new Date().toISOString()))();
       const key = (env[REALIE_ENV_KEY] ?? '').trim();
       if (!key) {
-        // Not configured: fail loud, make NO call, never fabricate a parcel.
-        return {
-          verified: false,
-          source: 'Realie.ai',
-          status: 'not_configured',
-          note: 'Realie.ai adapter is wired but not configured (no REALIE_API_KEY). No live call made; no parcel fabricated.',
-        };
+        // Not configured: make NO call, never fabricate a parcel.
+        return unverified('not_configured', 'Realie.ai not configured (no REALIE_API_KEY). No live call made.', now, '');
       }
-      // Configured: live-ready REST lookup (injected fetch in tests; never paid in tests).
-      const base = (env[REALIE_BASE_ENV_KEY] ?? REALIE_DEFAULT_BASE).trim().replace(/\/+$/, '');
+
+      const base = (env[REALIE_BASE_ENV_KEY] || REALIE_DEFAULT_BASE).trim().replace(/\/+$/, '');
+      const state = (args.state ?? '').trim();
+      const county = (args.county ?? '').trim();
+      // ParcelLookupArgs.apn carries the parcel id for Realie's parcelId endpoint.
+      const parcelId = (args.apn ?? args.propertyId ?? '').trim();
+      const address = (args.address ?? '').trim();
+
+      // Choose the endpoint from the EXACT identifiers present. No coordinates,
+      // no location/nearest endpoint is ever used to identify the subject parcel.
+      let path: string;
+      let params: URLSearchParams;
+      let searchedIdentifier: string;
+      let matchedBy: 'parcelId' | 'address';
+      if (state && county && parcelId) {
+        path = REALIE_PARCEL_PATH;
+        params = new URLSearchParams({ state, county, parcelId });
+        searchedIdentifier = `parcelId:${parcelId} (${county}, ${state})`;
+        matchedBy = 'parcelId';
+      } else if (state && address) {
+        path = REALIE_ADDRESS_PATH;
+        params = new URLSearchParams({ state, address }); // address = street line 1 only
+        if (county) params.set('county', county);
+        if (args.city && county) params.set('city', args.city.trim()); // city requires county
+        searchedIdentifier = `address:${address} (${state})`;
+        matchedBy = 'address';
+      } else {
+        // Not enough exact identifiers to run an official lookup — never guess,
+        // never use proximity. Caller treats this as Needs Verification.
+        return unverified(
+          'insufficient_identifiers',
+          'Realie.ai needs state+county+parcelId (parcel lookup) or state+address (address lookup). No call made; coordinates are never used to identify a parcel.',
+          now,
+          '',
+        );
+      }
+
       const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
-      const params = new URLSearchParams();
-      if (args.address) params.set('address', args.address);
-      if (args.city) params.set('city', args.city);
-      if (args.state) params.set('state', args.state);
-      if (args.zip) params.set('zip', args.zip);
-      if (args.apn) params.set('apn', args.apn);
-      if (args.county) params.set('county', args.county);
-      if (args.fips) params.set('fips', args.fips);
-      if (args.owner) params.set('owner', args.owner);
-      if (args.propertyId) params.set('property_id', args.propertyId);
       try {
-        const res = await fetchImpl(`${base}/parcels/lookup?${params.toString()}`, {
+        const res = await fetchImpl(`${base}${path}?${params.toString()}`, {
           method: 'GET',
-          headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
+          headers: { authorization: key, accept: 'application/json' }, // raw key, NOT Bearer
         });
-        if (!res.ok) {
-          return {
-            verified: false,
-            source: 'Realie.ai',
-            status: `error_${res.status}`,
-            note: `Realie.ai lookup failed (HTTP ${res.status}). No parcel fabricated.`,
-          };
-        }
-        return normalizeRealie(await res.json());
+        if (res.status === 404) return unverified('no_match', 'Realie.ai: no property found for the exact identifier.', now, searchedIdentifier);
+        if (res.status === 401) return unverified('error_401', 'Realie.ai: unauthorized (key missing/invalid).', now, searchedIdentifier);
+        if (res.status === 403) return unverified('error_403', 'Realie.ai: usage limit exceeded (403).', now, searchedIdentifier);
+        if (res.status === 429) return unverified('error_429', 'Realie.ai: rate limited (429).', now, searchedIdentifier);
+        if (!res.ok) return unverified(`error_${res.status}`, `Realie.ai lookup failed (HTTP ${res.status}). No parcel fabricated.`, now, searchedIdentifier);
+        return normalizeRealieProperty(await res.json(), { searchedIdentifier, matchedBy, timestamp: now });
       } catch (e: unknown) {
-        return {
-          verified: false,
-          source: 'Realie.ai',
-          status: 'error',
-          note: `Realie.ai lookup error: ${(e as Error)?.message ?? String(e)}. No parcel fabricated.`,
-        };
+        return unverified('error', `Realie.ai lookup error: ${(e as Error)?.message ?? String(e)}. No parcel fabricated.`, now, searchedIdentifier);
       }
     },
   };
