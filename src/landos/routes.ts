@@ -110,6 +110,7 @@ import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSou
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
 import { getDealCardReport, runDealCardReport } from './deal-card-report.js';
+import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
@@ -1127,6 +1128,10 @@ export function registerLandosRoutes(app: Hono): void {
       resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       actor: str(body.actor) ?? 'tyler/report',
+      googleVisualConfigured: googleVisualConfiguredResolved(),
+      // Reuse persisted verified data by default (no Realie credit). Operator can
+      // force a fresh provider re-verification with { reverify: true }.
+      reverify: body.reverify === true,
     });
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     return c.json(result);
@@ -1419,6 +1424,7 @@ export function registerLandosRoutes(app: Hono): void {
         resolve: resolveParcelIdentityResult,
         timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
         actor: 'tyler/from-verification',
+        googleVisualConfigured: googleVisualConfiguredResolved(),
       })) as { warnings?: string[] } | null;
       if (rep && Array.isArray(rep.warnings)) reportWarnings = rep.warnings;
     } catch {
@@ -1630,6 +1636,13 @@ export function registerLandosRoutes(app: Hono): void {
     const { store, backend } = await resolveKnowledgeStore();
     const items = await listAgentKnowledge(agentKey, store);
     return c.json({ agentKey, backend, count: items.length, items });
+  });
+
+  // Visual provider readiness (Google). Presence-only (no key, no value, no
+  // Google call). Lists the visual services and whether the key is configured.
+  app.get('/api/landos/visual/status', (c) => {
+    const status = googleVisualStatus({ ...process.env, GOOGLE_MAPS_API_KEY: googleVisualConfiguredResolved() ? 'present' : '' });
+    return c.json(status);
   });
 
   // County Scorecard (Market Research business intelligence; NOT a Deal Card

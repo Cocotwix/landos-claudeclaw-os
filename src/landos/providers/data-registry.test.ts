@@ -54,7 +54,9 @@ describe('Realie.ai adapter — VERIFIED official contract (offline, fixture-bas
   // The documented `property` response shape (docs.realie.ai, confirmed 2026-06).
   const REALIE_PROPERTY_FIXTURE = {
     property: {
-      parcelId: '123-456-789', fipsCounty: '13321', ownerName: 'JANE DOE',
+      // Realie returns fipsCounty as the 3-digit COUNTY code (verified live: '321'),
+      // and fipsState as the 2-digit state code ('13'). Canonical fips = '13321'.
+      parcelId: '123-456-789', fipsCounty: '321', ownerName: 'JANE DOE',
       addressFull: '472 West Rd', city: 'Poulan', state: 'GA', zipCode: '31781',
       acres: 5.2, zoningCode: 'A-1', county: 'Worth', fipsState: '13',
       landArea: 226512, legalDesc: 'LOT 4 BLK B', subdivision: 'PINE ACRES',
@@ -91,14 +93,15 @@ describe('Realie.ai adapter — VERIFIED official contract (offline, fixture-bas
     expect(p.status).toBe('verified');
     expect(p.apn).toBe('123-456-789');
     expect(p.propertyId).toBe('123-456-789');
-    expect(p.fips).toBe('13321');
+    expect(p.fips).toBe('13321');        // canonical 5-digit = fipsState + fipsCounty
+    expect(p.fipsState).toBe('13');      // 2-digit part preserved
+    expect(p.fipsCounty).toBe('321');    // 3-digit part preserved
     expect(p.owner).toBe('JANE DOE');
     expect(p.situsAddress).toBe('472 West Rd');
     expect(p.city).toBe('Poulan');
     expect(p.county).toBe('Worth');
     expect(p.acres).toBe(5.2);
     expect(p.zoning).toBe('A-1');
-    expect(p.fipsState).toBe('13');
     expect(p.landArea).toBe(226512);
     expect(p.legalDesc).toBe('LOT 4 BLK B');
     expect(p.subdivision).toBe('PINE ACRES');
@@ -124,6 +127,20 @@ describe('Realie.ai adapter — VERIFIED official contract (offline, fixture-bas
     expect(p.searchedIdentifier).toContain('address:472 West Rd');
   });
 
+  it('address lookup: normalizes a full address string to STREET LINE 1 only', async () => {
+    let seenUrl = '';
+    const realie = makeRealieParcelAdapter({
+      env: KEY, now: FIXED,
+      fetchImpl: async (url) => { seenUrl = url; return { ok: true, status: 200, json: async () => REALIE_PROPERTY_FIXTURE }; },
+    });
+    const p = await realie.lookup({ address: '472 West Rd, Poulan, GA 31781', state: 'GA' }, { timeoutMs: 1000 });
+    expect(seenUrl).toContain('address=472+West+Rd');   // line 1 only
+    expect(seenUrl).not.toContain('Poulan');            // city/state/zip dropped from the address param
+    expect(seenUrl).not.toContain('31781');
+    expect(p.verified).toBe(true);
+    expect(p.searchedIdentifier).toBe('address:472 West Rd (GA)');
+  });
+
   it('insufficient identifiers (no parcelId/address) makes NO call — Needs Verification, never coordinates', async () => {
     let called = false;
     const realie = makeRealieParcelAdapter({ env: KEY, now: FIXED, fetchImpl: async () => { called = true; return { ok: true, status: 200, json: async () => ({}) }; } });
@@ -147,5 +164,33 @@ describe('Realie.ai adapter — VERIFIED official contract (offline, fixture-bas
     const p = await realie.lookup({ apn: 'X', county: 'Worth', state: 'GA' }, { timeoutMs: 1000 });
     expect(p.status).toBe('no_match');
     expect(p.verified).toBe(false);
+  });
+
+  // ── Canonical 5-digit FIPS rule ─────────────────────────────────────────────
+  const realieReturning = (property: Record<string, unknown>) =>
+    makeRealieParcelAdapter({ env: KEY, now: FIXED, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ property }) }) });
+
+  it('FIPS: concatenates fipsState + fipsCounty into the canonical 5-digit fips', async () => {
+    const p = await realieReturning({ parcelId: 'A', fipsState: '13', fipsCounty: '321' })
+      .lookup({ apn: 'A', county: 'Worth', state: 'GA' }, { timeoutMs: 1000 });
+    expect(p.fips).toBe('13321');
+    expect(p.fipsState).toBe('13');
+    expect(p.fipsCounty).toBe('321');
+  });
+
+  it('FIPS: zero-pads parts so a short county code still yields 5 digits', async () => {
+    const p = await realieReturning({ parcelId: 'A', fipsState: '6', fipsCounty: '7' })
+      .lookup({ apn: 'A', county: 'X', state: 'CA' }, { timeoutMs: 1000 });
+    expect(p.fips).toBe('06007'); // 06 + 007
+    expect(p.fipsState).toBe('6');
+    expect(p.fipsCounty).toBe('7');
+  });
+
+  it('FIPS: with ONLY fipsCounty, does NOT pretend it is full FIPS (canonical fips undefined)', async () => {
+    const p = await realieReturning({ parcelId: 'A', fipsCounty: '321' })
+      .lookup({ apn: 'A', county: 'Worth', state: 'GA' }, { timeoutMs: 1000 });
+    expect(p.fips).toBeNull();        // not derivable -> unknown, never faked
+    expect(p.fipsCounty).toBe('321'); // preserved on its own
+    expect(p.fipsState ?? null).toBeNull();
   });
 });

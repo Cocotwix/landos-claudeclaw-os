@@ -52,6 +52,18 @@ describe('toMarkdown', () => {
   it('contains no secret/token-like values', async () => {
     const md = toMarkdown(await sampleResult());
     expect(md).not.toMatch(/Bearer\s|APIFY_TOKEN|LP_JWT_TOKEN|DASHBOARD_TOKEN/i);
+    // visual section must not leak a keyed static-image URL
+    expect(md).not.toMatch(/staticmap\?|streetview\?|[?&]key=/i);
+  });
+
+  it('includes a Visual Property Context section listing visual services (Not Verified) without a Google call', async () => {
+    const md = toMarkdown(await sampleResult());
+    expect(md).toContain('## Visual Property Context');
+    expect(md).toContain('Visual Signal, Not Verified Fact');
+    expect(md).toContain('Maps Static API');        // services rendered
+    expect(md).toContain('Street View Static API');
+    // unverified sample has no address -> assets render as unavailable (never invented)
+    expect(md).toMatch(/image placeholder|unavailable \(no address/);
   });
 });
 

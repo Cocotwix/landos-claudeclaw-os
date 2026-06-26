@@ -8,6 +8,7 @@ import {
   type LpResolveResult,
 } from './parcel-capability.js';
 import type { NormalizedParcel } from './providers/data-registry.js';
+import { makeRealieParcelAdapter, REALIE_ENV_KEY } from './providers/data-registry.js';
 
 const lpOk = (over: Partial<LpResolveResult> = {}): LpResolveResult => ({
   verified: true, status: 'verified', propertyid: 'PID-1', fips: '13321', apn: 'LP-APN',
@@ -94,5 +95,34 @@ describe('parcel-identity capability — provider selection', () => {
     });
     expect(r.verified).toBe(true);
     expect(r.apn).toBe('LP-APN');
+  });
+
+  // End-to-end: the REAL Realie adapter (fixture fetch, no live call) flowing
+  // through the capability → canonical verified result. Locks the Lead→DD parcel
+  // verification chain incl. 5-digit FIPS and provider provenance.
+  it('real Realie adapter through the capability yields a verified canonical parcel (5-digit FIPS)', async () => {
+    const REALIE_FIXTURE = {
+      property: {
+        parcelId: '00830-054-000', fipsCounty: '321', fipsState: '13', ownerName: 'CARROLL, MARGARET R',
+        addressFull: '472 WEST RD, POULAN, GA 31781', city: 'POULAN', state: 'GA', zipCode: '31781',
+        acres: 8.6, county: 'WORTH', zoningCode: null, landArea: 374616, legalDesc: 'LANDLOT:291 DIST:7 RESIDENCE',
+      },
+    };
+    const realieLookup = makeRealieParcelAdapter({
+      env: { [REALIE_ENV_KEY]: 'k' }, now: () => '2026-06-26T00:00:00Z',
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => REALIE_FIXTURE }),
+    }).lookup;
+    const out = await resolveParcelIdentity(
+      { address: '472 West Rd, Poulan, GA 31781', state: 'GA', county: 'Worth' },
+      20000,
+      { activeProvider: 'realie', configured: { realie: true }, realieLookup },
+    );
+    expect(out.provenance.provider).toBe('realie');
+    expect(out.provenance.fellBack).toBe(false);
+    expect(out.result.verified).toBe(true);
+    expect(out.result.status).toBe('verified');
+    expect(out.result.apn).toBe('00830-054-000');
+    expect(out.result.fips).toBe('13321'); // canonical 5-digit flows through the capability
+    expect(out.result.owner).toBe('CARROLL, MARGARET R');
   });
 });

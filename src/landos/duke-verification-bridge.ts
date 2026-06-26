@@ -343,14 +343,17 @@ export function mapResolveToVerification(input: ResolveMapInput): DukeVerificati
     const hasNamedIdentity = !!(identity.apn || identity.propertyId || identity.situsAddress || identity.owner);
     if (hasNamedIdentity) {
       const propertyData = ps ? normalizeFromLpSummary(ps, { fips: str(r.fips) }) : undefined;
+      // Provider provenance: use the resolver's reported source (e.g. 'Realie.ai',
+      // 'Persisted verified Property Card') and fall back to the LandPortal label.
+      const verificationSource = str(r.source) ?? LANDPORTAL_SOURCE;
       return {
         status: 'parcel_verified',
         parcelVerified: true,
-        verificationSource: LANDPORTAL_SOURCE,
+        verificationSource,
         identity,
         propertyData,
         sourceAttempts: [
-          { source: LANDPORTAL_SOURCE, status: 'verified', reason: str(r.match_notes) ?? 'LandPortal returned a verified exact match.', truthLabel: 'verified_fact' },
+          { source: verificationSource, status: 'verified', reason: str(r.match_notes) ?? 'Verified exact match.', truthLabel: 'verified_fact' },
         ],
         dataGaps: propertyData ? propertyData.dataGaps : [],
         marketPulseEligible,

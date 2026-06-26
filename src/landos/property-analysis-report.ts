@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import type { PropertyAnalysisResult } from './property-analysis.js';
 import type { StrategyScenario } from './offer-engine.js';
+import { buildVisualPropertyContext, renderVisualContextMarkdown, googleVisualConfiguredResolved } from './providers/google-visual.js';
 
 type StrategyScenarioLike = StrategyScenario;
 
@@ -77,6 +78,15 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
     L.push(`- **${s.signal}** — _${s.status}_${s.sourceName ? ` · ${s.sourceName}` : ''}: ${s.note}${s.sourceUrl ? ` (${s.sourceUrl})` : ''}`);
   }
   if (r.marketPulse.disclaimer) L.push(`\n> ${r.marketPulse.disclaimer}`);
+
+  // Visual Property Context (Google) — supporting context only, never verification.
+  // Built purely from the verified identity address; no Google call in this render.
+  const vid = r.parcelVerification.identity;
+  const visualCtx = buildVisualPropertyContext(
+    { address: vid?.situsAddress ?? null, city: vid?.city ?? null, state: vid?.state ?? null },
+    { configured: googleVisualConfiguredResolved(), now: () => r.reportTimestamp },
+  );
+  L.push('\n' + renderVisualContextMarkdown(visualCtx));
 
   L.push(h('Redfin Sold Comps'));
   L.push(kv('Lane started', `${r.redfinComps.ran} (from ${r.redfinComps.startedFrom}, concurrent with resolver: ${r.lanes.redfin.concurrentWithResolver})`));

@@ -137,6 +137,7 @@ function normalizedToResult(n: NormalizedParcel): LpResolveResult {
     state: n.state ?? null,
     owner: n.owner ?? null,
     match_notes: `[${n.source}] ${n.note}`,
+    source: n.source, // provider provenance flows through to the verification bridge
     candidates: [],
   };
 }

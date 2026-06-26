@@ -52,8 +52,66 @@ import { runDukeVerification, type DukeVerificationResult } from './duke-verific
 import { buildDukeAnalysis } from './duke-analysis.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD } from './offer-engine.js';
 import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './source-adapters.js';
-import type { LpResolveArgs, LpResolveResult } from './landportal-client.js';
+import type { LpResolveArgs, LpResolveResult, LpPropertySummary } from './landportal-client.js';
 import type { DukePropertyData } from './duke-property-data.js';
+import { buildVisualPropertyContext, type VisualPropertyContext } from './providers/google-visual.js';
+
+// ── Persisted verified reuse (no provider call) ──────────────────────────────
+
+/** An empty LandPortal-shaped summary (all fields blank → normalized as data
+ *  gaps, never fabricated). Used to carry persisted identity into the report. */
+function emptyLpSummary(): LpPropertySummary {
+  return {
+    propertyid: '', apn: '', situs_address: '', city: '', state: '', zip: '', county: '', owner: '',
+    land_use: '', lot_size_acres: '', calc_acres: '', lot_size_sqft: '', road_frontage_ft: '',
+    land_locked: '', near_water: '', wetlands_pct: '', fema_pct: '', buildability_pct: '',
+    buildability_acres: '', slope_avg_deg: '', elevation_avg_ft: '', building_area_sqft: '',
+    assessed_total: '', assessed_land: '', market_total: '', market_land: '', tlp_estimate: '',
+    tlp_ppa: '', price_acre_county: '', lat: '', lng: '', municipality: '', mailing_address: '',
+    mailing_city: '', mailing_state: '', similars_count: '', similars_ppa_min: '', similars_ppa_max: '',
+    similars_ppa_median: '', similars_most_recent_year: '', similar_sales: [],
+  };
+}
+
+/**
+ * Build a resolver that REUSES a persisted, already-verified Property Card instead
+ * of calling any data provider. Returns a verified LpResolveResult carrying the
+ * card's identity + acreage; all other land facts stay blank (reported as data
+ * gaps / Needs Verification — never fabricated). This is how the Discovery Call
+ * Report runs from persisted verified data without consuming another Realie call.
+ */
+export function buildPersistedResolver(
+  pc: Record<string, unknown>,
+): (args: LpResolveArgs, timeoutMs: number) => Promise<LpResolveResult> {
+  return async () => {
+    const summary = emptyLpSummary();
+    summary.propertyid = s(pc.lp_property_id) || s(pc.property_id) || s(pc.parcel_id);
+    summary.apn = s(pc.apn);
+    summary.county = s(pc.county);
+    summary.state = s(pc.state);
+    summary.city = s(pc.city);
+    summary.situs_address = s(pc.active_input_address);
+    summary.owner = s(pc.owner);
+    const acres = typeof pc.acres === 'number' ? pc.acres : undefined;
+    if (acres !== undefined) { summary.lot_size_acres = String(acres); summary.calc_acres = String(acres); }
+    const origSource = s(pc.verification_source);
+    return {
+      verified: true,
+      status: 'verified',
+      propertyid: summary.propertyid || null,
+      fips: s(pc.fips) || null,
+      apn: summary.apn || null,
+      situs_address: summary.situs_address || null,
+      city: summary.city || null,
+      state: summary.state || null,
+      owner: summary.owner || null,
+      match_notes: `Reused persisted verified Property Card${pc.id ? ` #${pc.id}` : ''} — no provider call, no Realie credit.`,
+      source: `Persisted verified Property Card${origSource ? ` (orig: ${origSource})` : ''}`,
+      property_summary: summary,
+      candidates: [],
+    };
+  };
+}
 
 const REPORT_STATUS_SET = new Set<string>(DEAL_CARD_REPORT_STATUSES);
 
@@ -96,6 +154,10 @@ export interface DealCardReportView {
   strategyBlockers: string[];
   nextConfirmations: string[];
   preCallStrategyNotes: string;
+  /** Visual Property Context (Google) — supporting context only, never parcel
+   *  verification. Deep links + image placeholders/captured refs, all labeled
+   *  "Visual Signal, Not Verified Fact". Built purely (no Google call here). */
+  visualContext: VisualPropertyContext;
   creditUsage: {
     landportalNonCreditUsed: boolean;
     compCreditUsed: false;
@@ -112,6 +174,13 @@ export interface DealCardReportDeps {
   timeoutMs: number;
   /** Who ran the report (audit/display only). */
   actor?: string;
+  /** Presence-only flag (resolved by the route from GOOGLE_MAPS_API_KEY). Kept as
+   *  a dep so this engine never reads .env/secrets. Default false. */
+  googleVisualConfigured?: boolean;
+  /** Force a fresh provider re-verification even when a verified Property Card is
+   *  already linked. Default false → reuse persisted verified data (no provider
+   *  call / no Realie credit). Set true only on explicit operator re-verify. */
+  reverify?: boolean;
 }
 
 export interface DealCardReportResult {
@@ -242,13 +311,23 @@ function buildDdLeg(verification: DukeVerificationResult, dd: DealCardDdView): D
     const id = pd.identity;
     const f = pd.landFacts;
 
-    // A named LandPortal source citation built from the verified identifiers
-    // (propertyid + FIPS). This is source attribution for the exact record, not
-    // a fabricated fact; it lets the verified DD facts stay labeled "Verified".
+    // A named, provider-agnostic source citation for the verified record. For
+    // LandPortal we cite the exact propertyid+FIPS record; for any other verified
+    // source (Realie, or a reused persisted verified Property Card) we cite the
+    // named source with a map reference to the verified parcel. This is source
+    // attribution, never a fabricated fact — it lets verified DD facts stay
+    // labeled "Verified" honestly.
+    const srcLabel = verification.verificationSource || 'Verified source';
+    const isLandPortal = /landportal/i.test(srcLabel);
+    const mapsRef = id.situsAddress
+      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(id.situsAddress)}`
+      : null;
     const lpSourceLink: DealCardSourceLink | null =
-      id.propertyId && id.fips
+      isLandPortal && id.propertyId && id.fips
         ? { label: 'LandPortal exact property data (non-credit)', url: `https://landportal.com/?propertyid=${id.propertyId}&fips=${id.fips}` }
-        : null;
+        : mapsRef
+          ? { label: `${srcLabel} — verified parcel (map reference)`, url: mapsRef }
+          : null;
 
     const patch: DealCardDdPatch = {
       parcelIdentityStatus: lpSourceLink ? 'source_verified' : 'apn_provided',
@@ -281,7 +360,7 @@ function buildDdLeg(verification: DukeVerificationResult, dd: DealCardDdView): D
     }
 
     // Data gaps: surface the source's missing fields verbatim (never invented).
-    for (const g of pd.dataGaps) dataGaps.push(`LandPortal field not returned: ${g}`);
+    for (const g of pd.dataGaps) dataGaps.push(`Source field not returned: ${g}`);
 
     // Risk flags from the source facts (deterministic; mirrors duke-analysis).
     if (f.landLocked !== undefined && TRUE_RE.test(f.landLocked.trim())) riskFlags.push('Landlocked per source — confirm legal/recorded access.');
@@ -301,11 +380,11 @@ function buildDdLeg(verification: DukeVerificationResult, dd: DealCardDdView): D
     );
 
     if (!lpSourceLink) {
-      verificationWarnings.push('LandPortal returned a verified match but without a propertyid+FIPS citation; DD facts are labeled "Needs verification" rather than "Verified".');
+      verificationWarnings.push(`${srcLabel} verified the parcel but no citation URL/address was available; DD facts are labeled "Needs verification" rather than "Verified".`);
     }
 
     const summary = [
-      `Parcel verified via LandPortal exact lookup (non-credit).`,
+      `Parcel verified via ${srcLabel}.`,
       id.apn ? `APN ${id.apn}.` : '',
       [id.county, id.state].filter(Boolean).join(', '),
       typeof f.acres === 'number' ? `~${f.acres} ac.` : '',
@@ -560,6 +639,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     strategyBlockers: [],
     nextConfirmations: [],
     preCallStrategyNotes: '',
+    visualContext: buildVisualPropertyContext({}, { configured: false }),
     creditUsage: {
       landportalNonCreditUsed: false,
       compCreditUsed: false,
@@ -680,11 +760,21 @@ export async function runDealCardReport(
   const market = getDealCardMarket(dealCardId);
   const strategy = getDealCardStrategy(dealCardId);
 
-  // 1. Safe parcel identification (non-credit exact resolve; injected).
+  // 1. Safe parcel identification. REUSE persisted verified data when a linked
+  //    Property Card is already verified (no provider call, no Realie credit),
+  //    unless the operator forces re-verification. Only re-query the provider
+  //    when there is no verified card or reverify is explicitly requested.
+  const verifiedCard = (deal.propertyCards as Array<Record<string, unknown>>).find(
+    (c) => c.verification_status === 'verified_property' &&
+      (s(c.apn) || s(c.lp_property_id) || s(c.parcel_id) || s(c.active_input_address)),
+  );
+  const usedPersistedVerification = !!verifiedCard && !deps.reverify;
+  const effectiveResolve = usedPersistedVerification ? buildPersistedResolver(verifiedCard!) : deps.resolve;
+
   const identityText = buildIdentityText(deal, dd);
   let verification: DukeVerificationResult;
   try {
-    verification = await runDukeVerification(identityText, { resolve: deps.resolve, timeoutMs: deps.timeoutMs });
+    verification = await runDukeVerification(identityText, { resolve: effectiveResolve, timeoutMs: deps.timeoutMs });
   } catch {
     // Unexpected engine error — honest failed report, no worksheet mutation.
     const failed: DealCardReportView = {
@@ -727,11 +817,14 @@ export async function runDealCardReport(
   const strategyRes = upsertDealCardStrategy(dealCardId, { ...strategyLeg.patch, updatedBy: actor });
   if (strategyRes) warnings.push(...strategyRes.warnings);
 
-  // 4. Build the unified source table (parcel-exact + market-pulse). LandPortal
-  //    is the only parcel-exact source used here; it is non-credit. Comp credit
-  //    tools are never listed as used.
+  // 4. Build the unified source table (parcel-exact + market-pulse). The parcel
+  //    source reflects the actual provider/provenance (LandPortal, Realie, or a
+  //    reused persisted verified Property Card). No comp credit is ever used.
+  const parcelSourceLabel = usedPersistedVerification
+    ? (verification.verificationSource || 'Persisted verified Property Card') + ' (reused — no provider call)'
+    : (verification.verificationSource || 'Parcel identity provider') + ' (non-credit)';
   const lpRow: DealCardReportSourceRow = {
-    source: 'LandPortal exact lookup (non-credit property data)',
+    source: parcelSourceLabel,
     kind: 'parcel_exact',
     status: verification.parcelVerified
       ? 'used_non_credit'
@@ -741,7 +834,9 @@ export async function runDealCardReport(
           ? 'attempted_not_verified'
           : 'manual_entry_needed',
     detail: verification.parcelVerified
-      ? 'Parcel verified via the non-credit exact property-data lookup. No comp credit used.'
+      ? (usedPersistedVerification
+          ? 'Parcel identity reused from the persisted verified Property Card — no provider call, no Realie credit.'
+          : 'Parcel verified via the non-credit exact property-data lookup. No comp credit used.')
       : landportalUnavailable
         ? 'LandPortal exact lookup unavailable (not configured or unreachable). No comp credit used.'
         : landportalAttempted
@@ -764,8 +859,22 @@ export async function runDealCardReport(
   else reportStatus = 'complete_with_gaps';
 
   const parcelVerificationStatus = verification.parcelVerified
-    ? 'Parcel verified (LandPortal exact, non-credit)'
+    ? `Parcel verified (${verification.verificationSource || 'exact source'}, non-credit)`
     : verification.localAreaContextLabel ?? 'Not parcel verified';
+
+  // Visual Property Context (supporting only, never verification). Built PURELY
+  // from the verified identity's address — no Google call here; images are
+  // captured separately via an explicit per-property workflow.
+  const vid = verification.identity;
+  const visualContext = buildVisualPropertyContext(
+    {
+      address: vid?.situsAddress ?? null,
+      city: vid?.city ?? null,
+      county: vid?.county ?? null,
+      state: vid?.state ?? null,
+    },
+    { configured: deps.googleVisualConfigured ?? false },
+  );
 
   const view: DealCardReportView = {
     exists: true,
@@ -786,6 +895,7 @@ export async function runDealCardReport(
     strategyBlockers: union(strategyLeg.blockers, []),
     nextConfirmations: union(strategyLeg.nextConfirmations, []),
     preCallStrategyNotes: strategyLeg.preCallNotes,
+    visualContext,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,
       compCreditUsed: false,

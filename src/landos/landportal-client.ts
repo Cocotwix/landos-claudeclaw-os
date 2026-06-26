@@ -156,6 +156,10 @@ export interface LpResolveResult {
   state?: string | null;
   owner: string | null;
   match_notes: string;
+  /** Provider provenance label (e.g. 'Realie.ai', 'Persisted verified Property
+   *  Card'). Optional/additive; when absent the consumer defaults to the
+   *  LandPortal label for backward compatibility. */
+  source?: string;
   property_summary?: LpPropertySummary;
   candidates?: Array<Record<string, unknown>>;
   /** APN format variants generated for exact search (search keys only). */

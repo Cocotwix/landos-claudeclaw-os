@@ -31,7 +31,11 @@ export interface NormalizedParcel {
   // ── Extended canonical fields (additive/optional; populated when a provider
   //    supplies them). Never required; older providers simply omit them. ──
   zoning?: string | null;
+  /** State FIPS (2-digit) when a provider supplies it. */
   fipsState?: string | null;
+  /** County FIPS (3-digit) when a provider supplies it. Canonical `fips` is the
+   *  5-digit fipsState+fipsCounty concatenation; this preserves the part. */
+  fipsCounty?: string | null;
   landArea?: number | null;
   legalDesc?: string | null;
   subdivision?: string | null;
@@ -152,6 +156,13 @@ function normalizeRealieProperty(
     return Number.isFinite(n) ? n : null;
   };
   const parcelId = str(p.parcelId);
+  // Canonical FIPS is the 5-digit fipsState(2)+fipsCounty(3) concatenation. Realie
+  // returns fipsCounty as the 3-digit COUNTY code (e.g. '321'), NOT the full FIPS.
+  // Only form the 5-digit code when BOTH parts are present; otherwise leave the
+  // canonical fips undefined and keep fipsCounty alone (never pretend it's full).
+  const fipsState = str(p.fipsState);
+  const fipsCounty = str(p.fipsCounty);
+  const fipsFull = fipsState && fipsCounty ? `${fipsState.padStart(2, '0')}${fipsCounty.padStart(3, '0')}` : null;
   const matched = !!(parcelId || str(p.addressFull) || str(p.ownerName));
   if (!matched) {
     return {
@@ -168,7 +179,7 @@ function normalizeRealieProperty(
     source: 'Realie.ai',
     status: 'verified',
     apn: parcelId,
-    fips: str(p.fipsCounty),
+    fips: fipsFull, // canonical 5-digit (state+county), or null when not derivable
     propertyId: parcelId,
     situsAddress: str(p.addressFull),
     city: str(p.city),
@@ -177,7 +188,8 @@ function normalizeRealieProperty(
     owner: str(p.ownerName),
     acres: num(p.acres),
     zoning: str(p.zoningCode),
-    fipsState: str(p.fipsState),
+    fipsState,
+    fipsCounty,
     landArea: num(p.landArea),
     legalDesc: str(p.legalDesc),
     subdivision: str(p.subdivision),
@@ -215,7 +227,11 @@ export function makeRealieParcelAdapter(deps: RealieParcelDeps = {}): ParcelProv
       const county = (args.county ?? '').trim();
       // ParcelLookupArgs.apn carries the parcel id for Realie's parcelId endpoint.
       const parcelId = (args.apn ?? args.propertyId ?? '').trim();
-      const address = (args.address ?? '').trim();
+      // Realie's address endpoint wants STREET LINE 1 ONLY. Real leads often arrive
+      // as a full address string ("472 West Rd, Poulan, GA 31781"); take the part
+      // before the first comma so the exact lookup isn't broadened/failed. This is
+      // pure string normalization — never geocoding or proximity.
+      const addressLine1 = (args.address ?? '').split(',')[0].trim();
 
       // Choose the endpoint from the EXACT identifiers present. No coordinates,
       // no location/nearest endpoint is ever used to identify the subject parcel.
@@ -228,12 +244,12 @@ export function makeRealieParcelAdapter(deps: RealieParcelDeps = {}): ParcelProv
         params = new URLSearchParams({ state, county, parcelId });
         searchedIdentifier = `parcelId:${parcelId} (${county}, ${state})`;
         matchedBy = 'parcelId';
-      } else if (state && address) {
+      } else if (state && addressLine1) {
         path = REALIE_ADDRESS_PATH;
-        params = new URLSearchParams({ state, address }); // address = street line 1 only
+        params = new URLSearchParams({ state, address: addressLine1 }); // street line 1 only
         if (county) params.set('county', county);
         if (args.city && county) params.set('city', args.city.trim()); // city requires county
-        searchedIdentifier = `address:${address} (${state})`;
+        searchedIdentifier = `address:${addressLine1} (${state})`;
         matchedBy = 'address';
       } else {
         // Not enough exact identifiers to run an official lookup — never guess,

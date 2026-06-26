@@ -14,6 +14,8 @@ import { getDealCardDd, upsertDealCardDd } from './deal-card-dd.js';
 import { getDealCardStrategy } from './deal-card-strategy.js';
 import { getDealCardMarket } from './deal-card-market.js';
 import { getDealCardReport, runDealCardReport } from './deal-card-report.js';
+import { upsertCardFromDukeRun } from './property-card.js';
+import { linkPropertyToDeal } from './deal-card.js';
 import type { LpPropertySummary, LpResolveArgs, LpResolveResult } from './landportal-client.js';
 
 beforeEach(() => {
@@ -142,6 +144,60 @@ describe('Deal Card report — verified parcel path', () => {
     expect(market.buyerDemandLabel).toBe('not_reviewed');
     expect(r.marketFollowUpChecklist.length).toBeGreaterThan(0);
     expect(r.sourceTable.some((row) => row.kind === 'market_pulse')).toBe(true);
+  });
+
+  it('includes a Visual Property Context (supporting only, labeled Not Verified) without any Google call', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    const r = (await runDealCardReport(id, { resolve: verifiedResolve, timeoutMs: 1000, googleVisualConfigured: true }))!.report;
+    expect(r.visualContext).toBeDefined();
+    expect(r.visualContext.provider).toBe('google');
+    expect(r.visualContext.configured).toBe(true);
+    expect(r.visualContext.label).toBe('Visual Signal, Not Verified Fact');
+    // image assets are placeholders (no capture/Google call in the report path)
+    expect(r.visualContext.assets.every((a) => a.status !== 'captured')).toBe(true);
+    // never used for verification: parcel verification is independent
+    expect(r.parcelVerified).toBe(true);
+  });
+});
+
+describe('Deal Card report — reuse persisted verified data (no Realie credit)', () => {
+  function seedVerifiedCard(dealId: number): void {
+    const { card } = upsertCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '472 WEST RD', city: 'Poulan', county: 'Worth', state: 'GA',
+      apn: '00830-054-000', fips: '13321', owner: 'CARROLL MARGARET R', acres: 8.6,
+      verified: true, verificationSource: 'Realie.ai', summary: 'verified via Realie',
+    });
+    expect(card.verification_status).toBe('verified_property');
+    linkPropertyToDeal({ dealCardId: dealId, cardId: card.id, role: 'subject' });
+  }
+
+  it('reuses the verified Property Card and makes NO provider call', async () => {
+    const id = newDeal();
+    seedVerifiedCard(id);
+    let resolverCalled = false;
+    const spyResolve = async (): Promise<LpResolveResult> => { resolverCalled = true; throw new Error('provider must NOT be called when reusing persisted verification'); };
+    const r = (await runDealCardReport(id, { resolve: spyResolve, timeoutMs: 1000, googleVisualConfigured: true }))!.report;
+
+    expect(resolverCalled).toBe(false);             // no Realie/provider call
+    expect(r.parcelVerified).toBe(true);            // reused verified identity
+    expect(r.parcelVerificationStatus).toMatch(/verified/i);
+    const parcelRow = r.sourceTable.find((x) => x.kind === 'parcel_exact')!;
+    expect(parcelRow.source).toMatch(/Persisted verified Property Card|reused/i);
+    expect(parcelRow.compCreditUsed).toBe(false);
+    // DD facts not carried by the card are honest gaps, never fabricated.
+    expect(r.dataGaps.some((g) => /femaPct|wetlandsPct|slopeAvgDeg/.test(g))).toBe(true);
+    // visual context present and labeled
+    expect(r.visualContext.label).toBe('Visual Signal, Not Verified Fact');
+  });
+
+  it('reverify:true forces a fresh provider call even with a verified card', async () => {
+    const id = newDeal();
+    seedVerifiedCard(id);
+    let called = false;
+    const resolve = async (): Promise<LpResolveResult> => { called = true; return verifiedResolve({} as LpResolveArgs); };
+    await runDealCardReport(id, { resolve, timeoutMs: 1000, reverify: true });
+    expect(called).toBe(true);
   });
 });
 
