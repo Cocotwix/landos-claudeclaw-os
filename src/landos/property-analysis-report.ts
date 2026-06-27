@@ -12,55 +12,19 @@ import path from 'path';
 import type { PropertyAnalysisResult } from './property-analysis.js';
 import type { StrategyScenario } from './offer-engine.js';
 import { buildVisualPropertyContext, renderVisualContextMarkdown, googleVisualConfiguredResolved } from './providers/google-visual.js';
+import { buildDdChecklist, renderDdChecklistMarkdown } from './dd-checklist.js';
 
 type StrategyScenarioLike = StrategyScenario;
 
 function h(s: string): string { return `\n## ${s}\n`; }
 function kv(k: string, v: unknown): string { return `- **${k}:** ${v ?? '—'}`; }
 
-// Canonical Due Diligence fact set. Every standard field is accounted for: a
-// Verified value cites its source; anything a provider did not return is shown as
-// an explicit Unknown / Needs Verification row (never silently omitted, never
-// fabricated). Utilities have no connected provider yet -> always Needs Verification.
-const DD_LAND_FIELDS: Array<{ key: string; label: string; fmt?: (v: number | string) => string }> = [
-  { key: 'acres', label: 'Acreage', fmt: (v) => `${v} ac` },
-  { key: 'zoning', label: 'Zoning' },
-  { key: 'landUse', label: 'Land use' },
-  { key: 'roadFrontageFt', label: 'Road frontage', fmt: (v) => `${v} ft` },
-  { key: 'landLocked', label: 'Access (landlocked flag)' },
-  { key: 'nearWater', label: 'Near water' },
-  { key: 'wetlandsPct', label: 'Wetlands', fmt: (v) => `~${v}%` },
-  { key: 'femaPct', label: 'FEMA flood zone', fmt: (v) => `~${v}%` },
-  { key: 'slopeAvgDeg', label: 'Average slope', fmt: (v) => `~${v}°` },
-  { key: 'buildabilityPct', label: 'Buildability', fmt: (v) => `~${v}%` },
-  { key: 'buildableAcres', label: 'Buildable acres', fmt: (v) => `${v} ac` },
-  { key: 'buildingAreaSqft', label: 'Building area', fmt: (v) => `${v} sqft` },
-];
-const DD_UTILITY_FIELDS = ['Power', 'Water', 'Sewer / septic'];
-const NEEDS_VERIFICATION = 'Unknown / Needs Verification';
-
-function ddFactPresent(v: unknown): v is number | string {
-  if (v === undefined || v === null) return false;
-  if (typeof v === 'string') return v.trim() !== '';
-  if (typeof v === 'number') return Number.isFinite(v);
-  return false;
-}
-
-/** Render the full DD fact checklist (every standard field, explicit gaps). */
+/** Render the full DD fact checklist (every standard field, explicit gaps) from
+ *  the shared canonical builder. */
 function renderDdChecklist(r: PropertyAnalysisResult): string[] {
-  const lf = ((r.ddFacts?.landFacts ?? {}) as Record<string, unknown>);
+  const lf = (r.ddFacts?.landFacts ?? {}) as Record<string, unknown>;
   const src = r.parcelVerification.verificationSource || 'named source';
-  const lines: string[] = [];
-  for (const f of DD_LAND_FIELDS) {
-    const v = lf[f.key];
-    lines.push(ddFactPresent(v)
-      ? `- **${f.label}:** ${f.fmt ? f.fmt(v) : v} — Verified (source: ${src})`
-      : `- **${f.label}:** ${NEEDS_VERIFICATION}`);
-  }
-  for (const u of DD_UTILITY_FIELDS) {
-    lines.push(`- **${u}:** ${NEEDS_VERIFICATION} (no connected source)`);
-  }
-  return lines;
+  return renderDdChecklistMarkdown(buildDdChecklist(lf, src));
 }
 
 /** Render the full Markdown report. Includes every required section. Pure. */

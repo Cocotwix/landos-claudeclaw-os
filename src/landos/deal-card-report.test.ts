@@ -161,6 +161,35 @@ describe('Deal Card report — verified parcel path', () => {
   });
 });
 
+describe('Deal Card report — full DD fact checklist (mirrors Discovery Report)', () => {
+  it('lists every standard DD field with Verified value+source or explicit Needs Verification', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    const zonedResolve = async (): Promise<LpResolveResult> => ({
+      verified: true, status: 'verified', propertyid: '999', fips: '37043', apn: '12-345-678',
+      situs_address: '123 Main St', city: 'Sparta', state: 'NC', owner: 'GENERIC OWNER',
+      match_notes: 'verified', source: 'Realie.ai', zoning: 'A-1', candidates: [],
+      property_summary: { ...VERIFIED_SUMMARY, situs_address: '123 Main St' },
+    });
+    const r = (await runDealCardReport(id, { resolve: zonedResolve, timeoutMs: 1000 }))!.report;
+    const byLabel = (l: string) => r.ddFactChecklist.find((x) => x.label === l)!;
+    expect(r.ddFactChecklist.length).toBeGreaterThan(10);
+    // acreage verified from property_summary (10 ac), source carried
+    expect(byLabel('Acreage')).toMatchObject({ status: 'verified', source: 'Realie.ai' });
+    expect(byLabel('Zoning')).toMatchObject({ status: 'verified', value: 'A-1' });
+    // utilities have no connected source -> Needs Verification
+    expect(byLabel('Power')).toMatchObject({ status: 'needs_verification', noConnectedSource: true });
+  });
+
+  it('marks the whole checklist Needs Verification when the parcel is not verified', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    const r = (await runDealCardReport(id, { resolve: notVerifiedResolve, timeoutMs: 1000 }))!.report;
+    expect(r.ddFactChecklist.length).toBeGreaterThan(10);
+    expect(r.ddFactChecklist.every((x) => x.status === 'needs_verification')).toBe(true);
+  });
+});
+
 describe('Deal Card report — zoning wiring (canonical, no provider call)', () => {
   it('threads provider zoning (e.g. Realie zoningCode) into the DD zoning field, labeled Verified', async () => {
     const id = newDeal();

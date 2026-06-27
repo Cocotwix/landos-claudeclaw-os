@@ -56,6 +56,7 @@ import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from
 import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
 import { loadCardVisualCapture } from './property-card.js';
+import { buildDdChecklist, type DdChecklistRow } from './dd-checklist.js';
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
 
@@ -141,6 +142,10 @@ export interface DealCardReportView {
   strategyBlockers: string[];
   nextConfirmations: string[];
   preCallStrategyNotes: string;
+  /** Full DD fact checklist — every standard field with a Verified value (+source)
+   *  or an explicit Unknown / Needs Verification status. Never fabricated. Mirrors
+   *  the Discovery Call Report checklist. */
+  ddFactChecklist: DdChecklistRow[];
   /** Visual Property Context (Google) — supporting context only, never parcel
    *  verification. Deep links + image placeholders/captured refs, all labeled
    *  "Visual Signal, Not Verified Fact". Built purely (no Google call here). */
@@ -629,6 +634,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     strategyBlockers: [],
     nextConfirmations: [],
     preCallStrategyNotes: '',
+    ddFactChecklist: buildDdChecklist({}, null),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
     creditUsage: {
       landportalNonCreditUsed: false,
@@ -896,6 +902,7 @@ export async function runDealCardReport(
     strategyBlockers: union(strategyLeg.blockers, []),
     nextConfirmations: union(strategyLeg.nextConfirmations, []),
     preCallStrategyNotes: strategyLeg.preCallNotes,
+    ddFactChecklist: buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null),
     visualContext,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,
