@@ -51,6 +51,10 @@ export interface VisualAsset {
   status: 'captured' | 'not_captured' | 'unavailable';
   /** Local stored image path when captured (gitignored; never in repo). */
   storedPath: string | null;
+  /** Dashboard-safe URL to fetch the captured image (token-gated route). Null
+   *  until captured. The web renders this; the raw filesystem path is never
+   *  exposed to the browser. */
+  imageUrl: string | null;
   /** Keyless Google deep link for this view (always safe to expose). */
   deepLink: string | null;
   provider: 'google';
@@ -95,6 +99,17 @@ export function googleVisualConfiguredResolved(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Resolve an env object carrying the Google key VALUE for the capture path
+ *  (process.env wins, else .env). The value is used only to call the Google
+ *  Static APIs server-side and is never logged or returned to the client. */
+export function resolveGoogleVisualEnv(): Record<string, string | undefined> {
+  let v = process.env[GOOGLE_MAPS_ENV_KEY] ?? '';
+  if (!v && !process.env.LANDOS_DISABLE_DOTENV_FALLBACK) {
+    try { v = readEnvFile([GOOGLE_MAPS_ENV_KEY])[GOOGLE_MAPS_ENV_KEY] ?? ''; } catch { v = ''; }
+  }
+  return { [GOOGLE_MAPS_ENV_KEY]: v };
 }
 
 export function googleVisualStatus(env: Record<string, string | undefined> = process.env): {
@@ -163,8 +178,9 @@ export interface VisualContextInput {
 export interface BuildVisualContextOpts {
   configured?: boolean;
   now?: () => string;
-  /** Captured assets keyed by service (storedPath from a prior explicit capture). */
-  captured?: Partial<Record<VisualService, { storedPath: string; timestamp?: string }>>;
+  /** Captured assets keyed by service (from a prior explicit capture). `url` is a
+   *  dashboard-safe fetch URL; `storedPath` is the local file (never sent to the browser). */
+  captured?: Partial<Record<VisualService, { storedPath: string; timestamp?: string; url?: string }>>;
 }
 
 /** Compose a full address string for visual lookups (NOT for identity). */
@@ -205,6 +221,7 @@ export function buildVisualPropertyContext(i: VisualContextInput, opts: BuildVis
     return {
       service, imageType, status,
       storedPath: cap?.storedPath ?? null,
+      imageUrl: cap?.url ?? null,
       deepLink,
       provider: 'google',
       apiService,
@@ -252,8 +269,8 @@ export function renderVisualContextMarkdown(ctx: VisualPropertyContext): string 
   lines.push(`_${ctx.label}. Provider: Google. Generated: ${ctx.generatedAt}._`);
   lines.push('');
   for (const a of ctx.assets) {
-    if (a.status === 'captured' && a.storedPath) {
-      lines.push(`- **${a.apiService}** (${a.imageType}): ![${a.imageType}](${a.storedPath}) — ${a.verificationStatus}.`);
+    if (a.status === 'captured' && (a.imageUrl || a.storedPath)) {
+      lines.push(`- **${a.apiService}** (${a.imageType}): ![${a.imageType}](${a.imageUrl ?? a.storedPath}) — ${a.verificationStatus}.`);
     } else if (a.status === 'not_captured') {
       lines.push(`- **${a.apiService}** (${a.imageType}): _[image placeholder — not captured yet]_${a.deepLink ? ` · [open](${a.deepLink})` : ''} — ${a.verificationStatus}.`);
     } else {

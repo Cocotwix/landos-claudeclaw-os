@@ -83,7 +83,12 @@ import {
   createLeadJobs,
   listLeadJobs,
   updateLeadJob,
+  loadCardVisualCapture,
 } from './property-card.js';
+import { captureAndPersistCardVisuals } from './visual-capture-workflow.js';
+import { resolveGoogleVisualEnv, VISUAL_SERVICES } from './providers/google-visual.js';
+import fs from 'fs';
+import path from 'path';
 import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification } from './duke-verification-bridge.js';
@@ -1643,6 +1648,38 @@ export function registerLandosRoutes(app: Hono): void {
   app.get('/api/landos/visual/status', (c) => {
     const status = googleVisualStatus({ ...process.env, GOOGLE_MAPS_API_KEY: googleVisualConfiguredResolved() ? 'present' : '' });
     return c.json(status);
+  });
+
+  // Serve a captured visual image for a property card (token-gated, read-only).
+  // Reads the stored PNG from the gitignored store/visuals; the raw filesystem
+  // path is never exposed to the browser. Makes NO Google call.
+  app.get('/api/landos/visual/image', (c) => {
+    const cardId = Number(c.req.query('cardId'));
+    const service = c.req.query('service') ?? '';
+    if (!Number.isInteger(cardId)) return c.json({ error: 'invalid cardId' }, 400);
+    if (!(VISUAL_SERVICES as readonly string[]).includes(service)) return c.json({ error: 'invalid service' }, 400);
+    const asset = loadCardVisualCapture(cardId)[service];
+    if (!asset?.storedPath) return c.json({ error: 'no captured image' }, 404);
+    const resolved = path.resolve(asset.storedPath);
+    const root = path.resolve(process.cwd(), 'store', 'visuals');
+    if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const buf = fs.readFileSync(resolved);
+      return new Response(new Uint8Array(buf), { headers: { 'content-type': 'image/png', 'cache-control': 'private, max-age=300' } });
+    } catch {
+      return c.json({ error: 'image not found' }, 404);
+    }
+  });
+
+  // Explicit per-property visual capture (the ONLY route that calls Google). One
+  // property per call; no bulk, no loop. Captures satellite + Street View, stores
+  // locally, persists metadata on the card. Requires GOOGLE_MAPS_API_KEY.
+  app.post('/api/landos/property-cards/:id/visual-capture', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!googleVisualConfiguredResolved()) return c.json({ error: 'Google visual not configured (no GOOGLE_MAPS_API_KEY).' }, 400);
+    const result = await captureAndPersistCardVisuals(id, { env: resolveGoogleVisualEnv() });
+    return c.json(result, result.ok ? 200 : 400);
   });
 
   // County Scorecard (Market Research business intelligence; NOT a Deal Card

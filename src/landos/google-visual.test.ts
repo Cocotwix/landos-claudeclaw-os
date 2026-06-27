@@ -38,15 +38,20 @@ describe('google-visual: pure context builder (NO network, NO key)', () => {
     expect(maps.deepLink).toBe(ctx.links.maps);
   });
 
-  it('captured assets reflect a prior stored image (one_request cost)', () => {
+  it('captured assets reflect a prior stored image with a dashboard URL (one_request cost)', () => {
     const ctx = buildVisualPropertyContext(
       { address: '1 Main', state: 'GA' },
-      { configured: true, now: FIXED, captured: { maps_static: { storedPath: '/store/visuals/x.png' } } },
+      { configured: true, now: FIXED, captured: { maps_static: { storedPath: '/store/visuals/x.png', url: '/api/landos/visual/image?cardId=4&service=maps_static' } } },
     );
     const maps = ctx.assets.find((a) => a.service === 'maps_static')!;
     expect(maps.status).toBe('captured');
     expect(maps.storedPath).toBe('/store/visuals/x.png');
+    expect(maps.imageUrl).toBe('/api/landos/visual/image?cardId=4&service=maps_static');
     expect(maps.costRisk).toBe('one_request');
+    // markdown renders the dashboard URL (not the raw filesystem path)
+    const md = renderVisualContextMarkdown(ctx);
+    expect(md).toContain('/api/landos/visual/image?cardId=4&service=maps_static');
+    expect(md).not.toContain('/store/visuals/x.png');
   });
 
   it('no address/coords -> assets unavailable, links null, never invents a target', () => {

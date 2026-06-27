@@ -479,6 +479,42 @@ export function attachCardActivity(input: { cardId: number; agentId: string; kin
   ).run(input.cardId, input.agentId, input.kind, input.summary, input.ref ?? '').lastInsertRowid as number;
 }
 
+// ── Visual capture persistence (Google Visual Property Context) ──────────────
+// Captured image metadata is stored as a card activity (kind='visual_capture').
+// Supporting context only — never parcel verification. Stored paths live under
+// the gitignored store/visuals; only dashboard-safe URLs reach the browser.
+
+export interface CardVisualAsset { storedPath: string; timestamp: string }
+
+/** Persist the latest visual capture for a property card (newest wins on read). */
+export function saveCardVisualCapture(
+  cardId: number,
+  assets: Record<string, CardVisualAsset>,
+  meta: { provider: string },
+): void {
+  attachCardActivity({
+    cardId,
+    agentId: 'tyler/visual',
+    kind: 'visual_capture',
+    summary: `Captured ${Object.keys(assets).length} ${meta.provider} visual(s) — Visual Signal, Not Verified Fact.`,
+    ref: JSON.stringify({ provider: meta.provider, assets }),
+  });
+}
+
+/** Load the most recent persisted visual capture for a card (empty when none). */
+export function loadCardVisualCapture(cardId: number): Record<string, CardVisualAsset> {
+  const row = getLandosDb()
+    .prepare("SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind = 'visual_capture' ORDER BY created_at DESC, id DESC LIMIT 1")
+    .get(cardId) as { ref: string } | undefined;
+  if (!row) return {};
+  try {
+    const j = JSON.parse(row.ref) as { assets?: Record<string, CardVisualAsset> };
+    return j && typeof j.assets === 'object' && j.assets ? j.assets : {};
+  } catch {
+    return {};
+  }
+}
+
 export function addCardNextAction(input: { cardId: number; action: string; createdBy?: string }): number {
   return getLandosDb().prepare(
     `INSERT INTO landos_card_next_action (card_id, action, created_by) VALUES (?, ?, ?)`,

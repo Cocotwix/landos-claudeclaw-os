@@ -695,3 +695,40 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
     expect(Array.isArray(b.scorecard.counties)).toBe(true);
   });
 });
+
+describe('LandOS routes — visual image serving + capture gating (no Google call)', () => {
+  it('serves a stored captured image by card+service; 404 when none; 400 on bad service', async () => {
+    const fsm = await import('fs');
+    const pathm = await import('path');
+    const { upsertCardFromDukeRun, saveCardVisualCapture } = await import('./property-card.js');
+    const { card } = upsertCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '472 WEST RD', county: 'Worth', state: 'GA',
+      apn: '00830-054-000', fips: '13321', owner: 'X', acres: 8.6, verified: true, verificationSource: 'Realie.ai', summary: 'v',
+    });
+    const dir = pathm.join(process.cwd(), 'store', 'visuals');
+    fsm.mkdirSync(dir, { recursive: true });
+    const file = pathm.join(dir, `test_${card.id}_maps.png`);
+    fsm.writeFileSync(file, Buffer.from([137, 80, 78, 71])); // PNG magic bytes
+    saveCardVisualCapture(card.id, { maps_static: { storedPath: file, timestamp: 't' } }, { provider: 'google' });
+
+    const ok = await get(`/api/landos/visual/image?cardId=${card.id}&service=maps_static`);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-type')).toContain('image/png');
+
+    const noCap = await get(`/api/landos/visual/image?cardId=${card.id}&service=street_view_static`);
+    expect(noCap.status).toBe(404);
+
+    const badSvc = await get(`/api/landos/visual/image?cardId=${card.id}&service=evil`);
+    expect(badSvc.status).toBe(400);
+
+    fsm.unlinkSync(file);
+  });
+
+  it('capture route is gated: 400 when Google is not configured (no call made)', async () => {
+    // hermetic test env (LANDOS_DISABLE_DOTENV_FALLBACK) → key not resolvable → gated off.
+    const res = await post('/api/landos/property-cards/1/visual-capture', {});
+    expect(res.status).toBe(400);
+    const b = (await res.json()) as any;
+    expect(String(b.error)).toMatch(/not configured/i);
+  });
+});

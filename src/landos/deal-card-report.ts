@@ -54,7 +54,8 @@ import { GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD } from './off
 import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './source-adapters.js';
 import type { LpResolveArgs, LpResolveResult, LpPropertySummary } from './landportal-client.js';
 import type { DukePropertyData } from './duke-property-data.js';
-import { buildVisualPropertyContext, type VisualPropertyContext } from './providers/google-visual.js';
+import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
+import { loadCardVisualCapture } from './property-card.js';
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
 
@@ -863,9 +864,20 @@ export async function runDealCardReport(
     : verification.localAreaContextLabel ?? 'Not parcel verified';
 
   // Visual Property Context (supporting only, never verification). Built PURELY
-  // from the verified identity's address — no Google call here; images are
-  // captured separately via an explicit per-property workflow.
+  // here — NO Google call. Captured images (from a prior explicit capture) are
+  // loaded from the linked Property Card and surfaced as dashboard-safe URLs;
+  // services without a capture render as placeholders + deep links.
   const vid = verification.identity;
+  const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
+  const rawCaptured = visualCardId ? loadCardVisualCapture(visualCardId) : {};
+  const captured: Partial<Record<VisualService, { storedPath: string; timestamp?: string; url?: string }>> = {};
+  for (const [svc, a] of Object.entries(rawCaptured)) {
+    captured[svc as VisualService] = {
+      storedPath: a.storedPath,
+      timestamp: a.timestamp,
+      url: `/api/landos/visual/image?cardId=${visualCardId}&service=${encodeURIComponent(svc)}`,
+    };
+  }
   const visualContext = buildVisualPropertyContext(
     {
       address: vid?.situsAddress ?? null,
@@ -873,7 +885,7 @@ export async function runDealCardReport(
       county: vid?.county ?? null,
       state: vid?.state ?? null,
     },
-    { configured: deps.googleVisualConfigured ?? false },
+    { configured: deps.googleVisualConfigured ?? false, captured },
   );
 
   const view: DealCardReportView = {

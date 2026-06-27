@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { PageState } from '@/components/PageState';
 import { ModelControl } from '@/components/ModelControl';
-import { apiGet, apiPost, apiPatch, apiPut } from '@/lib/api';
+import { apiGet, apiPost, apiPatch, apiPut, dashboardToken } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
@@ -229,8 +229,66 @@ interface ReportView {
   nextConfirmations: string[];
   preCallStrategyNotes: string;
   creditUsage: { landportalNonCreditUsed: boolean; compCreditUsed: boolean; note: string };
+  visualContext?: VisualContextView;
   generatedAt: number | null;
   updatedBy: string;
+}
+
+// Visual Property Context (Google) — supporting context only, never verification.
+interface VisualAssetView {
+  service: string;
+  imageType: string;
+  status: 'captured' | 'not_captured' | 'unavailable';
+  imageUrl: string | null;
+  deepLink: string | null;
+  apiService: string;
+  verificationStatus: string;
+  note: string;
+}
+interface VisualContextView {
+  provider: string;
+  configured: boolean;
+  label: string;
+  generatedAt: string;
+  assets: VisualAssetView[];
+  links: { maps: string | null; streetView: string | null; earth: string | null };
+  note: string;
+}
+
+// Visual Property Context section — renders captured images inline (via the
+// token-gated image route) or placeholders, plus backup Maps/Street View/Earth
+// links. All labeled "Visual Signal, Not Verified Fact". No Google call here.
+function VisualPropertyContextSection({ ctx, token }: { ctx?: VisualContextView; token: string }) {
+  if (!ctx) return null;
+  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+  const captured = ctx.assets.filter((a) => a.status === 'captured' && a.imageUrl);
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 mt-3">
+      <div class="flex items-center gap-2">
+        <span class="text-[12px] font-medium">Visual Property Context</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full border text-[var(--color-text-faint)] border-[var(--color-border)]">{ctx.label}</span>
+      </div>
+      {captured.length > 0 ? (
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          {captured.map((a) => (
+            <figure key={a.service} class="m-0">
+              <img src={withToken(a.imageUrl as string)} alt={a.imageType} class="w-full rounded-md border border-[var(--color-border)]" loading="lazy" />
+              <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-1">{a.apiService} · {a.verificationStatus}</figcaption>
+            </figure>
+          ))}
+        </div>
+      ) : (
+        <div class="text-[11px] text-[var(--color-text-muted)] mt-2">
+          No images captured yet. Use "Capture visuals" to fetch satellite + Street View for this property (one explicit Google call).
+        </div>
+      )}
+      <div class="text-[11px] mt-2 flex flex-wrap gap-x-3 gap-y-1">
+        {ctx.links.maps && <a href={ctx.links.maps} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Google Maps</a>}
+        {ctx.links.streetView && <a href={ctx.links.streetView} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Street View</a>}
+        {ctx.links.earth && <a href={ctx.links.earth} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Google Earth / 3D</a>}
+      </div>
+    </div>
+  );
 }
 
 // Human-readable report status.
@@ -559,6 +617,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportWarnings, setReportWarnings] = useState<string[]>([]);
+  // Visual Property Context capture state (explicit per-property Google capture).
+  const [visualCapturing, setVisualCapturing] = useState(false);
+  const [visualCaptureMsg, setVisualCaptureMsg] = useState<string | null>(null);
 
   // Land Score + supporting imagery — computed ON DEMAND (a Land Score click
   // triggers a bounded NON-CREDIT LandPortal resolve; never scored from
@@ -632,6 +693,22 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
       setReportError(err?.message || String(err));
     } finally {
       setReportRunning(false);
+    }
+  }
+
+  // Explicit per-property visual capture (one Google call). After capture, reload
+  // the report so the freshly-stored images render inline.
+  async function captureVisuals(cardId: number) {
+    setVisualCapturing(true);
+    setVisualCaptureMsg(null);
+    try {
+      const res = await apiPost<{ ok: boolean; reason: string; captured: string[] }>(`/api/landos/property-cards/${cardId}/visual-capture`, {});
+      setVisualCaptureMsg(res.ok ? `Captured: ${res.captured.join(', ') || 'none'}.` : `Capture failed: ${res.reason}`);
+      if (deal) await loadReport(deal.id);
+    } catch (err: any) {
+      setVisualCaptureMsg(err?.message || String(err));
+    } finally {
+      setVisualCapturing(false);
     }
   }
 
@@ -1172,6 +1249,24 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   <Field label="Most viable strategy" value={report.mostViableStrategy || undefined} />
                   <Field label="Offer readiness" value={readinessText(report.offerReadiness)} />
                 </div>
+
+                {/* Visual Property Context — inline images / placeholders + links. */}
+                {prop?.id && (
+                  <div>
+                    <div class="flex items-center justify-end mb-1">
+                      <button
+                        type="button"
+                        disabled={visualCapturing}
+                        onClick={() => captureVisuals(prop.id)}
+                        class="px-2 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+                      >
+                        {visualCapturing ? 'Capturing…' : 'Capture visuals'}
+                      </button>
+                    </div>
+                    <VisualPropertyContextSection ctx={report.visualContext} token={dashboardToken} />
+                    {visualCaptureMsg && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{visualCaptureMsg}</div>}
+                  </div>
+                )}
 
                 {/* Source table — every source, its status, and credit usage. */}
                 <div>
