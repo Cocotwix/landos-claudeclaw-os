@@ -73,6 +73,32 @@ describe('toMarkdown', () => {
     expect(md).toMatch(/Zoning:.*(Unknown|Needs Verification)/);
   });
 
+  it('lists the FULL DD fact set with explicit Unknown / Needs Verification rows (unverified)', async () => {
+    const md = toMarkdown(await sampleResult()); // unverified sample
+    expect(md).toContain('## Due Diligence Fact Checklist');
+    for (const label of ['Acreage', 'Zoning', 'Land use', 'Road frontage', 'Access (landlocked flag)', 'Near water', 'Wetlands', 'FEMA flood zone', 'Average slope', 'Buildability', 'Buildable acres', 'Building area']) {
+      expect(md, `missing DD field ${label}`).toContain(`**${label}:**`);
+    }
+    // utilities have no connected source -> always Needs Verification
+    expect(md).toContain('**Power:**');
+    expect(md).toContain('**Water:**');
+    expect(md).toContain('**Sewer / septic:**');
+    // unverified -> standard fields are Needs Verification, never fabricated
+    expect(md).toMatch(/Acreage:\*\* Unknown \/ Needs Verification/);
+    expect(md).toMatch(/FEMA flood zone:\*\* Unknown \/ Needs Verification/);
+  });
+
+  it('shows Verified DD values with source when present; unprovided fields stay Needs Verification', async () => {
+    const r = (await sampleResult()) as any;
+    r.parcelVerification.verificationSource = 'Realie.ai';
+    r.ddFacts = { landFacts: { acres: 8.6, zoning: 'A-1' }, identity: {}, valuation: {}, similars: {}, similarSales: [] };
+    const md = toMarkdown(r);
+    expect(md).toMatch(/Acreage:\*\* 8\.6 ac — Verified \(source: Realie\.ai\)/);
+    expect(md).toMatch(/Zoning:\*\* A-1 — Verified \(source: Realie\.ai\)/);
+    expect(md).toMatch(/FEMA flood zone:\*\* Unknown \/ Needs Verification/); // not provided
+    expect(md).toMatch(/Wetlands:\*\* Unknown \/ Needs Verification/);
+  });
+
   it('includes a Visual Property Context section listing visual services (Not Verified) without a Google call', async () => {
     const md = toMarkdown(await sampleResult());
     expect(md).toContain('## Visual Property Context');

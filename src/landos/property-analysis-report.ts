@@ -18,6 +18,51 @@ type StrategyScenarioLike = StrategyScenario;
 function h(s: string): string { return `\n## ${s}\n`; }
 function kv(k: string, v: unknown): string { return `- **${k}:** ${v ?? '—'}`; }
 
+// Canonical Due Diligence fact set. Every standard field is accounted for: a
+// Verified value cites its source; anything a provider did not return is shown as
+// an explicit Unknown / Needs Verification row (never silently omitted, never
+// fabricated). Utilities have no connected provider yet -> always Needs Verification.
+const DD_LAND_FIELDS: Array<{ key: string; label: string; fmt?: (v: number | string) => string }> = [
+  { key: 'acres', label: 'Acreage', fmt: (v) => `${v} ac` },
+  { key: 'zoning', label: 'Zoning' },
+  { key: 'landUse', label: 'Land use' },
+  { key: 'roadFrontageFt', label: 'Road frontage', fmt: (v) => `${v} ft` },
+  { key: 'landLocked', label: 'Access (landlocked flag)' },
+  { key: 'nearWater', label: 'Near water' },
+  { key: 'wetlandsPct', label: 'Wetlands', fmt: (v) => `~${v}%` },
+  { key: 'femaPct', label: 'FEMA flood zone', fmt: (v) => `~${v}%` },
+  { key: 'slopeAvgDeg', label: 'Average slope', fmt: (v) => `~${v}°` },
+  { key: 'buildabilityPct', label: 'Buildability', fmt: (v) => `~${v}%` },
+  { key: 'buildableAcres', label: 'Buildable acres', fmt: (v) => `${v} ac` },
+  { key: 'buildingAreaSqft', label: 'Building area', fmt: (v) => `${v} sqft` },
+];
+const DD_UTILITY_FIELDS = ['Power', 'Water', 'Sewer / septic'];
+const NEEDS_VERIFICATION = 'Unknown / Needs Verification';
+
+function ddFactPresent(v: unknown): v is number | string {
+  if (v === undefined || v === null) return false;
+  if (typeof v === 'string') return v.trim() !== '';
+  if (typeof v === 'number') return Number.isFinite(v);
+  return false;
+}
+
+/** Render the full DD fact checklist (every standard field, explicit gaps). */
+function renderDdChecklist(r: PropertyAnalysisResult): string[] {
+  const lf = ((r.ddFacts?.landFacts ?? {}) as Record<string, unknown>);
+  const src = r.parcelVerification.verificationSource || 'named source';
+  const lines: string[] = [];
+  for (const f of DD_LAND_FIELDS) {
+    const v = lf[f.key];
+    lines.push(ddFactPresent(v)
+      ? `- **${f.label}:** ${f.fmt ? f.fmt(v) : v} — Verified (source: ${src})`
+      : `- **${f.label}:** ${NEEDS_VERIFICATION}`);
+  }
+  for (const u of DD_UTILITY_FIELDS) {
+    lines.push(`- **${u}:** ${NEEDS_VERIFICATION} (no connected source)`);
+  }
+  return lines;
+}
+
 /** Render the full Markdown report. Includes every required section. Pure. */
 export function toMarkdown(r: PropertyAnalysisResult): string {
   const L: string[] = [];
@@ -55,18 +100,19 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
   L.push(kv('Summary', r.parcelVerification.summary));
   if (r.parcelVerification.nextAction) L.push(kv('Next action', r.parcelVerification.nextAction));
 
-  L.push(h('Property / DD Facts'));
+  // Full DD fact checklist — every standard field accounted for, with explicit
+  // Unknown / Needs Verification rows for anything not provided (never fabricated).
+  L.push(h('Due Diligence Fact Checklist'));
+  L.push('_Every standard DD field is listed. Verified values cite their source; anything not provided by a connected source is explicitly Unknown / Needs Verification._');
+  for (const line of renderDdChecklist(r)) L.push(line);
+
+  L.push(h('Property / DD Facts (raw)'));
   if (r.ddFacts) {
-    // Explicit zoning line (canonical provider zoning, e.g. Realie zoningCode);
-    // Unknown when not provided — never fabricated.
-    const lf = (r.ddFacts.landFacts ?? {}) as { zoning?: string; landUse?: string };
-    const zoning = lf.zoning ?? lf.landUse;
-    L.push(kv('Zoning', zoning ? `${zoning} (Verified — source: ${r.parcelVerification.verificationSource})` : 'Unknown / Needs Verification'));
     L.push('```json');
     L.push(JSON.stringify(r.ddFacts, null, 2));
     L.push('```');
   } else {
-    L.push('_No verified property facts (parcel not verified — Local Area Context only)._');
+    L.push('_No verified property facts (parcel not verified — Local Area Context only). See the checklist above for the per-field Needs Verification status._');
   }
 
   L.push(h('Data Gaps and Risk Flags'));
@@ -229,7 +275,10 @@ async function writePdf(r: PropertyAnalysisResult, outPath: string): Promise<str
     }
     line(r.parcelVerification.summary);
 
-    title('Property / DD Facts');
+    title('Due Diligence Fact Checklist');
+    for (const l of renderDdChecklist(r)) line('• ' + l.replace(/^- /, '').replace(/\*\*/g, ''));
+
+    title('Property / DD Facts (raw)');
     line(r.ddFacts ? JSON.stringify(r.ddFacts) : 'No verified property facts (Local Area Context only).');
 
     title('Data Gaps & Risk Flags');
