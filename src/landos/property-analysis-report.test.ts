@@ -56,6 +56,23 @@ describe('toMarkdown', () => {
     expect(md).not.toMatch(/staticmap\?|streetview\?|[?&]key=/i);
   });
 
+  it('renders explicit canonical Zoning in the DD section when present (e.g. Realie zoningCode)', async () => {
+    const r = (await sampleResult()) as any;
+    r.ddFacts = { landFacts: { zoning: 'A-1' }, identity: {}, valuation: {}, similars: {}, similarSales: [] };
+    r.parcelVerification.verificationSource = 'Realie.ai';
+    const md = toMarkdown(r);
+    expect(md).toContain('Zoning:');
+    expect(md).toContain('A-1');
+    expect(md).toContain('Realie.ai');
+  });
+
+  it('renders Zoning as Unknown / Needs Verification when no zoning is provided (never fabricated)', async () => {
+    const r = (await sampleResult()) as any;
+    r.ddFacts = { landFacts: {}, identity: {}, valuation: {}, similars: {}, similarSales: [] };
+    const md = toMarkdown(r);
+    expect(md).toMatch(/Zoning:.*(Unknown|Needs Verification)/);
+  });
+
   it('includes a Visual Property Context section listing visual services (Not Verified) without a Google call', async () => {
     const md = toMarkdown(await sampleResult());
     expect(md).toContain('## Visual Property Context');

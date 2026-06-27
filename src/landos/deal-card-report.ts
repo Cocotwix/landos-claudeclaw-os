@@ -108,6 +108,7 @@ export function buildPersistedResolver(
       owner: summary.owner || null,
       match_notes: `Reused persisted verified Property Card${pc.id ? ` #${pc.id}` : ''} — no provider call, no Realie credit.`,
       source: `Persisted verified Property Card${origSource ? ` (orig: ${origSource})` : ''}`,
+      zoning: s(pc.zoning) || null, // carried when the card persists zoning (else Unknown)
       property_summary: summary,
       candidates: [],
     };
@@ -338,7 +339,10 @@ function buildDdLeg(verification: DukeVerificationResult, dd: DealCardDdView): D
     if (id.state) patch.state = id.state;
     if (id.county || id.state) patch.locationLabel = lpSourceLink ? 'Verified' : 'Needs verification';
     if (typeof f.acres === 'number') { patch.acreage = f.acres; patch.acreageLabel = lpSourceLink ? 'Verified' : 'Needs verification'; }
-    if (f.landUse) { patch.zoning = f.landUse; patch.zoningLabel = lpSourceLink ? 'Verified' : 'Needs verification'; }
+    // Zoning: prefer the explicit provider zoning code (e.g. Realie zoningCode);
+    // fall back to land use. Honest Unknown when neither is present.
+    const zoningVal = f.zoning ?? f.landUse;
+    if (zoningVal) { patch.zoning = zoningVal; patch.zoningLabel = lpSourceLink ? 'Verified' : 'Needs verification'; }
 
     // Access (from landlocked source flag — confirm legal/recorded access).
     if (f.landLocked !== undefined) {

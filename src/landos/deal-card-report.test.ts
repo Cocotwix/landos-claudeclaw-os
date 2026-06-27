@@ -161,6 +161,40 @@ describe('Deal Card report — verified parcel path', () => {
   });
 });
 
+describe('Deal Card report — zoning wiring (canonical, no provider call)', () => {
+  it('threads provider zoning (e.g. Realie zoningCode) into the DD zoning field, labeled Verified', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    // Verified resolver carrying canonical zoning + a situs address (so a source
+    // citation exists -> Verified label). No real provider call.
+    const zonedResolve = async (): Promise<LpResolveResult> => ({
+      verified: true, status: 'verified', propertyid: '999', fips: '37043', apn: '12-345-678',
+      situs_address: '123 Main St', city: 'Sparta', state: 'NC', owner: 'GENERIC OWNER',
+      match_notes: 'verified', source: 'Realie.ai', zoning: 'A-1', candidates: [],
+      property_summary: { ...VERIFIED_SUMMARY, situs_address: '123 Main St' },
+    });
+    await runDealCardReport(id, { resolve: zonedResolve, timeoutMs: 1000 });
+    const dd = getDealCardDd(id);
+    expect(dd.zoning).toBe('A-1');
+    expect(dd.zoningLabel).toBe('Verified');
+  });
+
+  it('zoning is Unknown (never fabricated) when the provider returns none', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    // verifiedResolve has land_use 'Vacant Residential Land' and no zoning -> falls
+    // back to land use; with neither, zoning would be left unset.
+    const noZoning = async (): Promise<LpResolveResult> => ({
+      verified: true, status: 'verified', propertyid: '999', fips: '37043', apn: '12-345-678',
+      situs_address: '123 Main St', city: '', state: 'NC', owner: 'O', match_notes: 'v', source: 'Realie.ai',
+      candidates: [], property_summary: { ...VERIFIED_SUMMARY, land_use: '', situs_address: '123 Main St' },
+    });
+    await runDealCardReport(id, { resolve: noZoning, timeoutMs: 1000 });
+    const dd = getDealCardDd(id);
+    expect(dd.zoning).toBeFalsy(); // not fabricated
+  });
+});
+
 describe('Deal Card report — reuse persisted verified data (no Realie credit)', () => {
   function seedVerifiedCard(dealId: number): void {
     const { card } = upsertCardFromDukeRun({

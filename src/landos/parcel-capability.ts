@@ -138,6 +138,7 @@ function normalizedToResult(n: NormalizedParcel): LpResolveResult {
     owner: n.owner ?? null,
     match_notes: `[${n.source}] ${n.note}`,
     source: n.source, // provider provenance flows through to the verification bridge
+    zoning: n.zoning ?? null, // canonical zoning (e.g. Realie zoningCode) flows to DD
     candidates: [],
   };
 }

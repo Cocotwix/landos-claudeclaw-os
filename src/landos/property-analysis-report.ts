@@ -57,6 +57,11 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
 
   L.push(h('Property / DD Facts'));
   if (r.ddFacts) {
+    // Explicit zoning line (canonical provider zoning, e.g. Realie zoningCode);
+    // Unknown when not provided — never fabricated.
+    const lf = (r.ddFacts.landFacts ?? {}) as { zoning?: string; landUse?: string };
+    const zoning = lf.zoning ?? lf.landUse;
+    L.push(kv('Zoning', zoning ? `${zoning} (Verified — source: ${r.parcelVerification.verificationSource})` : 'Unknown / Needs Verification'));
     L.push('```json');
     L.push(JSON.stringify(r.ddFacts, null, 2));
     L.push('```');

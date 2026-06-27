@@ -160,6 +160,9 @@ export interface LpResolveResult {
    *  Card'). Optional/additive; when absent the consumer defaults to the
    *  LandPortal label for backward compatibility. */
   source?: string;
+  /** Canonical zoning code when a provider supplies it (e.g. Realie zoningCode).
+   *  Additive; threaded into DD land facts. Never fabricated. */
+  zoning?: string | null;
   property_summary?: LpPropertySummary;
   candidates?: Array<Record<string, unknown>>;
   /** APN format variants generated for exact search (search keys only). */

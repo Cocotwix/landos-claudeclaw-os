@@ -105,7 +105,7 @@ describe('parcel-identity capability — provider selection', () => {
       property: {
         parcelId: '00830-054-000', fipsCounty: '321', fipsState: '13', ownerName: 'CARROLL, MARGARET R',
         addressFull: '472 WEST RD, POULAN, GA 31781', city: 'POULAN', state: 'GA', zipCode: '31781',
-        acres: 8.6, county: 'WORTH', zoningCode: null, landArea: 374616, legalDesc: 'LANDLOT:291 DIST:7 RESIDENCE',
+        acres: 8.6, county: 'WORTH', zoningCode: 'A-1', landArea: 374616, legalDesc: 'LANDLOT:291 DIST:7 RESIDENCE',
       },
     };
     const realieLookup = makeRealieParcelAdapter({
@@ -124,5 +124,6 @@ describe('parcel-identity capability — provider selection', () => {
     expect(out.result.apn).toBe('00830-054-000');
     expect(out.result.fips).toBe('13321'); // canonical 5-digit flows through the capability
     expect(out.result.owner).toBe('CARROLL, MARGARET R');
+    expect(out.result.zoning).toBe('A-1'); // canonical zoning (Realie zoningCode) flows through
   });
 });

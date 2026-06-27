@@ -31,6 +31,9 @@ export interface DukeLandFacts {
   slopeAvgDeg?: number;
   buildingAreaSqft?: number;
   landUse?: string;
+  /** Zoning code from a provider (e.g. Realie zoningCode). Distinct from landUse;
+   *  threaded from the canonical resolve result, never fabricated. */
+  zoning?: string;
 }
 
 export interface DukeValuation {

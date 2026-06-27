@@ -343,6 +343,14 @@ export function mapResolveToVerification(input: ResolveMapInput): DukeVerificati
     const hasNamedIdentity = !!(identity.apn || identity.propertyId || identity.situsAddress || identity.owner);
     if (hasNamedIdentity) {
       const propertyData = ps ? normalizeFromLpSummary(ps, { fips: str(r.fips) }) : undefined;
+      // Thread the canonical zoning (e.g. Realie zoningCode) into land facts when
+      // present. It is a named-source fact, not fabricated; clears the 'zoning'
+      // data gap so DD can label it Verified.
+      const zoning = str(r.zoning);
+      if (propertyData && zoning) {
+        propertyData.landFacts.zoning = zoning;
+        propertyData.dataGaps = propertyData.dataGaps.filter((g) => g !== 'zoning');
+      }
       // Provider provenance: use the resolver's reported source (e.g. 'Realie.ai',
       // 'Persisted verified Property Card') and fall back to the LandPortal label.
       const verificationSource = str(r.source) ?? LANDPORTAL_SOURCE;
