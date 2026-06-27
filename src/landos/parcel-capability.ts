@@ -22,8 +22,10 @@ import { readEnvFile } from '../env.js';
 import {
   lpResolveForPreflight,
   landPortalConfigured,
+  emptyLpPropertySummary,
   type LpResolveArgs,
   type LpResolveResult,
+  type LpPropertySummary,
 } from './landportal-client.js';
 import {
   makeRealieParcelAdapter,
@@ -126,6 +128,23 @@ function normalizedToResult(n: NormalizedParcel): LpResolveResult {
     : n.status.startsWith('error')
       ? 'error'
       : 'not_verified';
+  // For a verified parcel, carry the canonical identity-level fields into a
+  // property_summary so the DD path builds normalized property data (acres, etc.)
+  // and labels them Verified — instead of falling back to Local Area Context.
+  // Fields the provider didn't supply stay blank -> honest data gaps, never faked.
+  let property_summary: LpPropertySummary | undefined;
+  if (n.verified) {
+    const ps = emptyLpPropertySummary();
+    ps.propertyid = n.propertyId ?? '';
+    ps.apn = n.apn ?? '';
+    ps.county = n.county ?? '';
+    ps.state = n.state ?? '';
+    ps.situs_address = n.situsAddress ?? '';
+    ps.city = n.city ?? '';
+    ps.owner = n.owner ?? '';
+    if (typeof n.acres === 'number') { ps.lot_size_acres = String(n.acres); ps.calc_acres = String(n.acres); }
+    property_summary = ps;
+  }
   return {
     verified: n.verified,
     status,
@@ -139,6 +158,7 @@ function normalizedToResult(n: NormalizedParcel): LpResolveResult {
     match_notes: `[${n.source}] ${n.note}`,
     source: n.source, // provider provenance flows through to the verification bridge
     zoning: n.zoning ?? null, // canonical zoning (e.g. Realie zoningCode) flows to DD
+    property_summary,
     candidates: [],
   };
 }

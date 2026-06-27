@@ -9,6 +9,7 @@ import {
 } from './parcel-capability.js';
 import type { NormalizedParcel } from './providers/data-registry.js';
 import { makeRealieParcelAdapter, REALIE_ENV_KEY } from './providers/data-registry.js';
+import { mapResolveToVerification } from './duke-verification-bridge.js';
 
 const lpOk = (over: Partial<LpResolveResult> = {}): LpResolveResult => ({
   verified: true, status: 'verified', propertyid: 'PID-1', fips: '13321', apn: 'LP-APN',
@@ -125,5 +126,18 @@ describe('parcel-identity capability — provider selection', () => {
     expect(out.result.fips).toBe('13321'); // canonical 5-digit flows through the capability
     expect(out.result.owner).toBe('CARROLL, MARGARET R');
     expect(out.result.zoning).toBe('A-1'); // canonical zoning (Realie zoningCode) flows through
+    // A verified Realie result now carries a property_summary so DD facts flow.
+    expect(out.result.property_summary).toBeDefined();
+    expect(out.result.property_summary?.lot_size_acres).toBe('8.6');
+
+    // End-to-end: the verification bridge builds normalized DD property data
+    // (verified) — NOT the "Local Area Context, Not Parcel Verified" fallback.
+    const v = mapResolveToVerification({ text: '472 West Rd, Worth County, GA', hasIdentifierInput: true, resolve: out.result, unavailable: false });
+    expect(v.parcelVerified).toBe(true);
+    expect(v.status).toBe('parcel_verified');
+    expect(v.propertyData).toBeDefined();
+    expect(v.propertyData?.landFacts.acres).toBe(8.6);
+    expect(v.propertyData?.landFacts.zoning).toBe('A-1');
+    expect(v.verificationSource).toBe('Realie.ai');
   });
 });

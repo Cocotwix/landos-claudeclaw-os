@@ -133,6 +133,22 @@ export interface LpSimilarSale {
   addressOrCounty?: string;
 }
 
+/** An all-blank LpPropertySummary. Blank fields normalize to honest data gaps
+ *  (never fabricated). Shared by provider adapters that carry only identity-level
+ *  data (e.g. Realie) so the DD path can build normalized property data. */
+export function emptyLpPropertySummary(): LpPropertySummary {
+  return {
+    propertyid: '', apn: '', situs_address: '', city: '', state: '', zip: '', county: '', owner: '',
+    land_use: '', lot_size_acres: '', calc_acres: '', lot_size_sqft: '', road_frontage_ft: '',
+    land_locked: '', near_water: '', wetlands_pct: '', fema_pct: '', buildability_pct: '',
+    buildability_acres: '', slope_avg_deg: '', elevation_avg_ft: '', building_area_sqft: '',
+    assessed_total: '', assessed_land: '', market_total: '', market_land: '', tlp_estimate: '',
+    tlp_ppa: '', price_acre_county: '', lat: '', lng: '', municipality: '', mailing_address: '',
+    mailing_city: '', mailing_state: '', similars_count: '', similars_ppa_min: '', similars_ppa_max: '',
+    similars_ppa_median: '', similars_most_recent_year: '', similar_sales: [],
+  };
+}
+
 /** One recorded exact-search attempt (deterministic trace). Never a coordinate
  *  or proximity query; only identity searches (parcelnumb/owner/address/id). */
 export interface LpSearchAttempt {

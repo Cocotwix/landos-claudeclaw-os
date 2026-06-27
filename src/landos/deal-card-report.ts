@@ -52,27 +52,12 @@ import { runDukeVerification, type DukeVerificationResult } from './duke-verific
 import { buildDukeAnalysis } from './duke-analysis.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD } from './offer-engine.js';
 import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './source-adapters.js';
-import type { LpResolveArgs, LpResolveResult, LpPropertySummary } from './landportal-client.js';
+import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
 import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
 import { loadCardVisualCapture } from './property-card.js';
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
-
-/** An empty LandPortal-shaped summary (all fields blank → normalized as data
- *  gaps, never fabricated). Used to carry persisted identity into the report. */
-function emptyLpSummary(): LpPropertySummary {
-  return {
-    propertyid: '', apn: '', situs_address: '', city: '', state: '', zip: '', county: '', owner: '',
-    land_use: '', lot_size_acres: '', calc_acres: '', lot_size_sqft: '', road_frontage_ft: '',
-    land_locked: '', near_water: '', wetlands_pct: '', fema_pct: '', buildability_pct: '',
-    buildability_acres: '', slope_avg_deg: '', elevation_avg_ft: '', building_area_sqft: '',
-    assessed_total: '', assessed_land: '', market_total: '', market_land: '', tlp_estimate: '',
-    tlp_ppa: '', price_acre_county: '', lat: '', lng: '', municipality: '', mailing_address: '',
-    mailing_city: '', mailing_state: '', similars_count: '', similars_ppa_min: '', similars_ppa_max: '',
-    similars_ppa_median: '', similars_most_recent_year: '', similar_sales: [],
-  };
-}
 
 /**
  * Build a resolver that REUSES a persisted, already-verified Property Card instead
@@ -85,7 +70,7 @@ export function buildPersistedResolver(
   pc: Record<string, unknown>,
 ): (args: LpResolveArgs, timeoutMs: number) => Promise<LpResolveResult> {
   return async () => {
-    const summary = emptyLpSummary();
+    const summary = emptyLpPropertySummary();
     summary.propertyid = s(pc.lp_property_id) || s(pc.property_id) || s(pc.parcel_id);
     summary.apn = s(pc.apn);
     summary.county = s(pc.county);
