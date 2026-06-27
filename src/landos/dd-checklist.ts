@@ -61,6 +61,33 @@ export function buildDdChecklist(landFacts: Partial<DukeLandFacts> = {}, source:
   return rows;
 }
 
+export interface DdCompleteness {
+  /** Standard DD fields counted (all rows, incl. utilities). */
+  total: number;
+  verified: number;
+  needsVerification: number;
+  /** verified / total, 0–100, rounded. */
+  percentComplete: number;
+  /** e.g. "3 of 15 DD fields verified (20%)". */
+  label: string;
+}
+
+/** Summarize DD completeness from checklist rows. Pure; counts every standard
+ *  field (utilities included) so the denominator reflects the full DD picture. */
+export function summarizeDdCompleteness(rows: DdChecklistRow[]): DdCompleteness {
+  const total = rows.length;
+  const verified = rows.filter((r) => r.status === 'verified').length;
+  const needsVerification = total - verified;
+  const percentComplete = total > 0 ? Math.round((verified / total) * 100) : 0;
+  return {
+    total,
+    verified,
+    needsVerification,
+    percentComplete,
+    label: `${verified} of ${total} DD fields verified (${percentComplete}%)`,
+  };
+}
+
 /** Render checklist rows as Markdown bullet lines (used by the Discovery Report). */
 export function renderDdChecklistMarkdown(rows: DdChecklistRow[]): string[] {
   return rows.map((r) =>

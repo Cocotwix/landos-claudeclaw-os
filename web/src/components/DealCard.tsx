@@ -230,6 +230,7 @@ interface ReportView {
   preCallStrategyNotes: string;
   creditUsage: { landportalNonCreditUsed: boolean; compCreditUsed: boolean; note: string };
   ddFactChecklist?: DdChecklistRowView[];
+  ddCompleteness?: { total: number; verified: number; needsVerification: number; percentComplete: number; label: string };
   visualContext?: VisualContextView;
   generatedAt: number | null;
   updatedBy: string;
@@ -247,11 +248,22 @@ interface DdChecklistRowView {
 // Full DD fact checklist — mirrors the Discovery Call Report. Every standard
 // field shows a Verified value (+source) or an explicit Unknown / Needs
 // Verification status. Read-only; never fabricated.
-function DdFactChecklist({ rows }: { rows?: DdChecklistRowView[] }) {
+function DdFactChecklist({ rows, completeness }: { rows?: DdChecklistRowView[]; completeness?: ReportView['ddCompleteness'] }) {
   if (!rows || rows.length === 0) return null;
+  const pct = completeness?.percentComplete ?? 0;
   return (
     <div>
-      <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Due Diligence fact checklist</div>
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-[11px] text-[var(--color-text-muted)]">Due Diligence fact checklist</span>
+        {completeness && (
+          <span class="text-[11px] text-[var(--color-text-faint)] tabular-nums">{completeness.label}</span>
+        )}
+      </div>
+      {completeness && (
+        <div class="h-1.5 w-full rounded-full bg-[var(--color-elevated)] overflow-hidden mb-2">
+          <div class="h-full bg-[var(--color-status-done)]" style={{ width: `${pct}%` }} />
+        </div>
+      )}
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] divide-y divide-[var(--color-border)]">
         {rows.map((r) => (
           <div key={r.key} class="flex items-center gap-2 px-3 py-1.5 text-[12px]">
@@ -1288,8 +1300,8 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   <Field label="Offer readiness" value={readinessText(report.offerReadiness)} />
                 </div>
 
-                {/* Full DD fact checklist (mirrors the Discovery Call Report). */}
-                <DdFactChecklist rows={report.ddFactChecklist} />
+                {/* Full DD fact checklist + completeness (mirrors the Discovery Call Report). */}
+                <DdFactChecklist rows={report.ddFactChecklist} completeness={report.ddCompleteness} />
 
                 {/* Visual Property Context — inline images / placeholders + links. */}
                 {prop?.id && (

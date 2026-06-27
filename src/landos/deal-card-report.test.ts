@@ -187,6 +187,24 @@ describe('Deal Card report — full DD fact checklist (mirrors Discovery Report)
     const r = (await runDealCardReport(id, { resolve: notVerifiedResolve, timeoutMs: 1000 }))!.report;
     expect(r.ddFactChecklist.length).toBeGreaterThan(10);
     expect(r.ddFactChecklist.every((x) => x.status === 'needs_verification')).toBe(true);
+    expect(r.ddCompleteness.verified).toBe(0);
+    expect(r.ddCompleteness.percentComplete).toBe(0);
+  });
+
+  it('reports DD completeness consistent with the checklist (verified count)', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    const zonedResolve = async (): Promise<LpResolveResult> => ({
+      verified: true, status: 'verified', propertyid: '999', fips: '37043', apn: '12-345-678',
+      situs_address: '123 Main St', city: 'Sparta', state: 'NC', owner: 'GENERIC OWNER',
+      match_notes: 'verified', source: 'Realie.ai', zoning: 'A-1', candidates: [],
+      property_summary: { ...VERIFIED_SUMMARY, situs_address: '123 Main St' },
+    });
+    const r = (await runDealCardReport(id, { resolve: zonedResolve, timeoutMs: 1000 }))!.report;
+    const verifiedCount = r.ddFactChecklist.filter((x) => x.status === 'verified').length;
+    expect(r.ddCompleteness.verified).toBe(verifiedCount);
+    expect(r.ddCompleteness.total).toBe(r.ddFactChecklist.length);
+    expect(r.ddCompleteness.percentComplete).toBeGreaterThan(0);
   });
 });
 

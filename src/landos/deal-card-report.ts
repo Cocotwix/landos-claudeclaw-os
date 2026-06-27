@@ -56,7 +56,7 @@ import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from
 import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
 import { loadCardVisualCapture } from './property-card.js';
-import { buildDdChecklist, type DdChecklistRow } from './dd-checklist.js';
+import { buildDdChecklist, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
 
@@ -146,6 +146,8 @@ export interface DealCardReportView {
    *  or an explicit Unknown / Needs Verification status. Never fabricated. Mirrors
    *  the Discovery Call Report checklist. */
   ddFactChecklist: DdChecklistRow[];
+  /** Completeness summary derived from the checklist (X of N verified). */
+  ddCompleteness: DdCompleteness;
   /** Visual Property Context (Google) — supporting context only, never parcel
    *  verification. Deep links + image placeholders/captured refs, all labeled
    *  "Visual Signal, Not Verified Fact". Built purely (no Google call here). */
@@ -635,6 +637,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     nextConfirmations: [],
     preCallStrategyNotes: '',
     ddFactChecklist: buildDdChecklist({}, null),
+    ddCompleteness: summarizeDdCompleteness(buildDdChecklist({}, null)),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
     creditUsage: {
       landportalNonCreditUsed: false,
@@ -862,6 +865,7 @@ export async function runDealCardReport(
   // here — NO Google call. Captured images (from a prior explicit capture) are
   // loaded from the linked Property Card and surfaced as dashboard-safe URLs;
   // services without a capture render as placeholders + deep links.
+  const ddChecklistRows = buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null);
   const vid = verification.identity;
   const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
   const rawCaptured = visualCardId ? loadCardVisualCapture(visualCardId) : {};
@@ -902,7 +906,8 @@ export async function runDealCardReport(
     strategyBlockers: union(strategyLeg.blockers, []),
     nextConfirmations: union(strategyLeg.nextConfirmations, []),
     preCallStrategyNotes: strategyLeg.preCallNotes,
-    ddFactChecklist: buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null),
+    ddFactChecklist: ddChecklistRows,
+    ddCompleteness: summarizeDdCompleteness(ddChecklistRows),
     visualContext,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,

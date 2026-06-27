@@ -12,7 +12,7 @@ import path from 'path';
 import type { PropertyAnalysisResult } from './property-analysis.js';
 import type { StrategyScenario } from './offer-engine.js';
 import { buildVisualPropertyContext, renderVisualContextMarkdown, googleVisualConfiguredResolved } from './providers/google-visual.js';
-import { buildDdChecklist, renderDdChecklistMarkdown } from './dd-checklist.js';
+import { buildDdChecklist, renderDdChecklistMarkdown, summarizeDdCompleteness } from './dd-checklist.js';
 
 type StrategyScenarioLike = StrategyScenario;
 
@@ -67,8 +67,11 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
   // Full DD fact checklist — every standard field accounted for, with explicit
   // Unknown / Needs Verification rows for anything not provided (never fabricated).
   L.push(h('Due Diligence Fact Checklist'));
+  const ddRows = buildDdChecklist((r.ddFacts?.landFacts ?? {}) as Record<string, unknown>, r.parcelVerification.verificationSource || 'named source');
+  const ddSummary = summarizeDdCompleteness(ddRows);
+  L.push(`**DD completeness: ${ddSummary.label}.**`);
   L.push('_Every standard DD field is listed. Verified values cite their source; anything not provided by a connected source is explicitly Unknown / Needs Verification._');
-  for (const line of renderDdChecklist(r)) L.push(line);
+  for (const line of renderDdChecklistMarkdown(ddRows)) L.push(line);
 
   L.push(h('Property / DD Facts (raw)'));
   if (r.ddFacts) {
@@ -240,6 +243,7 @@ async function writePdf(r: PropertyAnalysisResult, outPath: string): Promise<str
     line(r.parcelVerification.summary);
 
     title('Due Diligence Fact Checklist');
+    line(`DD completeness: ${summarizeDdCompleteness(buildDdChecklist((r.ddFacts?.landFacts ?? {}) as Record<string, unknown>, r.parcelVerification.verificationSource || 'named source')).label}`);
     for (const l of renderDdChecklist(r)) line('• ' + l.replace(/^- /, '').replace(/\*\*/g, ''));
 
     title('Property / DD Facts (raw)');

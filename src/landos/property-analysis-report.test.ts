@@ -88,6 +88,11 @@ describe('toMarkdown', () => {
     expect(md).toMatch(/FEMA flood zone:\*\* Unknown \/ Needs Verification/);
   });
 
+  it('shows a DD completeness summary line in the checklist section', async () => {
+    const md = toMarkdown(await sampleResult()); // unverified -> 0 of N
+    expect(md).toMatch(/DD completeness: \d+ of \d+ DD fields verified \(\d+%\)/);
+  });
+
   it('shows Verified DD values with source when present; unprovided fields stay Needs Verification', async () => {
     const r = (await sampleResult()) as any;
     r.parcelVerification.verificationSource = 'Realie.ai';

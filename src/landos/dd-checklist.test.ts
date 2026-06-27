@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDdChecklist, renderDdChecklistMarkdown, NEEDS_VERIFICATION_LABEL } from './dd-checklist.js';
+import { buildDdChecklist, renderDdChecklistMarkdown, summarizeDdCompleteness, NEEDS_VERIFICATION_LABEL } from './dd-checklist.js';
 
 describe('dd-checklist (shared canonical DD fact set)', () => {
   it('marks present fields Verified with source and absent fields Needs Verification', () => {
@@ -21,6 +21,20 @@ describe('dd-checklist (shared canonical DD fact set)', () => {
     const rows = buildDdChecklist({}, null);
     expect(rows.length).toBeGreaterThan(12);
     expect(rows.every((r) => r.status === 'needs_verification')).toBe(true);
+  });
+
+  it('summarizes completeness (X of N verified, percent)', () => {
+    const all = buildDdChecklist({}, null);
+    const none = summarizeDdCompleteness(all);
+    expect(none.verified).toBe(0);
+    expect(none.percentComplete).toBe(0);
+    expect(none.total).toBe(all.length);
+    expect(none.label).toBe(`0 of ${all.length} DD fields verified (0%)`);
+
+    const some = summarizeDdCompleteness(buildDdChecklist({ acres: 8.6, zoning: 'A-1' }, 'Realie.ai'));
+    expect(some.verified).toBe(2);
+    expect(some.needsVerification).toBe(some.total - 2);
+    expect(some.percentComplete).toBe(Math.round((2 / some.total) * 100));
   });
 
   it('markdown render: Verified rows cite source; gaps show the standard label', () => {
