@@ -122,7 +122,9 @@ const STREET_TYPE_WORDS =
   'way|place|pl|highway|hwy|parkway|pkwy|circle|cir|loop|trail|trl|pike|' +
   'terrace|terr|ter|route|rt|cove|cv|crossing|xing|square|sq';
 const ADDRESS_RE = new RegExp(
-  `\\b(\\d+[A-Za-z]?\\s+[A-Za-z][\\w ]*?\\s+(?:${STREET_TYPE_WORDS}))\\b`,
+  // House number (incl. "0" for vacant land), then a street name that may start
+  // with a letter OR a digit (ordinals like "1st", "42nd"), then a street type.
+  `\\b(\\d+[A-Za-z]?\\s+[A-Za-z0-9][\\w ]*?\\s+(?:${STREET_TYPE_WORDS}))\\b`,
   'i',
 );
 // City + 2-letter state, with or without a comma before the state, e.g.

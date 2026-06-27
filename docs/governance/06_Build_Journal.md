@@ -75,3 +75,33 @@ Next business milestone: activate the first free gov DD provider (FEMA flood) li
 **Lessons learned:** scaffolded adapters must be validated against the real provider contract before trusting them (the Realie scaffold mismatched on base/path/auth/fields); env config must be reachable at runtime (live-routing persisted via dashboard_settings, not `.env`-only); restart only takes effect on a rebuilt `dist`.
 
 **Next business milestone:** validate the real lead workflow (Lead → Realie verify → Deal Card → DD → Discovery Call Report) one approved Realie call at a time; then complete the Deal Card working experience and DD capability shell.
+
+## 2026-06-27 — Working-product mode + DD final-acceptance kickoff
+
+**Business milestone:** shift LandOS to working-product mode (remove over-governance) and begin the final Due Diligence acceptance suite.
+
+**Summary:**
+- Governance/policy correction: CLAUDE.md + governance README/Decision Log/Roadmap/Architecture rewritten to working-product mode. Configured operational providers (Apify Redfin, Google Maps/Street View/Static Maps, free gov APIs, Realie within budget) are approved for normal use; build proceeds without per-step approval. Only hard stops: machine safety, secret exposure, deletion/destruction, irreversible data loss. The per-call paid-approval regime is retired.
+- Live pipeline validated: outbound network confirmed to all providers; the parcel-identity capability verified address #1 live via Realie (APN P072-0580) in ~0.3s; the live Redfin comp lane is wired.
+- Address parser fix: `ADDRESS_RE`/`extractPropertyArgs` now parse street names starting with an ordinal ("1915 1st Avenue") and "0" house numbers (vacant land) — all five acceptance addresses parse. +2 regression tests.
+- Two browser-capable agents recognized as a product requirement (County Records Browser Agent + General Browser Research Assistant); architecture leaves room.
+
+**Tests:** full suite 1342 green; tsc clean.
+
+**Remaining for DD completion (next block):** lead-type classification field, property-type inference, Apify comps wired into the persisted Deal Card report, gov DD live activation, and the five live Test-Lead Deal Card runs with persisted Discovery Call Reports.
+
+**Next business milestone:** execute the five-address live acceptance suite end-to-end (Test-Lead Deal Cards + persisted Discovery Call Reports).
+
+## 2026-06-27 — Realie locality root-cause fix (production-safe identity)
+
+**Business milestone:** make parcel verification production-safe after acceptance testing found wrong-locality "Verified" matches.
+
+**Root cause:** Realie's address endpoint matches on `state` + street-line-1 only (it does not accept ZIP and only honors `city` when `county` is also supplied; it returns a single property, not candidates). Fresh leads arrived as address+city+state+zip with no county, so the adapter sent only state+street-line → Realie returned a statewide arbitrary street-name match (Augusta→Macon, Rockvale→Knoxville, Dunlap→Lakeland). The normalizer then marked any returned property Verified with no locality comparison.
+
+**Fix:** (A) derive the county from the address via the free US Census geocoder (`providers/county-geocode.ts`) so the Realie lookup is locality-constrained (city+county); (B) validate the returned parcel's locality against the searched locality (`providers/locality-validation.ts`) — a state/ZIP/county conflict downgrades to Needs Verification (status `locality_mismatch`); confidence is scored. The normalizer now reads `zipCode`. Wired live in `parcel-capability.ts`; the adapter takes an injectable `deriveCounty` (tests stay offline).
+
+**Why correct:** identity is constrained up front and independently validated after; a parcel can no longer become Verified when the returned locality conflicts with the searched one. Proven live: Augusta now verifies to AUGUSTA (Richmond Co); Rockvale/Dunlap downgrade to Needs Verification on ZIP conflict.
+
+**Tests:** +8 (validateLocality + adapter county-derivation/downgrade/keep-correct), full suite 1350 green; tsc clean.
+
+**Remaining for DD department completion:** lead-type field, property-type inference, Apify comps wired into the persisted Deal Card report, gov DD activation, and the five-address full-workflow acceptance suite (now unblocked by this fix).

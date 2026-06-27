@@ -73,11 +73,14 @@ export function toMarkdown(r: PropertyAnalysisResult): string {
   L.push('_Every standard DD field is listed. Verified values cite their source; anything not provided by a connected source is explicitly Unknown / Needs Verification._');
   for (const line of renderDdChecklistMarkdown(ddRows)) L.push(line);
 
-  L.push(h('Property / DD Facts (raw)'));
+  L.push(h('Property / DD Facts'));
   if (r.ddFacts) {
-    L.push('```json');
-    L.push(JSON.stringify(r.ddFacts, null, 2));
-    L.push('```');
+    const lf = (r.ddFacts.landFacts ?? {}) as Record<string, unknown>;
+    const id = (r.ddFacts.identity ?? {}) as Record<string, unknown>;
+    const show = (label: string, v: unknown) => { if (v !== undefined && v !== null && v !== '') L.push(kv(label, v)); };
+    show('Owner', id.owner); show('APN', id.apn); show('County / State', `${id.county ?? '—'} / ${id.state ?? '—'}`);
+    show('Acreage', lf.acres); show('Zoning', lf.zoning); show('Land use', lf.landUse);
+    L.push('_Full per-field status (Verified / Unknown / Needs Verification) is in the Due Diligence Fact Checklist above._');
   } else {
     L.push('_No verified property facts (parcel not verified — Local Area Context only). See the checklist above for the per-field Needs Verification status._');
   }

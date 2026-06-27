@@ -245,6 +245,41 @@ interface DdChecklistRowView {
   noConnectedSource?: boolean;
 }
 
+// Discovery Call Preparation briefing (operator-facing).
+interface BriefingView {
+  knownFacts: string[];
+  biggestUnknowns: string[];
+  questionsToAsk: string[];
+  warnings: string[];
+  risks: string[];
+  followUpPriorities: string[];
+}
+
+function DiscoveryBriefingSection({ b }: { b?: BriefingView | null }) {
+  if (!b) return null;
+  const block = (title: string, items: string[], tone?: string) => (
+    <div>
+      <div class={`text-[11px] font-semibold uppercase tracking-wider mb-1 ${tone ?? 'text-[var(--color-text-faint)]'}`}>{title}</div>
+      {items.length ? (
+        <ul class="list-disc pl-4 space-y-0.5 text-[12px] text-[var(--color-text)]">{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
+      ) : <div class="text-[11px] text-[var(--color-text-faint)]">(none)</div>}
+    </div>
+  );
+  return (
+    <div class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-card)] p-3 space-y-3">
+      <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Discovery Call Preparation</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {block('What we already know', b.knownFacts)}
+        {block('Biggest unknowns', b.biggestUnknowns)}
+        {block('Questions to ask the seller', b.questionsToAsk)}
+        {block('Follow-up priorities', b.followUpPriorities)}
+        {block('Warnings', b.warnings, 'text-[var(--color-accent)]')}
+        {block('Risks', b.risks, 'text-[var(--color-status-failed)]')}
+      </div>
+    </div>
+  );
+}
+
 // Deal Card DD readiness (derived from the persisted report).
 interface ReadinessView {
   discoveryReportState: 'not_generated' | 'generated' | 'stale' | 'needs_rerun';
@@ -848,6 +883,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   // deal; produced by the backend workflow (read-only here).
   const [report, setReport] = useState<ReportView | null>(null);
   const [readiness, setReadiness] = useState<ReadinessView | null>(null);
+  const [briefing, setBriefing] = useState<BriefingView | null>(null);
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportWarnings, setReportWarnings] = useState<string[]>([]);
@@ -901,12 +937,14 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
   async function loadReport(id: number) {
     try {
-      const res = await apiGet<{ report: ReportView; readiness?: ReadinessView }>(`/api/landos/deal-cards/${id}/report`);
+      const res = await apiGet<{ report: ReportView; readiness?: ReadinessView; briefing?: BriefingView }>(`/api/landos/deal-cards/${id}/report`);
       setReport(res.report);
       setReadiness(res.readiness ?? null);
+      setBriefing(res.briefing ?? null);
     } catch {
       setReport(null);
       setReadiness(null);
+      setBriefing(null);
     }
   }
 
@@ -919,9 +957,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     setReportError(null);
     setReportWarnings([]);
     try {
-      const res = await apiPost<{ report: ReportView; warnings: string[]; readiness?: ReadinessView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
+      const res = await apiPost<{ report: ReportView; warnings: string[]; readiness?: ReadinessView; briefing?: BriefingView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
       setReport(res.report);
       setReadiness(res.readiness ?? null);
+      setBriefing(res.briefing ?? null);
       setReportWarnings(Array.isArray(res.warnings) ? res.warnings : []);
       await loadDd(deal.id);
       await loadStrategy(deal.id);
@@ -1467,6 +1506,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               <div class="space-y-3">
                 {/* DD Command Center — at-a-glance pre-call readiness. */}
                 <DealCardCommandCenter r={readiness} />
+
+                {/* Discovery Call Preparation — the operator briefing for the call. */}
+                <DiscoveryBriefingSection b={briefing} />
 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>

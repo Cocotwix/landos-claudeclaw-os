@@ -10,6 +10,7 @@
 // (its resolver is injected so tests run with no network).
 
 import type { LpResolveArgs, LpResolveResult } from '../landportal-client.js';
+import { validateLocality } from './locality-validation.js';
 
 export type DataDomain = 'parcel' | 'comps' | 'crm' | 'market';
 
@@ -26,6 +27,7 @@ export interface NormalizedParcel {
   city?: string | null;
   county?: string | null;
   state?: string | null;
+  zip?: string | null;
   owner?: string | null;
   acres?: number | null;
   // ── Extended canonical fields (additive/optional; populated when a provider
@@ -139,6 +141,11 @@ export interface RealieParcelDeps {
   env?: Record<string, string | undefined>;
   /** ISO clock for provenance timestamps (tests inject a fixed value). */
   now?: () => string;
+  /** County derivation (root-cause fix): when an address lookup has no county,
+   *  derive it so Realie can be locality-constrained (city+county). Injected;
+   *  default undefined = no derivation (preserves offline tests). The capability
+   *  wires the live Census geocoder. */
+  deriveCounty?: (input: { address?: string; city?: string; state?: string; zip?: string }) => Promise<{ county: string; state: string; zip: string | null; fips: string | null } | null>;
 }
 
 /** Normalize a Realie `property` object into the canonical NormalizedParcel.
@@ -185,6 +192,7 @@ function normalizeRealieProperty(
     city: str(p.city),
     county: str(p.county),
     state: str(p.state),
+    zip: str(p.zipCode),
     owner: str(p.ownerName),
     acres: num(p.acres),
     zoning: str(p.zoningCode),
@@ -224,7 +232,18 @@ export function makeRealieParcelAdapter(deps: RealieParcelDeps = {}): ParcelProv
 
       const base = (env[REALIE_BASE_ENV_KEY] || REALIE_DEFAULT_BASE).trim().replace(/\/+$/, '');
       const state = (args.state ?? '').trim();
-      const county = (args.county ?? '').trim();
+      let county = (args.county ?? '').trim();
+      const addrLine1ForCounty = (args.address ?? '').split(',')[0].trim();
+      // ROOT-CAUSE FIX (A): Realie's address endpoint only constrains by city when
+      // county is also supplied (and ignores ZIP). When a fresh lead has an
+      // address but no county, derive the county so the lookup is locality-scoped
+      // instead of a statewide street-name match. Derivation is a supporting
+      // record search; identity still comes from Realie + locality validation.
+      let derivedZip: string | null = null;
+      if (!county && state && addrLine1ForCounty && deps.deriveCounty) {
+        const d = await deps.deriveCounty({ address: addrLine1ForCounty, city: args.city, state, zip: args.zip }).catch(() => null);
+        if (d?.county) { county = d.county.trim(); derivedZip = d.zip; }
+      }
       // ParcelLookupArgs.apn carries the parcel id for Realie's parcelId endpoint.
       const parcelId = (args.apn ?? args.propertyId ?? '').trim();
       // Realie's address endpoint wants STREET LINE 1 ONLY. Real leads often arrive
@@ -273,7 +292,24 @@ export function makeRealieParcelAdapter(deps: RealieParcelDeps = {}): ParcelProv
         if (res.status === 403) return unverified('error_403', 'Realie.ai: usage limit exceeded (403).', now, searchedIdentifier);
         if (res.status === 429) return unverified('error_429', 'Realie.ai: rate limited (429).', now, searchedIdentifier);
         if (!res.ok) return unverified(`error_${res.status}`, `Realie.ai lookup failed (HTTP ${res.status}). No parcel fabricated.`, now, searchedIdentifier);
-        return normalizeRealieProperty(await res.json(), { searchedIdentifier, matchedBy, timestamp: now });
+        const n = normalizeRealieProperty(await res.json(), { searchedIdentifier, matchedBy, timestamp: now });
+        // ROOT-CAUSE FIX (B): never trust a returned parcel whose locality differs
+        // from the searched locality (Realie's statewide street-name match can
+        // return the wrong place). Validate state/zip/county; downgrade on conflict.
+        if (n.verified && matchedBy === 'address') {
+          const check = validateLocality(
+            { city: args.city, county: county || args.county, state, zip: args.zip ?? derivedZip },
+            { city: n.city, county: n.county, state: n.state, zip: n.zip },
+          );
+          if (!check.ok) {
+            return {
+              ...n, verified: false, status: 'locality_mismatch', confidence: 'none',
+              note: `Realie returned a parcel in a DIFFERENT locality than searched. ${check.note} Searched ${searchedIdentifier}; returned "${n.situsAddress ?? 'n/a'}" (${n.city ?? '?'}, ${n.county ?? '?'} ${n.state ?? '?'} ${n.zip ?? ''}). Needs Verification — NOT marked Verified.`,
+            };
+          }
+          return { ...n, confidence: check.confidence, note: `${n.note} Locality check (${check.confidence}): ${check.note}` };
+        }
+        return n;
       } catch (e: unknown) {
         return unverified('error', `Realie.ai lookup error: ${(e as Error)?.message ?? String(e)}. No parcel fabricated.`, now, searchedIdentifier);
       }

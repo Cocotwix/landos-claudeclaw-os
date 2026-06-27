@@ -33,8 +33,15 @@ Update Rule: CC updates when the implementation architecture changes. Describe t
 - `deal-card-readiness.ts` — derives the Deal Card workflow stage + next-best-action + provenance; surfaced on the Deal Card UI (Command Center + Post-Discovery panel) and list chips.
 - Post-discovery persistence uses `landos_card_activity` only — **no schema migration**.
 
-## Cost / safety governance
-- `realie-trial-guard.ts` — manual, local, gitignored trial counter; pre-call confirmation + post-call record; never auto-invoked.
+## Browser-capable agents (planned capability — must not be blocked)
+Two browser agents are recognized product requirements; the architecture leaves room for both:
+- **County Records Browser Agent** — manual post-discovery official-record verification (`county-records-tasks.ts` + `browser-agents.ts`; dormant, bounded, exact-identity-only).
+- **General Browser Research Assistant** — broad public-web research (listing pages, public context, address/listing clues, screenshots/evidence). Complements structured providers (Apify), not a replacement. Not built; provider-registry + capability layer can host it when added.
+
+## Cost / safety governance (working-product mode, 2026-06-27)
+- **Configured operational providers are approved for normal use** to complete business milestones (Apify Redfin, Google Maps/Street View/Static Maps, free gov APIs). Usage is logged; provenance preserved; no duplicate/runaway calls; secrets never leaked.
+- `realie-trial-guard.ts` — local, gitignored trial counter that **logs** Realie usage and enforces a per-sprint allowance; reuse persisted verification first.
+- Hard stops only: machine safety, secret exposure, deletion/destruction, irreversible data loss.
 - Approval/audit spine, rubric, offer engine, departments/agent roster (`db.ts`, `rubric.ts`, `offer-engine.ts`, `departments.ts`, `agent-roster.ts`). Cost + model-call logging tables.
 
 ## Storage separation

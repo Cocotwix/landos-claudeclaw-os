@@ -36,10 +36,13 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 - **Canonical FIPS is the 5-digit `fipsState`+`fipsCounty`**; parts preserved; partial FIPS never faked.
 - **Every live Realie call is manually approved by Tyler immediately beforehand.** A local, gitignored trial guard (`store/realie-trial-counter.json`) enforces an approved budget (15), shows a pre-call confirmation, and records each call (timestamp/endpoint/identifier-type/success/remaining) — never the key or response bodies. Tests/dashboard/workflows never auto-consume Realie calls.
 
-## Safety / git hygiene (settled)
-- Never print `.env` or secrets; never run paid/credit-consuming calls without explicit approval.
-- Stage only intended files (never `git add .`); never commit `.env`, logs, generated reports, property work product, or the trial counter.
-- Restarting the live server and pushing require explicit approval.
+## Execution policy — working-product mode (settled 2026-06-27)
+- LandOS is in **working-product mode**. Configured operational providers may be used to complete approved business milestones; do not block on normal configured API usage. The agent builds without per-step approval.
+- **Configured operational providers approved for normal use:** Apify Redfin (live comps/market), Google Maps / Street View / Static Maps (visual context), free government APIs (FEMA / USFWS-NWI / USGS / Census), and any other configured operational provider required to complete a department. Log usage, avoid duplicate/runaway calls, preserve provenance, protect secrets.
+- **Realie** is the one budgeted provider: a local trial counter logs usage; reuse persisted verification; never waste or loop calls; stop only if a sprint's stated allowance would be exceeded.
+- **The only hard stops** (require Tyler's explicit approval): (1) commands that could harm the local machine or pose a security risk, (2) exposing `.env`/keys/secrets, (3) deleting/overwriting/destroying files or data, (4) any irreversible data loss.
+- **Git hygiene still applies:** stage only intended files (never `git add .`); commit/push scoped changes to complete approved milestones; never commit `.env`, secrets, logs, generated reports, property work product, or the trial counter.
+- This replaces the prior per-call paid-approval regime; the old "approve every comp/paid call" rules are retired.
 
 ## Post-discovery DD (settled)
 - **Two workflows:** pre-discovery stays fast (Lead → Deal Card → quick DD → market pulse → visual → Discovery Call Report). Post-discovery DD is a separate, deeper stage entered only after Tyler decides a lead is worth pursuing.

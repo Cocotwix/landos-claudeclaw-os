@@ -134,6 +134,16 @@ describe('extractPropertyArgs', () => {
     expect(r).toMatchObject({ lp_url: url });
   });
 
+  it('parses a street address whose name is an ordinal (1st Avenue)', () => {
+    const r = extractPropertyArgs('1915 1st Avenue, Augusta, GA 30901');
+    expect(r).toMatchObject({ address: '1915 1st Avenue', city: 'Augusta', state: 'GA', zip: '30901' });
+  });
+
+  it('parses a vacant-land "0" house number (0 Stewart Rd)', () => {
+    const r = extractPropertyArgs('0 Stewart Rd, Dunlap, TN 37327');
+    expect(r).toMatchObject({ address: '0 Stewart Rd', city: 'Dunlap', state: 'TN', zip: '37327' });
+  });
+
   it('extracts APN with keyword (colon form)', () => {
     const r = extractPropertyArgs('Run DD on APN: 12-345-678, Alleghany County NC');
     expect(r).toMatchObject({ apn: '12-345-678', state: 'NC' });

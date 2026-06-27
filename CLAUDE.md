@@ -305,57 +305,29 @@ Permission system requires approval, but this is read only and scoped.
 
 Then keep the command as narrow as possible.
 
-## Actions that always require Tyler approval
+## Execution policy (working-product mode)
 
-Always stop and ask before:
-editing files unless Tyler already approved the edit scope
-creating files unless Tyler already approved the file
-deleting files
-overwriting files
-staging files
-committing
-pushing
-restarting servers
-running live agent tests
-touching .env
-printing secrets or tokens
-calling LandPortal live
-calling lp_comp_report_create
-calling lp_comp_report_get
-using any comp credit
-creating Obsidian files
-writing property specific work product into the repo
-using git add .
-running destructive commands
-adding dependencies
-running npm install
-running migrations
+LandOS is a working product. Configured operational providers may be used to complete approved business milestones. Do not block on normal configured API usage.
+
+When using providers: log usage, avoid runaway loops, avoid duplicate calls, preserve provider provenance, and protect secrets.
+
+The only required protections — always stop and ask before:
+1. running commands that could harm Tyler's local machine or pose a security risk
+2. exposing `.env`, API keys, tokens, or any secret (never print them)
+3. deleting, overwriting, or destroying files / data without Tyler's explicit approval
+4. any irreversible data loss
+
+Otherwise: build. Create/edit files, run the test suite/build, use configured providers (Apify Redfin, Google Maps/Street View/Static Maps, free government APIs, Realie within its allowance), and commit/push scoped changes to complete approved milestones without per-step approval.
+
+Realie remains call-budgeted: a local trial counter logs usage. Reuse persisted verification; never waste or loop calls. Stop only if a sprint's stated Realie allowance would be exceeded.
 
 ## Git rules
 
-Never use git add .
+Never use git add . — stage only the exact files for the milestone. Before commit, confirm the staged list is limited to the intended files. Use clear commit messages. Commit and push scoped changes to complete approved milestones (no per-step approval needed). Never commit logs, `.env`/secrets, the trial counter, generated reports, Obsidian/property work product, temporary files, or unrelated changes.
 
-Only stage exact approved files.
+## Provider usage rules
 
-Before commit, confirm the staged file list is limited to the approved files.
-
-Use clear commit messages.
-
-Do not stage unrelated files.
-
-Do not commit logs, .env files, Obsidian property work product, temporary files, or unrelated changes.
-
-## LandPortal and comp credit rules
-
-Never call:
-lp_comp_report_create
-lp_comp_report_get
-
-unless Tyler explicitly approves using 1 LandPortal comp credit.
-
-Do not use paid tools silently.
-
-Do not run live LandPortal tests unless Tyler explicitly approves the live test.
+Configured operational providers are approved for normal operational use to complete business milestones: Apify Redfin (live comps/market), Google Maps / Street View / Static Maps (visual context), free government APIs (FEMA/USFWS-NWI/USGS/Census), and any other configured operational provider required. Log usage, avoid duplicate/runaway calls, preserve provenance, and never leak keys. Realie is budgeted (see Execution policy). Do not use paid providers in tests or hidden loops.
 
 ## Local and repo safety
 
@@ -394,6 +366,6 @@ fast operational fixes
 
 Hard limits:
 No auto worktrees.
-No auto commits.
-No auto pushes.
+No deletions or destructive actions without Tyler's approval.
+No secret/.env exposure.
 No auto subagent dispatch unless Tyler explicitly approves.

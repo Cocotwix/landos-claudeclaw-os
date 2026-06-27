@@ -19,6 +19,7 @@
 
 import { logger } from '../logger.js';
 import { readEnvFile } from '../env.js';
+import { deriveCounty } from './providers/county-geocode.js';
 import {
   lpResolveForPreflight,
   landPortalConfigured,
@@ -198,7 +199,10 @@ export async function resolveParcelIdentity(
       if (id === 'landportal') {
         result = await (deps.landPortalResolve ?? lpResolveForPreflight)(args, timeoutMs);
       } else if (id === 'realie') {
-        const lookup = deps.realieLookup ?? makeRealieParcelAdapter().lookup;
+        // Wire the live Census county derivation so Realie address lookups are
+        // locality-constrained (root-cause fix). Tests inject deps.realieLookup
+        // and never hit the network.
+        const lookup = deps.realieLookup ?? makeRealieParcelAdapter({ deriveCounty: (i) => deriveCounty(i) }).lookup;
         const n = await lookup(toLookupArgs(args), { timeoutMs });
         result = normalizedToResult(n);
       } else {

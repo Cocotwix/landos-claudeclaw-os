@@ -123,6 +123,7 @@ import {
   type CountyVerificationTask, type CountyTaskResult, type CountyTaskStatus,
 } from './county-records-tasks.js';
 import { buildUnderwritingPrep } from './underwriting-prep.js';
+import { buildDiscoveryBriefing } from './discovery-briefing.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -1135,12 +1136,14 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const report = getDealCardReport(id);
     const cardId = subjectCardId(deal);
+    const sellerSummary = summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []);
     const readiness = computeDealCardReadiness(report, {
       dealUpdatedAt: (deal as { updated_at?: number }).updated_at,
-      sellerFacts: summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []),
+      sellerFacts: sellerSummary,
       hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
     });
-    return c.json({ report, readiness });
+    const briefing = buildDiscoveryBriefing(report, readiness, sellerSummary);
+    return c.json({ report, readiness, briefing });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
@@ -1161,12 +1164,14 @@ export function registerLandosRoutes(app: Hono): void {
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     const deal = getDealCard(id);
     const cardId = deal ? subjectCardId(deal) : undefined;
+    const sellerSummary = summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []);
     const readiness = computeDealCardReadiness(result.report, {
       dealUpdatedAt: (deal as { updated_at?: number } | undefined)?.updated_at,
-      sellerFacts: summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []),
+      sellerFacts: sellerSummary,
       hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
     });
-    return c.json({ ...result, readiness });
+    const briefing = buildDiscoveryBriefing(result.report, readiness, sellerSummary);
+    return c.json({ ...result, readiness, briefing });
   });
 
   // ── Post-discovery DD layer ─────────────────────────────────────────────

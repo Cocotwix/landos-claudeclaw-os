@@ -37,5 +37,13 @@ Status: capability plumbing in place (parcel-identity capability routes to Reali
 ## Post-discovery DD layer — FOUNDATIONS BUILT (2026-06-27)
 Free gov DD providers (FEMA/NWI/USGS/Census) scaffolded + dormant; County Records Browser Agent foundation (post-discovery, manual, dormant); seller-stated facts; underwriting prep; Deal Card workflow stage + Post-Discovery panel. Remaining to activate: live gov-API activation (free, approval-gated), County Records Browser execution (visual stack + approval), comp provider.
 
+## Browser-capable agents (product requirement — recognized 2026-06-27)
+LandOS needs **two** browser-capable agents (architecture must not block them):
+1. **County Records Browser Agent** — manual post-discovery official-record verification (assessor/GIS/tax/legal). Foundation built + dormant; bounded, exact-identity-only.
+2. **General Browser Research Assistant** — broad public-web research: find listing pages, verify public context, pull address/listing clues, collect screenshots/evidence, support non-county tasks; eventually fast public property lookup. Complements (does not replace) structured providers like Apify. Not built yet — documented so the architecture leaves room.
+
+## Working-product mode (2026-06-27)
+Governance relaxed to working-product mode: configured operational providers (Apify Redfin, Google Maps/Street View/Static Maps, free gov APIs, Realie within budget) are approved for normal use; build proceeds without per-step approval. Only hard stops: machine safety, secret exposure, deletion/destruction, irreversible loss.
+
 ## Deferred (per Founder Vision phases / later)
 Real-time call assistant (teleprompter), full agent roster expansion (marketing, dispositions, competitor/AI/land research, system health), GHL/CRM live sync, voice/War Room expansion, second-machine/always-on infra.
