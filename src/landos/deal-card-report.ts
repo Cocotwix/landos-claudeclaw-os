@@ -691,6 +691,33 @@ export function getDealCardReport(dealCardId: number): DealCardReportView {
   return row ? rowToView(row) : emptyReport(dealCardId);
 }
 
+export interface DealCardReportSummary {
+  exists: boolean;
+  reportStatus: DealCardReportStatus | 'not_run';
+  parcelVerified: boolean;
+  ddPercentComplete: number;
+  generatedAt: number | null;
+}
+
+/** Lightweight per-deal report summary for list/board rows (avoids loading the
+ *  full report). Reads the persisted row and parses the completeness only. */
+export function getDealCardReportSummary(dealCardId: number): DealCardReportSummary {
+  const row = getReportRow(dealCardId);
+  if (!row) return { exists: false, reportStatus: 'not_run', parcelVerified: false, ddPercentComplete: 0, generatedAt: null };
+  let pct = 0;
+  try {
+    const j = JSON.parse(row.report_json) as Partial<DealCardReportView>;
+    pct = j.ddCompleteness?.percentComplete ?? 0;
+  } catch { pct = 0; }
+  return {
+    exists: true,
+    reportStatus: REPORT_STATUS_SET.has(row.report_status) ? row.report_status : 'failed',
+    parcelVerified: row.parcel_verified === 1,
+    ddPercentComplete: pct,
+    generatedAt: row.updated_at,
+  };
+}
+
 function persistReport(dealCardId: number, view: DealCardReportView, updatedBy: string, entity: string): void {
   const db = getLandosDb();
   const existing = getReportRow(dealCardId);

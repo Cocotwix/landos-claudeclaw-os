@@ -245,6 +245,72 @@ interface DdChecklistRowView {
   noConnectedSource?: boolean;
 }
 
+// Deal Card DD readiness (derived from the persisted report).
+interface ReadinessView {
+  discoveryReportState: 'not_generated' | 'generated' | 'stale' | 'needs_rerun';
+  nextBestAction: { action: string; label: string; reason: string };
+  ddCompleteness: { verified: number; total: number; percentComplete: number; label: string };
+  topMissingDdFacts: string[];
+  topRiskFlags: string[];
+  providerProvenance: { parcelSource: string; parcelStatus: string; parcelVerified: boolean };
+  visualsCaptured: number;
+}
+
+const DISCOVERY_STATE_LABEL: Record<ReadinessView['discoveryReportState'], string> = {
+  not_generated: 'Not generated',
+  generated: 'Generated',
+  stale: 'Stale (deal changed since last run)',
+  needs_rerun: 'Needs rerun',
+};
+
+// DD Command Center header — at-a-glance pre-call readiness: next-best action,
+// report state, completeness, provenance, top missing facts + risks.
+function DealCardCommandCenter({ r }: { r?: ReadinessView | null }) {
+  if (!r) return null;
+  const pct = r.ddCompleteness.percentComplete;
+  const ready = r.nextBestAction.action === 'ready_for_discovery_call';
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Due Diligence Command Center</span>
+        <span class={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${ready ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-accent)] border-[var(--color-accent)]'}`}>
+          Next: {r.nextBestAction.label}
+        </span>
+      </div>
+      <div class="text-[11px] text-[var(--color-text-muted)]">{r.nextBestAction.reason}</div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div class="text-[var(--color-text-faint)]">DD completeness</div>
+          <div class="h-1.5 w-full rounded-full bg-[var(--color-elevated)] overflow-hidden my-1"><div class="h-full bg-[var(--color-status-done)]" style={{ width: `${pct}%` }} /></div>
+          <div class="tabular-nums">{r.ddCompleteness.label}</div>
+        </div>
+        <div>
+          <div class="text-[var(--color-text-faint)]">Discovery report</div>
+          <div class="mt-1">{DISCOVERY_STATE_LABEL[r.discoveryReportState]}</div>
+          <div class="text-[var(--color-text-faint)] mt-1">Visuals captured: {r.visualsCaptured}</div>
+        </div>
+        <div>
+          <div class="text-[var(--color-text-faint)]">Parcel provenance</div>
+          <div class="mt-1">{r.providerProvenance.parcelVerified ? 'Verified' : 'Unverified'}</div>
+          <div class="text-[var(--color-text-faint)] truncate" title={r.providerProvenance.parcelSource}>{r.providerProvenance.parcelStatus}</div>
+        </div>
+      </div>
+      {r.topMissingDdFacts.length > 0 && (
+        <div class="text-[11px]">
+          <span class="text-[var(--color-text-faint)]">Top missing DD facts: </span>
+          <span>{r.topMissingDdFacts.join(', ')}</span>
+        </div>
+      )}
+      {r.topRiskFlags.length > 0 && (
+        <div class="text-[11px]">
+          <span class="text-[var(--color-status-failed)]">Top risk flags: </span>
+          <span>{r.topRiskFlags.join('; ')}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Full DD fact checklist — mirrors the Discovery Call Report. Every standard
 // field shows a Verified value (+source) or an explicit Unknown / Needs
 // Verification status. Read-only; never fabricated.
@@ -415,6 +481,21 @@ interface DealCardListItem {
   status: string;
   asking_price: number | null;
   updated_at: number;
+  reportSummary?: { exists: boolean; reportStatus: string; parcelVerified: boolean; ddPercentComplete: number; generatedAt: number | null };
+}
+
+// DD completeness chip for list/board rows.
+function DdChip({ s }: { s?: DealCardListItem['reportSummary'] }) {
+  if (!s || !s.exists) {
+    return <span class="text-[10px] px-1.5 py-0.5 rounded-full border text-[var(--color-text-faint)] border-[var(--color-border)]">DD: not run</span>;
+  }
+  const pct = s.ddPercentComplete;
+  const tone = s.parcelVerified ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-text-faint)] border-[var(--color-border)]';
+  return (
+    <span class={`text-[10px] px-1.5 py-0.5 rounded-full border tabular-nums ${tone}`} title={`Parcel ${s.parcelVerified ? 'verified' : 'unverified'} · DD ${pct}%`}>
+      {s.parcelVerified ? 'DD' : 'DD (unverified)'} {pct}%
+    </span>
+  );
 }
 
 function entityBadge(entity: string | null): string {
@@ -664,6 +745,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   // DD + Market + Strategy operational report state. Loaded alongside the open
   // deal; produced by the backend workflow (read-only here).
   const [report, setReport] = useState<ReportView | null>(null);
+  const [readiness, setReadiness] = useState<ReadinessView | null>(null);
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportWarnings, setReportWarnings] = useState<string[]>([]);
@@ -717,10 +799,12 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
   async function loadReport(id: number) {
     try {
-      const res = await apiGet<{ report: ReportView }>(`/api/landos/deal-cards/${id}/report`);
+      const res = await apiGet<{ report: ReportView; readiness?: ReadinessView }>(`/api/landos/deal-cards/${id}/report`);
       setReport(res.report);
+      setReadiness(res.readiness ?? null);
     } catch {
       setReport(null);
+      setReadiness(null);
     }
   }
 
@@ -733,8 +817,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     setReportError(null);
     setReportWarnings([]);
     try {
-      const res = await apiPost<{ report: ReportView; warnings: string[] }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
+      const res = await apiPost<{ report: ReportView; warnings: string[]; readiness?: ReadinessView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
       setReport(res.report);
+      setReadiness(res.readiness ?? null);
       setReportWarnings(Array.isArray(res.warnings) ? res.warnings : []);
       await loadDd(deal.id);
       await loadStrategy(deal.id);
@@ -1200,6 +1285,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                     <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
                       {c.status}
                     </span>
+                    <DdChip s={c.reportSummary} />
                     <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">#{c.id} · {formatRelativeTime(c.updated_at)}</span>
                   </div>
                 </button>
@@ -1277,6 +1363,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
             {report?.exists && (
               <div class="space-y-3">
+                {/* DD Command Center — at-a-glance pre-call readiness. */}
+                <DealCardCommandCenter r={readiness} />
+
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
                     <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Due Diligence + Research</div>

@@ -696,6 +696,26 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
   });
 });
 
+describe('LandOS routes — Deal Card DD readiness surfacing', () => {
+  it('report response includes readiness; list rows include a reportSummary', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Readiness deal' });
+    const id = ((await created.json()) as any).dealCard.id;
+
+    const rep = await get(`/api/landos/deal-cards/${id}/report`);
+    expect(rep.status).toBe(200);
+    const rb = (await rep.json()) as any;
+    expect(rb.readiness).toBeDefined();
+    expect(rb.readiness.discoveryReportState).toBe('not_generated');
+    expect(rb.readiness.nextBestAction.action).toBe('needs_parcel_verification');
+
+    const list = await get('/api/landos/deal-cards');
+    const item = ((await list.json()) as any).dealCards.find((d: any) => d.id === id);
+    expect(item.reportSummary).toBeDefined();
+    expect(item.reportSummary.exists).toBe(false);
+    expect(item.reportSummary.ddPercentComplete).toBe(0);
+  });
+});
+
 describe('LandOS routes — visual image serving + capture gating (no Google call)', () => {
   it('serves a stored captured image by card+service; 404 when none; 400 on bad service', async () => {
     const fsm = await import('fs');

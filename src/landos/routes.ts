@@ -114,7 +114,8 @@ import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealC
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
-import { getDealCardReport, runDealCardReport } from './deal-card-report.js';
+import { getDealCardReport, getDealCardReportSummary, runDealCardReport } from './deal-card-report.js';
+import { computeDealCardReadiness } from './deal-card-readiness.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -820,12 +821,17 @@ export function registerLandosRoutes(app: Hono): void {
   app.get('/api/landos/deal-cards', (c) => {
     const entity = entityParam(c.req.query('entity'));
     const status = c.req.query('status');
-    return c.json({
-      dealCards: listDealCards({
-        entity,
-        status: (DEAL_CARD_STATUSES as readonly string[]).includes(status ?? '') ? (status as DealCardStatus) : undefined,
-      }),
+    const dealCards = listDealCards({
+      entity,
+      status: (DEAL_CARD_STATUSES as readonly string[]).includes(status ?? '') ? (status as DealCardStatus) : undefined,
     });
+    // Attach a lightweight DD report summary per row (completeness chip on the
+    // list/board). Read-only; no provider call.
+    const withSummary = dealCards.map((d) => ({
+      ...(d as unknown as Record<string, unknown>),
+      reportSummary: getDealCardReportSummary((d as { id: number }).id),
+    }));
+    return c.json({ dealCards: withSummary });
   });
 
   app.get('/api/landos/deal-cards/:id', (c) => {
@@ -1120,7 +1126,9 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ report: getDealCardReport(id) });
+    const report = getDealCardReport(id);
+    const readiness = computeDealCardReadiness(report, { dealUpdatedAt: (deal as { updated_at?: number }).updated_at });
+    return c.json({ report, readiness });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
@@ -1139,7 +1147,9 @@ export function registerLandosRoutes(app: Hono): void {
       reverify: body.reverify === true,
     });
     if (!result) return c.json({ error: 'deal card not found' }, 404);
-    return c.json(result);
+    const deal = getDealCard(id);
+    const readiness = computeDealCardReadiness(result.report, { dealUpdatedAt: (deal as { updated_at?: number } | undefined)?.updated_at });
+    return c.json({ ...result, readiness });
   });
 
   // ── Comps (manual + automated). Never verifies parcel identity. ─────
