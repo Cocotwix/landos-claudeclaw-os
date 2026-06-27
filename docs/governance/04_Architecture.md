@@ -25,6 +25,14 @@ Update Rule: CC updates when the implementation architecture changes. Describe t
 - `knowledge-store.ts` (interface + `LocalFsKnowledgeStore`, default, no creds) and `knowledge-store-r2.ts` (R2/S3 backend, lazy SDK, config-gated selection, presence-only status). Path conventions under `R2_PATHS`.
 - `knowledge-ingestion.ts` — deterministic training/knowledge ingestion shell (sha256-addressed, roster-validated, manifest-tracked, `raw_training`, promotion blocked).
 
+## Post-discovery DD layer
+- `providers/gov-dd-providers.ts` — free government DD providers (FEMA flood, NWI wetlands, USGS slope, Census demographics) behind a capability; dormant by default (`LANDOS_LIVE_GOV_DD`), canonical result + provenance + Unknown fallback; no live call until activated.
+- `county-records-tasks.ts` + `browser-agents.ts` — County Records Browser Agent foundation: post-discovery, manual-trigger, bounded task contracts, exact-identity rules, conflict detection, manual outcome records (`landos_card_activity`). Execution dormant.
+- `seller-stated-facts.ts` — seller answers recorded as Seller-stated (never Verified), persisted on the subject property card (`landos_card_activity`).
+- `underwriting-prep.ts` — post-discovery underwriting prep (placeholders + gates + readiness; no offer).
+- `deal-card-readiness.ts` — derives the Deal Card workflow stage + next-best-action + provenance; surfaced on the Deal Card UI (Command Center + Post-Discovery panel) and list chips.
+- Post-discovery persistence uses `landos_card_activity` only — **no schema migration**.
+
 ## Cost / safety governance
 - `realie-trial-guard.ts` — manual, local, gitignored trial counter; pre-call confirmation + post-call record; never auto-invoked.
 - Approval/audit spine, rubric, offer engine, departments/agent roster (`db.ts`, `rubric.ts`, `offer-engine.ts`, `departments.ts`, `agent-roster.ts`). Cost + model-call logging tables.

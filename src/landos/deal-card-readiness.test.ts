@@ -75,6 +75,32 @@ describe('computeDealCardReadiness', () => {
     expect(r.visualsCaptured).toBe(0);
   });
 
+  it('workflow stage: pre_discovery until verified + discovery captured', () => {
+    // unverified -> pre_discovery
+    expect(computeDealCardReadiness(fakeReport({ parcelVerified: false })).workflowStage).toBe('pre_discovery_ready');
+    // verified but no seller facts -> still pre_discovery (call not done)
+    const checklist = buildDdChecklist({ acres: 8.6 }, 'Realie.ai');
+    const verified = fakeReport({ parcelVerified: true, ddFactChecklist: checklist, ddCompleteness: summarizeDdCompleteness(checklist), countyVerificationChecklist: [] });
+    expect(computeDealCardReadiness(verified).workflowStage).toBe('pre_discovery_ready');
+  });
+
+  it('workflow stage: discovery captured -> county_verification_needed / needs_deeper_dd / underwriting_ready', () => {
+    const sellerCaptured = { count: 1, kinds: ['access' as const], riskFlags: ['Seller-stated access — confirm.'], discoveryCaptured: true };
+    // county checklist outstanding -> county_verification_needed
+    const withCounty = fakeReport({ parcelVerified: true, countyVerificationChecklist: ['Confirm zoning'] });
+    expect(computeDealCardReadiness(withCounty, { sellerFacts: sellerCaptured }).workflowStage).toBe('county_verification_needed');
+    // county done but DD facts still missing -> needs_deeper_dd
+    const missing = fakeReport({ parcelVerified: true, countyVerificationChecklist: [] }); // empty checklist has gaps (no facts)
+    expect(computeDealCardReadiness(missing, { sellerFacts: sellerCaptured, hasCountyVerification: true }).workflowStage).toBe('needs_deeper_dd');
+    // all facts present + county done -> underwriting_ready; seller risk merged into top risks
+    const full = buildDdChecklist({ acres: 8.6, zoning: 'A-1', landUse: 'x', roadFrontageFt: 100, landLocked: 'false', nearWater: 'no', wetlandsPct: 0, femaPct: 0, slopeAvgDeg: 2, buildabilityPct: 90, buildableAcres: 8, buildingAreaSqft: 0 }, 'Realie.ai');
+    const ready = fakeReport({ parcelVerified: true, ddFactChecklist: full, ddCompleteness: summarizeDdCompleteness(full), countyVerificationChecklist: [] });
+    const rr = computeDealCardReadiness(ready, { sellerFacts: sellerCaptured, hasCountyVerification: true });
+    expect(rr.workflowStage).toBe('underwriting_ready');
+    expect(rr.sellerFactCount).toBe(1);
+    expect(rr.topRiskFlags.some((f) => /Seller-stated/i.test(f))).toBe(true);
+  });
+
   it('everything satisfied -> ready_for_discovery_call', () => {
     const checklist = buildDdChecklist({ acres: 8.6 }, 'Realie.ai');
     const visualContext = buildVisualPropertyContext({ address: '1 Main', state: 'GA' }, { configured: true, captured: { maps_static: { storedPath: '/x.png', url: '/api/landos/visual/image?cardId=1&service=maps_static' } } });

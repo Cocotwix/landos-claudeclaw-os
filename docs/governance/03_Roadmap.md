@@ -34,5 +34,8 @@ Status: capability plumbing in place (parcel-identity capability routes to Reali
 7. **County Records Browser Agent foundation** — official-record provider behind parcel/ownership/zoning/county capabilities, following all verification rules.
 8. **Underwriting + Offer Prep** — post-discovery deep underwriting feeding offer-range guidance (only on verified parcels).
 
+## Post-discovery DD layer — FOUNDATIONS BUILT (2026-06-27)
+Free gov DD providers (FEMA/NWI/USGS/Census) scaffolded + dormant; County Records Browser Agent foundation (post-discovery, manual, dormant); seller-stated facts; underwriting prep; Deal Card workflow stage + Post-Discovery panel. Remaining to activate: live gov-API activation (free, approval-gated), County Records Browser execution (visual stack + approval), comp provider.
+
 ## Deferred (per Founder Vision phases / later)
 Real-time call assistant (teleprompter), full agent roster expansion (marketing, dispositions, competitor/AI/land research, system health), GHL/CRM live sync, voice/War Room expansion, second-machine/always-on infra.

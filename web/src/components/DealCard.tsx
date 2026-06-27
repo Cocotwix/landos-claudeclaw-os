@@ -248,12 +248,15 @@ interface DdChecklistRowView {
 // Deal Card DD readiness (derived from the persisted report).
 interface ReadinessView {
   discoveryReportState: 'not_generated' | 'generated' | 'stale' | 'needs_rerun';
+  workflowStage: string;
+  workflowStageLabel: string;
   nextBestAction: { action: string; label: string; reason: string };
   ddCompleteness: { verified: number; total: number; percentComplete: number; label: string };
   topMissingDdFacts: string[];
   topRiskFlags: string[];
   providerProvenance: { parcelSource: string; parcelStatus: string; parcelVerified: boolean };
   visualsCaptured: number;
+  sellerFactCount: number;
 }
 
 const DISCOVERY_STATE_LABEL: Record<ReadinessView['discoveryReportState'], string> = {
@@ -273,6 +276,9 @@ function DealCardCommandCenter({ r }: { r?: ReadinessView | null }) {
     <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Due Diligence Command Center</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+          Stage: {r.workflowStageLabel}
+        </span>
         <span class={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${ready ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-accent)] border-[var(--color-accent)]'}`}>
           Next: {r.nextBestAction.label}
         </span>
@@ -307,6 +313,102 @@ function DealCardCommandCenter({ r }: { r?: ReadinessView | null }) {
           <span>{r.topRiskFlags.join('; ')}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+// Post-discovery DD panel: seller-stated facts (never Verified), manual county
+// verification (browser agent dormant), and underwriting prep state. Loads on
+// demand; mutations call back to refresh readiness.
+interface SellerFactView { kind: string; value: string; note?: string; recordedAt: number; recordedBy: string }
+interface CountyRecordView { task: string; status: string; extractedFact: string | null; officialSourceUrl: string | null; timestamp: string; note: string }
+interface UnderwritingPrepView { state: string; verificationRequiredBeforeOffer: string[]; tighterCompRequirement: string; dealKillers: string[]; minimumProfitRules: string[]; offerReadinessNote: string }
+
+function PostDiscoveryPanel({ dealId, onChange }: { dealId: number; onChange: () => void }) {
+  const [facts, setFacts] = useState<SellerFactView[]>([]);
+  const [factKinds, setFactKinds] = useState<string[]>([]);
+  const [county, setCounty] = useState<{ availableTasks: string[]; records: CountyRecordView[] }>({ availableTasks: [], records: [] });
+  const [uw, setUw] = useState<UnderwritingPrepView | null>(null);
+  const [factKind, setFactKind] = useState('');
+  const [factValue, setFactValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function loadAll() {
+    try {
+      const [sf, cv, up] = await Promise.all([
+        apiGet<{ facts: SellerFactView[]; kinds: string[] }>(`/api/landos/deal-cards/${dealId}/seller-facts`),
+        apiGet<{ availableTasks: string[]; records: CountyRecordView[] }>(`/api/landos/deal-cards/${dealId}/county-verification`),
+        apiGet<{ underwritingPrep: UnderwritingPrepView }>(`/api/landos/deal-cards/${dealId}/underwriting-prep`),
+      ]);
+      setFacts(sf.facts); setFactKinds(sf.kinds); if (!factKind && sf.kinds[0]) setFactKind(sf.kinds[0]);
+      setCounty(cv); setUw(up.underwritingPrep);
+    } catch (e: any) { setMsg(e?.message || String(e)); }
+  }
+  useEffect(() => { void loadAll(); /* eslint-disable-next-line */ }, [dealId]);
+
+  async function addFact() {
+    if (!factKind || !factValue.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await apiPost<{ error?: string }>(`/api/landos/deal-cards/${dealId}/seller-facts`, { kind: factKind, value: factValue.trim() });
+      if (r.error) setMsg(r.error); else { setFactValue(''); await loadAll(); onChange(); }
+    } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); }
+  }
+  async function markCounty(task: string) {
+    setBusy(true); setMsg(null);
+    try {
+      await apiPost(`/api/landos/deal-cards/${dealId}/county-verification/mark`, { task, status: 'needs_human_or_county_call', note: 'County call needed (manual).' });
+      await loadAll(); onChange();
+    } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); }
+  }
+
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-3">
+      <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Post-Discovery Due Diligence</div>
+
+      {uw && (
+        <div class="text-[11px]">
+          <span class="text-[var(--color-text-faint)]">Underwriting prep: </span>
+          <span class="font-medium">{uw.state.replace(/_/g, ' ')}</span>
+          <span class="text-[var(--color-text-muted)]"> — {uw.offerReadinessNote}</span>
+        </div>
+      )}
+
+      {/* Seller-stated facts */}
+      <div>
+        <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Seller-stated facts <span class="text-[10px] text-[var(--color-text-faint)]">(Seller-stated, not Verified)</span></div>
+        <div class="flex gap-1.5 mb-1">
+          <select class="text-[11px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1" value={factKind} onChange={(e) => setFactKind((e.target as HTMLSelectElement).value)}>
+            {factKinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}
+          </select>
+          <input class="flex-1 text-[11px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1" placeholder="What the seller said…" value={factValue} onInput={(e) => setFactValue((e.target as HTMLInputElement).value)} />
+          <button type="button" disabled={busy} onClick={addFact} class="text-[11px] px-2 py-1 rounded-md border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">Add</button>
+        </div>
+        {facts.length === 0 ? <div class="text-[11px] text-[var(--color-text-faint)]">No seller-stated facts yet.</div> : (
+          <div class="space-y-0.5">{facts.map((f, i) => <div key={i} class="text-[11px]"><span class="text-[var(--color-text-faint)]">{f.kind.replace(/_/g, ' ')}:</span> {f.value} <span class="text-[10px] text-[var(--color-text-faint)]">· Seller-stated</span></div>)}</div>
+        )}
+      </div>
+
+      {/* County verification (manual; agent dormant) */}
+      <div>
+        <div class="text-[11px] text-[var(--color-text-muted)] mb-1">County verification <span class="text-[10px] text-[var(--color-text-faint)]">(official records — agent dormant; manual trigger)</span></div>
+        <div class="flex flex-wrap gap-1">
+          {county.availableTasks.map((t) => (
+            <button key={t} type="button" disabled={busy} onClick={() => markCounty(t)} title="Mark county call needed" class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
+              {t.replace(/^verify_/, '').replace(/_/g, ' ')}
+            </button>
+          ))}
+        </div>
+        {county.records.length > 0 && (
+          <div class="mt-1 space-y-0.5">{county.records.map((r, i) => <div key={i} class="text-[11px]"><span class="text-[var(--color-text-faint)]">{r.task.replace(/_/g, ' ')}:</span> {r.status.replace(/_/g, ' ')}{r.extractedFact ? ` — ${r.extractedFact}` : ''}</div>)}</div>
+        )}
+      </div>
+
+      {uw && uw.verificationRequiredBeforeOffer.length > 0 && (
+        <div class="text-[11px]"><span class="text-[var(--color-status-failed)]">Verify before offer: </span>{uw.verificationRequiredBeforeOffer.slice(0, 4).join('; ')}</div>
+      )}
+      {msg && <div class="text-[11px] text-[var(--color-text-muted)]">{msg}</div>}
     </div>
   );
 }
@@ -1409,6 +1511,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                     {visualCaptureMsg && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{visualCaptureMsg}</div>}
                   </div>
                 )}
+
+                {/* Post-discovery DD: seller-stated facts, county verification, underwriting prep. */}
+                {deal?.id && <PostDiscoveryPanel dealId={deal.id} onChange={() => void loadReport(deal.id)} />}
 
                 {/* Source table — every source, its status, and credit usage. */}
                 <div>

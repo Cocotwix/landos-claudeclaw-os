@@ -41,6 +41,15 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 - Stage only intended files (never `git add .`); never commit `.env`, logs, generated reports, property work product, or the trial counter.
 - Restarting the live server and pushing require explicit approval.
 
+## Post-discovery DD (settled)
+- **Two workflows:** pre-discovery stays fast (Lead → Deal Card → quick DD → market pulse → visual → Discovery Call Report). Post-discovery DD is a separate, deeper stage entered only after Tyler decides a lead is worth pursuing.
+- **County Records Browser Agent is a post-discovery verification specialist** — NOT part of the automatic pre-discovery workflow. It runs only when manually triggered from a Deal Card; it stays dormant (no execution) until the visual stack is wired + approved. Tasks are bounded (max interactions/time, stop conditions); subject identity requires exact official identifiers (coordinates/nearest/geocoder can never verify).
+- **Free gov DD providers** (FEMA flood, NWI wetlands, USGS slope, Census demographics) are provider-agnostic and **dormant by default** (`LANDOS_LIVE_GOV_DD`); they return Unknown / Needs Verification until activation is approved. They are free, but live activation + first smoke still require approval.
+- **Seller-stated facts** recorded post-discovery are always labeled **Seller-stated, never Verified**; they affect missing-facts/risk/next-action/stage but never count as verified data.
+- **Underwriting "prep" ≠ final underwriting** — placeholders + gates + readiness state only; no binding offer is computed pre- or post-discovery by the prep layer.
+- **No-migration persistence:** post-discovery seller facts + county records are stored on the subject property card via `landos_card_activity` (no schema change; migrations remain gated).
+- **Deal Card workflow stage** is derived: pre_discovery_ready → discovery_completed → needs_deeper_dd → county_verification_needed → underwriting_ready → offer_prep_ready.
+
 ## Governance (settled — this milestone)
 - Governance lives in `docs/governance/` under version control. Authority hierarchy: **Founder Vision > Operating Charter / Product Principles > Decision Log / Roadmap / Architecture / Build Journal**.
 - Founder-controlled docs (Founder Vision, Operating Charter, Product Principles, Vision pointer) are **not modified without Tyler's approval**. Implementation-maintained docs (this log, Roadmap, Architecture, Build Journal) are kept current after major milestones.

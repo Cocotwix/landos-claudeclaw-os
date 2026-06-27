@@ -116,6 +116,13 @@ import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
 import { getDealCardReport, getDealCardReportSummary, runDealCardReport } from './deal-card-report.js';
 import { computeDealCardReadiness } from './deal-card-readiness.js';
+import { govDdProvidersStatus } from './providers/gov-dd-providers.js';
+import { addSellerStatedFact, loadSellerStatedFacts, summarizeSellerFacts, SELLER_FACT_KINDS, isSellerFactKind } from './seller-stated-facts.js';
+import {
+  COUNTY_VERIFICATION_TASKS, planCountyVerification, saveCountyVerificationRecord, loadCountyVerificationRecords,
+  type CountyVerificationTask, type CountyTaskResult, type CountyTaskStatus,
+} from './county-records-tasks.js';
+import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -1127,7 +1134,12 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const report = getDealCardReport(id);
-    const readiness = computeDealCardReadiness(report, { dealUpdatedAt: (deal as { updated_at?: number }).updated_at });
+    const cardId = subjectCardId(deal);
+    const readiness = computeDealCardReadiness(report, {
+      dealUpdatedAt: (deal as { updated_at?: number }).updated_at,
+      sellerFacts: summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []),
+      hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
+    });
     return c.json({ report, readiness });
   });
 
@@ -1148,8 +1160,120 @@ export function registerLandosRoutes(app: Hono): void {
     });
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     const deal = getDealCard(id);
-    const readiness = computeDealCardReadiness(result.report, { dealUpdatedAt: (deal as { updated_at?: number } | undefined)?.updated_at });
+    const cardId = deal ? subjectCardId(deal) : undefined;
+    const readiness = computeDealCardReadiness(result.report, {
+      dealUpdatedAt: (deal as { updated_at?: number } | undefined)?.updated_at,
+      sellerFacts: summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []),
+      hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
+    });
     return c.json({ ...result, readiness });
+  });
+
+  // ── Post-discovery DD layer ─────────────────────────────────────────────
+  // Resolve the deal's SUBJECT property card id (seller facts + county records
+  // are stored on it). undefined when no property card is linked yet.
+  const subjectCardId = (deal: unknown): number | undefined =>
+    ((deal as { propertyCards?: Array<Record<string, unknown>> }).propertyCards?.[0]?.id) as number | undefined;
+
+  // Free government DD provider readiness (dormant by default; no live call).
+  app.get('/api/landos/dd-providers/status', (c) => c.json(govDdProvidersStatus()));
+
+  // Seller-stated facts (post-discovery). Always labeled Seller-stated, never
+  // Verified. Stored on the subject property card; no provider call.
+  app.get('/api/landos/deal-cards/:id/seller-facts', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    const facts = cardId ? loadSellerStatedFacts(cardId) : [];
+    return c.json({ facts, summary: summarizeSellerFacts(facts), kinds: SELLER_FACT_KINDS });
+  });
+  app.post('/api/landos/deal-cards/:id/seller-facts', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    if (!cardId) return c.json({ error: 'link a property card to this deal before recording seller-stated facts' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const kind = str(body.kind) ?? '';
+    if (!isSellerFactKind(kind)) return c.json({ error: `kind must be one of: ${SELLER_FACT_KINDS.join(', ')}` }, 400);
+    const value = str(body.value);
+    if (!value || !value.trim()) return c.json({ error: 'value is required' }, 400);
+    const fact = addSellerStatedFact(cardId, { kind, value, note: str(body.note), recordedBy: str(body.recordedBy) });
+    return c.json({ fact, summary: summarizeSellerFacts(loadSellerStatedFacts(cardId)) }, 201);
+  });
+
+  // County Records verification (post-discovery, MANUAL trigger; agent dormant).
+  app.get('/api/landos/deal-cards/:id/county-verification', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    return c.json({ availableTasks: COUNTY_VERIFICATION_TASKS, records: cardId ? loadCountyVerificationRecords(cardId) : [] });
+  });
+  // Plan a targeted, bounded county task (pure — NO browsing happens).
+  app.post('/api/landos/deal-cards/:id/county-verification/plan', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const task = str(body.task) ?? '';
+    if (!(COUNTY_VERIFICATION_TASKS as readonly string[]).includes(task)) return c.json({ error: `task must be one of: ${COUNTY_VERIFICATION_TASKS.join(', ')}` }, 400);
+    const dd = getDealCardDd(id);
+    const pc = ((deal as { propertyCards?: Array<Record<string, unknown>> }).propertyCards?.[0] ?? {}) as Record<string, unknown>;
+    const plan = planCountyVerification(task as CountyVerificationTask, {
+      apn: str(dd.apn) || str(pc.apn) || undefined,
+      ownerName: str(pc.owner) || undefined,
+      county: str(dd.county) || str(pc.county) || undefined,
+      state: str(dd.state) || str(pc.state) || undefined,
+      fullAddress: str(pc.active_input_address) || undefined,
+    });
+    return c.json({ plan, note: 'County Records Browser Agent is dormant — this is a bounded plan only. No browsing performed.' });
+  });
+  // Manually record a county verification outcome (county call result / conflict).
+  app.post('/api/landos/deal-cards/:id/county-verification/mark', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const task = str(body.task) ?? '';
+    if (!(COUNTY_VERIFICATION_TASKS as readonly string[]).includes(task)) return c.json({ error: 'invalid task' }, 400);
+    const allowedStatus: CountyTaskStatus[] = ['verified', 'conflict', 'needs_human_or_county_call', 'not_found'];
+    const status = str(body.status) as CountyTaskStatus;
+    if (!allowedStatus.includes(status)) return c.json({ error: `status must be one of: ${allowedStatus.join(', ')}` }, 400);
+    const cardId = subjectCardId(deal);
+    if (!cardId) return c.json({ error: 'link a property card to this deal before recording county verification' }, 400);
+    const result: CountyTaskResult = {
+      task: task as CountyVerificationTask,
+      fieldUpdated: str(body.fieldUpdated) ?? task,
+      status,
+      officialSourceUrl: str(body.officialSourceUrl) ?? null,
+      sourceTitle: str(body.sourceTitle) ?? null,
+      extractedFact: str(body.extractedFact) ?? null,
+      confidence: (str(body.confidence) as CountyTaskResult['confidence']) ?? (status === 'verified' ? 'high' : 'none'),
+      timestamp: new Date().toISOString(),
+      conflictWith: str(body.conflictWith) ?? null,
+      evidenceRefs: Array.isArray(body.evidenceRefs) ? (body.evidenceRefs as string[]).filter((x) => typeof x === 'string') : [],
+      note: str(body.note) ?? 'Manually recorded county verification outcome.',
+    };
+    saveCountyVerificationRecord(cardId, result, { by: str(body.by) });
+    return c.json({ result, records: loadCountyVerificationRecords(cardId) }, 201);
+  });
+
+  // Post-discovery underwriting prep (derived; placeholders + gates, no offer).
+  app.get('/api/landos/deal-cards/:id/underwriting-prep', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    const prep = buildUnderwritingPrep(getDealCardReport(id), summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []));
+    return c.json({ underwritingPrep: prep });
   });
 
   // ── Comps (manual + automated). Never verifies parcel identity. ─────

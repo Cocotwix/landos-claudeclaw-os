@@ -696,6 +696,65 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
   });
 });
 
+describe('LandOS routes — post-discovery DD layer', () => {
+  it('dd-providers status: free gov providers dormant by default', async () => {
+    const res = await get('/api/landos/dd-providers/status');
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as any;
+    expect(b.liveEnabled).toBe(false);
+    expect(b.providers.map((p: any) => p.capability).sort()).toEqual(['demographics', 'flood', 'slope', 'wetlands']);
+  });
+
+  it('seller-stated facts: add (Seller-stated) + list + summary', async () => {
+    const { upsertCardFromDukeRun } = await import('./property-card.js');
+    const { linkPropertyToDeal } = await import('./deal-card.js');
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Seller deal' });
+    const id = ((await created.json()) as any).dealCard.id;
+    const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 WEST RD', county: 'Worth', state: 'GA', apn: '00830-054-000', fips: '13321', owner: 'X', acres: 8.6, verified: true, verificationSource: 'Realie.ai', summary: 'v' });
+    linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
+    const bad = await post(`/api/landos/deal-cards/${id}/seller-facts`, { kind: 'nope', value: 'x' });
+    expect(bad.status).toBe(400);
+    const add = await post(`/api/landos/deal-cards/${id}/seller-facts`, { kind: 'liens', value: 'maybe a tax lien' });
+    expect(add.status).toBe(201);
+    const list = await get(`/api/landos/deal-cards/${id}/seller-facts`);
+    const lb = (await list.json()) as any;
+    expect(lb.facts).toHaveLength(1);
+    expect(lb.summary.discoveryCaptured).toBe(true);
+    expect(lb.summary.riskFlags.some((f: string) => /Seller-stated/i.test(f))).toBe(true);
+  });
+
+  it('county verification: plan (no browsing) + manual mark (agent dormant)', async () => {
+    const { upsertCardFromDukeRun } = await import('./property-card.js');
+    const { linkPropertyToDeal } = await import('./deal-card.js');
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'County deal' });
+    const id = ((await created.json()) as any).dealCard.id;
+    const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 WEST RD', county: 'Worth', state: 'GA', apn: '00830-054-000', fips: '13321', owner: 'X', acres: 8.6, verified: true, verificationSource: 'Realie.ai', summary: 'v' });
+    linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
+    const plan = await post(`/api/landos/deal-cards/${id}/county-verification/plan`, { task: 'verify_owner' });
+    expect(plan.status).toBe(200);
+    const pb = (await plan.json()) as any;
+    expect(pb.note).toMatch(/dormant/i);
+    // exact identifier (APN+county/state) present -> plan allowed (bounded)
+    expect(pb.plan.allowed).toBe(true);
+    const mark = await post(`/api/landos/deal-cards/${id}/county-verification/mark`, { task: 'verify_owner', status: 'needs_human_or_county_call', note: 'call county' });
+    expect(mark.status).toBe(201);
+    const listed = await get(`/api/landos/deal-cards/${id}/county-verification`);
+    const lb = (await listed.json()) as any;
+    expect(lb.records).toHaveLength(1);
+    expect(lb.availableTasks).toContain('verify_apn');
+  });
+
+  it('underwriting prep is blocked on an unverified deal (no offer computed)', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'UW deal' });
+    const id = ((await created.json()) as any).dealCard.id;
+    const res = await get(`/api/landos/deal-cards/${id}/underwriting-prep`);
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as any;
+    expect(b.underwritingPrep.state).toBe('blocked');
+    expect(b.underwritingPrep.minimumProfitRules.length).toBeGreaterThan(0);
+  });
+});
+
 describe('LandOS routes — Deal Card DD readiness surfacing', () => {
   it('report response includes readiness; list rows include a reportSummary', async () => {
     const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Readiness deal' });
