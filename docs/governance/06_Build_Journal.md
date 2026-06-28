@@ -144,3 +144,18 @@ Next business milestone: activate the first free gov DD provider (FEMA flood) li
 - Tests +1 (items 1+2 with injected deps); full suite 1371 green; tsc + build clean. Realie report-run calls: 5; Google captures: 2 parcels; Apify lane ran live for 2 parcels.
 
 **DD department status:** the full pre-call pipeline now runs end-to-end into the persisted Deal Card — identity (Realie + locality validation + expanded fields), property inference, FEMA flood, Google visuals, Apify comp lane, browser-intel capability, pre-call intelligence, lead types. Remaining are genuine extensions: NWI/USGS contract activation, a real browser-research backend, and Apify active-listing separation.
+
+## 2026-06-27 — Activate NWI wetlands + USGS slope/topography (live, verified contracts)
+
+Verified each contract live before coding (no guessing):
+
+**NWI wetlands** — endpoint: USFWS WIM `…/wetlandsmapservice/rest/services/Wetlands/MapServer/0/query`. Inputs: point geometry `lng,lat` (inSR 4326), spatialRel intersects, `outFields=*` (REQUIRED — the layer joins NWI_Wetland_Codes, so unqualified field names return an embedded error 400), `f=json`. Response: `{ features: [{ attributes: { "Wetlands.WETLAND_TYPE", … } }] }`; 0 features = no wetland mapped at the point. Fields mapped: WETLAND_TYPE (prefixed-key tolerant). Failure: HTTP!=200 / embedded error → error; no lat/lng → needs_verification; 0 features → verified "None mapped". Provenance: the query URL.
+
+**USGS slope/topography** — endpoint: 3DEP EPQS `https://epqs.nationalmap.gov/v1/json?x=lng&y=lat&units=Meters&wkid=4326`. Inputs: point (5-point ~33 m cross: center + N/S/E/W). Response: `{ value: <elevation m> }`. Fields mapped: avg slope° = atan(max elevation Δ / 33 m), plus center elevation (m). Failure: HTTP!=200 → error; non-finite value → needs_verification. Provenance: the center EPQS URL.
+
+- Both wired into the persisted Deal Card report (`govDd.wetlands`, `govDd.slope`) alongside FEMA, and into Pre-Call Intelligence signals. Coordinates are SUPPORTING-only (on `DukeVerificationResult.coordinates`), never identity. Unverified/area-only parcels have no coordinates → honest `not_run` / Needs Verification.
+- **Root-cause loop:** NWI first returned an embedded error 400 (HTTP 200 body) because joined-layer field names were ambiguous; an earlier probe masked it via `features||[]`. Fixed by switching to `outFields=*` + prefixed-key-tolerant parsing. Re-verified live: 472 = "None mapped", Lake Seminole = "Lake".
+- **DD-checklist note:** gov DD is intentionally NOT folded into the DD fact checklist, because that builder stamps all verified rows with the PARCEL provider's source — folding USGS/FEMA/NWI there would misattribute provenance. Gov DD keeps its own correctly-sourced section. Per-field checklist provenance is a future refinement.
+- Acceptance (deals #20-24 region, TEST LEAD): 731 + 472 → FEMA zone X + NWI None mapped + USGS slope 5.4°/3.1° (all verified, persisted); 3 unverified → all gov DD not_run. Tests +4 (1374 green); tsc + build clean. Realie report-runs: 5.
+
+**Remaining:** Census demographics activation, Apify active-listing separation + comp tuning, a real browser-research backend.

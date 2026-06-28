@@ -20,7 +20,7 @@ function fakeReport(over: Partial<DealCardReportView> = {}): DealCardReportView 
     ddFactChecklist: checklist,
     ddCompleteness: summarizeDdCompleteness(checklist),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
-    govDd: { flood: { status: 'not_run', zone: null, note: 'x', source: null, timestamp: null } },
+    govDd: { flood: { status: 'not_run', zone: null, note: 'x', source: null, timestamp: null }, wetlands: { status: 'not_run', type: null, note: 'x', source: null, timestamp: null }, slope: { status: 'not_run', slopeDeg: null, note: 'x', source: null, timestamp: null } },
     marketComps: { status: 'not_run', soldCount: 0, activeCount: 0, sold: [], active: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, activeAvgPrice: null, domMedian: null }, providers: [], source: 'Apify Redfin', timestamp: null, note: 'x' },
     creditUsage: { landportalNonCreditUsed: false, compCreditUsed: false, note: '' },
     generatedAt: 1000,

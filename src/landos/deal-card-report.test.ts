@@ -76,15 +76,22 @@ it('activates FEMA flood (live contract) in the persisted report when the verifi
     match_notes: 'ok', candidates: [],
     property_summary: { ...VERIFIED_SUMMARY, situs_address: '472 WEST RD', lat: '31.498296', lng: '-83.772086' },
   });
-  // Injected FEMA fetch — offline, mimics the verified NFHL contract.
+  // Injected gov-DD fetches — offline, mimic the verified contracts.
   const femaFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'X', ZONE_SUBTY: 'AREA OF MINIMAL FLOOD HAZARD', SFHA_TF: 'F' } }] }) });
-  const r = (await runDealCardReport(id, { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, femaFetch }))!.report;
+  const nwiFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) }); // upland: no wetland
+  const usgsFetch = async () => ({ ok: true, status: 200, json: async () => ({ value: '108.6' }) }); // flat
+  const r = (await runDealCardReport(id, { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, femaFetch, nwiFetch, usgsFetch }))!.report;
   expect(r.parcelVerified).toBe(true);
   expect(r.govDd.flood.status).toBe('verified');
   expect(r.govDd.flood.zone).toBe('X');
+  expect(r.govDd.wetlands.status).toBe('verified');
+  expect(r.govDd.wetlands.type).toBe('None mapped');
+  expect(r.govDd.slope.status).toBe('verified');
+  expect(r.govDd.slope.slopeDeg).toBe(0); // flat cross
   // persisted + reloads
   const reloaded = getDealCardReport(id);
   expect(reloaded.govDd.flood.zone).toBe('X');
+  expect(reloaded.govDd.slope.status).toBe('verified');
 });
 
 it('auto-captures Google visuals once + reuses them, and persists Apify comps + metrics (items 1+2)', async () => {
@@ -105,7 +112,9 @@ it('auto-captures Google visuals once + reuses them, and persists Apify comps + 
     providers: [{ providerId: 'redfin', status: 'connected', kept: 2 }], source: 'Apify Redfin', timestamp: 't', note: '2 sold comps',
   });
   const femaFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'X', SFHA_TF: 'F' } }] }) });
-  const opts = { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, googleVisualConfigured: true, captureVisuals, retrieveCompsImpl, femaFetch };
+  const nwiFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) });
+  const usgsFetch = async () => ({ ok: true, status: 200, json: async () => ({ value: '108.6' }) });
+  const opts = { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, googleVisualConfigured: true, captureVisuals, retrieveCompsImpl, femaFetch, nwiFetch, usgsFetch };
 
   const r1 = (await runDealCardReport(id, opts))!.report;
   expect(r1.parcelVerified).toBe(true);

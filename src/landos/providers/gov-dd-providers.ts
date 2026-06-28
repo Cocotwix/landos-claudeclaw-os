@@ -140,33 +140,88 @@ export async function fetchFemaFlood(lat: number, lng: number, deps: { fetchImpl
   }
 }
 
+/** Live NWI wetlands lookup by point. Free + keyless + verified contract. */
+export async function fetchNwiWetlands(lat: number, lng: number, deps: { fetchImpl?: GovFetch; now?: () => string } = {}): Promise<GovDdResult> {
+  const nowFn = deps.now ?? (() => new Date().toISOString());
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as GovFetch);
+  try { return await nwiWetlandsProvider.fetchFact({ lat, lng }, { env: { [GOV_DD_LIVE_ENV]: '1' }, fetchImpl, now: nowFn }); }
+  catch (e: unknown) { return { capability: 'wetlands', provider: 'nwi_wetlands', status: 'error', value: null, confidence: 'none', timestamp: nowFn(), sourceUrl: null, note: `NWI error: ${(e as Error)?.message ?? String(e)}.` }; }
+}
+
+/** Live USGS slope/elevation lookup by point. Free + keyless + verified contract. */
+export async function fetchUsgsSlope(lat: number, lng: number, deps: { fetchImpl?: GovFetch; now?: () => string } = {}): Promise<GovDdResult> {
+  const nowFn = deps.now ?? (() => new Date().toISOString());
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as GovFetch);
+  try { return await usgsSlopeProvider.fetchFact({ lat, lng }, { env: { [GOV_DD_LIVE_ENV]: '1' }, fetchImpl, now: nowFn }); }
+  catch (e: unknown) { return { capability: 'slope', provider: 'usgs_slope', status: 'error', value: null, confidence: 'none', timestamp: nowFn(), sourceUrl: null, note: `USGS error: ${(e as Error)?.message ?? String(e)}.` }; }
+}
+
 // ── USFWS / NWI wetlands ─────────────────────────────────────────────────────
+// VERIFIED CONTRACT (live-confirmed): USFWS WIM Wetlands MapServer layer 0, point
+// query in SR 4326, outFields ATTRIBUTE/WETLAND_TYPE/ACRES, returns features[].
+// 0 features => no NWI wetland mapped at the point. Free, keyless.
+export function nwiWetlandsUrl(lat: number, lng: number): string {
+  // outFields=* is REQUIRED: the layer joins NWI_Wetland_Codes, so unqualified
+  // field names (ATTRIBUTE/WETLAND_TYPE) are ambiguous and the service returns an
+  // embedded error 400. The wetland type comes back as "Wetlands.WETLAND_TYPE".
+  const base = 'https://fwspublicservices.wim.usgs.gov/wetlandsmapservice/rest/services/Wetlands/MapServer/0/query';
+  const qs = `geometry=${lng}%2C${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json`;
+  return `${base}?${qs}`;
+}
 export const nwiWetlandsProvider = makeGovProvider(
   { id: 'nwi_wetlands', label: 'USFWS NWI wetlands', capability: 'wetlands' },
   async (input, fetchImpl, now) => {
-    const url = `https://www.fws.gov/wetlands/arcgis?lat=${input.lat ?? ''}&lng=${input.lng ?? ''}`;
+    if (typeof input.lat !== 'number' || typeof input.lng !== 'number') {
+      return { capability: 'wetlands', provider: 'nwi_wetlands', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: null, note: 'NWI needs lat/lng (none supplied).' };
+    }
+    const url = nwiWetlandsUrl(input.lat, input.lng);
     const res = await fetchImpl(url);
     if (!res.ok) return { capability: 'wetlands', provider: 'nwi_wetlands', status: 'error', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: `NWI HTTP ${res.status}.` };
-    const j = (await res.json()) as { wetlandsPct?: number };
-    const pct = typeof j.wetlandsPct === 'number' && Number.isFinite(j.wetlandsPct) ? j.wetlandsPct : null;
-    return pct !== null
-      ? { capability: 'wetlands', provider: 'nwi_wetlands', status: 'verified', value: pct, unit: '%', confidence: 'high', timestamp: now, sourceUrl: url, note: 'USFWS NWI wetlands coverage (official).' }
-      : { capability: 'wetlands', provider: 'nwi_wetlands', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: 'NWI returned no wetlands coverage.' };
+    const j = (await res.json()) as { features?: Array<{ attributes?: Record<string, unknown> }>; error?: unknown };
+    if ((j as { error?: unknown }).error) return { capability: 'wetlands', provider: 'nwi_wetlands', status: 'error', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: 'NWI query error.' };
+    const feats = j.features ?? [];
+    if (feats.length === 0) {
+      return { capability: 'wetlands', provider: 'nwi_wetlands', status: 'verified', value: 'None mapped', confidence: 'high', timestamp: now, sourceUrl: url, note: 'No NWI wetland mapped at the parcel point (official). Confirm full-parcel extent in deeper DD.' };
+    }
+    // Joined layer => the type comes back under a prefixed key (e.g. "Wetlands.WETLAND_TYPE").
+    const attrs = feats[0].attributes ?? {};
+    const pick = (re: RegExp): string | null => { for (const [k, v] of Object.entries(attrs)) { if (re.test(k) && typeof v === 'string' && v.trim()) return v.trim(); } return null; };
+    const type = pick(/(^|\.)WETLAND_TYPE$/i) || pick(/(^|\.)ATTRIBUTE$/i) || 'Wetland present';
+    return { capability: 'wetlands', provider: 'nwi_wetlands', status: 'verified', value: type, confidence: 'high', timestamp: now, sourceUrl: url, note: `NWI wetland at the parcel point: ${type} (official). Confirm extent/% in deeper DD.` };
   },
 );
 
-// ── USGS 3DEP slope ──────────────────────────────────────────────────────────
+// ── USGS slope / topography (3DEP via EPQS) ──────────────────────────────────
+// VERIFIED CONTRACT (live-confirmed): EPQS point elevation
+// `https://epqs.nationalmap.gov/v1/json?x=lng&y=lat&units=Meters&wkid=4326` ->
+// { value: <elevation metres> }. Slope is derived from a 5-point ~33 m cross
+// (center + N/S/E/W) as atan(max elevation delta / 33 m). Free, keyless.
+const EPQS_OFFSET_DEG = 0.0003; // ~33 m
+const EPQS_HORIZ_M = 33;
+export function usgsElevationUrl(lat: number, lng: number): string {
+  return `https://epqs.nationalmap.gov/v1/json?x=${lng}&y=${lat}&units=Meters&wkid=4326&includeDate=false`;
+}
 export const usgsSlopeProvider = makeGovProvider(
-  { id: 'usgs_slope', label: 'USGS 3DEP slope', capability: 'slope' },
+  { id: 'usgs_slope', label: 'USGS 3DEP slope/topography (EPQS)', capability: 'slope' },
   async (input, fetchImpl, now) => {
-    const url = `https://elevation.nationalmap.gov/arcgis?lat=${input.lat ?? ''}&lng=${input.lng ?? ''}`;
-    const res = await fetchImpl(url);
-    if (!res.ok) return { capability: 'slope', provider: 'usgs_slope', status: 'error', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: `USGS HTTP ${res.status}.` };
-    const j = (await res.json()) as { slopeAvgDeg?: number };
-    const deg = typeof j.slopeAvgDeg === 'number' && Number.isFinite(j.slopeAvgDeg) ? j.slopeAvgDeg : null;
-    return deg !== null
-      ? { capability: 'slope', provider: 'usgs_slope', status: 'verified', value: deg, unit: '°', confidence: 'medium', timestamp: now, sourceUrl: url, note: 'USGS 3DEP average slope (derived from elevation).' }
-      : { capability: 'slope', provider: 'usgs_slope', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: 'USGS returned no slope.' };
+    if (typeof input.lat !== 'number' || typeof input.lng !== 'number') {
+      return { capability: 'slope', provider: 'usgs_slope', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: null, note: 'USGS needs lat/lng (none supplied).' };
+    }
+    const d = EPQS_OFFSET_DEG;
+    const pts: Array<[number, number]> = [[0, 0], [d, 0], [-d, 0], [0, d], [0, -d]];
+    const elevations: number[] = [];
+    for (const [dLat, dLng] of pts) {
+      const res = await fetchImpl(usgsElevationUrl(input.lat + dLat, input.lng + dLng));
+      if (!res.ok) return { capability: 'slope', provider: 'usgs_slope', status: 'error', value: null, confidence: 'none', timestamp: now, sourceUrl: usgsElevationUrl(input.lat, input.lng), note: `USGS EPQS HTTP ${res.status}.` };
+      const j = (await res.json()) as { value?: string | number };
+      const v = typeof j.value === 'number' ? j.value : typeof j.value === 'string' ? Number(j.value) : NaN;
+      if (!Number.isFinite(v)) return { capability: 'slope', provider: 'usgs_slope', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: usgsElevationUrl(input.lat, input.lng), note: 'USGS EPQS returned no elevation (may be outside coverage).' };
+      elevations.push(v);
+    }
+    const dz = Math.max(...elevations) - Math.min(...elevations);
+    const slopeDeg = Math.round(Math.atan(dz / EPQS_HORIZ_M) * (180 / Math.PI) * 10) / 10;
+    const elevM = Math.round(elevations[0] * 10) / 10;
+    return { capability: 'slope', provider: 'usgs_slope', status: 'verified', value: slopeDeg, unit: '°', confidence: 'medium', timestamp: now, sourceUrl: usgsElevationUrl(input.lat, input.lng), note: `USGS 3DEP: ~${slopeDeg}° avg slope, ${elevM} m elevation (derived from a 33 m EPQS cross). Confirm with full DEM in deeper DD.` };
   },
 );
 

@@ -59,7 +59,7 @@ import { loadCardVisualCapture, saveCardVisualCapture, type CardVisualAsset } fr
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
 import { googleVisualConfigured } from './providers/google-visual.js';
 import { buildDdChecklist, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
-import { fetchFemaFlood, type GovFetch } from './providers/gov-dd-providers.js';
+import { fetchFemaFlood, fetchNwiWetlands, fetchUsgsSlope, type GovFetch } from './providers/gov-dd-providers.js';
 
 export interface MarketCompView {
   price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
@@ -118,16 +118,33 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
 
 type GovDdView = DealCardReportView['govDd'];
 function emptyGovDd(): GovDdView {
-  return { flood: { status: 'not_run', zone: null, note: 'Not run (no verified parcel coordinates).', source: null, timestamp: null } };
+  const nr = (kind: string) => ({ status: 'not_run', note: `Not run (no verified parcel coordinates) — ${kind} Needs Verification.`, source: null, timestamp: null });
+  return {
+    flood: { ...nr('flood'), zone: null },
+    wetlands: { ...nr('wetlands'), type: null },
+    slope: { ...nr('slope'), slopeDeg: null },
+  };
 }
-/** Run free government environmental DD for a verified parcel with coordinates.
- *  FEMA flood is contract-verified + free, so it runs live (injectable fetch for
- *  tests). Coordinates are supporting context, never identity. */
-async function buildGovDd(verification: DukeVerificationResult, deps: { femaFetch?: GovFetch }): Promise<GovDdView> {
+/** Run free government environmental DD for a verified parcel with coordinates
+ *  (FEMA flood + NWI wetlands + USGS slope — all contract-verified + free, run
+ *  live; injectable fetches for tests). Coordinates are SUPPORTING context only,
+ *  never identity. Unverified/area-only parcels have no coordinates -> not_run. */
+async function buildGovDd(
+  verification: DukeVerificationResult,
+  deps: { femaFetch?: GovFetch; nwiFetch?: GovFetch; usgsFetch?: GovFetch },
+): Promise<GovDdView> {
   const co = verification.coordinates;
   if (!verification.parcelVerified || !co) return emptyGovDd();
-  const r = await fetchFemaFlood(co.lat, co.lng, { fetchImpl: deps.femaFetch });
-  return { flood: { status: r.status, zone: r.value == null ? null : String(r.value), note: r.note, source: r.sourceUrl, timestamp: r.timestamp } };
+  const [flood, wet, slope] = await Promise.all([
+    fetchFemaFlood(co.lat, co.lng, { fetchImpl: deps.femaFetch }),
+    fetchNwiWetlands(co.lat, co.lng, { fetchImpl: deps.nwiFetch }),
+    fetchUsgsSlope(co.lat, co.lng, { fetchImpl: deps.usgsFetch }),
+  ]);
+  return {
+    flood: { status: flood.status, zone: flood.value == null ? null : String(flood.value), note: flood.note, source: flood.sourceUrl, timestamp: flood.timestamp },
+    wetlands: { status: wet.status, type: wet.value == null ? null : String(wet.value), note: wet.note, source: wet.sourceUrl, timestamp: wet.timestamp },
+    slope: { status: slope.status, slopeDeg: typeof slope.value === 'number' ? slope.value : null, note: slope.note, source: slope.sourceUrl, timestamp: slope.timestamp },
+  };
 }
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
@@ -228,6 +245,8 @@ export interface DealCardReportView {
    *  available). FEMA flood is activated; others labeled honestly when absent. */
   govDd: {
     flood: { status: string; zone: string | null; note: string; source: string | null; timestamp: string | null };
+    wetlands: { status: string; type: string | null; note: string; source: string | null; timestamp: string | null };
+    slope: { status: string; slopeDeg: number | null; note: string; source: string | null; timestamp: string | null };
   };
   /** Apify Redfin sold comps + active listings + market metrics (live where
    *  configured). Persisted; honest status when sparse/unavailable. */
@@ -255,8 +274,10 @@ export interface DealCardReportDeps {
    *  already linked. Default false → reuse persisted verified data (no provider
    *  call / no Realie credit). Set true only on explicit operator re-verify. */
   reverify?: boolean;
-  /** Injected FEMA fetch for tests (keeps the suite offline). Default = live. */
+  /** Injected gov-DD fetches for tests (keep the suite offline). Default = live. */
   femaFetch?: GovFetch;
+  nwiFetch?: GovFetch;
+  usgsFetch?: GovFetch;
   /** Injected Google visual capture for tests. Default = live capturePropertyVisuals. */
   captureVisuals?: (input: CaptureInput) => Promise<CaptureResult>;
   /** Injected comp retrieval for tests. Default = live Apify Redfin registry. */
@@ -1036,7 +1057,7 @@ export async function runDealCardReport(
     { configured: deps.googleVisualConfigured ?? false, captured },
   );
 
-  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch });
+  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch });
 
   // ITEM 2: Apify Redfin sold comps + market metrics for the verified parcel's
   // area. Live where configured (injectable for tests); honest status otherwise.
