@@ -439,6 +439,30 @@ describe('LandOS routes — Duke property data (propertyid + FIPS, non-comp)', (
     // Never a comp report tool / comp credit.
     expect(fetchCalls.some((u) => /comp_report|comp-report|lp_comp/.test(u))).toBe(false);
   });
+
+  it('from-verification (verified parcel) launches the PRODUCTION DD pipeline (runDealCardReport), never legacy property-analysis', async () => {
+    // A verified parcel creates a Deal Card AND populates it via runDealCardReport.
+    const created = await post('/api/landos/deal-cards/from-verification', { text: 'propertyid 173393466, FIPS 47031', entity: 'TY_LAND_BIZ' });
+    const cbody = (await created.json()) as any;
+    expect(cbody.created).toBe(true);
+    expect(cbody.parcelVerified).toBe(true);
+    expect(cbody.dealCardId).toBeGreaterThan(0);
+    // The populated Deal Card report carries the CURRENT pipeline shape — Realie
+    // provider chain, Zillow supplemental, gov DD, Pre-Call Intelligence — and
+    // NONE of the legacy PropertyAnalysisResult shape.
+    const rpt = (await (await get(`/api/landos/deal-cards/${cbody.dealCardId}/report`)).json()) as any;
+    expect(rpt.report.marketComps).toBeDefined();
+    expect(rpt.report.marketComps).toHaveProperty('providerChain');     // Realie-first provider chain
+    expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane
+    expect(rpt.govDd).toBeDefined();                                    // FEMA/NWI/USGS lane
+    expect(rpt.preCallIntelligence).toBeDefined();                      // Pre-Call Intelligence
+    expect(rpt.report).not.toHaveProperty('redfinComps');              // no legacy comp shape
+    expect(rpt.report).not.toHaveProperty('strategyMatrix');           // no legacy strategy shape
+    // Acquisitions section is available for the same Deal Card (CRM-independent layer).
+    const acq = (await (await get(`/api/landos/deal-cards/${cbody.dealCardId}/acquisition`)).json()) as any;
+    expect(acq.acquisition).toBeDefined();
+    expect(acq.playbook.status).toBe('foundational');
+  });
 });
 
 describe('LandOS routes — offer scenarios', () => {
@@ -693,6 +717,27 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
     const b = (await res.json()) as any;
     expect(b.scorecard.version).toBe(1);
     expect(Array.isArray(b.scorecard.counties)).toBe(true);
+  });
+});
+
+describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not legacy)', () => {
+  it('/acquire/run invokes runDealCardReport (new pipeline) and persists the current report shape', async () => {
+    const res = await post('/api/landos/acquire/run', { text: '2123 Panola Road, Lithonia GA', entity: 'TY_LAND_BIZ' });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.pipeline).toBe('deal_card_report');
+    expect(body.dealCardId).toBeGreaterThan(0);
+    // The Deal Card now carries the CURRENT DD report (Realie + Zillow comp lane,
+    // FEMA/NWI/USGS gov DD, Pre-Call Intelligence) — NOT the legacy PropertyAnalysisResult.
+    const rpt = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/report`)).json()) as any;
+    expect(rpt.report.marketComps).toBeDefined();
+    expect(rpt.report.marketComps).toHaveProperty('providerChain');     // Realie-first provider chain
+    expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane
+    expect(rpt.govDd).toBeDefined();                                    // FEMA/NWI/USGS lane
+    expect(rpt.preCallIntelligence).toBeDefined();                      // Pre-Call Intelligence
+    // Legacy PropertyAnalysisResult markers must be ABSENT (no old Redfin/strategy shape)
+    expect(rpt.report).not.toHaveProperty('redfinComps');
+    expect(rpt.report).not.toHaveProperty('strategyMatrix');
   });
 });
 

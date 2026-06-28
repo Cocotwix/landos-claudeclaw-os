@@ -93,6 +93,7 @@ import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification } from './duke-verification-bridge.js';
 import { resolveParcelIdentityResult } from './parcel-capability.js';
+import { extractPropertyArgs } from './duke-preflight.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
 import { buildDukeAnalysis } from './duke-analysis.js';
@@ -1862,6 +1863,38 @@ export function registerLandosRoutes(app: Hono): void {
       'property_analysis_result',
     );
     return c.json({ result, report });
+  });
+
+  // PRODUCTION Mission Control "Run Property Analysis" — drives the CURRENT DD
+  // pipeline (runDealCardReport): Realie-first parcel identity + locality
+  // validation, Realie premium sold comps + Zillow supplemental, FEMA/NWI/USGS,
+  // browser market intelligence, Pre-Call Intelligence, and the Acquisitions
+  // layer — all persisted on a Deal Card. Returns the dealCardId so the UI opens
+  // the Deal Card (which renders every current section). Replaces the legacy
+  // /property-analysis path for the button.
+  app.post('/api/landos/acquire/run', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const entity: LandosEntity = isEntity(str(body.entity)) ? (str(body.entity) as LandosEntity) : 'TY_LAND_BIZ';
+    const parsed = extractPropertyArgs(text) ?? {};
+    // Create the subject Property Card from the input (unverified — runDealCardReport
+    // performs the Realie-first verification), then ensure a Deal Card, then run
+    // the production DD report on it.
+    const { card } = upsertCardFromDukeRun({
+      entity, agentId: 'acquire', activeInputAddress: text.trim(),
+      city: parsed.city, state: parsed.state, county: parsed.county, apn: parsed.apn, owner: parsed.owner,
+      verified: false, summary: 'Acquire — production DD pipeline',
+    });
+    const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: parsed.address || text.trim() });
+    const result = await runDealCardReport(dealCardId, {
+      resolve: resolveParcelIdentityResult,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+      googleVisualConfigured: googleVisualConfiguredResolved(),
+      reverify: true,
+    });
+    logger.info({ event: 'acquire_run', dealCardId, parcelVerified: result?.report.parcelVerified, pipeline: 'deal_card_report' }, 'acquire_run');
+    return c.json({ dealCardId, pipeline: 'deal_card_report', parcelVerified: result?.report.parcelVerified ?? false }, 201);
   });
 
   // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded

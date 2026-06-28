@@ -1,8 +1,9 @@
 // Source-scan checks on the Acquire UI: the NORMAL path is one primary
-// "Run Property Analysis" action hitting the one-button endpoint; the old
-// two-step Verify/Create flow is demoted to a developer fallback. No
-// coordinate/geocoder parcel-identity language. (Browser-run component, so we
-// source-scan like the other LandOS UI tests.)
+// "Run Property Analysis" action hitting the CURRENT production DD endpoint
+// (/api/landos/acquire/run -> runDealCardReport) and OPENING the resulting Deal
+// Card; the legacy /property-analysis result view is retired. The old two-step
+// Verify/Create flow remains as a developer fallback. No coordinate/geocoder
+// parcel-identity language. (Browser-run component, so we source-scan.)
 
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
@@ -16,14 +17,26 @@ describe('Acquire — one-button Property Analysis', () => {
     expect(SRC).toMatch(/runPropertyAnalysis/);
   });
 
-  it('the primary action posts to the one-button orchestration endpoint', () => {
-    expect(SRC).toMatch(/apiPost<[^>]*>\('\/api\/landos\/property-analysis'/);
+  it('the primary action posts to the CURRENT production DD endpoint (not the legacy one)', () => {
+    expect(SRC).toMatch(/apiPost<[^>]*>\('\/api\/landos\/acquire\/run'/);
+    // the legacy one-button orchestration endpoint is no longer wired to the button
+    expect(SRC).not.toMatch(/'\/api\/landos\/property-analysis'/);
   });
 
-  it('shows real progress stages', () => {
-    expect(SRC).toMatch(/Checking parcel identity/);
-    expect(SRC).toMatch(/Collecting Redfin sold comps/);
-    expect(SRC).toMatch(/Preparing report/);
+  it('opens the resulting Deal Card on success (which renders the current sections)', () => {
+    expect(SRC).toMatch(/onOpenDealCard\(res\.dealCardId\)/);
+  });
+
+  it('shows real progress stages for the current pipeline', () => {
+    expect(SRC).toMatch(/Verifying parcel identity \(Realie-first\)/);
+    expect(SRC).toMatch(/Collecting Realie sold comps/);
+    expect(SRC).toMatch(/Adding Zillow supplemental listings/);
+  });
+
+  it('does not render the retired legacy PropertyAnalysisResult view', () => {
+    expect(SRC).not.toMatch(/Redfin Sold Comps/);
+    expect(SRC).not.toMatch(/Local Area Context, Not Parcel Verified/);
+    expect(SRC).not.toMatch(/interface PropertyAnalysisResult/);
   });
 
   it('demotes the old two-step Verify/Create flow to a developer fallback (not the default)', () => {
@@ -37,9 +50,5 @@ describe('Acquire — one-button Property Analysis', () => {
 
   it('uses no coordinate/geocoder/proximity parcel-identity language', () => {
     expect(/geocod|proximity|nearest parcel|map pin|centroid/i.test(SRC)).toBe(false);
-  });
-
-  it('honestly surfaces the unverified terminal label', () => {
-    expect(SRC).toMatch(/Local Area Context, Not Parcel Verified/);
   });
 });

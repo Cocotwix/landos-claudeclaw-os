@@ -3,47 +3,21 @@ import { apiPost } from '@/lib/api';
 import { ModelControl } from '@/components/ModelControl';
 
 // Acquire — ONE normal action: Run Property Analysis. A single click runs the
-// full approved chain server-side (LandPortal v2 exact verify -> DD facts ->
-// Local Market Pulse -> Live Comps readiness -> Redfin sold comps -> strategy /
-// underwriting -> verified Deal Card -> Markdown + local PDF) and returns one
-// structured result. The old two-step Verify/Create controls are demoted to a
-// collapsed developer fallback. Parcel identity is verified only from named
-// sources, never imagery/coordinates. No fake data.
+// CURRENT production DD pipeline server-side (runDealCardReport): Realie-first
+// parcel identity + locality validation -> property/DD facts -> FEMA/NWI/USGS gov
+// DD -> Realie sold comps + Zillow supplemental -> browser market intelligence ->
+// Pre-Call Intelligence -> Acquisitions, all persisted on a Deal Card. On success
+// it OPENS the Deal Card (which renders every current section). The old two-step
+// Verify/Create controls remain as a collapsed developer fallback. Parcel
+// identity is verified only from named sources, never imagery/coordinates.
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
 
-interface PAIdentity { situsAddress?: string; apn?: string; county?: string; state?: string; fips?: string; owner?: string; }
-interface PASignal { signal: string; status: string; sourceName?: string; sourceUrl?: string; note: string; }
-interface PAComp { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; }
-interface PAStrategy { strategy: string; label: string; feasible: boolean; offerLowUsd: number | null; offerHighUsd: number | null; outputLabel: string; reasons: string[]; }
-interface PASourceRow { category: string; source: string; status: string; timestamp: string; confidence: string; note: string; }
-interface PAProviderCall { source: string; kind: string; rows: number; spendUsd: number; }
-interface PropertyAnalysisResult {
-  input: string; reportTimestamp: string;
-  verified: 'Verified' | 'Not Verified';
-  verdict: 'Pursue' | 'Pursue With Caution' | 'Pass' | 'Not Ready';
-  offerReadiness: 'Offer Ready' | 'Needs Confirmation' | 'Blocked';
-  statuses: string[];
-  parcelVerification: { status: string; parcelVerified: boolean; verificationSource?: string; lpApiVersion: string; identity?: PAIdentity; summary: string; nextAction?: string };
-  ddFacts: Record<string, unknown> | null;
-  dataGaps: string[]; riskFlags: string[];
-  marketPulse: { eligible: boolean; localArea: { descriptor: string }; label: string; signals: PASignal[]; disclaimer: string };
-  redfinComps: { ran: boolean; readiness: { ready: boolean; reason: string }; comps: PAComp[]; note: string; terminalState?: string };
-  compInclusionExclusionNotes: string[];
-  strategyMatrix: PAStrategy[];
-  underwriting: { expectedValueUsd: number | null; evBasis: string; offerReadiness: string; blockerNote?: string };
-  mostViableStrategy: { strategy: string; label: string; reason: string } | null;
-  discoveryQuestions: string[];
-  sourceTable: PASourceRow[];
-  providerCalls: PAProviderCall[]; providerCallCount: number; actualSpendUsd: number;
-  dealCard: { created: boolean; dealCardId?: number; reason: string };
-}
-interface PAResponse { result: PropertyAnalysisResult; report: { markdownPath: string; pdfPath: string | null; pdfReason: string }; }
-
 const PROGRESS_STAGES = [
-  'Checking parcel identity', 'Collecting verified property facts', 'Running Local Market Pulse',
-  'Checking Live Comps readiness', 'Collecting Redfin sold comps', 'Analyzing strategy lanes',
-  'Preparing report', 'Complete',
+  'Verifying parcel identity (Realie-first)', 'Collecting property + DD facts',
+  'Running gov DD (FEMA / NWI / USGS)', 'Collecting Realie sold comps',
+  'Adding Zillow supplemental listings', 'Building Pre-Call Intelligence',
+  'Opening Deal Card', 'Complete',
 ];
 
 function entityLabel(e: EntityFilter): string {
@@ -51,40 +25,33 @@ function entityLabel(e: EntityFilter): string {
   if (e === 'TY_LAND_BIZ') return 'Solo Biz';
   return 'all entities';
 }
-function badgeTone(kind: 'verified' | 'verdict' | 'offer', v: string): string {
-  if (v === 'Verified' || v === 'Pursue' || v === 'Offer Ready') return 'border-[var(--color-accent)] text-[var(--color-accent)]';
-  if (v === 'Not Verified' || v === 'Pass' || v === 'Blocked') return 'border-[var(--color-status-failed)] text-[var(--color-status-failed)]';
-  return 'border-[var(--color-border)] text-[var(--color-text-muted)]';
-}
 
 export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOpenDealCard?: (id: number) => void }) {
   const [text, setText] = useState('');
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [resp, setResp] = useState<PAResponse | null>(null);
 
-  // ── The single normal action ───────────────────────────────────────────────
+  // ── The single normal action — PRODUCTION DD pipeline ──────────────────────
+  // Runs the current Deal Card DD report (Realie-first identity + locality
+  // validation, Realie sold comps + Zillow supplemental, FEMA/NWI/USGS, Pre-Call
+  // Intelligence, Acquisitions) and opens the resulting Deal Card, which renders
+  // every current section. (The legacy /property-analysis result view is retired.)
   async function runPropertyAnalysis() {
     if (!text.trim()) return;
     setRunning(true);
     setError(null);
-    setResp(null);
     try {
       const body: Record<string, unknown> = { text };
       if (entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ') body.entity = entity;
-      const res = await apiPost<PAResponse>('/api/landos/property-analysis', body);
-      setResp(res);
-      if (res.result.dealCard.created && res.result.dealCard.dealCardId && onOpenDealCard) {
-        onOpenDealCard(res.result.dealCard.dealCardId);
-      }
+      const res = await apiPost<{ dealCardId: number; pipeline: string; parcelVerified: boolean }>('/api/landos/acquire/run', body);
+      if (res.dealCardId && onOpenDealCard) onOpenDealCard(res.dealCardId);
+      else setError('No Deal Card was returned.');
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
       setRunning(false);
     }
   }
-
-  const r = resp?.result;
 
   return (
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
@@ -129,110 +96,11 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
 
       {error && <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">{error}</div>}
 
-      {r && (
-        <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-4">
-          {/* Top badges */}
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class={`text-[11px] px-2 py-0.5 rounded-full border ${badgeTone('verified', r.verified)}`}>{r.verified}</span>
-            <span class={`text-[11px] px-2 py-0.5 rounded-full border ${badgeTone('verdict', r.verdict)}`}>{r.verdict}</span>
-            <span class={`text-[11px] px-2 py-0.5 rounded-full border ${badgeTone('offer', r.offerReadiness)}`}>{r.offerReadiness}</span>
-            <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">{r.reportTimestamp}</span>
-          </div>
-
-          {/* Actual stages reached */}
-          <div class="text-[10px] text-[var(--color-text-faint)]">{r.statuses.join(' → ')}</div>
-
-          {/* Parcel Verification */}
-          <Section title="Parcel Verification">
-            {r.parcelVerification.parcelVerified ? (
-              <div class="text-[12px] text-[var(--color-text)]">
-                {r.parcelVerification.identity?.situsAddress || r.parcelVerification.identity?.apn} · {[r.parcelVerification.identity?.county, r.parcelVerification.identity?.state].filter(Boolean).join(', ')}
-                <span class="text-[10px] text-[var(--color-text-faint)]"> · via {r.parcelVerification.verificationSource} ({r.parcelVerification.lpApiVersion})</span>
-              </div>
-            ) : (
-              <div class="rounded-md border border-dashed border-[var(--color-border)] p-2">
-                <div class="text-[12px] font-medium text-[var(--color-text-muted)]">Local Area Context, Not Parcel Verified</div>
-                {r.parcelVerification.nextAction && <div class="text-[11px] text-[var(--color-text-faint)] mt-1">{r.parcelVerification.nextAction}</div>}
-              </div>
-            )}
-          </Section>
-
-          {/* DD facts + gaps/risks */}
-          {r.ddFacts && (
-            <Section title="Property / DD Facts">
-              <pre class="text-[10px] text-[var(--color-text-muted)] overflow-x-auto">{JSON.stringify(r.ddFacts, null, 2)}</pre>
-            </Section>
-          )}
-          {(r.dataGaps.length > 0 || r.riskFlags.length > 0) && (
-            <Section title="Data Gaps and Risk Flags">
-              {r.dataGaps.length > 0 && <div class="text-[11px] text-[var(--color-text-faint)]">Gaps: {r.dataGaps.join(', ')}</div>}
-              {r.riskFlags.map((f) => <div key={f} class="text-[11px] text-[var(--color-status-failed)]">⚑ {f}</div>)}
-            </Section>
-          )}
-
-          {/* Market Pulse */}
-          <Section title={`Local Market Pulse — ${r.marketPulse.localArea.descriptor}`}>
-            <div class="text-[10px] text-[var(--color-text-faint)] mb-1">{r.marketPulse.label}</div>
-            {r.marketPulse.signals.map((s) => (
-              <div key={s.signal} class="text-[11px] text-[var(--color-text-muted)]">
-                <span class="text-[var(--color-text)]">{s.signal}</span> · <span class="text-[var(--color-text-faint)]">{s.status}</span>
-                {s.sourceUrl ? <> · <a href={s.sourceUrl} target="_blank" class="text-[var(--color-accent)] underline">source</a></> : null} — {s.note}
-              </div>
-            ))}
-          </Section>
-
-          {/* Redfin comps */}
-          <Section title="Redfin Sold Comps">
-            <div class="text-[10px] text-[var(--color-text-faint)] mb-1">readiness: {String(r.redfinComps.readiness.ready)} — {r.redfinComps.readiness.reason}</div>
-            {r.redfinComps.comps.length > 0 ? r.redfinComps.comps.map((c) => (
-              <div key={c.sourceUrl} class="text-[11px] text-[var(--color-text-muted)]">${c.price.toLocaleString()} · {c.saleDateIso.slice(0, 10)} · {c.acres ?? '—'} ac · <a href={c.sourceUrl} target="_blank" class="text-[var(--color-accent)] underline">{c.sourceLabel}</a></div>
-            )) : <div class="text-[12px] text-[var(--color-text-muted)]">{r.redfinComps.terminalState || r.redfinComps.note}</div>}
-            {r.compInclusionExclusionNotes.map((n, i) => <div key={i} class="text-[10px] text-[var(--color-text-faint)]">· {n}</div>)}
-          </Section>
-
-          {/* Strategy + underwriting */}
-          <Section title="Strategy Matrix / Underwriting">
-            {r.strategyMatrix.length > 0 ? r.strategyMatrix.map((s) => (
-              <div key={s.strategy} class="text-[11px] text-[var(--color-text-muted)]">
-                <span class="text-[var(--color-text)]">{s.label}</span>: {s.feasible ? 'feasible' : 'not feasible'} · {s.offerLowUsd != null ? `$${s.offerLowUsd.toLocaleString()}–$${(s.offerHighUsd ?? 0).toLocaleString()}` : 'no band'} · <span class="text-[var(--color-text-faint)]">{s.outputLabel}</span>
-              </div>
-            )) : <div class="text-[12px] text-[var(--color-text-muted)]">{r.underwriting.blockerNote || 'Strategy blocked: insufficient verified evidence.'}</div>}
-            <div class="text-[11px] text-[var(--color-text-faint)] mt-1">EV: {r.underwriting.expectedValueUsd != null ? `$${r.underwriting.expectedValueUsd.toLocaleString()}` : 'not ready'} ({r.underwriting.evBasis})</div>
-            {r.mostViableStrategy && <div class="text-[11px] text-[var(--color-accent)] mt-1">Most viable: {r.mostViableStrategy.label} — {r.mostViableStrategy.reason}</div>}
-          </Section>
-
-          {/* Discovery questions */}
-          {r.discoveryQuestions.length > 0 && (
-            <Section title="Discovery Questions">
-              {r.discoveryQuestions.map((q, i) => <div key={i} class="text-[11px] text-[var(--color-text-muted)]">• {q}</div>)}
-            </Section>
-          )}
-
-          {/* Calls + spend + report */}
-          <Section title="Provider Calls · Spend · Report">
-            <div class="text-[11px] text-[var(--color-text-muted)]">Calls: {r.providerCallCount} · Spend: ${r.actualSpendUsd.toFixed(2)}</div>
-            {resp?.report.markdownPath && <div class="text-[10px] text-[var(--color-text-faint)] break-all">Markdown: {resp.report.markdownPath}</div>}
-            <div class="text-[10px] text-[var(--color-text-faint)] break-all">PDF: {resp?.report.pdfPath || resp?.report.pdfReason}</div>
-          </Section>
-
-          {r.dealCard.created && <div class="text-[11px] text-[var(--color-accent)]">Deal Card #{r.dealCard.dealCardId} created and opened.</div>}
-        </div>
-      )}
-
       {/* Demoted developer fallback — the OLD two-step Verify/Create flow. */}
       <details class="rounded-lg border border-dashed border-[var(--color-border)] p-2">
         <summary class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] cursor-pointer">Developer fallback — manual Verify / Create (not the normal flow)</summary>
         <DeveloperFallback entity={entity} onOpenDealCard={onOpenDealCard} />
       </details>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: any }) {
-  return (
-    <div class="rounded-md border border-[var(--color-border)] p-3">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">{title}</div>
-      {children}
     </div>
   );
 }
