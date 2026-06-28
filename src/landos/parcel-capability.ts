@@ -18,7 +18,7 @@
 // gated by configuration/approval).
 
 import { logger } from '../logger.js';
-import { readEnvFile } from '../env.js';
+import { readEnvFile, withEnvFileSecrets } from '../env.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import {
   lpResolveForPreflight,
@@ -216,7 +216,11 @@ export async function resolveParcelIdentity(
         // Wire the live Census county derivation so Realie address lookups are
         // locality-constrained (root-cause fix). Tests inject deps.realieLookup
         // and never hit the network.
-        const lookup = deps.realieLookup ?? makeRealieParcelAdapter({ deriveCounty: (i) => deriveCounty(i) }).lookup;
+        // The Realie adapter reads its key from the env object; the app keeps
+        // secrets in the .env FILE, not process.env, so bridge the key (mirrors
+        // realieConfigured()'s file fallback). Without this the adapter is
+        // "available" by file check but runs not_configured at lookup time.
+        const lookup = deps.realieLookup ?? makeRealieParcelAdapter({ env: withEnvFileSecrets(['REALIE_API_KEY', 'REALIE_API_BASE']), deriveCounty: (i) => deriveCounty(i) }).lookup;
         const n = await lookup(toLookupArgs(args), { timeoutMs });
         result = normalizedToResult(n);
       } else {

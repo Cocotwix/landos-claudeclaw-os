@@ -108,7 +108,8 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
     //    NEVER labeled sold; Zillow sold kept separate from Realie's PPA band. ──
     if (q.zip) {
       const { fetchZillowComps } = await import('./zillow-comps.js');
-      const zc = await fetchZillowComps(q.zip, {});
+      const { withEnvFileSecrets } = await import('../env.js');
+      const zc = await fetchZillowComps(q.zip, { env: withEnvFileSecrets(['APIFY_TOKEN', 'LANDOS_ZILLOW_ACTOR']) });
       chain.push(`zillow:${zc.status}`);
       if (zc.status === 'collected') {
         const zView = (c: { price: number | null; acres: number | null; pricePerAcre: number | null; sourceUrl: string | null; city: string | null; state: string | null; saleOrListDateIso: string | null }): MarketCompView => ({ price: c.price ?? 0, saleDateIso: c.saleOrListDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl ?? '', sourceLabel: 'zillow', addressDesc: [c.city, c.state].filter(Boolean).join(', ') || undefined });
@@ -116,6 +117,10 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
         v.supplementalSold = zc.sold.map(zView);
         v.providers.push({ providerId: 'zillow', status: 'connected', kept: zc.active.length + zc.sold.length });
         if (v.status !== 'collected' && (zc.active.length > 0 || zc.sold.length > 0)) v.status = 'collected';
+      } else {
+        // Honest readiness: record WHY Zillow produced nothing (not_authorized /
+        // not_configured / no_results / error) instead of silently omitting it.
+        v.providers.push({ providerId: 'zillow', status: zc.status, kept: 0 });
       }
     }
     v.providerChain = chain;
@@ -138,7 +143,8 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
   // ── 1) Realie premium comparables (primary) ────────────────────────────────
   if (typeof q.lat === 'number' && typeof q.lng === 'number') {
     const { fetchRealieComps } = await import('./realie-comps.js');
-    const rc = await fetchRealieComps(q.lat, q.lng, { radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null });
+    const { withEnvFileSecrets } = await import('../env.js');
+    const rc = await fetchRealieComps(q.lat, q.lng, { env: withEnvFileSecrets(['REALIE_API_KEY', 'REALIE_API_BASE']), radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null });
     chain.push(`realie:${rc.status}`);
     if (rc.status === 'collected' && rc.sold.length > 0) {
       const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined });

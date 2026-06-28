@@ -34,7 +34,10 @@ export interface ZillowComp {
 }
 
 export interface ZillowCompsResult {
-  status: 'collected' | 'no_results' | 'not_configured' | 'error';
+  // Honest provider states. `not_configured` = no Apify token. `not_authorized` =
+  // token present but the actor itself is not authorized for our account (HTTP
+  // 402/403) — distinct from "no token" so readiness isn't misleading.
+  status: 'collected' | 'no_results' | 'not_configured' | 'not_authorized' | 'error';
   active: ZillowComp[];
   sold: ZillowComp[];
   source: string;
@@ -73,7 +76,9 @@ export async function fetchZillowComps(zip: string | null | undefined, deps: Zil
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as ZillowFetch);
   try {
     const res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
-    if (res.status === 402 || res.status === 403) return { ...base, status: 'not_configured', note: `Zillow actor not authorized (HTTP ${res.status}).` };
+    // Token present but the ACTOR is not authorized for our account (paid/rental
+    // actor not subscribed). NOT a missing-token condition — label it honestly.
+    if (res.status === 402 || res.status === 403) return { ...base, status: 'not_authorized', note: `Zillow actor not authorized (HTTP ${res.status}) — token OK; the Apify actor needs to be authorized/subscribed for this account.` };
     if (!res.ok) return { ...base, status: 'error', note: `Zillow actor HTTP ${res.status}.` };
     const rows = (await res.json()) as Array<Record<string, unknown>>;
     if (!Array.isArray(rows) || rows.length === 0) return { ...base, status: 'no_results', note: `Zillow returned no listings for ZIP ${z}.` };

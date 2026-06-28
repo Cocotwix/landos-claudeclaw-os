@@ -10,6 +10,29 @@ const rows = [
   { statusType: 'FOR_SALE', unformattedPrice: 0, detailUrl: 'https://zillow.com/c', hdpData: { homeInfo: {} } }, // skipped (no price)
 ];
 
+describe('Zillow provider readiness — honest status labeling (root-cause fix)', () => {
+  it('HTTP 403/402 (actor not authorized) => not_authorized, NOT not_configured (token is present)', async () => {
+    for (const code of [402, 403]) {
+      const r = await fetchZillowComps('30058', { env: KEY, fetchImpl: async () => ({ ok: false, status: code, json: async () => [] }) });
+      expect(r.status).toBe('not_authorized');
+      expect(r.note).toMatch(/not authorized/i);
+      expect(r.note).toMatch(/token OK|subscrib|authoriz/i); // makes clear the token is fine
+    }
+  });
+  it('missing Apify token => not_configured (distinct from not_authorized)', async () => {
+    const r = await fetchZillowComps('30058', { env: {}, fetchImpl: async () => ok([]) });
+    expect(r.status).toBe('not_configured');
+  });
+  it('missing/!5-digit ZIP => no_results (never not_configured)', async () => {
+    expect((await fetchZillowComps('', { env: KEY })).status).toBe('no_results');
+    expect((await fetchZillowComps('abc', { env: KEY })).status).toBe('no_results');
+  });
+  it('other non-OK HTTP => error (not mislabeled)', async () => {
+    const r = await fetchZillowComps('30058', { env: KEY, fetchImpl: async () => ({ ok: false, status: 500, json: async () => [] }) });
+    expect(r.status).toBe('error');
+  });
+});
+
 describe('Zillow supplemental comps (validated contract, configurable actor)', () => {
   it('separates active vs sold, maps price/acres/ppa/url, skips priceless rows', async () => {
     const r = await fetchZillowComps('28301', { env: KEY, now: () => 't', fetchImpl: async () => ok(rows) });
