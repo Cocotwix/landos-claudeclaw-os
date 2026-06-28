@@ -20,6 +20,7 @@ function fakeReport(over: Partial<DealCardReportView> = {}): DealCardReportView 
     ddFactChecklist: checklist,
     ddCompleteness: summarizeDdCompleteness(checklist),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
+    govDd: { flood: { status: 'not_run', zone: null, note: 'x', source: null, timestamp: null } },
     creditUsage: { landportalNonCreditUsed: false, compCreditUsed: false, note: '' },
     generatedAt: 1000,
     updatedBy: 't',

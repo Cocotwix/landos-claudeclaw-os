@@ -58,6 +58,10 @@ export interface DukeVerificationResult {
   identity?: DukeVerificationIdentity;
   /** Full normalized LandPortal non-comp property data — present when verified. */
   propertyData?: DukePropertyData;
+  /** Parcel point (lat/lng) for SUPPORTING workflows only (free government
+   *  environmental DD — FEMA/NWI/USGS — by point). NEVER used for identity. Kept
+   *  off the property-data contract so coordinates can't leak into identity/DD. */
+  coordinates?: { lat: number; lng: number };
   sourceAttempts: DukeVerificationSourceAttempt[];
   dataGaps: string[];
   /** Human "what to provide / do next" derived from the data gap. */
@@ -354,12 +358,21 @@ export function mapResolveToVerification(input: ResolveMapInput): DukeVerificati
       // Provider provenance: use the resolver's reported source (e.g. 'Realie.ai',
       // 'Persisted verified Property Card') and fall back to the LandPortal label.
       const verificationSource = str(r.source) ?? LANDPORTAL_SOURCE;
+      // Supporting-only parcel point (lat/lng) for environmental DD (never
+      // identity). Sign-aware (longitude is negative in the western hemisphere —
+      // numFrom's >0 rule would wrongly drop it).
+      const coordNum = (v: unknown): number | undefined => { const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN; return Number.isFinite(n) ? n : undefined; };
+      const cLat = ps ? coordNum(ps.lat) : undefined;
+      const cLng = ps ? coordNum(ps.lng) : undefined;
+      const coordinates = typeof cLat === 'number' && typeof cLng === 'number' && (cLat !== 0 || cLng !== 0)
+        && Math.abs(cLat) <= 90 && Math.abs(cLng) <= 180 ? { lat: cLat, lng: cLng } : undefined;
       return {
         status: 'parcel_verified',
         parcelVerified: true,
         verificationSource,
         identity,
         propertyData,
+        coordinates,
         sourceAttempts: [
           { source: verificationSource, status: 'verified', reason: str(r.match_notes) ?? 'Verified exact match.', truthLabel: 'verified_fact' },
         ],

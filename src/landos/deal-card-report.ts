@@ -57,6 +57,21 @@ import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
 import { loadCardVisualCapture } from './property-card.js';
 import { buildDdChecklist, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
+import { fetchFemaFlood, type GovFetch } from './providers/gov-dd-providers.js';
+
+type GovDdView = DealCardReportView['govDd'];
+function emptyGovDd(): GovDdView {
+  return { flood: { status: 'not_run', zone: null, note: 'Not run (no verified parcel coordinates).', source: null, timestamp: null } };
+}
+/** Run free government environmental DD for a verified parcel with coordinates.
+ *  FEMA flood is contract-verified + free, so it runs live (injectable fetch for
+ *  tests). Coordinates are supporting context, never identity. */
+async function buildGovDd(verification: DukeVerificationResult, deps: { femaFetch?: GovFetch }): Promise<GovDdView> {
+  const co = verification.coordinates;
+  if (!verification.parcelVerified || !co) return emptyGovDd();
+  const r = await fetchFemaFlood(co.lat, co.lng, { fetchImpl: deps.femaFetch });
+  return { flood: { status: r.status, zone: r.value == null ? null : String(r.value), note: r.note, source: r.sourceUrl, timestamp: r.timestamp } };
+}
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
 
@@ -152,6 +167,11 @@ export interface DealCardReportView {
    *  verification. Deep links + image placeholders/captured refs, all labeled
    *  "Visual Signal, Not Verified Fact". Built purely (no Google call here). */
   visualContext: VisualPropertyContext;
+  /** Free government environmental DD (live where contract-verified + lat/lng
+   *  available). FEMA flood is activated; others labeled honestly when absent. */
+  govDd: {
+    flood: { status: string; zone: string | null; note: string; source: string | null; timestamp: string | null };
+  };
   creditUsage: {
     landportalNonCreditUsed: boolean;
     compCreditUsed: false;
@@ -175,6 +195,8 @@ export interface DealCardReportDeps {
    *  already linked. Default false → reuse persisted verified data (no provider
    *  call / no Realie credit). Set true only on explicit operator re-verify. */
   reverify?: boolean;
+  /** Injected FEMA fetch for tests (keeps the suite offline). Default = live. */
+  femaFetch?: GovFetch;
 }
 
 export interface DealCardReportResult {
@@ -647,6 +669,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     ddFactChecklist: buildDdChecklist({}, null),
     ddCompleteness: summarizeDdCompleteness(buildDdChecklist({}, null)),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
+    govDd: emptyGovDd(),
     creditUsage: {
       landportalNonCreditUsed: false,
       compCreditUsed: false,
@@ -922,6 +945,8 @@ export async function runDealCardReport(
     { configured: deps.googleVisualConfigured ?? false, captured },
   );
 
+  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch });
+
   const view: DealCardReportView = {
     exists: true,
     dealCardId,
@@ -944,6 +969,7 @@ export async function runDealCardReport(
     ddFactChecklist: ddChecklistRows,
     ddCompleteness: summarizeDdCompleteness(ddChecklistRows),
     visualContext,
+    govDd,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,
       compCreditUsed: false,

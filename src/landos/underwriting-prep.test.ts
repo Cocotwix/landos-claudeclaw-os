@@ -15,6 +15,7 @@ function report(over: Partial<DealCardReportView> = {}): DealCardReportView {
     countyVerificationChecklist: [], marketFollowUpChecklist: [], strategyBlockers: [], nextConfirmations: [],
     preCallStrategyNotes: '', ddFactChecklist: checklist, ddCompleteness: summarizeDdCompleteness(checklist),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
+    govDd: { flood: { status: 'not_run', zone: null, note: 'x', source: null, timestamp: null } },
     creditUsage: { landportalNonCreditUsed: false, compCreditUsed: false, note: '' },
     generatedAt: 1, updatedBy: 't', ...over,
   };

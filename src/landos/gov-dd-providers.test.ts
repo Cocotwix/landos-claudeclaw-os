@@ -10,19 +10,20 @@ describe('gov DD providers (dormant by default, no live call)', () => {
 
   it('dormant by default: returns Unknown/unavailable and makes NO call', async () => {
     let called = false;
-    const fetchImpl: GovFetch = async () => { called = true; return { ok: true, status: 200, json: async () => ({ floodZone: 'AE' }) }; };
+    const fetchImpl: GovFetch = async () => { called = true; return { ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'AE', SFHA_TF: 'T' } }] }) }; };
     const r = await femaFloodProvider.fetchFact({ lat: 31.5, lng: -83.7 }, { env: {}, fetchImpl, now: FIXED });
     expect(called).toBe(false);
     expect(r.status).toBe('unavailable');
     expect(r.value).toBeNull();
   });
 
-  it('when activated + fetch injected, parses a verified value (no real network)', async () => {
-    const fetchImpl: GovFetch = async () => ({ ok: true, status: 200, json: async () => ({ floodZone: 'AE' }) });
+  it('when activated + fetch injected, parses the verified NFHL contract (no real network)', async () => {
+    const fetchImpl: GovFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'AE', ZONE_SUBTY: '', SFHA_TF: 'T' } }] }) });
     const r = await femaFloodProvider.fetchFact({ lat: 31.5, lng: -83.7 }, { env: { [GOV_DD_LIVE_ENV]: '1' }, fetchImpl, now: FIXED });
     expect(r.status).toBe('verified');
     expect(r.value).toBe('AE');
     expect(r.sourceUrl).toContain('fema');
+    expect(r.note).toMatch(/Special Flood Hazard Area/i);
     expect(r.confidence).toBe('high');
   });
 

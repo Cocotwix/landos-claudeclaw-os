@@ -125,3 +125,12 @@ Next business milestone: activate the first free gov DD provider (FEMA flood) li
 - Tests 1365 green; tsc + build clean. Realie report-run calls this block: 5.
 
 **Remaining for department completion:** Google visuals + Apify comps/market + Browser Market Intelligence + gov DD activation wired into the persisted run.
+
+## 2026-06-27 — Government DD (FEMA flood, live) + Browser Market Intelligence capability
+
+- **FEMA flood activated (live, verified contract):** confirmed the real NFHL endpoint live (MapServer layer 28, point query -> features[].attributes.FLD_ZONE/ZONE_SUBTY/SFHA_TF), rewired the provider parser to it, and added `fetchFemaFlood` (free, keyless, not behind the dormant gov-DD gate). Wired into the persisted Deal Card report (`govDd.flood`) via the verified parcel point. Acceptance: 731 + 472 return zone X (minimal hazard, not in SFHA); unverified parcels honestly show not_run.
+- **Coordinate governance preserved:** lat/lng are SUPPORTING-only (environmental DD), carried on a dedicated `DukeVerificationResult.coordinates` field, never in the property-data/identity contract (kept the no-coordinates-in-contract guard green). Fixed a sign bug (numFrom dropped negative longitude).
+- **Browser Market Intelligence capability** (`browser-market-intelligence.ts`): model-agnostic, SELECTABLE open-weight model (`LANDOS_BROWSER_MODEL`, default qwen3-vl, replaceable), evidence model with full provenance (url/source/snippet/timestamp/confidence/supports/doesNotProve). Returns honest "Needs Research — no browser model backend wired" until a backend is provided; never fabricates evidence. Surfaced in the report response.
+- Tests +9 (FEMA contract parse, govDd in persisted report, browser intel statuses); full suite 1370 green; tsc + build clean. Realie report-run calls this block: 5.
+
+**Remaining for department completion:** Google visual auto-capture in the run (item 1) and Apify Redfin sold-comps lane in the persisted report (item 2); plus NWI/USGS gov providers (contract-verify like FEMA) and a real browser backend.

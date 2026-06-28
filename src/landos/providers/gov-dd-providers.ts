@@ -98,20 +98,47 @@ function makeGovProvider(
 }
 
 // ── FEMA flood ────────────────────────────────────────────────────────────────
+// VERIFIED CONTRACT (live-confirmed): NFHL MapServer layer 28 (Flood Hazard
+// Zones), point query in SR 4326, returns features[].attributes.{FLD_ZONE,
+// ZONE_SUBTY, SFHA_TF}. Free, keyless, no auth.
+export const FEMA_NFHL_FLOOD_LAYER = 28;
+export function femaFloodUrl(lat: number, lng: number): string {
+  const base = `https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/${FEMA_NFHL_FLOOD_LAYER}/query`;
+  const qs = `geometry=${lng},${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY,SFHA_TF&returnGeometry=false&f=json`;
+  return `${base}?${qs}`;
+}
+
 export const femaFloodProvider = makeGovProvider(
   { id: 'fema_flood', label: 'FEMA flood (NFHL)', capability: 'flood' },
   async (input, fetchImpl, now) => {
-    // Future live path (NFHL identify by point). Parses a flood-zone string.
-    const url = `https://hazards.fema.gov/nfhl?lat=${input.lat ?? ''}&lng=${input.lng ?? ''}`;
+    if (typeof input.lat !== 'number' || typeof input.lng !== 'number') {
+      return { capability: 'flood', provider: 'fema_flood', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: null, note: 'FEMA flood needs lat/lng (none supplied).' };
+    }
+    const url = femaFloodUrl(input.lat, input.lng);
     const res = await fetchImpl(url);
     if (!res.ok) return { capability: 'flood', provider: 'fema_flood', status: 'error', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: `FEMA HTTP ${res.status}.` };
-    const j = (await res.json()) as { floodZone?: string };
-    const zone = typeof j.floodZone === 'string' && j.floodZone.trim() ? j.floodZone.trim() : null;
-    return zone
-      ? { capability: 'flood', provider: 'fema_flood', status: 'verified', value: zone, confidence: 'high', timestamp: now, sourceUrl: url, note: 'FEMA NFHL flood zone (official).' }
-      : { capability: 'flood', provider: 'fema_flood', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: 'FEMA returned no flood zone for the point.' };
+    const j = (await res.json()) as { features?: Array<{ attributes?: { FLD_ZONE?: string; ZONE_SUBTY?: string; SFHA_TF?: string } }> };
+    const a = j.features?.[0]?.attributes;
+    const zone = a?.FLD_ZONE && String(a.FLD_ZONE).trim() ? String(a.FLD_ZONE).trim() : null;
+    if (!zone) return { capability: 'flood', provider: 'fema_flood', status: 'needs_verification', value: null, confidence: 'none', timestamp: now, sourceUrl: url, note: 'FEMA NFHL returned no flood zone for the point (may be unmapped).' };
+    const inSfha = a?.SFHA_TF === 'T';
+    const sub = a?.ZONE_SUBTY ? ` (${a.ZONE_SUBTY})` : '';
+    return { capability: 'flood', provider: 'fema_flood', status: 'verified', value: zone, confidence: 'high', timestamp: now, sourceUrl: url, note: `FEMA NFHL flood zone ${zone}${sub}${inSfha ? ' — in Special Flood Hazard Area' : ' — not in SFHA'} (official).` };
   },
 );
+
+/** Live FEMA flood lookup by point. FREE + keyless + verified contract, so it is
+ *  NOT behind the dormant LANDOS_LIVE_GOV_DD gate (that gate guards the not-yet-
+ *  contract-verified providers). Injectable fetch keeps tests offline. */
+export async function fetchFemaFlood(lat: number, lng: number, deps: { fetchImpl?: GovFetch; now?: () => string } = {}): Promise<GovDdResult> {
+  const nowFn = deps.now ?? (() => new Date().toISOString());
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as GovFetch);
+  try {
+    return await femaFloodProvider.fetchFact({ lat, lng }, { env: { [GOV_DD_LIVE_ENV]: '1' }, fetchImpl, now: nowFn });
+  } catch (e: unknown) {
+    return { capability: 'flood', provider: 'fema_flood', status: 'error', value: null, confidence: 'none', timestamp: nowFn(), sourceUrl: null, note: `FEMA flood error: ${(e as Error)?.message ?? String(e)}.` };
+  }
+}
 
 // ── USFWS / NWI wetlands ─────────────────────────────────────────────────────
 export const nwiWetlandsProvider = makeGovProvider(

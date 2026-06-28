@@ -125,6 +125,7 @@ import {
 import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { buildDiscoveryBriefing } from './discovery-briefing.js';
 import { buildPreCallIntelligence, inferPropertyType, type ParcelFacts } from './pre-call-intelligence.js';
+import { collectBrowserMarketIntelligence } from './browser-market-intelligence.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, isLeadType, LEAD_TYPE_LABEL, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence, type LeadType } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -1158,18 +1159,26 @@ export function registerLandosRoutes(app: Hono): void {
     const propertyType = inferPropertyType(facts);
     const compsCount = cardId ? listComps({ dealCardId: deal.id as number }).length : 0;
     const visualsCaptured = ((report.visualContext as { assets?: Array<{ status: string }> })?.assets ?? []).filter((a) => a.status === 'captured').length;
+    const floodStatus = ((report.govDd as { flood?: { status?: string } } | undefined)?.flood?.status === 'verified') ? 'verified' as const : 'needs_verification' as const;
     const preCallIntelligence = buildPreCallIntelligence(facts, {
       identityVerified: !!report.parcelVerified,
       visualsCaptured,
       compsCount,
       marketPulse: !!report.marketSummary,
       browserEvidenceCount: 0,
-      flood: 'needs_verification', wetlands: 'needs_verification', slope: 'needs_verification',
+      flood: floodStatus, wetlands: 'needs_verification', slope: 'needs_verification',
     });
     return { preCallIntelligence, propertyType };
   };
 
-  app.get('/api/landos/deal-cards/:id/report', (c) => {
+  // Browser Market Intelligence area from the deal's subject card (honest status
+  // when no browser model backend is wired).
+  const browserIntelFor = (deal: Record<string, unknown>) => {
+    const card = ((deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0] ?? {}) as Record<string, unknown>;
+    return collectBrowserMarketIntelligence({ city: card.city as string, county: card.county as string, state: card.state as string });
+  };
+
+  app.get('/api/landos/deal-cards/:id/report', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
@@ -1186,7 +1195,8 @@ export function registerLandosRoutes(app: Hono): void {
     const { preCallIntelligence, propertyType } = synthPreCall(report as unknown as Record<string, unknown>, deal as unknown as Record<string, unknown>, cardId);
     const leadTypeRaw = (deal as unknown as { lead_type?: string }).lead_type;
     const leadType: LeadType = isLeadType(leadTypeRaw) ? leadTypeRaw : 'actual';
-    return c.json({ report, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType] });
+    const browserMarketIntel = await browserIntelFor(deal as unknown as Record<string, unknown>);
+    return c.json({ report, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
@@ -1215,7 +1225,8 @@ export function registerLandosRoutes(app: Hono): void {
     });
     const briefing = buildDiscoveryBriefing(result.report, readiness, sellerSummary);
     const { preCallIntelligence, propertyType } = synthPreCall(result.report as unknown as Record<string, unknown>, (deal ?? {}) as unknown as Record<string, unknown>, cardId);
-    return c.json({ ...result, readiness, briefing, preCallIntelligence, propertyType });
+    const browserMarketIntel = await browserIntelFor((deal ?? {}) as unknown as Record<string, unknown>);
+    return c.json({ ...result, readiness, briefing, preCallIntelligence, propertyType, govDd: result.report.govDd, browserMarketIntel });
   });
 
   // ── Post-discovery DD layer ─────────────────────────────────────────────

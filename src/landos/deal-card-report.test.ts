@@ -66,6 +66,27 @@ async function verifiedResolve(_args: LpResolveArgs): Promise<LpResolveResult> {
   };
 }
 
+it('activates FEMA flood (live contract) in the persisted report when the verified parcel has coordinates', async () => {
+  const id = createDealCard({ entity: 'TY_LAND_BIZ', title: 'flood deal', leadType: 'test' }).id;
+  const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 West Rd, Poulan, GA 31781', state: 'GA', verified: false, summary: 'x' });
+  linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
+  const resolveWithGeo = async (): Promise<LpResolveResult> => ({
+    verified: true, status: 'verified', propertyid: '1', fips: '13321', apn: '00830-054-000',
+    situs_address: '472 WEST RD', city: 'POULAN', state: 'GA', owner: 'CARROLL, MARGARET R',
+    match_notes: 'ok', candidates: [],
+    property_summary: { ...VERIFIED_SUMMARY, situs_address: '472 WEST RD', lat: '31.498296', lng: '-83.772086' },
+  });
+  // Injected FEMA fetch — offline, mimics the verified NFHL contract.
+  const femaFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'X', ZONE_SUBTY: 'AREA OF MINIMAL FLOOD HAZARD', SFHA_TF: 'F' } }] }) });
+  const r = (await runDealCardReport(id, { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, femaFetch }))!.report;
+  expect(r.parcelVerified).toBe(true);
+  expect(r.govDd.flood.status).toBe('verified');
+  expect(r.govDd.flood.zone).toBe('X');
+  // persisted + reloads
+  const reloaded = getDealCardReport(id);
+  expect(reloaded.govDd.flood.zone).toBe('X');
+});
+
 /** A resolver that cannot verify the parcel. */
 async function notVerifiedResolve(_args: LpResolveArgs): Promise<LpResolveResult> {
   return {
