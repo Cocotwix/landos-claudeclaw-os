@@ -58,61 +58,132 @@ import { buildVisualPropertyContext, type VisualPropertyContext, type VisualServ
 import { loadCardVisualCapture, saveCardVisualCapture, type CardVisualAsset } from './property-card.js';
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
 import { googleVisualConfigured } from './providers/google-visual.js';
-import { buildDdChecklist, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
+import { buildDdChecklist, mergeGovDdRows, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
 import { fetchFemaFlood, fetchNwiWetlands, fetchUsgsSlope, type GovFetch } from './providers/gov-dd-providers.js';
+import { fetchCensusDemographics, emptyCensus, type CensusDemographics, type CensusFetch } from './census-demographics.js';
 
 export interface MarketCompView {
   price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
 }
 export interface MarketCompsView {
   status: 'collected' | 'no_comps' | 'not_configured' | 'no_area' | 'error' | 'not_run';
+  /** Which provider produced the comps actually shown ('realie' | 'apify' | 'none'). */
+  primaryProvider: 'realie' | 'apify' | 'none';
+  /** Failover chain tried, e.g. ['realie:collected'] or ['realie:no_comps','apify:error']. */
+  providerChain: string[];
   soldCount: number;
   activeCount: number;
   sold: MarketCompView[];
   active: MarketCompView[];
-  metrics: { soldAvgPrice: number | null; soldAvgPpa: number | null; soldMedianPpa: number | null; activeAvgPrice: number | null; domMedian: number | null };
+  /** Supplemental sold comps from a secondary provider (e.g. Zillow) — attributed,
+   *  kept OUT of the primary (Realie) price-per-acre band to avoid polluting it. */
+  supplementalSold: MarketCompView[];
+  /** Realie valuation-only rows (market value, no usable sale) — kept separate. */
+  valuation: MarketCompView[];
+  metrics: { soldAvgPrice: number | null; soldAvgPpa: number | null; soldMedianPpa: number | null; ppaMin: number | null; ppaMax: number | null; activeAvgPrice: number | null; domMedian: number | null };
+  /** Sparse-market explanation when sold comps are thin/absent. */
+  sparseExplanation: string | null;
   providers: Array<{ providerId: string; status: string; kept: number }>;
   source: string;
   timestamp: string | null;
   note: string;
 }
 function emptyMarketComps(): MarketCompsView {
-  return { status: 'not_run', soldCount: 0, activeCount: 0, sold: [], active: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, activeAvgPrice: null, domMedian: null }, providers: [], source: 'Apify Redfin', timestamp: null, note: 'Not run.' };
+  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.' };
 }
 const avg = (ns: number[]): number | null => (ns.length ? Math.round(ns.reduce((a, b) => a + b, 0) / ns.length) : null);
 const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
+const ppas = (rows: MarketCompView[]): number[] => rows.map((c) => c.pricePerAcre).filter((p): p is number => typeof p === 'number');
 
-/** Live Apify Redfin comp collection for the verified parcel's area. Returns a
- *  persisted-shaped view with sold comps + metrics. Honest status when sparse. */
+/**
+ * Market comps with PROVIDER FAILOVER: 1) Realie premium comparables (primary —
+ * row-level, by coordinates, authorized on our key), 2) Apify Redfin fallback,
+ * else honest provider_error / no_comps. Every comp keeps its provider. Sparse
+ * rural/infill markets get a price-per-acre band + explanation instead of silence.
+ */
 async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
+  const chain: string[] = [];
+  const finalize = async (v: MarketCompsView): Promise<MarketCompsView> => {
+    // ── Supplemental Zillow lane (active listings + supplemental sold). Active is
+    //    NEVER labeled sold; Zillow sold kept separate from Realie's PPA band. ──
+    if (q.zip) {
+      const { fetchZillowComps } = await import('./zillow-comps.js');
+      const zc = await fetchZillowComps(q.zip, {});
+      chain.push(`zillow:${zc.status}`);
+      if (zc.status === 'collected') {
+        const zView = (c: { price: number | null; acres: number | null; pricePerAcre: number | null; sourceUrl: string | null; city: string | null; state: string | null; saleOrListDateIso: string | null }): MarketCompView => ({ price: c.price ?? 0, saleDateIso: c.saleOrListDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl ?? '', sourceLabel: 'zillow', addressDesc: [c.city, c.state].filter(Boolean).join(', ') || undefined });
+        v.active = zc.active.map(zView);
+        v.supplementalSold = zc.sold.map(zView);
+        v.providers.push({ providerId: 'zillow', status: 'connected', kept: zc.active.length + zc.sold.length });
+        if (v.status !== 'collected' && (zc.active.length > 0 || zc.sold.length > 0)) v.status = 'collected';
+      }
+    }
+    v.providerChain = chain;
+    v.activeCount = v.active.length;
+    const p = ppas(v.sold).sort((a, b) => a - b);
+    const pct = (q2: number): number | null => (p.length ? p[Math.min(p.length - 1, Math.floor(q2 * p.length))] : null);
+    v.metrics.soldAvgPrice = avg(v.sold.map((c) => c.price));
+    v.metrics.soldAvgPpa = avg(p);
+    v.metrics.soldMedianPpa = median(p);
+    // Outlier-resistant band (p25–p75) — comp sets mix raw land with improved/
+    // commercial parcels, so a raw min–max is misleading. Median + IQR is usable.
+    v.metrics.ppaMin = pct(0.25);
+    v.metrics.ppaMax = pct(0.75);
+    v.soldCount = v.sold.length;
+    if (v.soldCount > 0 && v.soldCount < 3) v.sparseExplanation = `Sparse market: only ${v.soldCount} verifiable sold comp(s). Lean on the median price-per-acre ($${v.metrics.soldMedianPpa}/ac) + valuation/area context; widen radius/timeframe before pricing.`;
+    else if (v.soldCount === 0 && v.valuation.length > 0) v.sparseExplanation = 'No verifiable sold comps; using Realie valuation-only rows + area context. Confirm with a wider comp search before pricing.';
+    return v;
+  };
+
+  // ── 1) Realie premium comparables (primary) ────────────────────────────────
+  if (typeof q.lat === 'number' && typeof q.lng === 'number') {
+    const { fetchRealieComps } = await import('./realie-comps.js');
+    const rc = await fetchRealieComps(q.lat, q.lng, { radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null });
+    chain.push(`realie:${rc.status}`);
+    if (rc.status === 'collected' && rc.sold.length > 0) {
+      const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined });
+      return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: rc.sold.map(toView), valuation: rc.valuation.map(toView), providers: [{ providerId: 'realie', status: 'connected', kept: rc.sold.length }], source: 'Realie premium comparables', timestamp: new Date().toISOString(), note: rc.note });
+    }
+    // Realie valuation-only (no sold) — keep for context but still try Apify for sold.
+    if (rc.status === 'collected' && rc.valuation.length > 0) {
+      const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? undefined });
+      const valuationView = rc.valuation.map(toView);
+      const apify = await apifyComps(q, chain);
+      if (apify.status === 'collected') { apify.valuation = valuationView; return await finalize(apify); }
+      return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: [], valuation: valuationView, providers: [{ providerId: 'realie', status: 'connected', kept: 0 }], source: 'Realie premium comparables (valuation-only)', timestamp: new Date().toISOString(), note: rc.note });
+    }
+  } else {
+    chain.push('realie:no_coords');
+  }
+
+  // ── 2) Apify Redfin fallback ───────────────────────────────────────────────
+  return await finalize(await apifyComps(q, chain));
+}
+
+async function apifyComps(q: CompQueryLite, chain: string[]): Promise<MarketCompsView> {
   const { registerLiveProviders } = await import('./providers/register-live-providers.js');
   const { retrieveComps } = await import('./comp-retrieval.js');
   const reg = await registerLiveProviders({ onSpend: () => {} });
-  if (!reg.compsLive) return { ...emptyMarketComps(), status: 'not_configured', note: `Apify Redfin not wired: ${reg.reason}` };
-  if (!q.state || !(q.address || q.city || q.zip)) return { ...emptyMarketComps(), status: 'no_area', note: 'No address/city/ZIP + state to search comps.' };
+  if (!reg.compsLive) { chain.push('apify:not_configured'); return { ...emptyMarketComps(), status: 'not_configured', note: `Apify not wired: ${reg.reason}` }; }
+  if (!q.state || !(q.address || q.city || q.zip)) { chain.push('apify:no_area'); return { ...emptyMarketComps(), status: 'no_area', note: 'No address/city/ZIP + state to search comps.' }; }
   const res = await retrieveComps(
     { address: q.address, city: q.city, county: q.county, state: q.state, zip: q.zip, acres: q.acres, centroid: typeof q.lat === 'number' && typeof q.lng === 'number' ? { lat: q.lat, lng: q.lng } : null, centroidTier: 'A' },
     { registry: reg.registry },
   );
   const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc }));
-  const doms = res.needsVerification.map((n) => n.daysOnMarket).filter((d): d is number => typeof d === 'number');
+  const doms = res.needsVerification.map((nn) => nn.daysOnMarket).filter((d): d is number => typeof d === 'number');
+  const anyConnected = res.providers.some((p) => p.status === 'connected' || p.status === 'no_comps');
+  const anyError = res.providers.some((p) => p.status === 'error' || p.status === 'timeout');
+  const status: MarketCompsView['status'] = res.hasComps ? 'collected' : (anyError && !anyConnected ? 'error' : 'no_comps');
+  chain.push(`apify:${status}`);
+  const providerNote = anyError && !res.hasComps ? ' Upstream Apify comp actor failed (error/timeout) — not a confirmed empty market.' : '';
   return {
-    status: res.hasComps ? 'collected' : 'no_comps',
-    soldCount: sold.length,
-    activeCount: 0, // current Redfin actor returns sold comps; active listings not separated yet
-    sold: sold.slice(0, 25),
-    active: [],
-    metrics: {
-      soldAvgPrice: avg(sold.map((c) => c.price)),
-      soldAvgPpa: avg(sold.map((c) => c.pricePerAcre).filter((p): p is number => typeof p === 'number')),
-      soldMedianPpa: median(sold.map((c) => c.pricePerAcre).filter((p): p is number => typeof p === 'number')),
-      activeAvgPrice: null,
-      domMedian: median(doms),
-    },
+    ...emptyMarketComps(),
+    status, primaryProvider: res.hasComps ? 'apify' : 'none',
+    sold: sold.slice(0, 25), active: [], valuation: [],
+    metrics: { ...emptyMarketComps().metrics, domMedian: median(doms) },
     providers: res.providers.map((p) => ({ providerId: p.providerId, status: p.status, kept: p.kept })),
-    source: 'Apify Redfin',
-    timestamp: new Date().toISOString(),
-    note: res.note,
+    source: 'Apify Redfin', timestamp: new Date().toISOString(), note: res.note + providerNote,
   };
 }
 
@@ -251,6 +322,9 @@ export interface DealCardReportView {
   /** Apify Redfin sold comps + active listings + market metrics (live where
    *  configured). Persisted; honest status when sparse/unavailable. */
   marketComps: MarketCompsView;
+  /** US Census ACS county demographics (supporting market context; never identity).
+   *  Honest not_configured when no free CENSUS_API_KEY. */
+  demographics: CensusDemographics;
   creditUsage: {
     landportalNonCreditUsed: boolean;
     compCreditUsed: false;
@@ -282,6 +356,8 @@ export interface DealCardReportDeps {
   captureVisuals?: (input: CaptureInput) => Promise<CaptureResult>;
   /** Injected comp retrieval for tests. Default = live Apify Redfin registry. */
   retrieveCompsImpl?: (q: CompQueryLite) => Promise<MarketCompsView>;
+  /** Injected Census fetch for tests. Default = live (honest not_configured w/o key). */
+  censusFetch?: CensusFetch;
 }
 
 /** Minimal comp query the report builds from the verified parcel. */
@@ -762,6 +838,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     visualContext: buildVisualPropertyContext({}, { configured: false }),
     govDd: emptyGovDd(),
     marketComps: emptyMarketComps(),
+    demographics: emptyCensus(),
     creditUsage: {
       landportalNonCreditUsed: false,
       compCreditUsed: false,
@@ -1015,7 +1092,13 @@ export async function runDealCardReport(
   // here — NO Google call. Captured images (from a prior explicit capture) are
   // loaded from the linked Property Card and surfaced as dashboard-safe URLs;
   // services without a capture render as placeholders + deep links.
-  const ddChecklistRows = buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null);
+  // Government environmental DD (FEMA/NWI/USGS) — computed first so its verified
+  // facts merge into the DD checklist with their OWN per-field provenance.
+  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch });
+  const ddChecklistRows = mergeGovDdRows(
+    buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null),
+    govDd,
+  );
   const vid = verification.identity;
   const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
   // ITEM 1: Google visual auto-capture/REUSE. For a verified parcel, capture once
@@ -1057,8 +1140,6 @@ export async function runDealCardReport(
     { configured: deps.googleVisualConfigured ?? false, captured },
   );
 
-  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch });
-
   // ITEM 2: Apify Redfin sold comps + market metrics for the verified parcel's
   // area. Live where configured (injectable for tests); honest status otherwise.
   let marketComps = emptyMarketComps();
@@ -1069,6 +1150,8 @@ export async function runDealCardReport(
       city: vid?.city ?? undefined,
       county: vid?.county ?? undefined,
       state: vid?.state ?? undefined,
+      // ZIP for the Zillow supplemental lane — from the situs address tail.
+      zip: vid?.situsAddress?.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1],
       acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
       lat: verification.coordinates?.lat,
       lng: verification.coordinates?.lng,
@@ -1078,6 +1161,12 @@ export async function runDealCardReport(
     } catch (e: unknown) {
       marketComps = { ...emptyMarketComps(), status: 'error', note: `Comp retrieval error: ${(e as Error)?.message ?? String(e)}.` };
     }
+  }
+
+  // Census demographics (supporting market context) for the verified parcel's county.
+  let demographics = emptyCensus();
+  if (verification.parcelVerified) {
+    demographics = await fetchCensusDemographics(verification.identity?.fips, { fetchImpl: deps.censusFetch });
   }
 
   const view: DealCardReportView = {
@@ -1104,6 +1193,7 @@ export async function runDealCardReport(
     visualContext,
     govDd,
     marketComps,
+    demographics,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,
       compCreditUsed: false,

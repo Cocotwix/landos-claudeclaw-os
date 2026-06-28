@@ -74,6 +74,58 @@ export function resolveBrowserModel(env: Record<string, string | undefined> = pr
   return (BROWSER_MODELS as readonly string[]).includes(v) ? (v as BrowserModel) : DEFAULT_BROWSER_MODEL;
 }
 
+/** Minimal text fetch (injected in tests). */
+export type TextFetch = (url: string) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
+
+function classifySource(title: string): MarketIntelSourceType {
+  const t = title.toLowerCase();
+  if (/road|highway|bridge|interchange|gdot|dot|rail|transit/.test(t)) return 'infrastructure';
+  if (/water|sewer|utility|power|grid|broadband|fiber/.test(t)) return 'infrastructure';
+  if (/hospital|plant|factory|employer|jobs|hiring|headquarters|distribution center/.test(t)) return 'employer';
+  if (/development|subdivision|homes|housing|apartments|commercial|retail|industrial park|warehouse/.test(t)) return 'development';
+  if (/economic development|investment|grant|incentive|chamber/.test(t)) return 'economic_development';
+  if (/planning|zoning|commission|county board|city council|meeting/.test(t)) return 'county_planning';
+  return 'local_news';
+}
+
+/**
+ * Real, free browser-research backend over Google News RSS (no key, no browser
+ * binary). Collects ACTUAL public local development / infrastructure / economic
+ * evidence for the area, each item carrying full provenance. This is the default
+ * working backend; a vision/browser-control model (the selectable `model`) can
+ * replace it for deeper site navigation later. Injectable fetch for tests.
+ */
+export function makeNewsResearchBackend(deps: { fetchImpl?: TextFetch; now?: () => string; maxItems?: number } = {}): BrowserBackend {
+  return async ({ area, model }) => {
+    const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as TextFetch);
+    const now = (deps.now ?? (() => new Date().toISOString()))();
+    const max = deps.maxItems ?? 8;
+    const query = `${area} (development OR infrastructure OR "economic development" OR planning OR employer OR housing)`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+    const res = await fetchImpl(url);
+    if (!res.ok) throw new Error(`news RSS HTTP ${res.status}`);
+    const xml = await res.text();
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, max);
+    const ev: MarketEvidence[] = [];
+    for (const m of items) {
+      const block = m[1];
+      const title = (block.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? '').replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+      const link = (block.match(/<link>([\s\S]*?)<\/link>/)?.[1] ?? '').trim();
+      const pub = (block.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] ?? '').trim();
+      const src = (block.match(/<source[^>]*>([\s\S]*?)<\/source>/)?.[1] ?? 'Google News').replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+      if (!title || !link) continue;
+      ev.push({
+        url: link, source: src, sourceType: classifySource(title), snippet: title,
+        timestamp: pub || now, confidence: 'low',
+        supports: 'Local market/development signal for the area (public news).',
+        doesNotProve: 'Does NOT confirm any parcel-specific fact, value, or identity.',
+      });
+    }
+    void model;
+    return ev;
+  };
+}
+
 /**
  * Collect public-web market intelligence for an area. If no browser backend is
  * wired (the current runtime), returns an honest "no_browser_model" status with

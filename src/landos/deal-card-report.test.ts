@@ -106,10 +106,10 @@ it('auto-captures Google visuals once + reuses them, and persists Apify comps + 
   let captureCalls = 0;
   const captureVisuals = async () => { captureCalls++; return { captured: true, reason: 'ok', assets: { maps_static: { storedPath: '/x.png', timestamp: 't' }, street_view_static: { storedPath: '/y.png', timestamp: 't' } } }; };
   const retrieveCompsImpl = async () => ({
-    status: 'collected' as const, soldCount: 2, activeCount: 0,
-    sold: [{ price: 50000, saleDateIso: '2025-01-01', acres: 8, pricePerAcre: 6250, sourceUrl: 'https://redfin.com/a', sourceLabel: 'redfin' }, { price: 70000, saleDateIso: '2025-02-01', acres: 10, pricePerAcre: 7000, sourceUrl: 'https://redfin.com/b', sourceLabel: 'redfin' }],
-    active: [], metrics: { soldAvgPrice: 60000, soldAvgPpa: 6625, soldMedianPpa: 6625, activeAvgPrice: null, domMedian: null },
-    providers: [{ providerId: 'redfin', status: 'connected', kept: 2 }], source: 'Apify Redfin', timestamp: 't', note: '2 sold comps',
+    status: 'collected' as const, primaryProvider: 'realie' as const, providerChain: ['realie:collected'], soldCount: 2, activeCount: 0,
+    sold: [{ price: 50000, saleDateIso: '2025-01-01', acres: 8, pricePerAcre: 6250, sourceUrl: '', sourceLabel: 'realie' }, { price: 70000, saleDateIso: '2025-02-01', acres: 10, pricePerAcre: 7000, sourceUrl: '', sourceLabel: 'realie' }],
+    active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: 60000, soldAvgPpa: 6625, soldMedianPpa: 6625, ppaMin: 6250, ppaMax: 7000, activeAvgPrice: null, domMedian: null }, sparseExplanation: null,
+    providers: [{ providerId: 'realie', status: 'connected', kept: 2 }], source: 'Realie premium comparables', timestamp: 't', note: '2 sold comps',
   });
   const femaFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'X', SFHA_TF: 'F' } }] }) });
   const nwiFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) });
@@ -129,6 +129,34 @@ it('auto-captures Google visuals once + reuses them, and persists Apify comps + 
   // reuse: a second run does NOT capture again
   await runDealCardReport(id, opts);
   expect(captureCalls).toBe(1);
+});
+
+it('separates Realie sold / Zillow active / Zillow supplemental sold; active never drives the band; persists + reloads', async () => {
+  const id = createDealCard({ entity: 'TY_LAND_BIZ', title: 'comps sep', leadType: 'test' }).id;
+  const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 West Rd, Poulan, GA 31781', state: 'GA', verified: false, summary: 'x' });
+  linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
+  const resolveWithGeo = async (): Promise<LpResolveResult> => ({
+    verified: true, status: 'verified', propertyid: '1', fips: '13321', apn: 'A', situs_address: '472 WEST RD', city: 'POULAN', state: 'GA', owner: 'X', match_notes: 'ok', candidates: [],
+    property_summary: { ...VERIFIED_SUMMARY, situs_address: '472 WEST RD', lat: '31.498296', lng: '-83.772086' },
+  });
+  // Realie sold (band drivers) + Zillow active (asking) + Zillow supplemental sold (home-centric, must NOT enter the band).
+  const retrieveCompsImpl = async () => ({
+    status: 'collected' as const, primaryProvider: 'realie' as const, providerChain: ['realie:collected', 'zillow:collected'], soldCount: 2, activeCount: 1,
+    sold: [{ price: 50000, saleDateIso: '2025-01-01', acres: 8, pricePerAcre: 6250, sourceUrl: '', sourceLabel: 'realie' }, { price: 70000, saleDateIso: '2025-02-01', acres: 10, pricePerAcre: 7000, sourceUrl: '', sourceLabel: 'realie' }],
+    active: [{ price: 999999, saleDateIso: '', acres: 0.1, pricePerAcre: 9999990, sourceUrl: 'https://zillow.com/x', sourceLabel: 'zillow', addressDesc: 'Poulan, GA' }],
+    supplementalSold: [{ price: 800000, saleDateIso: '2025-03-01', acres: 0.2, pricePerAcre: 4000000, sourceUrl: 'https://zillow.com/y', sourceLabel: 'zillow' }],
+    valuation: [], metrics: { soldAvgPrice: 60000, soldAvgPpa: 6625, soldMedianPpa: 6625, ppaMin: 6250, ppaMax: 7000, activeAvgPrice: 999999, domMedian: 14 }, sparseExplanation: null,
+    providers: [{ providerId: 'realie', status: 'connected', kept: 2 }, { providerId: 'zillow', status: 'connected', kept: 2 }], source: 'Realie + Zillow', timestamp: 't', note: 'ok',
+  });
+  await runDealCardReport(id, { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, retrieveCompsImpl, femaFetch: async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) }), nwiFetch: async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) }), usgsFetch: async () => ({ ok: true, status: 200, json: async () => ({ value: '100' }) }) });
+  // reload from persistence
+  const r = getDealCardReport(id).marketComps;
+  expect(r.sold.every((c) => c.sourceLabel === 'realie')).toBe(true);          // Realie sold separate
+  expect(r.active.length).toBe(1); expect(r.active[0].sourceLabel).toBe('zillow'); // Zillow active separate
+  expect(r.supplementalSold.length).toBe(1); expect(r.supplementalSold[0].sourceLabel).toBe('zillow'); // supplemental separate
+  // band derived from Realie sold ONLY — the $9.99M/ac active + $4M/ac supplemental must not pollute it
+  expect(r.metrics.ppaMax).toBe(7000);
+  expect(r.providers.map((p) => p.providerId).sort()).toEqual(['realie', 'zillow']); // provider readiness
 });
 
 /** A resolver that cannot verify the parcel. */

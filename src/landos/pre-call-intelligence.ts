@@ -65,6 +65,7 @@ export interface PreCallSourceSignals {
   flood?: 'verified' | 'unavailable' | 'needs_verification' | 'error';
   wetlands?: 'verified' | 'unavailable' | 'needs_verification' | 'error';
   slope?: 'verified' | 'unavailable' | 'needs_verification' | 'error';
+  demographics?: 'verified' | 'not_configured' | 'no_geography' | 'error' | 'not_run';
 }
 
 export interface PreCallIntelligence {
@@ -202,6 +203,8 @@ export function buildPreCallIntelligence(facts: ParcelFacts, sig: PreCallSourceS
   for (const [k, v] of [['Flood (FEMA)', sig.flood], ['Wetlands (NWI)', sig.wetlands], ['Slope (USGS)', sig.slope]] as const) {
     if (v === 'verified') { verified.push(k); retrieved.push(k); } else unknown.push(`${k} (${v ?? 'not retrieved'})`);
   }
+  if (sig.demographics === 'verified') { verified.push('Demographics (Census)'); retrieved.push('Demographics (Census)'); }
+  else if (sig.demographics && sig.demographics !== 'not_run') unknown.push(`Demographics (Census ${sig.demographics})`);
 
   // Score: identity is the heaviest signal; the rest are additive.
   let score = 0;
@@ -211,6 +214,7 @@ export function buildPreCallIntelligence(facts: ParcelFacts, sig: PreCallSourceS
   if (sig.marketPulse) score += 8;
   if (sig.browserEvidenceCount > 0) score += 10;
   score += [sig.flood, sig.wetlands, sig.slope].filter((x) => x === 'verified').length * 4;
+  if (sig.demographics === 'verified') score += 6;
   score = Math.min(100, score);
 
   const status: PreCallStatus = score >= 70 ? 'high' : score >= 45 ? 'moderate' : score >= 20 ? 'limited' : 'needs_verification';

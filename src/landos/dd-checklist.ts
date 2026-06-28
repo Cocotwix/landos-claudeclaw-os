@@ -16,10 +16,41 @@ export interface DdChecklistRow {
   /** Formatted Verified value, or null when not provided. */
   value: string | null;
   status: 'verified' | 'needs_verification';
-  /** Named source for a Verified value; null otherwise. */
+  /** Named source/provider for a Verified value; null otherwise. PER FIELD — a
+   *  row's source reflects whoever supplied THAT fact (Realie, FEMA, NWI, USGS,
+   *  Census, Google visual), never a single global stamp. */
   source: string | null;
+  /** Provenance for the field's value (all optional, populated when known). */
+  timestamp?: string | null;
+  url?: string | null;
+  confidence?: 'high' | 'medium' | 'low' | 'none' | null;
+  /** Label for the kind of fact (e.g. 'visual signal' for Google). */
+  factKind?: 'verified' | 'visual_signal';
   /** True for fields with no connected provider yet (e.g. utilities). */
   noConnectedSource?: boolean;
+}
+
+/** A government-DD result shape (from the report's govDd) to merge per-field. */
+export interface GovDdForChecklist {
+  flood: { status: string; zone: string | null; source: string | null; timestamp: string | null };
+  wetlands: { status: string; type: string | null; source: string | null; timestamp: string | null };
+  slope: { status: string; slopeDeg: number | null; source: string | null; timestamp: string | null };
+}
+
+/**
+ * Merge verified government-DD facts into the checklist, each carrying its OWN
+ * provider/source/url/timestamp (no mislabeling as the parcel provider). Replaces
+ * the corresponding Needs-Verification rows (femaPct/wetlandsPct/slopeAvgDeg).
+ * Pure; only replaces a row when the gov result is verified.
+ */
+export function mergeGovDdRows(rows: DdChecklistRow[], gov: GovDdForChecklist | undefined): DdChecklistRow[] {
+  if (!gov) return rows;
+  const replace: Record<string, DdChecklistRow | null> = {
+    femaPct: gov.flood.status === 'verified' ? { key: 'femaPct', label: 'FEMA flood zone', value: gov.flood.zone, status: 'verified', source: 'FEMA NFHL', url: gov.flood.source, timestamp: gov.flood.timestamp, confidence: 'high' } : null,
+    wetlandsPct: gov.wetlands.status === 'verified' ? { key: 'wetlandsPct', label: 'Wetlands (NWI)', value: gov.wetlands.type, status: 'verified', source: 'USFWS NWI', url: gov.wetlands.source, timestamp: gov.wetlands.timestamp, confidence: 'high' } : null,
+    slopeAvgDeg: gov.slope.status === 'verified' ? { key: 'slopeAvgDeg', label: 'Average slope', value: gov.slope.slopeDeg == null ? null : `~${gov.slope.slopeDeg}°`, status: 'verified', source: 'USGS 3DEP', url: gov.slope.source, timestamp: gov.slope.timestamp, confidence: 'medium' } : null,
+  };
+  return rows.map((r) => replace[r.key] ?? r);
 }
 
 const DD_LAND_FIELDS: Array<{ key: keyof DukeLandFacts; label: string; fmt?: (v: number | string) => string }> = [
@@ -90,9 +121,10 @@ export function summarizeDdCompleteness(rows: DdChecklistRow[]): DdCompleteness 
 
 /** Render checklist rows as Markdown bullet lines (used by the Discovery Report). */
 export function renderDdChecklistMarkdown(rows: DdChecklistRow[]): string[] {
-  return rows.map((r) =>
-    r.status === 'verified'
-      ? `- **${r.label}:** ${r.value} — Verified (source: ${r.source})`
-      : `- **${r.label}:** ${NEEDS_VERIFICATION_LABEL}${r.noConnectedSource ? ' (no connected source)' : ''}`,
-  );
+  return rows.map((r) => {
+    if (r.status !== 'verified') return `- **${r.label}:** ${NEEDS_VERIFICATION_LABEL}${r.noConnectedSource ? ' (no connected source)' : ''}`;
+    const label = r.factKind === 'visual_signal' ? 'Visual signal' : 'Verified';
+    const src = r.source ? ` (source: ${r.source})` : '';
+    return `- **${r.label}:** ${r.value} — ${label}${src}`;
+  });
 }

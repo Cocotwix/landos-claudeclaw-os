@@ -125,7 +125,7 @@ import {
 import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { buildDiscoveryBriefing } from './discovery-briefing.js';
 import { buildPreCallIntelligence, inferPropertyType, type ParcelFacts } from './pre-call-intelligence.js';
-import { collectBrowserMarketIntelligence } from './browser-market-intelligence.js';
+import { collectBrowserMarketIntelligence, makeNewsResearchBackend } from './browser-market-intelligence.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, isLeadType, LEAD_TYPE_LABEL, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence, type LeadType } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -1162,22 +1162,28 @@ export function registerLandosRoutes(app: Hono): void {
     const visualsCaptured = ((report.visualContext as { assets?: Array<{ status: string }> })?.assets ?? []).filter((a) => a.status === 'captured').length;
     const gov = report.govDd as { flood?: { status?: string }; wetlands?: { status?: string }; slope?: { status?: string } } | undefined;
     const sig = (s?: string) => (s === 'verified' ? 'verified' as const : 'needs_verification' as const);
+    const demoStatus = (report.demographics as { status?: string } | undefined)?.status as ('verified' | 'not_configured' | 'no_geography' | 'error' | 'not_run' | undefined);
+    // Browser evidence feeds pre-call only when a discovery backend actually
+    // returned items; 0 until then (honest).
+    const browserEvidenceCount = 0;
     const preCallIntelligence = buildPreCallIntelligence(facts, {
       identityVerified: !!report.parcelVerified,
       visualsCaptured,
       compsCount,
       marketPulse: !!report.marketSummary,
-      browserEvidenceCount: 0,
+      browserEvidenceCount,
       flood: sig(gov?.flood?.status), wetlands: sig(gov?.wetlands?.status), slope: sig(gov?.slope?.status),
+      demographics: demoStatus,
     });
     return { preCallIntelligence, propertyType };
   };
 
   // Browser Market Intelligence area from the deal's subject card (honest status
   // when no browser model backend is wired).
+  const browserResearchBackend = makeNewsResearchBackend();
   const browserIntelFor = (deal: Record<string, unknown>) => {
     const card = ((deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0] ?? {}) as Record<string, unknown>;
-    return collectBrowserMarketIntelligence({ city: card.city as string, county: card.county as string, state: card.state as string });
+    return collectBrowserMarketIntelligence({ city: card.city as string, county: card.county as string, state: card.state as string }, { backend: browserResearchBackend });
   };
 
   app.get('/api/landos/deal-cards/:id/report', async (c) => {

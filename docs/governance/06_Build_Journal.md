@@ -159,3 +159,47 @@ Verified each contract live before coding (no guessing):
 - Acceptance (deals #20-24 region, TEST LEAD): 731 + 472 → FEMA zone X + NWI None mapped + USGS slope 5.4°/3.1° (all verified, persisted); 3 unverified → all gov DD not_run. Tests +4 (1374 green); tsc + build clean. Realie report-runs: 5.
 
 **Remaining:** Census demographics activation, Apify active-listing separation + comp tuning, a real browser-research backend.
+
+## 2026-06-27 — DD completion block: Census + real browser backend + checklist provenance + Apify root-cause
+
+**Census (verified contract):** endpoint `https://api.census.gov/data/2023/acs/acs5`; inputs `get=NAME,B01003_001E,B19013_001E,B25001_001E,B25003_002E,B25003_003E&for=county:CCC&in=state:SS&key=`; geography = county (from 5-digit FIPS); response = `[header,row]` string arrays; mapped population/median-income/housing-units/owner/renter/owner%; failure → not_configured (no free key — never invented) / error (non-JSON). Wired into report (`demographics`) + Pre-Call. **Live result: not_configured** — Census now requires a free CENSUS_API_KEY which is not set (external limitation, hard-stop list). Activates when the key is added.
+
+**Browser Market Intelligence — REAL backend:** `makeNewsResearchBackend` over Google News RSS (free, no key, no browser binary) collects ACTUAL local development/infrastructure/economic evidence per area, each item with URL/source/snippet/timestamp/source-type/confidence/supports/doesNotProve; classified heuristically. Selectable open-weight model architecture preserved (Puppeteer is installed for future vision/site-nav backends). **Live: 8 real evidence items per acceptance area.** Surfaced in the report API response (computed live on read for freshness).
+
+**DD checklist per-field provenance:** `DdChecklistRow` now carries per-field source/timestamp/url/confidence; `mergeGovDdRows` folds FEMA/NWI/USGS into the checklist EACH with its own provider (FEMA NFHL / USFWS NWI / USGS 3DEP) — Realie facts keep Realie. No mislabeling. Verified-parcel DD completeness rose to 40%.
+
+**Apify root cause (external):** instrumented a live run — the upstream third-party actor `tri_angle/redfin-search` is BROKEN against Redfin's current page ("Expected exactly one structured-data script tag, found 0", all retries fail) → 0 rows. NOT a LandOS filter/mapping/tuning bug. Fixed the mapping so a provider failure surfaces as `error` (not a false `no_comps`); genuine empty markets still read `no_comps`. Resolution needs a working/alternate comp actor (external).
+
+**Acceptance (deals #35-39, TEST LEAD):** all 5 persist + reload; identity tiers correct (2 Verified, 1 Candidate, 2 Area-Only); Realie facts flow; Google visuals on verified; FEMA zone X + USGS slope on verified (NWI 1 verified, 1 transient WIM error — contract verified, honest); Census not_configured; Apify honest error/no_comps (broken actor); browser intel collected 8 real evidence each; DD checklist per-field provenance; Pre-Call complete. Tests +13 (1382 green); tsc + build clean. Realie report-runs: 5.
+
+**Remaining = true external limitations:** Census free API key not set; the Redfin Apify actor is broken upstream (needs a working comp actor); a vision/browser-control model for deeper site navigation beyond news RSS.
+
+## 2026-06-27 — Market Intelligence production-grade: Realie comps (root cause) + provider failover + per-field provenance + Census + real browser backend
+
+**Realie comp ROOT CAUSE (investigated, fixed):** Realie DOES expose comps — `GET /public/premium/comparables/?latitude=&longitude=` (tag "Premium"), row-level `comparables[]`, authorized on our key (live probe returned 10 rows for 472). We had simply **never implemented it** (adapter only used the property endpoints) and it needs **coordinates** (now available for verified parcels). Built `realie-comps.ts` (sold vs valuation split, PPA, premium-auth handling) and made Realie the **primary** comp lane.
+**Apify (external):** the `tri_angle/redfin-search` actor is broken upstream (0 structured data, all retries fail) — confirmed by instrumented run; now a fallback that surfaces provider_error honestly. Recommendation: keep Realie primary; do not add a new paid Redfin/Zillow actor until needed.
+**Failover chain:** Realie premium comps → Apify Redfin → honest provider_error → no_comps. Every comp keeps its provider; Realie valuation-only rows kept separate.
+**Comp quality fixes (root-cause loop):** raw 30 comps produced absurd PPA ($3M/ac) from tiny urban lots — fixed by filtering to subject acreage band (0.25×–4×), recency (60mo), non-nominal sales (≥$1k), then reporting an **outlier-resistant p25–p75 PPA band + median** (not raw min–max). 472 → 9 relevant comps, $10.7k–$78k/ac; sparse-market explanation when <3.
+**DD checklist per-field provenance:** each row carries its own source/timestamp/url/confidence; FEMA/NWI/USGS merged with correct providers (no mislabeling). Verified-parcel completeness ~47%.
+**Census:** verified contract; honest `not_configured` (needs free CENSUS_API_KEY — external).
+**Browser Market Intelligence:** real Google News RSS backend (no key) collecting live local development/infrastructure/economic evidence (8 items/area), classified, full provenance; selectable open-weight model architecture; Puppeteer installed for a future vision backend.
+**Acceptance (5 TEST LEAD, persist+reload):** 731 + 472 verified → Realie comps (21 / 9), FEMA zone X, NWI None mapped, USGS slope, Google visuals, 8 browser-evidence; 3 unverified → honest not_run for parcel DD + area browser evidence. Tests 1387 green; tsc + build clean. Realie report-runs: 5 (+premium comp calls for verified parcels).
+
+**Remaining = external only:** Census free key; a working active-listings/Redfin Apify actor (current one broken); a browser vision model for deeper site nav beyond news RSS.
+
+## 2026-06-28 — Second comp provider: Zillow (validated live) as supplemental lane
+
+**Investigation:** searched the Apify store. Redfin: current `tri_angle/redfin-search` broken; alternatives (rigelbytes, mantisus, lulzasaur) all take search URLs (same URL-guessing risk). Zillow: `maxcopell/zillow-zip-search` (94k runs, 3089 users) takes a **ZIP code** (no URL guessing) and **separate `sold`/`forSaleByAgent` flags** → active vs sold cleanly separated. Selected it.
+**Live validation (async, bounded):** ZIP 28301 returned 8 structured rows in ~15s — fields: statusType (FOR_SALE/SOLD), unformattedPrice, address/city/state/zip, latLong, beds/baths, detailUrl, daysOnZillow, hdpData.homeInfo (lotAreaValue/Unit, dateSold, homeType, taxAssessedValue). Fixture saved.
+**Wired (`zillow-comps.ts`):** configurable actor id (`LANDOS_ZILLOW_ACTOR`, default `maxcopell/zillow-zip-search` — not hard-coded at call site), run-sync, maps to canonical rows tagged **provider=zillow + active|sold + url + price + acres(lot, sqft→ac) + $/ac + city/state/zip + sale/list date + DOM + capturedAt + confidence**. Active NEVER labeled sold.
+**Failover chain:** Realie sold (primary) → Zillow supplemental (active listings + supplemental sold, attributed, kept OUT of Realie's PPA band) → browser evidence → provider_error → no_comps. New `marketComps.supplementalSold` + `active` fields; `providers` + `providerChain` show attribution.
+**Acceptance (5 TEST LEAD, persist+reload):** 731 → realie 21 sold + Zillow 86 active/767 sold; 472 → realie 9 + Zillow 8 active/69 sold; both providers connected, active separated, Realie PPA band clean ($262k–803k infill / $10.7k–78k rural). 3 unverified → not_run (no coords/zip) + area browser evidence. Tests +3 (1390 green); tsc + build clean.
+**LandWatch/Land.com:** deferred (URL-format blocker) — Zillow covers the supplemental lane; revisit active-land-inventory later with a verified URL.
+
+## 2026-06-28 — Pre-audit cleanup: Deal Card market-comps UI + separation verification
+
+- **Deal Card UI** (`web/src/components/DealCard.tsx`): added `MarketCompsSection` rendering three clearly-separated blocks — **Realie Sold Comps** (primary, with p25–p75 $/ac band + sparse note), **Zillow Active Listings / Asking-Market Evidence** (explicitly "not sold comps"; empty state "No Zillow active listings returned"; provider-error state "Zillow provider error"), and **Zillow Supplemental Sold Listings** (separate, "excluded from Realie band"). Each row shows price/acres/$per-acre/location/sold-date or DOM/listing-URL/provider label; top-8 with "+N more". Provider-readiness chips per provider + the provider chain.
+- **Separation guarantees** (regression test added): Realie sold drive the band; Zillow active (asking) and Zillow supplemental sold are kept OUT of the Realie $/ac band (a $9.99M/ac active + $4M/ac supplemental do not move `ppaMax`); every row keeps its provider; active is never labeled sold.
+- **Persistence/reload verified on real persisted reports** (no new live calls): 731 → Realie 21 sold + Zillow 86 active / 767 supplemental sold; 472 → Realie 9 + Zillow 8 / 69; 3 unverified → not_run. Providers `realie:connected, zillow:connected`; chain `realie→zillow`. All five persist + reload.
+- No provider research reopened; LandWatch/Land.com not chased; no new actors validated; Census left not_configured; no new paid providers.
+- Tests 1391 green; tsc clean; production build (web tsc + vite) clean.

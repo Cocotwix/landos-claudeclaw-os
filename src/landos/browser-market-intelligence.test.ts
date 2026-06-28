@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { collectBrowserMarketIntelligence, resolveBrowserModel, BROWSER_MODEL_ENV, DEFAULT_BROWSER_MODEL, type MarketEvidence } from './browser-market-intelligence.js';
+import { collectBrowserMarketIntelligence, makeNewsResearchBackend, resolveBrowserModel, BROWSER_MODEL_ENV, DEFAULT_BROWSER_MODEL, type MarketEvidence } from './browser-market-intelligence.js';
+
+describe('news research backend (real evidence over Google News RSS)', () => {
+  const rss = `<rss><channel>
+    <item><title>GDOT to speed up roundabout project</title><link>https://news.example/a</link><pubDate>Fri, 19 Jun 2026 00:00:00 GMT</pubDate><source url="x">Albany Herald</source></item>
+    <item><title>Phoebe hospital $2.5 billion economic impact</title><link>https://news.example/b</link><pubDate>Mon, 02 Mar 2026 00:00:00 GMT</pubDate><source url="x">Albany Herald</source></item>
+  </channel></rss>`;
+  it('parses RSS items into evidence with provenance + classification', async () => {
+    const backend = makeNewsResearchBackend({ fetchImpl: async () => ({ ok: true, status: 200, text: async () => rss }), now: () => 't' });
+    const r = await collectBrowserMarketIntelligence({ county: 'Worth', state: 'GA' }, { backend });
+    expect(r.status).toBe('collected');
+    expect(r.evidence.length).toBe(2);
+    expect(r.evidence[0].url).toContain('news.example');
+    expect(r.evidence[0].sourceType).toBe('infrastructure'); // roundabout/GDOT
+    expect(r.evidence[1].sourceType).toBe('employer'); // hospital
+    expect(r.evidence[0].doesNotProve).toMatch(/parcel/i);
+  });
+  it('backend HTTP failure surfaces as error (no fabrication)', async () => {
+    const backend = makeNewsResearchBackend({ fetchImpl: async () => ({ ok: false, status: 503, text: async () => '' }) });
+    const r = await collectBrowserMarketIntelligence({ county: 'Worth', state: 'GA' }, { backend });
+    expect(r.status).toBe('error');
+    expect(r.evidence.length).toBe(0);
+  });
+});
 
 describe('browser market intelligence (selectable model, honest status)', () => {
   it('defaults to the open-weight model and is selectable via env', () => {

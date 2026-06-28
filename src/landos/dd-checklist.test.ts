@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import { buildDdChecklist, renderDdChecklistMarkdown, summarizeDdCompleteness, NEEDS_VERIFICATION_LABEL } from './dd-checklist.js';
+import { buildDdChecklist, mergeGovDdRows, renderDdChecklistMarkdown, summarizeDdCompleteness, NEEDS_VERIFICATION_LABEL } from './dd-checklist.js';
+
+describe('mergeGovDdRows — per-field provenance (no mislabeling)', () => {
+  it('replaces flood/wetlands/slope rows with their OWN gov source', () => {
+    const rows = buildDdChecklist({ acres: 8.6 }, 'Realie.ai');
+    const merged = mergeGovDdRows(rows, {
+      flood: { status: 'verified', zone: 'X', source: 'https://fema/x', timestamp: 't' },
+      wetlands: { status: 'verified', type: 'None mapped', source: 'https://nwi/x', timestamp: 't' },
+      slope: { status: 'verified', slopeDeg: 3.1, source: 'https://usgs/x', timestamp: 't' },
+    });
+    const fema = merged.find((r) => r.key === 'femaPct')!;
+    expect(fema.status).toBe('verified'); expect(fema.value).toBe('X'); expect(fema.source).toBe('FEMA NFHL');
+    expect(merged.find((r) => r.key === 'wetlandsPct')!.source).toBe('USFWS NWI');
+    const slope = merged.find((r) => r.key === 'slopeAvgDeg')!;
+    expect(slope.source).toBe('USGS 3DEP'); expect(slope.value).toBe('~3.1°');
+    expect(merged.find((r) => r.key === 'acres')!.source).toBe('Realie.ai'); // not overwritten
+  });
+  it('leaves rows untouched when gov results are not verified', () => {
+    const merged = mergeGovDdRows(buildDdChecklist({}, null), { flood: { status: 'not_run', zone: null, source: null, timestamp: null }, wetlands: { status: 'not_run', type: null, source: null, timestamp: null }, slope: { status: 'not_run', slopeDeg: null, source: null, timestamp: null } });
+    expect(merged.find((r) => r.key === 'femaPct')!.status).toBe('needs_verification');
+  });
+});
 
 describe('dd-checklist (shared canonical DD fact set)', () => {
   it('marks present fields Verified with source and absent fields Needs Verification', () => {

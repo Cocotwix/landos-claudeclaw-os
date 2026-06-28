@@ -232,8 +232,28 @@ interface ReportView {
   ddFactChecklist?: DdChecklistRowView[];
   ddCompleteness?: { total: number; verified: number; needsVerification: number; percentComplete: number; label: string };
   visualContext?: VisualContextView;
+  marketComps?: MarketCompsView;
   generatedAt: number | null;
   updatedBy: string;
+}
+
+interface MarketCompRowView { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string }
+interface MarketCompsView {
+  status: string;
+  primaryProvider: string;
+  providerChain: string[];
+  soldCount: number;
+  activeCount: number;
+  sold: MarketCompRowView[];
+  active: MarketCompRowView[];
+  supplementalSold: MarketCompRowView[];
+  valuation: MarketCompRowView[];
+  metrics: { soldAvgPrice: number | null; soldAvgPpa: number | null; soldMedianPpa: number | null; ppaMin: number | null; ppaMax: number | null; activeAvgPrice: number | null; domMedian: number | null };
+  sparseExplanation: string | null;
+  providers: Array<{ providerId: string; status: string; kept: number }>;
+  source: string;
+  timestamp: string | null;
+  note: string;
 }
 
 interface DdChecklistRowView {
@@ -293,6 +313,68 @@ interface BriefingView {
   warnings: string[];
   risks: string[];
   followUpPriorities: string[];
+}
+
+// Market comps + listings — Realie sold (primary band), Zillow active (asking-
+// market evidence, NOT sold), Zillow supplemental sold (separate), provider
+// readiness. Active listings never drive the sold-comp valuation band.
+function CompRows({ rows, kind }: { rows: MarketCompRowView[]; kind: 'sold' | 'active' }) {
+  return (
+    <div class="space-y-0.5">
+      {rows.slice(0, 8).map((c, i) => (
+        <div key={i} class="text-[11px] flex items-center gap-2">
+          <span class="tabular-nums">{c.price ? `$${c.price.toLocaleString()}` : '—'}</span>
+          <span class="text-[var(--color-text-faint)]">{c.acres != null ? `${c.acres} ac` : '— ac'}{c.pricePerAcre != null ? ` · $${c.pricePerAcre.toLocaleString()}/ac` : ''}</span>
+          {c.addressDesc && <span class="text-[var(--color-text-muted)] truncate">{c.addressDesc}</span>}
+          {kind === 'sold' && c.saleDateIso && <span class="text-[10px] text-[var(--color-text-faint)]">sold {c.saleDateIso}</span>}
+          <span class="ml-auto text-[10px] px-1 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-faint)]">{c.sourceLabel}</span>
+          {c.sourceUrl && <a href={c.sourceUrl} target="_blank" rel="noreferrer" class="text-[10px] text-[var(--color-accent)]">link</a>}
+        </div>
+      ))}
+      {rows.length > 8 && <div class="text-[10px] text-[var(--color-text-faint)]">+{rows.length - 8} more</div>}
+    </div>
+  );
+}
+
+function MarketCompsSection({ mc }: { mc?: MarketCompsView | null }) {
+  if (!mc) return null;
+  const m = mc.metrics || {};
+  const band = m.ppaMin != null && m.ppaMax != null ? `$${m.ppaMin.toLocaleString()}–$${m.ppaMax.toLocaleString()}/ac (p25–p75)` : '—';
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Market Comps &amp; Listings</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">chain: {(mc.providerChain || []).join(' → ') || '—'}</span>
+        {/* Provider readiness */}
+        <span class="ml-auto flex gap-1">
+          {(mc.providers || []).map((p, i) => <span key={i} class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">{p.providerId}: {p.status}</span>)}
+        </span>
+      </div>
+
+      {/* Realie sold comps — primary band */}
+      <div>
+        <div class="text-[11px] font-semibold text-[var(--color-status-done)]">Realie Sold Comps <span class="text-[10px] text-[var(--color-text-faint)]">(primary · band {band})</span></div>
+        {mc.sold && mc.sold.length > 0 ? <CompRows rows={mc.sold} kind="sold" /> : <div class="text-[11px] text-[var(--color-text-faint)]">No Realie sold comps.</div>}
+        {mc.sparseExplanation && <div class="text-[10px] text-[var(--color-accent)] mt-1">{mc.sparseExplanation}</div>}
+      </div>
+
+      {/* Zillow active listings — asking-market evidence, NOT sold */}
+      <div>
+        <div class="text-[11px] font-semibold text-[var(--color-accent)]">Zillow Active Listings / Asking-Market Evidence <span class="text-[10px] text-[var(--color-text-faint)]">(not sold comps)</span></div>
+        {mc.status === 'error' ? <div class="text-[11px] text-[var(--color-status-failed)]">Zillow provider error.</div>
+          : mc.active && mc.active.length > 0 ? <CompRows rows={mc.active} kind="active" />
+          : <div class="text-[11px] text-[var(--color-text-faint)]">No Zillow active listings returned.</div>}
+      </div>
+
+      {/* Zillow supplemental sold — separate from Realie */}
+      {mc.supplementalSold && mc.supplementalSold.length > 0 && (
+        <div>
+          <div class="text-[11px] font-semibold text-[var(--color-text-muted)]">Zillow Supplemental Sold Listings <span class="text-[10px] text-[var(--color-text-faint)]">(supplemental · excluded from Realie band)</span></div>
+          <CompRows rows={mc.supplementalSold} kind="sold" />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function DiscoveryBriefingSection({ b }: { b?: BriefingView | null }) {
@@ -1599,6 +1681,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   <Field label="Most viable strategy" value={report.mostViableStrategy || undefined} />
                   <Field label="Offer readiness" value={readinessText(report.offerReadiness)} />
                 </div>
+
+                {/* Market comps + listings: Realie sold (primary) / Zillow active (asking-market) / Zillow supplemental sold. */}
+                <MarketCompsSection mc={report.marketComps} />
 
                 {/* Full DD fact checklist + completeness (mirrors the Discovery Call Report). */}
                 <DdFactChecklist rows={report.ddFactChecklist} completeness={report.ddCompleteness} />
