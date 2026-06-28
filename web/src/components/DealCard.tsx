@@ -315,6 +315,103 @@ interface BriefingView {
   followUpPriorities: string[];
 }
 
+// Acquisitions department panel (CRM-independent seller-strategy brain). Loads
+// per-deal seller memory; supports paste-discovery, manual comm log, follow-up
+// DRAFTS (never sent), call prep, next-best-action, stage. Source = Deal Card.
+interface AcqView {
+  acquisition: { stage: string; profile: Record<string, unknown>; commLog: Array<Record<string, unknown>>; discovery: Array<Record<string, unknown>> };
+  stageLabel: string;
+  nextAction: { action: string; label: string; reason: string };
+  strategy: { situation: string; motivation: string; likelyLeverage: string; recommendedTone: string; nextMove: string; missingInfo: string; offerCallReady: boolean };
+  callPrep: { openingFrame: string; whatWeKnow: string[]; whatToLearn: string[]; keyQuestions: string[]; likelyObjections: string[]; doNotSay: string[]; desiredOutcome: string };
+  playbook: { status: string; toneRules: string[] };
+  trainingReadiness: { backend: string; r2Configured: boolean; ingestionImplemented: boolean; note: string };
+}
+const ACQ_STAGES = ['new_lead', 'needs_discovery', 'discovery_complete', 'needs_follow_up', 'ready_for_offer_prep', 'offer_sent', 'stalled', 'paused', 'pass'];
+
+function AcquisitionsPanel({ dealId }: { dealId: number }) {
+  const [v, setV] = useState<AcqView | null>(null);
+  const [notes, setNotes] = useState('');
+  const [followFmt, setFollowFmt] = useState<'sms' | 'email' | 'call_script'>('sms');
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  async function load() { try { setV(await apiGet<AcqView>(`/api/landos/deal-cards/${dealId}/acquisition`)); } catch (e: any) { setMsg(e?.message || String(e)); } }
+  useEffect(() => { void load(); /* eslint-disable-next-line */ }, [dealId]);
+  async function addDiscovery() { if (!notes.trim()) return; setBusy(true); try { await apiPost(`/api/landos/deal-cards/${dealId}/acquisition/discovery`, { notes: notes.trim() }); setNotes(''); await load(); } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); } }
+  async function genFollowup() { setBusy(true); try { const r = await apiPost<{ draft: { draft: string } }>(`/api/landos/deal-cards/${dealId}/acquisition/followup`, { format: followFmt }); setDraft(r.draft.draft); } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); } }
+  async function setStage(stage: string) { setBusy(true); try { await apiPost(`/api/landos/deal-cards/${dealId}/acquisition/stage`, { stage }); await load(); } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); } }
+  if (!v) return null;
+  const p = v.acquisition.profile as Record<string, string | string[] | undefined>;
+  const d0 = v.acquisition.discovery[0] as Record<string, unknown> | undefined;
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Acquisitions</span>
+        <select class="text-[11px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5" value={v.acquisition.stage} disabled={busy} onChange={(e) => void setStage((e.target as HTMLSelectElement).value)}>
+          {ACQ_STAGES.map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+        </select>
+        <span class={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${v.strategy.offerCallReady ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-accent)] border-[var(--color-accent)]'}`}>Next: {v.nextAction.label}</span>
+      </div>
+      <div class="text-[11px] text-[var(--color-text-muted)]">{v.nextAction.reason}</div>
+
+      {/* Seller profile summary */}
+      <div class="text-[11px] grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
+        <div><span class="text-[var(--color-text-faint)]">Seller:</span> {(p.name as string) || '—'} {p.phone ? `· ${p.phone}` : ''}</div>
+        <div><span class="text-[var(--color-text-faint)]">Motivation:</span> {(p.motivation as string) || '—'}</div>
+        <div><span class="text-[var(--color-text-faint)]">Timeline:</span> {(p.timeline as string) || '—'}</div>
+        <div><span class="text-[var(--color-text-faint)]">Asking (seller-stated):</span> {(p.askingPrice as string) || '—'}</div>
+        <div><span class="text-[var(--color-text-faint)]">Last contact:</span> {(p.lastContactDate as string) || '—'}</div>
+        <div><span class="text-[var(--color-text-faint)]">Next follow-up:</span> {(p.nextFollowUpDate as string) || '—'}</div>
+        {Array.isArray(p.objections) && (p.objections as string[]).length > 0 && <div class="md:col-span-2"><span class="text-[var(--color-status-failed)]">Objections:</span> {(p.objections as string[]).join('; ')}</div>}
+        {Array.isArray(p.sellerStatedFacts) && (p.sellerStatedFacts as string[]).length > 0 && <div class="md:col-span-2"><span class="text-[var(--color-text-faint)]">Seller-stated facts (not verified):</span> {(p.sellerStatedFacts as string[]).slice(0, 4).join('; ')}</div>}
+      </div>
+
+      {/* Discovery notes input */}
+      <div>
+        <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Paste discovery / call notes (auto-extracts motivation, timeline, price, decision-makers, objections — facts stored Seller-stated)</div>
+        <textarea class="w-full text-[11px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1" rows={2} value={notes} placeholder="Paste what the seller said…" onInput={(e) => setNotes((e.target as HTMLTextAreaElement).value)} />
+        <button type="button" disabled={busy || !notes.trim()} onClick={addDiscovery} class="mt-1 text-[11px] px-2 py-1 rounded-md border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">Extract &amp; save discovery</button>
+      </div>
+
+      {/* Call prep */}
+      <div class="text-[11px]">
+        <div class="font-semibold text-[var(--color-text-faint)]">Call prep</div>
+        <div><span class="text-[var(--color-text-faint)]">Open:</span> {v.callPrep.openingFrame}</div>
+        {v.callPrep.keyQuestions.length > 0 && <div><span class="text-[var(--color-text-faint)]">Ask:</span> {v.callPrep.keyQuestions.slice(0, 4).join(' · ')}</div>}
+        <div><span class="text-[var(--color-status-failed)]">Do not say:</span> {v.callPrep.doNotSay.slice(0, 2).join(' · ')}</div>
+      </div>
+
+      {/* Follow-up draft (never sent) */}
+      <div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-[11px] text-[var(--color-text-muted)]">Follow-up draft (not sent):</span>
+          <select class="text-[11px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5" value={followFmt} onChange={(e) => setFollowFmt((e.target as HTMLSelectElement).value as never)}>
+            <option value="sms">SMS</option><option value="email">Email</option><option value="call_script">Call script</option>
+          </select>
+          <button type="button" disabled={busy} onClick={genFollowup} class="text-[11px] px-2 py-0.5 rounded-md border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">Generate</button>
+        </div>
+        {draft && <pre class="mt-1 text-[11px] whitespace-pre-wrap bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md p-2">{draft}<div class="text-[10px] text-[var(--color-text-faint)] mt-1">Draft only — nothing sent.</div></pre>}
+      </div>
+
+      {/* Comm log + discovery summary */}
+      {v.acquisition.commLog.length > 0 && (
+        <div class="text-[11px]"><div class="text-[var(--color-text-faint)]">Communication log ({v.acquisition.commLog.length})</div>
+          {v.acquisition.commLog.slice(0, 3).map((e, i) => <div key={i}>• {(e.at as string || '').slice(0, 10)} {String(e.channel)}/{String(e.direction)}: {String(e.summary)}</div>)}
+        </div>
+      )}
+      {d0 && <div class="text-[11px]"><span class="text-[var(--color-text-faint)]">Latest discovery:</span> tone {String(d0.emotionalTone)} · urgency {String(d0.urgency)}</div>}
+
+      {/* Playbook + training readiness */}
+      <div class="flex items-center gap-2 flex-wrap text-[10px]">
+        <span class="px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">Playbook: {v.playbook.status}</span>
+        <span class="px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">Training storage: {v.trainingReadiness.backend}{v.trainingReadiness.r2Configured ? ' (R2)' : ' (R2-ready)'} · ingestion: future</span>
+      </div>
+      {msg && <div class="text-[11px] text-[var(--color-text-muted)]">{msg}</div>}
+    </div>
+  );
+}
+
 // Market comps + listings — Realie sold (primary band), Zillow active (asking-
 // market evidence, NOT sold), Zillow supplemental sold (separate), provider
 // readiness. Active listings never drive the sold-comp valuation band.
@@ -1647,6 +1744,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 No report run yet. Click <span class="text-[var(--color-accent)]">Run DD + Market + Strategy Report</span> to run the safe non-credit parcel lookup, structure Market Research source targets, apply Strategy logic, and update the three worksheets. It never spends a comp credit and never fabricates parcel facts, comps, demand, pricing, or offers.
               </div>
             )}
+
+            {/* Acquisitions — seller-strategy brain (CRM-independent; shows with or without a DD report). */}
+            {deal?.id && <AcquisitionsPanel dealId={deal.id} />}
 
             {report?.exists && (
               <div class="space-y-3">

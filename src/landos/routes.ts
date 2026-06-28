@@ -124,6 +124,18 @@ import {
 } from './county-records-tasks.js';
 import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { buildDiscoveryBriefing } from './discovery-briefing.js';
+import {
+  getAcquisition, upsertSellerProfile, addCommLogEntry, addDiscoveryNote, setAcquisitionStage,
+  extractDiscoveryNotes, acquisitionNextAction, sellerStrategySummary, isAcquisitionStage,
+  COMM_CHANNELS, ACQUISITION_STAGE_LABEL, type CommChannel, type AcquisitionStage,
+} from './acquisitions.js';
+import { buildCallPrep, buildFollowUpDraft, acquisitionPlaybook, acquisitionTrainingReadiness, type FollowUpFormat, type DealContextForPrep } from './acquisition-prep.js';
+import {
+  registerAsset, listAssets, addKnowledge, listKnowledge, approveKnowledge, rejectKnowledge,
+  generatePlaybookSection, publishPlaybookSection, getPublishedPlaybookSection, listPlaybook, coachingLookup,
+  isSourceType, isKnowledgeCategory, isPlaybookSection,
+  type CoachingMode, type AipSourceType, type AipKnowledgeCategory, type AipPlaybookSection,
+} from './aip.js';
 import { buildPreCallIntelligence, inferPropertyType, type ParcelFacts } from './pre-call-intelligence.js';
 import { collectBrowserMarketIntelligence, makeNewsResearchBackend } from './browser-market-intelligence.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
@@ -1342,6 +1354,126 @@ export function registerLandosRoutes(app: Hono): void {
     const cardId = subjectCardId(deal);
     const prep = buildUnderwritingPrep(getDealCardReport(id), summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []));
     return c.json({ underwritingPrep: prep });
+  });
+
+  // ── Acquisitions department (CRM-independent intelligence; never sends) ─────
+  // Build DD/market context for call prep from the persisted report.
+  const acqContext = (id: number): DealContextForPrep => {
+    const r = getDealCardReport(id);
+    const mc = r.marketComps as { metrics?: { ppaMin?: number | null; ppaMax?: number | null } } | undefined;
+    const band = mc?.metrics?.ppaMin != null && mc?.metrics?.ppaMax != null ? `$${mc.metrics.ppaMin.toLocaleString()}–$${mc.metrics.ppaMax.toLocaleString()}/ac` : null;
+    return {
+      ddParcelVerified: r.parcelVerified,
+      ddCompletenessLabel: r.ddCompleteness?.label,
+      marketBand: band,
+      topRiskFlags: (r.riskFlags ?? []).slice(0, 4),
+      topMissingDdFacts: (r.ddFactChecklist ?? []).filter((x) => x.status === 'needs_verification' && !x.noConnectedSource).map((x) => x.label).slice(0, 4),
+    };
+  };
+  const acqView = (id: number) => {
+    const acq = getAcquisition(id);
+    const report = getDealCardReport(id);
+    const na = acquisitionNextAction(acq, { ddParcelVerified: report.parcelVerified });
+    return {
+      acquisition: acq,
+      stageLabel: ACQUISITION_STAGE_LABEL[acq.stage],
+      nextAction: na,
+      strategy: sellerStrategySummary(acq, na),
+      callPrep: buildCallPrep(acq, na, acqContext(id)),
+      playbook: acquisitionPlaybook(),
+      trainingReadiness: acquisitionTrainingReadiness(),
+    };
+  };
+  app.get('/api/landos/deal-cards/:id/acquisition', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json(acqView(id));
+  });
+  app.post('/api/landos/deal-cards/:id/acquisition/profile', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    upsertSellerProfile(id, (body.profile ?? body) as Record<string, never>);
+    return c.json(acqView(id), 201);
+  });
+  app.post('/api/landos/deal-cards/:id/acquisition/comm', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const channel = (COMM_CHANNELS as readonly string[]).includes(str(b.channel) ?? '') ? (b.channel as CommChannel) : 'other';
+    if (!str(b.summary)) return c.json({ error: 'summary is required' }, 400);
+    addCommLogEntry(id, {
+      at: str(b.at) ?? new Date().toISOString(), channel,
+      direction: b.direction === 'inbound' ? 'inbound' : 'outbound',
+      summary: str(b.summary)!, notes: str(b.notes),
+      sentiment: (str(b.sentiment) as never) ?? 'unknown',
+      keyFacts: Array.isArray(b.keyFacts) ? (b.keyFacts as string[]) : [],
+      objections: Array.isArray(b.objections) ? (b.objections as string[]) : [],
+      commitments: Array.isArray(b.commitments) ? (b.commitments as string[]) : [],
+      followUpNeeded: b.followUpNeeded === true,
+    });
+    return c.json(acqView(id), 201);
+  });
+  app.post('/api/landos/deal-cards/:id/acquisition/discovery', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const notes = str(b.notes) ?? str(b.text);
+    if (!notes) return c.json({ error: 'notes are required' }, 400);
+    addDiscoveryNote(id, extractDiscoveryNotes(notes));
+    return c.json(acqView(id), 201);
+  });
+  app.post('/api/landos/deal-cards/:id/acquisition/stage', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const stage = str(b.stage);
+    if (!isAcquisitionStage(stage)) return c.json({ error: 'invalid stage' }, 400);
+    setAcquisitionStage(id, stage as AcquisitionStage);
+    return c.json(acqView(id), 201);
+  });
+  // Generate a follow-up DRAFT only — NEVER sends anything.
+  app.post('/api/landos/deal-cards/:id/acquisition/followup', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const fmt = (['sms', 'email', 'call_script'].includes(str(b.format) ?? '') ? b.format : 'sms') as FollowUpFormat;
+    return c.json({ draft: buildFollowUpDraft(getAcquisition(id), fmt) });
+  });
+
+  // ── Acquisition Intelligence Platform (AIP) — learning engine (no auto-modify) ──
+  app.get('/api/landos/aip/assets', (c) => c.json({ assets: listAssets() }));
+  app.post('/api/landos/aip/assets', async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!isSourceType(b.sourceType)) return c.json({ error: 'invalid sourceType' }, 400);
+    if (!str(b.title)) return c.json({ error: 'title required' }, 400);
+    return c.json({ asset: registerAsset({ sourceType: b.sourceType as AipSourceType, title: str(b.title)!, author: str(b.author), metadata: (b.metadata as Record<string, never>) ?? {}, ext: str(b.ext) }) }, 201);
+  });
+  app.get('/api/landos/aip/knowledge', (c) => {
+    const cat = c.req.query('category'); const status = c.req.query('status');
+    return c.json({ knowledge: listKnowledge({ category: isKnowledgeCategory(cat) ? (cat as AipKnowledgeCategory) : undefined, status: (status === 'proposed' || status === 'approved' || status === 'rejected') ? status : undefined }) });
+  });
+  app.post('/api/landos/aip/knowledge', async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!isKnowledgeCategory(b.category)) return c.json({ error: 'invalid category' }, 400);
+    if (!str(b.content)) return c.json({ error: 'content required' }, 400);
+    return c.json({ knowledge: addKnowledge({ category: b.category as AipKnowledgeCategory, content: str(b.content)!, citations: Array.isArray(b.citations) ? (b.citations as never[]) : [], links: Array.isArray(b.links) ? (b.links as never[]) : [], confidence: (str(b.confidence) as never) ?? 'medium', sourceAssetId: typeof b.sourceAssetId === 'number' ? b.sourceAssetId : null }) }, 201);
+  });
+  app.post('/api/landos/aip/knowledge/:kid/approve', (c) => { const k = approveKnowledge(Number(c.req.param('kid'))); return k ? c.json({ knowledge: k }) : c.json({ error: 'not found' }, 404); });
+  app.post('/api/landos/aip/knowledge/:kid/reject', (c) => { const k = rejectKnowledge(Number(c.req.param('kid'))); return k ? c.json({ knowledge: k }) : c.json({ error: 'not found' }, 404); });
+  app.get('/api/landos/aip/playbook', (c) => { const s = c.req.query('section'); return c.json({ playbook: listPlaybook(isPlaybookSection(s) ? (s as AipPlaybookSection) : undefined), published: isPlaybookSection(s) ? getPublishedPlaybookSection(s as AipPlaybookSection) : undefined }); });
+  app.post('/api/landos/aip/playbook/generate', async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!isPlaybookSection(b.section)) return c.json({ error: 'invalid section' }, 400);
+    return c.json({ result: generatePlaybookSection(b.section as AipPlaybookSection) }, 201);
+  });
+  app.post('/api/landos/aip/playbook/:pid/publish', (c) => { const p = publishPlaybookSection(Number(c.req.param('pid'))); return p ? c.json({ playbook: p }) : c.json({ error: 'not found' }, 404); });
+  app.post('/api/landos/aip/coaching', async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const modes: CoachingMode[] = ['before_call', 'during_prep', 'after_call_review', 'negotiation_review', 'offer_review'];
+    const mode = modes.includes(str(b.mode) as CoachingMode) ? (b.mode as CoachingMode) : 'before_call';
+    return c.json(coachingLookup({ mode, query: str(b.query) }));
   });
 
   // ── Comps (manual + automated). Never verifies parcel identity. ─────

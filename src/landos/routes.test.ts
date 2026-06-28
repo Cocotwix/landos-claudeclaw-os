@@ -696,6 +696,59 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
   });
 });
 
+describe('LandOS routes — Acquisition Intelligence Platform (learning engine)', () => {
+  it('register asset -> add/approve knowledge -> generate/publish playbook -> coaching (approved only)', async () => {
+    const a = ((await (await post('/api/landos/aip/assets', { sourceType: 'mp3', title: 'Objections', author: 'JM', ext: 'mp3', metadata: { tags: ['obj'] } })).json()) as any).asset;
+    expect(a.r2Key).toContain('agents/acquisitions/training/raw/mp3/');
+    const k = ((await (await post('/api/landos/aip/knowledge', { category: 'objection_category', content: 'Anchor on recent sales.', citations: [{ assetId: a.id, sourceTitle: 'Objections' }] })).json()) as any).knowledge;
+    expect(k.status).toBe('proposed');
+    // unapproved excluded from generated playbook
+    let gen = ((await (await post('/api/landos/aip/playbook/generate', { section: 'objection_handling' })).json()) as any).result;
+    expect(gen.record.content).not.toContain('Anchor on recent sales');
+    await post(`/api/landos/aip/knowledge/${k.id}/approve`, {});
+    gen = ((await (await post('/api/landos/aip/playbook/generate', { section: 'objection_handling' })).json()) as any).result;
+    expect(gen.record.content).toContain('Anchor on recent sales');
+    const pub = ((await (await post(`/api/landos/aip/playbook/${gen.record.id}/publish`, {})).json()) as any).playbook;
+    expect(pub.status).toBe('published');
+    const coach = (await (await post('/api/landos/aip/coaching', { mode: 'negotiation_review', query: 'price objection' })).json()) as any;
+    expect(coach.insights.every((x: any) => x.status === 'approved')).toBe(true);
+    // reload: published section is retrievable
+    const pb = (await (await get('/api/landos/aip/playbook?section=objection_handling')).json()) as any;
+    expect(pb.published.id).toBe(pub.id);
+  });
+});
+
+describe('LandOS routes — Acquisitions department (CRM-independent, never sends)', () => {
+  it('seller profile + discovery + stage persist/reload; follow-up is a draft only', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Acq deal', leadType: 'test' });
+    const id = ((await created.json()) as any).dealCard.id;
+
+    await post(`/api/landos/deal-cards/${id}/acquisition/profile`, { profile: { name: 'Jane Doe', motivation: 'inherited' } });
+    let v = (await (await get(`/api/landos/deal-cards/${id}/acquisition`)).json()) as any;
+    expect(v.acquisition.profile.name).toBe('Jane Doe');
+    expect(v.nextAction.action).toBe('needs_discovery_call');
+    expect(v.playbook.status).toBe('foundational');
+    expect(v.trainingReadiness.ingestionImplemented).toBe(false);
+
+    // discovery extraction stores seller-claimed facts as seller-stated
+    await post(`/api/landos/deal-cards/${id}/acquisition/discovery`, { notes: 'Inherited, wants to sell within 30 days, 10 acres with road access, brother on the deed.' });
+    v = (await (await get(`/api/landos/deal-cards/${id}/acquisition`)).json()) as any;
+    expect(v.acquisition.discovery.length).toBe(1);
+    expect(v.acquisition.profile.sellerStatedFacts.some((f: string) => /acre|road/i.test(f))).toBe(true);
+    expect(v.acquisition.stage).toBe('discovery_complete');
+
+    // follow-up draft — produced but NEVER sent
+    const fu = (await (await post(`/api/landos/deal-cards/${id}/acquisition/followup`, { format: 'sms' })).json()) as any;
+    expect(fu.draft.sent).toBe(false);
+    expect(fu.draft.draft.length).toBeGreaterThan(10);
+
+    // stage update persists
+    await post(`/api/landos/deal-cards/${id}/acquisition/stage`, { stage: 'needs_follow_up' });
+    v = (await (await get(`/api/landos/deal-cards/${id}/acquisition`)).json()) as any;
+    expect(v.acquisition.stage).toBe('needs_follow_up');
+  });
+});
+
 describe('LandOS routes — post-discovery DD layer', () => {
   it('lead type: a TEST LEAD deal persists + the report response carries leadType', async () => {
     const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Acceptance test lead', leadType: 'test' });

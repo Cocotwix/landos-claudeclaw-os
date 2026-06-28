@@ -38,6 +38,14 @@ Two browser agents are recognized product requirements; the architecture leaves 
 - **County Records Browser Agent** — manual post-discovery official-record verification (`county-records-tasks.ts` + `browser-agents.ts`; dormant, bounded, exact-identity-only).
 - **General Browser Research Assistant** — broad public-web research (listing pages, public context, address/listing clues, screenshots/evidence). Complements structured providers (Apify), not a replacement. Not built; provider-registry + capability layer can host it when added.
 
+## Market Intelligence layer (DD production-ready, 2026-06-28)
+- `realie-comps.ts` — **primary sold comps** via Realie Premium Comparables (`/public/premium/comparables/`, by coordinates); acreage/recency/non-nominal filtering; sold vs valuation split; owns the p25–p75 $/ac band.
+- `zillow-comps.ts` — **supplemental** active + sold via the configurable Zillow ZIP-search actor (`LANDOS_ZILLOW_ACTOR`); active and sold kept separate; active never enters the sold-comp band.
+- `browser-market-intelligence.ts` — Google News RSS evidence backend (sourced; selectable open-weight model architecture for a future vision/site-nav backend).
+- `census-demographics.ts` — county ACS demographics (honest `not_configured` until a free key is set).
+- Comp failover chain (in `deal-card-report.ts` market lane): Realie sold → Zillow supplemental → browser evidence → provider_error → no_comps; all rows provider-attributed; persisted in `marketComps` (sold/active/supplementalSold/valuation/metrics/providers/providerChain).
+- DD checklist (`dd-checklist.ts`) carries **per-field provenance**; FEMA/NWI/USGS merge with their own source labels.
+
 ## Cost / safety governance (working-product mode, 2026-06-27)
 - **Configured operational providers are approved for normal use** to complete business milestones (Apify Redfin, Google Maps/Street View/Static Maps, free gov APIs). Usage is logged; provenance preserved; no duplicate/runaway calls; secrets never leaked.
 - `realie-trial-guard.ts` — local, gitignored trial counter that **logs** Realie usage and enforces a per-sprint allowance; reuse persisted verification first.

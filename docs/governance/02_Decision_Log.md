@@ -44,6 +44,13 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 - **Git hygiene still applies:** stage only intended files (never `git add .`); commit/push scoped changes to complete approved milestones; never commit `.env`, secrets, logs, generated reports, property work product, or the trial counter.
 - This replaces the prior per-call paid-approval regime; the old "approve every comp/paid call" rules are retired.
 
+## Due Diligence department production-ready (settled — audit baseline fb63e94, 2026-06-28)
+- The **DD / Pre-Call Intelligence department is production-ready** for real pre-call use on verified parcels (audit passed: 1391 tests, tsc clean, build clean, no code changes needed).
+- **Comp provider stack:** Realie Premium Comparables is the **primary sold-comp** provider and owns the price-per-acre band; **Zillow** (ZIP search, configurable actor id) is the **supplemental** active + sold provider. **Active listings are kept structurally separate from sold comps and never drive sold-comp valuation.**
+- **Provider chain:** Realie sold → Zillow supplemental (active + sold) → browser evidence → provider_error → no_comps. Provider readiness is honest per provider.
+- **Environmental DD:** FEMA/NWI/USGS run live for verified parcels (coordinates are supporting-only, never identity) and appear in the DD checklist with **per-field provenance** (FEMA NFHL / USFWS NWI / USGS 3DEP).
+- **Honest external gaps (non-blocking):** Census stays **not_configured** until a free key is added; Redfin stays **provider_error** (broken upstream actor); **LandWatch/Land.com deferred** (URL-format blocker); browser intelligence is current **RSS/text** evidence with a future vision/site-nav enhancement.
+
 ## Post-discovery DD (settled)
 - **Two workflows:** pre-discovery stays fast (Lead → Deal Card → quick DD → market pulse → visual → Discovery Call Report). Post-discovery DD is a separate, deeper stage entered only after Tyler decides a lead is worth pursuing.
 - **County Records Browser Agent is a post-discovery verification specialist** — NOT part of the automatic pre-discovery workflow. It runs only when manually triggered from a Deal Card; it stays dormant (no execution) until the visual stack is wired + approved. Tasks are bounded (max interactions/time, stop conditions); subject identity requires exact official identifiers (coordinates/nearest/geocoder can never verify).

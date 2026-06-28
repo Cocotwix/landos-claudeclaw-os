@@ -203,3 +203,44 @@ Verified each contract live before coding (no guessing):
 - **Persistence/reload verified on real persisted reports** (no new live calls): 731 → Realie 21 sold + Zillow 86 active / 767 supplemental sold; 472 → Realie 9 + Zillow 8 / 69; 3 unverified → not_run. Providers `realie:connected, zillow:connected`; chain `realie→zillow`. All five persist + reload.
 - No provider research reopened; LandWatch/Land.com not chased; no new actors validated; Census left not_configured; no new paid providers.
 - Tests 1391 green; tsc clean; production build (web tsc + vite) clean.
+
+## 2026-06-28 — Due Diligence department marked PRODUCTION-READY (audit baseline fb63e94)
+
+Final audit passed; the DD department is production-ready for real pre-call use. Settled facts at this baseline:
+1. **DD department is production-ready** for real pre-call intelligence on verified parcels; unverified/area-only parcels return Needs Verification + area context (never guessed).
+2. **Realie Premium Comparables = primary sold-comp provider** (owns the p25–p75 $/ac band).
+3. **Zillow ZIP search = supplemental** active + sold provider (configurable actor id `LANDOS_ZILLOW_ACTOR`).
+4. **Active listings are separated from sold comps** (`active[]` / `supplementalSold[]` kept out of the Realie band; active never drives valuation).
+5. **Provider readiness is honest** (per-provider connected/collected/error/no_comps/not_configured/not_run).
+6. **Census remains not_configured** until a free CENSUS_API_KEY is added.
+7. **Redfin remains provider_error** (broken upstream actor; Zillow covers the supplemental lane).
+8. **LandWatch/Land.com deferred** (URL-format blocker; future active-land inventory lane).
+9. **Browser intelligence = current RSS/text evidence** (Google News RSS, sourced); future vision/site-nav model is an enhancement.
+10. **Audit baseline: fb63e94.**
+11. Audit passed **1391 tests, tsc clean, production build clean**.
+12. **No code changes were needed during the audit** (verification only).
+
+## 2026-06-28 — Acquisitions Department v1 (CRM-independent seller-strategy brain)
+
+Built the Acquisitions intelligence layer working directly from the Deal Card — **no GHL, no Closebot, no CRM automation, no outbound sending, no paid APIs**.
+- **`acquisitions.ts`**: new `landos_acquisition` table (1 row/deal: profile/comm-log/discovery/stage JSON; persists + reloads). Seller profile (motivation/timeline/price/decision-makers/objections/personality/communication-style/commitments/seller-stated-facts/unknowns/verification-needed/contact dates/stage); manual communication log; deterministic discovery-note extraction (motivation/timeline/price/decision-makers/seller-claimed-facts/objections/tone/urgency/risks/follow-ups/unanswered) — heuristic, no AI; seller-claimed facts stored **Seller-stated, never Verified**; deterministic next-best-action (+why), acquisition readiness stages, seller strategy summary.
+- **`acquisition-prep.ts`**: call-prep generator (opening frame / what we know / what to learn / psychology / key questions / risk topics / likely objections / suggested language / do-not-say / desired outcome) in Tyler's plain low-pressure voice; follow-up **DRAFT** generator (sms/email/call-script) that is NEVER sent (`sent:false`); acquisition playbook foundation (labeled **foundational** until training ingested); R2 training-storage readiness (paths under `agents/acquisitions/training/...` via the existing KnowledgeStore abstraction — **R2-ready, ingestion pipeline NOT built**; raw media never enters Git).
+- **Routes**: GET `/acquisition` (+ profile/comm/discovery/stage/followup POSTs). Follow-up returns a draft only.
+- **Deal Card UI**: Acquisitions panel (stage selector, next best action, seller summary, paste-discovery, call prep, follow-up draft, comm log, discovery summary, playbook + training-readiness chips). Shows with or without a DD report.
+- **Root-cause fix:** next-best-action wrongly required a comm-log entry to count discovery (pasted discovery notes were ignored) — fixed to key on discovery notes/motivation; +regression test.
+- Tests +15 (1406 green); tsc clean; production build clean. Acceptance across 5 scenarios (verified+DD, notes-only, discovery pasted, objections, follow-up) passed; memory persists/reloads; no GHL/CRM/send path built; no raw media staged.
+- **Intentionally NOT built:** CRM/GHL/Closebot integration, outbound sending, MP3/MP4/YouTube ingestion pipeline (storage contracts/paths/UI only), underwriting math.
+
+## 2026-06-28 — Acquisition Intelligence Platform (AIP) v1 (learning engine)
+
+The permanent learning system behind Acquisitions — NOT a CRM/GHL/messaging/chatbot. Modular, model-agnostic, approval-gated; nothing self-modifies.
+- **`aip.ts`** + 3 tables (`landos_aip_asset` / `landos_aip_knowledge` / `landos_aip_playbook`). Pipeline: Training sources → ingestion contract → knowledge extraction → knowledge store → knowledge graph → playbook generator → coaching engine.
+- **Ingestion contract**: one `IngestionHandler` interface + registry (mp3/mp4/wav/youtube/pdf/book/sop/transcript/discovery/offer/meeting/objection/negotiation/seller/note/markdown/text). v1 ships the CONTRACT + registry; media handlers report `unsupported` (future pipeline), text-like accept manual transcripts. Replaceable, model-agnostic.
+- **Assets + metadata** (source/title/author/type/upload/transcript-status/extraction-status/tags/confidence/r2Key). Raw media lives in **R2 only** (`agents/acquisitions/training/{raw,transcripts,summaries,extracted,embeddings,playbook,coaching,examples}`) — the DB stores an r2 key + metadata, never bytes; **Git never stores raw media**.
+- **Knowledge** (17 categories) with **citations back to source** + **graph links** (knowledge→knowledge, knowledge→asset) + confidence + **approval status** + **version**. Starts `proposed`; nothing active until approved.
+- **Playbook generator**: builds a section FROM APPROVED knowledge only → `proposed` (NEVER auto-publishes); approval workflow publishes a new **version** and supersedes the prior; foundational when no approved knowledge.
+- **Coaching engine**: modes (before_call/during_prep/after_call_review/negotiation_review/offer_review) return APPROVED-only knowledge, **cited**, keyword + category matched.
+- **Analytics**: contracts/shapes only (not implemented).
+- Routes: `/api/landos/aip/{assets,knowledge,knowledge/:id/approve|reject,playbook,playbook/generate,playbook/:id/publish,coaching}`.
+- Tests +12 (assets/metadata/citations/approval/versioning/graph/playbook-gen/unapproved-never-active/R2-contract/no-raw-media + full 10-step acceptance + route flow). Suite 1418 green; tsc clean; build clean.
+- **Boundaries honored:** no CRM/GHL/messaging/automation; existing Acquisitions dept not rewritten; no real ingestion/transcription/embeddings built (contracts only); no model hard-coded.

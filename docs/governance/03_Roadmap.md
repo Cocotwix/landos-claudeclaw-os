@@ -34,6 +34,9 @@ Status: capability plumbing in place (parcel-identity capability routes to Reali
 7. **County Records Browser Agent foundation** — official-record provider behind parcel/ownership/zoning/county capabilities, following all verification rules.
 8. **Underwriting + Offer Prep** — post-discovery deep underwriting feeding offer-range guidance (only on verified parcels).
 
+## Due Diligence department — PRODUCTION-READY ✅ (audit baseline fb63e94, 2026-06-28)
+The DD / Pre-Call Intelligence department is production-ready for real pre-call use on verified parcels. Stack: **Realie Premium Comparables = primary sold comps** (owns the $/ac band); **Zillow ZIP search = supplemental active + sold** (separated — active never drives sold valuation); **FEMA/NWI/USGS = live environmental DD** with per-field provenance in the checklist; **browser market intelligence = Google News RSS evidence** (sourced); honest provider readiness throughout; everything persists + reloads. Audit passed 1391 tests / tsc clean / build clean; no code changes needed. Honest external gaps (non-blocking): **Census not_configured** (needs free key), **Redfin provider_error** (broken upstream actor; Zillow covers the lane), **LandWatch/Land.com deferred** (URL-format blocker), browser is RSS/text (vision/site-nav is a future enhancement). **Next leg: Underwriting + Offer Prep** (see Next business milestones #8).
+
 ## Post-discovery DD layer — FOUNDATIONS BUILT (2026-06-27)
 Free gov DD providers (FEMA/NWI/USGS/Census) scaffolded + dormant; County Records Browser Agent foundation (post-discovery, manual, dormant); seller-stated facts; underwriting prep; Deal Card workflow stage + Post-Discovery panel. Remaining to activate: live gov-API activation (free, approval-gated), County Records Browser execution (visual stack + approval), comp provider.
 

@@ -1028,6 +1028,64 @@ function createLandosSchema(db: Database.Database): void {
   };
   addColumn('landos_deal_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
   addColumn('landos_property_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
+
+  // Acquisitions department (CRM-independent intelligence layer) — one row per
+  // Deal Card holding the seller profile, communication log, discovery notes, and
+  // acquisition stage as JSON. Source of truth is the Deal Card; persists/reloads.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS landos_acquisition (
+      deal_card_id  INTEGER PRIMARY KEY REFERENCES landos_deal_card(id),
+      stage         TEXT NOT NULL DEFAULT 'new_lead',
+      profile_json  TEXT NOT NULL DEFAULT '{}',
+      comm_log_json TEXT NOT NULL DEFAULT '[]',
+      discovery_json TEXT NOT NULL DEFAULT '[]',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+  `);
+
+  // Acquisition Intelligence Platform (AIP) — the learning engine behind the
+  // Acquisitions department. Training ASSETS (metadata; raw media lives in R2,
+  // never Git), extracted KNOWLEDGE (with citations + graph links + approval +
+  // versioning), and generated PLAYBOOK sections (approval + publish + version).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS landos_aip_asset (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_type   TEXT NOT NULL DEFAULT 'other',
+      title         TEXT NOT NULL DEFAULT '',
+      author        TEXT NOT NULL DEFAULT '',
+      r2_key        TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      transcript_status TEXT NOT NULL DEFAULT 'pending',
+      extraction_status TEXT NOT NULL DEFAULT 'pending',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE TABLE IF NOT EXISTS landos_aip_knowledge (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      category      TEXT NOT NULL DEFAULT 'principle',
+      content       TEXT NOT NULL DEFAULT '',
+      citations_json TEXT NOT NULL DEFAULT '[]',
+      links_json    TEXT NOT NULL DEFAULT '[]',
+      confidence    TEXT NOT NULL DEFAULT 'medium',
+      status        TEXT NOT NULL DEFAULT 'proposed',
+      version       INTEGER NOT NULL DEFAULT 1,
+      source_asset_id INTEGER REFERENCES landos_aip_asset(id),
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE TABLE IF NOT EXISTS landos_aip_playbook (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      section       TEXT NOT NULL DEFAULT '',
+      content       TEXT NOT NULL DEFAULT '',
+      knowledge_refs_json TEXT NOT NULL DEFAULT '[]',
+      status        TEXT NOT NULL DEFAULT 'proposed',
+      version       INTEGER NOT NULL DEFAULT 1,
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_aip_knowledge_cat ON landos_aip_knowledge(category, status);
+    CREATE INDEX IF NOT EXISTS idx_aip_playbook_section ON landos_aip_playbook(section, status, version DESC);
+  `);
 }
 
 /** Lead classification for property/deal cards. TEST LEAD records behave like
