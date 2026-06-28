@@ -245,6 +245,46 @@ interface DdChecklistRowView {
   noConnectedSource?: boolean;
 }
 
+// Pre-Call Intelligence (identity tier + property type + readiness).
+interface PropertyTypeView {
+  propertyType: string; vacantOrImproved: string; context: string; likelyBuyer: string;
+  viableExits: string[]; poorFitExits: string[]; dealKillers: string[]; opportunities: string[]; risks: string[]; postDiscoveryVerifications: string[];
+}
+interface PreCallView {
+  identityTier: string; identityTierLabel: string; status: string; statusLabel: string; score: number;
+  retrieved: string[]; verified: string[]; candidateEvidence: string[]; unknown: string[]; note: string;
+}
+
+function PreCallIntelligenceSection({ pci, pt }: { pci?: PreCallView | null; pt?: PropertyTypeView | null }) {
+  if (!pci) return null;
+  const tierTone = pci.identityTier === 'verified_parcel' ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : pci.identityTier === 'candidate_parcel' ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+    : 'text-[var(--color-text-faint)] border-[var(--color-border)]';
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Pre-Call Intelligence</span>
+        <span class={`text-[11px] px-2 py-0.5 rounded-full border ${tierTone}`}>{pci.identityTierLabel}</span>
+        <span class="ml-auto text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] tabular-nums">Status: {pci.statusLabel} ({pci.score}%)</span>
+      </div>
+      <div class="text-[11px] text-[var(--color-text-muted)]">{pci.note}</div>
+      {pt && (
+        <div class="text-[11px] grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+          <div><span class="text-[var(--color-text-faint)]">Inferred type:</span> {pt.propertyType} <span class="text-[10px] text-[var(--color-text-faint)]">({pt.vacantOrImproved}/{pt.context})</span></div>
+          <div><span class="text-[var(--color-text-faint)]">Likely buyer:</span> {pt.likelyBuyer}</div>
+          {pt.viableExits.length > 0 && <div class="md:col-span-2"><span class="text-[var(--color-text-faint)]">Viable exits:</span> {pt.viableExits.join(', ')}</div>}
+          {pt.opportunities.length > 0 && <div class="md:col-span-2"><span class="text-[var(--color-text-faint)]">Opportunities:</span> {pt.opportunities.join('; ')}</div>}
+        </div>
+      )}
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
+        <div><div class="text-[var(--color-status-done)]">Retrieved / Verified</div>{[...pci.verified, ...pci.retrieved.filter((r) => !pci.verified.includes(r))].slice(0, 6).map((x, i) => <div key={i}>• {x}</div>)}</div>
+        <div><div class="text-[var(--color-accent)]">Candidate evidence</div>{pci.candidateEvidence.length ? pci.candidateEvidence.map((x, i) => <div key={i}>• {x}</div>) : <div class="text-[var(--color-text-faint)]">—</div>}</div>
+        <div><div class="text-[var(--color-text-faint)]">Unknown / Needs Verification</div>{pci.unknown.slice(0, 6).map((x, i) => <div key={i}>• {x}</div>)}</div>
+      </div>
+    </div>
+  );
+}
+
 // Discovery Call Preparation briefing (operator-facing).
 interface BriefingView {
   knownFacts: string[];
@@ -618,7 +658,21 @@ interface DealCardListItem {
   status: string;
   asking_price: number | null;
   updated_at: number;
+  lead_type?: string;
   reportSummary?: { exists: boolean; reportStatus: string; parcelVerified: boolean; ddPercentComplete: number; generatedAt: number | null };
+}
+
+const LEAD_TYPE_LABELS: Record<string, string> = { actual: 'Actual Lead', test: 'TEST LEAD', research: 'Research Lead', imported: 'Imported Lead', manual: 'Manual Lead' };
+
+// Lead-type badge. TEST LEAD is deliberately loud (amber, bordered) so test
+// records are never mistaken for real seller leads anywhere in LandOS.
+function LeadTypeBadge({ leadType }: { leadType?: string }) {
+  const lt = leadType ?? 'actual';
+  if (lt === 'actual') return null;
+  const tone = lt === 'test'
+    ? 'text-[#b45309] border-[#f59e0b] bg-[#fef3c7]'
+    : 'text-[var(--color-text-muted)] border-[var(--color-border)]';
+  return <span class={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${tone}`}>{LEAD_TYPE_LABELS[lt] ?? lt}</span>;
 }
 
 // DD completeness chip for list/board rows.
@@ -884,6 +938,8 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   const [report, setReport] = useState<ReportView | null>(null);
   const [readiness, setReadiness] = useState<ReadinessView | null>(null);
   const [briefing, setBriefing] = useState<BriefingView | null>(null);
+  const [preCall, setPreCall] = useState<PreCallView | null>(null);
+  const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportWarnings, setReportWarnings] = useState<string[]>([]);
@@ -937,14 +993,18 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
   async function loadReport(id: number) {
     try {
-      const res = await apiGet<{ report: ReportView; readiness?: ReadinessView; briefing?: BriefingView }>(`/api/landos/deal-cards/${id}/report`);
+      const res = await apiGet<{ report: ReportView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${id}/report`);
       setReport(res.report);
       setReadiness(res.readiness ?? null);
       setBriefing(res.briefing ?? null);
+      setPreCall(res.preCallIntelligence ?? null);
+      setPropertyType(res.propertyType ?? null);
     } catch {
       setReport(null);
       setReadiness(null);
       setBriefing(null);
+      setPreCall(null);
+      setPropertyType(null);
     }
   }
 
@@ -957,10 +1017,12 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     setReportError(null);
     setReportWarnings([]);
     try {
-      const res = await apiPost<{ report: ReportView; warnings: string[]; readiness?: ReadinessView; briefing?: BriefingView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
+      const res = await apiPost<{ report: ReportView; warnings: string[]; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
       setReport(res.report);
       setReadiness(res.readiness ?? null);
       setBriefing(res.briefing ?? null);
+      setPreCall(res.preCallIntelligence ?? null);
+      setPropertyType(res.propertyType ?? null);
       setReportWarnings(Array.isArray(res.warnings) ? res.warnings : []);
       await loadDd(deal.id);
       await loadStrategy(deal.id);
@@ -1420,6 +1482,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 >
                   <div class="flex items-center gap-2">
                     <span class="text-[12px] font-medium truncate">{c.title || `Deal #${c.id}`}</span>
+                    <LeadTypeBadge leadType={c.lead_type} />
                     <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
                       {entityBadge(c.entity)}
                     </span>
@@ -1447,6 +1510,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               <span class="text-[14px] font-semibold">
                 {prop?.active_input_address || deal.title || 'Untitled Deal'}
               </span>
+              <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
               <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
                 {entityBadge(deal.entity)}
               </span>
@@ -1506,6 +1570,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               <div class="space-y-3">
                 {/* DD Command Center — at-a-glance pre-call readiness. */}
                 <DealCardCommandCenter r={readiness} />
+
+                {/* Pre-Call Intelligence — identity tier + inferred type + readiness. */}
+                <PreCallIntelligenceSection pci={preCall} pt={propertyType} />
 
                 {/* Discovery Call Preparation — the operator briefing for the call. */}
                 <DiscoveryBriefingSection b={briefing} />

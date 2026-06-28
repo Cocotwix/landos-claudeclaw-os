@@ -697,6 +697,20 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
 });
 
 describe('LandOS routes — post-discovery DD layer', () => {
+  it('lead type: a TEST LEAD deal persists + the report response carries leadType', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Acceptance test lead', leadType: 'test' });
+    const dc = ((await created.json()) as any).dealCard;
+    expect(dc.lead_type).toBe('test');
+    const rep = await get(`/api/landos/deal-cards/${dc.id}/report`);
+    const rb = (await rep.json()) as any;
+    expect(rb.leadType).toBe('test');
+    expect(rb.leadTypeLabel).toBe('TEST LEAD');
+    // list row exposes lead_type for the badge
+    const list = await get('/api/landos/deal-cards');
+    const item = ((await list.json()) as any).dealCards.find((d: any) => d.id === dc.id);
+    expect(item.lead_type).toBe('test');
+  });
+
   it('dd-providers status: free gov providers dormant by default', async () => {
     const res = await get('/api/landos/dd-providers/status');
     expect(res.status).toBe(200);
@@ -766,6 +780,11 @@ describe('LandOS routes — Deal Card DD readiness surfacing', () => {
     expect(rb.readiness).toBeDefined();
     expect(rb.readiness.discoveryReportState).toBe('not_generated');
     expect(rb.readiness.nextBestAction.action).toBe('needs_parcel_verification');
+    // Pre-Call Intelligence: unverified deal -> area-only context, needs verification.
+    expect(rb.preCallIntelligence).toBeDefined();
+    expect(rb.preCallIntelligence.identityTier).toBe('area_only_context');
+    expect(rb.preCallIntelligence.status).toBe('needs_verification');
+    expect(typeof rb.propertyType.propertyType).toBe('string');
 
     const list = await get('/api/landos/deal-cards');
     const item = ((await list.json()) as any).dealCards.find((d: any) => d.id === id);

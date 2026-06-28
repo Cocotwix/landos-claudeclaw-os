@@ -1018,6 +1018,27 @@ function createLandosSchema(db: Database.Database): void {
   db.prepare(
     `INSERT OR IGNORE INTO landos_business_entity (id, name) VALUES (?, ?)`,
   ).run('TY_LAND_BIZ', "Ty's Land Biz");
+
+  // ── Additive migrations (idempotent; no data loss) ────────────────────
+  // Add lead_type to deal/property cards for existing DBs. CREATE TABLE IF NOT
+  // EXISTS does not alter an existing table, so add the column when missing.
+  const addColumn = (table: string, column: string, ddl: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addColumn('landos_deal_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
+  addColumn('landos_property_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
+}
+
+/** Lead classification for property/deal cards. TEST LEAD records behave like
+ *  real leads but are visually distinct and excluded from real-lead reporting. */
+export const LEAD_TYPES = ['actual', 'test', 'research', 'imported', 'manual'] as const;
+export type LeadType = (typeof LEAD_TYPES)[number];
+export const LEAD_TYPE_LABEL: Record<LeadType, string> = {
+  actual: 'Actual Lead', test: 'TEST LEAD', research: 'Research Lead', imported: 'Imported Lead', manual: 'Manual Lead',
+};
+export function isLeadType(v: unknown): v is LeadType {
+  return typeof v === 'string' && (LEAD_TYPES as readonly string[]).includes(v);
 }
 
 /** Open (or return) the LandOS database. Lazy so processes that never touch

@@ -105,3 +105,23 @@ Next business milestone: activate the first free gov DD provider (FEMA flood) li
 **Tests:** +8 (validateLocality + adapter county-derivation/downgrade/keep-correct), full suite 1350 green; tsc clean.
 
 **Remaining for DD department completion:** lead-type field, property-type inference, Apify comps wired into the persisted Deal Card report, gov DD activation, and the five-address full-workflow acceptance suite (now unblocked by this fix).
+
+## 2026-06-27 — Pre-Call Intelligence synthesis layer
+
+**Milestone:** add the trustworthy/labeled core of the Pre-Call Intelligence package.
+
+- `pre-call-intelligence.ts` (new, pure): identity TIER (Verified Parcel / Candidate Parcel / Area-Only Context), property-type + preliminary-strategy inference (never fabricated), and a Pre-Call readiness STATUS (High/Moderate/Limited/Needs Verification with a 0-100 score) — replaces binary "ready". Wired into the Deal Card report API (`preCallIntelligence` + `propertyType`) and rendered on the Deal Card UI.
+- Live-validated on the five acceptance addresses: locality fix holds in the suite (0 Green Rd, Rockvale correctly downgraded to Area-Only when Realie returned Knoxville); 731 Filter Plant Dr + 472 West Rd verified with high locality confidence; 220 W White Rd = Candidate.
+- Tests +11 (1361 total green); tsc + production build clean.
+
+**Remaining for department completion:** lead-type field + labeling, Apify comps + Google visuals wired into the persisted Deal Card run, browser-research market-intelligence lane (selectable open-source model), gov DD activation, acreage sourcing for property-type inference, and the five persisted Test-Lead Deal Card full runs.
+
+## 2026-06-27 — Lead types + 5 persisted Test-Lead Deal Cards (acceptance) + report-path identity fix
+
+- **Origin repair:** folded the previously-stranded `pre-call-intelligence.ts` (+test) that `routes.ts` imports — 4bc9fe2 had committed the importer but not the module, so origin did not build. Now consistent.
+- **Lead types:** additive `lead_type` column (idempotent ALTER, no data loss) on deal/property cards; `LEAD_TYPES`/`LEAD_TYPE_LABEL`; `createDealCard`+POST accept `leadType`; report response carries `leadType`/`leadTypeLabel`; **TEST LEAD** badge (loud amber) on Deal Card list rows + detail header.
+- **Root-cause fix (acceptance defect):** `buildIdentityText` never included the street address, so an address-only lead resolved to just the state and the Deal Card report path could never verify it (`parcelVerified=false`) even though the capability verified it directly. Added the address line (APN still wins when present). +regression test.
+- **Acceptance:** created 5 persisted **TEST LEAD** Deal Cards via the live pipeline (Realie + locality fix + expanded fields). 731 Fayetteville + 472 Poulan verify (472 → Improved property, 8.6ac, building 1512, market/AVM/lat-lng); 0 Green Rd downgrades on locality; 220 W White / 0 Fredonia honest not-verified. Reports persist + reload.
+- Tests 1365 green; tsc + build clean. Realie report-run calls this block: 5.
+
+**Remaining for department completion:** Google visuals + Apify comps/market + Browser Market Intelligence + gov DD activation wired into the persisted run.

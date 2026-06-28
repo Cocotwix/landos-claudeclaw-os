@@ -126,7 +126,7 @@ import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { buildDiscoveryBriefing } from './discovery-briefing.js';
 import { buildPreCallIntelligence, inferPropertyType, type ParcelFacts } from './pre-call-intelligence.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
-import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
+import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, isLeadType, LEAD_TYPE_LABEL, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence, type LeadType } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import {
   DEAL_CARD_STATUSES,
@@ -906,6 +906,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (statusRaw !== undefined && !(DEAL_CARD_STATUSES as readonly string[]).includes(statusRaw)) {
       return c.json({ error: 'invalid status' }, 400);
     }
+    const leadTypeRaw = str(body.leadType);
     const created = createDealCard({
       entity,
       title: str(body.title),
@@ -914,6 +915,7 @@ export function registerLandosRoutes(app: Hono): void {
       askingPrice: num(body.askingPrice),
       combinedStrategy: str(body.combinedStrategy),
       packageNotes: str(body.packageNotes),
+      leadType: isLeadType(leadTypeRaw) ? leadTypeRaw : undefined,
     });
     return c.json({ dealCard: getDealCard(created.id) }, 201);
   });
@@ -1182,7 +1184,9 @@ export function registerLandosRoutes(app: Hono): void {
     });
     const briefing = buildDiscoveryBriefing(report, readiness, sellerSummary);
     const { preCallIntelligence, propertyType } = synthPreCall(report as unknown as Record<string, unknown>, deal as unknown as Record<string, unknown>, cardId);
-    return c.json({ report, readiness, briefing, preCallIntelligence, propertyType });
+    const leadTypeRaw = (deal as unknown as { lead_type?: string }).lead_type;
+    const leadType: LeadType = isLeadType(leadTypeRaw) ? leadTypeRaw : 'actual';
+    return c.json({ report, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType] });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {

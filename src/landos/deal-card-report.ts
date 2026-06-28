@@ -258,12 +258,20 @@ export function buildIdentityText(deal: DealCardDetail, dd: DealCardDdView): str
   const propertyId = s(prop.lp_property_id);
   const fips = s(prop.fips);
   const ownerName = s(owner?.name) || s(prop.owner);
+  // The street address of the subject parcel. WITHOUT this, an address-only lead
+  // (no APN/owner/LP URL) produced an identity text of just the state, so the
+  // report could never run an address-based verification. Include it so the
+  // capability resolves address leads (APN still takes precedence when present).
+  const address = s((prop as { active_input_address?: string }).active_input_address) || s((prop as { address?: string }).address);
 
   const lines: string[] = [];
   if (lpUrl) lines.push(lpUrl);
   if (apn) lines.push(`APN: ${apn}`);
   if (propertyId) lines.push(`propertyid: ${propertyId}`);
   if (fips) lines.push(`fips: ${fips}`);
+  // A full "street, city, ST zip" line lets extractPropertyArgs build an address
+  // lookup. Placed before county/state so the address parse wins for address leads.
+  if (address) lines.push(address);
   if (county) lines.push(`${county} County`);
   if (state) lines.push(state);
   if (ownerName) lines.push(`Owner: ${ownerName}`);

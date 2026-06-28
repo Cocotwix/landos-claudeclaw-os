@@ -71,6 +71,36 @@ describe('Realie adapter — root-cause fix (county derivation + locality downgr
     expect(n.note).toMatch(/different locality/i);
   });
 
+  it('maps the expanded Realie fields (real 472 West Rd response shape)', async () => {
+    const adapter = makeRealieParcelAdapter({
+      env: key,
+      deriveCounty: async () => ({ county: 'Worth', state: 'GA', zip: '31781', fips: '13321' }),
+      fetchImpl: async () => okBody({
+        parcelId: '00830-054-000', addressFull: '472 WEST RD, POULAN, GA 31781', city: 'POULAN', county: 'WORTH',
+        state: 'GA', zipCode: '31781', ownerName: 'CARROLL, MARGARET R', fipsState: '13', fipsCounty: '321',
+        acres: 8.6, landArea: 374616, buildingArea: 1512, livingArea: 1512, yearBuilt: 1992, useCode: '1001',
+        residential: true, totalBedrooms: 0, totalBathrooms: 0, totalMarketValue: 152956, totalLandValue: 38296,
+        totalAssessedValue: 61182, assessedLandValue: 15318, taxValue: 1613.77, modelValue: 222467,
+        latitude: 31.498296, longitude: -83.772086, siteCensusTract: '133219504.004086',
+        ownerAddressFull: '472 WEST RD, POULAN, GA 31781', assessorSalePrice: 6880, transferDate: '20101220',
+      }),
+      now: () => 't',
+    });
+    const n = await adapter.lookup({ address: '472 West Rd', city: 'Poulan', state: 'GA', zip: '31781' }, { timeoutMs: 1000 });
+    expect(n.verified).toBe(true);
+    expect(n.acres).toBe(8.6);
+    expect(n.buildingAreaSqft).toBe(1512);
+    expect(n.yearBuilt).toBe(1992);
+    expect(n.residential).toBe(true);
+    expect(n.useCode).toBe('1001');
+    expect(n.marketTotal).toBe(152956);
+    expect(n.assessedTotal).toBe(61182);
+    expect(n.avmEstimate).toBe(222467);
+    expect(n.lat).toBeCloseTo(31.4983, 2);
+    expect(n.lng).toBeCloseTo(-83.7721, 2);
+    expect(n.lastSalePrice).toBe(6880);
+  });
+
   it('keeps a correct match Verified', async () => {
     const adapter = makeRealieParcelAdapter({
       env: key,

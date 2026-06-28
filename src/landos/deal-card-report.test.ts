@@ -13,13 +13,24 @@ import { createDealCard } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd } from './deal-card-dd.js';
 import { getDealCardStrategy } from './deal-card-strategy.js';
 import { getDealCardMarket } from './deal-card-market.js';
-import { getDealCardReport, runDealCardReport } from './deal-card-report.js';
+import { getDealCardReport, runDealCardReport, buildIdentityText } from './deal-card-report.js';
+import { getDealCard } from './deal-card.js';
 import { upsertCardFromDukeRun } from './property-card.js';
 import { linkPropertyToDeal } from './deal-card.js';
 import type { LpPropertySummary, LpResolveArgs, LpResolveResult } from './landportal-client.js';
 
 beforeEach(() => {
   _initTestLandosDb();
+});
+
+it('buildIdentityText includes the street address so address-only leads can verify (regression)', () => {
+  const dealId = createDealCard({ entity: 'TY_LAND_BIZ', title: 'addr lead', leadType: 'test' }).id;
+  const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '731 Filter Plant Dr, Fayetteville, NC 28301', city: 'Fayetteville', state: 'NC', verified: false, summary: 'x' });
+  linkPropertyToDeal({ dealCardId: dealId, cardId: card.id, role: 'subject' });
+  const deal = getDealCard(dealId)!;
+  const text = buildIdentityText(deal as never, getDealCardDd(dealId) as never);
+  expect(text).toContain('731 Filter Plant Dr');
+  expect(text).toMatch(/NC/);
 });
 
 function newDeal(): number {

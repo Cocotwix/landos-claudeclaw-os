@@ -36,6 +36,8 @@ import {
   DEAL_PROPERTY_ROLES,
   PERSON_AUTHORITY_STATUSES,
   PERSON_ROLES,
+  isLeadType,
+  type LeadType,
 } from './db.js';
 import {
   getPropertyCardRow,
@@ -175,13 +177,15 @@ export function createDealCard(input: {
   askingPrice?: number;
   combinedStrategy?: string;
   packageNotes?: string;
+  leadType?: LeadType;
 }): DealCardRow {
   const db = getLandosDb();
   const status: DealCardStatus =
     input.status && (DEAL_CARD_STATUSES as readonly string[]).includes(input.status) ? input.status : 'new';
+  const leadType: LeadType = isLeadType(input.leadType) ? input.leadType : 'actual';
   const id = db.prepare(
-    `INSERT INTO landos_deal_card (entity, title, status, seller_notes, asking_price, combined_strategy, package_notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO landos_deal_card (entity, title, status, seller_notes, asking_price, combined_strategy, package_notes, lead_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.entity,
     input.title ?? '',
@@ -190,6 +194,7 @@ export function createDealCard(input: {
     input.askingPrice ?? null,
     input.combinedStrategy ?? '',
     input.packageNotes ?? '',
+    leadType,
   ).lastInsertRowid as number;
   landosAudit('tyler', 'deal_card_created', `deal ${id}`, { entity: input.entity, refTable: 'landos_deal_card', refId: id });
   return getDealCardRow(id)!;
