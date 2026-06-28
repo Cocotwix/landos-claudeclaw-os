@@ -41,6 +41,26 @@ export interface NormalizedParcel {
   landArea?: number | null;
   legalDesc?: string | null;
   subdivision?: string | null;
+  // ── Extended Realie fields (additive; populated when the provider supplies
+  //    them). One canonical model — no duplicate mappings. ──
+  buildingAreaSqft?: number | null;
+  yearBuilt?: number | null;
+  useCode?: string | null;
+  residential?: boolean | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  marketTotal?: number | null;
+  marketLand?: number | null;
+  assessedTotal?: number | null;
+  assessedLand?: number | null;
+  taxValue?: number | null;
+  avmEstimate?: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  censusTract?: string | null;
+  mailingAddress?: string | null;
+  lastSalePrice?: number | null;
+  lastSaleDate?: string | null;
   // ── Provenance (preserved for every fact) ──
   /** ISO timestamp the record was produced. */
   timestamp?: string;
@@ -201,6 +221,25 @@ function normalizeRealieProperty(
     landArea: num(p.landArea),
     legalDesc: str(p.legalDesc),
     subdivision: str(p.subdivision),
+    // Extended fields — mapped from the (already authorized) single response.
+    buildingAreaSqft: num(p.buildingArea) ?? num(p.livingArea),
+    yearBuilt: num(p.yearBuilt),
+    useCode: str(p.useCode),
+    residential: typeof p.residential === 'boolean' ? p.residential : null,
+    bedrooms: num(p.totalBedrooms),
+    bathrooms: num(p.totalBathrooms),
+    marketTotal: num(p.totalMarketValue),
+    marketLand: num(p.totalLandValue),
+    assessedTotal: num(p.totalAssessedValue),
+    assessedLand: num(p.assessedLandValue),
+    taxValue: num(p.taxValue),
+    avmEstimate: num(p.modelValue),
+    lat: num(p.latitude),
+    lng: num(p.longitude),
+    censusTract: str(p.siteCensusTract),
+    mailingAddress: str(p.ownerAddressFull) ?? str(p.mailerAddress),
+    lastSalePrice: num(p.assessorSalePrice),
+    lastSaleDate: str(p.transferDate),
     timestamp: ctx.timestamp,
     confidence: 'high',
     searchedIdentifier: ctx.searchedIdentifier,

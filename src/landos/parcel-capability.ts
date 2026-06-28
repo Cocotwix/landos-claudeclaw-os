@@ -143,7 +143,21 @@ function normalizedToResult(n: NormalizedParcel): LpResolveResult {
     ps.situs_address = n.situsAddress ?? '';
     ps.city = n.city ?? '';
     ps.owner = n.owner ?? '';
+    ps.zip = n.zip ?? ps.zip;
     if (typeof n.acres === 'number') { ps.lot_size_acres = String(n.acres); ps.calc_acres = String(n.acres); }
+    // Thread the expanded Realie fields into the canonical property_summary so
+    // they flow through the existing bridge -> landFacts -> DD checklist/report.
+    if (typeof n.landArea === 'number') ps.lot_size_sqft = String(n.landArea);
+    if (typeof n.buildingAreaSqft === 'number') ps.building_area_sqft = String(n.buildingAreaSqft);
+    if (typeof n.assessedTotal === 'number') ps.assessed_total = String(n.assessedTotal);
+    if (typeof n.assessedLand === 'number') ps.assessed_land = String(n.assessedLand);
+    if (typeof n.marketTotal === 'number') ps.market_total = String(n.marketTotal);
+    if (typeof n.marketLand === 'number') ps.market_land = String(n.marketLand);
+    if (typeof n.avmEstimate === 'number') ps.tlp_estimate = String(n.avmEstimate);
+    if (typeof n.lat === 'number') ps.lat = String(n.lat);
+    if (typeof n.lng === 'number') ps.lng = String(n.lng);
+    if (n.mailingAddress) ps.mailing_address = n.mailingAddress;
+    if (n.useCode) ps.land_use = ps.land_use || `Use code ${n.useCode}`;
     property_summary = ps;
   }
   return {

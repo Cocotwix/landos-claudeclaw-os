@@ -124,6 +124,7 @@ import {
 } from './county-records-tasks.js';
 import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { buildDiscoveryBriefing } from './discovery-briefing.js';
+import { buildPreCallIntelligence, inferPropertyType, type ParcelFacts } from './pre-call-intelligence.js';
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { DD_FIELD_LABELS, DD_PARCEL_IDENTITY_STATUSES, STRATEGY_OFFER_READINESS, MARKET_DEMAND_LABELS, MARKET_SOURCE_CONFIDENCE, type DdFieldLabel, type DdParcelIdentityStatus, type StrategyOfferReadiness, type MarketDemandLabel, type MarketSourceConfidence } from './db.js';
 import { addComp, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
@@ -1129,6 +1130,43 @@ export function registerLandosRoutes(app: Hono): void {
   // Strategy logic, updates the three worksheets (non-destructively), and
   // persists a practical local report that survives reload. No fabricated parcel
   // facts/comps/demand/pricing/EVs/offers; no external CRM/GHL; no secret read.
+  // Synthesize Pre-Call Intelligence (identity tier + property-type/strategy
+  // inference + readiness) from the persisted report. Derived; never fabricated.
+  const factsFromReport = (report: Record<string, unknown>, deal: Record<string, unknown>): ParcelFacts => {
+    const rows = (report.ddFactChecklist ?? []) as Array<{ label: string; value: string | null; status: string }>;
+    const v = (needle: string) => rows.find((r) => r.label.toLowerCase().includes(needle) && r.status === 'verified')?.value ?? null;
+    const numv = (s: string | null) => { if (!s) return null; const n = Number(String(s).replace(/[^0-9.]/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
+    const card = ((deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0] ?? {}) as Record<string, unknown>;
+    return {
+      verified: !!report.parcelVerified,
+      localityOk: !!report.parcelVerified,
+      acres: numv(v('acre')),
+      zoning: v('zoning'),
+      landUse: v('land use'),
+      buildingAreaSqft: numv(v('building')),
+      inputAddress: (card.active_input_address as string) ?? (deal.title as string) ?? null,
+      owner: (card.owner as string) ?? null,
+      city: (card.city as string) ?? null,
+      county: (card.county as string) ?? null,
+      state: (card.state as string) ?? null,
+    };
+  };
+  const synthPreCall = (report: Record<string, unknown>, deal: Record<string, unknown>, cardId: number | undefined) => {
+    const facts = factsFromReport(report, deal);
+    const propertyType = inferPropertyType(facts);
+    const compsCount = cardId ? listComps({ dealCardId: deal.id as number }).length : 0;
+    const visualsCaptured = ((report.visualContext as { assets?: Array<{ status: string }> })?.assets ?? []).filter((a) => a.status === 'captured').length;
+    const preCallIntelligence = buildPreCallIntelligence(facts, {
+      identityVerified: !!report.parcelVerified,
+      visualsCaptured,
+      compsCount,
+      marketPulse: !!report.marketSummary,
+      browserEvidenceCount: 0,
+      flood: 'needs_verification', wetlands: 'needs_verification', slope: 'needs_verification',
+    });
+    return { preCallIntelligence, propertyType };
+  };
+
   app.get('/api/landos/deal-cards/:id/report', (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -1143,7 +1181,8 @@ export function registerLandosRoutes(app: Hono): void {
       hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
     });
     const briefing = buildDiscoveryBriefing(report, readiness, sellerSummary);
-    return c.json({ report, readiness, briefing });
+    const { preCallIntelligence, propertyType } = synthPreCall(report as unknown as Record<string, unknown>, deal as unknown as Record<string, unknown>, cardId);
+    return c.json({ report, readiness, briefing, preCallIntelligence, propertyType });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
@@ -1171,7 +1210,8 @@ export function registerLandosRoutes(app: Hono): void {
       hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
     });
     const briefing = buildDiscoveryBriefing(result.report, readiness, sellerSummary);
-    return c.json({ ...result, readiness, briefing });
+    const { preCallIntelligence, propertyType } = synthPreCall(result.report as unknown as Record<string, unknown>, (deal ?? {}) as unknown as Record<string, unknown>, cardId);
+    return c.json({ ...result, readiness, briefing, preCallIntelligence, propertyType });
   });
 
   // ── Post-discovery DD layer ─────────────────────────────────────────────
