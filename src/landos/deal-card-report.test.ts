@@ -87,6 +87,41 @@ it('activates FEMA flood (live contract) in the persisted report when the verifi
   expect(reloaded.govDd.flood.zone).toBe('X');
 });
 
+it('auto-captures Google visuals once + reuses them, and persists Apify comps + metrics (items 1+2)', async () => {
+  const id = createDealCard({ entity: 'TY_LAND_BIZ', title: 'enrich deal', leadType: 'test' }).id;
+  const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 West Rd, Poulan, GA 31781', state: 'GA', verified: false, summary: 'x' });
+  linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
+  const resolveWithGeo = async (): Promise<LpResolveResult> => ({
+    verified: true, status: 'verified', propertyid: '1', fips: '13321', apn: '00830-054-000',
+    situs_address: '472 WEST RD', city: 'POULAN', state: 'GA', owner: 'CARROLL, MARGARET R', match_notes: 'ok', candidates: [],
+    property_summary: { ...VERIFIED_SUMMARY, situs_address: '472 WEST RD', lat: '31.498296', lng: '-83.772086' },
+  });
+  let captureCalls = 0;
+  const captureVisuals = async () => { captureCalls++; return { captured: true, reason: 'ok', assets: { maps_static: { storedPath: '/x.png', timestamp: 't' }, street_view_static: { storedPath: '/y.png', timestamp: 't' } } }; };
+  const retrieveCompsImpl = async () => ({
+    status: 'collected' as const, soldCount: 2, activeCount: 0,
+    sold: [{ price: 50000, saleDateIso: '2025-01-01', acres: 8, pricePerAcre: 6250, sourceUrl: 'https://redfin.com/a', sourceLabel: 'redfin' }, { price: 70000, saleDateIso: '2025-02-01', acres: 10, pricePerAcre: 7000, sourceUrl: 'https://redfin.com/b', sourceLabel: 'redfin' }],
+    active: [], metrics: { soldAvgPrice: 60000, soldAvgPpa: 6625, soldMedianPpa: 6625, activeAvgPrice: null, domMedian: null },
+    providers: [{ providerId: 'redfin', status: 'connected', kept: 2 }], source: 'Apify Redfin', timestamp: 't', note: '2 sold comps',
+  });
+  const femaFetch = async () => ({ ok: true, status: 200, json: async () => ({ features: [{ attributes: { FLD_ZONE: 'X', SFHA_TF: 'F' } }] }) });
+  const opts = { resolve: resolveWithGeo, timeoutMs: 1000, reverify: true, googleVisualConfigured: true, captureVisuals, retrieveCompsImpl, femaFetch };
+
+  const r1 = (await runDealCardReport(id, opts))!.report;
+  expect(r1.parcelVerified).toBe(true);
+  expect(captureCalls).toBe(1);
+  expect(r1.visualContext.assets.some((a) => a.status === 'captured')).toBe(true);
+  expect(r1.marketComps.status).toBe('collected');
+  expect(r1.marketComps.soldCount).toBe(2);
+  expect(r1.marketComps.metrics.soldAvgPrice).toBe(60000);
+  // persisted + reloads
+  const reloaded = getDealCardReport(id);
+  expect(reloaded.marketComps.soldCount).toBe(2);
+  // reuse: a second run does NOT capture again
+  await runDealCardReport(id, opts);
+  expect(captureCalls).toBe(1);
+});
+
 /** A resolver that cannot verify the parcel. */
 async function notVerifiedResolve(_args: LpResolveArgs): Promise<LpResolveResult> {
   return {

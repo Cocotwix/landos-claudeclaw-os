@@ -1157,7 +1157,8 @@ export function registerLandosRoutes(app: Hono): void {
   const synthPreCall = (report: Record<string, unknown>, deal: Record<string, unknown>, cardId: number | undefined) => {
     const facts = factsFromReport(report, deal);
     const propertyType = inferPropertyType(facts);
-    const compsCount = cardId ? listComps({ dealCardId: deal.id as number }).length : 0;
+    const liveSold = (report.marketComps as { soldCount?: number } | undefined)?.soldCount ?? 0;
+    const compsCount = liveSold > 0 ? liveSold : (cardId ? listComps({ dealCardId: deal.id as number }).length : 0);
     const visualsCaptured = ((report.visualContext as { assets?: Array<{ status: string }> })?.assets ?? []).filter((a) => a.status === 'captured').length;
     const floodStatus = ((report.govDd as { flood?: { status?: string } } | undefined)?.flood?.status === 'verified') ? 'verified' as const : 'needs_verification' as const;
     const preCallIntelligence = buildPreCallIntelligence(facts, {

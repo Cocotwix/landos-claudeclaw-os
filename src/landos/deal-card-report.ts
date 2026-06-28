@@ -55,9 +55,66 @@ import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './s
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
 import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
-import { loadCardVisualCapture } from './property-card.js';
+import { loadCardVisualCapture, saveCardVisualCapture, type CardVisualAsset } from './property-card.js';
+import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
+import { googleVisualConfigured } from './providers/google-visual.js';
 import { buildDdChecklist, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
 import { fetchFemaFlood, type GovFetch } from './providers/gov-dd-providers.js';
+
+export interface MarketCompView {
+  price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
+}
+export interface MarketCompsView {
+  status: 'collected' | 'no_comps' | 'not_configured' | 'no_area' | 'error' | 'not_run';
+  soldCount: number;
+  activeCount: number;
+  sold: MarketCompView[];
+  active: MarketCompView[];
+  metrics: { soldAvgPrice: number | null; soldAvgPpa: number | null; soldMedianPpa: number | null; activeAvgPrice: number | null; domMedian: number | null };
+  providers: Array<{ providerId: string; status: string; kept: number }>;
+  source: string;
+  timestamp: string | null;
+  note: string;
+}
+function emptyMarketComps(): MarketCompsView {
+  return { status: 'not_run', soldCount: 0, activeCount: 0, sold: [], active: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, activeAvgPrice: null, domMedian: null }, providers: [], source: 'Apify Redfin', timestamp: null, note: 'Not run.' };
+}
+const avg = (ns: number[]): number | null => (ns.length ? Math.round(ns.reduce((a, b) => a + b, 0) / ns.length) : null);
+const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
+
+/** Live Apify Redfin comp collection for the verified parcel's area. Returns a
+ *  persisted-shaped view with sold comps + metrics. Honest status when sparse. */
+async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
+  const { registerLiveProviders } = await import('./providers/register-live-providers.js');
+  const { retrieveComps } = await import('./comp-retrieval.js');
+  const reg = await registerLiveProviders({ onSpend: () => {} });
+  if (!reg.compsLive) return { ...emptyMarketComps(), status: 'not_configured', note: `Apify Redfin not wired: ${reg.reason}` };
+  if (!q.state || !(q.address || q.city || q.zip)) return { ...emptyMarketComps(), status: 'no_area', note: 'No address/city/ZIP + state to search comps.' };
+  const res = await retrieveComps(
+    { address: q.address, city: q.city, county: q.county, state: q.state, zip: q.zip, acres: q.acres, centroid: typeof q.lat === 'number' && typeof q.lng === 'number' ? { lat: q.lat, lng: q.lng } : null, centroidTier: 'A' },
+    { registry: reg.registry },
+  );
+  const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc }));
+  const doms = res.needsVerification.map((n) => n.daysOnMarket).filter((d): d is number => typeof d === 'number');
+  return {
+    status: res.hasComps ? 'collected' : 'no_comps',
+    soldCount: sold.length,
+    activeCount: 0, // current Redfin actor returns sold comps; active listings not separated yet
+    sold: sold.slice(0, 25),
+    active: [],
+    metrics: {
+      soldAvgPrice: avg(sold.map((c) => c.price)),
+      soldAvgPpa: avg(sold.map((c) => c.pricePerAcre).filter((p): p is number => typeof p === 'number')),
+      soldMedianPpa: median(sold.map((c) => c.pricePerAcre).filter((p): p is number => typeof p === 'number')),
+      activeAvgPrice: null,
+      domMedian: median(doms),
+    },
+    providers: res.providers.map((p) => ({ providerId: p.providerId, status: p.status, kept: p.kept })),
+    source: 'Apify Redfin',
+    timestamp: new Date().toISOString(),
+    note: res.note,
+  };
+}
 
 type GovDdView = DealCardReportView['govDd'];
 function emptyGovDd(): GovDdView {
@@ -172,6 +229,9 @@ export interface DealCardReportView {
   govDd: {
     flood: { status: string; zone: string | null; note: string; source: string | null; timestamp: string | null };
   };
+  /** Apify Redfin sold comps + active listings + market metrics (live where
+   *  configured). Persisted; honest status when sparse/unavailable. */
+  marketComps: MarketCompsView;
   creditUsage: {
     landportalNonCreditUsed: boolean;
     compCreditUsed: false;
@@ -197,6 +257,16 @@ export interface DealCardReportDeps {
   reverify?: boolean;
   /** Injected FEMA fetch for tests (keeps the suite offline). Default = live. */
   femaFetch?: GovFetch;
+  /** Injected Google visual capture for tests. Default = live capturePropertyVisuals. */
+  captureVisuals?: (input: CaptureInput) => Promise<CaptureResult>;
+  /** Injected comp retrieval for tests. Default = live Apify Redfin registry. */
+  retrieveCompsImpl?: (q: CompQueryLite) => Promise<MarketCompsView>;
+}
+
+/** Minimal comp query the report builds from the verified parcel. */
+export interface CompQueryLite {
+  address?: string; city?: string; county?: string; state?: string; zip?: string;
+  acres?: number; lat?: number; lng?: number;
 }
 
 export interface DealCardReportResult {
@@ -670,6 +740,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     ddCompleteness: summarizeDdCompleteness(buildDdChecklist({}, null)),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
     govDd: emptyGovDd(),
+    marketComps: emptyMarketComps(),
     creditUsage: {
       landportalNonCreditUsed: false,
       compCreditUsed: false,
@@ -926,6 +997,26 @@ export async function runDealCardReport(
   const ddChecklistRows = buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null);
   const vid = verification.identity;
   const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
+  // ITEM 1: Google visual auto-capture/REUSE. For a verified parcel, capture once
+  // (satellite + Street View) and persist to the card; on later runs reuse the
+  // persisted capture (no repeat Google call). Honest no-op when not configured.
+  const googleConfigured = deps.googleVisualConfigured ?? googleVisualConfigured();
+  if (visualCardId && googleConfigured && verification.parcelVerified) {
+    const already = loadCardVisualCapture(visualCardId);
+    const hasCoordsOrAddr = !!(verification.coordinates || vid?.situsAddress);
+    if (Object.keys(already).length === 0 && hasCoordsOrAddr) {
+      try {
+        const cap = await (deps.captureVisuals ?? capturePropertyVisuals)({
+          propertyLabel: vid?.situsAddress ?? `deal ${dealCardId}`,
+          address: vid?.situsAddress ?? null,
+          coords: verification.coordinates ?? null,
+        });
+        if (cap.captured && Object.keys(cap.assets).length > 0) {
+          saveCardVisualCapture(visualCardId, cap.assets as Record<string, CardVisualAsset>, { provider: 'google' });
+        }
+      } catch { /* visuals are supporting-only; never fail the report on a capture error */ }
+    }
+  }
   const rawCaptured = visualCardId ? loadCardVisualCapture(visualCardId) : {};
   const captured: Partial<Record<VisualService, { storedPath: string; timestamp?: string; url?: string }>> = {};
   for (const [svc, a] of Object.entries(rawCaptured)) {
@@ -946,6 +1037,27 @@ export async function runDealCardReport(
   );
 
   const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch });
+
+  // ITEM 2: Apify Redfin sold comps + market metrics for the verified parcel's
+  // area. Live where configured (injectable for tests); honest status otherwise.
+  let marketComps = emptyMarketComps();
+  if (verification.parcelVerified) {
+    const lf = verification.propertyData?.landFacts as { acres?: number } | undefined;
+    const q: CompQueryLite = {
+      address: vid?.situsAddress ?? undefined,
+      city: vid?.city ?? undefined,
+      county: vid?.county ?? undefined,
+      state: vid?.state ?? undefined,
+      acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
+      lat: verification.coordinates?.lat,
+      lng: verification.coordinates?.lng,
+    };
+    try {
+      marketComps = await (deps.retrieveCompsImpl ?? liveMarketComps)(q);
+    } catch (e: unknown) {
+      marketComps = { ...emptyMarketComps(), status: 'error', note: `Comp retrieval error: ${(e as Error)?.message ?? String(e)}.` };
+    }
+  }
 
   const view: DealCardReportView = {
     exists: true,
@@ -970,6 +1082,7 @@ export async function runDealCardReport(
     ddCompleteness: summarizeDdCompleteness(ddChecklistRows),
     visualContext,
     govDd,
+    marketComps,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,
       compCreditUsed: false,

@@ -134,3 +134,13 @@ Next business milestone: activate the first free gov DD provider (FEMA flood) li
 - Tests +9 (FEMA contract parse, govDd in persisted report, browser intel statuses); full suite 1370 green; tsc + build clean. Realie report-run calls this block: 5.
 
 **Remaining for department completion:** Google visual auto-capture in the run (item 1) and Apify Redfin sold-comps lane in the persisted report (item 2); plus NWI/USGS gov providers (contract-verify like FEMA) and a real browser backend.
+
+## 2026-06-27 — Final DD integrations: Google visual auto-capture + Apify comps in the persisted report
+
+- **Item 1 (Google visuals):** the persisted report run now auto-captures satellite + Street View ONCE for a verified parcel (point/address), persists to the card, and REUSES on later runs (no repeat Google call). Honest no-op when not configured. Injectable for offline tests.
+- **Item 2 (Apify Redfin comps + metrics):** the run now collects live sold comps for the verified parcel area (registerLiveProviders + retrieveComps), computes metrics (sold count, avg price, avg/median price-per-acre, median DOM), and persists them in the report (`marketComps`). Honest status when sparse (no_comps / not_configured / no_area) — never fabricated. Injectable for offline tests.
+- Pre-call comp signal now uses the live sold-comp count.
+- Acceptance re-run (deals #20-24, all TEST LEAD): 731 + 472 verified, both auto-captured 2 visuals + FEMA zone X + ran the live Apify lane (returned no verifiable comps for these specific parcels — honest); 3 unverified honestly area-only/candidate. All persist + reload.
+- Tests +1 (items 1+2 with injected deps); full suite 1371 green; tsc + build clean. Realie report-run calls: 5; Google captures: 2 parcels; Apify lane ran live for 2 parcels.
+
+**DD department status:** the full pre-call pipeline now runs end-to-end into the persisted Deal Card — identity (Realie + locality validation + expanded fields), property inference, FEMA flood, Google visuals, Apify comp lane, browser-intel capability, pre-call intelligence, lead types. Remaining are genuine extensions: NWI/USGS contract activation, a real browser-research backend, and Apify active-listing separation.
