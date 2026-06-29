@@ -23,8 +23,17 @@ describe('Acquire — one-button Property Analysis', () => {
     expect(SRC).not.toMatch(/'\/api\/landos\/property-analysis'/);
   });
 
-  it('opens the resulting Deal Card on success (which renders the current sections)', () => {
+  it('opens the Deal Card ONLY on a verified success (parcelVerified === true), never on dealCardId alone', () => {
+    // The open must be gated by res.ok && res.parcelVerified === true.
+    expect(SRC).toMatch(/res\.ok\s*&&\s*res\.parcelVerified\s*===\s*true\s*&&\s*res\.dealCardId/);
     expect(SRC).toMatch(/onOpenDealCard\(res\.dealCardId\)/);
+    // It must NOT open on the mere existence of a dealCardId (the old bug).
+    expect(SRC).not.toMatch(/if\s*\(res\.dealCardId\s*&&\s*onOpenDealCard\)/);
+  });
+
+  it('does not claim a verified Deal Card is created automatically (only on verified success)', () => {
+    expect(SRC).not.toMatch(/verified Deal Card is created automatically on success/);
+    expect(SRC).toMatch(/opens only when parcel identity is verified/);
   });
 
   it('shows real progress stages for the current pipeline', () => {

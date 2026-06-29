@@ -158,6 +158,11 @@ describe('extractPropertyArgs', () => {
     expect(r).toMatchObject({ address: '0 Stewart Rd', city: 'Dunlap', state: 'TN', zip: '37327' });
   });
 
+  it('parses 388 Gilstrap Road, Cleveland GA (address + city + state, no ZIP)', () => {
+    const r = extractPropertyArgs('388 Gilstrap Road, Cleveland GA');
+    expect(r).toMatchObject({ address: '388 Gilstrap Road', city: 'Cleveland', state: 'GA' });
+  });
+
   it('extracts APN with keyword (colon form)', () => {
     const r = extractPropertyArgs('Run DD on APN: 12-345-678, Alleghany County NC');
     expect(r).toMatchObject({ apn: '12-345-678', state: 'NC' });

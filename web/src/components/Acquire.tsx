@@ -43,9 +43,14 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
     try {
       const body: Record<string, unknown> = { text };
       if (entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ') body.entity = entity;
-      const res = await apiPost<{ dealCardId: number; pipeline: string; parcelVerified: boolean }>('/api/landos/acquire/run', body);
-      if (res.dealCardId && onOpenDealCard) onOpenDealCard(res.dealCardId);
-      else setError('No Deal Card was returned.');
+      const res = await apiPost<{ ok: boolean; parcelVerified: boolean; dealCardId: number | null; pipeline?: string; message?: string; neededIdentifier?: string; status?: string }>('/api/landos/acquire/run', body);
+      // Open the Deal Card ONLY on a verified success. A Deal Card id alone (or a
+      // "complete with gaps" report) is NOT success — parcelVerified must be true.
+      if (res.ok && res.parcelVerified === true && res.dealCardId) {
+        if (onOpenDealCard) onOpenDealCard(res.dealCardId);
+      } else {
+        setError(res.message || 'Parcel identity not verified — no Deal Card was created. Provide APN + county, owner + city/state, or a corrected address.');
+      }
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
@@ -76,7 +81,7 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
             {running ? 'Running Property Analysis…' : 'Run Property Analysis'}
           </button>
           <span class="text-[10px] text-[var(--color-text-faint)]">
-            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. A verified Deal Card is created automatically on success.
+            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. A Deal Card opens only when parcel identity is verified; an unverified input returns what identifier to provide next.
           </span>
         </div>
       </div>

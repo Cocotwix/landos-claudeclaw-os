@@ -8,16 +8,33 @@ import type { Hono } from 'hono';
 import { _initTestDatabase } from '../db.js';
 import { buildDashboardApp } from '../dashboard.js';
 import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
+import { emptyLpPropertySummary } from './landportal-client.js';
 
 // The live DD routes now default to the parcel-identity CAPABILITY. These route
 // tests exercise the verification BRIDGE mapping, so delegate the capability to
 // the real LandPortal resolver (its no-network arg-validation paths) for
 // deterministic, network-free behavior. Capability *selection* is covered by
 // parcel-capability.test.ts.
+// The resolver delegates to the real no-network LandPortal arg-validation paths
+// by DEFAULT; individual tests can install a verified override (RESOLVER.override)
+// to exercise the verified branch without a live call.
+const RESOLVER = vi.hoisted(() => ({ override: null as null | ((args: unknown, t: unknown) => unknown) }));
 vi.mock('./parcel-capability.js', async (orig) => {
   const actual = (await orig()) as Record<string, unknown>;
   const { lpResolveForPreflight } = await import('./landportal-client.js');
-  return { ...actual, resolveParcelIdentityResult: (args: unknown, t: unknown) => (lpResolveForPreflight as any)(args, t) };
+  return {
+    ...actual,
+    resolveParcelIdentityResult: (args: unknown, t: unknown) =>
+      RESOLVER.override ? RESOLVER.override(args, t) : (lpResolveForPreflight as any)(args, t),
+  };
+});
+
+// Stub the free government DD fetchers so verified-parcel routes (which now have
+// coordinates) stay hermetic and fast — no FEMA/NWI/USGS network calls in tests.
+vi.mock('./providers/gov-dd-providers.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  const stub = (capability: string, provider: string) => async () => ({ capability, provider, status: 'needs_verification', value: null, confidence: 'none', timestamp: new Date().toISOString(), sourceUrl: null, note: 'stubbed in test (no network)' });
+  return { ...actual, fetchFemaFlood: stub('flood', 'fema_flood'), fetchNwiWetlands: stub('wetlands', 'nwi_wetlands'), fetchUsgsSlope: stub('slope', 'usgs_slope') };
 });
 
 const TOKEN = 'test-contract-token';
@@ -31,6 +48,7 @@ beforeAll(() => {
 beforeEach(() => {
   _initTestDatabase();
   _initTestLandosDb();
+  RESOLVER.override = null; // default: real no-network arg-validation paths
 });
 
 async function get(path: string) {
@@ -721,24 +739,69 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
 });
 
 describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not legacy)', () => {
-  it('/acquire/run invokes runDealCardReport (new pipeline) and persists the current report shape', async () => {
-    const res = await post('/api/landos/acquire/run', { text: '2123 Panola Road, Lithonia GA', entity: 'TY_LAND_BIZ' });
+  // A verified resolver result for 388 Gilstrap Road (named source + coordinates).
+  function verifiedGilstrapResolve() {
+    return async () => {
+      const ps = emptyLpPropertySummary();
+      Object.assign(ps, {
+        propertyid: '1', apn: '064-001', fips: '13137', county: 'WHITE', state: 'GA', city: 'CLEVELAND',
+        situs_address: '388 GILSTRAP RD', lat: '34.5970', lng: '-83.7660', lot_size_acres: '3.2', calc_acres: '3.2', owner: 'TEST OWNER',
+      });
+      return {
+        verified: true, status: 'verified', propertyid: '1', fips: '13137', apn: '064-001',
+        situs_address: '388 GILSTRAP RD', city: 'CLEVELAND', state: 'GA', county: 'WHITE', owner: 'TEST OWNER',
+        match_notes: 'ok', candidates: [], property_summary: ps,
+      };
+    };
+  }
+
+  it('UNVERIFIED input does NOT return or open a successful Deal Card (388 Gilstrap, no FIPS)', async () => {
+    // default resolver = real no-network paths -> address-only -> not verified
+    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
+    expect(res.status).not.toBe(201);                 // not a success
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.parcelVerified).toBe(false);
+    expect(body.dealCardId).toBeNull();               // nothing to open
+    expect(typeof body.message).toBe('string');
+    expect(body.message.length).toBeGreaterThan(0);
+    expect(body.neededIdentifier).toBeTruthy();        // actionable next identifier
+  });
+
+  it('VERIFIED input creates a verified Deal Card via runDealCardReport (current pipeline, not legacy)', async () => {
+    RESOLVER.override = verifiedGilstrapResolve();
+    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
-    expect(body.pipeline).toBe('deal_card_report');
+    expect(body.ok).toBe(true);
+    expect(body.parcelVerified).toBe(true);
     expect(body.dealCardId).toBeGreaterThan(0);
-    // The Deal Card now carries the CURRENT DD report (Realie + Zillow comp lane,
-    // FEMA/NWI/USGS gov DD, Pre-Call Intelligence) — NOT the legacy PropertyAnalysisResult.
+    expect(body.pipeline).toBe('deal_card_report'); // regression: wired to production pipeline
     const rpt = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/report`)).json()) as any;
-    expect(rpt.report.marketComps).toBeDefined();
     expect(rpt.report.marketComps).toHaveProperty('providerChain');     // Realie-first provider chain
     expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane
-    expect(rpt.govDd).toBeDefined();                                    // FEMA/NWI/USGS lane
-    expect(rpt.preCallIntelligence).toBeDefined();                      // Pre-Call Intelligence
-    // Legacy PropertyAnalysisResult markers must be ABSENT (no old Redfin/strategy shape)
-    expect(rpt.report).not.toHaveProperty('redfinComps');
+    expect(rpt.govDd).toBeDefined();
+    expect(rpt.preCallIntelligence).toBeDefined();
+    expect(rpt.report).not.toHaveProperty('redfinComps');     // legacy shape absent
     expect(rpt.report).not.toHaveProperty('strategyMatrix');
-  });
+  }, 30000);
+
+  it('VERIFIED success persists APN / county / state / acres / coordinates on the Property Card', async () => {
+    RESOLVER.override = verifiedGilstrapResolve();
+    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
+    const body = (await res.json()) as any;
+    expect(body.dealCardId).toBeGreaterThan(0);
+    const row = getLandosDb().prepare(
+      'SELECT pc.apn, pc.county, pc.state, pc.acres, pc.lat, pc.lng, pc.verification_status FROM landos_property_card pc JOIN landos_deal_card_property dp ON dp.card_id = pc.id WHERE dp.deal_card_id = ?',
+    ).get(body.dealCardId) as any;
+    expect(row.verification_status).toBe('verified_property');
+    expect(row.apn).toBe('064-001');
+    expect(String(row.county)).toMatch(/WHITE/i);
+    expect(row.state).toBe('GA');
+    expect(row.acres).toBeGreaterThan(0);
+    expect(row.lat).not.toBeNull();
+    expect(row.lng).not.toBeNull();
+  }, 30000);
 });
 
 describe('LandOS routes — Acquisition Intelligence Platform (learning engine)', () => {

@@ -1882,23 +1882,62 @@ export function registerLandosRoutes(app: Hono): void {
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const entity: LandosEntity = isEntity(str(body.entity)) ? (str(body.entity) as LandosEntity) : 'TY_LAND_BIZ';
     const parsed = extractPropertyArgs(text) ?? {};
-    // Create the subject Property Card from the input (unverified — runDealCardReport
-    // performs the Realie-first verification), then ensure a Deal Card, then run
-    // the production DD report on it.
-    const { card } = upsertCardFromDukeRun({
-      entity, agentId: 'acquire', activeInputAddress: text.trim(),
-      city: parsed.city, state: parsed.state, county: parsed.county, apn: parsed.apn, owner: parsed.owner,
-      verified: false, summary: 'Acquire — production DD pipeline',
+
+    // ── VERIFIED-FIRST CONTRACT ────────────────────────────────────────────
+    // Verify parcel identity from a named source BEFORE creating any card/Deal
+    // Card. An unverified input is NOT a successful Acquire: it returns an
+    // actionable non-success response and opens nothing. (Research cards for
+    // failed verification are a separate explicit action, not this flow.)
+    const verification = await runDukeVerification(text.trim(), {
+      resolve: resolveParcelIdentityResult,
+      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
-    const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: parsed.address || text.trim() });
+
+    if (!verification.parcelVerified || !verification.propertyData || !verification.identity) {
+      const neededIdentifier = parsed.apn
+        ? 'Confirm APN + county/state (or FIPS) — the APN did not resolve to a single parcel.'
+        : parsed.owner
+          ? 'Provide owner + county/state, or APN + county.'
+          : (parsed.address || parsed.city)
+            ? 'Provide APN + county, owner + city/state, or a corrected address.'
+            : 'Provide a full address, APN + county, or owner + city/state.';
+      const message = `Parcel identity not verified (${verification.status}). No Deal Card was created. Next: ${neededIdentifier}`;
+      logger.info({ event: 'acquire_run', ok: false, parcelVerified: false, status: verification.status, pipeline: 'deal_card_report' }, 'acquire_run_unverified');
+      return c.json({
+        ok: false, parcelVerified: false, dealCardId: null,
+        status: verification.status, message, neededIdentifier, dataGaps: verification.dataGaps,
+      }, 200);
+    }
+
+    // Verified: persist a verified Property Card (with coordinates — enrichment
+    // output, never identity), ensure a Deal Card, then run the production DD
+    // pipeline. reverify:false reuses the just-persisted verified card (coords
+    // persist), so no second identity lookup is spent.
+    const id = verification.identity;
+    const { card } = upsertCardFromDukeRun({
+      entity, agentId: 'acquire',
+      activeInputAddress: id.situsAddress || parsed.address || text.trim(),
+      city: id.city ?? parsed.city, state: id.state ?? parsed.state, county: id.county ?? parsed.county,
+      apn: id.apn, lpPropertyId: id.propertyId, fips: id.fips, lpUrl: id.lpUrl, owner: id.owner, acres: id.acres,
+      lat: verification.coordinates?.lat ?? null, lng: verification.coordinates?.lng ?? null,
+      verified: true, verificationSource: verification.verificationSource ?? 'Realie.ai (non-credit)',
+      summary: 'Acquire — verified parcel',
+    });
+    const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: id.situsAddress || parsed.address || text.trim() });
     const result = await runDealCardReport(dealCardId, {
       resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       googleVisualConfigured: googleVisualConfiguredResolved(),
-      reverify: true,
     });
-    logger.info({ event: 'acquire_run', dealCardId, parcelVerified: result?.report.parcelVerified, pipeline: 'deal_card_report' }, 'acquire_run');
-    return c.json({ dealCardId, pipeline: 'deal_card_report', parcelVerified: result?.report.parcelVerified ?? false }, 201);
+    const verifiedSuccess = result?.report.parcelVerified === true;
+    logger.info({ event: 'acquire_run', ok: verifiedSuccess, parcelVerified: verifiedSuccess, dealCardId, pipeline: 'deal_card_report' }, 'acquire_run');
+    return c.json({
+      ok: verifiedSuccess,
+      parcelVerified: verifiedSuccess,
+      dealCardId: verifiedSuccess ? dealCardId : null,
+      pipeline: 'deal_card_report',
+      reportStatus: result?.report.reportStatus ?? null,
+    }, verifiedSuccess ? 201 : 200);
   });
 
   // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded
