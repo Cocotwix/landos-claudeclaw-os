@@ -15,4 +15,7 @@ Core concepts to preserve:
 - Dashboard-first usage.
 - Provider-agnostic data layer.
 - Fast operator workflow.
-- Facts over guesses.
+- LandOS retrieves, interprets, and synthesizes — it is expected to think, estimate from verified evidence, rank strategies, and give operator-ready pre-call intelligence with explicit confidence labels.
+- Facts over fabrication: never invent parcel identity or facts, but a clearly-labeled estimate beats conservative silence. Verification unlocks the pipeline; unknown DD items stay labeled, they do not block synthesis.
+
+(Interpretation/synthesis principle added 2026-06-29 at Tyler's direction; see 07_Product_Principles.md.)
