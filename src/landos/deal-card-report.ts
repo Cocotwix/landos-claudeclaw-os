@@ -137,13 +137,38 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
         v.providers.push({ providerId: 'zillow', status: zc.status, kept: 0 });
       }
     }
+    // ── HomeHarvest open-source land lane (Realtor.com, MIT, no key). Pulls
+    //    raw-land sold comps (merged into the band) + land actives. Reduces
+    //    dependence on the paid Apify lane. Gated off via LANDOS_HOMEHARVEST=off. ──
+    const hhDisabled = (process.env.LANDOS_HOMEHARVEST ?? 'on').toLowerCase() === 'off' || !!process.env.VITEST;
+    if (!hhDisabled && (q.address || (q.state && (q.city || q.zip)) || (q.county && q.state))) {
+      try {
+        const { fetchHomeHarvestComps } = await import('./providers/homeharvest-comp-provider.js');
+        const hh = await fetchHomeHarvestComps({ address: q.address, city: q.city, zip: q.zip, county: q.county, state: q.state, acres: q.acres }, {});
+        chain.push(`homeharvest:${hh.status}`);
+        if (hh.status === 'collected') {
+          const toView = (c: { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; addressDesc?: string; yearBuilt: number | null; buildingAreaSqft: number | null; propertyTypeText: string | null; descriptionText: string | null }): MarketCompView => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: 'homeharvest', addressDesc: c.addressDesc, yearBuilt: c.yearBuilt, buildingAreaSqft: c.buildingAreaSqft, propertyTypeText: c.propertyTypeText, descriptionText: c.descriptionText });
+          // Sold land comps join the band set (classified raw-land already);
+          // actives augment the active-listing context.
+          v.sold = [...v.sold, ...hh.sold.map(toView)];
+          v.active = [...v.active, ...hh.active.map(toView)];
+          v.providers.push({ providerId: 'homeharvest', status: 'connected', kept: hh.sold.length + hh.active.length });
+          if (v.status !== 'collected' && (hh.sold.length > 0 || hh.active.length > 0)) v.status = 'collected';
+        } else {
+          v.providers.push({ providerId: 'homeharvest', status: hh.status, kept: 0 });
+        }
+      } catch {
+        chain.push('homeharvest:error');
+        v.providers.push({ providerId: 'homeharvest', status: 'error', kept: 0 });
+      }
+    }
     v.providerChain = chain;
     v.activeCount = v.active.length;
     // ── Provider-agnostic comp classification at the valuation seam ──────────
     //    Build the per-acre band from RAW LAND only. Residential/manufactured/
     //    commercial/nominal sales can never inflate it (the engine-wide fix);
     //    each sold comp is tagged with its class + reason for the UI.
-    const band = buildLandPpaBand(v.sold);
+    const band = buildLandPpaBand(v.sold, undefined, { subjectAcres: q.acres ?? null });
     for (const { comp, classification } of [...band.rawLand, ...band.unknown, ...band.excluded]) {
       comp.compClass = classification.class;
       comp.classReason = classification.reason;

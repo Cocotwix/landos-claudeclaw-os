@@ -33,6 +33,25 @@ export type BandComp = CompClassificationInput & {
  *  falling back to unknown-type comps. */
 export const MIN_RAW_LAND_FOR_BAND = 3;
 
+/** Default acreage band: comps from 0.25x to 4x the subject acreage are
+ *  comparable; a 0.1-ac infill lot vs a 5-ac parcel is not (and its per-acre
+ *  price is meaningless for the subject). */
+export const ACRE_BAND_LOW = 0.25;
+export const ACRE_BAND_HIGH = 4;
+/** Minimum band comps before the IQR high-outlier trim runs (so a genuinely
+ *  small set is never distorted). */
+export const MIN_FOR_OUTLIER_TRIM = 4;
+
+export interface BandOptions {
+  /** Subject acreage. When > 0, comps outside the acreage band are excluded so a
+   *  tiny urban lot's huge per-acre price cannot drive a rural parcel's band. */
+  subjectAcres?: number | null;
+  acreBandLow?: number;
+  acreBandHigh?: number;
+  /** Trim extreme high price-per-acre outliers (IQR). Default true. */
+  trimHighOutliers?: boolean;
+}
+
 export interface BandMetrics {
   soldAvgPrice: number | null;
   soldAvgPpa: number | null;
@@ -54,6 +73,10 @@ export interface LandBandResult<T> {
   rawLand: ClassifiedComp<T>[];
   /** Non-land + nominal comps kept for transparency, never in the band. */
   excluded: ClassifiedComp<T>[];
+  /** Land comps dropped because their acreage is outside the subject's band. */
+  excludedAcreage: ClassifiedComp<T>[];
+  /** Land comps dropped as extreme high price-per-acre outliers (IQR). */
+  excludedOutlier: ClassifiedComp<T>[];
   /** Unknown-type comps (used only when fallback was needed). */
   unknown: ClassifiedComp<T>[];
   /** True when unknown-type comps were folded in due to thin raw-land data. */
@@ -103,6 +126,7 @@ function metricsFrom<T extends BandComp>(comps: ClassifiedComp<T>[]): BandMetric
 export function buildLandPpaBand<T extends BandComp>(
   comps: T[],
   toInput?: (comp: T) => CompClassificationInput,
+  options: BandOptions = {},
 ): LandBandResult<T> {
   const classified: ClassifiedComp<T>[] = comps.map((comp) => ({
     comp,
@@ -120,19 +144,56 @@ export function buildLandPpaBand<T extends BandComp>(
 
   // Raw land drives the band. When raw land is too thin, fold in unknown-type
   // comps (no negative signal) so a sparse market still gets a band — flagged.
-  let bandComps = rawLand;
+  let candidate = rawLand;
   let unknownFallbackUsed = false;
   if (rawLand.length < MIN_RAW_LAND_FOR_BAND && unknown.length > 0) {
-    bandComps = [...rawLand, ...unknown];
+    candidate = [...rawLand, ...unknown];
     unknownFallbackUsed = true;
   }
 
+  // ── Acreage-band filter: a comp must be within 0.25x–4x the subject acreage.
+  //    A 0.1-ac infill lot's per-acre price is meaningless for a 5-ac parcel. ──
+  const subjectAcres = typeof options.subjectAcres === 'number' && options.subjectAcres > 0 ? options.subjectAcres : null;
+  const lo = subjectAcres ? subjectAcres * (options.acreBandLow ?? ACRE_BAND_LOW) : null;
+  const hi = subjectAcres ? subjectAcres * (options.acreBandHigh ?? ACRE_BAND_HIGH) : null;
+  const excludedAcreage: ClassifiedComp<T>[] = [];
+  if (lo != null && hi != null) {
+    const inBand: ClassifiedComp<T>[] = [];
+    for (const c of candidate) {
+      const a = c.comp.acres ?? null;
+      if (a != null && a > 0 && (a < lo || a > hi)) excludedAcreage.push(c);
+      else inBand.push(c);
+    }
+    candidate = inBand;
+  }
+
+  // ── IQR high-outlier trim: drop extreme high per-acre sales that survive
+  //    classification (tiny lots, anomalies) so they don't inflate the band. ──
+  const excludedOutlier: ClassifiedComp<T>[] = [];
+  if ((options.trimHighOutliers ?? true) && candidate.length >= MIN_FOR_OUTLIER_TRIM) {
+    const ppas = candidate.map(ppaOf).filter((p): p is number => typeof p === 'number' && p > 0).sort((a, b) => a - b);
+    if (ppas.length >= MIN_FOR_OUTLIER_TRIM) {
+      const p75 = percentile(ppas, 0.75) ?? 0;
+      const p25 = percentile(ppas, 0.25) ?? 0;
+      const hiCut = p75 + 1.5 * (p75 - p25);
+      if (hiCut > 0) {
+        const kept: ClassifiedComp<T>[] = [];
+        for (const c of candidate) {
+          if ((ppaOf(c) ?? 0) > hiCut) excludedOutlier.push(c);
+          else kept.push(c);
+        }
+        candidate = kept;
+      }
+    }
+  }
+
+  const bandComps = candidate;
   const metrics = metricsFrom(bandComps);
 
   const parts: string[] = [];
   parts.push(
     bandComps.length > 0
-      ? `Land band from ${rawLand.length} raw-land${unknownFallbackUsed ? ` + ${unknown.length} unverified-type` : ''} sold comp(s).`
+      ? `Land band from ${bandComps.length} comp(s)${unknownFallbackUsed ? ' (incl. unverified-type)' : ''}.`
       : 'No raw-land sold comps to price a band (none invented).',
   );
   const nonLand = counts.residential + counts.manufactured + counts.commercial + counts.exclude;
@@ -143,9 +204,11 @@ export function buildLandPpaBand<T extends BandComp>(
       counts.commercial ? `${counts.commercial} commercial` : '',
       counts.exclude ? `${counts.exclude} nominal/non-market` : '',
     ].filter(Boolean);
-    parts.push(`Excluded from the band: ${bits.join(', ')} (kept for transparency, never priced as land).`);
+    parts.push(`Excluded as non-land: ${bits.join(', ')}.`);
   }
+  if (excludedAcreage.length > 0) parts.push(`${excludedAcreage.length} comp(s) outside the subject acreage band (${(options.acreBandLow ?? ACRE_BAND_LOW)}x–${(options.acreBandHigh ?? ACRE_BAND_HIGH)}x).`);
+  if (excludedOutlier.length > 0) parts.push(`${excludedOutlier.length} extreme price-per-acre outlier(s) trimmed (IQR).`);
   if (unknownFallbackUsed) parts.push('Thin raw-land data: unverified-type comps folded in — verify type before pricing.');
 
-  return { metrics, bandComps, rawLand, excluded, unknown, unknownFallbackUsed, counts, note: parts.join(' ') };
+  return { metrics, bandComps, rawLand, excluded, excludedAcreage, excludedOutlier, unknown, unknownFallbackUsed, counts, note: parts.join(' ') };
 }

@@ -66,6 +66,48 @@ describe('buildLandPpaBand — empty + all-excluded', () => {
   });
 });
 
+describe('buildLandPpaBand — acreage-band filter (the infill-lot failure mode)', () => {
+  // land comp with explicit acreage
+  const lotAc = (ppa: number, acres: number): BandComp => ({ pricePerAcre: ppa, price: ppa * acres, acres, redfinPropertyTypeCode: 8 });
+
+  it('drops tiny infill lots whose per-acre price is meaningless for a multi-acre subject', () => {
+    const comps = [
+      lotAc(5000, 5), lotAc(6000, 4), lotAc(7000, 6), lotAc(5500, 5), // comparable ~5 ac
+      lotAc(1900000, 0.1), lotAc(1500000, 0.12), // metro infill lots — off-band
+    ];
+    const r = buildLandPpaBand(comps, undefined, { subjectAcres: 5 });
+    expect(r.excludedAcreage.length).toBe(2);
+    expect(r.metrics.ppaMax).toBeLessThanOrEqual(7000); // the $1.9M/ac lots are gone
+    expect(r.bandComps.every((c) => (c.comp.acres ?? 0) >= 1.25 && (c.comp.acres ?? 0) <= 20)).toBe(true);
+  });
+
+  it('keeps all comps when no subject acreage is supplied', () => {
+    const comps = [lotAc(5000, 5), lotAc(1900000, 0.1)];
+    const r = buildLandPpaBand(comps);
+    expect(r.excludedAcreage).toHaveLength(0);
+  });
+});
+
+describe('buildLandPpaBand — IQR high-outlier trim', () => {
+  const lot = (ppa: number): BandComp => ({ pricePerAcre: ppa, price: ppa * 5, acres: 5, redfinPropertyTypeCode: 8 });
+  it('trims an extreme high per-acre outlier that survives classification', () => {
+    const comps = [lot(5000), lot(5500), lot(6000), lot(6500), lot(7000), lot(900000)];
+    const r = buildLandPpaBand(comps);
+    expect(r.excludedOutlier.length).toBe(1);
+    expect(r.metrics.ppaMax).toBeLessThan(900000);
+  });
+  it('does not trim when below the minimum comp count', () => {
+    const comps = [lot(5000), lot(900000)];
+    const r = buildLandPpaBand(comps);
+    expect(r.excludedOutlier).toHaveLength(0);
+  });
+  it('can be disabled', () => {
+    const comps = [lot(5000), lot(5500), lot(6000), lot(6500), lot(900000)];
+    const r = buildLandPpaBand(comps, undefined, { trimHighOutliers: false });
+    expect(r.excludedOutlier).toHaveLength(0);
+  });
+});
+
 describe('buildLandPpaBand — counts + percentiles', () => {
   it('reports per-class counts', () => {
     const comps = [land(5000), { pricePerAcre: 4000, propertyTypeText: 'farm' } as BandComp, house(300000)];
