@@ -106,10 +106,10 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
   const finalize = async (v: MarketCompsView): Promise<MarketCompsView> => {
     // ── Supplemental Zillow lane (active listings + supplemental sold). Active is
     //    NEVER labeled sold; Zillow sold kept separate from Realie's PPA band. ──
-    if (q.zip) {
+    if (typeof q.lat === 'number' && typeof q.lng === 'number') {
       const { fetchZillowComps } = await import('./zillow-comps.js');
       const { withEnvFileSecrets } = await import('../env.js');
-      const zc = await fetchZillowComps(q.zip, { env: withEnvFileSecrets(['APIFY_TOKEN', 'LANDOS_ZILLOW_ACTOR']) });
+      const zc = await fetchZillowComps({ lat: q.lat, lng: q.lng, zip: q.zip }, { env: withEnvFileSecrets(['APIFY_TOKEN', 'LANDOS_ZILLOW_ACTOR']) });
       chain.push(`zillow:${zc.status}`);
       if (zc.status === 'collected') {
         const zView = (c: { price: number | null; acres: number | null; pricePerAcre: number | null; sourceUrl: string | null; city: string | null; state: string | null; saleOrListDateIso: string | null }): MarketCompView => ({ price: c.price ?? 0, saleDateIso: c.saleOrListDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl ?? '', sourceLabel: 'zillow', addressDesc: [c.city, c.state].filter(Boolean).join(', ') || undefined });
