@@ -56,6 +56,20 @@ it('rerun of a parcel with a space-APN + address re-verifies (no stale unverifie
   expect(getDealCardReport(dealId).parcelVerified).toBe(true);
 });
 
+it('a verified report upgrades the subject card to verified_property + advances kanban (identity != DD completeness)', async () => {
+  const dealId = createDealCard({ entity: 'TY_LAND_BIZ', title: 'verify upgrade', leadType: 'test' }).id;
+  const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '999 Test Rd, Clay, NC', city: '', county: 'Clay', state: 'NC', verified: false, summary: 'x' });
+  linkPropertyToDeal({ dealCardId: dealId, cardId: card.id, role: 'subject' });
+  upsertDealCardDd(dealId, { apn: '12-345-678', county: 'Clay', state: 'NC' });
+  const cardOf = (id: number) => getDealCard(id)!.propertyCards![0]! as { verification_status: string; kanban_status: string };
+  expect(cardOf(dealId).verification_status).toBe('unverified_lead'); // before
+  const r = (await runDealCardReport(dealId, { resolve: verifiedResolve, timeoutMs: 1000, reverify: true }))!.report;
+  expect(r.parcelVerified).toBe(true);
+  const after = cardOf(dealId);
+  expect(after.verification_status).toBe('verified_property'); // identity propagated to the card
+  expect(after.kanban_status).not.toBe('needs_parcel_verification'); // no longer "needs verification"
+});
+
 function newDeal(): number {
   return createDealCard({ entity: 'TY_LAND_BIZ', title: 'Generic report test deal' }).id;
 }

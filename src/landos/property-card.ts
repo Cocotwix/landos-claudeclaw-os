@@ -295,8 +295,12 @@ export function upsertPropertyCard(
   const isVerifiedNow = verificationStatus === 'verified_property';
 
   if (existing) {
+    // A verified parcel no longer "needs parcel verification": advance the kanban
+    // off the pre-verification stages so the card stops reading as unverified.
     const kanban: KanbanStatus =
-      existing.kanban_status === 'new_lead' && isVerifiedNow ? 'researching' : existing.kanban_status;
+      isVerifiedNow && existing.kanban_status === 'new_lead' ? 'researching'
+      : isVerifiedNow && existing.kanban_status === 'needs_parcel_verification' ? 'needs_seller_discovery'
+      : existing.kanban_status;
     db.prepare(
       `UPDATE landos_property_card SET
          verification_status = ?,

@@ -43,6 +43,7 @@ import {
   DEAL_CARD_REPORT_STATUSES,
   type DealCardReportStatus,
   type StrategyOfferReadiness,
+  type LandosEntity,
 } from './db.js';
 import { getDealCard, type DealCardDetail } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd, type DealCardDdView, type DealCardSourceLink, type DealCardDdPatch } from './deal-card-dd.js';
@@ -55,7 +56,7 @@ import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './s
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
 import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
-import { loadCardVisualCapture, saveCardVisualCapture, type CardVisualAsset } from './property-card.js';
+import { loadCardVisualCapture, saveCardVisualCapture, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
 import { googleVisualConfigured } from './providers/google-visual.js';
 import { buildDdChecklist, mergeGovDdRows, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
@@ -1020,6 +1021,33 @@ export async function runDealCardReport(
     };
     persistReport(dealCardId, failed, actor, s(deal.entity));
     return { report: getDealCardReport(dealCardId), warnings: ['Safe parcel lookup errored; report saved as failed.'] };
+  }
+
+  // Propagate VERIFIED IDENTITY to the subject property card so its
+  // verification_status / kanban agree with the report. Parcel-identity
+  // verification is SEPARATE from DD completeness: a Realie-verified parcel must
+  // read "identity verified" on the card even while DD is still incomplete.
+  // Strong identity only (APN or property id); never downgrades (only runs on
+  // parcelVerified), so a verified card stays verified across reruns.
+  if (verification.parcelVerified && verification.propertyData) {
+    const pid = verification.propertyData.identity as { apn?: string; propertyId?: string; fips?: string; county?: string; state?: string; situsAddress?: string; owner?: string };
+    const subjectCard = (deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0];
+    const subjectCardId = subjectCard ? Number(subjectCard.id) : undefined;
+    if (subjectCardId && (s(pid.apn) || s(pid.propertyId))) {
+      const lf = verification.propertyData.landFacts as { acres?: number } | undefined;
+      upsertCardFromDukeRun({
+        entity: s(deal.entity) as LandosEntity,
+        agentId: 'duke-due-diligence',
+        cardId: subjectCardId,
+        activeInputAddress: s(pid.situsAddress) || s((subjectCard as { active_input_address?: string }).active_input_address) || s(deal.title) || `deal ${dealCardId}`,
+        county: s(pid.county), state: s(pid.state), apn: s(pid.apn),
+        lpPropertyId: s(pid.propertyId), fips: s(pid.fips), owner: s(pid.owner),
+        acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
+        verified: true,
+        verificationSource: verification.verificationSource ?? 'Realie.ai (non-credit)',
+        summary: verification.propertyData.note ?? verification.summary,
+      });
+    }
   }
 
   const landportalAttempted = verification.sourceAttempts.some((a) => a.status !== 'skipped');
