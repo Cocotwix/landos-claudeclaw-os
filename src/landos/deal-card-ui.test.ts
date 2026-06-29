@@ -10,8 +10,12 @@ const SRC = fs.readFileSync(
 );
 
 describe('Deal Card panel — required sections', () => {
+  // Brief sections shown by default + legacy sections retained (collapsed).
   const SECTIONS = [
-    'Imagery',
+    'Visual Context',
+    'At a Glance',
+    'Market Pulse',
+    'Confirm Before Offer',
     'Land Score',
     'Deal Economics',
     'Land Data / DD Facts',
@@ -25,12 +29,14 @@ describe('Deal Card panel — required sections', () => {
     for (const s of SECTIONS) expect(SRC.includes(s), `missing section ${s}`).toBe(true);
   });
 
-  it('renders a sticky/header area with entity badge, county/state, APN, stage', () => {
+  it('renders a SLIM sticky header (parcel facts live once, in the property header)', () => {
     expect(SRC).toMatch(/class="sticky/);
     expect(SRC).toMatch(/entityBadge/);
-    expect(SRC).toMatch(/County\/State/);
-    expect(SRC).toMatch(/APN:/);
-    expect(SRC).toMatch(/Stage:/);
+    expect(SRC).toMatch(/Stage: \{deal\.status\}/);
+    // The sticky bar no longer repeats County/State + APN + Verification — those
+    // belong to PropertyHeaderSection so each fact appears exactly once.
+    expect(SRC).not.toMatch(/County\/State: \{/);
+    expect(SRC).toMatch(/PropertyHeaderSection/);
   });
 
   it('maps entity to Land Ally / My Business / Unknown without breaking validation', () => {
@@ -44,10 +50,13 @@ describe('Deal Card panel — required sections', () => {
     expect(SRC).toMatch(/Target-clear baseline/);
   });
 
-  it('treats imagery as supporting context only, never parcel identity', () => {
-    expect(SRC).toMatch(/never verifies parcel identity/);
-    expect(SRC).toMatch(/visual not captured yet/);
-    expect(SRC).toMatch(/Supporting context — not identity verification/);
+  it('treats visuals as supporting context only and removes the duplicate Imagery panel + contradiction', () => {
+    expect(SRC).toMatch(/Visual Context/);
+    expect(SRC).toMatch(/Supporting context only — never parcel identity/);
+    // The standalone always-on "Imagery" panel — which showed "visual not captured
+    // yet" even when Visual Context already had visuals — is removed.
+    expect(SRC).not.toMatch(/Capture supporting imagery/);
+    expect(SRC).not.toMatch(/Supporting context — not identity verification/);
   });
 
   it('renders the quick-action shell with all six actions, disabled/approval-gated', () => {
@@ -65,6 +74,44 @@ describe('Deal Card panel — required sections', () => {
     ]) {
       expect(SRC.includes(f), `missing pre-call field ${f}`).toBe(true);
     }
+  });
+});
+
+describe('Deal Card panel — concise DD operator brief', () => {
+  it('collapses legacy worksheets / seller / contacts / comms / documents / call prep by default', () => {
+    expect(SRC).toMatch(/function Collapsible/);
+    expect(SRC).toMatch(/Worksheets, seller \/ acquisitions, contacts, documents/);
+    // The raw comp table + provider chain are collapsed out of the default brief.
+    expect(SRC).toMatch(/Comparable sales & active listings \(raw\)/);
+  });
+
+  it('surfaces Confirm Before Offer exactly once, not scattered across panels', () => {
+    expect(SRC).toMatch(/ConfirmBeforeOfferSection/);
+    expect(SRC).toMatch(/Confirm Before Offer/);
+  });
+
+  it('keeps seller-call questions OUT of the default DD brief (Acquisitions owns them)', () => {
+    // The Executive Summary no longer renders an "Ask the seller" column in the brief.
+    expect(SRC).not.toMatch(/Ask the seller/);
+  });
+
+  it('Market Pulse names period, sources, active-retrieval status, and signal effect', () => {
+    expect(SRC).toMatch(/Sold period/);
+    expect(SRC).toMatch(/Sold source/);
+    expect(SRC).toMatch(/Active source/);
+    expect(SRC).toMatch(/Active retrieval/);
+    expect(SRC).toMatch(/Effect on land demand/);
+    expect(SRC).toMatch(/development \/ rezoning \/ infrastructure signals/);
+  });
+
+  it('fixes the active-listing contradiction (incomplete vs honest zero)', () => {
+    expect(SRC).toMatch(/function activeRetrievalState/);
+    expect(SRC).toMatch(/Active listing retrieval incomplete/);
+    expect(SRC).toMatch(/No active land listings found \(retrieval ran\)/);
+  });
+
+  it('caps visual sizing so satellite/Street View do not take over the screen', () => {
+    expect(SRC).toMatch(/h-40 sm:h-44 object-cover/);
   });
 });
 
