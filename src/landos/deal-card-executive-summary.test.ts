@@ -88,3 +88,55 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(es.marketPulse.confidence).toBe('none');
   });
 });
+
+describe('Market Pulse completion (absorption, direction, verdict)', () => {
+  // Build dated land sold comps: older half cheaper, recent half pricier -> strengthening.
+  function withDatedComps(older: number[], recent: number[], active = 10, domMedian = 60): DealCardReportView {
+    const mk = (ppa: number, iso: string) => ({ price: ppa * 5, saleDateIso: iso, acres: 5, pricePerAcre: ppa, sourceUrl: 'https://x', sourceLabel: 'homeharvest', compClass: 'vacant_land' });
+    const sold = [
+      ...older.map((p, i) => mk(p, `2025-0${(i % 8) + 1}-15`)),
+      ...recent.map((p, i) => mk(p, `2026-0${(i % 6) + 1}-15`)),
+    ];
+    const ppas = sold.map((s) => s.pricePerAcre).sort((a, b) => a - b);
+    const med = ppas[Math.floor(ppas.length / 2)];
+    return verifiedReport({
+      marketComps: { status: 'collected', primaryProvider: 'realie', providerChain: [], soldCount: sold.length, activeCount: active, sold, active: new Array(active).fill({}), supplementalSold: [], valuation: [], metrics: { soldAvgPrice: med * 5, soldAvgPpa: med, soldMedianPpa: med, ppaMin: ppas[0], ppaMax: ppas[ppas.length - 1], activeAvgPrice: null, domMedian }, sparseExplanation: null, providers: [], source: 'multi', timestamp: 't', note: '' } as never,
+    });
+  }
+
+  it('computes months-of-inventory and sell-through', () => {
+    const p = buildExecutiveSummary(withDatedComps([5000, 5200, 5400], [5600, 5800, 6000], 12)).marketPulse;
+    expect(p.soldCount).toBe(6);
+    expect(p.activeCount).toBe(12);
+    // monthly rate = 6/12 = 0.5; months of inventory = 12 / 0.5 = 24
+    expect(p.monthsOfInventory).toBe(24);
+    expect(p.sellThroughPct).toBe(33); // 6 / 18
+    expect(p.absorption).toMatch(/months of inventory/i);
+  });
+
+  it('detects a STRENGTHENING market when recent per-acre prices rise', () => {
+    const p = buildExecutiveSummary(withDatedComps([4000, 4200, 4400], [6000, 6200, 6400], 4, 45)).marketPulse;
+    expect(p.direction).toBe('strengthening');
+    expect(p.directionPct).toBeGreaterThan(8);
+    expect(p.verdict).toMatch(/STRENGTHENING/);
+    expect(p.verdict).toMatch(/Why:/);
+  });
+
+  it('detects a SOFTENING market when recent per-acre prices fall', () => {
+    const p = buildExecutiveSummary(withDatedComps([8000, 8200, 8400], [5000, 5200, 5400], 30, 200)).marketPulse;
+    expect(p.direction).toBe('softening');
+    expect(p.directionPct).toBeLessThan(-8);
+    expect(p.verdict).toMatch(/SOFTENING/);
+  });
+
+  it('reports unknown direction with too few dated comps (never guesses)', () => {
+    const p = buildExecutiveSummary(withDatedComps([5000], [5200], 5)).marketPulse;
+    expect(p.direction).toBe('unknown');
+    expect(p.directionPct).toBeNull();
+  });
+
+  it('the verdict always answers stronger-or-weaker-and-why', () => {
+    const p = buildExecutiveSummary(verifiedReport()).marketPulse;
+    expect(p.verdict.length).toBeGreaterThan(0);
+  });
+});

@@ -11,19 +11,37 @@
 import type { DealCardReportView } from './deal-card-report.js';
 import type { GrowthDriverSummary } from './browser-market-intelligence.js';
 
+export type MarketDirection = 'strengthening' | 'softening' | 'stable' | 'unknown';
+
 export interface MarketPulseSynthesis {
   realieSoldCount: number;
   zillowActiveCount: number;
   zillowSupplementalSoldCount: number;
+  /** Total verifiable sold land comps that drove the band (all providers). */
+  soldCount: number;
+  /** Total active land listings (all providers — Zillow + HomeHarvest). */
+  activeCount: number;
   pricePerAcre: { p25: number | null; median: number | null; p75: number | null; low: number | null; high: number | null };
   domMedian: number | null;
+  /** Months of inventory = active supply ÷ monthly sold rate. < 6 = seller's
+   *  market, 6–12 = balanced, > 12 = soft/oversupplied. Null when uncomputable. */
+  monthsOfInventory: number | null;
+  /** Sell-through proxy: sold ÷ (sold + active), as a percent. */
+  sellThroughPct: number | null;
+  /** Direction of the per-acre band over time (recent half vs older half). */
+  direction: MarketDirection;
+  /** Recent-vs-older median PPA change, percent (null when too few dated comps). */
+  directionPct: number | null;
   supply: string;
   demand: string;
   liquidity: string;
+  absorption: string;
   confidence: 'high' | 'medium' | 'low' | 'none';
   sparseExplanation: string | null;
   interpretation: string;
   whatThisMeans: string;
+  /** The headline answer: is this land market getting stronger or weaker, and why? */
+  verdict: string;
   /** Local growth drivers synthesized from Browser Intelligence (operator summary). */
   growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number }> };
 }
@@ -84,6 +102,33 @@ export interface ExecutiveSummary {
 }
 
 const money = (n: number | null | undefined): string => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
+const medianOf = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
+
+/** Land sold comps eligible for trend (raw-land or unclassified — never the
+ *  positively non-land rows that classification already flagged). */
+function landSoldOf(report: DealCardReportView): Array<{ ppa: number; t: number }> {
+  const sold = report.marketComps?.sold ?? [];
+  return sold
+    .filter((c) => c.compClass == null || c.compClass === 'vacant_land' || c.compClass === 'farm' || c.compClass === 'unknown')
+    .filter((c) => typeof c.pricePerAcre === 'number' && c.pricePerAcre > 0 && c.saleDateIso && !Number.isNaN(Date.parse(c.saleDateIso)))
+    .map((c) => ({ ppa: c.pricePerAcre as number, t: Date.parse(c.saleDateIso) }))
+    .sort((a, b) => a.t - b.t);
+}
+
+/** Market direction from the per-acre band over time: split the dated land sales
+ *  into older vs recent halves and compare median price-per-acre. Needs >= 6
+ *  dated comps; otherwise 'unknown' (never guessed). */
+function computeMarketDirection(report: DealCardReportView): { direction: MarketDirection; pct: number | null } {
+  const dated = landSoldOf(report);
+  if (dated.length < 6) return { direction: 'unknown', pct: null };
+  const mid = Math.floor(dated.length / 2);
+  const olderMed = medianOf(dated.slice(0, mid).map((d) => d.ppa));
+  const recentMed = medianOf(dated.slice(mid).map((d) => d.ppa));
+  if (olderMed == null || recentMed == null || olderMed <= 0) return { direction: 'unknown', pct: null };
+  const pct = Math.round(((recentMed - olderMed) / olderMed) * 1000) / 10;
+  const direction: MarketDirection = pct >= 8 ? 'strengthening' : pct <= -8 ? 'softening' : 'stable';
+  return { direction, pct };
+}
 function checklistVal(report: DealCardReportView, key: string): string | null {
   const row = (report.ddFactChecklist ?? []).find((r) => r.key === key && r.status === 'verified');
   return row?.value ?? null;
@@ -100,24 +145,71 @@ function buildMarketPulse(report: DealCardReportView, growth?: GrowthDriverSumma
   const realieSold = mc?.soldCount ?? 0;
   const active = mc?.active?.length ?? 0;
   const suppSold = mc?.supplementalSold?.length ?? 0;
+  const soldCount = realieSold; // band count across all providers (post-classification)
   const ppa = { p25: m.ppaMin ?? null, median: m.soldMedianPpa ?? null, p75: m.ppaMax ?? null, low: m.ppaMin ?? null, high: m.ppaMax ?? null };
-  const confidence: MarketPulseSynthesis['confidence'] = realieSold >= 5 ? 'high' : realieSold >= 3 ? 'medium' : realieSold >= 1 ? 'low' : 'none';
-  const supply = active >= 20 ? `Active supply is healthy (${active} listings nearby).` : active > 0 ? `Thin active supply (${active} listings nearby).` : 'No active listings retrieved nearby.';
-  const demand = realieSold >= 5 ? `Steady recent sold activity (${realieSold} verified sold comps).` : realieSold > 0 ? `Limited recent sold activity (${realieSold} verified sold comps).` : 'No verified recent sold comps.';
-  const liquidity = m.domMedian != null ? `Median ~${m.domMedian} days on market.` : 'Days-on-market not established.';
+  const confidence: MarketPulseSynthesis['confidence'] = soldCount >= 5 ? 'high' : soldCount >= 3 ? 'medium' : soldCount >= 1 ? 'low' : 'none';
+
+  // ── Absorption / months of inventory + sell-through ─────────────────────────
+  const WINDOW_MONTHS = 12;
+  const monthlySoldRate = soldCount / WINDOW_MONTHS;
+  const monthsOfInventory = monthlySoldRate > 0 && active > 0 ? Math.round((active / monthlySoldRate) * 10) / 10 : null;
+  const sellThroughPct = soldCount + active > 0 ? Math.round((soldCount / (soldCount + active)) * 100) : null;
+
+  // ── Direction (per-acre band over time) ─────────────────────────────────────
+  const { direction, pct: directionPct } = computeMarketDirection(report);
+
+  const supply = active >= 20 ? `Healthy active supply (${active} land listings nearby).` : active > 0 ? `Thin active supply (${active} land listings nearby).` : 'No active land listings retrieved nearby.';
+  const demand = soldCount >= 5 ? `Steady recent sold activity (${soldCount} verified land sold comps in the band).` : soldCount > 0 ? `Limited recent sold activity (${soldCount} verified land sold comps).` : 'No verified recent land sold comps.';
+  const liquidity = m.domMedian != null ? `Median ~${m.domMedian} days on market.` : 'Days-on-market not established for land here.';
+  const absorption = monthsOfInventory != null
+    ? `~${monthsOfInventory} months of inventory (${monthsOfInventory < 6 ? "tight — seller's market" : monthsOfInventory <= 12 ? 'balanced' : 'soft — oversupplied'})${sellThroughPct != null ? `, ${sellThroughPct}% sell-through` : ''}.`
+    : 'Absorption not computable yet (need both sold and active land data).';
+
   const interpretation = ppa.median != null
-    ? `Verified land is trading around ${money(ppa.median)}/acre (p25–p75 ${money(ppa.p25)}–${money(ppa.p75)}/acre) from ${realieSold} Realie sold comp(s), with ${active} Zillow active listing(s) for asking-market context.`
-    : `No verified price-per-acre band yet (${realieSold} sold comps). Use area context + widen the comp search before pricing.`;
+    ? `Verified land is trading around ${money(ppa.median)}/acre (p25–p75 ${money(ppa.p25)}–${money(ppa.p75)}/acre) from ${soldCount} sold comp(s), with ${active} active land listing(s) for asking-market context.`
+    : `No verified price-per-acre band yet (${soldCount} land sold comps). Use area context + widen the comp search before pricing.`;
   const whatThisMeans = ppa.median != null
     ? `There is enough verified evidence to price a preliminary acquisition range (see below). ${mc?.sparseExplanation ?? ''}`.trim()
     : 'Not enough verified sold comps to price confidently — treat any value as area context only until more comps are gathered.';
+
   const growthDrivers = {
     available: !!growth && growth.status === 'collected' && growth.drivers.length > 0,
     summary: growth?.summary ?? 'Local growth drivers not summarized this run.',
     whatThisMeans: growth?.whatThisMeans ?? 'Rely on the verified comp band; confirm local development with the seller / county.',
     drivers: (growth?.drivers ?? []).map((d) => ({ category: d.category, count: d.count })),
   };
-  return { realieSoldCount: realieSold, zillowActiveCount: active, zillowSupplementalSoldCount: suppSold, pricePerAcre: ppa, domMedian: m.domMedian ?? null, supply, demand, liquidity, confidence, sparseExplanation: mc?.sparseExplanation ?? null, interpretation, whatThisMeans, growthDrivers };
+
+  // ── Verdict: stronger or weaker, and WHY (combine direction + absorption +
+  //    liquidity + growth evidence into one operator answer). ───────────────────
+  const verdict = buildMarketVerdict({ direction, directionPct, monthsOfInventory, domMedian: m.domMedian ?? null, growthAvailable: growthDrivers.available, soldCount });
+
+  return { realieSoldCount: realieSold, zillowActiveCount: active, zillowSupplementalSoldCount: suppSold, soldCount, activeCount: active, pricePerAcre: ppa, domMedian: m.domMedian ?? null, monthsOfInventory, sellThroughPct, direction, directionPct, supply, demand, liquidity, absorption, confidence, sparseExplanation: mc?.sparseExplanation ?? null, interpretation, whatThisMeans, verdict, growthDrivers };
+}
+
+/** Synthesize the headline market verdict by weighing the strengthening vs
+ *  softening signals. Honest about thin data; never overstates. */
+function buildMarketVerdict(s: { direction: MarketDirection; directionPct: number | null; monthsOfInventory: number | null; domMedian: number | null; growthAvailable: boolean; soldCount: number }): string {
+  if (s.soldCount < 2) return 'Not enough verified land sales to call market direction yet. Widen the comp search (radius/recency) before drawing a conclusion.';
+  const strong: string[] = [];
+  const weak: string[] = [];
+  if (s.direction === 'strengthening') strong.push(`per-acre prices are rising (${s.directionPct! > 0 ? '+' : ''}${s.directionPct}% recent vs older sales)`);
+  else if (s.direction === 'softening') weak.push(`per-acre prices are easing (${s.directionPct}% recent vs older sales)`);
+  if (s.monthsOfInventory != null) {
+    if (s.monthsOfInventory < 6) strong.push(`tight supply (~${s.monthsOfInventory} months of inventory)`);
+    else if (s.monthsOfInventory > 12) weak.push(`heavy supply (~${s.monthsOfInventory} months of inventory)`);
+  }
+  if (s.domMedian != null) {
+    if (s.domMedian <= 90) strong.push(`land sells quickly (~${s.domMedian} days on market)`);
+    else if (s.domMedian >= 180) weak.push(`slow turnover (~${s.domMedian} days on market)`);
+  }
+  if (s.growthAvailable) strong.push('local growth/development catalysts are present');
+  let headline: string;
+  if (strong.length > weak.length && strong.length > 0) headline = 'This land market looks like it is STRENGTHENING';
+  else if (weak.length > strong.length && weak.length > 0) headline = 'This land market looks like it is SOFTENING';
+  else if (strong.length === 0 && weak.length === 0) headline = 'This land market reads as STABLE / mixed (no decisive signal)';
+  else headline = 'This land market reads as MIXED';
+  const because = [...strong.map((x) => `+ ${x}`), ...weak.map((x) => `− ${x}`)];
+  return `${headline}. Why: ${because.length ? because.join('; ') : 'thin signals on both sides'}.`;
 }
 
 function buildAcquisitionRange(report: DealCardReportView, pulse: MarketPulseSynthesis): PreliminaryAcquisitionRange {

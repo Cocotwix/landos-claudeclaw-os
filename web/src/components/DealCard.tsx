@@ -531,25 +531,26 @@ function MarketCompsSection({ mc }: { mc?: MarketCompsView | null }) {
         </span>
       </div>
 
-      {/* Realie sold comps — primary band */}
+      {/* Comparable Sales — retained raw-land sold comps that drive the band
+          (multi-provider: Realie + HomeHarvest, classified, acreage-filtered) */}
       <div>
-        <div class="text-[11px] font-semibold text-[var(--color-status-done)]">Realie Sold Comps <span class="text-[10px] text-[var(--color-text-faint)]">(primary · band {band})</span></div>
-        {mc.sold && mc.sold.length > 0 ? <CompRows rows={mc.sold} kind="sold" /> : <div class="text-[11px] text-[var(--color-text-faint)]">No Realie sold comps.</div>}
-        {mc.sparseExplanation && <div class="text-[10px] text-[var(--color-accent)] mt-1">{mc.sparseExplanation}</div>}
+        <div class="text-[13px] font-semibold text-[var(--color-status-done)]">Comparable Sales <span class="text-[11px] text-[var(--color-text-faint)]">(retained raw-land band {band})</span></div>
+        {mc.sold && mc.sold.length > 0 ? <CompRows rows={mc.sold} kind="sold" /> : <div class="text-[12px] text-[var(--color-text-faint)]">No retained land sold comps.</div>}
+        {mc.sparseExplanation && <div class="text-[11px] text-[var(--color-accent)] mt-1">{mc.sparseExplanation}</div>}
       </div>
 
-      {/* Zillow active listings — asking-market evidence, NOT sold */}
+      {/* Active Listings — asking-market evidence (multi-provider), NOT sold */}
       <div>
-        <div class="text-[11px] font-semibold text-[var(--color-accent)]">Zillow Active Listings / Asking-Market Evidence <span class="text-[10px] text-[var(--color-text-faint)]">(not sold comps)</span></div>
-        {mc.status === 'error' ? <div class="text-[11px] text-[var(--color-status-failed)]">Zillow provider error.</div>
+        <div class="text-[13px] font-semibold text-[var(--color-accent)]">Active Listings <span class="text-[11px] text-[var(--color-text-faint)]">(asking-market evidence, not sold comps)</span></div>
+        {mc.status === 'error' ? <div class="text-[12px] text-[var(--color-status-failed)]">Active-listing provider error.</div>
           : mc.active && mc.active.length > 0 ? <CompRows rows={mc.active} kind="active" />
-          : <div class="text-[11px] text-[var(--color-text-faint)]">No Zillow active listings returned.</div>}
+          : <div class="text-[12px] text-[var(--color-text-faint)]">No active land listings returned.</div>}
       </div>
 
-      {/* Zillow supplemental sold — separate from Realie */}
+      {/* Supplemental sold — kept separate, never in the raw-land band */}
       {mc.supplementalSold && mc.supplementalSold.length > 0 && (
         <div>
-          <div class="text-[11px] font-semibold text-[var(--color-text-muted)]">Zillow Supplemental Sold Listings <span class="text-[10px] text-[var(--color-text-faint)]">(supplemental · excluded from Realie band)</span></div>
+          <div class="text-[12px] font-semibold text-[var(--color-text-muted)]">Supplemental Sold Listings <span class="text-[11px] text-[var(--color-text-faint)]">(home-centric · excluded from the land band)</span></div>
           <CompRows rows={mc.supplementalSold} kind="sold" />
         </div>
       )}
@@ -810,38 +811,191 @@ interface VisualContextView {
   note: string;
 }
 
-// Visual Property Context section — renders captured images inline (via the
-// token-gated image route) or placeholders, plus backup Maps/Street View/Earth
-// links. All labeled "Visual Signal, Not Verified Fact". No Google call here.
-function VisualPropertyContextSection({ ctx, token }: { ctx?: VisualContextView; token: string }) {
+// ── Visual Context — the permanent foundation for the future Interactive
+//    Intelligence Map. This section is the FIRST thing on the Deal Card. It
+//    renders a large satellite image, a parcel boundary when geometry is
+//    available (else an honest marker fallback), Street View, and Maps/Earth
+//    links + imagery source/date. The data contract here (assets + links +
+//    optional parcelBoundary) is shaped so a MapLibre layer stack (pan/zoom,
+//    parcel/flood/wetlands/slope/comp pins, measurement) can slot in later
+//    WITHOUT a refactor — see the FUTURE MAP note below.
+function isSatellite(a: VisualAssetView): boolean { return /satellite|maps_static|static_?map|aerial/i.test(`${a.service} ${a.imageType} ${a.apiService}`); }
+function isStreetView(a: VisualAssetView): boolean { return /street/i.test(`${a.service} ${a.imageType} ${a.apiService}`); }
+
+function VisualContextSection({ ctx, token }: { ctx?: VisualContextView; token: string }) {
   if (!ctx) return null;
   const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
   const captured = ctx.assets.filter((a) => a.status === 'captured' && a.imageUrl);
+  const sat = captured.find(isSatellite);
+  const street = captured.find(isStreetView);
+  // Parcel geometry is not provided by the connected imagery source (Google
+  // Static Maps returns no parcel polygon). When a geometry provider (county
+  // GIS / OpenAddresses) is wired, set ctx.parcelBoundary and this renders the
+  // outline instead of the marker fallback. Until then: honest marker fallback.
+  const hasBoundary = !!(ctx as { parcelBoundary?: unknown }).parcelBoundary;
+  const streetUnavailable = ctx.assets.some(isStreetView) && !street;
   return (
-    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 mt-3">
-      <div class="flex items-center gap-2">
-        <span class="text-[12px] font-medium">Visual Property Context</span>
-        <span class="text-[10px] px-1.5 py-0.5 rounded-full border text-[var(--color-text-faint)] border-[var(--color-border)]">{ctx.label}</span>
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[14px] font-semibold">Visual Context</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full border text-[var(--color-text-faint)] border-[var(--color-border)]">{ctx.label}</span>
       </div>
-      {captured.length > 0 ? (
-        <div class="grid grid-cols-2 gap-2 mt-2">
-          {captured.map((a) => (
-            <figure key={a.service} class="m-0">
-              <img src={withToken(a.imageUrl as string)} alt={a.imageType} class="w-full rounded-md border border-[var(--color-border)]" loading="lazy" />
-              <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-1">{a.apiService} · {a.verificationStatus}</figcaption>
-            </figure>
-          ))}
-        </div>
+
+      {/* Large satellite */}
+      {sat ? (
+        <figure class="m-0">
+          <img src={withToken(sat.imageUrl as string)} alt="satellite" class="w-full rounded-lg border border-[var(--color-border)]" loading="lazy" />
+          <figcaption class="text-[11px] text-[var(--color-text-faint)] mt-1">
+            {hasBoundary ? 'Parcel boundary overlaid.' : 'Parcel boundary unavailable from connected sources — image centered on the geocoded parcel marker.'}
+          </figcaption>
+        </figure>
       ) : (
-        <div class="text-[11px] text-[var(--color-text-muted)] mt-2">
-          No images captured yet. Use "Capture visuals" to fetch satellite + Street View for this property (one explicit Google call).
+        <div class="text-[12px] text-[var(--color-text-muted)] rounded-lg border border-dashed border-[var(--color-border)] p-4">
+          Satellite image not captured yet. Use "Capture visuals" to fetch satellite + Street View (one explicit Google call). Parcel boundary unavailable from connected sources.
         </div>
       )}
-      <div class="text-[11px] mt-2 flex flex-wrap gap-x-3 gap-y-1">
+
+      {/* Street View (or honest "Google never drove this road" fallback) */}
+      {street ? (
+        <figure class="m-0">
+          <img src={withToken(street.imageUrl as string)} alt="street view" class="w-full rounded-lg border border-[var(--color-border)]" loading="lazy" />
+          <figcaption class="text-[11px] text-[var(--color-text-faint)] mt-1">Street View · {street.apiService}</figcaption>
+        </figure>
+      ) : streetUnavailable ? (
+        <div class="text-[12px] text-[var(--color-text-muted)]">Street View unavailable — Google has not driven imagery on this road. Satellite + Maps/Earth still apply.</div>
+      ) : null}
+
+      {/* Imagery source + date (honest when the source does not provide a date) */}
+      <div class="text-[11px] text-[var(--color-text-faint)]">
+        Imagery source: {ctx.provider === 'google' ? 'Google (Static Maps / Street View)' : ctx.provider}. Imagery date: not provided by source.
+      </div>
+
+      {/* Links */}
+      <div class="text-[12px] flex flex-wrap gap-x-4 gap-y-1">
         {ctx.links.maps && <a href={ctx.links.maps} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Google Maps</a>}
         {ctx.links.streetView && <a href={ctx.links.streetView} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Street View</a>}
         {ctx.links.earth && <a href={ctx.links.earth} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Google Earth / 3D</a>}
       </div>
+      {/* FUTURE MAP: replace the static figures above with a MapLibre canvas
+          consuming { satellite tiles, parcelBoundary, comp pins, listing pins,
+          flood/wetlands/slope layers, measurement tools }. The section contract
+          (assets + links + optional parcelBoundary) is already shaped for it. */}
+    </div>
+  );
+}
+
+// Small labeled value for the header / at-a-glance strips.
+function HeaderField({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div class="min-w-0">
+      <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+      <div class="text-[13px] text-[var(--color-text)] truncate font-medium">{value || '—'}</div>
+    </div>
+  );
+}
+
+// Property Header — large, readable identity line: seller, address, APN, county,
+// state, acreage, verification, entity, stage. Pulls from the DD fact checklist.
+function PropertyHeaderSection({ report, entity, stageLabel, seller }: { report: ReportView; entity: string; stageLabel?: string; seller?: string }) {
+  const fact = (key: string): string | null => (report.ddFactChecklist ?? []).find((r) => r.key === key)?.value ?? null;
+  const address = fact('situsAddress') ?? fact('address') ?? null;
+  const apn = fact('apn') ?? fact('parcelId') ?? null;
+  const county = fact('county') ?? null;
+  const state = fact('state') ?? null;
+  const acres = fact('acres') ?? null;
+  return (
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[18px] font-semibold text-[var(--color-text)]">{address || 'Address pending verification'}</span>
+        <span class={`text-[11px] px-2 py-0.5 rounded-full border ${report.parcelVerified ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-text-faint)] border-[var(--color-border)]'}`}>
+          {report.parcelVerified ? 'Verified' : 'Needs Verification'}
+        </span>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-2">
+        <HeaderField label="Seller / Lead" value={seller} />
+        <HeaderField label="APN" value={apn} />
+        <HeaderField label="County" value={county} />
+        <HeaderField label="State" value={state} />
+        <HeaderField label="Acreage" value={acres} />
+        <HeaderField label="Business entity" value={entity} />
+        <HeaderField label="Stage" value={stageLabel} />
+      </div>
+    </div>
+  );
+}
+
+// At-A-Glance — the one-line answer strip directly under the header.
+function AtAGlanceStrip({ report, propertyType }: { report: ReportView; propertyType?: PropertyTypeView | null }) {
+  const fact = (key: string): string | null => (report.ddFactChecklist ?? []).find((r) => r.key === key)?.value ?? null;
+  const g = (report as { govDd?: { flood?: { status: string; zone: string | null }; wetlands?: { status: string; type: string | null }; slope?: { status: string; slopeDeg: number | null } } }).govDd;
+  const floodTxt = g?.flood?.status === 'verified' ? (g.flood.zone && !/^x$/i.test(g.flood.zone) ? `Zone ${g.flood.zone}` : 'Zone X (min.)') : 'Unknown';
+  const wetTxt = g?.wetlands?.status === 'verified' ? (g.wetlands.type ? 'Present' : 'None mapped') : 'Unknown';
+  const slopeTxt = g?.slope?.status === 'verified' && g.slope.slopeDeg != null ? `~${g.slope.slopeDeg}°` : 'Unknown';
+  const improved = propertyType?.vacantOrImproved || 'Unknown';
+  const cells: Array<{ label: string; value: string }> = [
+    { label: 'Verified', value: report.parcelVerified ? 'Yes' : 'No' },
+    { label: 'Property type', value: propertyType?.propertyType || (fact('landUse') ?? 'Unknown') },
+    { label: 'Land use', value: fact('landUse') ?? 'Unknown' },
+    { label: 'Flood', value: floodTxt },
+    { label: 'Wetlands', value: wetTxt },
+    { label: 'Slope', value: slopeTxt },
+    { label: 'Improvement', value: improved },
+    { label: 'DD complete', value: report.ddCompleteness ? `${report.ddCompleteness.percentComplete}%` : '—' },
+  ];
+  return (
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-elevated)] p-3">
+      <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] mb-2">At a Glance</div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
+        {cells.map((c) => <HeaderField key={c.label} label={c.label} value={c.value} />)}
+      </div>
+    </div>
+  );
+}
+
+// Market Pulse — the completed market read: counts, band, liquidity, absorption,
+// direction, and the headline verdict (stronger or weaker, and why) + growth.
+interface MarketPulseView {
+  soldCount: number; activeCount: number;
+  pricePerAcre: { p25: number | null; median: number | null; p75: number | null };
+  domMedian: number | null; monthsOfInventory: number | null; sellThroughPct: number | null;
+  direction: string; directionPct: number | null;
+  supply: string; demand: string; liquidity: string; absorption: string;
+  confidence: string; interpretation: string; verdict: string;
+  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number }> };
+}
+function MarketPulseSection({ mp }: { mp?: MarketPulseView | null }) {
+  if (!mp) return null;
+  const usd = (n: number | null) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
+  const dirTone = mp.direction === 'strengthening' ? 'text-[var(--color-status-done)]' : mp.direction === 'softening' ? 'text-[var(--color-status-failed)]' : 'text-[var(--color-text-muted)]';
+  return (
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[14px] font-semibold">Market Pulse</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">confidence {mp.confidence}</span>
+      </div>
+      {/* Headline verdict */}
+      <div class={`text-[14px] font-medium ${dirTone}`}>{mp.verdict}</div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
+        <HeaderField label="Sold (band)" value={String(mp.soldCount)} />
+        <HeaderField label="Active" value={String(mp.activeCount)} />
+        <HeaderField label="Median $/ac" value={usd(mp.pricePerAcre.median)} />
+        <HeaderField label="Band p25–p75" value={`${usd(mp.pricePerAcre.p25)}–${usd(mp.pricePerAcre.p75)}`} />
+        <HeaderField label="Days on market" value={mp.domMedian != null ? `~${mp.domMedian}` : '—'} />
+        <HeaderField label="Mo. of inventory" value={mp.monthsOfInventory != null ? String(mp.monthsOfInventory) : '—'} />
+        <HeaderField label="Sell-through" value={mp.sellThroughPct != null ? `${mp.sellThroughPct}%` : '—'} />
+        <HeaderField label="Direction" value={mp.direction + (mp.directionPct != null ? ` (${mp.directionPct > 0 ? '+' : ''}${mp.directionPct}%)` : '')} />
+      </div>
+      <div class="text-[12px] text-[var(--color-text-muted)] space-y-1">
+        <div>{mp.supply} {mp.demand} {mp.liquidity} {mp.absorption}</div>
+        <div>{mp.interpretation}</div>
+      </div>
+      {mp.growthDrivers.available && (
+        <div class="text-[12px] text-[var(--color-text-muted)] border-t border-[var(--color-border)] pt-2">
+          <span class="text-[var(--color-text-faint)]">Local growth/development:</span> {mp.growthDrivers.summary}
+          {mp.growthDrivers.drivers.length > 0 && <span class="text-[11px] text-[var(--color-text-faint)]"> [{mp.growthDrivers.drivers.slice(0, 4).map((d) => `${d.category} ×${d.count}`).join(', ')}]</span>}
+          <div class="text-[12px] text-[var(--color-accent)] mt-1">What this means for Tyler: {mp.growthDrivers.whatThisMeans}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1831,53 +1985,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </div>
             )}
 
-            {/* Acquisitions — seller-strategy brain (CRM-independent; shows with or without a DD report). */}
-            {deal?.id && <AcquisitionsPanel dealId={deal.id} />}
-
             {report?.exists && (
               <div class="space-y-3">
-                {/* Executive Summary — operator-ready pre-call brief, first thing Tyler sees. */}
-                <ExecutiveSummarySection es={execSummary} />
-
-                {/* DD Command Center — at-a-glance pre-call readiness. */}
-                <DealCardCommandCenter r={readiness} />
-
-                {/* Pre-Call Intelligence — identity tier + inferred type + readiness. */}
-                <PreCallIntelligenceSection pci={preCall} pt={propertyType} />
-
-                {/* Discovery Call Preparation — the operator briefing for the call. */}
-                <DiscoveryBriefingSection b={briefing} />
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Due Diligence + Research</div>
-                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.ddSummary || '—'}</p>
-                  </div>
-                  <div>
-                    <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Market Research</div>
-                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.marketSummary || '—'}</p>
-                  </div>
-                  <div>
-                    <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Strategy</div>
-                    <p class="text-[12px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.strategySummary || '—'}</p>
-                    <div class="mt-1 flex flex-wrap items-center gap-2">
-                      <StrategyReadinessBadge status={report.offerReadiness} />
-                    </div>
-                  </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
-                  <Field label="Most viable strategy" value={report.mostViableStrategy || undefined} />
-                  <Field label="Offer readiness" value={readinessText(report.offerReadiness)} />
-                </div>
-
-                {/* Market comps + listings: Realie sold (primary) / Zillow active (asking-market) / Zillow supplemental sold. */}
-                <MarketCompsSection mc={report.marketComps} />
-
-                {/* Full DD fact checklist + completeness (mirrors the Discovery Call Report). */}
-                <DdFactChecklist rows={report.ddFactChecklist} completeness={report.ddCompleteness} />
-
-                {/* Visual Property Context — inline images / placeholders + links. */}
+                {/* 1. VISUAL CONTEXT — top of the card (large satellite + parcel
+                    marker/boundary + Street View + Maps/Earth + source/date). */}
                 {prop?.id && (
                   <div>
                     <div class="flex items-center justify-end mb-1">
@@ -1890,10 +2001,68 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                         {visualCapturing ? 'Capturing…' : 'Capture visuals'}
                       </button>
                     </div>
-                    <VisualPropertyContextSection ctx={report.visualContext} token={dashboardToken} />
+                    <VisualContextSection ctx={report.visualContext} token={dashboardToken} />
                     {visualCaptureMsg && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{visualCaptureMsg}</div>}
                   </div>
                 )}
+
+                {/* 2. SELLER / LEAD — acquisitions brain leads with the seller profile. */}
+                {deal?.id && <AcquisitionsPanel dealId={deal.id} />}
+
+                {/* 3. PROPERTY HEADER — large identity line. */}
+                <PropertyHeaderSection report={report} entity={entity} stageLabel={readiness?.workflowStageLabel} />
+
+                {/* 4. AT-A-GLANCE — the one-line answer strip. */}
+                <AtAGlanceStrip report={report} propertyType={propertyType} />
+
+                {/* 5-7, 11, 12. EXECUTIVE SUMMARY (brief + deal economics + acquisition
+                    range + strategy ranking + top risks, in that internal order). */}
+                <ExecutiveSummarySection es={execSummary} />
+
+                {/* 8 + 9. COMPARABLE SALES + ACTIVE LISTINGS. */}
+                <MarketCompsSection mc={report.marketComps} />
+
+                {/* 10. MARKET PULSE — stronger or weaker, and why. */}
+                <MarketPulseSection mp={execSummary?.marketPulse as unknown as MarketPulseView} />
+
+                {/* 13 + 14. DETAILED DUE DILIGENCE — collapsed by default. */}
+                <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)]">
+                  <summary class="cursor-pointer px-4 py-3 text-[13px] font-semibold text-[var(--color-text)]">Detailed Due Diligence &amp; Research</summary>
+                  <div class="px-4 pb-4 space-y-3">
+                {/* DD Command Center — pre-call readiness. */}
+                <DealCardCommandCenter r={readiness} />
+
+                {/* Pre-Call Intelligence — identity tier + inferred type + readiness. */}
+                <PreCallIntelligenceSection pci={preCall} pt={propertyType} />
+
+                {/* Discovery Call Preparation — the operator briefing for the call. */}
+                <DiscoveryBriefingSection b={briefing} />
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Due Diligence + Research</div>
+                    <p class="text-[13px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.ddSummary || '—'}</p>
+                  </div>
+                  <div>
+                    <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Market Research</div>
+                    <p class="text-[13px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.marketSummary || '—'}</p>
+                  </div>
+                  <div>
+                    <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Strategy</div>
+                    <p class="text-[13px] text-[var(--color-text)] whitespace-pre-wrap break-words">{report.strategySummary || '—'}</p>
+                    <div class="mt-1 flex flex-wrap items-center gap-2">
+                      <StrategyReadinessBadge status={report.offerReadiness} />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+                  <Field label="Most viable strategy" value={report.mostViableStrategy || undefined} />
+                  <Field label="Offer readiness" value={readinessText(report.offerReadiness)} />
+                </div>
+
+                {/* 13. PROPERTY FACTS — full DD fact checklist + completeness. */}
+                <DdFactChecklist rows={report.ddFactChecklist} completeness={report.ddCompleteness} />
 
                 {/* Post-discovery DD: seller-stated facts, county verification, underwriting prep. */}
                 {deal?.id && <PostDiscoveryPanel dealId={deal.id} onChange={() => void loadReport(deal.id)} />}
@@ -1943,6 +2112,8 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   </div>
                   <div class="text-[10px] text-[var(--color-text-faint)] mt-1">{report.creditUsage.note}</div>
                 </div>
+                  </div>
+                </details>
 
                 <div class="text-[10px] text-[var(--color-text-faint)]">
                   Operational report. Departments stay separate (DD property-level, Market market-level, Strategy decision-level). No parcel fact is Verified without a named source; no comps, demand, pricing, EVs, or offers are fabricated.
