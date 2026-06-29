@@ -168,8 +168,14 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
 
   // Explicit APN keyword: "APN: 12-345-678", "APN 12-345-678", or multi-segment
   // forms with internal whitespace/decimals like "APN 051   012.05".
-  const apnKw = text.match(/\bapn[:\s]+([0-9][0-9A-Za-z./\-]*(?:\s+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
-    ?.replace(/\s+/g, ' ').trim();
+  // ROOT-CAUSE FIX: the segment separator is HORIZONTAL whitespace only ([^\S\n]+),
+  // not \s+. A space-containing APN on its own line ("APN: 16 038 07 001") followed
+  // by an address line starting with a number ("2123 Panola Road") previously
+  // merged into a corrupt APN ("16 038 07 001 2123") because \s matches newlines —
+  // which then failed Realie lookup and produced a false "not verified" that
+  // contradicted the parcel's genuinely-verified facts. Stop the APN at the line end.
+  const apnKw = text.match(/\bapn[:\s]+([0-9][0-9A-Za-z./\-]*(?:[^\S\n]+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
+    ?.replace(/[^\S\n]+/g, ' ').trim();
   if (apnKw) {
     const state = extractState(text);
     const fips = extractLabeledFips(text);

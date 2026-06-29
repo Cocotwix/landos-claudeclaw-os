@@ -120,6 +120,20 @@ describe('looksLikePropertyInput', () => {
 // ── extractPropertyArgs ───────────────────────────────────────────────────────
 
 describe('extractPropertyArgs', () => {
+  // REGRESSION: a space-containing APN on its own line, followed by an address
+  // line starting with a house number, must NOT merge across the newline. This
+  // corruption ("16 038 07 001 2123") caused a false "not verified" that
+  // contradicted a parcel's genuinely-verified Realie facts (2123 Panola Road).
+  it('does not merge a multi-line APN with the next line\'s house number', () => {
+    const r = extractPropertyArgs('APN: 16 038 07 001\n2123 Panola Road, Lithonia GA\nDeKalb County\nGA');
+    expect(r?.apn).toBe('16 038 07 001'); // clean — NOT "16 038 07 001 2123"
+    expect(r?.county).toBe('DeKalb');
+    expect(r?.state).toBe('GA');
+  });
+  it('still parses a single-line space-APN normally', () => {
+    expect(extractPropertyArgs('APN: 051 012.05, Coffee County, TN')?.apn).toBe('051 012.05');
+  });
+
   it('extracts LP URL', () => {
     const r = extractPropertyArgs(
       'Check https://landportal.com/property?propertyid=12345&fips=37005 for me',

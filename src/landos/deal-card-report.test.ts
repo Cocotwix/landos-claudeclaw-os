@@ -33,6 +33,29 @@ it('buildIdentityText includes the street address so address-only leads can veri
   expect(text).toMatch(/NC/);
 });
 
+it('rerun of a parcel with a space-APN + address re-verifies (no stale unverified contradiction)', async () => {
+  // REGRESSION for the 2123 Panola verification-state contradiction: a previously
+  // verified parcel carries a space-APN in DD ("16 038 07 001") and an address on
+  // the linked card. On rerun, buildIdentityText -> extractPropertyArgs must yield
+  // the CLEAN apn so the resolver verifies — not a corrupt merged value that flips
+  // the report to unverified while the card still shows verified facts.
+  const dealId = createDealCard({ entity: 'TY_LAND_BIZ', title: 'space-apn rerun', leadType: 'test' }).id;
+  const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '2123 Panola Road, Lithonia GA', city: 'Lithonia', state: 'GA', verified: false, summary: 'x' });
+  linkPropertyToDeal({ dealCardId: dealId, cardId: card.id, role: 'subject' });
+  upsertDealCardDd(dealId, { apn: '16 038 07 001', county: 'DeKalb', state: 'GA' });
+  // Resolver verifies ONLY for the clean APN; a corrupt merged "...2123" would NOT match.
+  const resolve = async (args: LpResolveArgs): Promise<LpResolveResult> => {
+    const ok = (args.apn ?? '').trim() === '16 038 07 001';
+    if (!ok) return { verified: false, status: 'not_verified', propertyid: null, fips: '13089', apn: null, situs_address: null, owner: null, match_notes: `unmatched apn=[${args.apn}]`, candidates: [] };
+    return { verified: true, status: 'verified', propertyid: '7', fips: '13089', apn: '16 038 07 001', situs_address: '2123 PANOLA RD', city: 'LITHONIA', state: 'GA', owner: 'X', match_notes: 'exact parcelId match', candidates: [], property_summary: { ...VERIFIED_SUMMARY, propertyid: '7', apn: '16 038 07 001', situs_address: '2123 PANOLA RD', city: 'LITHONIA', state: 'GA', county: 'DeKalb' } };
+  };
+  const r = (await runDealCardReport(dealId, { resolve, timeoutMs: 1000, reverify: true }))!.report;
+  expect(r.parcelVerified).toBe(true); // clean apn -> verified, no contradiction
+  expect(r.parcelVerificationStatus).not.toMatch(/not parcel verified|local area context/i);
+  // persisted + reloaded stays consistent
+  expect(getDealCardReport(dealId).parcelVerified).toBe(true);
+});
+
 function newDeal(): number {
   return createDealCard({ entity: 'TY_LAND_BIZ', title: 'Generic report test deal' }).id;
 }
