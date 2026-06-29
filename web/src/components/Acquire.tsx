@@ -1,23 +1,26 @@
 import { useState } from 'preact/hooks';
 import { apiPost } from '@/lib/api';
 import { ModelControl } from '@/components/ModelControl';
+import { SmartIntake } from '@/components/SmartIntake';
 
-// Acquire — ONE normal action: Run Property Analysis. A single click runs the
-// CURRENT production DD pipeline server-side (runDealCardReport): Realie-first
-// parcel identity + locality validation -> property/DD facts -> FEMA/NWI/USGS gov
-// DD -> Realie sold comps + Zillow supplemental -> browser market intelligence ->
-// Pre-Call Intelligence -> Acquisitions, all persisted on a Deal Card. On success
-// it OPENS the Deal Card (which renders every current section). The old two-step
-// Verify/Create controls remain as a collapsed developer fallback. Parcel
-// identity is verified only from named sources, never imagery/coordinates.
+// Acquire — Universal Intake → Property Resolution → DD. A single click runs the
+// Property Resolution Engine server-side (every practical lane: Realie/LandPortal
+// exact resolve, free Census county derivation + retry, free Photon/Census
+// address suggest, parked browser lanes) and returns Matched or Needs
+// Clarification. On Matched it persists/updates a Property + Deal Card, runs the
+// production DD pipeline, and OPENS the Deal Card (which renders every section);
+// unknown fields are surfaced as Confirm Before Offer, never suppressed. On Needs
+// Clarification it shows practical guidance and opens nothing. Pre-call DD is
+// practical property intelligence — parcel identity is still verified only from
+// named sources, never imagery or a suggestion's coordinates.
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
 
 const PROGRESS_STAGES = [
-  'Verifying parcel identity (Realie-first)', 'Collecting property + DD facts',
-  'Running gov DD (FEMA / NWI / USGS)', 'Collecting Realie sold comps',
-  'Adding Zillow supplemental listings', 'Building Pre-Call Intelligence',
-  'Opening Deal Card', 'Complete',
+  'Resolving the property (every practical lane)', 'Verifying parcel identity (named sources)',
+  'Collecting property + DD facts', 'Running gov DD (FEMA / NWI / USGS)',
+  'Collecting Realie sold comps', 'Adding Zillow supplemental listings',
+  'Building Pre-Call Intelligence', 'Opening Deal Card', 'Complete',
 ];
 
 function entityLabel(e: EntityFilter): string {
@@ -26,30 +29,38 @@ function entityLabel(e: EntityFilter): string {
   return 'all entities';
 }
 
+interface AcquireResponse {
+  ok: boolean; matched?: boolean; parcelVerified?: boolean; dealCardId: number | null;
+  pipeline?: string; status?: string; message?: string; guidance?: string;
+  confidence?: number; matchedReason?: string; confirmBeforeOffer?: string[]; sources?: string[];
+}
+
 export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOpenDealCard?: (id: number) => void }) {
   const [text, setText] = useState('');
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsClarification, setNeedsClarification] = useState<string | null>(null);
 
-  // ── The single normal action — PRODUCTION DD pipeline ──────────────────────
-  // Runs the current Deal Card DD report (Realie-first identity + locality
-  // validation, Realie sold comps + Zillow supplemental, FEMA/NWI/USGS, Pre-Call
-  // Intelligence, Acquisitions) and opens the resulting Deal Card, which renders
-  // every current section. (The legacy /property-analysis result view is retired.)
+  // ── The single normal action — Property Resolution → DD ────────────────────
+  // Runs the Property Resolution Engine; on Matched it persists/updates the Deal
+  // Card, runs the production DD report, and OPENS the Deal Card (which renders
+  // every section). Unknown fields ride along as Confirm Before Offer. On Needs
+  // Clarification it shows practical guidance and opens nothing — never an empty
+  // shell. The open is gated on res.matched (a credible match), not on legal-grade
+  // verification: pre-call DD is practical intelligence, not title work.
   async function runPropertyAnalysis() {
     if (!text.trim()) return;
     setRunning(true);
     setError(null);
+    setNeedsClarification(null);
     try {
       const body: Record<string, unknown> = { text };
       if (entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ') body.entity = entity;
-      const res = await apiPost<{ ok: boolean; parcelVerified: boolean; dealCardId: number | null; pipeline?: string; message?: string; neededIdentifier?: string; status?: string }>('/api/landos/acquire/run', body);
-      // Open the Deal Card ONLY on a verified success. A Deal Card id alone (or a
-      // "complete with gaps" report) is NOT success — parcelVerified must be true.
-      if (res.ok && res.parcelVerified === true && res.dealCardId) {
+      const res = await apiPost<AcquireResponse>('/api/landos/acquire/run', body);
+      if (res.ok && res.matched === true && res.dealCardId) {
         if (onOpenDealCard) onOpenDealCard(res.dealCardId);
       } else {
-        setError(res.message || 'Parcel identity not verified — no Deal Card was created. Provide APN + county, owner + city/state, or a corrected address.');
+        setNeedsClarification(res.guidance || res.message || 'No practical match could be established. Provide APN + county, owner + city/state, or a corrected address.');
       }
     } catch (err: any) {
       setError(err?.message || String(err));
@@ -62,14 +73,14 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-3">
         <div class="flex items-center justify-between gap-2 flex-wrap">
-          <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Acquire — Property Analysis</div>
+          <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Acquire — Universal Intake</div>
           <ModelControl entity={entity} scopeKind="task_type" scopeKey="routing" orientation="task_oriented" label="Intake model" size="sm" />
         </div>
-        <textarea
+        <SmartIntake
           value={text}
-          onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
-          placeholder="Enter a full address, APN, or owner + county. One click runs the whole analysis — county/FIPS is resolved internally. Identity is verified from named sources, never imagery or coordinates."
-          class="w-full h-20 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-2 text-[12px] text-[var(--color-text)]"
+          onInput={setText}
+          onSubmit={() => void runPropertyAnalysis()}
+          disabled={running}
         />
         <div class="flex items-center gap-2 flex-wrap">
           <button
@@ -81,10 +92,17 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
             {running ? 'Running Property Analysis…' : 'Run Property Analysis'}
           </button>
           <span class="text-[10px] text-[var(--color-text-faint)]">
-            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. A Deal Card opens only when parcel identity is verified; an unverified input returns what identifier to provide next.
+            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. A Deal Card opens on a credible match; unknown fields ride along as Confirm Before Offer. No practical match returns the smallest next identifier.
           </span>
         </div>
       </div>
+
+      {needsClarification && (
+        <div class="rounded-lg border border-[var(--color-status-warn,var(--color-border))] bg-[var(--color-card)] p-4">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Needs clarification</div>
+          <div class="text-[12px] text-[var(--color-text-muted)]">{needsClarification}</div>
+        </div>
+      )}
 
       {running && (
         <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">

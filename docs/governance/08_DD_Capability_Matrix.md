@@ -6,7 +6,11 @@ Legend: R=Retrieved, M=Mapped, P=Persisted, S=Synthesized, D=Displayed, T=Regres
 
 | Capability | Provider | R | M | P | S | D | T | A | Notes |
 |---|---|---|---|---|---|---|---|---|---|
-| Parcel identity (verified) | Realie | ✅|✅|✅|✅|✅|✅|✅ | Address / APN+county+state → parcel record. Unlocks pipeline. |
+| Universal Smart Intake | intake-router | ✅|✅|—|✅|✅|✅|✅ | Permanent front door. Classifies + routes any input; future departments register intents (data, not a redesign). Only Property Resolution route operational. |
+| Smart Address Search | Photon + US Census | ✅|✅|—|✅|✅|✅|✅ | Free/keyless autocomplete; debounce + min-chars + cache; raw free-text still submittable. No mandatory paid dependency. |
+| Property Resolution Engine | provider-agnostic | ✅|✅|✅|✅|✅|✅|✅ | Property-first. Runs every practical lane → **Matched** or **Needs Clarification**. Never stops on one provider; never opens an empty shell. |
+| Normalized Property Object | all lanes | ✅|✅|✅|✅|✅|✅|✅ | One shape every lane + future department consumes. Sourced evidence + confidence + missing (Confirm Before Offer). |
+| Parcel identity (verified) | Realie | ✅|✅|✅|✅|✅|✅|✅ | Address / APN+county+state → parcel record. **Strongest** resolution lane; offer-stage gate. NOT the only path to a credible Match. |
 | Owner | Realie | ✅|✅|✅|✅|✅|✅|✅ | |
 | APN | Realie | ✅|✅|✅|✅|✅|✅|✅ | |
 | Address / county / state | Realie | ✅|✅|✅|✅|✅|✅|✅ | Drives market target. |
@@ -46,10 +50,13 @@ Legend: R=Retrieved, M=Mapped, P=Persisted, S=Synthesized, D=Displayed, T=Regres
 - **Realie coordinates**: not always returned → we geocode the verified address for imagery only (never identity).
 - **Zillow supplemental sold**: can be thin (shared item budget) — Realie is the primary sold-comp source.
 
+## Browser retrieval lanes (read-only, PARKED — contracts defined)
+The Property Resolution Engine declares browser lanes that **find the property** (never write reports): public web search, NETR Online navigation (county → assessor → GIS → parcel map → recorder → tax, with browser-search fallback per step), county GIS/assessor, and **STRICT read-only** LandPortal / Land ID lanes. All are **parked**: the visual browser stack is not installed/approved (a gated install, not a code change), and LandPortal/Land ID additionally require an *existing authenticated session* (credentials are never stored/hardcoded). Read-only lanes may search/navigate/zoom/view/copy visible facts ONLY — never generate paid reports, consume credits, purchase, modify billing/settings, or perform any write (enforced by `assertReadOnly` + a forbidden-action list). The engine records each parked lane honestly and continues.
+
 ## Deferred by design (out of DD scope)
 - Interactive Intelligence Map (MapLibre + Mapbox) — the Visual Context section is structured to swap to it later without Deal Card architecture changes.
-- County Records Browser Agent (post-discovery official-record verification).
+- County Records Browser Agent execution (post-discovery official-record verification) — contract + NETR workflow defined; execution parked on the visual stack.
 - Deeper per-strategy confidence modeling; Census demographics.
 
 ## Freeze
-The Due Diligence Department is operationally complete for pre-call use. Future DD work is limited to: genuine bugs, provider changes, small UX refinements, and the deferred Interactive Intelligence Map.
+The Due Diligence Department is operationally complete for pre-call use. The Universal Intake + Property Resolution foundation **extends** DD (property-first resolution feeding the existing DD engine) without reopening it. Future DD work is limited to: genuine bugs, provider changes, small UX refinements, the deferred Interactive Intelligence Map, and enabling the parked browser lanes once the visual stack is installed + approved.

@@ -91,9 +91,15 @@ import fs from 'fs';
 import path from 'path';
 import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
-import { runDukeVerification } from './duke-verification-bridge.js';
+import { runDukeVerification, mapResolveToVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
 import { resolveParcelIdentityResult } from './parcel-capability.js';
 import { extractPropertyArgs } from './duke-preflight.js';
+import { suggestAddresses } from './address-suggest.js';
+import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
+import { planResolver, type IntakeFields } from './resolver-planner.js';
+import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
+import { defaultBrowserLanes, browserLaneStatus } from './browser-retrieval.js';
+import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
 import { buildDukeAnalysis } from './duke-analysis.js';
@@ -159,6 +165,47 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' && Number
 function entityParam(raw: string | undefined): string | undefined {
   if (!raw || raw === 'all') return undefined;
   return (LANDOS_ENTITIES as readonly string[]).includes(raw) ? raw : undefined;
+}
+
+// ── Property Resolution Engine: live lane adapters ──────────────────────────
+// The engine is pure; these wire the existing tested providers (Realie/LandPortal
+// exact resolve, free US Census county derivation, free Photon/Census address
+// suggest). Browser lanes are parked (visual stack not installed) but recorded.
+function pifToIntakeFields(f: ParsedIntakeFields): IntakeFields {
+  return { address: f.address, city: f.city, state: f.state, zip: f.zip, county: f.county, fips: f.fips, apn: f.apn, owner: f.owner, propertyId: f.propertyId };
+}
+function pifToText(f: ParsedIntakeFields): string {
+  return [f.lpUrl, f.address, f.city, f.county ? `${f.county} County` : undefined, f.state, f.zip,
+    f.apn ? `APN: ${f.apn}` : undefined, f.owner ? `Owner: ${f.owner}` : undefined].filter(Boolean).join('\n');
+}
+
+/** Named-source verification built from parsed fields (so the engine can retry
+ *  with a derived county). Reuses the canonical resolver-planner → exact resolve
+ *  → mapResolveToVerification path. Never a comp credit. */
+async function verifyFromFields(fields: ParsedIntakeFields, timeoutMs: number): Promise<DukeVerificationResult> {
+  const text = pifToText(fields);
+  const plan = planResolver(pifToIntakeFields(fields));
+  if (plan.path === 'none') {
+    return mapResolveToVerification({ text, hasIdentifierInput: false, resolve: null, unavailable: false });
+  }
+  try {
+    const resolve = await resolveParcelIdentityResult(plan.args, timeoutMs);
+    return mapResolveToVerification({ text, hasIdentifierInput: true, resolve, unavailable: false });
+  } catch {
+    return mapResolveToVerification({ text, hasIdentifierInput: true, resolve: null, unavailable: true });
+  }
+}
+
+/** Live deps for the Property Resolution Engine. Free providers (Census/Photon)
+ *  and the budgeted Realie exact resolve only; browser lanes parked. */
+function liveResolutionDeps(timeoutMs: number): ResolutionDeps {
+  return {
+    verify: verifyFromFields,
+    deriveCounty: (f) => deriveCounty({ address: f.address, city: f.city, state: f.state, zip: f.zip }),
+    suggest: (q) => suggestAddresses(q),
+    browserLanes: defaultBrowserLanes(),
+    timeoutMs,
+  };
 }
 
 /**
@@ -1881,63 +1928,106 @@ export function registerLandosRoutes(app: Hono): void {
     const text = str(body.text);
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const entity: LandosEntity = isEntity(str(body.entity)) ? (str(body.entity) as LandosEntity) : 'TY_LAND_BIZ';
-    const parsed = extractPropertyArgs(text) ?? {};
 
-    // ── VERIFIED-FIRST CONTRACT ────────────────────────────────────────────
-    // Verify parcel identity from a named source BEFORE creating any card/Deal
-    // Card. An unverified input is NOT a successful Acquire: it returns an
-    // actionable non-success response and opens nothing. (Research cards for
-    // failed verification are a separate explicit action, not this flow.)
-    const verification = await runDukeVerification(text.trim(), {
-      resolve: resolveParcelIdentityResult,
-      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
-    });
+    // ── PROPERTY-FIRST CONTRACT ─────────────────────────────────────────────
+    // Pre-call DD is practical property intelligence, NOT legal-grade title
+    // verification. Run the Property Resolution Engine across every practical
+    // lane (Realie/LandPortal exact resolve, free Census county derivation +
+    // retry, free Photon/Census address suggest, parked browser lanes). Two
+    // outcomes only: Matched (run the report; unknown fields become Confirm
+    // Before Offer) or Needs Clarification (no card; smallest next identifier).
+    const cls = classifySmartIntake(text.trim());
+    const resolution = await resolveProperty(
+      { rawText: text.trim(), fields: cls.parsedFields },
+      liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
+    );
 
-    if (!verification.parcelVerified || !verification.propertyData || !verification.identity) {
-      const neededIdentifier = parsed.apn
-        ? 'Confirm APN + county/state (or FIPS) — the APN did not resolve to a single parcel.'
-        : parsed.owner
-          ? 'Provide owner + county/state, or APN + county.'
-          : (parsed.address || parsed.city)
-            ? 'Provide APN + county, owner + city/state, or a corrected address.'
-            : 'Provide a full address, APN + county, or owner + city/state.';
-      const message = `Parcel identity not verified (${verification.status}). No Deal Card was created. Next: ${neededIdentifier}`;
-      logger.info({ event: 'acquire_run', ok: false, parcelVerified: false, status: verification.status, pipeline: 'deal_card_report' }, 'acquire_run_unverified');
+    if (resolution.status === 'needs_clarification') {
+      logger.info({ event: 'acquire_run', ok: false, matched: false, confidence: resolution.confidence, pipeline: 'property_resolution' }, 'acquire_run_needs_clarification');
       return c.json({
-        ok: false, parcelVerified: false, dealCardId: null,
-        status: verification.status, message, neededIdentifier, dataGaps: verification.dataGaps,
+        ok: false, matched: false, parcelVerified: false, dealCardId: null,
+        status: 'needs_clarification', confidence: resolution.confidence,
+        message: resolution.guidance ?? 'No practical match could be established. Provide a stronger identifier.',
+        guidance: resolution.guidance,
+        lanesAttempted: resolution.lanesAttempted,
       }, 200);
     }
 
-    // Verified: persist a verified Property Card (with coordinates — enrichment
-    // output, never identity), ensure a Deal Card, then run the production DD
-    // pipeline. reverify:false reuses the just-persisted verified card (coords
-    // persist), so no second identity lookup is spent.
-    const id = verification.identity;
+    // Matched: persist the resolved Property Card. `verified` reflects whether a
+    // NAMED source confirmed identity; a credible-but-unverified match is still
+    // Matched (Confirm Before Offer) and is NOT marked verified. Coordinates are
+    // enrichment output, never identity.
+    const p = resolution.property;
+    const subjectAddress = p.normalizedAddress || p.address || cls.parsedFields.address || text.trim();
     const { card } = upsertCardFromDukeRun({
       entity, agentId: 'acquire',
-      activeInputAddress: id.situsAddress || parsed.address || text.trim(),
-      city: id.city ?? parsed.city, state: id.state ?? parsed.state, county: id.county ?? parsed.county,
-      apn: id.apn, lpPropertyId: id.propertyId, fips: id.fips, lpUrl: id.lpUrl, owner: id.owner, acres: id.acres,
-      lat: verification.coordinates?.lat ?? null, lng: verification.coordinates?.lng ?? null,
-      verified: true, verificationSource: verification.verificationSource ?? 'Realie.ai (non-credit)',
-      summary: 'Acquire — verified parcel',
+      activeInputAddress: subjectAddress,
+      city: p.city, state: p.state, county: p.county,
+      apn: p.apn, lpPropertyId: p.propertyId, fips: p.fips, lpUrl: p.lpUrl, owner: p.owner, acres: p.acres,
+      lat: p.coordinates?.lat ?? null, lng: p.coordinates?.lng ?? null,
+      verified: p.parcelVerified,
+      verificationSource: p.parcelVerified ? (p.verificationSource ?? 'Realie.ai (non-credit)') : undefined,
+      summary: p.parcelVerified ? 'Acquire — verified parcel' : 'Acquire — matched (Confirm Before Offer)',
     });
-    const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: id.situsAddress || parsed.address || text.trim() });
+    const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: subjectAddress });
+    // Run the full production DD report. Its internal verification reuses the
+    // resolved county (now on the card) so an address-only lead that the engine
+    // resolved (e.g. 388 Gilstrap → White County) verifies and runs full DD;
+    // a still-unverified match runs as labeled local-area-context (never empty).
     const result = await runDealCardReport(dealCardId, {
       resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       googleVisualConfigured: googleVisualConfiguredResolved(),
     });
-    const verifiedSuccess = result?.report.parcelVerified === true;
-    logger.info({ event: 'acquire_run', ok: verifiedSuccess, parcelVerified: verifiedSuccess, dealCardId, pipeline: 'deal_card_report' }, 'acquire_run');
+    const reportVerified = result?.report.parcelVerified === true;
+    logger.info({ event: 'acquire_run', ok: true, matched: true, parcelVerified: reportVerified, confidence: resolution.confidence, dealCardId, pipeline: 'property_resolution' }, 'acquire_run');
     return c.json({
-      ok: verifiedSuccess,
-      parcelVerified: verifiedSuccess,
-      dealCardId: verifiedSuccess ? dealCardId : null,
-      pipeline: 'deal_card_report',
+      ok: true, matched: true,
+      parcelVerified: reportVerified,
+      dealCardId,
+      confidence: resolution.confidence,
+      matchedReason: resolution.matchedReason,
+      // Unknown practical fields surface in the UI as Confirm Before Offer.
+      confirmBeforeOffer: resolution.missing,
+      sources: p.sources,
+      pipeline: 'property_resolution',
       reportStatus: result?.report.reportStatus ?? null,
-    }, verifiedSuccess ? 201 : 200);
+    }, 201);
+  });
+
+  // ── Smart Address Search (free/open providers; no paid dependency) ────────
+  // Autocomplete for the Universal Intake. Photon (OSM) then US Census, both
+  // free/keyless. Min-chars + caching handled in the module; debounce in the UI.
+  app.get('/api/landos/address/suggest', async (c) => {
+    const q = str(c.req.query('q')) ?? '';
+    const result = await suggestAddresses(q);
+    return c.json(result);
+  });
+
+  // ── Universal Smart Intake classification (the permanent front door) ──────
+  // Classifies raw input and routes it to the owning department's intent. Only
+  // property_resolution is operational; others route as registered shells.
+  app.post('/api/landos/intake/classify', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    return c.json({ classification: classifySmartIntake(text), registeredIntents: listIntakeIntents() });
+  });
+
+  // ── Property Resolution Engine (read-only: resolve identity, write nothing) ─
+  // Matched | Needs Clarification with the canonical NormalizedProperty + the
+  // lane-by-lane trace. Free Census/Photon + budgeted Realie exact resolve;
+  // browser lanes parked. Never opens an empty shell.
+  app.post('/api/landos/property/resolve', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const text = str(body.text);
+    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
+    const cls = classifySmartIntake(text.trim());
+    const resolution = await resolveProperty(
+      { rawText: text.trim(), fields: cls.parsedFields },
+      liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
+    );
+    return c.json({ classification: cls, resolution, browserLanes: browserLaneStatus() });
   });
 
   // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded

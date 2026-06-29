@@ -29,6 +29,25 @@ vi.mock('./parcel-capability.js', async (orig) => {
   };
 });
 
+// Keep the Property Resolution Engine's free provider lanes hermetic: the engine
+// now derives county via the Census geocoder and corroborates via the address
+// suggest providers. Stub both so acquire/run + resolve routes never hit the net.
+const CENSUS = vi.hoisted(() => ({ county: { county: 'White', state: 'GA', zip: '30528', fips: '13311', lat: 34.597, lng: -83.766 } as null | Record<string, unknown> }));
+vi.mock('./providers/county-geocode.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return { ...actual, deriveCounty: async () => CENSUS.county };
+});
+const SUGGEST = vi.hoisted(() => ({
+  result: {
+    query: '', source: 'Photon', cached: false,
+    suggestions: [{ label: '388 Gilstrap Rd, Cleveland, GA 30528', line1: '388 Gilstrap Rd', city: 'Cleveland', state: 'GA', zip: '30528', county: 'White', coordinates: { lat: 34.597, lng: -83.766 }, source: 'Photon', confidence: 0.8 }],
+  } as Record<string, unknown>,
+}));
+vi.mock('./address-suggest.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return { ...actual, suggestAddresses: async (q: string) => ({ ...SUGGEST.result, query: q }) };
+});
+
 // Stub the free government DD fetchers so verified-parcel routes (which now have
 // coordinates) stay hermetic and fast — no FEMA/NWI/USGS network calls in tests.
 vi.mock('./providers/gov-dd-providers.js', async (orig) => {
@@ -755,20 +774,40 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     };
   }
 
-  it('UNVERIFIED input does NOT return or open a successful Deal Card (388 Gilstrap, no FIPS)', async () => {
-    // default resolver = real no-network paths -> address-only -> not verified
+  it('PROPERTY-FIRST: 388 Gilstrap (address-only, no FIPS) is Matched via county derivation — no empty Deal Card', async () => {
+    // Default resolver = real no-network paths -> Realie cannot verify. The engine
+    // derives White County (Census, mocked) and corroborates via address suggest
+    // (Photon, mocked), so the property is credibly Matched and a Deal Card opens.
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
-    expect(res.status).not.toBe(201);                 // not a success
+    expect(res.status).toBe(201);                       // a Matched success
     const body = (await res.json()) as any;
-    expect(body.ok).toBe(false);
-    expect(body.parcelVerified).toBe(false);
-    expect(body.dealCardId).toBeNull();               // nothing to open
-    expect(typeof body.message).toBe('string');
-    expect(body.message.length).toBeGreaterThan(0);
-    expect(body.neededIdentifier).toBeTruthy();        // actionable next identifier
+    expect(body.ok).toBe(true);
+    expect(body.matched).toBe(true);
+    expect(body.dealCardId).toBeGreaterThan(0);          // a real Deal Card, never empty
+    expect(body.confidence).toBeGreaterThanOrEqual(0.7);
+    expect(Array.isArray(body.confirmBeforeOffer)).toBe(true); // unknowns surfaced, not suppressed
   });
 
-  it('VERIFIED input creates a verified Deal Card via runDealCardReport (current pipeline, not legacy)', async () => {
+  it('NEEDS CLARIFICATION: a vague non-property input opens nothing and returns guidance', async () => {
+    CENSUS.county = null; // no county derivable
+    const prevSuggest = SUGGEST.result.suggestions;
+    SUGGEST.result.suggestions = [];
+    try {
+      const res = await post('/api/landos/acquire/run', { text: 'some land somewhere', entity: 'TY_LAND_BIZ' });
+      expect(res.status).not.toBe(201);
+      const body = (await res.json()) as any;
+      expect(body.ok).toBe(false);
+      expect(body.matched).toBe(false);
+      expect(body.dealCardId).toBeNull();
+      expect(body.status).toBe('needs_clarification');
+      expect(typeof body.guidance).toBe('string');
+    } finally {
+      CENSUS.county = { county: 'White', state: 'GA', zip: '30528', fips: '13311', lat: 34.597, lng: -83.766 };
+      SUGGEST.result.suggestions = prevSuggest;
+    }
+  });
+
+  it('VERIFIED input creates a verified Deal Card via the production DD pipeline', async () => {
     RESOLVER.override = verifiedGilstrapResolve();
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
     expect(res.status).toBe(201);
@@ -776,7 +815,7 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     expect(body.ok).toBe(true);
     expect(body.parcelVerified).toBe(true);
     expect(body.dealCardId).toBeGreaterThan(0);
-    expect(body.pipeline).toBe('deal_card_report'); // regression: wired to production pipeline
+    expect(body.pipeline).toBe('property_resolution'); // property-first engine
     const rpt = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/report`)).json()) as any;
     expect(rpt.report.marketComps).toHaveProperty('providerChain');     // Realie-first provider chain
     expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane

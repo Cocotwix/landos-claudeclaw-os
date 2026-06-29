@@ -23,21 +23,26 @@ describe('Acquire — one-button Property Analysis', () => {
     expect(SRC).not.toMatch(/'\/api\/landos\/property-analysis'/);
   });
 
-  it('opens the Deal Card ONLY on a verified success (parcelVerified === true), never on dealCardId alone', () => {
-    // The open must be gated by res.ok && res.parcelVerified === true.
-    expect(SRC).toMatch(/res\.ok\s*&&\s*res\.parcelVerified\s*===\s*true\s*&&\s*res\.dealCardId/);
+  it('opens the Deal Card on a Matched success (res.matched === true && res.dealCardId), never on dealCardId alone', () => {
+    // Property-first: the open is gated by a credible Match, not legal-grade verify.
+    expect(SRC).toMatch(/res\.ok\s*&&\s*res\.matched\s*===\s*true\s*&&\s*res\.dealCardId/);
     expect(SRC).toMatch(/onOpenDealCard\(res\.dealCardId\)/);
     // It must NOT open on the mere existence of a dealCardId (the old bug).
     expect(SRC).not.toMatch(/if\s*\(res\.dealCardId\s*&&\s*onOpenDealCard\)/);
   });
 
-  it('does not claim a verified Deal Card is created automatically (only on verified success)', () => {
-    expect(SRC).not.toMatch(/verified Deal Card is created automatically on success/);
-    expect(SRC).toMatch(/opens only when parcel identity is verified/);
+  it('uses the Universal Smart Intake input (autocomplete) instead of a bare textarea', () => {
+    expect(SRC).toMatch(/import \{ SmartIntake \}/);
+    expect(SRC).toMatch(/<SmartIntake/);
   });
 
-  it('shows real progress stages for the current pipeline', () => {
-    expect(SRC).toMatch(/Verifying parcel identity \(Realie-first\)/);
+  it('on no practical match it shows guidance and opens nothing (never an empty shell)', () => {
+    expect(SRC).toMatch(/needsClarification/);
+    expect(SRC).toMatch(/Needs clarification/i);
+  });
+
+  it('shows real progress stages for the property-first pipeline', () => {
+    expect(SRC).toMatch(/Resolving the property/);
     expect(SRC).toMatch(/Collecting Realie sold comps/);
     expect(SRC).toMatch(/Adding Zillow supplemental listings/);
   });

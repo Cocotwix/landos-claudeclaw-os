@@ -22,11 +22,18 @@ LandOS is a living deal-intelligence system that prepares Tyler to make decision
 - But "Unknown" is NOT the default answer when evidence exists. Do not refuse to estimate, interpret, rank strategies, or give a preliminary acquisition range just because some fields are incomplete. Estimate from what is verified, label the confidence, and name the unknowns.
 - Incomplete DD never blocks useful synthesis. Show the best operator-ready intelligence available now, with gaps clearly marked as DD follow-ups.
 
-## Verification model (pre-call DD)
+## Property resolution model (pre-call DD)
 
-- A parcel is **VERIFIED for pre-call use** when a trusted provider resolves Tyler's input into a real parcel/property record — e.g. Realie returns a parcel record, APN, acreage, owner/property info, building/parcel facts, or parcel-specific comps for the address or APN+county+state.
-- **Verification unlocks the rest of the pipeline.** Comps, market pulse, strategy, deal economics, acquisition range, imagery, and seller-call prep all proceed once identity is verified.
-- Verification does NOT mean title, legal, county records, utilities, zoning, access, or buildability are confirmed. Those remain Due Diligence items, labeled Unknown / Needs Verification — but they do **not** block the rest of the pipeline.
+**Pre-call Due Diligence is practical property intelligence, not legal-grade title verification.** The objective is simple: **resolve the intended property, then run the report.** The goal is to help the operator have an informed seller conversation — not title work, not final underwriting, not legal confirmation.
+
+- **The system is property-first, not provider-first.** The Property Resolution Engine searches every practical lane (Realie/LandPortal exact resolve, free Census county derivation, free address suggest, county GIS/NETR/browser lanes, the LandOS cache) until the intended property is resolved or every reasonable lane is exhausted. It never stops because one provider failed.
+- **Resolution returns exactly two outcomes: Matched or Needs Clarification.**
+  - **Matched** means enough credible evidence exists to confidently identify the intended property for pre-call DD. A named-source parcel verification is the strongest path, but it is not the *only* path — credible corroboration across independent lanes can also resolve a property.
+  - **Needs Clarification** means no practical match could be established. Show the smallest next identifier. Never open an empty shell.
+- **If a credible match exists, run the report.** Imagery, comps, Market Pulse, browser intelligence, strategy, economics, seller questions, and risks all proceed on a Matched property. Do not suppress useful intelligence because one source is incomplete.
+- **Unknown fields become Confirm Before Offer.** Missing practical fields (county, APN, owner, acreage, etc.) are surfaced as Confirm-Before-Offer items, never fabricated and never used to block the report.
+- **Offer-stage work stays gated on named-source verification.** A credible-but-unverified Matched property is enough for pre-call intelligence; it is NOT marked "Verified," and Strategy/Underwriting offer numbers still require named-source parcel verification. Parcel identity is never established from coordinates, proximity, or imagery.
+- Verification does NOT mean title, legal, county records, utilities, zoning, access, or buildability are confirmed. Those remain Due Diligence items, labeled Unknown / Needs Verification.
 - Parcel-identity verification is **separate from DD completeness**. A verified parcel reads "identity verified" everywhere even when DD fields are still unknown.
 
 ## Structure principles

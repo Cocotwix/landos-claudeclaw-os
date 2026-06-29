@@ -1,0 +1,141 @@
+import { describe, it, expect } from 'vitest';
+import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
+import type { DukeVerificationResult } from './duke-verification-bridge.js';
+import type { ParsedIntakeFields } from './intake-router.js';
+import type { SuggestResult } from './address-suggest.js';
+import type { DerivedCounty } from './providers/county-geocode.js';
+
+const NOW = () => '2026-06-29T00:00:00.000Z';
+
+function verified(fields: ParsedIntakeFields): DukeVerificationResult {
+  return {
+    status: 'parcel_verified', parcelVerified: true, verificationSource: 'Realie.ai (non-credit)',
+    identity: { situsAddress: fields.address ?? '388 Gilstrap Rd', city: 'Cleveland', state: 'GA', county: 'White', apn: '042 123', acres: 5 },
+    coordinates: { lat: 34.59, lng: -83.76 },
+    sourceAttempts: [], dataGaps: [], marketPulseEligible: true, strategyUnderwritingBlocked: false,
+    summary: 'Parcel verified.', executionMode: 'duke_verification_read_only',
+  };
+}
+
+function needsCounty(): DukeVerificationResult {
+  return {
+    status: 'unverified', parcelVerified: false,
+    sourceAttempts: [], dataGaps: ['needs_county_or_fips'], marketPulseEligible: false,
+    strategyUnderwritingBlocked: true, summary: 'Needs county/FIPS.', executionMode: 'duke_verification_read_only',
+  };
+}
+
+function noIdentity(): DukeVerificationResult {
+  return {
+    status: 'skipped_no_identity', parcelVerified: false,
+    sourceAttempts: [], dataGaps: ['no_parcel_identifier_in_input'], marketPulseEligible: false,
+    strategyUnderwritingBlocked: true, summary: 'No identifier.', executionMode: 'duke_verification_read_only',
+  };
+}
+
+const gilstrapSuggest: SuggestResult = {
+  query: '388 Gilstrap Rd, Cleveland, GA 30528',
+  suggestions: [{
+    label: '388 Gilstrap Rd, Cleveland, GA 30528', line1: '388 Gilstrap Rd', city: 'Cleveland', state: 'GA',
+    zip: '30528', county: 'White', coordinates: { lat: 34.59, lng: -83.76 }, source: 'Photon', confidence: 0.8,
+  }],
+  source: 'Photon', cached: false,
+};
+
+const gilstrapCensus: DerivedCounty = { county: 'White', state: 'GA', zip: '30528', fips: '13311', lat: 34.59, lng: -83.76 };
+
+describe('property resolution engine', () => {
+  it('Matched immediately when a named source verifies the parcel', async () => {
+    const deps: ResolutionDeps = { verify: async (f) => verified(f), now: NOW };
+    const r = await resolveProperty({ fields: { address: '388 Gilstrap Rd', city: 'Cleveland', state: 'GA', county: 'White' } }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.property.parcelVerified).toBe(true);
+    expect(r.property.verificationSource).toContain('Realie');
+    expect(r.matchedReason).toMatch(/verified/i);
+  });
+
+  it('388 Gilstrap: Matched via census county-derivation + retry verify (no empty Deal Card)', async () => {
+    let call = 0;
+    const deps: ResolutionDeps = {
+      verify: async (f) => { call += 1; return call === 1 ? needsCounty() : verified(f); },
+      deriveCounty: async () => gilstrapCensus,
+      suggest: async () => gilstrapSuggest,
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: '388 Gilstrap Rd, Cleveland, GA 30528' }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.property.parcelVerified).toBe(true);
+    expect(r.property.county).toBe('White');
+    expect(r.lanesAttempted.some((l) => l.lane === 'census_geocode' && l.contributed)).toBe(true);
+  });
+
+  it('388 Gilstrap: Matched on credible corroboration even when Realie never verifies', async () => {
+    const deps: ResolutionDeps = {
+      verify: async () => needsCounty(),
+      deriveCounty: async () => gilstrapCensus,
+      suggest: async () => gilstrapSuggest,
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: '388 Gilstrap Rd, Cleveland, GA 30528' }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.property.parcelVerified).toBe(false); // not legal-grade — Confirm Before Offer
+    expect(r.property.county).toBe('White');
+    expect(r.property.coordinates).toBeTruthy();
+    expect(r.confidence).toBeGreaterThanOrEqual(0.7);
+    expect(r.matchedReason).toMatch(/Confirm Before Offer/i);
+  });
+
+  it('Needs Clarification when nothing credible resolves the property', async () => {
+    const deps: ResolutionDeps = {
+      verify: async () => noIdentity(),
+      suggest: async () => ({ query: 'asdf', suggestions: [], source: 'none', cached: false }),
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: 'some vacant lot near the lake' }, deps);
+    expect(r.status).toBe('needs_clarification');
+    expect(r.guidance).toBeTruthy();
+    expect(r.property.parcelVerified).toBe(false);
+  });
+
+  it('never stops because one provider failed (a throwing lane is recorded, others run)', async () => {
+    const deps: ResolutionDeps = {
+      verify: async () => { throw new Error('LandPortal down'); },
+      deriveCounty: async () => gilstrapCensus,
+      suggest: async () => gilstrapSuggest,
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: '388 Gilstrap Rd, Cleveland, GA 30528' }, deps);
+    expect(r.lanesAttempted.some((l) => l.lane === 'realie_landportal' && l.status === 'error')).toBe(true);
+    // Suggest still corroborated the property.
+    expect(r.property.address).toContain('Gilstrap');
+    expect(r.status).toBe('matched');
+  });
+
+  it('uses the LandOS cache when present and short-circuits to verified', async () => {
+    const deps: ResolutionDeps = {
+      cacheGet: () => ({
+        address: '12 Oak Rd', city: 'Athens', state: 'GA', county: 'Clarke', apn: 'X1', parcelVerified: true,
+        verificationSource: 'Realie.ai', evidence: [], sources: ['Realie.ai'], confidence: 0.95, missing: [],
+      }),
+      verify: async () => { throw new Error('should not be called'); },
+      now: NOW,
+    };
+    const r = await resolveProperty({ fields: { address: '12 Oak Rd', state: 'GA' } }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.property.parcelVerified).toBe(true);
+    expect(r.lanesAttempted[0].lane).toBe('landos_cache');
+  });
+
+  it('records parked browser lanes without contributing', async () => {
+    const { defaultBrowserLanes } = await import('./browser-retrieval.js');
+    const deps: ResolutionDeps = {
+      verify: async () => needsCounty(),
+      suggest: async () => ({ query: 'x', suggestions: [], source: 'none', cached: false }),
+      browserLanes: defaultBrowserLanes(), // all parked
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: '1 Nowhere Rd, Cleveland, GA' }, deps);
+    expect(r.lanesAttempted.some((l) => l.lane === 'netr' && l.status === 'parked')).toBe(true);
+    expect(r.lanesAttempted.some((l) => l.lane === 'landportal_readonly' && !l.contributed)).toBe(true);
+  });
+});
