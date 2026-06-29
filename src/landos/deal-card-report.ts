@@ -152,6 +152,12 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
           // actives augment the active-listing context.
           v.sold = [...v.sold, ...hh.sold.map(toView)];
           v.active = [...v.active, ...hh.active.map(toView)];
+          // Days-on-market from HomeHarvest sold land (liquidity signal) when no
+          // other provider supplied it.
+          if (v.metrics.domMedian == null) {
+            const hhDoms = hh.sold.map((s) => s.daysOnMarket).filter((d): d is number => typeof d === 'number' && d > 0);
+            if (hhDoms.length > 0) v.metrics.domMedian = median(hhDoms);
+          }
           v.providers.push({ providerId: 'homeharvest', status: 'connected', kept: hh.sold.length + hh.active.length });
           if (v.status !== 'collected' && (hh.sold.length > 0 || hh.active.length > 0)) v.status = 'collected';
         } else {

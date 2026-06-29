@@ -846,7 +846,7 @@ function VisualContextSection({ ctx, token }: { ctx?: VisualContextView; token: 
         <figure class="m-0">
           <img src={withToken(sat.imageUrl as string)} alt="satellite" class="w-full rounded-lg border border-[var(--color-border)]" loading="lazy" />
           <figcaption class="text-[11px] text-[var(--color-text-faint)] mt-1">
-            {hasBoundary ? 'Parcel boundary overlaid.' : 'Parcel boundary unavailable from connected sources — image centered on the geocoded parcel marker.'}
+            {hasBoundary ? 'Parcel boundary overlaid.' : 'Parcel boundary unavailable from connected sources — showing the parcel marker only.'}
           </figcaption>
         </figure>
       ) : (

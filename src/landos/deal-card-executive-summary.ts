@@ -150,10 +150,14 @@ function buildMarketPulse(report: DealCardReportView, growth?: GrowthDriverSumma
   const confidence: MarketPulseSynthesis['confidence'] = soldCount >= 5 ? 'high' : soldCount >= 3 ? 'medium' : soldCount >= 1 ? 'low' : 'none';
 
   // ── Absorption / months of inventory + sell-through ─────────────────────────
+  //    Supply/demand is AREA-level, so use the count of land-class sold comps in
+  //    the area (not the subject-acreage-filtered band count, which understates
+  //    the sold rate and inflates months-of-inventory). Pricing still uses the band.
   const WINDOW_MONTHS = 12;
-  const monthlySoldRate = soldCount / WINDOW_MONTHS;
+  const areaLandSold = (mc?.sold ?? []).filter((c) => c.compClass == null || c.compClass === 'vacant_land' || c.compClass === 'farm' || c.compClass === 'unknown').length || soldCount;
+  const monthlySoldRate = areaLandSold / WINDOW_MONTHS;
   const monthsOfInventory = monthlySoldRate > 0 && active > 0 ? Math.round((active / monthlySoldRate) * 10) / 10 : null;
-  const sellThroughPct = soldCount + active > 0 ? Math.round((soldCount / (soldCount + active)) * 100) : null;
+  const sellThroughPct = areaLandSold + active > 0 ? Math.round((areaLandSold / (areaLandSold + active)) * 100) : null;
 
   // ── Direction (per-acre band over time) ─────────────────────────────────────
   const { direction, pct: directionPct } = computeMarketDirection(report);
