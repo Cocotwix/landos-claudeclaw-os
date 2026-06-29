@@ -302,6 +302,13 @@ export function buildPersistedResolver(
     summary.owner = s(pc.owner);
     const acres = typeof pc.acres === 'number' ? pc.acres : undefined;
     if (acres !== undefined) { summary.lot_size_acres = String(acres); summary.calc_acres = String(acres); }
+    // Restore persisted verified-parcel coordinates so the reopened parcel keeps
+    // its full enrichment pipeline (Realie/Zillow comps, imagery, map context).
+    // Coordinates are supporting OUTPUT, never identity — identity above comes
+    // from the persisted exact-source fields (propertyid/apn/fips), not lat/lng.
+    const lat = typeof pc.lat === 'number' ? pc.lat : null;
+    const lng = typeof pc.lng === 'number' ? pc.lng : null;
+    if (lat !== null && lng !== null && (lat !== 0 || lng !== 0)) { summary.lat = String(lat); summary.lng = String(lng); }
     const origSource = s(pc.verification_source);
     return {
       verified: true,
@@ -1100,6 +1107,10 @@ export async function runDealCardReport(
         county: s(pid.county), state: s(pid.state), apn: s(pid.apn),
         lpPropertyId: s(pid.propertyId), fips: s(pid.fips), owner: s(pid.owner),
         acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
+        // Persist verified-parcel coordinates (enrichment output) so a reopened
+        // card keeps Realie/Zillow comps, imagery, and map context. Never identity.
+        lat: verification.coordinates?.lat ?? null,
+        lng: verification.coordinates?.lng ?? null,
         verified: true,
         verificationSource: verification.verificationSource ?? 'Realie.ai (non-credit)',
         summary: verification.propertyData.note ?? verification.summary,

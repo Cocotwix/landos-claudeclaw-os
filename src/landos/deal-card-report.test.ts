@@ -13,9 +13,9 @@ import { createDealCard } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd } from './deal-card-dd.js';
 import { getDealCardStrategy } from './deal-card-strategy.js';
 import { getDealCardMarket } from './deal-card-market.js';
-import { getDealCardReport, runDealCardReport, buildIdentityText } from './deal-card-report.js';
+import { getDealCardReport, runDealCardReport, buildIdentityText, buildPersistedResolver } from './deal-card-report.js';
 import { getDealCard } from './deal-card.js';
-import { upsertCardFromDukeRun } from './property-card.js';
+import { upsertCardFromDukeRun, getPropertyCardRow } from './property-card.js';
 import { linkPropertyToDeal } from './deal-card.js';
 import type { LpPropertySummary, LpResolveArgs, LpResolveResult } from './landportal-client.js';
 
@@ -31,6 +31,49 @@ it('buildIdentityText includes the street address so address-only leads can veri
   const text = buildIdentityText(deal as never, getDealCardDd(dealId) as never);
   expect(text).toContain('731 Filter Plant Dr');
   expect(text).toMatch(/NC/);
+});
+
+describe('coordinate persistence — a reopened verified parcel keeps its enrichment pipeline', () => {
+  it('persists verified-parcel coordinates on verify and restores them via the persisted resolver', async () => {
+    const { card } = upsertCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '2123 Panola Rd, Lithonia, GA',
+      apn: '16-001-00-001', county: 'DeKalb', state: 'GA', fips: '13089',
+      lat: 33.712, lng: -84.155, verified: true, verificationSource: 'Realie.ai (non-credit)',
+    });
+    const stored = getPropertyCardRow(card.id)!;
+    expect(stored.lat).toBe(33.712);
+    expect(stored.lng).toBe(-84.155);
+    // Reopen path: the persisted resolver must rebuild property_summary.lat/lng so
+    // verification.coordinates is non-null and Realie/Zillow/imagery lanes run.
+    const resolve = buildPersistedResolver(stored as unknown as Record<string, unknown>);
+    const res = await resolve({} as never, 1000);
+    expect(res.verified).toBe(true);
+    expect(res.property_summary?.lat).toBe('33.712');
+    expect(res.property_summary?.lng).toBe('-84.155');
+  });
+
+  it('a coordinate-less re-verify never wipes persisted coordinates (COALESCE)', () => {
+    const { card } = upsertCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '1 Test Rd', apn: 'A1', county: 'C', state: 'GA', fips: '13089',
+      lat: 1.5, lng: 2.5, verified: true, verificationSource: 'Realie',
+    });
+    // A later run on the same card WITHOUT coordinates must preserve them.
+    upsertCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '1 Test Rd', apn: 'A1', county: 'C', state: 'GA', fips: '13089',
+      cardId: card.id, verified: true, verificationSource: 'Realie',
+    });
+    const stored = getPropertyCardRow(card.id)!;
+    expect(stored.lat).toBe(1.5);
+    expect(stored.lng).toBe(2.5);
+  });
+
+  it('an unverified card with no coordinates leaves the summary coordinate-free (no fabrication)', async () => {
+    const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '9 Nowhere Rd', verified: false });
+    const stored = getPropertyCardRow(card.id)!;
+    expect(stored.lat).toBeNull();
+    const res = await buildPersistedResolver(stored as unknown as Record<string, unknown>)({} as never, 1000);
+    expect(res.property_summary?.lat ?? '').toBe('');
+  });
 });
 
 it('rerun of a parcel with a space-APN + address re-verifies (no stale unverified contradiction)', async () => {

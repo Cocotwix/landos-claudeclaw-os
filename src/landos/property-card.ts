@@ -108,6 +108,9 @@ export interface PropertyCardRow {
   verification_source: string;
   property_id: number | null;
   parcel_id: number | null;
+  /** Verified-parcel coordinates (ENRICHMENT OUTPUT only — never identity). */
+  lat: number | null;
+  lng: number | null;
   open_risks: string;
   summary: string;
   last_refreshed_at: number | null;
@@ -129,6 +132,10 @@ export interface UpsertPropertyCardInput {
   lpUrl?: string;
   owner?: string;
   acres?: number;
+  /** Verified-parcel coordinates from the provider — persisted as ENRICHMENT
+   *  OUTPUT (comps/imagery/map context), NEVER an identity/merge input. */
+  lat?: number | null;
+  lng?: number | null;
   verified?: boolean;
   verificationSource?: string;
   /** A source appears to match the address but parcel identity is not locked.
@@ -317,6 +324,8 @@ export function upsertPropertyCard(
          city = CASE WHEN ? != '' THEN ? ELSE city END,
          owner = CASE WHEN ? != '' THEN ? ELSE owner END,
          acres = COALESCE(?, acres),
+         lat = COALESCE(?, lat),
+         lng = COALESCE(?, lng),
          verification_source = CASE WHEN ? != '' THEN ? ELSE verification_source END,
          property_id = COALESCE(?, property_id),
          parcel_id = COALESCE(?, parcel_id),
@@ -339,6 +348,8 @@ export function upsertPropertyCard(
       input.city ?? '', input.city ?? '',
       input.owner ?? '', input.owner ?? '',
       input.acres ?? null,
+      input.lat ?? null,
+      input.lng ?? null,
       effectiveSource, effectiveSource,
       input.propertyId ?? null,
       input.parcelId ?? null,
@@ -358,8 +369,8 @@ export function upsertPropertyCard(
     `INSERT INTO landos_property_card
        (entity, verification_status, kanban_status, active_input_address, address_key,
         prior_inputs, apn, lp_property_id, fips, lp_url, county, state, city, owner, acres,
-        verification_source, property_id, parcel_id, summary, last_refreshed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        lat, lng, verification_source, property_id, parcel_id, summary, last_refreshed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.entity,
     verificationStatus,
@@ -376,6 +387,8 @@ export function upsertPropertyCard(
     input.city ?? '',
     input.owner ?? '',
     input.acres ?? null,
+    input.lat ?? null,
+    input.lng ?? null,
     effectiveSource,
     input.propertyId ?? null,
     input.parcelId ?? null,
@@ -666,6 +679,9 @@ export interface DukeRunCardInput {
   lpUrl?: string;
   owner?: string;
   acres?: number;
+  /** Verified-parcel coordinates (ENRICHMENT OUTPUT only — never identity). */
+  lat?: number | null;
+  lng?: number | null;
   verified?: boolean;
   verificationSource?: string;
   summary?: string;
@@ -696,6 +712,8 @@ export function upsertCardFromDukeRun(
     lpUrl: input.lpUrl,
     owner: input.owner,
     acres: input.acres,
+    lat: input.lat,
+    lng: input.lng,
     verified: input.verified,
     verificationSource: input.verificationSource,
     propertyId: input.propertyId,

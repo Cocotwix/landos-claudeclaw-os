@@ -1028,6 +1028,12 @@ function createLandosSchema(db: Database.Database): void {
   };
   addColumn('landos_deal_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
   addColumn('landos_property_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
+  // Verified-parcel coordinates persisted as ENRICHMENT OUTPUT (supporting
+  // context for Realie/Zillow comps, imagery, and map context). They are NEVER
+  // used for card identity or merge — identity stays exact-source only. Persisted
+  // so a reopened verified parcel keeps its full enrichment pipeline.
+  addColumn('landos_property_card', 'lat', `lat REAL`);
+  addColumn('landos_property_card', 'lng', `lng REAL`);
 
   // Acquisitions department (CRM-independent intelligence layer) — one row per
   // Deal Card holding the seller profile, communication log, discovery notes, and
