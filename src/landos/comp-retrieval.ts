@@ -78,6 +78,15 @@ export interface RetrievedComp {
   sourceLabel: CompProviderId;
   distanceMiles?: number | null;
   addressDesc?: string;
+  // ── Optional classification signals (carried so the provider-agnostic comp
+  //    classification engine can keep residential/manufactured/commercial sales
+  //    out of a vacant-land valuation band). Absent -> classified 'unknown'. ──
+  propertyTypeCode?: number | null;
+  yearBuilt?: number | null;
+  buildingAreaSqft?: number | null;
+  useCode?: string | null;
+  propertyTypeText?: string | null;
+  descriptionText?: string | null;
 }
 
 export interface CompProviderResult {

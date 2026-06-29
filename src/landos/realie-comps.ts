@@ -26,6 +26,11 @@ export interface RealieComp {
   pricePerAcre: number | null;
   marketValue: number | null;
   yearBuilt: number | null;
+  /** County / Realie land-use code or description (e.g. "Vacant", "SFR"). Drives
+   *  classification beyond yearBuilt so vacant vs improved is decided reliably. */
+  useCode: string | null;
+  /** Building / improvement area (sq ft) when present — a structure signal. */
+  buildingAreaSqft: number | null;
   lat: number | null;
   lng: number | null;
 }
@@ -130,7 +135,10 @@ export async function fetchRealieComps(lat: number | null | undefined, lng: numb
         provider: 'realie', parcelId: s(r.parcelId), address: s(r.addressFull) ?? s(r.addressRaw),
         acres, soldPrice, soldDateIso,
         pricePerAcre: soldPrice && acres ? Math.round(soldPrice / acres) : null,
-        marketValue, yearBuilt: n(r.yearBuilt), lat: n(r.latitude), lng: n(r.longitude),
+        marketValue, yearBuilt: n(r.yearBuilt),
+        useCode: s(r.useCode) ?? s(r.landUseCode) ?? s(r.propertyUseDescription) ?? s(r.standardizedLandUseCode),
+        buildingAreaSqft: n(r.buildingArea) ?? n(r.totalBuildingArea) ?? n(r.livingArea),
+        lat: n(r.latitude), lng: n(r.longitude),
       };
       if (soldPrice && soldDateIso) sold.push(comp); else if (marketValue) valuation.push(comp);
     }

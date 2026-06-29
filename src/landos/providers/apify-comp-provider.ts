@@ -277,6 +277,10 @@ export function toRetrievedComp(c: DetailComp, distanceMiles?: number | null): R
     sourceLabel: c.sourceLabel,
     distanceMiles: distanceMiles ?? null,
     ...(c.addressDesc ? { addressDesc: c.addressDesc } : {}),
+    // Carry classification signals so the comp-classification engine can keep
+    // residential/commercial Redfin rows out of a vacant-land valuation band.
+    propertyTypeCode: c.propertyTypeCode,
+    descriptionText: c.descriptionText,
   };
 }
 

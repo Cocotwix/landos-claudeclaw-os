@@ -62,9 +62,24 @@ import { googleVisualConfigured, resolveGoogleVisualEnv } from './providers/goog
 import { buildDdChecklist, mergeGovDdRows, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
 import { fetchFemaFlood, fetchNwiWetlands, fetchUsgsSlope, type GovFetch } from './providers/gov-dd-providers.js';
 import { fetchCensusDemographics, emptyCensus, type CensusDemographics, type CensusFetch } from './census-demographics.js';
+import { buildLandPpaBand } from './comp-valuation-band.js';
+import type { CompClass } from './comp-classification.js';
 
 export interface MarketCompView {
   price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
+  // ── Classification signals (set at provider mapping time) + the resulting
+  //    class. The comp-classification engine uses these to keep residential/
+  //    manufactured/commercial sales out of the vacant-land valuation band. ──
+  yearBuilt?: number | null;
+  buildingAreaSqft?: number | null;
+  propertyTypeCode?: number | null;
+  useCode?: string | null;
+  propertyTypeText?: string | null;
+  descriptionText?: string | null;
+  /** Resulting class (vacant_land/farm/residential/manufactured/commercial/unknown/exclude). */
+  compClass?: CompClass;
+  /** Plain reason for the class (shown in the UI; loud when excluded). */
+  classReason?: string;
 }
 export interface MarketCompsView {
   status: 'collected' | 'no_comps' | 'not_configured' | 'no_area' | 'error' | 'not_run';
@@ -92,9 +107,7 @@ export interface MarketCompsView {
 function emptyMarketComps(): MarketCompsView {
   return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.' };
 }
-const avg = (ns: number[]): number | null => (ns.length ? Math.round(ns.reduce((a, b) => a + b, 0) / ns.length) : null);
 const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
-const ppas = (rows: MarketCompView[]): number[] => rows.map((c) => c.pricePerAcre).filter((p): p is number => typeof p === 'number');
 
 /**
  * Market comps with PROVIDER FAILOVER: 1) Realie premium comparables (primary —
@@ -126,18 +139,28 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
     }
     v.providerChain = chain;
     v.activeCount = v.active.length;
-    const p = ppas(v.sold).sort((a, b) => a - b);
-    const pct = (q2: number): number | null => (p.length ? p[Math.min(p.length - 1, Math.floor(q2 * p.length))] : null);
-    v.metrics.soldAvgPrice = avg(v.sold.map((c) => c.price));
-    v.metrics.soldAvgPpa = avg(p);
-    v.metrics.soldMedianPpa = median(p);
-    // Outlier-resistant band (p25–p75) — comp sets mix raw land with improved/
-    // commercial parcels, so a raw min–max is misleading. Median + IQR is usable.
-    v.metrics.ppaMin = pct(0.25);
-    v.metrics.ppaMax = pct(0.75);
-    v.soldCount = v.sold.length;
-    if (v.soldCount > 0 && v.soldCount < 3) v.sparseExplanation = `Sparse market: only ${v.soldCount} verifiable sold comp(s). Lean on the median price-per-acre ($${v.metrics.soldMedianPpa}/ac) + valuation/area context; widen radius/timeframe before pricing.`;
-    else if (v.soldCount === 0 && v.valuation.length > 0) v.sparseExplanation = 'No verifiable sold comps; using Realie valuation-only rows + area context. Confirm with a wider comp search before pricing.';
+    // ── Provider-agnostic comp classification at the valuation seam ──────────
+    //    Build the per-acre band from RAW LAND only. Residential/manufactured/
+    //    commercial/nominal sales can never inflate it (the engine-wide fix);
+    //    each sold comp is tagged with its class + reason for the UI.
+    const band = buildLandPpaBand(v.sold);
+    for (const { comp, classification } of [...band.rawLand, ...band.unknown, ...band.excluded]) {
+      comp.compClass = classification.class;
+      comp.classReason = classification.reason;
+    }
+    v.metrics.soldAvgPrice = band.metrics.soldAvgPrice;
+    v.metrics.soldAvgPpa = band.metrics.soldAvgPpa;
+    v.metrics.soldMedianPpa = band.metrics.soldMedianPpa;
+    v.metrics.ppaMin = band.metrics.ppaMin;
+    v.metrics.ppaMax = band.metrics.ppaMax;
+    // soldCount reflects the comps that actually drive the band (raw land, plus
+    // unknowns only when the fallback was needed) — not contaminating rows.
+    v.soldCount = band.bandComps.length;
+    const excludedNote = band.excluded.length > 0 ? ` ${band.note}` : '';
+    if (band.bandComps.length > 0 && band.bandComps.length < 3) v.sparseExplanation = `Sparse market: only ${band.bandComps.length} land comp(s) in the band. Lean on the median price-per-acre ($${v.metrics.soldMedianPpa}/ac) + valuation/area context; widen radius/timeframe before pricing.${excludedNote}`;
+    else if (band.bandComps.length === 0 && v.valuation.length > 0) v.sparseExplanation = `No raw-land sold comps; using Realie valuation-only rows + area context. Confirm with a wider comp search before pricing.${excludedNote}`;
+    else if (band.bandComps.length === 0 && v.sold.length > 0) v.sparseExplanation = `Sold comps were found but none classify as raw land (all residential/improved/unknown).${excludedNote} Widen the comp search or verify type before pricing.`;
+    else if (band.excluded.length > 0) v.sparseExplanation = excludedNote.trim();
     return v;
   };
 
@@ -148,7 +171,7 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
     const rc = await fetchRealieComps(q.lat, q.lng, { env: withEnvFileSecrets(['REALIE_API_KEY', 'REALIE_API_BASE']), radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null, subjectImproved: q.improved === true });
     chain.push(`realie:${rc.status}`);
     if (rc.status === 'collected' && rc.sold.length > 0) {
-      const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined });
+      const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null; yearBuilt?: number | null; useCode?: string | null; buildingAreaSqft?: number | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null });
       return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: rc.sold.map(toView), valuation: rc.valuation.map(toView), providers: [{ providerId: 'realie', status: 'connected', kept: rc.sold.length }], source: 'Realie premium comparables', timestamp: new Date().toISOString(), note: rc.note });
     }
     // Realie valuation-only (no sold) — keep for context but still try Apify for sold.
@@ -177,7 +200,7 @@ async function apifyComps(q: CompQueryLite, chain: string[]): Promise<MarketComp
     { address: q.address, city: q.city, county: q.county, state: q.state, zip: q.zip, acres: q.acres, centroid: typeof q.lat === 'number' && typeof q.lng === 'number' ? { lat: q.lat, lng: q.lng } : null, centroidTier: 'A' },
     { registry: reg.registry },
   );
-  const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc }));
+  const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc, propertyTypeCode: c.propertyTypeCode ?? null, descriptionText: c.descriptionText ?? null, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null, propertyTypeText: c.propertyTypeText ?? null }));
   const doms = res.needsVerification.map((nn) => nn.daysOnMarket).filter((d): d is number => typeof d === 'number');
   const anyConnected = res.providers.some((p) => p.status === 'connected' || p.status === 'no_comps');
   const anyError = res.providers.some((p) => p.status === 'error' || p.status === 'timeout');
