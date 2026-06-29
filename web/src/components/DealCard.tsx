@@ -412,6 +412,89 @@ function AcquisitionsPanel({ dealId }: { dealId: number }) {
   );
 }
 
+// Executive Summary — the operator-ready pre-call brief at the top of the file.
+interface ExecSummaryView {
+  headline: string; whatItIs: string; whyInteresting: string;
+  marketPulse: { realieSoldCount: number; zillowActiveCount: number; pricePerAcre: { median: number | null; p25: number | null; p75: number | null }; confidence: string; interpretation: string; whatThisMeans: string; growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number }> } };
+  preliminaryAcquisitionRange: { available: boolean; acres: number | null; estMidValue: number | null; acquisition40: number | null; acquisition60: number | null; recommendedRange: [number, number] | null; confidence: string; assumptions: string[]; increaseValueIf: string[]; decreaseValueIf: string[]; note: string };
+  strongestStrategy: { strategy: string; why: string };
+  strategyRanking: Array<{ strategy: string; viability: string; reason: string; risk: string; confidence: string; mustVerify: string }>;
+  dealEconomics: { available: boolean; estValueLow: number | null; estValueMid: number | null; estValueHigh: number | null; acquisitionRange: [number, number] | null; roughSpread: [number, number] | null; confidence: string; missingCostItems: string[]; whyUnderwritingLater: string };
+  topRisks: string[]; sellerQuestions: string[]; verifyBeforeOffer: string[]; nextSteps: string[]; confidence: string;
+}
+const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
+function ExecutiveSummarySection({ es }: { es?: ExecSummaryView | null }) {
+  if (!es) return null;
+  const ar = es.preliminaryAcquisitionRange; const mp = es.marketPulse;
+  const tone = es.confidence === 'high' ? 'text-[var(--color-status-done)]' : es.confidence === 'low' ? 'text-[var(--color-text-faint)]' : 'text-[var(--color-accent)]';
+  return (
+    <div class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">Executive Summary</span>
+        <span class={`ml-auto text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-border)] ${tone}`}>confidence: {es.confidence}</span>
+      </div>
+      <div class="text-[13px] font-semibold text-[var(--color-text)]">{es.headline}</div>
+      <div class="text-[12px] text-[var(--color-text-muted)]">{es.whatItIs}</div>
+      <div class="text-[12px] text-[var(--color-text-muted)]">{es.whyInteresting}</div>
+
+      {/* Preliminary acquisition range */}
+      {ar.available ? (
+        <div class="rounded-md border border-[var(--color-border)] p-2.5 space-y-1">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Preliminary Acquisition Range <span class="normal-case text-[10px]">(pre-call only — not an offer)</span></div>
+          <div class="text-[13px] font-semibold text-[var(--color-status-done)]">{usd(ar.acquisition40)} – {usd(ar.acquisition60)}</div>
+          <div class="text-[11px] text-[var(--color-text-muted)]">Est. market value ~{usd(ar.estMidValue)} ({ar.acres} ac @ {usd(mp.pricePerAcre.median)}/ac) · 40–60% acquisition band · confidence {ar.confidence}</div>
+          <div class="text-[10px] text-[var(--color-text-faint)]">↑ {ar.increaseValueIf.slice(0, 3).join(', ')}</div>
+          <div class="text-[10px] text-[var(--color-text-faint)]">↓ {ar.decreaseValueIf.slice(0, 3).join(', ')}</div>
+        </div>
+      ) : (
+        <div class="text-[11px] text-[var(--color-text-faint)] rounded-md border border-dashed border-[var(--color-border)] p-2">{ar.note}</div>
+      )}
+
+      {/* Deal economics snapshot */}
+      {es.dealEconomics.available && (
+        <div class="rounded-md border border-[var(--color-border)] p-2.5 text-[11px]">
+          <div class="font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Deal Economics (preliminary)</div>
+          <div class="text-[var(--color-text-muted)]">Est. value {usd(es.dealEconomics.estValueLow)} / {usd(es.dealEconomics.estValueMid)} / {usd(es.dealEconomics.estValueHigh)} (low/mid/high) · acquire {usd(es.dealEconomics.acquisitionRange?.[0])}–{usd(es.dealEconomics.acquisitionRange?.[1])} · gross spread {usd(es.dealEconomics.roughSpread?.[0])}–{usd(es.dealEconomics.roughSpread?.[1])} (pre-cost) · conf {es.dealEconomics.confidence}</div>
+          <div class="text-[10px] text-[var(--color-text-faint)]">Missing costs: {es.dealEconomics.missingCostItems.join(', ')}. {es.dealEconomics.whyUnderwritingLater}</div>
+        </div>
+      )}
+
+      {/* Market pulse one-liner */}
+      <div class="text-[11px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text-faint)]">Market:</span> {mp.interpretation}</div>
+
+      {/* Local growth drivers (synthesized from Browser Intelligence) */}
+      <div class="text-[11px] text-[var(--color-text-muted)]">
+        <span class="text-[var(--color-text-faint)]">Local growth:</span> {mp.growthDrivers.summary}
+        {mp.growthDrivers.drivers.length > 0 && <span class="text-[10px] text-[var(--color-text-faint)]"> [{mp.growthDrivers.drivers.slice(0, 3).map((d) => `${d.category} ×${d.count}`).join(', ')}]</span>}
+        <div class="text-[10px] text-[var(--color-accent)]">What this means: {mp.growthDrivers.whatThisMeans}</div>
+      </div>
+
+      {/* Strategy ranking (top lanes) */}
+      <div class="text-[11px]">
+        <div class="font-semibold text-[var(--color-text-faint)]">Strategy ranking</div>
+        {es.strategyRanking.slice(0, 4).map((s, i) => (
+          <div key={i} class="text-[var(--color-text-muted)]">{i + 1}. <span class="text-[var(--color-text)]">{s.strategy}</span> — {s.viability} · {s.reason}</div>
+        ))}
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div class="text-[11px] font-semibold text-[var(--color-text-faint)]">Strongest strategy</div>
+          <div class="text-[11px] text-[var(--color-text-muted)]">{es.strongestStrategy.strategy} — {es.strongestStrategy.why}</div>
+          <div class="text-[11px] font-semibold text-[var(--color-status-failed)] mt-1">Top risks</div>
+          {es.topRisks.slice(0, 4).map((r, i) => <div key={i} class="text-[11px] text-[var(--color-text-muted)]">• {r}</div>)}
+        </div>
+        <div>
+          <div class="text-[11px] font-semibold text-[var(--color-text-faint)]">Ask the seller</div>
+          {es.sellerQuestions.slice(0, 4).map((q, i) => <div key={i} class="text-[11px] text-[var(--color-text-muted)]">• {q}</div>)}
+        </div>
+      </div>
+      {es.verifyBeforeOffer.length > 0 && <div class="text-[11px]"><span class="text-[var(--color-text-faint)]">Verify before offer:</span> {es.verifyBeforeOffer.slice(0, 5).join(' · ')}</div>}
+      {es.nextSteps.length > 0 && <div class="text-[11px]"><span class="text-[var(--color-accent)]">Next:</span> {es.nextSteps.join(' → ')}</div>}
+    </div>
+  );
+}
+
 // Market comps + listings — Realie sold (primary band), Zillow active (asking-
 // market evidence, NOT sold), Zillow supplemental sold (separate), provider
 // readiness. Active listings never drive the sold-comp valuation band.
@@ -1118,6 +1201,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   const [readiness, setReadiness] = useState<ReadinessView | null>(null);
   const [briefing, setBriefing] = useState<BriefingView | null>(null);
   const [preCall, setPreCall] = useState<PreCallView | null>(null);
+  const [execSummary, setExecSummary] = useState<ExecSummaryView | null>(null);
   const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -1172,14 +1256,16 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
   async function loadReport(id: number) {
     try {
-      const res = await apiGet<{ report: ReportView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${id}/report`);
+      const res = await apiGet<{ report: ReportView; executiveSummary?: ExecSummaryView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${id}/report`);
       setReport(res.report);
+      setExecSummary(res.executiveSummary ?? null);
       setReadiness(res.readiness ?? null);
       setBriefing(res.briefing ?? null);
       setPreCall(res.preCallIntelligence ?? null);
       setPropertyType(res.propertyType ?? null);
     } catch {
       setReport(null);
+      setExecSummary(null);
       setReadiness(null);
       setBriefing(null);
       setPreCall(null);
@@ -1750,6 +1836,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
             {report?.exists && (
               <div class="space-y-3">
+                {/* Executive Summary — operator-ready pre-call brief, first thing Tyler sees. */}
+                <ExecutiveSummarySection es={execSummary} />
+
                 {/* DD Command Center — at-a-glance pre-call readiness. */}
                 <DealCardCommandCenter r={readiness} />
 

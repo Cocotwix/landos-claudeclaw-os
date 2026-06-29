@@ -125,6 +125,7 @@ import {
 } from './county-records-tasks.js';
 import { buildUnderwritingPrep } from './underwriting-prep.js';
 import { buildDiscoveryBriefing } from './discovery-briefing.js';
+import { buildExecutiveSummary } from './deal-card-executive-summary.js';
 import {
   getAcquisition, upsertSellerProfile, addCommLogEntry, addDiscoveryNote, setAcquisitionStage,
   extractDiscoveryNotes, acquisitionNextAction, sellerStrategySummary, isAcquisitionStage,
@@ -1217,7 +1218,10 @@ export function registerLandosRoutes(app: Hono): void {
     const leadTypeRaw = (deal as unknown as { lead_type?: string }).lead_type;
     const leadType: LeadType = isLeadType(leadTypeRaw) ? leadTypeRaw : 'actual';
     const browserMarketIntel = await browserIntelFor(deal as unknown as Record<string, unknown>);
-    return c.json({ report, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
+    const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
+    const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
+    const executiveSummary = buildExecutiveSummary(report, growthSummary);
+    return c.json({ report, executiveSummary, growthSummary, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {

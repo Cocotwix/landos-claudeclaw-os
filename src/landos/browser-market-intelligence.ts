@@ -60,6 +60,53 @@ export interface BrowserMarketIntelligence {
   note: string;
 }
 
+// ── Growth-driver synthesis (operator summary, NOT a headline dump) ──────────
+export interface GrowthDriverSummary {
+  status: BrowserIntelStatus;
+  area: string;
+  evidenceCount: number;
+  drivers: Array<{ category: string; count: number; examples: string[] }>;
+  summary: string;
+  whatThisMeans: string;
+}
+const GROWTH_PATTERNS: Array<{ category: string; rx: RegExp }> = [
+  { category: 'Residential / subdivisions', rx: /subdivision|master.?planned|residential develop|new homes|housing develop|lots? (approved|platted)/i },
+  { category: 'Commercial / retail', rx: /commercial|retail|shopping|mixed.?use|store opening|grocery/i },
+  { category: 'Industrial / logistics', rx: /industrial|distribution center|warehouse|manufactur|logistics|data center/i },
+  { category: 'Infrastructure / highway', rx: /highway|interchange|road (widen|expan)|infrastructure|bridge|transit|interstate|\bi-\d/i },
+  { category: 'Utilities expansion', rx: /water line|sewer|utility expan|broadband|power line|electric expan/i },
+  { category: 'Rezoning / annexation', rx: /rezon|annex|zoning change|comprehensive plan|land.?use plan/i },
+  { category: 'Schools / hospitals', rx: /\bschool\b|hospital|university|college|medical center/i },
+  { category: 'Major land / real-estate deals', rx: /acres? (sold|purchased|acquired)|land (sale|deal)|developer (bought|acquired)|\$\d+\s*(million|m)\b/i },
+];
+
+/** Classify already-collected public-web evidence into land-value growth drivers
+ *  and produce an OPERATOR summary (never a raw headline dump). Honest when no
+ *  browser model / no evidence is available. */
+export function summarizeGrowthDrivers(intel: BrowserMarketIntelligence): GrowthDriverSummary {
+  const base = { status: intel.status, area: intel.area, evidenceCount: intel.evidence?.length ?? 0 };
+  if (intel.status !== 'collected' || !intel.evidence?.length) {
+    return { ...base, drivers: [], summary: intel.status === 'no_browser_model' ? 'No browser research model configured — local growth drivers not auto-summarized this run.' : intel.status === 'no_area' ? 'No verified area to research local growth drivers.' : 'No public-web growth signals retrieved for the area.', whatThisMeans: 'Treat the market as steady-state and rely on the verified comp band; confirm local development directly with the seller / county.' };
+  }
+  const drivers: GrowthDriverSummary['drivers'] = [];
+  for (const { category, rx } of GROWTH_PATTERNS) {
+    const hits = intel.evidence.filter((e) => rx.test(`${e.snippet} ${e.supports}`));
+    if (hits.length) drivers.push({ category, count: hits.length, examples: hits.slice(0, 2).map((h) => h.snippet.slice(0, 120)) });
+  }
+  drivers.sort((a, b) => b.count - a.count);
+  const topNames = drivers.slice(0, 3).map((d) => `${d.category.toLowerCase()} (${d.count})`);
+  const summary = drivers.length
+    ? `${intel.evidence.length} public signals for ${intel.area}; growth themes: ${topNames.join(', ')}.`
+    : `${intel.evidence.length} public items for ${intel.area} but no clear land-value growth driver among them.`;
+  const strong = drivers.reduce((n, d) => n + d.count, 0);
+  const whatThisMeans = drivers.length === 0
+    ? 'No clear growth catalysts in public news — price off the verified comp band; ask the seller about local development.'
+    : strong >= 4
+      ? 'Multiple growth catalysts (development + infrastructure) point to a strengthening land market — supports stronger exit confidence and a firmer acquisition stance near the top of the 40–60% band.'
+      : 'Some growth signals present — modestly supportive of demand; weight the verified comps and confirm specifics with the seller / county.';
+  return { ...base, drivers, summary, whatThisMeans };
+}
+
 /** A browser backend that actually drives a model to collect evidence. Injected
  *  when a runtime backend is available; absent => honest Needs Research. */
 export type BrowserBackend = (args: { area: string; model: BrowserModel; categories: readonly string[] }) => Promise<MarketEvidence[]>;

@@ -18,6 +18,11 @@ export interface DerivedCounty {
   zip: string | null;
   /** 5-digit state+county FIPS when available. */
   fips: string | null;
+  /** Approximate address coordinates from the Census match. SUPPORTING-ONLY
+   *  (e.g. to fetch imagery for a verified parcel that lacks provider coords) —
+   *  NEVER used for parcel identity. */
+  lat: number | null;
+  lng: number | null;
 }
 
 const CENSUS_ONELINE = 'https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress';
@@ -47,11 +52,17 @@ export async function deriveCounty(
     const countyFips = (c?.COUNTY ?? '').toString().trim();
     const fips = stateFips && countyFips ? `${stateFips.padStart(2, '0')}${countyFips.padStart(3, '0')}` : null;
     if (!county) return null;
+    // Census match.coordinates: x = longitude, y = latitude (supporting-only).
+    const coord = match?.coordinates ?? {};
+    const lng = typeof coord.x === 'number' ? coord.x : Number(coord.x);
+    const lat = typeof coord.y === 'number' ? coord.y : Number(coord.y);
     return {
       county,
       state: (ac.state ?? input.state ?? '').toString().trim(),
       zip: (ac.zip ?? input.zip ?? null) || null,
       fips,
+      lat: Number.isFinite(lat) ? lat : null,
+      lng: Number.isFinite(lng) ? lng : null,
     };
   } catch {
     return null;

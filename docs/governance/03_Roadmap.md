@@ -50,3 +50,15 @@ Governance relaxed to working-product mode: configured operational providers (Ap
 
 ## Deferred (per Founder Vision phases / later)
 Real-time call assistant (teleprompter), full agent roster expansion (marketing, dispositions, competitor/AI/land research, system health), GHL/CRM live sync, voice/War Room expansion, second-machine/always-on infra.
+
+## Due Diligence Department — SYNTHESIS + IMAGERY FOUNDATION IMPLEMENTED (in progress, 2026-06-29)
+Implemented and live: parcel verification, Realie facts + sold comps, Zillow active, FEMA/NWI/USGS, Executive Summary synthesis (market pulse, 40–60% preliminary acquisition range, 8-lane strategy ranking, deal economics), Browser-Intelligence growth summary, and the Google imagery foundation (.env key fix + geocode-the-verified-address fallback). See 08_DD_Capability_Matrix.md.
+
+**NOT yet complete (DD is not frozen):**
+- Final Deal Card UX / layout (visual-to-top, header/seller/APN/acreage redesign, font/readability, declutter).
+- Model-router investigation (Gemma / ChatGPT "Not Wired").
+- Smart browser comp verification + enrichment; Zillow vacant-land comp retrieval; vision-based improvement status.
+- Valuation cleanup — 2123 Panola still inflated because Realie comp rows omit building data (needs wider comp radius / comp building data; outlier guard alone insufficient).
+- Parcel boundary geometry; the deferred Interactive Intelligence Map.
+
+The department will be marked COMPLETE / FROZEN only after the above are resolved.

@@ -58,7 +58,7 @@ import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
 import { loadCardVisualCapture, saveCardVisualCapture, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
-import { googleVisualConfigured } from './providers/google-visual.js';
+import { googleVisualConfigured, resolveGoogleVisualEnv } from './providers/google-visual.js';
 import { buildDdChecklist, mergeGovDdRows, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
 import { fetchFemaFlood, fetchNwiWetlands, fetchUsgsSlope, type GovFetch } from './providers/gov-dd-providers.js';
 import { fetchCensusDemographics, emptyCensus, type CensusDemographics, type CensusFetch } from './census-demographics.js';
@@ -145,7 +145,7 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
   if (typeof q.lat === 'number' && typeof q.lng === 'number') {
     const { fetchRealieComps } = await import('./realie-comps.js');
     const { withEnvFileSecrets } = await import('../env.js');
-    const rc = await fetchRealieComps(q.lat, q.lng, { env: withEnvFileSecrets(['REALIE_API_KEY', 'REALIE_API_BASE']), radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null });
+    const rc = await fetchRealieComps(q.lat, q.lng, { env: withEnvFileSecrets(['REALIE_API_KEY', 'REALIE_API_BASE']), radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null, subjectImproved: q.improved === true });
     chain.push(`realie:${rc.status}`);
     if (rc.status === 'collected' && rc.sold.length > 0) {
       const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined });
@@ -371,6 +371,9 @@ export interface DealCardReportDeps {
 export interface CompQueryLite {
   address?: string; city?: string; county?: string; state?: string; zip?: string;
   acres?: number; lat?: number; lng?: number;
+  /** True when the subject has a structure (improved). Controls vacant-land comp
+   *  validation — when false, improved/house sales are excluded from valuation. */
+  improved?: boolean;
 }
 
 export interface DealCardReportResult {
@@ -1141,13 +1144,32 @@ export async function runDealCardReport(
   const googleConfigured = deps.googleVisualConfigured ?? googleVisualConfigured();
   if (visualCardId && googleConfigured && verification.parcelVerified) {
     const already = loadCardVisualCapture(visualCardId);
-    const hasCoordsOrAddr = !!(verification.coordinates || vid?.situsAddress);
+    // Best available address for imagery: the verified situs, else the card's
+    // original input address (a verified parcel may lack a normalized situs).
+    const imageryAddress = s(vid?.situsAddress) || s((deal.propertyCards?.[0] as { active_input_address?: string } | undefined)?.active_input_address) || '';
+    const hasCoordsOrAddr = !!(verification.coordinates || imageryAddress);
     if (Object.keys(already).length === 0 && hasCoordsOrAddr) {
+      // Imagery needs coordinates. When the parcel provider returns none, geocode
+      // the VERIFIED address for IMAGERY ONLY (supporting context, never identity)
+      // so satellite/Street-View reliably appear for a verified parcel.
+      let imageryCoords = verification.coordinates ?? null;
+      if (!imageryCoords && imageryAddress) {
+        try {
+          const { deriveCounty } = await import('./providers/county-geocode.js');
+          const g = await deriveCounty({ address: imageryAddress, city: vid?.city, state: vid?.state });
+          if (g && g.lat != null && g.lng != null) imageryCoords = { lat: g.lat, lng: g.lng };
+        } catch { /* supporting-only; never fail the report */ }
+      }
       try {
-        const cap = await (deps.captureVisuals ?? capturePropertyVisuals)({
-          propertyLabel: vid?.situsAddress ?? `deal ${dealCardId}`,
-          address: vid?.situsAddress ?? null,
-          coords: verification.coordinates ?? null,
+        // The capture reads its key from the env it's given; the app keeps secrets
+        // in the .env FILE (not process.env), so pass the file-resolved Google key
+        // (same fix class as Realie/Zillow). Test injection (deps.captureVisuals)
+        // is used as-is.
+        const doCapture = deps.captureVisuals ?? ((inp: CaptureInput) => capturePropertyVisuals(inp, { env: resolveGoogleVisualEnv() }));
+        const cap = await doCapture({
+          propertyLabel: imageryAddress || `deal ${dealCardId}`,
+          address: imageryAddress || null,
+          coords: imageryCoords,
         });
         if (cap.captured && Object.keys(cap.assets).length > 0) {
           saveCardVisualCapture(visualCardId, cap.assets as Record<string, CardVisualAsset>, { provider: 'google' });
@@ -1178,8 +1200,12 @@ export async function runDealCardReport(
   // area. Live where configured (injectable for tests); honest status otherwise.
   let marketComps = emptyMarketComps();
   if (verification.parcelVerified) {
-    const lf = verification.propertyData?.landFacts as { acres?: number } | undefined;
+    const lf = verification.propertyData?.landFacts as { acres?: number; buildingAreaSqft?: number | string; buildingArea?: number | string; yearBuilt?: number | string; landUse?: string } | undefined;
+    // Improved subject = has a structure (building area / year built / use code).
+    const bArea = Number(String(lf?.buildingAreaSqft ?? lf?.buildingArea ?? '').replace(/[^0-9.]/g, '')) || 0;
+    const subjectImproved = bArea > 0 || (!!lf?.yearBuilt && Number(lf.yearBuilt) > 1900) || /home|house|dwelling|residence|mobile|improv|structure/i.test(lf?.landUse ?? '');
     const q: CompQueryLite = {
+      improved: subjectImproved,
       address: vid?.situsAddress ?? undefined,
       city: vid?.city ?? undefined,
       county: vid?.county ?? undefined,
