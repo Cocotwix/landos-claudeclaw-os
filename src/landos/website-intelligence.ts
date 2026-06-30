@@ -353,12 +353,17 @@ export function verifyTargetReached(obs: PageObservation, opts: { expectIdentifi
   const looksLikeSearchForm = obs.searchControls.length >= 4 && formyVals >= 2 && fieldKeys.length > 0;
   if (looksLikeSearchForm) return { pageType: 'search_form', reached: false, reason: 'On a search/filter form (filter controls + option-list values) — extraction would be false facts.' };
 
-  // A record detail page: identifier present in the visible fields + several
-  // record-like labels (owner/parcel/acre/value), and NOT dominated by filters.
-  const recordLabels = fieldKeys.filter((k) => /owner|parcel|apn|acre|address|assess|deed|tax|zon|use|legal/i.test(k)).length;
+  // A record detail page: several record-like labels (owner/parcel/acre/value)
+  // whose VALUES are real data (not filter options). Global page chrome — a token
+  // counter, cart subtotal — is ignored: only the RECORD-labeled fields must be
+  // clean, so a real parcel panel is recognized even alongside that chrome.
+  const RECORD_LABEL = /owner|parcel|apn|acre|address|situs|assess|deed|tax|zon|use|legal|sqft|frontage/i;
+  const recordKeys = fieldKeys.filter((k) => RECORD_LABEL.test(k));
+  const realRecordPairs = recordKeys.filter((k) => { const v = obs.fields[k]; return v && v.length > 0 && !FORMY_LABELS.test(v); }).length;
   const idHit = opts.expectIdentifier ? fieldVals.some((v) => v.replace(/[ .\-/]/g, '').includes(opts.expectIdentifier!.replace(/[ .\-/]/g, ''))) : false;
-  if (recordLabels >= 3 && formyVals === 0) return { pageType: 'record_detail', reached: true, reason: `Record detail page (${recordLabels} record fields${idHit ? ', identifier confirmed' : ''}).` };
-  if (recordLabels >= 1 && idHit) return { pageType: 'record_detail', reached: true, reason: 'Record detail page (identifier confirmed in fields).' };
+  if (realRecordPairs >= 3) return { pageType: 'record_detail', reached: true, reason: `Record detail page (${realRecordPairs} record fields with real values${idHit ? ', identifier confirmed' : ''}).` };
+  if (realRecordPairs >= 1 && idHit) return { pageType: 'record_detail', reached: true, reason: 'Record detail page (identifier confirmed in fields).' };
+  const recordLabels = realRecordPairs;
 
   // Results list: multiple links/rows that look like records.
   if (obs.hasTable && obs.links.some((l) => /detail|parcel|record|result|view/i.test(`${l.text} ${l.href}`))) return { pageType: 'results_list', reached: false, reason: 'Search results list — open the matching record first.' };

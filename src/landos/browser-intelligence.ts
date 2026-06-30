@@ -214,6 +214,15 @@ export interface BrowserDriver {
   /** Click the candidate at the given deterministic index (re-collected in the
    *  same order). Read-only navigation (opens a detail panel/popup/record). */
   clickCandidate?(index: number, opts: { timeoutMs: number }): Promise<void>;
+  /** Type a value into a search box WITHOUT submitting (drives a typeahead). */
+  typeSearch?(selector: string, value: string, opts: { timeoutMs: number }): Promise<void>;
+  /** Switch a search-method selector (Address/APN/Owner/Lat) to `method` by
+   *  opening the toggle near the search bar and clicking the option. Read-only. */
+  selectMethod?(method: string, opts: { timeoutMs: number }): Promise<void>;
+  /** Set scope filter dropdowns (e.g. State, then County) so a search resolves to
+   *  a single jurisdiction. Drives standard Select2/native dropdowns. Read-only.
+   *  Returns the values it confirmed it set. */
+  setScope?(values: string[], opts: { timeoutMs: number }): Promise<string[]>;
   /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
   act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
 }

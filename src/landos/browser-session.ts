@@ -566,6 +566,9 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const addF = (k: string, v: string) => { const key = (k || '').replace(/\s+/g, ' ').trim().replace(/[:#]+$/, ''); const val = (v || '').replace(/\s+/g, ' ').trim(); if (key && val && key.length <= 40 && !fields[key]) fields[key] = val; };
         document.querySelectorAll('dl').forEach((dl: any) => { const dts = dl.querySelectorAll('dt'); const dds = dl.querySelectorAll('dd'); for (let i = 0; i < Math.min(dts.length, dds.length); i++) addF(dts[i].textContent || '', dds[i].textContent || ''); });
         document.querySelectorAll('tr').forEach((tr: any) => { const cells = tr.querySelectorAll('th,td'); if (cells.length === 2) addF(cells[0].textContent || '', cells[1].textContent || ''); });
+        // Two-span label:value rows (common in detail panels — e.g. a row with a
+        // title span + a value span). Generic; captures custom property panels.
+        document.querySelectorAll('p,div,li').forEach((el: any) => { if (!vis(el)) return; const sp = el.querySelectorAll(':scope > span'); if (sp.length === 2) addF(sp[0].textContent || '', sp[1].textContent || ''); });
         const loginLike = /sign in|log in|login|password/i.test(bodyText.slice(0, 2000)) && Object.keys(fields).length === 0;
         // Custom (non-<select>) search-method toggle: a visible, short clickable
         // pill whose text IS a method name (Address/APN/Owner/Parcel/Lat) and which
@@ -611,7 +614,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const page = await getWorkingPage();
       const READ = (): Array<{ index: number; text: string; kind: string }> => {
         // Deterministic collector — MUST match clickCandidate's collector exactly.
-        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li';
+        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li,li[class*="search" i],li[class*="variant" i]';
         const seen = new Set<any>(); const out: any[] = [];
         Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
           if (seen.has(el)) return; seen.add(el);
@@ -631,7 +634,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     async clickCandidate(index, opts) {
       const page = await getWorkingPage();
       const CLICK = (target: number): boolean => {
-        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li';
+        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li,li[class*="search" i],li[class*="variant" i]';
         const seen = new Set<any>(); const out: any[] = [];
         Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
           if (seen.has(el)) return; seen.add(el);
@@ -648,6 +651,79 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       };
       await page.evaluate<boolean>(CLICK as unknown as () => boolean, index);
       await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 2500))); // panel/popup settle
+    },
+    async typeSearch(selector, value, opts) {
+      const page = await getWorkingPage();
+      // Set the value via the native setter (React/Angular-safe) and dispatch the
+      // input/keyup events that drive a debounced typeahead. Then nudge with real
+      // keystrokes if available (some typeaheads only fire on trusted key events).
+      const SET = ((s: string, v: string): boolean => {
+        const el = document.querySelector(s) as any; if (!el) return false;
+        el.focus();
+        const proto = Object.getPrototypeOf(el);
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (desc && desc.set) desc.set.call(el, v); else el.value = v;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new (window as any).KeyboardEvent('keydown', { bubbles: true }));
+        el.dispatchEvent(new (window as any).KeyboardEvent('keyup', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }) as unknown as () => boolean;
+      await page.evaluate(SET, selector, value);
+      if (page.type && page.keyboard) { try { await page.evaluate(((s: string) => { const i = document.querySelector(s) as any; if (i) i.focus(); }) as unknown as () => void, selector); await page.keyboard.press('Space'); await page.keyboard.press('Backspace'); } catch { /* best-effort nudge */ } }
+      await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 3200))); // let the typeahead resolve
+    },
+    async selectMethod(method) {
+      const page = await getWorkingPage();
+      const OPEN = (m: string): boolean => {
+        const METHOD = /^(address|apn|parcel(\s*id)?|owner|lat(itude)?)/i;
+        const inputs = Array.from(document.querySelectorAll('input')).filter((i: any) => { const r = i.getBoundingClientRect(); return r.width > 1 && r.top < 220; });
+        for (const el of Array.from(document.querySelectorAll('div,button,span,p')) as any[]) {
+          const tx = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (tx.length > 28 || !METHOD.test(tx)) continue;
+          const r = el.getBoundingClientRect(); if (r.width < 1 || r.top > 220) continue;
+          if (inputs.some((i: any) => { const ir = i.getBoundingClientRect(); return Math.abs(ir.top - r.top) < 70; })) { el.click(); return true; }
+        }
+        return false;
+      };
+      await page.evaluate(OPEN as unknown as () => boolean, method);
+      await new Promise((r) => setTimeout(r, 450));
+      const PICK = (m: string): boolean => {
+        const want = m === 'apn' ? /^(apn|parcel)/i : m === 'address' ? /^address$/i : m === 'owner' ? /^owner$/i : /^lat/i;
+        const opts = Array.from(document.querySelectorAll('li,p,span,div,[class*="option" i]')) as any[];
+        const el = opts.find((o) => { const t = (o.textContent || '').replace(/\s+/g, ' ').trim(); return t.length < 18 && want.test(t); });
+        if (el) { el.click(); return true; } return false;
+      };
+      await page.evaluate(PICK as unknown as () => boolean, method);
+      await new Promise((r) => setTimeout(r, 700));
+    },
+    async setScope(values, opts) {
+      const page = await getWorkingPage();
+      const confirmed: string[] = [];
+      // Drive the search-scope dropdowns in order (e.g. State, then County). Works
+      // with Select2 widgets (open → type → click result) — a standard library.
+      for (let i = 0; i < values.length; i++) {
+        const val = values[i];
+        const opened = await page.evaluate(((w: number) => {
+          const conts = Array.from(document.querySelectorAll('.search-selects-wr .select2-container, .select2-container')) as any[];
+          const c = conts[w]; if (!c) return false;
+          if ((c.className || '').includes('disabled')) return false;
+          const sel = c.querySelector('.select2-selection'); if (!sel) return false;
+          sel.dispatchEvent(new (window as any).MouseEvent('mousedown', { bubbles: true })); sel.click(); return true;
+        }) as unknown as () => boolean, i);
+        if (!opened) continue;
+        await new Promise((r) => setTimeout(r, 450));
+        await page.evaluate(((v: string) => { const sf = document.querySelector('.select2-search__field') as any; if (sf) { sf.value = v; sf.dispatchEvent(new Event('input', { bubbles: true })); sf.dispatchEvent(new (window as any).KeyboardEvent('keyup', { bubbles: true })); } }) as unknown as () => void, val);
+        await new Promise((r) => setTimeout(r, 900));
+        const picked = await page.evaluate(((v: string): boolean => {
+          const opts2 = Array.from(document.querySelectorAll('.select2-results__option')) as any[];
+          const el = opts2.find((o) => (o.textContent || '').trim().toLowerCase() === v.toLowerCase()) || opts2.find((o) => (o.textContent || '').trim().toLowerCase().includes(v.toLowerCase()));
+          if (el) { el.dispatchEvent(new (window as any).MouseEvent('mouseup', { bubbles: true })); el.click(); return true; } return false;
+        }) as unknown as () => boolean, val);
+        if (picked) confirmed.push(val);
+        await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 1200)));
+      }
+      return confirmed;
     },
     async screenshot(purpose): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();

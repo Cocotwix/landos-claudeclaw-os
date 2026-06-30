@@ -122,23 +122,26 @@ describe('live BrowserDriver (read-only)', () => {
     expect(driver.configured()).toBe(false);
   });
 
-  it('LandPortal live workflow: ONE screenshot + structured extraction, session reused', async () => {
+  it('live driver: structured read + ONE screenshot, session reused across leads (no re-login)', async () => {
+    // Session mechanics (the full agentic LandPortal retrieval is covered by
+    // landportal-agentic.test.ts). Prove read/screenshot work and the SAME session
+    // is reused across leads without reconnecting or re-logging-in.
     const pup = fakePuppeteer(LP_FIELDS);
     const driver = makeLiveBrowserDriver('landportal', { config: LIVE, puppeteer: pup });
     await ensureBrowserSession({ config: LIVE, puppeteer: pup });
-    const lp = makeLandPortalBrowser({ driver });
 
-    const lead1 = await lp.runWorkflow({ searchKey: { address: '388 Gilstrap Rd', county: 'White', state: 'GA' } }, { timeoutMs: 1000 });
-    expect(lead1.status).toBe('retrieved');
-    expect(lead1.screenshots).toHaveLength(1);
-    expect(lead1.screenshots[0].purpose).toBe(LANDPORTAL_SCREENSHOT_PURPOSE);
-    expect(lead1.patch.apn).toBe('042 123');
-    expect(lead1.patch.owner).toBe('TEST OWNER');
+    // Lead 1 — open, read structured fields, capture exactly one screenshot.
+    await driver.open('https://landportal.com', { timeoutMs: 1000 });
+    const read1 = await driver.readFields({ timeoutMs: 1000 });
+    const shot1 = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { timeoutMs: 1000 });
+    expect(read1.fields.APN).toBe('042 123');
+    expect(read1.fields.Owner).toBe('TEST OWNER');
+    expect(shot1.purpose).toBe(LANDPORTAL_SCREENSHOT_PURPOSE);
 
-    // Second property without logging in again — same session reused.
-    const lead2 = await lp.runWorkflow({ searchKey: { address: '12 Other Rd', county: 'White', state: 'GA' } }, { timeoutMs: 1000 });
-    expect(lead2.status).toBe('retrieved');
-    expect(pup._counts.connect).toBe(1); // never reconnected / re-logged-in
+    // Lead 2 — same session, never reconnected / re-logged-in.
+    await driver.open('https://landportal.com', { timeoutMs: 1000 });
+    await driver.readFields({ timeoutMs: 1000 });
+    expect(pup._counts.connect).toBe(1);
   });
 
   it('auth detection: a login-like page flips status to auth_needed (no fabrication)', async () => {
