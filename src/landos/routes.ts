@@ -102,7 +102,7 @@ import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion } from './browser-intelligence.js';
-import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth } from './browser-session.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession } from './browser-session.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
@@ -2048,6 +2048,22 @@ export function registerLandosRoutes(app: Hono): void {
   // unreachable / auth_needed. NEVER returns cookies, tokens, or credentials.
   app.get('/api/landos/browser/session', async (c) => {
     return c.json({ session: await browserSessionHealth() });
+  });
+
+  // Start Browser Intelligence: reuse the persistent Chrome session if already
+  // running, else launch GOOGLE CHROME (never Edge) with the dedicated LandOS
+  // profile + remote debugging, then connect. One profile reused across leads;
+  // never stores a credential. Returns status/launch result (no cookies/tokens).
+  app.post('/api/landos/browser/start', async (c) => {
+    const result = await startBrowserSession();
+    return c.json({ start: result });
+  });
+
+  // Open LandPortal in the session for a one-time manual login + auth detection
+  // (read-only navigation). After login, Refresh Status detects authentication.
+  app.post('/api/landos/browser/open-landportal', async (c) => {
+    const result = await openLandPortalInSession();
+    return c.json({ landportal: result });
   });
 
   // ── Browser Intelligence — Ask Mode (Phase 1) ─────────────────────────────

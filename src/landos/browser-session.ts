@@ -16,6 +16,7 @@
 
 import os from 'os';
 import path from 'path';
+import fs from 'fs';
 import { readEnvFile } from '../env.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 
@@ -58,9 +59,23 @@ export interface BrowserSessionConfig {
   cdpUrl: string;
   /** Local dir for proof screenshots (NOT the repo; property work product). */
   screenshotDir: string;
+  /** Chrome executable to launch (Google Chrome ONLY — never Edge). */
+  chromePath?: string;
+  /** Dedicated persistent Chrome profile dir (keeps the LandPortal login). */
+  profileDir: string;
 }
 
-const ENV_KEYS = ['BROWSER_INTEL_LIVE', 'BROWSER_INTEL_CDP_URL', 'BROWSER_INTEL_SHOT_DIR'];
+/** LandPortal entry URL opened in the session for manual login / auth detection. */
+export const LANDPORTAL_SESSION_URL = 'https://www.landportal.com/';
+
+/** Standard Google Chrome install paths (Windows). Edge is intentionally excluded. */
+export const CHROME_CANDIDATE_PATHS = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'),
+];
+
+const ENV_KEYS = ['BROWSER_INTEL_LIVE', 'BROWSER_INTEL_CDP_URL', 'BROWSER_INTEL_SHOT_DIR', 'BROWSER_INTEL_CHROME_PATH', 'BROWSER_INTEL_PROFILE_DIR'];
 
 /** Read live-session config. The shell environment wins; otherwise the same keys
  *  are read from the .env FILE (these are non-secret config flags, never secrets).
@@ -75,6 +90,8 @@ export function readSessionConfig(env?: Record<string, string | undefined>): Bro
     enabled: flag === '1' || flag === 'true' || flag === 'yes',
     cdpUrl: get('BROWSER_INTEL_CDP_URL') || 'http://127.0.0.1:9222',
     screenshotDir: get('BROWSER_INTEL_SHOT_DIR') || path.join(os.tmpdir(), 'landos-browser-shots'),
+    chromePath: get('BROWSER_INTEL_CHROME_PATH') || undefined,
+    profileDir: get('BROWSER_INTEL_PROFILE_DIR') || path.join(os.homedir(), '.landos-chrome'),
   };
 }
 
@@ -88,8 +105,12 @@ interface SessionState {
   status: BrowserSessionStatus;
   cdpUrl: string;
   connectedAtIso: string | null;
+  /** LandPortal auth, set when LandPortal is opened/checked in the session. */
+  auth: { authenticated: boolean | null; atIso: string | null };
+  lastCheckIso: string | null;
+  screenshotDir: string;
 }
-const state: SessionState = { browser: null, workingPage: null, status: 'disabled', cdpUrl: '', connectedAtIso: null };
+const state: SessionState = { browser: null, workingPage: null, status: 'disabled', cdpUrl: '', connectedAtIso: null, auth: { authenticated: null, atIso: null }, lastCheckIso: null, screenshotDir: '' };
 
 export interface SessionDeps {
   puppeteer?: PuppeteerLike;
@@ -120,6 +141,8 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
   const cfg = deps.config ?? readSessionConfig();
   const now = deps.now ?? (() => new Date().toISOString());
   state.cdpUrl = cfg.cdpUrl;
+  state.screenshotDir = cfg.screenshotDir;
+  state.lastCheckIso = now();
   if (!cfg.enabled) { state.status = 'disabled'; return 'disabled'; }
 
   // Reuse: if we already hold a live connection, keep it (no reconnect, no relogin).
@@ -157,16 +180,34 @@ async function getWorkingPage(): Promise<PageLike> {
   return state.workingPage;
 }
 
+export interface BrowserSessionHealth {
+  healthy: boolean;
+  status: BrowserSessionStatus;
+  cdpUrl: string;
+  connectedAtIso: string | null;
+  lastCheckIso: string | null;
+  screenshotDir: string;
+  /** LandPortal auth (null = not checked this session). Never a cookie/token. */
+  landportalAuthenticated: boolean | null;
+  landportalAuthCheckedIso: string | null;
+  note: string;
+}
+
 /** Session health — for the status endpoint. Never returns cookies/tokens. */
-export async function browserSessionHealth(deps: SessionDeps = {}): Promise<{ healthy: boolean; status: BrowserSessionStatus; cdpUrl: string; connectedAtIso: string | null; note: string }> {
+export async function browserSessionHealth(deps: SessionDeps = {}): Promise<BrowserSessionHealth> {
   const status = await ensureBrowserSession(deps);
   const note = {
     live: 'Connected to the persistent Chrome session (reused across leads).',
-    disabled: 'Live browser execution is disabled. Set BROWSER_INTEL_LIVE=1 and launch Chrome with remote debugging.',
-    unreachable: 'No reachable Chrome on the CDP endpoint. Launch the persistent browser (remote debugging) and keep it open.',
-    auth_needed: 'Connected, but the site needs a manual login once in the persistent session.',
+    disabled: 'Live browser execution is disabled. Set BROWSER_INTEL_LIVE=1 and Start Browser Intelligence.',
+    unreachable: 'No reachable Chrome on the CDP endpoint. Click Start Browser Intelligence to launch the LandOS Chrome profile.',
+    auth_needed: 'Connected, but LandPortal needs a manual login once. Click Open LandPortal, sign in, then Refresh Status.',
   }[status];
-  return { healthy: status === 'live', status, cdpUrl: state.cdpUrl, connectedAtIso: state.connectedAtIso, note };
+  return {
+    healthy: status === 'live', status, cdpUrl: state.cdpUrl,
+    connectedAtIso: state.connectedAtIso, lastCheckIso: state.lastCheckIso, screenshotDir: state.screenshotDir,
+    landportalAuthenticated: state.auth.authenticated, landportalAuthCheckedIso: state.auth.atIso,
+    note,
+  };
 }
 
 export function browserSessionStatus(): BrowserSessionStatus { return state.status; }
@@ -181,7 +222,144 @@ export async function disconnectBrowserSession(): Promise<void> {
 
 /** Test-only: reset the singleton between tests. */
 export function _resetBrowserSession(): void {
-  state.browser = null; state.workingPage = null; state.status = 'disabled'; state.cdpUrl = ''; state.connectedAtIso = null;
+  state.browser = null; state.workingPage = null; state.status = 'disabled'; state.cdpUrl = '';
+  state.connectedAtIso = null; state.auth = { authenticated: null, atIso: null }; state.lastCheckIso = null; state.screenshotDir = '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Operator flow: launch Chrome (NOT Edge) + connect + open LandPortal
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Injectable process spawn (tests pass a no-op; prod uses child_process). */
+export type SpawnLike = (cmd: string, args: string[]) => void;
+
+const defaultSpawn: SpawnLike = (cmd, args) => {
+  // Lazy import so a build/test never pulls a process unintentionally.
+  // detached + unref + ignored stdio → Chrome keeps running after this returns.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const cp = require('child_process') as typeof import('child_process');
+  const child = cp.spawn(cmd, args, { detached: true, stdio: 'ignore' });
+  child.unref();
+};
+
+/** Resolve the Google Chrome executable. Edge is never considered. Returns the
+ *  first existing candidate (configured path wins) + the list that was checked. */
+export function resolveChromePath(configured?: string): { path: string | null; checked: string[] } {
+  const checked = [configured, ...CHROME_CANDIDATE_PATHS].filter((x): x is string => !!x);
+  for (const c of checked) {
+    try { if (fs.existsSync(c)) return { path: c, checked }; } catch { /* ignore */ }
+  }
+  return { path: null, checked };
+}
+
+function portFromCdp(cdpUrl: string): number {
+  const m = cdpUrl.match(/:(\d+)/);
+  return m ? Number(m[1]) : 9222;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export interface StartSessionDeps extends SessionDeps {
+  spawn?: SpawnLike;
+  /** Connect-poll attempts after launch (tests set small). */
+  maxPolls?: number;
+  pollMs?: number;
+}
+
+export interface StartSessionResult {
+  status: BrowserSessionStatus;
+  /** True when this call launched Chrome; false when an existing session was reused. */
+  launched: boolean;
+  reused: boolean;
+  /** The Chrome executable used, when launched. */
+  chromePath: string | null;
+  profileDir: string;
+  /** Set when Chrome could not be found / launched. */
+  error: string | null;
+  health: BrowserSessionHealth;
+}
+
+/**
+ * Start Browser Intelligence: reuse the persistent Chrome session if it is already
+ * answering on the CDP port; otherwise launch GOOGLE CHROME (never Edge) with the
+ * dedicated LandOS profile + remote debugging, then connect. One profile, reused
+ * across leads — never a new profile or login per property. Never stores a
+ * credential; the spawn is injectable so tests/builds never launch a browser.
+ */
+export async function startBrowserSession(deps: StartSessionDeps = {}): Promise<StartSessionResult> {
+  const cfg = deps.config ?? readSessionConfig();
+  const health0 = (): Promise<BrowserSessionHealth> => browserSessionHealth({ ...deps });
+  if (!cfg.enabled) {
+    return { status: 'disabled', launched: false, reused: false, chromePath: null, profileDir: cfg.profileDir, error: 'Live mode disabled — set BROWSER_INTEL_LIVE=1 and restart LandOS.', health: await health0() };
+  }
+  // Already reachable → reuse, do not launch a second Chrome.
+  const pre = await ensureBrowserSession(deps);
+  if (pre === 'live' || pre === 'auth_needed') {
+    return { status: pre, launched: false, reused: true, chromePath: null, profileDir: cfg.profileDir, error: null, health: await health0() };
+  }
+  // Launch Google Chrome with the LandOS profile + remote debugging.
+  const chrome = resolveChromePath(cfg.chromePath);
+  if (!chrome.path) {
+    return {
+      status: 'unreachable', launched: false, reused: false, chromePath: null, profileDir: cfg.profileDir,
+      error: `Google Chrome was not found. Checked: ${chrome.checked.join(' ; ')}. Install Chrome or set BROWSER_INTEL_CHROME_PATH. (Edge is never used.)`,
+      health: await health0(),
+    };
+  }
+  const port = portFromCdp(cfg.cdpUrl);
+  const spawnImpl = deps.spawn ?? defaultSpawn;
+  try {
+    spawnImpl(chrome.path, [`--remote-debugging-port=${port}`, `--user-data-dir=${cfg.profileDir}`, '--no-first-run', '--no-default-browser-check', LANDPORTAL_SESSION_URL]);
+  } catch (err) {
+    return { status: 'unreachable', launched: false, reused: false, chromePath: chrome.path, profileDir: cfg.profileDir, error: `Failed to launch Chrome: ${(err as Error)?.message ?? 'unknown'}.`, health: await health0() };
+  }
+  // Poll for the CDP endpoint to come up, then connect.
+  const maxPolls = deps.maxPolls ?? 20;
+  const pollMs = deps.pollMs ?? 500;
+  let status: BrowserSessionStatus = 'unreachable';
+  for (let i = 0; i < maxPolls; i++) {
+    status = await ensureBrowserSession(deps);
+    if (status === 'live' || status === 'auth_needed') break;
+    await sleep(pollMs);
+  }
+  return {
+    status, launched: true, reused: false, chromePath: chrome.path, profileDir: cfg.profileDir,
+    error: status === 'live' || status === 'auth_needed' ? null : 'Chrome launched but the debugging port is not answering yet — click Refresh Status in a moment.',
+    health: await health0(),
+  };
+}
+
+export interface OpenLandPortalResult {
+  connected: boolean;
+  authenticated: boolean;
+  status: BrowserSessionStatus;
+  url: string | null;
+  note: string;
+  health: BrowserSessionHealth;
+}
+
+/**
+ * Open LandPortal in the persistent session so the operator can log in once, and
+ * detect whether the session is authenticated. Read-only navigation only. After a
+ * manual login, calling this again (Refresh) detects authentication.
+ */
+export async function openLandPortalInSession(deps: SessionDeps = {}): Promise<OpenLandPortalResult> {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const status = await ensureBrowserSession(deps);
+  if (status !== 'live' && status !== 'auth_needed') {
+    return { connected: false, authenticated: false, status, url: null, note: 'No live Chrome session — click Start Browser Intelligence first.', health: await browserSessionHealth(deps) };
+  }
+  const page = await getWorkingPage();
+  await page.goto(LANDPORTAL_SESSION_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  const read = await readPage(page);
+  const authenticated = !read.loginLike;
+  state.auth = { authenticated, atIso: now() };
+  state.status = authenticated ? 'live' : 'auth_needed';
+  return {
+    connected: true, authenticated, status: state.status, url: page.url(),
+    note: authenticated ? 'LandPortal session is authenticated and ready.' : 'Log into LandPortal in the opened Chrome tab, then click Refresh Status.',
+    health: await browserSessionHealth(deps),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

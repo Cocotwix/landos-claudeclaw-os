@@ -48,6 +48,21 @@ vi.mock('./address-suggest.js', async (orig) => {
   return { ...actual, suggestAddresses: async (q: string) => ({ ...SUGGEST.result, query: q }) };
 });
 
+// Keep the persistent browser session inert in tests: NEVER launch Chrome or
+// connect, regardless of any local .env BROWSER_INTEL_LIVE flag. Live execution
+// is covered by browser-session.test.ts with injected fakes.
+vi.mock('./browser-session.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  const health = { healthy: false, status: 'disabled', cdpUrl: 'http://127.0.0.1:9222', connectedAtIso: null, lastCheckIso: null, screenshotDir: '/tmp/shots', landportalAuthenticated: null, landportalAuthCheckedIso: null, note: 'disabled in test' };
+  return {
+    ...actual,
+    ensureBrowserSession: async () => 'disabled',
+    browserSessionHealth: async () => health,
+    startBrowserSession: async () => ({ status: 'disabled', launched: false, reused: false, chromePath: null, profileDir: '/tmp/profile', error: 'Live mode disabled', health }),
+    openLandPortalInSession: async () => ({ connected: false, authenticated: false, status: 'disabled', url: null, note: 'No live Chrome session.', health }),
+  };
+});
+
 // Stub the free government DD fetchers so verified-parcel routes (which now have
 // coordinates) stay hermetic and fast — no FEMA/NWI/USGS network calls in tests.
 vi.mock('./providers/gov-dd-providers.js', async (orig) => {
@@ -841,6 +856,41 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     expect(row.lat).not.toBeNull();
     expect(row.lng).not.toBeNull();
   }, 30000);
+});
+
+describe('LandOS routes — Browser Intelligence operator control', () => {
+  const noSecrets = (body: unknown) => {
+    const s = JSON.stringify(body).toLowerCase();
+    expect(s).not.toContain('cookie');
+    expect(s).not.toContain('token');
+    expect(s).not.toContain('password');
+  };
+
+  it('GET /browser/session returns status (no cookies/tokens)', async () => {
+    const res = await get('/api/landos/browser/session');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.session.status).toBe('disabled');
+    expect(body.session).not.toHaveProperty('cookies');
+    noSecrets(body);
+  });
+
+  it('POST /browser/start never launches Chrome in tests and reports status', async () => {
+    const res = await post('/api/landos/browser/start', {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.start.launched).toBe(false); // disabled in test → no spawn
+    expect(typeof body.start.status).toBe('string');
+    noSecrets(body);
+  });
+
+  it('POST /browser/open-landportal reports no session when not connected', async () => {
+    const res = await post('/api/landos/browser/open-landportal', {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.landportal.connected).toBe(false);
+    noSecrets(body);
+  });
 });
 
 describe('LandOS routes — Acquisition Intelligence Platform (learning engine)', () => {

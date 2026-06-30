@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks';
 import { apiPost } from '@/lib/api';
 import { ModelControl } from '@/components/ModelControl';
 import { SmartIntake } from '@/components/SmartIntake';
+import { BrowserIntelControl } from '@/components/BrowserIntelControl';
 
 // Acquire — Universal Intake → Property Resolution → DD. A single click runs the
 // Property Resolution Engine server-side (every practical lane: Realie/LandPortal
@@ -71,6 +72,10 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
 
   return (
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+      {/* Browser Intelligence operator control — start/connect the persistent
+          Chrome session used for LandPortal/County browser work. */}
+      <BrowserIntelControl />
+
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-3">
         <div class="flex items-center justify-between gap-2 flex-wrap">
           <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Acquire — Universal Intake</div>

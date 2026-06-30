@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   ensureBrowserSession, browserSessionStatus, browserSessionHealth, disconnectBrowserSession,
   makeLiveBrowserDriver, readSessionConfig, _resetBrowserSession,
-  type PuppeteerLike, type BrowserLike, type PageLike, type BrowserSessionConfig,
+  startBrowserSession, openLandPortalInSession, resolveChromePath,
+  type PuppeteerLike, type BrowserLike, type PageLike, type BrowserSessionConfig, type SpawnLike,
 } from './browser-session.js';
 import { makeLandPortalBrowser, LANDPORTAL_SCREENSHOT_PURPOSE } from './landportal-browser.js';
 
-const LIVE: BrowserSessionConfig = { enabled: true, cdpUrl: 'http://127.0.0.1:9222', screenshotDir: require('os').tmpdir() + '/landos-test-shots' };
+const LIVE: BrowserSessionConfig = { enabled: true, cdpUrl: 'http://127.0.0.1:9222', screenshotDir: require('os').tmpdir() + '/landos-test-shots', profileDir: require('os').tmpdir() + '/landos-test-profile' };
 
 // Fake page: evaluate(fn, query) → SUBMIT(true); evaluate(fn) → canned extraction.
 function fakePage(canned: { url: string; fields: Record<string, string>; snippets?: string[]; loginLike?: boolean }) {
@@ -147,5 +148,91 @@ describe('live BrowserDriver (read-only)', () => {
     expect(keys).not.toContain('purchase');
     expect(keys).not.toContain('export');
     expect(keys).not.toContain('write');
+  });
+});
+
+describe('Start Browser Intelligence (launch + connect, Chrome only)', () => {
+  beforeEach(() => _resetBrowserSession());
+
+  it('resolves a configured Chrome path that exists (Edge never considered)', () => {
+    const r = resolveChromePath(process.execPath); // a real existing exe
+    expect(r.path).toBe(process.execPath);
+    // The default candidate list is Chrome-only — no Edge anywhere.
+    expect(r.checked.join(' ').toLowerCase()).not.toContain('edge');
+    expect(r.checked.join(' ')).toMatch(/Google\\Chrome\\Application\\chrome\.exe/);
+  });
+
+  it('disabled when live mode is off (no launch)', async () => {
+    const spawnCalls: string[] = [];
+    const spawn: SpawnLike = (cmd) => spawnCalls.push(cmd);
+    const r = await startBrowserSession({ config: { ...LIVE, enabled: false }, spawn });
+    expect(r.status).toBe('disabled');
+    expect(r.launched).toBe(false);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('REUSES a running session instead of launching a second Chrome', async () => {
+    const pup = fakePuppeteer(LP_FIELDS); // connects immediately
+    const spawnCalls: string[] = [];
+    const spawn: SpawnLike = (cmd) => spawnCalls.push(cmd);
+    const r = await startBrowserSession({ config: LIVE, puppeteer: pup, spawn });
+    expect(r.reused).toBe(true);
+    expect(r.launched).toBe(false);
+    expect(spawnCalls).toHaveLength(0); // never launched a second browser
+  });
+
+  it('launches Google Chrome with the LandOS profile + remote debugging, then connects', async () => {
+    const launched = { yes: false };
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    const spawn: SpawnLike = (cmd, args) => { launched.yes = true; calls.push({ cmd, args }); };
+    // Connect fails until "Chrome" is launched, then succeeds (simulates startup).
+    const base = fakePuppeteer(LP_FIELDS);
+    const pup: PuppeteerLike = { async connect(o) { if (!launched.yes) throw new Error('not up'); return base.connect(o); } };
+    const r = await startBrowserSession({
+      config: { ...LIVE, chromePath: process.execPath }, puppeteer: pup, spawn, maxPolls: 5, pollMs: 1,
+    });
+    expect(r.launched).toBe(true);
+    expect(r.reused).toBe(false);
+    expect(r.chromePath).toBe(process.execPath);
+    expect(['live', 'auth_needed']).toContain(r.status);
+    const args = calls[0].args.join(' ');
+    expect(args).toContain('--remote-debugging-port=9222');
+    expect(args).toContain('--user-data-dir=');
+    expect(calls[0].cmd.toLowerCase()).not.toContain('edge'); // Chrome, not Edge
+  });
+
+  it('reports the exact issue when Chrome is not found at any path', async () => {
+    const r = await startBrowserSession({
+      // a bogus configured path forces the resolver to the (machine-dependent)
+      // candidates; we still get a structured error path when none exist.
+      config: { ...LIVE, chromePath: 'Z:\\nope\\chrome.exe' },
+      puppeteer: { async connect() { throw new Error('down'); } },
+      spawn: () => { throw new Error('should not launch when not found'); },
+      maxPolls: 1, pollMs: 1,
+    }).catch((e) => ({ error: String(e) } as any));
+    // Either Chrome was found on this machine (launched) OR a clear not-found error.
+    if (r.chromePath == null) {
+      expect(r.error).toMatch(/Chrome was not found|Checked:/i);
+      expect(String(r.error).toLowerCase()).not.toContain('edge');
+    } else {
+      expect(r.chromePath).toMatch(/chrome\.exe/i);
+    }
+  });
+
+  it('open LandPortal: authenticated page → live; login page → auth_needed', async () => {
+    const pupAuthed = fakePuppeteer(LP_FIELDS); // has property fields, not loginLike
+    await ensureBrowserSession({ config: LIVE, puppeteer: pupAuthed });
+    const ok = await openLandPortalInSession({ config: LIVE, puppeteer: pupAuthed });
+    expect(ok.authenticated).toBe(true);
+    expect(ok.status).toBe('live');
+    expect(ok.health.landportalAuthenticated).toBe(true);
+
+    _resetBrowserSession();
+    const pupLogin = fakePuppeteer({ url: 'https://www.landportal.com/login', fields: {}, loginLike: true });
+    await ensureBrowserSession({ config: LIVE, puppeteer: pupLogin });
+    const needs = await openLandPortalInSession({ config: LIVE, puppeteer: pupLogin });
+    expect(needs.authenticated).toBe(false);
+    expect(needs.status).toBe('auth_needed');
+    expect(needs.note).toMatch(/log into landportal/i);
   });
 });
