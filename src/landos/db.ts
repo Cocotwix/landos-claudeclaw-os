@@ -1111,6 +1111,27 @@ function createLandosSchema(db: Database.Database): void {
       UNIQUE(state, county)
     );
     CREATE INDEX IF NOT EXISTS idx_county_source_map ON landos_county_source_map(state, county);
+
+    -- Browser-derived public-record facts, written INCREMENTALLY to a Deal Card as
+    -- each is confidently found (with full provenance + status). Never overwrites
+    -- verified Realie data. No secrets.
+    CREATE TABLE IF NOT EXISTS landos_browser_fact (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id  INTEGER NOT NULL,
+      fact_key      TEXT NOT NULL DEFAULT '',
+      label         TEXT NOT NULL DEFAULT '',
+      value         TEXT NOT NULL DEFAULT '',
+      source_name   TEXT NOT NULL DEFAULT '',
+      source_type   TEXT NOT NULL DEFAULT '',
+      source_url    TEXT NOT NULL DEFAULT '',
+      origin        TEXT NOT NULL DEFAULT '',
+      confidence    TEXT NOT NULL DEFAULT 'low',
+      status        TEXT NOT NULL DEFAULT 'needs_verification',
+      extraction_method TEXT NOT NULL DEFAULT '',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, fact_key, source_url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_fact_deal ON landos_browser_fact(deal_card_id, created_at);
   `);
 }
 

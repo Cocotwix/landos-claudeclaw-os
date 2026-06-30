@@ -104,6 +104,9 @@ import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion } from './browser-intelligence.js';
 import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession } from './browser-session.js';
 import { getCountySources } from './county-source-map.js';
+import { writeBrowserFact, listBrowserFacts, requestCancel, isCancelled, clearCancel, markStoppedByOperator } from './browser-fact-store.js';
+import { assessSellerAuthority } from './seller-authority.js';
+import type { BrowserFact, BrowserSearchMode } from './browser-intelligence.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
@@ -2098,23 +2101,66 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    const prop = (deal.propertyCards?.[0] ?? {}) as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null; owner?: string | null };
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const mode: BrowserSearchMode = str(body.mode) === 'deep_record' ? 'deep_record' : 'parcel_fact';
+    const prop = (deal.propertyCards?.[0] ?? {}) as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null; owner?: string | null; verification_status?: string | null };
     const searchKey = { address: str(prop.active_input_address ?? undefined), apn: str(prop.apn ?? undefined), county: str(prop.county ?? undefined), state: str(prop.state ?? undefined), owner: str(prop.owner ?? undefined) };
+    const sellerPerson = (deal.people ?? []).find((p) => { const r = (p as { role?: string }).role; return r === 'seller' || r === 'lead'; }) as { name?: string } | undefined;
+    const sellerName = str(sellerPerson?.name);
+    const ownerVerified = prop.verification_status === 'verified_property';
+
+    clearCancel(id);
     await ensureBrowserSession();
+    // Incremental write: each confidently-found fact lands on the Deal Card now.
+    // Never overwrite a verified Realie identity with weaker browser text.
+    const verifiedKeys = new Set(ownerVerified ? ['owner', 'apn'] : []);
+    const onFact = (f: BrowserFact) => {
+      if (verifiedKeys.has(f.key) && f.origin === 'search_fallback') return; // don't override verified with a weaker source
+      try { writeBrowserFact(id, f); } catch { /* persist best-effort */ }
+    };
+    const hooks = { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS, onFact, isCancelled: () => isCancelled(id) };
+
     const lp = makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') });
     const county = makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') });
-    // LandPortal first.
-    const landportal = await lp.runWorkflow({ searchKey }, { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS });
-    // County Records only after LandPortal.
-    const countyRecords = await county.runWorkflow({ searchKey }, { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS });
+    const landportal = await lp.runWorkflow({ searchKey, mode }, hooks);      // LandPortal first
+    const countyRecords = await county.runWorkflow({ searchKey, mode }, hooks); // then County Records
+
+    // Mark any still-requested items the operator stopped (not Failed/Unknown).
+    if (isCancelled(id)) markStoppedByOperator(id, ['owner', 'apn', 'acreage', 'situsAddress', 'landUse', 'assessedValue', 'taxAmount', 'deedRef']);
+    clearCancel(id);
+
+    // Inherited / representative seller: a name mismatch NEVER invalidates the
+    // parcel. Owner-of-record from official records may be Verified; seller
+    // relationship Seller-stated; authority Needs Verification (with tasks).
+    const ownerOfRecord = str(prop.owner ?? undefined) ?? (countyRecords.facts.find((f) => f.key === 'owner' && f.status === 'extracted')?.value) ?? (landportal.facts.find((f) => f.key === 'owner')?.value);
+    const sellerAuthority = assessSellerAuthority({ sellerName, ownerOfRecord, parcelVerified: ownerVerified, ownerFromOfficialSource: countyRecords.facts.some((f) => f.key === 'owner' && f.status === 'extracted') });
+
     const session = await browserSessionHealth();
     return c.json({
-      dealCardId: id,
+      dealCardId: id, mode,
       landportal: redactEvidence(landportal),
       countyRecords: redactEvidence(countyRecords),
+      sellerAuthority,
+      facts: listBrowserFacts(id),
       countySourceMap: searchKey.state && searchKey.county ? getCountySources(searchKey.state, searchKey.county) : null,
       session,
     });
+  });
+
+  // Operator cancellation: stop an in-flight browser-intel run. Everything already
+  // found stays saved; remaining requested items become "Stopped by Operator".
+  app.post('/api/landos/deal-cards/:id/browser-intel/cancel', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    requestCancel(id);
+    return c.json({ cancelled: true, dealCardId: id });
+  });
+
+  // The incrementally-written browser facts persisted for a Deal Card.
+  app.get('/api/landos/deal-cards/:id/browser-facts', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    return c.json({ facts: listBrowserFacts(id) });
   });
 
   // ── Browser Intelligence — Ask Mode (Phase 1) ─────────────────────────────

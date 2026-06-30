@@ -26,6 +26,7 @@ import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browse
 // the Node typechecker. They are never executed in this process.
 declare const document: any;
 declare const Event: any;
+declare const window: any;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Injectable Puppeteer seam (tests inject a fake; prod loads puppeteer-core)
@@ -475,6 +476,49 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         return out.slice(0, 400);
       };
       return page.evaluate<Array<{ text: string; href: string }>>(READ_LINKS);
+    },
+    async readForms() {
+      const page = await getWorkingPage();
+      const READ_FORMS = (): Array<{ formIndex: number; fields: any[]; submitLabel?: string; submitSelector?: string }> => {
+        const labelFor = (el: any): string => {
+          if (el.id) { const lab = document.querySelector('label[for="' + el.id + '"]'); if (lab && lab.textContent) return lab.textContent.replace(/\s+/g, ' ').trim(); }
+          const wrap = el.closest && el.closest('label'); if (wrap && wrap.textContent) return wrap.textContent.replace(/\s+/g, ' ').trim();
+          const prev = el.previousElementSibling; if (prev && prev.textContent && prev.textContent.length < 60) return prev.textContent.replace(/\s+/g, ' ').trim();
+          return '';
+        };
+        const sel = (el: any): string => el.id ? '#' + (window as any).CSS.escape(el.id) : el.name ? '[name="' + el.name + '"]' : '';
+        const forms = Array.from(document.querySelectorAll('form')).slice(0, 6);
+        const list: Array<{ formIndex: number; fields: any[]; submitLabel?: string; submitSelector?: string }> = [];
+        forms.forEach((form: any, formIndex: number) => {
+          const fields: any[] = [];
+          form.querySelectorAll('input, select, textarea').forEach((el: any) => {
+            const type = (el.getAttribute('type') || el.tagName || 'text').toLowerCase();
+            const s = sel(el);
+            if (!s) return;
+            fields.push({ selector: s, name: el.name || undefined, id: el.id || undefined, label: labelFor(el) || undefined, placeholder: el.placeholder || undefined, type });
+          });
+          const submit = form.querySelector('button[type=submit], input[type=submit], button, input[type=button]') as any;
+          list.push({ formIndex, fields, submitLabel: submit ? (submit.value || submit.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) : undefined, submitSelector: submit ? sel(submit) : undefined });
+        });
+        return list;
+      };
+      return page.evaluate<Array<{ formIndex: number; fields: any[]; submitLabel?: string; submitSelector?: string }>>(READ_FORMS);
+    },
+    async fillAndSubmit(fieldSelector, value, submitSelector, opts) {
+      const page = await getWorkingPage();
+      const FILL = (sel: string, val: string, sub: string | null): boolean => {
+        const el = document.querySelector(sel) as any; if (!el) return false;
+        el.focus(); el.value = val; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+        const subEl = sub ? (document.querySelector(sub) as any) : null;
+        if (subEl) { subEl.click(); return true; }
+        const form = el.closest('form'); if (form) { (form.requestSubmit ? form.requestSubmit() : form.submit()); return true; }
+        return false;
+      };
+      await page.evaluate<boolean>(FILL as unknown as () => boolean, fieldSelector, value, submitSelector ?? null);
+      // best-effort settle for navigation / async result render
+      await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 3500)));
+      const read = await readPage(page);
+      return { url: read.url, fields: read.fields, snippets: read.snippets };
     },
     async screenshot(purpose): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();

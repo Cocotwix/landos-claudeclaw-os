@@ -507,17 +507,23 @@ function originBadge(o: string): string {
   return o;
 }
 
+interface SellerAuthorityView { nameMatch: boolean; ownerOfRecord?: string; sellerName?: string; parcelIdentityStatus: string; ownerOfRecordStatus: string; sellerRelationshipStatus: string; authorityToSellStatus: string; relationshipGuess: string; verificationTasks: Array<{ task: string; reason: string }>; summary: string }
+
 function BrowserIntelligenceSection({ dealId }: { dealId?: number }) {
-  const [data, setData] = useState<{ landportal: BrowserEvView; countyRecords: BrowserEvView; countySourceMap?: any } | null>(null);
+  const [data, setData] = useState<{ landportal: BrowserEvView; countyRecords: BrowserEvView; sellerAuthority?: SellerAuthorityView; facts?: BrowserFactView[]; countySourceMap?: any } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function retrieve() {
+  async function retrieve(mode: 'parcel_fact' | 'deep_record') {
     if (!dealId) return;
     setBusy(true); setErr(null);
-    try { setData(await apiPost(`/api/landos/deal-cards/${dealId}/browser-intel`, {})); }
+    try { setData(await apiPost(`/api/landos/deal-cards/${dealId}/browser-intel`, { mode })); }
     catch (e: any) { setErr(e?.message || String(e)); }
     finally { setBusy(false); }
+  }
+  async function stop() {
+    if (!dealId) return;
+    try { await apiPost(`/api/landos/deal-cards/${dealId}/browser-intel/cancel`, {}); } catch { /* ignore */ }
   }
 
   const renderEv = (label: string, e?: BrowserEvView) => (
@@ -534,7 +540,7 @@ function BrowserIntelligenceSection({ dealId }: { dealId?: number }) {
           {e.facts.filter((f) => f.status === 'extracted').map((f, i) => (
             <li key={i} class="text-[11px] text-[var(--color-text-muted)]">
               <span class="text-[var(--color-status-done)]">✓</span> <span class="text-[var(--color-text)]">{f.label}:</span> {f.value || (f.sourceUrl ? <a href={f.sourceUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">link</a> : '—')}
-              <span class="text-[10px] text-[var(--color-text-faint)]"> [{f.sourceName} · {f.confidence} · {originBadge(f.origin)}]</span>
+              <span class="text-[10px] text-[var(--color-text-faint)]"> [{f.sourceName} · {f.confidence} · {originBadge(f.origin)}{(f as any).extractionMethod ? ` · ${(f as any).extractionMethod}` : ''}]</span>
             </li>
           ))}
         </ul>
@@ -543,17 +549,38 @@ function BrowserIntelligenceSection({ dealId }: { dealId?: number }) {
     </div>
   );
 
+  const sa = data?.sellerAuthority;
   return (
     <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
       <div class="flex items-center justify-between gap-2 flex-wrap">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Browser Intelligence — public records</div>
-        <button type="button" onClick={() => void retrieve()} disabled={busy || !dealId}
-          class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
-          {busy ? 'Retrieving…' : 'Retrieve (LandPortal → NETR county)'}
-        </button>
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <button type="button" onClick={() => void retrieve('parcel_fact')} disabled={busy || !dealId}
+            class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
+            {busy ? 'Retrieving…' : 'Parcel facts'}
+          </button>
+          <button type="button" onClick={() => void retrieve('deep_record')} disabled={busy || !dealId}
+            class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
+            Deep records
+          </button>
+          {busy && <button type="button" onClick={() => void stop()} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-status-failed)] text-[var(--color-status-failed)]">Stop</button>}
+        </div>
       </div>
-      {!data && !err && <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal first (after your manual login), then County Records routed through NETR Online with official-source search fallback. Click Retrieve. Read-only; no credentials, no paid actions.</div>}
+      {!data && !err && <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal first (after your manual login), then County Records routed through NETR Online → official county source → semantic parcel search → facts stream onto the card as found. Read-only; no credentials, no paid actions.</div>}
       {err && <div class="text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+
+      {sa && (sa.sellerName || sa.ownerOfRecord) && (
+        <div class="rounded-md border border-[var(--color-border)] p-2 text-[11px]">
+          <div class="font-medium text-[var(--color-text)]">Owner-of-record vs seller</div>
+          <div class="text-[var(--color-text-muted)]">Lead / seller: {sa.sellerName || '—'} · Owner of record: {sa.ownerOfRecord || '—'} {sa.relationshipGuess && sa.relationshipGuess !== 'individual' ? `(${sa.relationshipGuess})` : ''}</div>
+          <div class="mt-0.5"><span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-status-done)] text-[var(--color-status-done)]">Parcel: {sa.parcelIdentityStatus}</span> <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-accent)] text-[var(--color-accent)]">Authority to sell: {sa.authorityToSellStatus.replace('_', ' ')}</span></div>
+          {!sa.nameMatch && sa.verificationTasks.length > 0 && (
+            <ul class="mt-1 ml-3 list-disc space-y-0.5 text-[var(--color-text-muted)]">{sa.verificationTasks.slice(0, 8).map((t, i) => <li key={i}>{t.task}</li>)}</ul>
+          )}
+          <div class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{sa.summary}</div>
+        </div>
+      )}
+
       {data && (
         <div class="space-y-2">
           {renderEv('LandPortal', data.landportal)}

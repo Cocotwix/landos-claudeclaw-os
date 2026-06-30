@@ -124,15 +124,20 @@ describe('Deal Card panel — concise DD operator brief', () => {
     expect(SRC).toMatch(/Absorption \(secondary\)/);
   });
 
-  it('renders the Browser Intelligence retrieval block with provenance labels (no logs/internals)', () => {
+  it('renders the Browser Intelligence retrieval block with modes, provenance, and seller-authority', () => {
     expect(SRC).toMatch(/function BrowserIntelligenceSection/);
     expect(SRC).toMatch(/<BrowserIntelligenceSection/);
-    // LandPortal-first → NETR-routed county; operator-triggered retrieval.
-    expect(SRC).toMatch(/Retrieve \(LandPortal → NETR county\)/);
+    // Two search modes + operator stop.
+    expect(SRC).toMatch(/retrieve\('parcel_fact'\)/);
+    expect(SRC).toMatch(/retrieve\('deep_record'\)/);
+    expect(SRC).toMatch(/browser-intel\/cancel/);
     expect(SRC).toMatch(/deal-cards\/\$\{dealId\}\/browser-intel/);
-    // Provenance: each fact/source labels LandPortal vs NETR→county vs search fallback.
+    // Provenance: LandPortal vs NETR→county vs search fallback.
     expect(SRC).toMatch(/NETR→county/);
     expect(SRC).toMatch(/search fallback/);
+    // Inherited/representative seller: owner-of-record vs seller + authority status.
+    expect(SRC).toMatch(/Owner-of-record vs seller/);
+    expect(SRC).toMatch(/Authority to sell/);
   });
 });
 

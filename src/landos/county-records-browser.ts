@@ -16,10 +16,11 @@
 
 import {
   type BrowserService, type BrowserDriver, type BrowserEvidence, type BrowserWorkflowInput,
-  type BrowserSearchKey, type BrowserFact,
+  type BrowserSearchKey, type BrowserFact, type BrowserRunHooks,
   makeParkedDriver, emptyEvidence, routeBrowserQuestion, recordBlocked,
 } from './browser-intelligence.js';
 import type { PropertyPatch } from './normalized-property.js';
+import { planParcelSearch, pickParcelRecordLink, type FormInfo } from './browser-navigator.js';
 import { planNetrWorkflow, buildNetrStateUrl, type NetrStep } from './browser-retrieval.js';
 import { COUNTY_WORKFLOW_FOR, type DdField } from './missing-field-analysis.js';
 import {
@@ -83,9 +84,12 @@ async function runCountyWorkflow(
   driver: BrowserDriver,
   now: () => string,
   timeoutMs: number,
+  hooks: Partial<BrowserRunHooks> = {},
 ): Promise<BrowserEvidence> {
   const ev = emptyEvidence('county_records', 'workflow');
   const key = input.searchKey;
+  const mode = input.mode ?? 'parcel_fact';
+  const cancelled = () => (hooks.isCancelled ? hooks.isCancelled() : false);
   const state = (key.state ?? '').trim();
   const county = (key.county ?? '').replace(/\s+county$/i, '').trim();
   const targets = workflowsForNeeded(input.neededFields);
@@ -152,29 +156,48 @@ async function runCountyWorkflow(
 
   ev.sourcesUsed = sources.map((s) => ({ type: s.type, url: s.url, origin: s.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const, confidence: s.confidence }));
 
-  // ── 5. Visit official sources → semantic-extract facts (with provenance) ─
+  // ── 5. Visit official sources → AI navigation: locate the parcel search,
+  //       pick the strongest identifier, search, open the record, extract facts
+  //       (streamed to the Deal Card immediately). Mode picks the source set. ──
   const facts: BrowserFact[] = [];
-  const priority: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'recorder', 'gis', 'planning', 'building'];
-  const ordered = [...sources].sort((a, b) => priority.indexOf(a.type) - priority.indexOf(b.type));
+  const emit = (f: BrowserFact) => { facts.push(f); try { hooks.onFact?.(f); } catch { /* non-fatal */ } };
+  const factPriority: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'gis', 'recorder', 'planning', 'building'];
+  const deepPriority: CountySourceType[] = ['recorder', 'planning', 'building', 'assessor', 'appraiser', 'tax', 'gis'];
+  const ordered = [...sources].sort((a, b) => (mode === 'deep_record' ? deepPriority : factPriority).indexOf(a.type) - (mode === 'deep_record' ? deepPriority : factPriority).indexOf(b.type));
   let screenshotTaken = false;
+  let stopped = false;
   for (const src of ordered) {
+    if (cancelled()) { stopped = true; break; }
+    const ctx = { sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url, origin: src.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const };
     try {
-      const page = await driver.open(src.url, { timeoutMs });
-      const read = await driver.readFields({ timeoutMs });
-      const merged = { ...page.fields, ...read.fields };
-      const ext = extractRecordFacts(merged, {
-        sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url,
-        origin: src.origin === 'netr' ? 'netr_county' : 'search_fallback',
-      });
-      // Any official source with no labeled record fields (landing/search pages,
-      // map portals) is still surfaced as a clickable, provenance-labeled LINK so
-      // the operator gets every official county source on the Deal Card.
-      if (ext.length === 0) {
-        facts.push({ key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: src.origin === 'netr' ? 'netr_county' : 'search_fallback', status: 'extracted' });
+      let page = await driver.open(src.url, { timeoutMs });
+      let merged: Record<string, string> = { ...page.fields };
+      // ── Semantic parcel-search navigation (no per-county logic) ──────────
+      let method = 'official source link';
+      const forms: FormInfo[] = (await driver.readForms?.({ timeoutMs })) ?? [];
+      const plan = planParcelSearch(forms, key);
+      if (plan && driver.fillAndSubmit) {
+        // Try the strongest identifier, then alternate formats, until results appear.
+        for (const value of [plan.value, ...plan.valueAlternates].slice(0, 4)) {
+          if (cancelled()) { stopped = true; break; }
+          const after = await driver.fillAndSubmit(plan.fieldSelector, value, plan.submitSelector, { timeoutMs });
+          // If a results list appeared, open the most likely parcel record.
+          const links = (await driver.readLinks?.({ timeoutMs })) ?? [];
+          const record = pickParcelRecordLink(links, key);
+          if (record) { const rp = await driver.open(record.href, { timeoutMs }); merged = { ...merged, ...rp.fields, ...(await driver.readFields({ timeoutMs })).fields }; method = `parcel search (${plan.idKind}) → record`; break; }
+          if (Object.keys(after.fields).length > Object.keys(page.fields).length) { merged = { ...merged, ...after.fields }; method = `parcel search (${plan.idKind})`; }
+        }
       } else {
-        facts.push(...ext);
+        merged = { ...merged, ...(await driver.readFields({ timeoutMs })).fields };
       }
-      if (!screenshotTaken && ext.length > 0) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
+      if (stopped) break;
+      const ext = extractRecordFacts(merged, ctx).map((f) => ({ ...f, extractionMethod: method }));
+      if (ext.length === 0) {
+        emit({ key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: ctx.sourceName, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: ctx.origin, status: 'extracted', extractionMethod: 'official source link' });
+      } else {
+        for (const f of ext) emit(f); // stream each fact to the Deal Card immediately
+        if (!screenshotTaken) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
+      }
     } catch { /* try the next source; never stop on one */ }
   }
 
@@ -182,9 +205,10 @@ async function runCountyWorkflow(
   ev.patch = factsToPatch(facts);
   const extractedCount = facts.filter((f) => f.status === 'extracted').length;
   ev.status = extractedCount > 0 ? 'retrieved' : sources.length > 0 ? 'partial' : 'no_match';
+  const stoppedNote = stopped ? 'Stopped by operator — facts already found are saved. ' : '';
   ev.note = sources.length === 0
-    ? `No official county source could be routed for ${county}, ${state} (NETR + search). Records marked Needs Verification.`
-    : `County Records via ${usedSearchFallback ? 'NETR + official search fallback' : 'NETR Online'}: ${sources.length} official source(s) (${ev.sourcesUsed.map((s) => s.type).join(', ')}); ${extractedCount} public-record fact(s) extracted with provenance. LandPortal-first; no duplicate retrieval.`;
+    ? `${stoppedNote}No official county source could be routed for ${county}, ${state} (NETR + search). Records marked Needs Verification.`
+    : `${stoppedNote}County Records (${mode}) via ${usedSearchFallback ? 'NETR + official search fallback' : 'NETR Online'}: ${sources.length} official source(s) (${ev.sourcesUsed.map((s) => s.type).join(', ')}); ${extractedCount} public-record fact(s) with provenance. LandPortal-first; no duplicate retrieval.`;
   return ev;
 }
 
@@ -212,7 +236,7 @@ export function makeCountyRecordsBrowser(deps: CountyRecordsBrowserDeps = {}): B
     label: 'County Records Browser (public-record research)',
     modes: ['workflow', 'ask'],
     configured() { return driver.configured(); },
-    runWorkflow(input, opts) { return runCountyWorkflow(input, driver, now, opts.timeoutMs); },
+    runWorkflow(input, opts) { return runCountyWorkflow(input, driver, now, opts.timeoutMs, opts); },
     async ask(question, ctx, opts) {
       const route = routeBrowserQuestion(question, ctx);
       // Map the asked intent to its county workflow target.

@@ -194,6 +194,12 @@ export interface BrowserDriver {
   screenshot(purpose: string, opts: { timeoutMs: number }): Promise<BrowserScreenshot>;
   /** Read visible anchor links (text + href) — used for NETR routing. Read-only. */
   readLinks?(opts: { timeoutMs: number }): Promise<Array<{ text: string; href: string }>>;
+  /** Read the page's forms (inputs + labels/placeholders + submit) for semantic
+   *  parcel-search navigation. Read-only. */
+  readForms?(opts: { timeoutMs: number }): Promise<Array<{ formIndex: number; fields: Array<{ selector: string; name?: string; id?: string; label?: string; placeholder?: string; type?: string }>; submitLabel?: string; submitSelector?: string }>>;
+  /** Type a value into a selector + submit (read-only navigation of a public
+   *  search form). action='search'. Returns the resulting page read. */
+  fillAndSubmit?(fieldSelector: string, value: string, submitSelector: string | undefined, opts: { timeoutMs: number }): Promise<BrowserPageRead>;
   /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
   act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
 }
@@ -220,8 +226,18 @@ export interface BrowserFact {
   sourceUrl: string;
   confidence: 'high' | 'medium' | 'low';
   origin: FactOrigin;
-  status: 'extracted' | 'needs_verification' | 'not_found';
+  /** Found = 'extracted'. The four operator statuses are extracted (Found),
+   *  needs_verification, not_found, blocked. */
+  status: 'extracted' | 'needs_verification' | 'not_found' | 'blocked';
+  /** How the value was obtained (e.g. 'semantic field match', 'parcel search →
+   *  record', 'official source link'). Required provenance. */
+  extractionMethod?: string;
 }
+
+/** Two search modes. Parcel Fact Retrieval is fast (assessor/GIS/tax parcel facts);
+ *  Deep Record Retrieval explores recorded documents (deeds/plats/permits) and
+ *  legitimately takes longer. */
+export type BrowserSearchMode = 'parcel_fact' | 'deep_record';
 
 export type BrowserRunStatus = 'retrieved' | 'partial' | 'no_match' | 'parked' | 'blocked' | 'error';
 
@@ -276,6 +292,18 @@ export interface BrowserWorkflowInput {
   /** In workflow mode, only these fields are still needed (gap-fill). Empty =
    *  collect the full property. */
   neededFields?: string[];
+  /** Parcel Fact Retrieval (fast) vs Deep Record Retrieval (deeds/plats/permits). */
+  mode?: BrowserSearchMode;
+}
+
+/** Per-run hooks: stream each found fact to the Deal Card immediately, and let
+ *  the operator cancel mid-run (preserving everything already found). */
+export interface BrowserRunHooks {
+  timeoutMs: number;
+  /** Called as soon as a fact is confidently found (incremental Deal Card write). */
+  onFact?: (fact: BrowserFact) => void;
+  /** Polled between steps; true → stop now (operator cancelled). */
+  isCancelled?: () => boolean;
 }
 
 export interface BrowserService {
@@ -284,8 +312,9 @@ export interface BrowserService {
   readonly modes: readonly BrowserMode[];
   /** True only when its driver has a live session + stack. */
   configured(): boolean;
-  /** Workflow mode — automatic retrieval for another workflow. */
-  runWorkflow(input: BrowserWorkflowInput, opts: { timeoutMs: number }): Promise<BrowserEvidence>;
+  /** Workflow mode — automatic retrieval for another workflow. opts may carry an
+   *  onFact stream + isCancelled hook for incremental Deal Card updates. */
+  runWorkflow(input: BrowserWorkflowInput, opts: { timeoutMs: number } & Partial<BrowserRunHooks>): Promise<BrowserEvidence>;
   /** Ask mode — answer a free-form question (routes to the right workflow). */
   ask(question: string, ctx: BrowserSearchKey, opts: { timeoutMs: number }): Promise<BrowserEvidence>;
 }
