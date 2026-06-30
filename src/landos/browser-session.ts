@@ -17,6 +17,7 @@
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
+import { spawn as nodeSpawn } from 'child_process';
 import { readEnvFile } from '../env.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 
@@ -234,11 +235,9 @@ export function _resetBrowserSession(): void {
 export type SpawnLike = (cmd: string, args: string[]) => void;
 
 const defaultSpawn: SpawnLike = (cmd, args) => {
-  // Lazy import so a build/test never pulls a process unintentionally.
+  // ESM import (this module is ESM; `require` is undefined at runtime).
   // detached + unref + ignored stdio → Chrome keeps running after this returns.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const cp = require('child_process') as typeof import('child_process');
-  const child = cp.spawn(cmd, args, { detached: true, stdio: 'ignore' });
+  const child = nodeSpawn(cmd, args, { detached: true, stdio: 'ignore' });
   child.unref();
 };
 
