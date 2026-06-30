@@ -126,6 +126,36 @@ describe('property resolution engine', () => {
     expect(r.lanesAttempted[0].lane).toBe('landos_cache');
   });
 
+  it('Browser Intelligence: LandPortal-first feeds evidence, county fills only gaps (no duplicate)', async () => {
+    const { makeLandPortalBrowser } = await import('./landportal-browser.js');
+    const { makeCountyRecordsBrowser } = await import('./county-records-browser.js');
+    // Fake LandPortal driver returns a full property; county driver is parked.
+    const lpDriver = {
+      id: 'lp', configured: () => true,
+      open: async () => ({ url: 'https://www.landportal.com', fields: {}, snippets: [] }),
+      search: async () => ({ url: 'https://www.landportal.com/property/x', fields: { 'Property Address': '388 Gilstrap Rd', APN: '042 123', Owner: 'TEST', County: 'White', State: 'GA', Acreage: '5 ac' }, snippets: [] }),
+      readFields: async () => ({ url: 'https://www.landportal.com/property/x', fields: { 'Property Address': '388 Gilstrap Rd', APN: '042 123', Owner: 'TEST', County: 'White', State: 'GA', Acreage: '5 ac' }, snippets: [] }),
+      screenshot: async (purpose: string) => ({ path: '/tmp/x.png', capturedAtIso: NOW(), purpose }),
+    };
+    const deps: ResolutionDeps = {
+      verify: async () => needsCounty(),
+      suggest: async () => gilstrapSuggest,
+      deriveCounty: async () => gilstrapCensus,
+      landPortalBrowser: makeLandPortalBrowser({ driver: lpDriver as any }),
+      countyRecordsBrowser: makeCountyRecordsBrowser(), // parked
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: '388 Gilstrap Rd, Cleveland, GA 30528' }, deps);
+    expect(r.browserEvidence.length).toBe(2); // LandPortal + County
+    expect(r.browserEvidence[0].service).toBe('landportal');
+    expect(r.browserEvidence[0].screenshots).toHaveLength(1); // one per property
+    expect(r.missingFieldAnalysis).toBeTruthy();
+    // APN came from LandPortal → not in the county gap list (no duplicate retrieval).
+    expect(r.missingFieldAnalysis!.missing).not.toContain('apn');
+    expect(r.lanesAttempted.some((l) => l.lane === 'landportal_readonly' && l.contributed)).toBe(true);
+    expect(r.lanesAttempted.some((l) => l.lane === 'county_records' && l.status === 'parked')).toBe(true);
+  });
+
   it('records parked browser lanes without contributing', async () => {
     const { defaultBrowserLanes } = await import('./browser-retrieval.js');
     const deps: ResolutionDeps = {

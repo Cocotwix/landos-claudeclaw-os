@@ -101,7 +101,7 @@ describe('Deal Card panel — concise DD operator brief', () => {
     expect(SRC).toMatch(/Active source/);
     expect(SRC).toMatch(/Active retrieval/);
     expect(SRC).toMatch(/Effect on land demand/);
-    expect(SRC).toMatch(/development \/ rezoning \/ infrastructure signals/);
+    expect(SRC).toMatch(/Local developments · rezonings/);
   });
 
   it('fixes the active-listing contradiction (incomplete vs honest zero)', () => {
@@ -112,6 +112,22 @@ describe('Deal Card panel — concise DD operator brief', () => {
 
   it('caps visual sizing so satellite/Street View do not take over the screen', () => {
     expect(SRC).toMatch(/h-40 sm:h-44 object-cover/);
+  });
+
+  it('Market Pulse prioritizes $/ac by acreage band + county $/ac + active asking over absorption', () => {
+    expect(SRC).toMatch(/Land \$\/ac by acreage band/);
+    expect(SRC).toMatch(/function ppaByAcreageBand/);
+    expect(SRC).toMatch(/County median \$\/ac/);
+    expect(SRC).toMatch(/Active asking \(land\)/);
+    expect(SRC).toMatch(/Local developments · rezonings/);
+    // Absorption is demoted to a secondary line, not a primary metric grid.
+    expect(SRC).toMatch(/Absorption \(secondary\)/);
+  });
+
+  it('renders a Browser Intelligence status block (no logs/internals)', () => {
+    expect(SRC).toMatch(/function BrowserIntelligenceSection/);
+    expect(SRC).toMatch(/<BrowserIntelligenceSection/);
+    expect(SRC).toMatch(/Screenshot available/);
   });
 });
 

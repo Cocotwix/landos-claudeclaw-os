@@ -34,6 +34,7 @@ export const RETRIEVAL_LANES = [
   'netr',                  // NETR Online navigation directory
   'county_gis',            // county GIS / assessor / parcel map / recorder
   'landportal_readonly',   // LandPortal browser lane (STRICT read-only)
+  'county_records',        // County Records browser lane (public-record gap-fill)
   'land_id_readonly',      // Land ID browser lane (STRICT read-only)
   'landos_cache',          // previously resolved property in the LandOS cache
 ] as const;

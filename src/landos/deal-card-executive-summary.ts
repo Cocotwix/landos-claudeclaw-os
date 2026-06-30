@@ -42,8 +42,10 @@ export interface MarketPulseSynthesis {
   whatThisMeans: string;
   /** The headline answer: is this land market getting stronger or weaker, and why? */
   verdict: string;
-  /** Local growth drivers synthesized from Browser Intelligence (operator summary). */
-  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number }> };
+  /** Local growth drivers synthesized from Browser Intelligence (operator summary).
+   *  Each driver carries up to two named example signals (real developments /
+   *  rezonings / infrastructure) so Market Pulse names them, not just counts. */
+  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number; examples: string[] }> };
 }
 
 export interface PreliminaryAcquisitionRange {
@@ -180,7 +182,7 @@ function buildMarketPulse(report: DealCardReportView, growth?: GrowthDriverSumma
     available: !!growth && growth.status === 'collected' && growth.drivers.length > 0,
     summary: growth?.summary ?? 'Local growth drivers not summarized this run.',
     whatThisMeans: growth?.whatThisMeans ?? 'Rely on the verified comp band; confirm local development with the seller / county.',
-    drivers: (growth?.drivers ?? []).map((d) => ({ category: d.category, count: d.count })),
+    drivers: (growth?.drivers ?? []).map((d) => ({ category: d.category, count: d.count, examples: (d.examples ?? []).slice(0, 2) })),
   };
 
   // ── Verdict: stronger or weaker, and WHY (combine direction + absorption +

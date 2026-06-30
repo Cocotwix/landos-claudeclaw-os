@@ -1,0 +1,285 @@
+// LandOS — Browser Intelligence (shared capability layer).
+//
+// Reusable browser CAPABILITIES that ANY future department can call — not DD-only
+// agents. Each browser service exposes two modes:
+//   • workflow mode — runs automatically when another workflow needs retrieval.
+//   • ask mode      — answers free-form operator questions; the service
+//                     intelligently determines the workflow required (NOT a fixed
+//                     list of hardcoded commands).
+//
+// This module is the shared contract + the deterministic ask-mode intent router +
+// the read-only safety surface. The actual page driving is behind an injectable
+// BrowserDriver, so the logic is pure + unit-testable and the live driver
+// (Puppeteer + an EXISTING authenticated session) plugs in without a rewrite.
+// Default driver is an honest parked stub — it never fabricates a page read and
+// never stores a credential.
+//
+// Safety is inherited from browser-retrieval.ts: read-only allow-list +
+// forbidden-action list (billing / credit / purchase / paid export / writes), and
+// assertReadOnly() gates every action before it runs.
+
+import {
+  assertReadOnly, isForbiddenAction, READONLY_FORBIDDEN_ACTIONS,
+  type ReadOnlyAction,
+} from './browser-retrieval.js';
+import type { PropertyPatch } from './normalized-property.js';
+
+export type BrowserMode = 'workflow' | 'ask';
+export const BROWSER_MODES: readonly BrowserMode[] = ['workflow', 'ask'];
+
+// ─────────────────────────────────────────────────────────────────────────
+// Intent taxonomy (ask mode) — broad, not a few hardcoded commands
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Every question intent the browser layer understands. New intents append here;
+ *  the router maps free text → one of these + the owning service + workflow. */
+export const BROWSER_INTENTS = [
+  // identity / property summary
+  'property_summary', 'search_address', 'search_apn', 'search_owner',
+  'owner', 'mailing_address', 'coordinates', 'acreage', 'land_use', 'parcel_id',
+  // environmental / physical
+  'fema_flood', 'wetlands', 'road_frontage', 'buildable_area', 'slope', 'utilities',
+  // records / county
+  'recorded_deed', 'deed_book', 'ownership_history', 'transfers',
+  'tax_history', 'tax_status', 'tax_delinquency', 'tax_values',
+  'zoning', 'zoning_ordinance', 'gis_map', 'plat', 'subdivision_restrictions',
+  'permits', 'planning_cases',
+  // fallback
+  'general',
+] as const;
+export type BrowserIntent = (typeof BROWSER_INTENTS)[number];
+
+export type BrowserServiceId = 'landportal' | 'county_records';
+
+/** Which service owns each intent. LandPortal is the first/primary property
+ *  intelligence source; county records own recorded-document + official queries. */
+const INTENT_SERVICE: Record<BrowserIntent, BrowserServiceId> = {
+  property_summary: 'landportal', search_address: 'landportal', search_apn: 'landportal',
+  search_owner: 'landportal', owner: 'landportal', coordinates: 'landportal',
+  acreage: 'landportal', land_use: 'landportal', parcel_id: 'landportal',
+  fema_flood: 'landportal', wetlands: 'landportal', buildable_area: 'landportal', slope: 'landportal',
+  utilities: 'landportal',
+  // records live at the county
+  mailing_address: 'county_records', road_frontage: 'county_records',
+  recorded_deed: 'county_records', deed_book: 'county_records', ownership_history: 'county_records',
+  transfers: 'county_records', tax_history: 'county_records', tax_status: 'county_records',
+  tax_delinquency: 'county_records', tax_values: 'county_records', zoning: 'county_records',
+  zoning_ordinance: 'county_records', gis_map: 'county_records', plat: 'county_records',
+  subdivision_restrictions: 'county_records', permits: 'county_records', planning_cases: 'county_records',
+  general: 'landportal',
+};
+
+/** Pattern → intent. Order matters (more specific first). A real classifier over
+ *  verbs + nouns, deliberately broad so the operator can ask freely. */
+const INTENT_PATTERNS: Array<{ rx: RegExp; intent: BrowserIntent }> = [
+  { rx: /\b(last|latest|recent|recorded)\s+deed\b|\bdeed\b(?!\s*book)/i, intent: 'recorded_deed' },
+  { rx: /\bdeed\s*book\b|\bbook\s*(?:&|and|\/)?\s*page\b/i, intent: 'deed_book' },
+  { rx: /\b(every|all)\s+transfer|transfer\s+history|chain of title\b/i, intent: 'transfers' },
+  { rx: /\bownership\s+(history|verif)|history of ownership\b/i, intent: 'ownership_history' },
+  { rx: /\bmailing\s+address\b/i, intent: 'mailing_address' },
+  { rx: /\btax\s+(delinquen|owed|unpaid|behind)\b/i, intent: 'tax_delinquency' },
+  { rx: /\btax\s+status\b/i, intent: 'tax_status' },
+  { rx: /\btax\s+(history|record)\b/i, intent: 'tax_history' },
+  { rx: /\btax\s+(value|assess|amount)\b/i, intent: 'tax_values' },
+  { rx: /\bsubdivision\s+(restriction|covenant)|\bcovenants?\b|\bdeed restriction/i, intent: 'subdivision_restrictions' },
+  { rx: /\bzoning\s+ordinance\b/i, intent: 'zoning_ordinance' },
+  { rx: /\bzoning\b|\bzoned\b/i, intent: 'zoning' },
+  { rx: /\bgis\b|parcel\s+map|map\s+the\s+parcel|open the (gis|map)/i, intent: 'gis_map' },
+  { rx: /\b(latest\s+)?plat\b|plat\s+map\b/i, intent: 'plat' },
+  { rx: /\bpermit/i, intent: 'permits' },
+  { rx: /\bplanning\s+(case|application|board)\b/i, intent: 'planning_cases' },
+  { rx: /\bfema\b|\bflood\s*(map|zone|plain)?\b/i, intent: 'fema_flood' },
+  { rx: /\bwetland/i, intent: 'wetlands' },
+  { rx: /\broad\s+frontage|frontage\b/i, intent: 'road_frontage' },
+  { rx: /\bbuildable\b/i, intent: 'buildable_area' },
+  { rx: /\bslope|topograph/i, intent: 'slope' },
+  { rx: /\butilit(y|ies)|water|sewer|septic|power|electric\b/i, intent: 'utilities' },
+  { rx: /\bland\s*use\b/i, intent: 'land_use' },
+  { rx: /\bacre|acreage|lot\s*size\b/i, intent: 'acreage' },
+  { rx: /\bcoordinate|lat\/?long|latitude|gps\b/i, intent: 'coordinates' },
+  { rx: /\bwho\s+owns\b|owner(ship)?\b/i, intent: 'owner' },
+  { rx: /\bsearch\s+(this\s+)?apn\b|\bapn\b/i, intent: 'search_apn' },
+  { rx: /\bsearch\s+(this\s+)?owner\b/i, intent: 'search_owner' },
+  { rx: /\bsearch\s+(this\s+)?address\b/i, intent: 'search_address' },
+];
+
+/** The search key the question targets, extracted from the free text or context. */
+export interface BrowserSearchKey {
+  address?: string;
+  apn?: string;
+  owner?: string;
+  county?: string;
+  state?: string;
+}
+
+export interface BrowserQuestionRoute {
+  intent: BrowserIntent;
+  service: BrowserServiceId;
+  /** workflow vs ask provenance; ask routes still produce a workflow plan. */
+  mode: BrowserMode;
+  searchKey: BrowserSearchKey;
+  /** Deterministic reason for the routing. */
+  reason: string;
+}
+
+/** Classify a free-form operator question into an intent + owning service +
+ *  search key. Intelligent, not a fixed command list: unknown phrasing falls back
+ *  to a full property workflow rather than refusing. Pure + deterministic. */
+export function routeBrowserQuestion(text: string, ctx: BrowserSearchKey = {}): BrowserQuestionRoute {
+  const t = (text ?? '').trim();
+  let intent: BrowserIntent = 'general';
+  for (const p of INTENT_PATTERNS) {
+    if (p.rx.test(t)) { intent = p.intent; break; }
+  }
+  const searchKey = { ...ctx, ...extractSearchKey(t, ctx) };
+  const service = INTENT_SERVICE[intent];
+  return {
+    intent,
+    service,
+    mode: 'ask',
+    searchKey,
+    reason: intent === 'general'
+      ? `No specific record intent recognized — running a full ${service} property workflow.`
+      : `Question maps to "${intent}" → ${service === 'landportal' ? 'LandPortal' : 'County Records'} browser.`,
+  };
+}
+
+/** Extract an APN / owner / address from question text (falls back to context). */
+export function extractSearchKey(text: string, ctx: BrowserSearchKey = {}): BrowserSearchKey {
+  const out: BrowserSearchKey = {};
+  const apn = text.match(/\bapn[:\s#]*([0-9][0-9A-Za-z.\-\/ ]{3,})/i)?.[1]?.trim()
+    ?? text.match(/\b(\d{2,6}-\d{2,6}-\d{2,6}(?:-\d+)?)\b/)?.[1];
+  if (apn) out.apn = apn.replace(/\s+/g, ' ').trim();
+  const owner = text.match(/\bowner[:\s]+([A-Za-z][A-Za-z.'\- ]{2,})/i)?.[1]?.trim();
+  if (owner) out.owner = owner;
+  const addr = text.match(/\b(\d+[A-Za-z]?\s+[A-Za-z0-9][\w ]*?\s+(?:road|rd|street|st|ave|avenue|dr|drive|ln|lane|ct|court|way|trl|trail|hwy|highway|pl|place|cir|circle|blvd|pike|loop))\b/i)?.[1];
+  if (addr) out.address = addr.trim();
+  return { ...ctx, ...out };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Driver contract (the injectable, pluggable page driver)
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface BrowserScreenshot {
+  /** Local file path to the saved screenshot, when captured. Never a remote URL. */
+  path: string;
+  capturedAtIso: string;
+  /** What the shot is meant to prove (e.g. 'landportal_property_loaded'). */
+  purpose: string;
+}
+
+/** A page the driver has loaded. Field reads are key→value of visible text. */
+export interface BrowserPageRead {
+  url: string;
+  /** Visible property/record fields the driver could read. Never invented. */
+  fields: Record<string, string>;
+  /** Visible evidence snippets (table rows, panel text). Never secrets. */
+  snippets: string[];
+}
+
+/** The pluggable page driver. A live implementation wraps Puppeteer + an EXISTING
+ *  authenticated session; the default is an honest parked stub. Read-only: every
+ *  method maps to an allow-listed action and never writes/purchases. */
+export interface BrowserDriver {
+  readonly id: string;
+  /** True only when a live session + stack are available and enabled. */
+  configured(): boolean;
+  open(url: string, opts: { timeoutMs: number }): Promise<BrowserPageRead>;
+  /** Type into the site's search and submit. action='search'. */
+  search(query: string, opts: { timeoutMs: number }): Promise<BrowserPageRead>;
+  /** Read all visible fields on the current page. action='read'. */
+  readFields(opts: { timeoutMs: number }): Promise<BrowserPageRead>;
+  /** Capture ONE screenshot of the current page. action='capture_screenshots'. */
+  screenshot(purpose: string, opts: { timeoutMs: number }): Promise<BrowserScreenshot>;
+  /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
+  act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Evidence + blocked-action records
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface BlockedAction {
+  action: string;
+  reason: string;
+}
+
+export type BrowserRunStatus = 'retrieved' | 'partial' | 'no_match' | 'parked' | 'blocked' | 'error';
+
+/** The normalized output of a browser service run. The structured `patch` +
+ *  `fields` are the REAL output; the screenshot is only visual proof. */
+export interface BrowserEvidence {
+  service: BrowserServiceId;
+  mode: BrowserMode;
+  status: BrowserRunStatus;
+  /** Normalized fields contributed to the property object. */
+  patch: PropertyPatch;
+  /** All visible fields read (superset of patch — raw evidence). */
+  fields: Record<string, string>;
+  /** ONE screenshot per successful property (LandPortal); county may add useful shots. */
+  screenshots: BrowserScreenshot[];
+  /** Actions that were NOT performed because they could spend money / write. */
+  blocked: BlockedAction[];
+  /** Public source URLs read, when safe. Never credentialed URLs. */
+  sourceUrls: string[];
+  /** Short, operator-facing note. Never a raw log dump. */
+  note: string;
+}
+
+/** Record a forbidden action as blocked (never performed). The single place a
+ *  "could this spend money?" decision is logged. */
+export function recordBlocked(ev: BrowserEvidence, action: string, reason?: string): void {
+  ev.blocked.push({ action, reason: reason ?? (isForbiddenAction(action) ? 'Forbidden read-only-mode action (billing/credit/purchase/write).' : 'Action not allowed.') });
+}
+
+/** Guard wrapper every driver action passes through. Throws ReadOnlyViolation on
+ *  a forbidden action so a service can record it as blocked rather than run it. */
+export function guardedAction(action: string): ReadOnlyAction {
+  assertReadOnly(action);
+  return action;
+}
+
+export function emptyEvidence(service: BrowserServiceId, mode: BrowserMode): BrowserEvidence {
+  return { service, mode, status: 'parked', patch: {}, fields: {}, screenshots: [], blocked: [], sourceUrls: [], note: '' };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Service contract + parked default driver
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface BrowserWorkflowInput {
+  searchKey: BrowserSearchKey;
+  /** In workflow mode, only these fields are still needed (gap-fill). Empty =
+   *  collect the full property. */
+  neededFields?: string[];
+}
+
+export interface BrowserService {
+  readonly id: BrowserServiceId;
+  readonly label: string;
+  readonly modes: readonly BrowserMode[];
+  /** True only when its driver has a live session + stack. */
+  configured(): boolean;
+  /** Workflow mode — automatic retrieval for another workflow. */
+  runWorkflow(input: BrowserWorkflowInput, opts: { timeoutMs: number }): Promise<BrowserEvidence>;
+  /** Ask mode — answer a free-form question (routes to the right workflow). */
+  ask(question: string, ctx: BrowserSearchKey, opts: { timeoutMs: number }): Promise<BrowserEvidence>;
+}
+
+/** Honest parked driver — the default. It NEVER opens a page, fabricates a read,
+ *  or stores a credential. configured() is false until a live session is wired. */
+export function makeParkedDriver(id: string): BrowserDriver {
+  const parked = (): never => { throw new Error(`${id} driver parked: no authenticated browser session / visual stack enabled.`); };
+  return {
+    id,
+    configured() { return false; },
+    async open() { return parked(); },
+    async search() { return parked(); },
+    async readFields() { return parked(); },
+    async screenshot() { return parked(); },
+  };
+}
+
+/** Re-export the read-only forbidden set so services can declare it. */
+export { READONLY_FORBIDDEN_ACTIONS };

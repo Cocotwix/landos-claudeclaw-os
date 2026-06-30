@@ -232,8 +232,20 @@ interface ReportView {
   ddCompleteness?: { total: number; verified: number; needsVerification: number; percentComplete: number; label: string };
   visualContext?: VisualContextView;
   marketComps?: MarketCompsView;
+  /** Browser Intelligence evidence (LandPortal-first, then County gap-fill).
+   *  Surfaced as a clean status block — never raw logs or workflow internals. */
+  browserEvidence?: BrowserEvidenceView[];
   generatedAt: number | null;
   updatedBy: string;
+}
+
+interface BrowserEvidenceView {
+  service: 'landportal' | 'county_records';
+  status: 'retrieved' | 'partial' | 'no_match' | 'parked' | 'blocked' | 'error';
+  screenshotAvailable: boolean;
+  /** Short, operator-facing items (e.g. "Property retrieved", "Last deed retrieved",
+   *  "GIS verified", "Tax status retrieved"). Never a log dump. */
+  items: string[];
 }
 
 interface MarketCompRowView { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string }
@@ -475,6 +487,38 @@ function ExecutiveSummarySection({ es }: { es?: ExecSummaryView | null }) {
         {es.topRisks.slice(0, 4).map((r, i) => <div key={i} class="text-[11px] text-[var(--color-text-muted)]">• {r}</div>)}
       </div>
       {es.nextSteps.length > 0 && <div class="text-[11px]"><span class="text-[var(--color-accent)]">Next:</span> {es.nextSteps.join(' → ')}</div>}
+    </div>
+  );
+}
+
+// Browser Intelligence — a clean status block (Phase 6). Browser evidence appears
+// naturally: LandPortal (property retrieved + screenshot), then County Records
+// (deed / GIS / tax gap-fill). Never dumps logs or exposes workflow internals.
+// Parked (read-only, no session) reads honestly until a session is enabled.
+function BrowserIntelligenceSection({ report }: { report: ReportView }) {
+  const ev = report.browserEvidence ?? [
+    { service: 'landportal', status: 'parked', screenshotAvailable: false, items: [] },
+    { service: 'county_records', status: 'parked', screenshotAvailable: false, items: [] },
+  ] as BrowserEvidenceView[];
+  const label = (s: BrowserEvidenceView['service']) => (s === 'landportal' ? 'LandPortal' : 'County Records');
+  const mark = (st: BrowserEvidenceView['status']) => (st === 'retrieved' || st === 'partial' ? '✓' : st === 'blocked' || st === 'error' ? '✕' : '○');
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Browser Intelligence</div>
+      <div class="space-y-1">
+        {ev.map((e) => (
+          <div key={e.service} class="text-[12px]">
+            <span class="text-[var(--color-text)] font-medium">{label(e.service)}</span>
+            <span class="text-[11px] text-[var(--color-text-faint)]"> · {e.status === 'parked' ? 'read-only, session not enabled (parked)' : e.status}</span>
+            {(e.status === 'retrieved' || e.status === 'partial') && (
+              <ul class="mt-0.5 ml-3">
+                {e.screenshotAvailable && <li class="text-[11px] text-[var(--color-status-done)]">✓ Screenshot available</li>}
+                {e.items.map((it, i) => <li key={i} class="text-[11px] text-[var(--color-status-done)]">{mark(e.status)} {it}</li>)}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -969,8 +1013,11 @@ function AtAGlanceStrip({ report, propertyType }: { report: ReportView; property
   );
 }
 
-// Market Pulse — the completed market read: counts, band, liquidity, absorption,
-// direction, and the headline verdict (stronger or weaker, and why) + growth.
+// Market Pulse — the completed market read. Phase 7 priorities: land $/ac by
+// acreage band, overall county $/ac, active land asking prices, and REAL named
+// local developments / rezonings / infrastructure — then what it means for buying
+// land here. Absorption metrics (DOM / months-of-inventory / sell-through) are
+// deprioritized to a secondary line.
 interface MarketPulseView {
   soldCount: number; activeCount: number;
   pricePerAcre: { p25: number | null; median: number | null; p75: number | null };
@@ -978,7 +1025,27 @@ interface MarketPulseView {
   direction: string; directionPct: number | null;
   supply: string; demand: string; liquidity: string; absorption: string;
   confidence: string; interpretation: string; verdict: string;
-  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number }> };
+  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number; examples: string[] }> };
+}
+
+function median(xs: number[]): number | null {
+  const s = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+  if (!s.length) return null;
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+}
+
+// Land $/ac binned by acreage band (computed from the verified sold comps — no
+// new provider). Empty bands are dropped.
+function ppaByAcreageBand(rows: MarketCompRowView[]): Array<{ band: string; ppa: number; count: number }> {
+  const bands: Array<{ band: string; lo: number; hi: number }> = [
+    { band: '<2 ac', lo: 0, hi: 2 }, { band: '2–5 ac', lo: 2, hi: 5 }, { band: '5–10 ac', lo: 5, hi: 10 },
+    { band: '10–20 ac', lo: 10, hi: 20 }, { band: '20–50 ac', lo: 20, hi: 50 }, { band: '50+ ac', lo: 50, hi: Infinity },
+  ];
+  return bands.map((b) => {
+    const ppas = rows.filter((r) => r.acres != null && r.pricePerAcre != null && r.acres >= b.lo && r.acres < b.hi).map((r) => r.pricePerAcre as number);
+    return { band: b.band, ppa: median(ppas) ?? 0, count: ppas.length };
+  }).filter((x) => x.count > 0);
 }
 function MarketPulseSection({ mp, mc }: { mp?: MarketPulseView | null; mc?: MarketCompsView | null }) {
   if (!mp) return null;
@@ -996,6 +1063,14 @@ function MarketPulseSection({ mp, mc }: { mp?: MarketPulseView | null; mc?: Mark
   const activeState = mc ? activeRetrievalState(mc) : 'not_run';
   const activeStatusTxt = activeState === 'ran' ? `ran (${mp.activeCount} found)` : activeState === 'not_run' ? 'not run yet' : 'incomplete (provider error/timeout)';
 
+  // Land $/ac by acreage band + active land asking prices (from existing comps).
+  const bands = ppaByAcreageBand(soldRows);
+  const activeRows = mc?.active ?? [];
+  const activeAsks = activeRows.map((r) => r.price).filter((p): p is number => p != null);
+  const askLo = activeAsks.length ? Math.min(...activeAsks) : null;
+  const askMed = median(activeAsks);
+  const askHi = activeAsks.length ? Math.max(...activeAsks) : null;
+
   // Named local signals + whether they help or hurt land demand.
   const drivers = mp.growthDrivers.drivers ?? [];
   const helpHurt = mp.direction === 'strengthening' ? 'Helps land demand'
@@ -1008,35 +1083,37 @@ function MarketPulseSection({ mp, mc }: { mp?: MarketPulseView | null; mc?: Mark
         <span class="text-[14px] font-semibold">Market Pulse</span>
         <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">confidence {mp.confidence}</span>
       </div>
-      {/* Headline verdict + growth trend */}
+      {/* Headline verdict */}
       <div class={`text-[14px] font-medium ${dirTone}`}>{mp.verdict}</div>
 
-      {/* Sources / period / active-retrieval status — named, not vague. */}
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
-        <HeaderField label="Sold period" value={period} />
-        <HeaderField label="Sold source" value={soldSrc} />
-        <HeaderField label="Active source" value={activeSrc} />
-        <HeaderField label="Active retrieval" value={activeStatusTxt} />
+      {/* PRIORITY 1 — land $/ac by acreage band. */}
+      <div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Land $/ac by acreage band</div>
+        {bands.length > 0 ? (
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 mt-1">
+            {bands.map((b) => <HeaderField key={b.band} label={`${b.band} (${b.count})`} value={`${usd(b.ppa)}/ac`} />)}
+          </div>
+        ) : <div class="text-[11px] text-[var(--color-text-faint)] mt-1">Not enough dated sold comps to band by acreage yet.</div>}
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
-        <HeaderField label="Sold (band)" value={String(mp.soldCount)} />
-        <HeaderField label="Active" value={activeState === 'ran' ? String(mp.activeCount) : activeState === 'not_run' ? 'not run' : 'incomplete'} />
-        <HeaderField label="Median $/ac" value={usd(mp.pricePerAcre.median)} />
-        <HeaderField label="Band p25–p75" value={`${usd(mp.pricePerAcre.p25)}–${usd(mp.pricePerAcre.p75)}`} />
-        <HeaderField label="Days on market" value={mp.domMedian != null ? `~${mp.domMedian}` : '—'} />
-        <HeaderField label="Mo. of inventory" value={mp.monthsOfInventory != null ? String(mp.monthsOfInventory) : '—'} />
-        <HeaderField label="Sell-through" value={mp.sellThroughPct != null ? `${mp.sellThroughPct}%` : '—'} />
-        <HeaderField label="Growth trend" value={mp.direction + (mp.directionPct != null ? ` (${mp.directionPct > 0 ? '+' : ''}${mp.directionPct}%)` : '')} />
-      </div>
-      <div class="text-[12px] text-[var(--color-text-muted)]">{mp.interpretation}</div>
 
-      {/* Local development / rezoning / infrastructure signals — NAMED. */}
+      {/* PRIORITY 2 — overall county $/ac + active land asking prices. */}
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
+        <HeaderField label="County median $/ac" value={usd(mp.pricePerAcre.median)} />
+        <HeaderField label="County $/ac band" value={`${usd(mp.pricePerAcre.p25)}–${usd(mp.pricePerAcre.p75)}`} />
+        <HeaderField label="Active asking (land)" value={activeState === 'ran' && askMed != null ? `${usd(askLo)}–${usd(askHi)}` : activeState === 'ran' ? 'none found' : activeState === 'not_run' ? 'not run' : 'incomplete'} />
+        <HeaderField label="Active median ask" value={activeState === 'ran' && askMed != null ? usd(askMed) : '—'} />
+      </div>
+
+      {/* PRIORITY 3 — REAL named local developments / rezonings / infrastructure. */}
       <div class="border-t border-[var(--color-border)] pt-2">
-        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Local development / rezoning / infrastructure signals</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Local developments · rezonings · subdivisions · roads · utilities · employers</div>
         {drivers.length > 0 ? (
-          <ul class="mt-1 flex flex-wrap gap-1.5">
+          <ul class="mt-1 space-y-0.5">
             {drivers.map((d, i) => (
-              <li key={i} class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{d.category} ×{d.count}</li>
+              <li key={i} class="text-[12px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text)]">{d.category}</span> <span class="text-[10px] text-[var(--color-text-faint)]">×{d.count}</span>
+                {d.examples && d.examples.length > 0 && <span class="text-[11px] text-[var(--color-text-faint)]"> — {d.examples.join('; ')}</span>}
+              </li>
             ))}
           </ul>
         ) : (
@@ -1045,6 +1122,20 @@ function MarketPulseSection({ mp, mc }: { mp?: MarketPulseView | null; mc?: Mark
         <div class="text-[12px] text-[var(--color-text-muted)] mt-1">{mp.growthDrivers.summary}</div>
         <div class="text-[11px] text-[var(--color-text)] mt-1"><span class="text-[var(--color-text-faint)]">Effect on land demand:</span> {helpHurt}.</div>
         <div class="text-[12px] text-[var(--color-accent)] mt-1">What this means for buying land here: {mp.growthDrivers.whatThisMeans}</div>
+      </div>
+
+      {/* Context: sources / period / active-retrieval status. */}
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 border-t border-[var(--color-border)] pt-2">
+        <HeaderField label="Sold period" value={period} />
+        <HeaderField label="Sold source" value={soldSrc} />
+        <HeaderField label="Active source" value={activeSrc} />
+        <HeaderField label="Active retrieval" value={activeStatusTxt} />
+      </div>
+      <div class="text-[12px] text-[var(--color-text-muted)]">{mp.interpretation}</div>
+
+      {/* Absorption metrics — deprioritized to a small secondary line. */}
+      <div class="text-[10px] text-[var(--color-text-faint)]">
+        Absorption (secondary): days on market {mp.domMedian != null ? `~${mp.domMedian}` : '—'} · months of inventory {mp.monthsOfInventory != null ? mp.monthsOfInventory : '—'} · sell-through {mp.sellThroughPct != null ? `${mp.sellThroughPct}%` : '—'} · trend {mp.direction}{mp.directionPct != null ? ` (${mp.directionPct > 0 ? '+' : ''}${mp.directionPct}%)` : ''}.
       </div>
     </div>
   );
@@ -2064,6 +2155,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
                 {/* 9. CONFIRM BEFORE OFFER — the single home for must-confirm items. */}
                 <ConfirmBeforeOfferSection es={execSummary} report={report} />
+
+                {/* Browser Intelligence status — LandPortal-first, then County. */}
+                <BrowserIntelligenceSection report={report} />
 
                 {/* Raw comparable sales + active listings + provider chain — collapsed. */}
                 <Collapsible title="Comparable sales & active listings (raw)">

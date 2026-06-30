@@ -28,6 +28,8 @@ import type { DerivedCounty } from './providers/county-geocode.js';
 import type { SuggestResult } from './address-suggest.js';
 import type { BrowserRetrievalLane, BrowserLaneInput } from './browser-retrieval.js';
 import type { PropertyPatch } from './normalized-property.js';
+import type { BrowserService, BrowserEvidence, BrowserSearchKey } from './browser-intelligence.js';
+import { analyzeMissingFields, type MissingFieldAnalysis } from './missing-field-analysis.js';
 
 export type ResolutionStatus = 'matched' | 'needs_clarification';
 
@@ -50,6 +52,11 @@ export interface PropertyResolution {
   /** Practical fields still unknown — surfaced downstream as Confirm Before Offer. */
   missing: NormalizedProperty['missing'];
   lanesAttempted: ResolutionLaneRecord[];
+  /** Browser Intelligence evidence (LandPortal-first, then County gap-fill).
+   *  Feeds the DD engine + Deal Card; never generates the Deal Card directly. */
+  browserEvidence: BrowserEvidence[];
+  /** Structured missing-field analysis after LandPortal (drives county gap-fill). */
+  missingFieldAnalysis?: MissingFieldAnalysis;
   /** Read-only: the engine resolves identity; it never writes a card itself. */
   executionMode: 'property_resolution';
 }
@@ -73,6 +80,10 @@ export interface ResolutionDeps {
   homeHarvest?: (fields: ParsedIntakeFields) => Promise<PropertyPatch | null>;
   /** Browser retrieval lanes (NETR/county GIS/LandPortal/Land ID read-only). */
   browserLanes?: BrowserRetrievalLane[];
+  /** Browser Intelligence services (Phase 5): LandPortal-first, then County
+   *  gap-fill driven by missing-field analysis. Parked unless a session exists. */
+  landPortalBrowser?: BrowserService;
+  countyRecordsBrowser?: BrowserService;
   /** Previously resolved property from the LandOS cache. */
   cacheGet?: (fields: ParsedIntakeFields) => NormalizedProperty | null;
   now?: () => string;
@@ -126,6 +137,8 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
 
   const property = emptyNormalizedProperty();
   const lanes: ResolutionLaneRecord[] = [];
+  const browserEvidence: BrowserEvidence[] = [];
+  let missingFieldAnalysis: MissingFieldAnalysis | undefined;
   const record = (lane: RetrievalLane, ran: boolean, contributed: boolean, status: string, note: string) =>
     lanes.push({ lane, ran, contributed, status, note });
 
@@ -211,7 +224,45 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     } catch { record('homeharvest', true, false, 'error', 'HomeHarvest lane failed; continued.'); }
   }
 
-  // ── Lane 5: Browser retrieval lanes (NETR/GIS/LandPortal/Land ID) ────────
+  // ── Browser Intelligence (Phase 5): LandPortal-first, then County gap-fill ─
+  // LandPortal Browser drives (largest property intelligence in one place). A
+  // missing-field analysis then decides what County Records must fill, so nothing
+  // is collected twice. Parked + honest until an authenticated session is enabled;
+  // the structured patch (not the screenshot) is the real contribution.
+  const searchKey: BrowserSearchKey = { address: fields.address, apn: fields.apn, owner: fields.owner, county: fields.county, state: fields.state };
+  if (deps.landPortalBrowser) {
+    try {
+      const lp = await deps.landPortalBrowser.runWorkflow({ searchKey }, { timeoutMs });
+      browserEvidence.push(lp);
+      const contributed = (lp.status === 'retrieved' || lp.status === 'partial')
+        ? mergeAndReport(property, 'landportal_readonly', 'LandPortal Browser', lp.patch, now(), 0.7, lp.sourceUrls[0])
+        : false;
+      record('landportal_readonly', lp.status !== 'parked', contributed, lp.status, lp.note);
+      // Missing-field analysis AFTER LandPortal — drives county gap-fill (no dup).
+      missingFieldAnalysis = analyzeMissingFields(property, lp);
+      if (deps.countyRecordsBrowser) {
+        try {
+          const cr = await deps.countyRecordsBrowser.runWorkflow({ searchKey, neededFields: missingFieldAnalysis.missing }, { timeoutMs });
+          browserEvidence.push(cr);
+          const c2 = (cr.status === 'retrieved' || cr.status === 'partial')
+            ? mergeAndReport(property, 'county_records', 'County Records Browser', cr.patch, now(), 0.65, cr.sourceUrls[0])
+            : false;
+          record('county_records', cr.status !== 'parked', c2, cr.status, cr.note);
+        } catch { record('county_records', true, false, 'error', 'County Records browser failed; continued.'); }
+      }
+    } catch { record('landportal_readonly', true, false, 'error', 'LandPortal browser failed; continued.'); }
+  } else if (deps.countyRecordsBrowser) {
+    try {
+      const cr = await deps.countyRecordsBrowser.runWorkflow({ searchKey }, { timeoutMs });
+      browserEvidence.push(cr);
+      const c2 = (cr.status === 'retrieved' || cr.status === 'partial')
+        ? mergeAndReport(property, 'county_records', 'County Records Browser', cr.patch, now(), 0.65, cr.sourceUrls[0])
+        : false;
+      record('county_records', cr.status !== 'parked', c2, cr.status, cr.note);
+    } catch { record('county_records', true, false, 'error', 'County Records browser failed; continued.'); }
+  }
+
+  // ── Lane 5: legacy parked browser-retrieval lanes (NETR/GIS/Land ID) ─────
   if (deps.browserLanes?.length && !property.parcelVerified) {
     const bInput: BrowserLaneInput = { address: fields.address, city: fields.city, state: fields.state, county: fields.county, zip: fields.zip, apn: fields.apn, owner: fields.owner };
     for (const lane of deps.browserLanes) {
@@ -244,6 +295,8 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       guidance: undefined,
       missing: property.missing,
       lanesAttempted: lanes,
+      browserEvidence,
+      missingFieldAnalysis,
       executionMode: 'property_resolution',
     };
   }
@@ -256,6 +309,8 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     guidance: `Provide a stronger identifier to resolve this property — e.g. ${smallestNextIdentifier(toIntakeFields(fields))}. (APN + county, owner + city/state, or a corrected full address all work.)`,
     missing: property.missing,
     lanesAttempted: lanes,
+    browserEvidence,
+    missingFieldAnalysis,
     executionMode: 'property_resolution',
   };
 }

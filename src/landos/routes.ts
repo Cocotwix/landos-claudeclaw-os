@@ -98,7 +98,10 @@ import { suggestAddresses } from './address-suggest.js';
 import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
 import { planResolver, type IntakeFields } from './resolver-planner.js';
 import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
-import { defaultBrowserLanes, browserLaneStatus } from './browser-retrieval.js';
+import { browserLaneStatus } from './browser-retrieval.js';
+import { makeLandPortalBrowser } from './landportal-browser.js';
+import { makeCountyRecordsBrowser } from './county-records-browser.js';
+import { routeBrowserQuestion } from './browser-intelligence.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
@@ -203,7 +206,10 @@ function liveResolutionDeps(timeoutMs: number): ResolutionDeps {
     verify: verifyFromFields,
     deriveCounty: (f) => deriveCounty({ address: f.address, city: f.city, state: f.state, zip: f.zip }),
     suggest: (q) => suggestAddresses(q),
-    browserLanes: defaultBrowserLanes(),
+    // Browser Intelligence: LandPortal-first, then County gap-fill. Both parked
+    // (honest) until an authenticated session is enabled — never stores a credential.
+    landPortalBrowser: makeLandPortalBrowser(),
+    countyRecordsBrowser: makeCountyRecordsBrowser(),
     timeoutMs,
   };
 }
@@ -2028,6 +2034,23 @@ export function registerLandosRoutes(app: Hono): void {
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
     );
     return c.json({ classification: cls, resolution, browserLanes: browserLaneStatus() });
+  });
+
+  // ── Browser Intelligence — Ask Mode (Phase 1) ─────────────────────────────
+  // Free-form public-record questions: the layer intelligently determines the
+  // workflow (LandPortal vs County Records) — not a fixed command list. Runs the
+  // chosen service in read-only ask mode. Parked (honest) until a session exists;
+  // never stores a credential, never performs a paid/billing action.
+  app.post('/api/landos/browser/ask', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const question = str(body.question) ?? str(body.text);
+    if (!question || !question.trim()) return c.json({ error: 'question required' }, 400);
+    const ctxRaw = (body.context ?? {}) as Record<string, unknown>;
+    const ctx = { address: str(ctxRaw.address), apn: str(ctxRaw.apn), owner: str(ctxRaw.owner), county: str(ctxRaw.county), state: str(ctxRaw.state) };
+    const route = routeBrowserQuestion(question.trim(), ctx);
+    const service = route.service === 'landportal' ? makeLandPortalBrowser() : makeCountyRecordsBrowser();
+    const evidence = await service.ask(question.trim(), ctx, { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS });
+    return c.json({ route, evidence });
   });
 
   // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded
