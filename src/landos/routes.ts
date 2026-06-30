@@ -102,6 +102,7 @@ import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion } from './browser-intelligence.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth } from './browser-session.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
@@ -206,10 +207,12 @@ function liveResolutionDeps(timeoutMs: number): ResolutionDeps {
     verify: verifyFromFields,
     deriveCounty: (f) => deriveCounty({ address: f.address, city: f.city, state: f.state, zip: f.zip }),
     suggest: (q) => suggestAddresses(q),
-    // Browser Intelligence: LandPortal-first, then County gap-fill. Both parked
-    // (honest) until an authenticated session is enabled — never stores a credential.
-    landPortalBrowser: makeLandPortalBrowser(),
-    countyRecordsBrowser: makeCountyRecordsBrowser(),
+    // Browser Intelligence: LandPortal-first, then County gap-fill, backed by the
+    // live persistent-session driver. configured() is true only when the operator's
+    // Chrome session is connected; otherwise the services report parked (honest).
+    // Never stores a credential; never prints cookies/tokens.
+    landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
+    countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
     timeoutMs,
   };
 }
@@ -1943,6 +1946,9 @@ export function registerLandosRoutes(app: Hono): void {
     // outcomes only: Matched (run the report; unknown fields become Confirm
     // Before Offer) or Needs Clarification (no card; smallest next identifier).
     const cls = classifySmartIntake(text.trim());
+    // Connect/reuse the persistent browser session before resolving (cheap; reuses
+    // the open Chrome). When live, LandPortal/County run; otherwise they stay parked.
+    await ensureBrowserSession();
     const resolution = await resolveProperty(
       { rawText: text.trim(), fields: cls.parsedFields },
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
@@ -2029,11 +2035,19 @@ export function registerLandosRoutes(app: Hono): void {
     const text = str(body.text);
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const cls = classifySmartIntake(text.trim());
+    await ensureBrowserSession();
     const resolution = await resolveProperty(
       { rawText: text.trim(), fields: cls.parsedFields },
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
     );
-    return c.json({ classification: cls, resolution, browserLanes: browserLaneStatus() });
+    const session = await browserSessionHealth();
+    return c.json({ classification: cls, resolution, browserLanes: browserLaneStatus(), session });
+  });
+
+  // Persistent browser session status/health. Reports live / disabled /
+  // unreachable / auth_needed. NEVER returns cookies, tokens, or credentials.
+  app.get('/api/landos/browser/session', async (c) => {
+    return c.json({ session: await browserSessionHealth() });
   });
 
   // ── Browser Intelligence — Ask Mode (Phase 1) ─────────────────────────────
@@ -2048,9 +2062,13 @@ export function registerLandosRoutes(app: Hono): void {
     const ctxRaw = (body.context ?? {}) as Record<string, unknown>;
     const ctx = { address: str(ctxRaw.address), apn: str(ctxRaw.apn), owner: str(ctxRaw.owner), county: str(ctxRaw.county), state: str(ctxRaw.state) };
     const route = routeBrowserQuestion(question.trim(), ctx);
-    const service = route.service === 'landportal' ? makeLandPortalBrowser() : makeCountyRecordsBrowser();
+    await ensureBrowserSession();
+    const service = route.service === 'landportal'
+      ? makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') })
+      : makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') });
     const evidence = await service.ask(question.trim(), ctx, { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS });
-    return c.json({ route, evidence });
+    const session = await browserSessionHealth();
+    return c.json({ route, evidence, session });
   });
 
   // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded
