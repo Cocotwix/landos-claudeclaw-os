@@ -41,6 +41,10 @@ export interface PageObservation {
   /** Visible label→value pairs (used only after Verify). */
   fields: Record<string, string>;
   loginLike: boolean;
+  /** A CUSTOM (non-<select>) search-method toggle, e.g. an "Address ▾" pill whose
+   *  click opens a method menu (Address / APN / Owner / Lat-Long). `current` is the
+   *  visible method it currently shows. Generic across modern SPAs. */
+  methodToggle?: { current: string };
 }
 
 // ── UNDERSTAND — classify the platform from generic signals ───────────────────
@@ -156,11 +160,21 @@ export function planNavigationStrategy(
     steps.push({ action: 'select_method', selector: sel.selector, text: optText });
   }
 
+  // 1b) Otherwise, if a CUSTOM method toggle exists (e.g. "Address ▾"), open it
+  //     and pick the wanted method by clicking — generic for modern SPA dropdowns.
+  const wantRx = METHOD_SIGNALS.find((m) => m.method === want)?.rx;
+  const directInput = controlForMethod(obs, want);
+  if (!sel && !directInput && obs.methodToggle && wantRx && !wantRx.test(obs.methodToggle.current)) {
+    const optionLabel = want === 'apn' ? 'APN' : want === 'address' ? 'Address' : want === 'owner' ? 'Owner' : 'Lat';
+    steps.push({ action: 'click', text: obs.methodToggle.current }); // open the menu
+    steps.push({ action: 'click', text: optionLabel });              // pick the method
+  }
+
   // 2) Find the input to fill — prefer one matching the wanted method, else the
   //    method selector's own field, else a general search control.
-  const input = controlForMethod(obs, want)
+  const input = directInput
     ?? (sel && sel.type !== 'select-one' ? sel : undefined)
-    ?? obs.searchControls.find((c) => /search|find|lookup|query/i.test([c.label, c.placeholder, c.name].filter(Boolean).join(' ')))
+    ?? obs.searchControls.find((c) => /search|find|lookup|query|address|situs/i.test([c.label, c.placeholder, c.name].filter(Boolean).join(' ')))
     ?? obs.searchControls.find((c) => (c.type ?? 'text') === 'text');
   if (!input) return null;
   steps.push({ action: 'fill', selector: input.selector, value: identifier.value });
@@ -171,6 +185,79 @@ export function planNavigationStrategy(
     steps,
     reason: `Platform "${understanding.platformClass}" offers [${understanding.availableSearchMethods.join(', ') || 'general'}]; identifier is ${want} → ${sel ? 'switch the method selector then ' : ''}search the ${want} field.`,
   };
+}
+
+// ── TASK SURFACE — "can this page accomplish my task?" + reach the right one ──
+//
+// Modern apps land you on an account/orders/dashboard page. Browser Intelligence
+// must recognize the wrong surface and navigate (sidebar / nav / menu / launcher)
+// to the real work surface — and NEVER touch forbidden surfaces (billing, orders,
+// purchases, payments, settings). Generic; the boundary is learned per platform.
+
+export type SurfaceClass = 'search' | 'record' | 'orders' | 'billing' | 'account' | 'settings' | 'dashboard' | 'other';
+
+const SURFACE_RX: Array<{ cls: SurfaceClass; rx: RegExp }> = [
+  { cls: 'billing', rx: /billing|payment|checkout|invoice|cart|purchase|pricing|upgrade|credit\s*purchase/i },
+  { cls: 'orders', rx: /orders?\s*history|my\s*orders|order\s*id|purchased\s*reports/i },
+  { cls: 'settings', rx: /settings|preferences/i },
+  { cls: 'account', rx: /my\s*account|profile|account\s*overview|sign\s*out|log\s*out/i },
+  { cls: 'record', rx: /parcel\s*(detail|record)|property\s*(record|detail|card)|owner\s*of\s*record/i },
+  { cls: 'search', rx: /map\s*search|property\s*search|parcel\s*search|search\s*(results|properties|parcels)/i },
+];
+
+/** Classify the current page's surface from its title/url/headings. */
+export function classifySurface(obs: PageObservation): SurfaceClass {
+  const hay = `${obs.title} ${obs.url} ${obs.headings.join(' ')}`;
+  for (const { cls, rx } of SURFACE_RX) if (rx.test(hay)) return cls;
+  return 'other';
+}
+
+// Forbidden = never click (protects against paid/destructive actions).
+const FORBIDDEN_NAV_RX = /billing|payment|checkout|\bpay\b|purchase|\bbuy\b|credit|subscri|upgrade|pricing|cart|invoice|skip\s*trace|mailing|order|account\s*settings|^settings$|delete|cancel\s*subscription/i;
+// Restricted = needs explicit approval (e.g. account creation).
+const RESTRICTED_NAV_RX = /create\s*account|sign\s*up|register|new\s*(list|filtered\s*list)|export/i;
+// The work surface for a parcel-search task.
+const SEARCH_NAV_RX = /map\s*search|property\s*search|parcel\s*search|^search$|search\s*(properties|parcels|map)|find\s*(a\s*)?(property|parcel)/i;
+
+export function isForbiddenTarget(text: string): boolean { return FORBIDDEN_NAV_RX.test(text); }
+
+/** Does this page actually serve the parcel-search task? (Has a usable search
+ *  control AND is not an account/orders/billing/settings surface.) */
+export function pageServesTask(obs: PageObservation, want: SearchMethod): boolean {
+  const surface = classifySurface(obs);
+  if (surface === 'record' || surface === 'search') return true;
+  if (surface === 'orders' || surface === 'billing' || surface === 'account' || surface === 'settings') return false;
+  // 'dashboard'/'other': serve only if a real, matching search control exists.
+  return !!planNavigationStrategy(obs, { kind: want, value: 'probe' });
+}
+
+export interface WorkSurfaceNav { text: string; reason: string }
+
+/** Find the nav/menu/card item that leads to the parcel-search work surface.
+ *  Prefers explicit search destinations; NEVER returns a forbidden target. */
+export function findWorkSurfaceNav(obs: PageObservation, _want: SearchMethod): WorkSurfaceNav | null {
+  const targets = [...obs.navItems, ...obs.buttons, ...obs.links.map((l) => l.text)].map((s) => (s || '').trim()).filter(Boolean);
+  const uniq = [...new Set(targets)];
+  const allowed = uniq.filter((t) => !isForbiddenTarget(t));
+  // 1) explicit search surface
+  const search = allowed.find((t) => SEARCH_NAV_RX.test(t));
+  if (search) return { text: search, reason: `Nav "${search}" leads to the parcel-search surface.` };
+  // 2) generic "search"/"map" entry that isn't forbidden/restricted
+  const generic = allowed.find((t) => /\b(search|map|find|lookup|properties|parcels)\b/i.test(t) && !RESTRICTED_NAV_RX.test(t));
+  if (generic) return { text: generic, reason: `Nav "${generic}" looks like the search/map entry.` };
+  return null;
+}
+
+export interface TaskBoundary { allowed: string[]; restricted: string[]; forbidden: string[] }
+
+/** Derive a platform's allowed / restricted / forbidden work surfaces from its
+ *  nav so the boundary becomes learned Platform Intelligence. Generic. */
+export function deriveTaskBoundary(obs: PageObservation): TaskBoundary {
+  const items = [...new Set([...obs.navItems, ...obs.buttons].map((s) => (s || '').trim()).filter(Boolean))];
+  const forbidden = items.filter((t) => FORBIDDEN_NAV_RX.test(t));
+  const restricted = items.filter((t) => !FORBIDDEN_NAV_RX.test(t) && RESTRICTED_NAV_RX.test(t));
+  const allowed = items.filter((t) => !FORBIDDEN_NAV_RX.test(t) && !RESTRICTED_NAV_RX.test(t) && (SEARCH_NAV_RX.test(t) || /research|report|map|search|comp/i.test(t)));
+  return { allowed, restricted, forbidden };
 }
 
 // ── INTERACT — select a non-anchor result (GIS rows, cards, popups, divs) ────

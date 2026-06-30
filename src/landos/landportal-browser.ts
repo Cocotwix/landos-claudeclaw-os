@@ -23,7 +23,8 @@ import type { PropertyPatch } from './normalized-property.js';
 import { extractRecordFacts } from './semantic-extract.js';
 import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
-  pickBestCandidate, type PageObservation, type SearchMethod, type ResultCandidate,
+  pickBestCandidate, pageServesTask, findWorkSurfaceNav, classifySurface, deriveTaskBoundary, isForbiddenTarget,
+  type PageObservation, type SearchMethod, type ResultCandidate,
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
@@ -100,9 +101,12 @@ function searchTermFor(key: BrowserSearchKey): { term: string; by: 'apn' | 'owne
 }
 
 function identifierFor(key: BrowserSearchKey): { kind: SearchMethod; value: string } | null {
-  if (key.apn) return { kind: 'apn', value: [key.apn, key.county, key.state].filter(Boolean).join(' ') };
+  // Structured identifiers (APN, owner) are searched BARE — a dedicated APN/owner
+  // search method rejects appended county/state. Only an address (a geocoder
+  // input) benefits from location context. Generic across platforms.
+  if (key.apn) return { kind: 'apn', value: key.apn };
   if (key.address) return { kind: 'address', value: [key.address, key.county, key.state].filter(Boolean).join(' ') };
-  if (key.owner) return { kind: 'owner', value: [key.owner, key.county, key.state].filter(Boolean).join(' ') };
+  if (key.owner) return { kind: 'owner', value: key.owner };
   return null;
 }
 
@@ -146,6 +150,27 @@ async function runLandPortalWorkflow(
     const memory = getPlatformIntel(LANDPORTAL_BROWSER_BASE);
     // ── RESEARCH (guidance available if needed; not blindly clicked) ──────
     const guidance = findGuidanceLinks(obs).length;
+
+    // Learn the platform's allowed/restricted/forbidden work surfaces (task boundary).
+    const taskBoundary = deriveTaskBoundary(obs);
+
+    // ── TASK SURFACE — if we landed on the wrong page (orders/account/billing/
+    //    dashboard), navigate via the nav menu to the parcel-search surface.
+    //    NEVER click a forbidden target (billing/orders/purchase/payment). ─────
+    const surfaceTrail: string[] = [classifySurface(obs)];
+    for (let hop = 0; hop < 3 && !pageServesTask(obs, id.kind); hop++) {
+      const nav = findWorkSurfaceNav(obs, id.kind);
+      if (!nav || isForbiddenTarget(nav.text) || !driver.clickByText) break;
+      await driver.clickByText(nav.text, t());
+      obs = (await driver.observe(t())) as PageObservation;
+      surfaceTrail.push(`→ ${nav.text} (${classifySurface(obs)})`);
+    }
+    if (!pageServesTask(obs, id.kind)) {
+      ev.status = 'partial';
+      ev.note = `Landed on a "${classifySurface(obs)}" surface (trail: ${surfaceTrail.join(' ')}) and could not reach the parcel-search work surface via the nav menu. No forbidden surface was touched. No facts (Unknown over incorrect).`;
+      rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, confidence: understanding.confidence, taskBoundary, used: true, navPatterns: `task-surface trail: ${surfaceTrail.join(' ')}`, knownLimitations: ['could not reach the parcel-search surface from the landing page'] });
+      return ev;
+    }
 
     // ── PLAN — choose the search method that matches the identifier ───────
     let strategy = planNavigationStrategy(obs, id);
@@ -193,7 +218,7 @@ async function runLandPortalWorkflow(
       } else {
         ev.status = 'partial';
         ev.note = `Reached a ${verify.pageType} of ${candidates.length} non-anchor result(s) but none scored a HIGH-confidence match to APN ${input.searchKey.apn || ''}/${input.searchKey.address || ''} — refusing to select (no weak-match, no false facts).`;
-        rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, confidence: understanding.confidence, used: true, navPatterns: `${strategy.method} search → results; non-anchor candidates read (${candidates.length})`, knownLimitations: [`no high-confidence result candidate for the parcel on the ${verify.pageType}`] });
+        rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, confidence: understanding.confidence, taskBoundary, used: true, navPatterns: `${strategy.method} search → results; non-anchor candidates read (${candidates.length})`, knownLimitations: [`no high-confidence result candidate for the parcel on the ${verify.pageType}`] });
         return ev;
       }
     }
@@ -218,7 +243,7 @@ async function runLandPortalWorkflow(
 
     // ── REMEMBER / IMPROVE — store the validated strategy + interaction pattern ─
     const validatedStrategy = { ...strategy, steps: interaction ? [...strategy.steps, { action: 'click' as const, text: `result candidate: ${interaction}` }] : strategy.steps, reason: `${strategy.reason}${interaction ? ` Then select ${interaction}.` : ''}` };
-    rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy, navPatterns: validatedStrategy.reason, authRequired: true, confidence: 'high', used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
+    rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy, navPatterns: validatedStrategy.reason, authRequired: true, confidence: 'high', taskBoundary, used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
     ev.note = `LandPortal understood as "${understanding.platformClass}"; ${method} (${verify.reason}); ${ev.facts.length} fact(s) extracted with provenance; one screenshot.`;
     return ev;
   } catch (err) {

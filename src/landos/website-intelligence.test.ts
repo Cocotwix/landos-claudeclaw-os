@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
-  scoreResultCandidate, pickBestCandidate, type PageObservation, type ResultCandidate,
+  scoreResultCandidate, pickBestCandidate, classifySurface, pageServesTask,
+  findWorkSurfaceNav, deriveTaskBoundary, isForbiddenTarget,
+  type PageObservation, type ResultCandidate,
 } from './website-intelligence.js';
 import { rememberPlatform, getPlatformIntel, platformKey, listPlatformIntel } from './platform-library.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
@@ -56,6 +58,14 @@ describe('Website Intelligence — PLAN (choose method by identifier, not first 
   it('returns null when there is no usable search control', () => {
     expect(planNavigationStrategy(obs({ searchControls: [] }), { kind: 'apn', value: 'X' })).toBeNull();
   });
+
+  it('uses a CUSTOM method toggle (Address ▾ → APN) before filling the search box', () => {
+    const o = obs({ methodToggle: { current: 'Address' }, searchControls: [{ selector: '#q', placeholder: 'Address or zip or city' }] });
+    const s = planNavigationStrategy(o, { kind: 'apn', value: '021 033 002' })!;
+    const clicks = s.steps.filter((x) => x.action === 'click').map((x) => x.text);
+    expect(clicks).toEqual(['Address', 'APN']); // open toggle, pick APN
+    expect(s.steps.find((x) => x.action === 'fill')!.selector).toBe('#q');
+  });
 });
 
 describe('Website Intelligence — VERIFY (never extract from a search form)', () => {
@@ -79,6 +89,73 @@ describe('Website Intelligence — VERIFY (never extract from a search form)', (
   it('rejects login + map dashboard pages', () => {
     expect(verifyTargetReached(obs({ loginLike: true })).pageType).toBe('login');
     expect(verifyTargetReached(obs({ hasMap: true, fields: {} })).reached).toBe(false);
+  });
+});
+
+describe('Website Intelligence — TASK SURFACE + BOUNDARY (reach the right page, avoid forbidden)', () => {
+  it('classifies the LandPortal orders page as the wrong surface', () => {
+    const o = obs({ url: 'https://landportal.com/my-account/orders/', title: 'My account - Land Portal', headings: ['Orders history'] });
+    expect(classifySurface(o)).toBe('orders');
+    expect(pageServesTask(o, 'apn')).toBe(false); // cannot do parcel search here
+  });
+
+  it('treats billing/orders/purchase nav as FORBIDDEN, map/property search as the work surface', () => {
+    expect(isForbiddenTarget('Orders history')).toBe(true);
+    expect(isForbiddenTarget('Billing')).toBe(true);
+    expect(isForbiddenTarget('Buy Skip Trace')).toBe(true);
+    expect(isForbiddenTarget('Map Search')).toBe(false);
+    const o = obs({ navItems: ['Hide Sidebar', 'Map Search', 'Orders history', 'Billing', 'Skip trace', 'Help Center'] });
+    expect(findWorkSurfaceNav(o, 'apn')!.text).toBe('Map Search'); // never a forbidden target
+  });
+
+  it('derives a platform task boundary (allowed / forbidden)', () => {
+    const o = obs({ navItems: ['Map Search', 'Property search', 'Market research', 'Orders history', 'Billing', 'Skip trace purchase'] });
+    const b = deriveTaskBoundary(o);
+    expect(b.allowed).toEqual(expect.arrayContaining(['Map Search', 'Property search', 'Market research']));
+    expect(b.forbidden).toEqual(expect.arrayContaining(['Orders history', 'Billing']));
+  });
+
+  it('a search surface with a matching control serves the task', () => {
+    const o = obs({ title: 'Map Search', searchControls: [{ selector: '#apn', label: 'APN' }], hasMap: true });
+    expect(pageServesTask(o, 'apn')).toBe(true);
+  });
+});
+
+// Driver that LANDS on orders, then (after clicking Map Search) exposes an APN
+// search that resolves straight to the parcel record.
+function landsOnOrdersDriver(onNav?: (t: string) => void): BrowserDriver {
+  let phase: 'orders' | 'search' | 'record' = 'orders';
+  const record = { 'Owner Name': 'SPROUL, BRITTANY', 'Parcel ID': '021 033 002', 'Deeded Acres': '5.20', 'Situs Address': '388 Gilstrap Rd' };
+  return {
+    id: 'lp', configured: () => true,
+    async open(url) { return { url, fields: {}, snippets: [] }; },
+    async search(q) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+    async readFields() { return { url: '', fields: phase === 'record' ? record : {}, snippets: [] }; },
+    async screenshot(purpose) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+    async readForms() { return phase === 'search' ? [{ formIndex: 0, fields: [{ selector: '#apn', label: 'APN' }], submitSelector: '#go' }] : []; },
+    async fillAndSubmit() { if (phase === 'search') phase = 'record'; return { url: 'rec', fields: {}, snippets: [] }; },
+    async observe() {
+      if (phase === 'orders') return { url: 'https://landportal.com/my-account/orders/', title: 'My account - Land Portal', headings: ['Orders history'], navItems: ['Map Search', 'Orders history', 'Billing'], buttons: [], searchControls: [], links: [], hasMap: true, hasTable: true, fields: { 'Order ID': '#638785' }, loginLike: false };
+      if (phase === 'search') return { url: 'https://landportal.com/map-search', title: 'Map Search', headings: ['Map Search'], navItems: ['Map Search', 'Orders history'], buttons: [], searchControls: [{ selector: '#apn', label: 'APN' }], links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false };
+      return { url: 'https://landportal.com/parcel', title: 'Parcel detail', headings: ['Property Record'], navItems: [], buttons: [], searchControls: [], links: [], hasMap: false, hasTable: false, fields: record, loginLike: false };
+    },
+    async clickByText(text) { onNav?.(text); if (/map search/i.test(text)) phase = 'search'; },
+  };
+}
+
+describe('Website Intelligence — wrong-surface recovery (orders → Map Search → record)', () => {
+  beforeEach(() => _initTestLandosDb());
+  it('recognizes the orders page, navigates to Map Search, then reaches the parcel record', async () => {
+    const navs: string[] = [];
+    const lp = makeLandPortalBrowser({ driver: landsOnOrdersDriver((t) => navs.push(t)) });
+    const ev = await lp.runWorkflow({ searchKey: { state: 'GA', county: 'White', apn: '021 033 002' } }, { timeoutMs: 2000 });
+    expect(navs).toContain('Map Search');      // corrected the surface
+    expect(navs).not.toContain('Billing');     // never touched forbidden
+    expect(ev.status).toBe('retrieved');
+    expect(ev.facts.find((f) => f.key === 'owner')!.value).toBe('SPROUL, BRITTANY');
+    // learned the task boundary
+    const b = getPlatformIntel('landportal.com')!.taskBoundary;
+    expect(b.forbidden).toEqual(expect.arrayContaining(['Orders history', 'Billing']));
   });
 });
 

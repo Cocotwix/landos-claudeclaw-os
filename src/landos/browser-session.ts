@@ -527,17 +527,29 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const cssEscape = (s: string) => (window as any).CSS && (window as any).CSS.escape ? (window as any).CSS.escape(s) : s;
         const sel = (el: any): string => el.id ? '#' + cssEscape(el.id) : el.name ? '[name="' + el.name + '"]' : '';
         const txt = (el: any, n = 60): string => ((el && el.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, n);
+        // Visible-only: modern SPAs keep many hidden modals (login, saved-search,
+        // purchase) in the DOM. Reading them pollutes classification + planning, so
+        // skip display:none / visibility:hidden / zero-size / far-offscreen nodes.
+        const vw = (window as any).innerWidth || 1280, vh = (window as any).innerHeight || 900;
+        const vis = (el: any): boolean => {
+          if (!el || !el.getBoundingClientRect) return false;
+          const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false;
+          const st = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
+          if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.1)) return false;
+          if (r.bottom < 0 || r.top > vh + 200 || r.right < 0 || r.left > vw + 200) return false; // far offscreen
+          return true;
+        };
         const labelFor = (el: any): string => {
           if (el.id) { const lab = document.querySelector('label[for="' + el.id + '"]'); if (lab) return txt(lab); }
           const wrap = el.closest && el.closest('label'); if (wrap) return txt(wrap);
           const prev = el.previousElementSibling; if (prev && (prev.textContent || '').length < 60) return txt(prev);
           return '';
         };
-        const headings = Array.from(document.querySelectorAll('h1,h2,h3')).map((h: any) => txt(h)).filter(Boolean).slice(0, 20);
-        const navItems = Array.from(document.querySelectorAll('nav a, nav button, [class*="sidebar" i] a, [class*="sidebar" i] button, [class*="menu" i] a, [role=tab]')).map((a: any) => txt(a, 40)).filter(Boolean).slice(0, 40);
-        const buttons = Array.from(document.querySelectorAll('button, input[type=submit], input[type=button], [role=button]')).map((b: any) => (b.value || txt(b, 40))).filter(Boolean).slice(0, 40);
+        const headings = Array.from(document.querySelectorAll('h1,h2,h3')).filter(vis).map((h: any) => txt(h)).filter(Boolean).slice(0, 20);
+        const navItems = Array.from(document.querySelectorAll('nav a, nav button, [class*="sidebar" i] a, [class*="sidebar" i] button, [class*="menu" i] a, [role=tab]')).filter(vis).map((a: any) => txt(a, 40)).filter(Boolean).slice(0, 40);
+        const buttons = Array.from(document.querySelectorAll('button, input[type=submit], input[type=button], [role=button]')).filter(vis).map((b: any) => (b.value || txt(b, 40))).filter(Boolean).slice(0, 40);
         const searchControls: any[] = [];
-        Array.from(document.querySelectorAll('input, select')).slice(0, 60).forEach((el: any) => {
+        Array.from(document.querySelectorAll('input, select')).filter(vis).slice(0, 60).forEach((el: any) => {
           const type = (el.getAttribute('type') || el.tagName || 'text').toLowerCase();
           if (/hidden|checkbox|radio|file|submit|button/.test(type)) return;
           const s = sel(el); if (!s) return;
@@ -555,7 +567,21 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         document.querySelectorAll('dl').forEach((dl: any) => { const dts = dl.querySelectorAll('dt'); const dds = dl.querySelectorAll('dd'); for (let i = 0; i < Math.min(dts.length, dds.length); i++) addF(dts[i].textContent || '', dds[i].textContent || ''); });
         document.querySelectorAll('tr').forEach((tr: any) => { const cells = tr.querySelectorAll('th,td'); if (cells.length === 2) addF(cells[0].textContent || '', cells[1].textContent || ''); });
         const loginLike = /sign in|log in|login|password/i.test(bodyText.slice(0, 2000)) && Object.keys(fields).length === 0;
-        return { url: location.href, title: document.title || '', headings, navItems, buttons, searchControls, links: links.slice(0, 300), hasMap, hasTable, fields, loginLike };
+        // Custom (non-<select>) search-method toggle: a visible, short clickable
+        // pill whose text IS a method name (Address/APN/Owner/Parcel/Lat) and which
+        // sits next to a text input (a search bar). Generic across SPAs.
+        let methodToggle: { current: string } | undefined;
+        const METHOD_WORD = /^(address|apn|parcel(\s*id)?|owner|lat(itude)?(\s*\/?\s*long(itude)?)?|coordinates?)$/i;
+        const togCands = Array.from(document.querySelectorAll('button,[role=button],[aria-haspopup],[class*="dropdown" i] > *,[class*="select" i] *,div,span')).filter(vis);
+        for (const el of togCands as any[]) {
+          const tx = txt(el, 24);
+          if (!METHOD_WORD.test(tx)) continue;
+          const r = el.getBoundingClientRect();
+          // must be near a visible text input (a search bar) on the same row
+          const nearInput = Array.from(document.querySelectorAll('input')).filter(vis).some((inp: any) => { const ir = inp.getBoundingClientRect(); return Math.abs(ir.top - r.top) < 60 && ir.left > r.left - 20; });
+          if (nearInput) { methodToggle = { current: tx }; break; }
+        }
+        return { url: location.href, title: document.title || '', headings, navItems, buttons, searchControls, links: links.slice(0, 300), hasMap, hasTable, fields, loginLike, methodToggle };
       };
       return page.evaluate<unknown>(OBSERVE);
     },
@@ -585,7 +611,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const page = await getWorkingPage();
       const READ = (): Array<{ index: number; text: string; kind: string }> => {
         // Deterministic collector — MUST match clickCandidate's collector exactly.
-        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i]';
+        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li';
         const seen = new Set<any>(); const out: any[] = [];
         Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
           if (seen.has(el)) return; seen.add(el);
@@ -605,7 +631,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     async clickCandidate(index, opts) {
       const page = await getWorkingPage();
       const CLICK = (target: number): boolean => {
-        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i]';
+        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li';
         const seen = new Set<any>(); const out: any[] = [];
         Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
           if (seen.has(el)) return; seen.add(el);

@@ -1024,6 +1024,7 @@ function createLandosSchema(db: Database.Database): void {
   // EXISTS does not alter an existing table, so add the column when missing.
   const addColumn = (table: string, column: string, ddl: string) => {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (cols.length === 0) return; // table not created yet (its CREATE includes the column)
     if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   };
   addColumn('landos_deal_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
@@ -1034,6 +1035,8 @@ function createLandosSchema(db: Database.Database): void {
   // so a reopened verified parcel keeps its full enrichment pipeline.
   addColumn('landos_property_card', 'lat', `lat REAL`);
   addColumn('landos_property_card', 'lng', `lng REAL`);
+  // Platform Intelligence: learned allowed/restricted/forbidden work surfaces.
+  addColumn('landos_platform_intel', 'task_boundary_json', `task_boundary_json TEXT NOT NULL DEFAULT '{}'`);
 
   // Acquisitions department (CRM-independent intelligence layer) — one row per
   // Deal Card holding the seller profile, communication log, discovery notes, and
@@ -1146,6 +1149,7 @@ function createLandosSchema(db: Database.Database): void {
       nav_patterns    TEXT NOT NULL DEFAULT '',
       auth_required   INTEGER NOT NULL DEFAULT 0,
       known_limitations_json TEXT NOT NULL DEFAULT '[]',
+      task_boundary_json TEXT NOT NULL DEFAULT '{}',
       confidence      TEXT NOT NULL DEFAULT 'low',
       times_used      INTEGER NOT NULL DEFAULT 0,
       times_succeeded INTEGER NOT NULL DEFAULT 0,
