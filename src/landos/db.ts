@@ -1132,6 +1132,28 @@ function createLandosSchema(db: Database.Database): void {
       UNIQUE(deal_card_id, fact_key, source_url)
     );
     CREATE INDEX IF NOT EXISTS idx_browser_fact_deal ON landos_browser_fact(deal_card_id, created_at);
+
+    -- Platform Intelligence Library: each website becomes a LEARNED object so
+    -- Browser Intelligence gets smarter every time it uses a platform. Generic
+    -- (LandPortal/ArcGIS/qPublic/CRM/...); no per-county or vendor code, just the
+    -- learned classification + validated navigation strategy + limitations.
+    CREATE TABLE IF NOT EXISTS landos_platform_intel (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform        TEXT NOT NULL DEFAULT '',
+      classification  TEXT NOT NULL DEFAULT 'unknown',
+      search_methods_json TEXT NOT NULL DEFAULT '[]',
+      validated_strategy_json TEXT,
+      nav_patterns    TEXT NOT NULL DEFAULT '',
+      auth_required   INTEGER NOT NULL DEFAULT 0,
+      known_limitations_json TEXT NOT NULL DEFAULT '[]',
+      confidence      TEXT NOT NULL DEFAULT 'low',
+      times_used      INTEGER NOT NULL DEFAULT 0,
+      times_succeeded INTEGER NOT NULL DEFAULT 0,
+      last_validated_at INTEGER,
+      updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(platform)
+    );
+    CREATE INDEX IF NOT EXISTS idx_platform_intel ON landos_platform_intel(platform);
   `);
 }
 

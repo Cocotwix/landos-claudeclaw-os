@@ -21,6 +21,12 @@ import {
 } from './browser-intelligence.js';
 import type { PropertyPatch } from './normalized-property.js';
 import { extractRecordFacts } from './semantic-extract.js';
+import {
+  understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
+  type PageObservation, type SearchMethod,
+} from './website-intelligence.js';
+import { getPlatformIntel, rememberPlatform } from './platform-library.js';
+import { pickParcelRecordLink } from './browser-navigator.js';
 
 // NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
 export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
@@ -93,12 +99,21 @@ function searchTermFor(key: BrowserSearchKey): { term: string; by: 'apn' | 'owne
   return null;
 }
 
+function identifierFor(key: BrowserSearchKey): { kind: SearchMethod; value: string } | null {
+  if (key.apn) return { kind: 'apn', value: [key.apn, key.county, key.state].filter(Boolean).join(' ') };
+  if (key.address) return { kind: 'address', value: [key.address, key.county, key.state].filter(Boolean).join(' ') };
+  if (key.owner) return { kind: 'owner', value: [key.owner, key.county, key.state].filter(Boolean).join(' ') };
+  return null;
+}
+
 /**
- * The LandPortal browser workflow. Open → search → open the property page → ONE
- * screenshot immediately after load → read every visible field → extract. ONE
- * screenshot per successful property is enforced by a local guard. A parked
- * driver yields an honest `parked` evidence (no fabrication). Pure given the
- * injected driver.
+ * LandPortal workflow driven by GENERALIZED Website Intelligence (no LandPortal-
+ * specific selectors): Observe → Understand → Research → Plan → Navigate →
+ * Verify → Extract → Remember. The platform is learned in the Platform
+ * Intelligence Library so reasoning improves over time. It only EXTRACTS after
+ * verifying a real record page (never a search/filter form) — Unknown over
+ * incorrect. ONE screenshot per verified property. A driver without observe() (or
+ * parked) yields honest non-fabricated evidence.
  */
 async function runLandPortalWorkflow(
   input: BrowserWorkflowInput,
@@ -107,64 +122,111 @@ async function runLandPortalWorkflow(
   timeoutMs: number,
 ): Promise<BrowserEvidence> {
   const ev = emptyEvidence('landportal', 'workflow');
-  // Declare the forbidden actions we will refuse if the workflow ever needs them.
-  // (Recorded only if encountered; here we simply never call them.)
+  const t = () => ({ timeoutMs });
   if (!driver.configured()) {
     ev.status = 'parked';
-    ev.note = 'LandPortal browser parked: no existing authenticated session / visual stack enabled. Read-only workflow + extraction are defined and will run once a session is provided. No credential is ever stored.';
+    ev.note = 'LandPortal browser parked: no authenticated session. Read-only Website-Intelligence workflow runs once a session is provided. No credential stored.';
     return ev;
   }
+  const id = identifierFor(input.searchKey);
+  if (!id) { ev.status = 'no_match'; ev.note = 'No APN / address / owner provided to search LandPortal.'; return ev; }
+  // A driver without page observation can't apply Website Intelligence reasoning;
+  // fall back to the simple search → read → extract path (used by simpler drivers).
+  if (!driver.observe) return runLandPortalLegacy(input, driver, ev, timeoutMs);
+
+  try {
+    // ── OBSERVE ───────────────────────────────────────────────────────────
+    await driver.open(LANDPORTAL_BROWSER_BASE, t());
+    ev.sourceUrls.push(LANDPORTAL_BROWSER_BASE);
+    let obs = (await driver.observe(t())) as PageObservation;
+    if (obs.loginLike) { ev.status = 'blocked'; ev.note = 'LandPortal requires login (not authenticated in the persistent session).'; rememberPlatform(LANDPORTAL_BROWSER_BASE, { authRequired: true, used: true, knownLimitations: ['requires manual login'] }); return ev; }
+
+    // ── UNDERSTAND (+ consult memory) ─────────────────────────────────────
+    const understanding = understandPlatform(obs);
+    const memory = getPlatformIntel(LANDPORTAL_BROWSER_BASE);
+    // ── RESEARCH (guidance available if needed; not blindly clicked) ──────
+    const guidance = findGuidanceLinks(obs).length;
+
+    // ── PLAN — choose the search method that matches the identifier ───────
+    let strategy = planNavigationStrategy(obs, id);
+    if (!strategy) {
+      ev.status = 'partial';
+      ev.note = `Understood LandPortal as "${understanding.platformClass}" (methods: ${understanding.availableSearchMethods.join('/') || 'none detected'}${guidance ? `; ${guidance} help links`: ''}), but found no usable ${id.kind} search control to plan a navigation.`;
+      rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, confidence: understanding.confidence, used: true, knownLimitations: ['no usable search control detected on landing'] });
+      return ev;
+    }
+
+    // ── NAVIGATE — execute the planned steps (select method, fill, submit) ─
+    for (const step of strategy.steps) {
+      if (step.action === 'select_method' && step.selector && step.text) {
+        if (driver.selectByText) await driver.selectByText(step.selector, step.text, t());
+        else if (driver.clickByText) await driver.clickByText(step.text, t());
+      } else if (step.action === 'fill' && step.selector && step.value && driver.fillAndSubmit) {
+        await driver.fillAndSubmit(step.selector, step.value, undefined, t());
+      } else if (step.action === 'click' && step.text && driver.clickByText) {
+        await driver.clickByText(step.text, t());
+      }
+    }
+
+    // ── VERIFY — confirm a record page before extracting (no false facts) ─
+    obs = (await driver.observe(t())) as PageObservation;
+    let verify = verifyTargetReached(obs, { expectIdentifier: input.searchKey.apn });
+    // If a results list, open the most likely record and re-verify.
+    if (verify.pageType === 'results_list') {
+      const rec = pickParcelRecordLink(obs.links, input.searchKey);
+      if (rec) { await driver.open(rec.href, t()); obs = (await driver.observe(t())) as PageObservation; verify = verifyTargetReached(obs, { expectIdentifier: input.searchKey.apn }); }
+    }
+    if (obs.url) ev.sourceUrls.push(obs.url);
+
+    if (!verify.reached) {
+      ev.status = 'partial';
+      ev.note = `Navigated LandPortal (${understanding.platformClass}, ${strategy.method} search) but did not reach a parcel record (page: ${verify.pageType}). ${verify.reason} No facts extracted (Unknown over incorrect).`;
+      rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, confidence: understanding.confidence, used: true, navPatterns: strategy.reason, knownLimitations: [`${strategy.method} search did not reach a record page (${verify.pageType})`] });
+      return ev;
+    }
+
+    // ── EXTRACT (verified record) + ONE screenshot ────────────────────────
+    const shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, t());
+    ev.screenshots.push(shot);
+    ev.fields = obs.fields;
+    ev.facts = extractRecordFacts(obs.fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' }).map((f) => ({ ...f, extractionMethod: `${strategy.method} search → verified record` }));
+    ev.patch = extractLandPortalFields({ url: obs.url, fields: obs.fields, snippets: [] }).patch;
+    ev.sourcesUsed = [{ type: 'landportal', url: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal', confidence: 0.85 }];
+    ev.status = ev.facts.length ? 'retrieved' : 'partial';
+
+    // ── REMEMBER / IMPROVE — store the validated strategy ─────────────────
+    rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy: strategy, navPatterns: strategy.reason, authRequired: true, confidence: 'high', used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
+    ev.note = `LandPortal understood as "${understanding.platformClass}"; ${strategy.method} search reached a verified record (${verify.reason}); ${ev.facts.length} fact(s) extracted with provenance; one screenshot.`;
+    return ev;
+  } catch (err) {
+    ev.status = 'error';
+    ev.note = `LandPortal Website-Intelligence run failed before any paid action: ${(err as Error)?.message ?? 'unknown error'}. No credit consumed.`;
+    return ev;
+  }
+}
+
+/** Legacy retrieval for drivers without observe(): open → search → read →
+ *  extract. The structured fields are the real output; one screenshot per page. */
+async function runLandPortalLegacy(input: BrowserWorkflowInput, driver: BrowserDriver, ev: BrowserEvidence, timeoutMs: number): Promise<BrowserEvidence> {
   const term = searchTermFor(input.searchKey);
-  if (!term) {
-    ev.status = 'no_match';
-    ev.note = 'No address / APN / owner provided to search LandPortal.';
-    return ev;
-  }
+  if (!term) { ev.status = 'no_match'; ev.note = 'No address / APN / owner to search LandPortal.'; return ev; }
   try {
     await driver.open(LANDPORTAL_BROWSER_BASE, { timeoutMs });
     ev.sourceUrls.push(LANDPORTAL_BROWSER_BASE);
     const searchRead = await driver.search(term.term, { timeoutMs });
-    // Navigate into the property page (the search lands on it or a result that
-    // opens it). The driver's search returns the resolved property page read.
-    const propRead = searchRead.url && /property|parcel|detail/i.test(searchRead.url)
-      ? searchRead
-      : await driver.readFields({ timeoutMs });
+    const propRead = searchRead.url && /property|parcel|detail/i.test(searchRead.url) ? searchRead : await driver.readFields({ timeoutMs });
     if (propRead.url) ev.sourceUrls.push(propRead.url);
-
-    // ── ONE screenshot, immediately after the property page loads ──────────
-    let screenshotTaken = false;
-    const captureOnce = async (): Promise<void> => {
-      if (screenshotTaken) return; // exactly one per property
-      const shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { timeoutMs });
-      ev.screenshots.push(shot);
-      screenshotTaken = true;
-    };
-    await captureOnce();
-
-    // ── Read EVERY visible field (expand panels are read-only) ─────────────
+    ev.screenshots.push(await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { timeoutMs }));
     const fullRead = await driver.readFields({ timeoutMs });
-    const merged: BrowserPageRead = {
-      url: fullRead.url || propRead.url,
-      fields: { ...propRead.fields, ...fullRead.fields },
-      snippets: [...propRead.snippets, ...fullRead.snippets],
-    };
+    const merged: BrowserPageRead = { url: fullRead.url || propRead.url, fields: { ...propRead.fields, ...fullRead.fields }, snippets: [] };
     const { patch, fields } = extractLandPortalFields(merged);
-    ev.patch = patch;
-    ev.fields = fields;
-    // Provenance-labeled facts (origin: landportal). All LandPortal-derived facts
-    // are clearly labeled as such; never a guess (only labeled fields become facts).
+    ev.patch = patch; ev.fields = fields;
     ev.facts = extractRecordFacts(fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: merged.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' });
     ev.sourcesUsed = [{ type: 'landportal', url: merged.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal', confidence: 0.8 }];
     ev.status = Object.keys(fields).length ? 'retrieved' : 'partial';
-    ev.note = ev.status === 'retrieved'
-      ? `LandPortal property opened (${term.by} search); ${Object.keys(fields).length} fields read; one screenshot captured as visual proof.`
-      : 'LandPortal page opened but no readable property fields were found.';
+    ev.note = ev.status === 'retrieved' ? `LandPortal property opened (${term.by} search); ${Object.keys(fields).length} fields read; one screenshot.` : 'LandPortal page opened but no readable property fields were found.';
     return ev;
-  } catch (err) {
-    ev.status = 'error';
-    ev.note = `LandPortal browser run failed before any paid action: ${(err as Error)?.message ?? 'unknown error'}. No credit consumed.`;
-    return ev;
-  }
+  } catch (err) { ev.status = 'error'; ev.note = `LandPortal run failed before any paid action: ${(err as Error)?.message ?? 'unknown'}. No credit consumed.`; return ev; }
 }
 
 export function makeLandPortalBrowser(deps: LandPortalBrowserDeps = {}): BrowserService {

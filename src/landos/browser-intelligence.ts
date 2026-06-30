@@ -200,6 +200,14 @@ export interface BrowserDriver {
   /** Type a value into a selector + submit (read-only navigation of a public
    *  search form). action='search'. Returns the resulting page read. */
   fillAndSubmit?(fieldSelector: string, value: string, submitSelector: string | undefined, opts: { timeoutMs: number }): Promise<BrowserPageRead>;
+  /** OBSERVE: rich page signals for Website Intelligence (title/headings/nav/
+   *  search controls + select options/buttons/links/map/table/fields). Read-only. */
+  observe?(opts: { timeoutMs: number }): Promise<unknown>;
+  /** Select an option (by visible text) in a select/dropdown — for a method
+   *  selector (Address/APN/Owner). Read-only navigation. */
+  selectByText?(selector: string, optionText: string, opts: { timeoutMs: number }): Promise<void>;
+  /** Click a control by its visible text (tab/button/menu). Read-only navigation. */
+  clickByText?(text: string, opts: { timeoutMs: number }): Promise<void>;
   /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
   act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
 }

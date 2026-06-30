@@ -27,6 +27,7 @@ import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browse
 declare const document: any;
 declare const Event: any;
 declare const window: any;
+declare const location: any;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Injectable Puppeteer seam (tests inject a fake; prod loads puppeteer-core)
@@ -519,6 +520,66 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 3500)));
       const read = await readPage(page);
       return { url: read.url, fields: read.fields, snippets: read.snippets };
+    },
+    async observe() {
+      const page = await getWorkingPage();
+      const OBSERVE = (): unknown => {
+        const cssEscape = (s: string) => (window as any).CSS && (window as any).CSS.escape ? (window as any).CSS.escape(s) : s;
+        const sel = (el: any): string => el.id ? '#' + cssEscape(el.id) : el.name ? '[name="' + el.name + '"]' : '';
+        const txt = (el: any, n = 60): string => ((el && el.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, n);
+        const labelFor = (el: any): string => {
+          if (el.id) { const lab = document.querySelector('label[for="' + el.id + '"]'); if (lab) return txt(lab); }
+          const wrap = el.closest && el.closest('label'); if (wrap) return txt(wrap);
+          const prev = el.previousElementSibling; if (prev && (prev.textContent || '').length < 60) return txt(prev);
+          return '';
+        };
+        const headings = Array.from(document.querySelectorAll('h1,h2,h3')).map((h: any) => txt(h)).filter(Boolean).slice(0, 20);
+        const navItems = Array.from(document.querySelectorAll('nav a, nav button, [class*="sidebar" i] a, [class*="sidebar" i] button, [class*="menu" i] a, [role=tab]')).map((a: any) => txt(a, 40)).filter(Boolean).slice(0, 40);
+        const buttons = Array.from(document.querySelectorAll('button, input[type=submit], input[type=button], [role=button]')).map((b: any) => (b.value || txt(b, 40))).filter(Boolean).slice(0, 40);
+        const searchControls: any[] = [];
+        Array.from(document.querySelectorAll('input, select')).slice(0, 60).forEach((el: any) => {
+          const type = (el.getAttribute('type') || el.tagName || 'text').toLowerCase();
+          if (/hidden|checkbox|radio|file|submit|button/.test(type)) return;
+          const s = sel(el); if (!s) return;
+          const options = el.tagName === 'SELECT' ? Array.from(el.options || []).map((o: any) => txt(o, 40)).filter(Boolean).slice(0, 30) : undefined;
+          searchControls.push({ selector: s, label: labelFor(el) || undefined, placeholder: el.placeholder || undefined, name: el.name || undefined, id: el.id || undefined, type: el.tagName === 'SELECT' ? 'select-one' : type, options });
+        });
+        const links: any[] = [];
+        document.querySelectorAll('a[href]').forEach((a: any) => { const href = a.href || ''; if (href && /^https?:/i.test(href)) links.push({ text: txt(a, 80), href }); });
+        const bodyText = (document.body && document.body.innerText) || '';
+        const hasMap = !!(document.querySelector('.leaflet-container, .mapboxgl-canvas, [class*="esri" i], canvas, [class*="map" i] canvas, [id*="map" i]') || /\bmap\b/i.test(headings.join(' ')));
+        const hasTable = !!document.querySelector('table tr');
+        // visible label:value fields (definition lists, two-cell rows)
+        const fields: Record<string, string> = {};
+        const addF = (k: string, v: string) => { const key = (k || '').replace(/\s+/g, ' ').trim().replace(/[:#]+$/, ''); const val = (v || '').replace(/\s+/g, ' ').trim(); if (key && val && key.length <= 40 && !fields[key]) fields[key] = val; };
+        document.querySelectorAll('dl').forEach((dl: any) => { const dts = dl.querySelectorAll('dt'); const dds = dl.querySelectorAll('dd'); for (let i = 0; i < Math.min(dts.length, dds.length); i++) addF(dts[i].textContent || '', dds[i].textContent || ''); });
+        document.querySelectorAll('tr').forEach((tr: any) => { const cells = tr.querySelectorAll('th,td'); if (cells.length === 2) addF(cells[0].textContent || '', cells[1].textContent || ''); });
+        const loginLike = /sign in|log in|login|password/i.test(bodyText.slice(0, 2000)) && Object.keys(fields).length === 0;
+        return { url: location.href, title: document.title || '', headings, navItems, buttons, searchControls, links: links.slice(0, 300), hasMap, hasTable, fields, loginLike };
+      };
+      return page.evaluate<unknown>(OBSERVE);
+    },
+    async selectByText(selector, optionText) {
+      const page = await getWorkingPage();
+      const SELECT = (s: string, t: string): boolean => {
+        const el = document.querySelector(s) as any; if (!el) return false;
+        if (el.tagName === 'SELECT') { const opt = Array.from(el.options).find((o: any) => (o.textContent || '').trim().toLowerCase().includes(t.toLowerCase())); if (opt) { el.value = (opt as any).value; el.dispatchEvent(new Event('change', { bubbles: true })); return true; } }
+        return false;
+      };
+      await page.evaluate<boolean>(SELECT as unknown as () => boolean, selector, optionText);
+      await new Promise((r) => setTimeout(r, 400));
+    },
+    async clickByText(text) {
+      const page = await getWorkingPage();
+      const CLICK = (t: string): boolean => {
+        const els = Array.from(document.querySelectorAll('button, a, [role=tab], [role=button], li, span'));
+        const el = els.find((e: any) => ((e.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase() === t.toLowerCase())) as any
+          || els.find((e: any) => ((e.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase().includes(t.toLowerCase()) && (e.textContent || '').length < 40)) as any;
+        if (el) { el.click(); return true; }
+        return false;
+      };
+      await page.evaluate<boolean>(CLICK as unknown as () => boolean, text);
+      await new Promise((r) => setTimeout(r, 1200));
     },
     async screenshot(purpose): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();

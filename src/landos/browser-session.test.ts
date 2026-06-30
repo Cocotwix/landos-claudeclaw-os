@@ -17,8 +17,16 @@ function fakePage(canned: { url: string; fields: Record<string, string>; snippet
     async goto(u: string) { state.url = u; state.gotos += 1; },
     url() { return state.url || canned.url; },
     async evaluate<T>(_fn: unknown, ...args: unknown[]): Promise<T> {
-      if (args.length && typeof args[0] === 'string') return true as unknown as T; // SUBMIT
-      return { fields: canned.fields, snippets: canned.snippets ?? [], loginLike: !!canned.loginLike } as unknown as T;
+      if (args.length && typeof args[0] === 'string') return true as unknown as T; // SUBMIT / SELECT / CLICK
+      // Doubles as a readPage result AND a PageObservation (observe()): extra keys
+      // are harmless to readPage and give the Website-Intelligence path a usable
+      // APN search control + record fields to reach a verified record.
+      return {
+        url: state.url || canned.url, title: 'Land Portal', headings: [], navItems: [], buttons: [],
+        searchControls: [{ selector: '#apn', label: 'APN' }, { selector: '#address', label: 'Address' }],
+        links: [], hasMap: false, hasTable: false,
+        fields: canned.fields, snippets: canned.snippets ?? [], loginLike: !!canned.loginLike,
+      } as unknown as T;
     },
     async screenshot() { state.shots += 1; },
   };
