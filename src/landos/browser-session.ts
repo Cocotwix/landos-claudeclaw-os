@@ -68,7 +68,7 @@ export interface BrowserSessionConfig {
 }
 
 /** LandPortal entry URL opened in the session for manual login / auth detection. */
-export const LANDPORTAL_SESSION_URL = 'https://www.landportal.com/';
+export const LANDPORTAL_SESSION_URL = 'https://landportal.com/';
 
 /** Standard Google Chrome install paths (Windows). Edge is intentionally excluded. */
 export const CHROME_CANDIDATE_PATHS = [

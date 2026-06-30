@@ -22,7 +22,8 @@ import {
 import type { PropertyPatch } from './normalized-property.js';
 import { extractRecordFacts } from './semantic-extract.js';
 
-export const LANDPORTAL_BROWSER_BASE = 'https://www.landportal.com';
+// NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
+export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
 export const LANDPORTAL_SCREENSHOT_PURPOSE = 'landportal_property_loaded';
 
 export interface LandPortalBrowserDeps {
