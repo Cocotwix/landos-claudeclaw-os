@@ -192,6 +192,8 @@ export interface BrowserDriver {
   readFields(opts: { timeoutMs: number }): Promise<BrowserPageRead>;
   /** Capture ONE screenshot of the current page. action='capture_screenshots'. */
   screenshot(purpose: string, opts: { timeoutMs: number }): Promise<BrowserScreenshot>;
+  /** Read visible anchor links (text + href) — used for NETR routing. Read-only. */
+  readLinks?(opts: { timeoutMs: number }): Promise<Array<{ text: string; href: string }>>;
   /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
   act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
 }
@@ -203,6 +205,22 @@ export interface BrowserDriver {
 export interface BlockedAction {
   action: string;
   reason: string;
+}
+
+/** A single browser-derived public-record fact with MANDATORY provenance. Never
+ *  a guess: status is 'extracted' only when confidently read; otherwise
+ *  'needs_verification' or 'not_found'. Origin records where it came from. */
+export type FactOrigin = 'landportal' | 'netr_county' | 'search_fallback';
+export interface BrowserFact {
+  key: string;
+  label: string;
+  value: string;
+  sourceName: string;
+  sourceType: string;
+  sourceUrl: string;
+  confidence: 'high' | 'medium' | 'low';
+  origin: FactOrigin;
+  status: 'extracted' | 'needs_verification' | 'not_found';
 }
 
 export type BrowserRunStatus = 'retrieved' | 'partial' | 'no_match' | 'parked' | 'blocked' | 'error';
@@ -217,6 +235,11 @@ export interface BrowserEvidence {
   patch: PropertyPatch;
   /** All visible fields read (superset of patch — raw evidence). */
   fields: Record<string, string>;
+  /** Provenance-labeled public-record facts extracted (the operator-facing
+   *  enrichment). Empty until a real page is read. */
+  facts: BrowserFact[];
+  /** County source routing actually used (NETR vs search fallback), when county. */
+  sourcesUsed: Array<{ type: string; url: string; origin: FactOrigin; confidence: number }>;
   /** ONE screenshot per successful property (LandPortal); county may add useful shots. */
   screenshots: BrowserScreenshot[];
   /** Actions that were NOT performed because they could spend money / write. */
@@ -241,7 +264,7 @@ export function guardedAction(action: string): ReadOnlyAction {
 }
 
 export function emptyEvidence(service: BrowserServiceId, mode: BrowserMode): BrowserEvidence {
-  return { service, mode, status: 'parked', patch: {}, fields: {}, screenshots: [], blocked: [], sourceUrls: [], note: '' };
+  return { service, mode, status: 'parked', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: '' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -124,10 +124,15 @@ describe('Deal Card panel — concise DD operator brief', () => {
     expect(SRC).toMatch(/Absorption \(secondary\)/);
   });
 
-  it('renders a Browser Intelligence status block (no logs/internals)', () => {
+  it('renders the Browser Intelligence retrieval block with provenance labels (no logs/internals)', () => {
     expect(SRC).toMatch(/function BrowserIntelligenceSection/);
     expect(SRC).toMatch(/<BrowserIntelligenceSection/);
-    expect(SRC).toMatch(/Screenshot available/);
+    // LandPortal-first → NETR-routed county; operator-triggered retrieval.
+    expect(SRC).toMatch(/Retrieve \(LandPortal → NETR county\)/);
+    expect(SRC).toMatch(/deal-cards\/\$\{dealId\}\/browser-intel/);
+    // Provenance: each fact/source labels LandPortal vs NETR→county vs search fallback.
+    expect(SRC).toMatch(/NETR→county/);
+    expect(SRC).toMatch(/search fallback/);
   });
 });
 

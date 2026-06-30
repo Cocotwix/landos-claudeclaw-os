@@ -16,11 +16,19 @@
 
 import {
   type BrowserService, type BrowserDriver, type BrowserEvidence, type BrowserWorkflowInput,
-  type BrowserSearchKey,
+  type BrowserSearchKey, type BrowserFact,
   makeParkedDriver, emptyEvidence, routeBrowserQuestion, recordBlocked,
 } from './browser-intelligence.js';
-import { planNetrWorkflow, countySearchFallbackQuery, type NetrStep } from './browser-retrieval.js';
+import type { PropertyPatch } from './normalized-property.js';
+import { planNetrWorkflow, buildNetrStateUrl, type NetrStep } from './browser-retrieval.js';
 import { COUNTY_WORKFLOW_FOR, type DdField } from './missing-field-analysis.js';
+import {
+  extractCountySources, officialSearchQuery, pickOfficialResult, netrIsStale,
+  searchEngineUrl, unwrapSearchResults,
+  COUNTY_SOURCE_TYPES, type CountySourceLink, type CountySourceType,
+} from './netr-routing.js';
+import { extractRecordFacts } from './semantic-extract.js';
+import { getCountySources, saveCountySources, isCountyCacheFresh } from './county-source-map.js';
 
 /** County workflow targets (the public resources the researcher navigates). */
 export const COUNTY_WORKFLOWS = [
@@ -58,10 +66,17 @@ function workflowsForNeeded(neededFields?: string[]): CountyWorkflow[] {
 }
 
 /**
- * County Records workflow. For each needed workflow, plan the NETR navigation
- * (with per-step intelligent-search fallback when a link fails) and, with a live
- * driver, navigate → read → extract. Gap-fill only (no duplicate retrieval). A
- * parked driver returns honest `parked` evidence listing the planned navigation.
+ * County Records workflow — REAL NETR-routed semantic retrieval (no county-
+ * specific scrapers). Runs only after LandPortal. Steps:
+ *   1. Reuse the County Source Map cache when fresh (routing is reused per county).
+ *   2. Else route via NETR Online: open the state page → find the county link →
+ *      read the county page links → classify official sources semantically.
+ *   3. If NETR is stale/missing core sources → intelligent web search for the
+ *      official county site (prefer .gov / county-owned), labeled search_fallback.
+ *   4. Persist the routing to the County Source Map.
+ *   5. Visit the official sources → semantic-extract public-record facts with full
+ *      provenance (never guessing). GIS/recorder/planning are kept as labeled links.
+ * Parked driver returns honest `parked` evidence with the planned routing.
  */
 async function runCountyWorkflow(
   input: BrowserWorkflowInput,
@@ -71,64 +86,121 @@ async function runCountyWorkflow(
 ): Promise<BrowserEvidence> {
   const ev = emptyEvidence('county_records', 'workflow');
   const key = input.searchKey;
+  const state = (key.state ?? '').trim();
+  const county = (key.county ?? '').replace(/\s+county$/i, '').trim();
   const targets = workflowsForNeeded(input.neededFields);
-  const netr = planNetrWorkflow({ county: key.county, state: key.state }, { configured: driver.configured() });
+  const plan = planNetrWorkflow({ county, state }, { configured: driver.configured() });
 
   if (!driver.configured()) {
     ev.status = 'parked';
-    ev.sourceUrls.push(netr.directoryUrl);
-    ev.note = `County Records browser parked: visual stack not enabled. Planned gap-fill workflows: ${targets.join(', ')}. NETR navigation + intelligent-search fallback are defined; nothing is collected twice (LandPortal-first). No login/credential required for public records.`;
+    ev.sourceUrls.push(plan.directoryUrl);
+    ev.note = `County Records parked (no live session). Plan: route ${county || '<county>'}, ${state || '<state>'} via NETR → official sources (${targets.join(', ')}); search fallback if NETR is stale. Runs only after LandPortal; no credential/login for public records.`;
+    return ev;
+  }
+  if (!state || !county) {
+    ev.status = 'no_match';
+    ev.note = 'Need state + county to route county records (provide a verified locality first).';
     return ev;
   }
 
-  try {
-    const collected: Record<string, string> = {};
-    for (const wf of targets) {
-      const step = WORKFLOW_NETR_STEP[wf] ?? 'locate_county';
-      const fallbackQuery = countySearchFallbackQuery({ county: key.county, state: key.state, step });
-      // Try the NETR directory first; on a failed/changed link, search intelligently.
-      let read;
-      try {
-        const entry = await driver.open(netr.directoryUrl, { timeoutMs });
-        ev.sourceUrls.push(entry.url || netr.directoryUrl);
-        read = await driver.search(searchTerm(key), { timeoutMs });
-      } catch {
-        // NETR link failed — find the current county site via intelligent search.
-        read = await driver.search(fallbackQuery, { timeoutMs });
-      }
-      if (read?.url) ev.sourceUrls.push(read.url);
-      for (const [k, v] of Object.entries(read?.fields ?? {})) {
-        if (v && !collected[k]) collected[k] = String(v).trim();
+  // ── 1. County Source Map cache (reuse routing across leads) ─────────────
+  let sources: CountySourceLink[] = [];
+  let netrUrl: string | null = null;
+  let usedSearchFallback = false;
+  const cached = getCountySources(state, county);
+  if (isCountyCacheFresh(cached) && cached) {
+    sources = cached.sources; netrUrl = cached.netrUrl; usedSearchFallback = cached.usedSearchFallback;
+    ev.sourceUrls.push('cache:county-source-map');
+  } else {
+    // ── 2. NETR routing: state page → county link → county sources ────────
+    try {
+      const stateUrl = buildNetrStateUrl(state);
+      await driver.open(stateUrl, { timeoutMs });
+      const stateLinks = (await driver.readLinks?.({ timeoutMs })) ?? [];
+      const countyRx = new RegExp(`\\b${county.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      const countyLink = stateLinks.find((l) => countyRx.test(l.text) && /netronline/i.test(l.href));
+      netrUrl = countyLink?.href ?? stateUrl;
+      const countyPage = await driver.open(netrUrl, { timeoutMs });
+      ev.sourceUrls.push(countyPage.url || netrUrl);
+      const countyLinks = (await driver.readLinks?.({ timeoutMs })) ?? [];
+      sources = extractCountySources(countyLinks, { origin: 'netr', county, state });
+    } catch { sources = []; }
+
+    // ── 3. Search fallback for missing core sources (NETR stale/dead) ──────
+    // Real web search (static-results engine the browser can read), not a page
+    // form. Prefer official .gov / county sources; label as search_fallback.
+    if (netrIsStale(sources)) {
+      usedSearchFallback = true;
+      for (const type of ['assessor', 'appraiser', 'tax', 'recorder', 'gis'] as CountySourceType[]) {
+        if (sources.some((s) => s.type === type)) continue;
+        try {
+          await driver.open(searchEngineUrl(officialSearchQuery(type, county, state)), { timeoutMs });
+          const raw = (await driver.readLinks?.({ timeoutMs })) ?? [];
+          const picked = pickOfficialResult(unwrapSearchResults(raw), type, county, state);
+          if (picked) sources.push(picked);
+        } catch { /* keep going */ }
       }
     }
-    ev.fields = collected;
-    ev.patch = countyPatch(collected);
-    ev.status = Object.keys(collected).length ? 'retrieved' : 'partial';
-    ev.note = `County Records filled gaps via ${targets.join(', ')} (public records; LandPortal-first, no duplicate retrieval).`;
-    return ev;
-  } catch (err) {
-    ev.status = 'error';
-    ev.note = `County Records run stopped before any payment/login: ${(err as Error)?.message ?? 'unknown error'}.`;
-    return ev;
+
+    // ── 4. Persist routing to the County Source Map ───────────────────────
+    const status: 'routed' | 'partial' | 'not_found' = sources.length === 0 ? 'not_found' : netrIsStale(sources) ? 'partial' : 'routed';
+    const confidence: 'high' | 'medium' | 'low' = status === 'routed' ? 'high' : status === 'partial' ? 'medium' : 'low';
+    try {
+      saveCountySources({ state, county, netrUrl, sources, usedSearchFallback, status, confidence, notes: usedSearchFallback ? 'NETR thin/stale — used official search fallback for missing sources.' : 'Routed via NETR Online.' });
+    } catch { /* cache best-effort */ }
   }
+
+  ev.sourcesUsed = sources.map((s) => ({ type: s.type, url: s.url, origin: s.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const, confidence: s.confidence }));
+
+  // ── 5. Visit official sources → semantic-extract facts (with provenance) ─
+  const facts: BrowserFact[] = [];
+  const priority: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'recorder', 'gis', 'planning', 'building'];
+  const ordered = [...sources].sort((a, b) => priority.indexOf(a.type) - priority.indexOf(b.type));
+  let screenshotTaken = false;
+  for (const src of ordered) {
+    try {
+      const page = await driver.open(src.url, { timeoutMs });
+      const read = await driver.readFields({ timeoutMs });
+      const merged = { ...page.fields, ...read.fields };
+      const ext = extractRecordFacts(merged, {
+        sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url,
+        origin: src.origin === 'netr' ? 'netr_county' : 'search_fallback',
+      });
+      // Any official source with no labeled record fields (landing/search pages,
+      // map portals) is still surfaced as a clickable, provenance-labeled LINK so
+      // the operator gets every official county source on the Deal Card.
+      if (ext.length === 0) {
+        facts.push({ key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: src.origin === 'netr' ? 'netr_county' : 'search_fallback', status: 'extracted' });
+      } else {
+        facts.push(...ext);
+      }
+      if (!screenshotTaken && ext.length > 0) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
+    } catch { /* try the next source; never stop on one */ }
+  }
+
+  ev.facts = facts;
+  ev.patch = factsToPatch(facts);
+  const extractedCount = facts.filter((f) => f.status === 'extracted').length;
+  ev.status = extractedCount > 0 ? 'retrieved' : sources.length > 0 ? 'partial' : 'no_match';
+  ev.note = sources.length === 0
+    ? `No official county source could be routed for ${county}, ${state} (NETR + search). Records marked Needs Verification.`
+    : `County Records via ${usedSearchFallback ? 'NETR + official search fallback' : 'NETR Online'}: ${sources.length} official source(s) (${ev.sourcesUsed.map((s) => s.type).join(', ')}); ${extractedCount} public-record fact(s) extracted with provenance. LandPortal-first; no duplicate retrieval.`;
+  return ev;
 }
 
-function searchTerm(key: BrowserSearchKey): string {
-  return [key.apn, key.address, key.owner, key.county, key.state].filter(Boolean).join(' ');
+function labelFor(t: CountySourceType): string {
+  return ({ assessor: 'Assessor', appraiser: 'Property Appraiser', tax: 'Tax Office', gis: 'GIS', recorder: 'Recorder / Register of Deeds', planning: 'Planning & Zoning', building: 'Building Dept' } as Record<CountySourceType, string>)[t];
 }
 
-function countyPatch(fields: Record<string, string>): BrowserEvidence['patch'] {
-  const patch: BrowserEvidence['patch'] = {};
-  const get = (...names: string[]) => {
-    const k = Object.keys(fields).find((x) => names.some((n) => x.toLowerCase().includes(n)));
-    return k ? fields[k] : undefined;
-  };
-  const owner = get('owner');
-  if (owner) patch.owner = owner;
-  const apn = get('apn', 'parcel id', 'parcel number');
-  if (apn) patch.apn = apn;
-  const county = get('county');
-  if (county) patch.county = county;
+/** Map extracted county facts → a property patch (gap-fill only; mergeNormalized
+ *  never overwrites a verified-source value). Identity facts only when official. */
+function factsToPatch(facts: BrowserFact[]): PropertyPatch {
+  const patch: PropertyPatch = {};
+  const fact = (key: string) => facts.find((f) => f.key === key && f.status === 'extracted');
+  const owner = fact('owner'); if (owner) patch.owner = owner.value;
+  const apn = fact('apn'); if (apn) patch.apn = apn.value;
+  const situs = fact('situsAddress'); if (situs) patch.address = situs.value;
+  const acreage = fact('acreage'); if (acreage) { const n = Number(acreage.value.replace(/[^0-9.]/g, '')); if (Number.isFinite(n) && n > 0) patch.acres = n; }
   return patch;
 }
 

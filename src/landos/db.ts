@@ -1091,6 +1091,26 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_aip_knowledge_cat ON landos_aip_knowledge(category, status);
     CREATE INDEX IF NOT EXISTS idx_aip_playbook_section ON landos_aip_playbook(section, status, version DESC);
+
+    -- County Source Map: reusable public-record routing by state + county.
+    -- NETR-first; records the official county source links found (assessor / tax /
+    -- GIS / recorder / planning / appraiser / building), how they were found
+    -- (NETR vs search fallback), status, confidence, and when last checked. No
+    -- credentials, no secrets — only public routing metadata.
+    CREATE TABLE IF NOT EXISTS landos_county_source_map (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      state           TEXT NOT NULL DEFAULT '',
+      county          TEXT NOT NULL DEFAULT '',
+      netr_url        TEXT,
+      sources_json    TEXT NOT NULL DEFAULT '{}',
+      used_search_fallback INTEGER NOT NULL DEFAULT 0,
+      status          TEXT NOT NULL DEFAULT 'unknown',
+      confidence      TEXT NOT NULL DEFAULT 'low',
+      notes           TEXT NOT NULL DEFAULT '',
+      last_checked_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(state, county)
+    );
+    CREATE INDEX IF NOT EXISTS idx_county_source_map ON landos_county_source_map(state, county);
   `);
 }
 

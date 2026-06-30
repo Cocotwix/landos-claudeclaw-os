@@ -491,34 +491,75 @@ function ExecutiveSummarySection({ es }: { es?: ExecSummaryView | null }) {
   );
 }
 
-// Browser Intelligence — a clean status block (Phase 6). Browser evidence appears
-// naturally: LandPortal (property retrieved + screenshot), then County Records
-// (deed / GIS / tax gap-fill). Never dumps logs or exposes workflow internals.
-// Parked (read-only, no session) reads honestly until a session is enabled.
-function BrowserIntelligenceSection({ report }: { report: ReportView }) {
-  const ev = report.browserEvidence ?? [
-    { service: 'landportal', status: 'parked', screenshotAvailable: false, items: [] },
-    { service: 'county_records', status: 'parked', screenshotAvailable: false, items: [] },
-  ] as BrowserEvidenceView[];
-  const label = (s: BrowserEvidenceView['service']) => (s === 'landportal' ? 'LandPortal' : 'County Records');
-  const mark = (st: BrowserEvidenceView['status']) => (st === 'retrieved' || st === 'partial' ? '✓' : st === 'blocked' || st === 'error' ? '✕' : '○');
+// Browser Intelligence — LandPortal first, then County Records routed via NETR
+// (semantic extraction, no per-county scrapers). The operator clicks Retrieve to
+// pull public-record facts; each fact shows source / type / URL / confidence and
+// whether it came from LandPortal, an NETR-routed county source, or a search
+// fallback. Read-only; never dumps logs or workflow internals.
+interface BrowserFactView { key: string; label: string; value: string; sourceName: string; sourceType: string; sourceUrl: string; confidence: string; origin: string; status: string }
+interface BrowserSourceView { type: string; url: string; origin: string; confidence: number }
+interface BrowserEvView { service: string; status: string; facts: BrowserFactView[]; sourcesUsed: BrowserSourceView[]; screenshotCount: number; note: string }
+
+function originBadge(o: string): string {
+  if (o === 'landportal') return 'LandPortal';
+  if (o === 'netr_county') return 'NETR→county';
+  if (o === 'search_fallback') return 'search fallback';
+  return o;
+}
+
+function BrowserIntelligenceSection({ dealId }: { dealId?: number }) {
+  const [data, setData] = useState<{ landportal: BrowserEvView; countyRecords: BrowserEvView; countySourceMap?: any } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function retrieve() {
+    if (!dealId) return;
+    setBusy(true); setErr(null);
+    try { setData(await apiPost(`/api/landos/deal-cards/${dealId}/browser-intel`, {})); }
+    catch (e: any) { setErr(e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const renderEv = (label: string, e?: BrowserEvView) => (
+    <div class="text-[12px]">
+      <span class="text-[var(--color-text)] font-medium">{label}</span>
+      <span class="text-[11px] text-[var(--color-text-faint)]"> · {e ? e.status : 'not run'}</span>
+      {e && e.sourcesUsed.length > 0 && (
+        <div class="ml-3 mt-0.5 flex flex-wrap gap-1">
+          {e.sourcesUsed.map((s, i) => <span key={i} class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{s.type} · {originBadge(s.origin)}</span>)}
+        </div>
+      )}
+      {e && e.facts.filter((f) => f.status === 'extracted').length > 0 && (
+        <ul class="ml-3 mt-1 space-y-0.5">
+          {e.facts.filter((f) => f.status === 'extracted').map((f, i) => (
+            <li key={i} class="text-[11px] text-[var(--color-text-muted)]">
+              <span class="text-[var(--color-status-done)]">✓</span> <span class="text-[var(--color-text)]">{f.label}:</span> {f.value || (f.sourceUrl ? <a href={f.sourceUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">link</a> : '—')}
+              <span class="text-[10px] text-[var(--color-text-faint)]"> [{f.sourceName} · {f.confidence} · {originBadge(f.origin)}]</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {e && e.note && <div class="ml-3 text-[10px] text-[var(--color-text-faint)] mt-0.5">{e.note}</div>}
+    </div>
+  );
+
   return (
-    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Browser Intelligence</div>
-      <div class="space-y-1">
-        {ev.map((e) => (
-          <div key={e.service} class="text-[12px]">
-            <span class="text-[var(--color-text)] font-medium">{label(e.service)}</span>
-            <span class="text-[11px] text-[var(--color-text-faint)]"> · {e.status === 'parked' ? 'read-only, session not enabled (parked)' : e.status}</span>
-            {(e.status === 'retrieved' || e.status === 'partial') && (
-              <ul class="mt-0.5 ml-3">
-                {e.screenshotAvailable && <li class="text-[11px] text-[var(--color-status-done)]">✓ Screenshot available</li>}
-                {e.items.map((it, i) => <li key={i} class="text-[11px] text-[var(--color-status-done)]">{mark(e.status)} {it}</li>)}
-              </ul>
-            )}
-          </div>
-        ))}
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Browser Intelligence — public records</div>
+        <button type="button" onClick={() => void retrieve()} disabled={busy || !dealId}
+          class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
+          {busy ? 'Retrieving…' : 'Retrieve (LandPortal → NETR county)'}
+        </button>
       </div>
+      {!data && !err && <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal first (after your manual login), then County Records routed through NETR Online with official-source search fallback. Click Retrieve. Read-only; no credentials, no paid actions.</div>}
+      {err && <div class="text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      {data && (
+        <div class="space-y-2">
+          {renderEv('LandPortal', data.landportal)}
+          {renderEv('County Records (NETR-routed)', data.countyRecords)}
+        </div>
+      )}
     </div>
   );
 }
@@ -2158,7 +2199,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 <ConfirmBeforeOfferSection es={execSummary} report={report} />
 
                 {/* Browser Intelligence status — LandPortal-first, then County. */}
-                <BrowserIntelligenceSection report={report} />
+                <BrowserIntelligenceSection dealId={deal?.id} />
 
                 {/* Raw comparable sales + active listings + provider chain — collapsed. */}
                 <Collapsible title="Comparable sales & active listings (raw)">

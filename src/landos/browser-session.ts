@@ -464,6 +464,18 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const read = await readPage(page);
       return { url: read.url, fields: read.fields, snippets: read.snippets };
     },
+    async readLinks() {
+      const page = await getWorkingPage();
+      const READ_LINKS = (): Array<{ text: string; href: string }> => {
+        const out: Array<{ text: string; href: string }> = [];
+        document.querySelectorAll('a[href]').forEach((a: any) => {
+          const href = a.href || ''; const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+          if (href && /^https?:/i.test(href)) out.push({ text: text.slice(0, 100), href });
+        });
+        return out.slice(0, 400);
+      };
+      return page.evaluate<Array<{ text: string; href: string }>>(READ_LINKS);
+    },
     async screenshot(purpose): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();
       const dir = cfg.screenshotDir;

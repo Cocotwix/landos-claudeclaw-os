@@ -20,6 +20,7 @@ import {
   makeParkedDriver, emptyEvidence, recordBlocked, routeBrowserQuestion,
 } from './browser-intelligence.js';
 import type { PropertyPatch } from './normalized-property.js';
+import { extractRecordFacts } from './semantic-extract.js';
 
 export const LANDPORTAL_BROWSER_BASE = 'https://www.landportal.com';
 export const LANDPORTAL_SCREENSHOT_PURPOSE = 'landportal_property_loaded';
@@ -149,6 +150,10 @@ async function runLandPortalWorkflow(
     const { patch, fields } = extractLandPortalFields(merged);
     ev.patch = patch;
     ev.fields = fields;
+    // Provenance-labeled facts (origin: landportal). All LandPortal-derived facts
+    // are clearly labeled as such; never a guess (only labeled fields become facts).
+    ev.facts = extractRecordFacts(fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: merged.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' });
+    ev.sourcesUsed = [{ type: 'landportal', url: merged.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal', confidence: 0.8 }];
     ev.status = Object.keys(fields).length ? 'retrieved' : 'partial';
     ev.note = ev.status === 'retrieved'
       ? `LandPortal property opened (${term.by} search); ${Object.keys(fields).length} fields read; one screenshot captured as visual proof.`

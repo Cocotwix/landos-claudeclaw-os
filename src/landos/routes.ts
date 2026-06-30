@@ -103,6 +103,7 @@ import { makeLandPortalBrowser } from './landportal-browser.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion } from './browser-intelligence.js';
 import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession } from './browser-session.js';
+import { getCountySources } from './county-source-map.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
@@ -198,6 +199,16 @@ async function verifyFromFields(fields: ParsedIntakeFields, timeoutMs: number): 
   } catch {
     return mapResolveToVerification({ text, hasIdentifierInput: true, resolve: null, unavailable: true });
   }
+}
+
+/** Operator-facing browser evidence: status, provenance-labeled facts, the
+ *  official sources routed, and a clean note — never a raw log/field dump. */
+function redactEvidence(ev: { service: string; mode: string; status: string; facts: unknown[]; sourcesUsed: unknown[]; screenshots: unknown[]; blocked: unknown[]; note: string }): Record<string, unknown> {
+  return {
+    service: ev.service, mode: ev.mode, status: ev.status,
+    facts: ev.facts, sourcesUsed: ev.sourcesUsed,
+    screenshotCount: ev.screenshots.length, blocked: ev.blocked, note: ev.note,
+  };
 }
 
 /** Live deps for the Property Resolution Engine. Free providers (Census/Photon)
@@ -2067,6 +2078,43 @@ export function registerLandosRoutes(app: Hono): void {
   app.post('/api/landos/browser/open-landportal', async (c) => {
     const result = await openLandPortalInSession();
     return c.json({ landportal: result });
+  });
+
+  // Read the persistent County Source Map (reusable NETR-routed county sources).
+  // Public routing metadata only — no secrets/cookies.
+  app.get('/api/landos/county-source-map', (c) => {
+    const state = str(c.req.query('state')) ?? '';
+    const county = str(c.req.query('county')) ?? '';
+    if (!state || !county) return c.json({ error: 'state and county required' }, 400);
+    return c.json({ countySourceMap: getCountySources(state, county) });
+  });
+
+  // Browser Intelligence enrichment for a Deal Card: LandPortal first (operator's
+  // logged-in session), then County Records via NETR routing + semantic extraction.
+  // Returns provenance-labeled facts + the official sources routed. Read-only; no
+  // credentials/paid actions; reuses the persistent Chrome session.
+  app.post('/api/landos/deal-cards/:id/browser-intel', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const prop = (deal.propertyCards?.[0] ?? {}) as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null; owner?: string | null };
+    const searchKey = { address: str(prop.active_input_address ?? undefined), apn: str(prop.apn ?? undefined), county: str(prop.county ?? undefined), state: str(prop.state ?? undefined), owner: str(prop.owner ?? undefined) };
+    await ensureBrowserSession();
+    const lp = makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') });
+    const county = makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') });
+    // LandPortal first.
+    const landportal = await lp.runWorkflow({ searchKey }, { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS });
+    // County Records only after LandPortal.
+    const countyRecords = await county.runWorkflow({ searchKey }, { timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS });
+    const session = await browserSessionHealth();
+    return c.json({
+      dealCardId: id,
+      landportal: redactEvidence(landportal),
+      countyRecords: redactEvidence(countyRecords),
+      countySourceMap: searchKey.state && searchKey.county ? getCountySources(searchKey.state, searchKey.county) : null,
+      session,
+    });
   });
 
   // ── Browser Intelligence — Ask Mode (Phase 1) ─────────────────────────────
