@@ -45,7 +45,7 @@ export interface MarketPulseSynthesis {
   /** Local growth drivers synthesized from Browser Intelligence (operator summary).
    *  Each driver carries up to two named example signals (real developments /
    *  rezonings / infrastructure) so Market Pulse names them, not just counts. */
-  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number; examples: string[] }> };
+  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number; examples: string[]; whyItMatters: string }> };
 }
 
 export interface PreliminaryAcquisitionRange {
@@ -182,7 +182,7 @@ function buildMarketPulse(report: DealCardReportView, growth?: GrowthDriverSumma
     available: !!growth && growth.status === 'collected' && growth.drivers.length > 0,
     summary: growth?.summary ?? 'Local growth drivers not summarized this run.',
     whatThisMeans: growth?.whatThisMeans ?? 'Rely on the verified comp band; confirm local development with the seller / county.',
-    drivers: (growth?.drivers ?? []).map((d) => ({ category: d.category, count: d.count, examples: (d.examples ?? []).slice(0, 2) })),
+    drivers: (growth?.drivers ?? []).map((d) => ({ category: d.category, count: d.count, examples: (d.examples ?? []).slice(0, 2), whyItMatters: d.whyItMatters ?? '' })),
   };
 
   // ── Verdict: stronger or weaker, and WHY (combine direction + absorption +
@@ -259,7 +259,10 @@ function topRisks(report: DealCardReportView): string[] {
   return out.slice(0, 6);
 }
 
-// ── Property-specific strategy ranking (8 lanes; deterministic + explainable) ──
+// ── Property-specific strategy ranking (7 PRIMARY lanes; deterministic). ──────
+// Primary land strategies: Quick Flip, Double Close / Novation, Subdivide, Land
+// Home Package, Improvement / Value Add, Hold, Pass. (Neighbor / adjacent-owner
+// sale was removed as a primary lane — it's a niche fallback, not a primary play.)
 function buildStrategyRanking(report: DealCardReportView, pulse: MarketPulseSynthesis, range: PreliminaryAcquisitionRange): StrategyRank[] {
   const acres = range.acres ?? 0;
   const landUse = (checklistVal(report, 'landUse') ?? '').toLowerCase();
@@ -276,13 +279,12 @@ function buildStrategyRanking(report: DealCardReportView, pulse: MarketPulseSynt
   const envClean = !flood && !wetlands && !steep && !landlocked;
 
   const lanes: StrategyRank[] = [
-    { strategy: 'Quick flip (wholesale/assignment)', viability: hasBand && liquid ? 'high' : hasBand ? 'medium' : 'low', reason: hasBand ? `Comp band exists (${pulse.realieSoldCount} sold) — buy at the 40–60% band and resell quickly.` : 'No comp band yet to anchor a quick flip.', risk: landlocked || flood ? 'Access/flood could kill resale speed.' : 'Resale velocity depends on local demand.', confidence: conf((hasBand ? 1 : 0) + (liquid ? 1 : 0)), mustVerify: 'Access, title, true marketable acreage.', score: (hasBand ? 4 : 1) + (liquid ? 3 : 0) },
-    { strategy: 'Retail resale (to end land buyer)', viability: hasBand && pulse.zillowActiveCount > 0 ? 'high' : hasBand ? 'medium' : 'low', reason: pulse.zillowActiveCount > 0 ? `${pulse.zillowActiveCount} active listings show retail demand.` : 'Limited active-listing evidence of retail demand.', risk: 'Longer hold; carrying costs.', confidence: conf((hasBand ? 1 : 0) + (pulse.zillowActiveCount > 0 ? 1 : 0)), mustVerify: 'Buildability, utilities, access for retail appeal.', score: (hasBand ? 3 : 1) + (pulse.zillowActiveCount > 0 ? 2 : 0) },
-    { strategy: 'Improved-property resale', viability: improved ? 'medium' : 'not_viable', reason: improved ? 'Improvement present — resell as improved.' : 'No improvement on record — vacant land.', risk: 'Condition/repair unknown.', confidence: improved ? 'medium' : 'high', mustVerify: 'Structure condition, permits.', score: improved ? 3 : 0 },
-    { strategy: 'Land-home package', viability: acres >= 1 && envClean ? 'medium' : acres >= 1 ? 'low' : 'not_viable', reason: acres >= 1 ? `~${acres} ac can host a manufactured/site-built home if buildable.` : 'Too small / not suited for a home package.', risk: 'Buildability, perc/septic, utilities unconfirmed.', confidence: conf((acres >= 1 ? 1 : 0) + (envClean ? 1 : 0)), mustVerify: 'Perc/septic, utilities, zoning, slope.', score: acres >= 1 ? (envClean ? 4 : 2) : 0 },
-    { strategy: 'Subdivision / split', viability: acres >= 5 && envClean ? 'medium' : 'low', reason: acres >= 5 ? `~${acres} ac may support a split if zoning + access allow.` : 'Acreage likely too small to subdivide.', risk: 'Zoning, min-lot, infrastructure cost.', confidence: acres >= 5 ? 'medium' : 'low', mustVerify: 'Zoning min lot size, road/utility feasibility.', score: acres >= 5 ? (envClean ? 4 : 2) : 1 },
-    { strategy: 'Neighbor / adjacent-owner sale', viability: landlocked || acres < 1 ? 'medium' : 'low', reason: landlocked ? 'Landlocked/odd parcel — adjacent owner is the natural buyer.' : 'Adjacent-owner sale is a fallback exit.', risk: 'Single-buyer leverage; slower.', confidence: 'low', mustVerify: 'Adjacent ownership, access dependency.', score: (landlocked ? 3 : 0) + (acres < 1 ? 1 : 0) + 1 },
-    { strategy: 'Hold', viability: 'medium', reason: 'Always available; appreciation + optionality while DD completes.', risk: 'Carrying cost, opportunity cost.', confidence: 'medium', mustVerify: 'Taxes, holding cost.', score: 2 },
+    { strategy: 'Quick Flip', viability: hasBand && liquid ? 'high' : hasBand ? 'medium' : 'low', reason: hasBand ? `Comp band exists (${pulse.realieSoldCount} sold) — buy at the 40–60% band and wholesale/assign quickly.` : 'No comp band yet to anchor a quick flip.', risk: landlocked || flood ? 'Access/flood could kill resale speed.' : 'Resale velocity depends on local demand.', confidence: conf((hasBand ? 1 : 0) + (liquid ? 1 : 0)), mustVerify: 'Access, title, true marketable acreage, assignment allowed.', score: (hasBand ? 4 : 1) + (liquid ? 3 : 0) },
+    { strategy: 'Double Close / Novation', viability: hasBand && pulse.zillowActiveCount > 0 ? 'high' : hasBand ? 'medium' : 'low', reason: pulse.zillowActiveCount > 0 ? `${pulse.zillowActiveCount} active listings show a retail buyer pool — capture the spread via a back-to-back (double) close or novate the contract to relist retail, without assigning.` : 'Limited active-listing evidence; double close/novation needs a retail buyer pool.', risk: 'Two closings / novation terms; brief title hold + double-closing costs.', confidence: conf((hasBand ? 1 : 0) + (pulse.zillowActiveCount > 0 ? 1 : 0)), mustVerify: 'Title insurability for back-to-back close; novation/assignment terms; end-buyer demand.', score: (hasBand ? 3 : 1) + (pulse.zillowActiveCount > 0 ? 2 : 0) },
+    { strategy: 'Subdivide', viability: acres >= 5 && envClean ? 'medium' : 'low', reason: acres >= 5 ? `~${acres} ac may support a split into multiple sellable lots if zoning + access allow.` : 'Acreage likely too small to subdivide.', risk: 'Zoning, min-lot, infrastructure cost.', confidence: acres >= 5 ? 'medium' : 'low', mustVerify: 'Zoning min lot size, road/utility feasibility, survey.', score: acres >= 5 ? (envClean ? 4 : 2) : 1 },
+    { strategy: 'Land Home Package', viability: acres >= 1 && envClean ? 'medium' : acres >= 1 ? 'low' : 'not_viable', reason: acres >= 1 ? `~${acres} ac can host a manufactured/site-built home if buildable — sell land + home together.` : 'Too small / not suited for a home package.', risk: 'Buildability, perc/septic, utilities unconfirmed.', confidence: conf((acres >= 1 ? 1 : 0) + (envClean ? 1 : 0)), mustVerify: 'Perc/septic, utilities, zoning, slope.', score: acres >= 1 ? (envClean ? 4 : 2) : 0 },
+    { strategy: 'Improvement / Value Add', viability: improved ? 'medium' : (envClean && acres >= 1) ? 'low' : 'not_viable', reason: improved ? 'Existing improvement — renovate/reposition and resell as improved.' : (envClean && acres >= 1) ? 'Add value via access/clearing/utilities/perc to lift raw-land value before resale.' : 'Environmental/access constraints limit value-add.', risk: improved ? 'Condition/repair unknown.' : 'Site-work cost vs. value lift unproven.', confidence: improved ? 'medium' : 'low', mustVerify: 'Structure condition/permits, or site-work cost vs. value lift.', score: improved ? 3 : (envClean && acres >= 1 ? 2 : 0) },
+    { strategy: 'Hold', viability: 'medium', reason: 'Always available; appreciation + optionality while DD completes or the market firms.', risk: 'Carrying cost, opportunity cost.', confidence: 'medium', mustVerify: 'Taxes, holding cost.', score: 2 },
     { strategy: 'Pass', viability: (!hasBand && (landlocked || flood || wetlands)) ? 'high' : 'low', reason: (!hasBand && (landlocked || flood || wetlands)) ? 'No comp band + serious environmental/access risk — likely pass.' : 'Only pass if DD reveals a deal-killer.', risk: 'Walking from a possible deal.', confidence: 'medium', mustVerify: 'Confirm the deal-killer before passing.', score: (!hasBand ? 1 : 0) + (landlocked ? 2 : 0) + (flood ? 1 : 0) + (wetlands ? 1 : 0) },
   ];
   return lanes.sort((a, b) => b.score - a.score);

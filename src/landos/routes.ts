@@ -1982,13 +1982,16 @@ export function registerLandosRoutes(app: Hono): void {
       summary: p.parcelVerified ? 'Acquire — verified parcel' : 'Acquire — matched (Confirm Before Offer)',
     });
     const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: subjectAddress });
-    // Run the full production DD report. Its internal verification reuses the
-    // resolved county (now on the card) so an address-only lead that the engine
-    // resolved (e.g. 388 Gilstrap → White County) verifies and runs full DD;
-    // a still-unverified match runs as labeled local-area-context (never empty).
+    // Run the full production DD report. reverify:true forces a FRESH full
+    // property-data lookup (using the card's now-verified APN + county) rather
+    // than reusing the resolution's identity-only card — otherwise acreage / land
+    // use / zoning land facts (and the acquisition range + strategy scoring that
+    // depend on acreage) would show as gaps on a verified parcel. Same provider
+    // (non-credit); the card carries the strong identifier so it re-verifies.
     const result = await runDealCardReport(dealCardId, {
       resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+      reverify: true,
       googleVisualConfigured: googleVisualConfiguredResolved(),
     });
     const reportVerified = result?.report.parcelVerified === true;

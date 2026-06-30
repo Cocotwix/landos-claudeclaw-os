@@ -7,7 +7,12 @@ describe('summarizeGrowthDrivers — operator growth summary (not a headline dum
     const intel = { status: 'collected' as const, model: 'none' as never, area: 'Anderson County, SC', categories: [], evidence: [_gev('New 200-lot residential subdivision approved'), _gev('Highway 85 interchange expansion funded'), _gev('Distribution center / warehouse breaks ground')], note: '' };
     const g = summarizeGrowthDrivers(intel);
     expect(g.drivers.length).toBeGreaterThanOrEqual(3);
-    expect(g.summary).toMatch(/growth themes|signals/i);
+    // Names the actual development types — no vague "N public signals".
+    expect(g.summary).toMatch(/Local development in Anderson County/i);
+    expect(g.summary).not.toMatch(/public signals/i);
+    expect(g.summary).toMatch(/Residential \/ subdivisions/);
+    // Every named development explains WHY it matters.
+    expect(g.drivers.every((d) => typeof d.whyItMatters === 'string' && d.whyItMatters.length > 0)).toBe(true);
     expect(g.whatThisMeans).toMatch(/strengthening|supportive|catalyst/i);
   });
   it('honest when no browser model / no evidence (steady-state, rely on comps)', () => {

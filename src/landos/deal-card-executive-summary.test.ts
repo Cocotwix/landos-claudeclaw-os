@@ -53,15 +53,17 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(es.sellerQuestions.length).toBeGreaterThanOrEqual(4);
     expect(es.confidence).toBe('high');
   });
-  it('ranks 8 property-specific strategies with reasons, and picks the top as strongest', () => {
+  it('ranks the 7 PRIMARY strategies with reasons, and picks the top as strongest', () => {
     const es = buildExecutiveSummary(verifiedReport());
-    expect(es.strategyRanking.length).toBe(8);
+    expect(es.strategyRanking.length).toBe(7);
+    const names = es.strategyRanking.map((s) => s.strategy);
+    // The required primary set (no Neighbor Sale; includes Double Close / Novation + Hold).
+    expect(names).toEqual(expect.arrayContaining(['Quick Flip', 'Double Close / Novation', 'Subdivide', 'Land Home Package', 'Improvement / Value Add', 'Hold', 'Pass']));
+    expect(names.some((n) => /neighbor/i.test(n))).toBe(false);
     expect(es.strategyRanking.every((s) => s.reason && s.risk && s.mustVerify)).toBe(true);
     // ranked by score descending
     for (let i = 1; i < es.strategyRanking.length; i++) expect(es.strategyRanking[i - 1].score).toBeGreaterThanOrEqual(es.strategyRanking[i].score);
     expect(es.strongestStrategy.strategy).toBe(es.strategyRanking[0].strategy);
-    // vacant land -> improved-property resale is not viable
-    expect(es.strategyRanking.find((s) => /improved-property/i.test(s.strategy))!.viability).toBe('not_viable');
   });
   it('populates preliminary Deal Economics (value low/mid/high + gross spread) when comps exist', () => {
     const de = buildExecutiveSummary(verifiedReport()).dealEconomics;

@@ -65,19 +65,20 @@ export interface GrowthDriverSummary {
   status: BrowserIntelStatus;
   area: string;
   evidenceCount: number;
-  drivers: Array<{ category: string; count: number; examples: string[] }>;
+  /** Each named development type carries WHY it matters for land here. */
+  drivers: Array<{ category: string; count: number; examples: string[]; whyItMatters: string }>;
   summary: string;
   whatThisMeans: string;
 }
-const GROWTH_PATTERNS: Array<{ category: string; rx: RegExp }> = [
-  { category: 'Residential / subdivisions', rx: /subdivision|master.?planned|residential develop|new homes|housing develop|lots? (approved|platted)/i },
-  { category: 'Commercial / retail', rx: /commercial|retail|shopping|mixed.?use|store opening|grocery/i },
-  { category: 'Industrial / logistics', rx: /industrial|distribution center|warehouse|manufactur|logistics|data center/i },
-  { category: 'Infrastructure / highway', rx: /highway|interchange|road (widen|expan)|infrastructure|bridge|transit|interstate|\bi-\d/i },
-  { category: 'Utilities expansion', rx: /water line|sewer|utility expan|broadband|power line|electric expan/i },
-  { category: 'Rezoning / annexation', rx: /rezon|annex|zoning change|comprehensive plan|land.?use plan/i },
-  { category: 'Schools / hospitals', rx: /\bschool\b|hospital|university|college|medical center/i },
-  { category: 'Major land / real-estate deals', rx: /acres? (sold|purchased|acquired)|land (sale|deal)|developer (bought|acquired)|\$\d+\s*(million|m)\b/i },
+const GROWTH_PATTERNS: Array<{ category: string; rx: RegExp; whyItMatters: string }> = [
+  { category: 'Residential / subdivisions', rx: /subdivision|master.?planned|residential develop|new homes|housing develop|lots? (approved|platted)/i, whyItMatters: 'New rooftops nearby raise demand for buildable lots and infill land — supports a faster, firmer exit.' },
+  { category: 'Commercial / retail', rx: /commercial|retail|shopping|mixed.?use|store opening|grocery/i, whyItMatters: 'Retail/commercial growth signals a rising population and services, which lifts nearby land values.' },
+  { category: 'Industrial / logistics', rx: /industrial|distribution center|warehouse|manufactur|logistics|data center/i, whyItMatters: 'Industrial investment brings jobs and housing demand — supports land absorption in the area.' },
+  { category: 'Infrastructure / highway', rx: /highway|interchange|road (widen|expan)|infrastructure|bridge|transit|interstate|\bi-\d/i, whyItMatters: 'Better access/roads expand the buildable market and shorten resale timelines.' },
+  { category: 'Utilities expansion', rx: /water line|sewer|utility expan|broadband|power line|electric expan/i, whyItMatters: 'Water/sewer/broadband extension can make raw land buildable — a direct value unlock.' },
+  { category: 'Rezoning / annexation', rx: /rezon|annex|zoning change|comprehensive plan|land.?use plan/i, whyItMatters: 'Zoning/annexation can raise allowed density or use — a direct path to higher land value.' },
+  { category: 'Schools / hospitals', rx: /\bschool\b|hospital|university|college|medical center/i, whyItMatters: 'Anchor institutions stabilize demand and draw families — supportive of residential land.' },
+  { category: 'Major land / real-estate deals', rx: /acres? (sold|purchased|acquired)|land (sale|deal)|developer (bought|acquired)|\$\d+\s*(million|m)\b/i, whyItMatters: 'Large nearby transactions confirm active investor/developer demand in the area.' },
 ];
 
 /** Classify already-collected public-web evidence into land-value growth drivers
@@ -89,15 +90,16 @@ export function summarizeGrowthDrivers(intel: BrowserMarketIntelligence): Growth
     return { ...base, drivers: [], summary: intel.status === 'no_browser_model' ? 'No browser research model configured — local growth drivers not auto-summarized this run.' : intel.status === 'no_area' ? 'No verified area to research local growth drivers.' : 'No public-web growth signals retrieved for the area.', whatThisMeans: 'Treat the market as steady-state and rely on the verified comp band; confirm local development directly with the seller / county.' };
   }
   const drivers: GrowthDriverSummary['drivers'] = [];
-  for (const { category, rx } of GROWTH_PATTERNS) {
+  for (const { category, rx, whyItMatters } of GROWTH_PATTERNS) {
     const hits = intel.evidence.filter((e) => rx.test(`${e.snippet} ${e.supports}`));
-    if (hits.length) drivers.push({ category, count: hits.length, examples: hits.slice(0, 2).map((h) => h.snippet.slice(0, 120)) });
+    if (hits.length) drivers.push({ category, count: hits.length, examples: hits.slice(0, 2).map((h) => h.snippet.slice(0, 140)), whyItMatters });
   }
   drivers.sort((a, b) => b.count - a.count);
-  const topNames = drivers.slice(0, 3).map((d) => `${d.category.toLowerCase()} (${d.count})`);
+  // Name the actual development types found (no vague "N public signals").
+  const named = drivers.map((d) => `${d.category} (${d.count})`).join(', ');
   const summary = drivers.length
-    ? `${intel.evidence.length} public signals for ${intel.area}; growth themes: ${topNames.join(', ')}.`
-    : `${intel.evidence.length} public items for ${intel.area} but no clear land-value growth driver among them.`;
+    ? `Local development in ${intel.area}: ${named}. Specific items + why each matters are listed below.`
+    : `No clear land-value growth driver found among the public items for ${intel.area}.`;
   const strong = drivers.reduce((n, d) => n + d.count, 0);
   const whatThisMeans = drivers.length === 0
     ? 'No clear growth catalysts in public news — price off the verified comp band; ask the seller about local development.'

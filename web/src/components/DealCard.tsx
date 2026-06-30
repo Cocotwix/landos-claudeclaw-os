@@ -1025,7 +1025,7 @@ interface MarketPulseView {
   direction: string; directionPct: number | null;
   supply: string; demand: string; liquidity: string; absorption: string;
   confidence: string; interpretation: string; verdict: string;
-  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number; examples: string[] }> };
+  growthDrivers: { available: boolean; summary: string; whatThisMeans: string; drivers: Array<{ category: string; count: number; examples: string[]; whyItMatters?: string }> };
 }
 
 function median(xs: number[]): number | null {
@@ -1113,6 +1113,7 @@ function MarketPulseSection({ mp, mc }: { mp?: MarketPulseView | null; mc?: Mark
               <li key={i} class="text-[12px] text-[var(--color-text-muted)]">
                 <span class="text-[var(--color-text)]">{d.category}</span> <span class="text-[10px] text-[var(--color-text-faint)]">×{d.count}</span>
                 {d.examples && d.examples.length > 0 && <span class="text-[11px] text-[var(--color-text-faint)]"> — {d.examples.join('; ')}</span>}
+                {d.whyItMatters && <div class="text-[11px] text-[var(--color-accent)] ml-3">Why it matters: {d.whyItMatters}</div>}
               </li>
             ))}
           </ul>
