@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
-  type PageObservation,
+  scoreResultCandidate, pickBestCandidate, type PageObservation, type ResultCandidate,
 } from './website-intelligence.js';
 import { rememberPlatform, getPlatformIntel, platformKey, listPlatformIntel } from './platform-library.js';
+import { makeLandPortalBrowser } from './landportal-browser.js';
+import type { BrowserDriver } from './browser-intelligence.js';
 import { _initTestLandosDb } from './db.js';
 
 function obs(over: Partial<PageObservation> = {}): PageObservation {
@@ -77,6 +79,81 @@ describe('Website Intelligence — VERIFY (never extract from a search form)', (
   it('rejects login + map dashboard pages', () => {
     expect(verifyTargetReached(obs({ loginLike: true })).pageType).toBe('login');
     expect(verifyTargetReached(obs({ hasMap: true, fields: {} })).reached).toBe(false);
+  });
+});
+
+describe('Website Intelligence — INTERACT (non-anchor result selection, no weak-match)', () => {
+  const cands = (xs: Array<[number, string]>): ResultCandidate[] => xs.map(([index, text]) => ({ index, text, kind: 'row' }));
+
+  it('scores an APN result as high confidence', () => {
+    const s = scoreResultCandidate({ index: 0, text: 'Parcel 021 033 002 — White County GA', kind: 'row' }, { apn: '021 033 002', county: 'White', state: 'GA' });
+    expect(s.confidence).toBe('high');
+    expect(s.matched).toContain('apn');
+  });
+
+  it('scores a full number+street address as high; street-only is NOT high', () => {
+    expect(scoreResultCandidate({ index: 0, text: '388 Gilstrap Rd, Cleveland GA', kind: 'row' }, { address: '388 Gilstrap Rd' }).confidence).toBe('high');
+    expect(scoreResultCandidate({ index: 1, text: 'Gilstrap Rd parcels', kind: 'row' }, { address: '388 Gilstrap Rd' }).confidence).not.toBe('high');
+  });
+
+  it('owner-only / county-only never reaches high confidence (no weak-match)', () => {
+    expect(scoreResultCandidate({ index: 0, text: 'SPROUL parcels in White County', kind: 'row' }, { owner: 'SPROUL', county: 'White' }).confidence).not.toBe('high');
+  });
+
+  it('pickBestCandidate selects the high-confidence APN row and rejects no-match sets', () => {
+    const best = pickBestCandidate(cands([[0, 'Some other parcel'], [1, 'APN 021 033 002 White GA']]), { apn: '021 033 002', county: 'White', state: 'GA' });
+    expect(best!.index).toBe(1);
+    expect(pickBestCandidate(cands([[0, 'Unrelated A'], [1, 'Unrelated B']]), { apn: '021 033 002' })).toBeNull();
+  });
+});
+
+// Fake LandPortal driver: search lands on a results_list with NON-ANCHOR rows;
+// clicking the APN row opens the parcel detail panel.
+function gisFakeDriver(onClick?: (i: number) => void): BrowserDriver {
+  let opened = false;
+  const record = { 'Owner Name': 'SPROUL, BRITTANY', 'Parcel ID': '021 033 002', 'Deeded Acres': '5.20', 'Situs Address': '388 Gilstrap Rd' };
+  const baseObs = () => ({ url: 'https://landportal.com/', title: 'Land Portal', headings: [], navItems: ['Map Search', 'Property search'], buttons: [], links: [], hasMap: true, hasTable: false, loginLike: false });
+  return {
+    id: 'lp', configured: () => true,
+    async open(url) { return { url, fields: {}, snippets: [] }; },
+    async search(q) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+    async readFields() { return { url: '', fields: opened ? record : {}, snippets: [] }; },
+    async screenshot(purpose) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+    async readForms() { return [{ formIndex: 0, fields: [{ selector: '#apn', label: 'APN' }], submitSelector: '#go' }]; },
+    async fillAndSubmit() { return { url: 'results', fields: {}, snippets: [] }; },
+    async observe() {
+      if (opened) return { ...baseObs(), hasMap: false, searchControls: [], fields: record };
+      // results_list: has a table-like result set, NON-anchor rows (no links)
+      return { ...baseObs(), hasTable: true, searchControls: [{ selector: '#apn', label: 'APN' }], fields: {}, links: [] };
+    },
+    async readCandidates() { return [{ index: 0, text: 'Parcel 044 000 111 — other', kind: 'row' }, { index: 1, text: 'Parcel 021 033 002 — 388 Gilstrap Rd, White GA', kind: 'row' }]; },
+    async clickCandidate(i) { onClick?.(i); opened = true; },
+  };
+}
+
+describe('Website Intelligence — LIVE-shaped non-anchor workflow (GIS results → record)', () => {
+  beforeEach(() => _initTestLandosDb());
+  it('reads candidates, selects the high-confidence parcel row, reaches the record, extracts', async () => {
+    let clicked = -1;
+    const lp = makeLandPortalBrowser({ driver: gisFakeDriver((i) => { clicked = i; }) });
+    const ev = await lp.runWorkflow({ searchKey: { state: 'GA', county: 'White', apn: '021 033 002', address: '388 Gilstrap Rd' } }, { timeoutMs: 2000 });
+    expect(clicked).toBe(1); // selected the matching row, not row 0
+    expect(ev.status).toBe('retrieved');
+    const owner = ev.facts.find((f) => f.key === 'owner');
+    expect(owner!.value).toBe('SPROUL, BRITTANY');
+    expect(owner!.extractionMethod).toMatch(/non-anchor result/);
+    // REMEMBERED the validated interaction strategy
+    expect(getPlatformIntel('landportal.com')!.validatedStrategy!.steps.some((s) => s.action === 'click')).toBe(true);
+  });
+
+  it('refuses to select when no candidate is a high-confidence match (no false facts)', async () => {
+    const driver = gisFakeDriver();
+    (driver as any).readCandidates = async () => [{ index: 0, text: 'Parcel 999 000 000 elsewhere', kind: 'row' }];
+    const lp = makeLandPortalBrowser({ driver });
+    const ev = await lp.runWorkflow({ searchKey: { state: 'GA', county: 'White', apn: '021 033 002' } }, { timeoutMs: 2000 });
+    expect(ev.status).toBe('partial');
+    expect(ev.facts).toHaveLength(0);
+    expect(ev.note).toMatch(/no weak-match|HIGH-confidence/i);
   });
 });
 

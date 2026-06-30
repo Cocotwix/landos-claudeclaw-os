@@ -581,6 +581,48 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await page.evaluate<boolean>(CLICK as unknown as () => boolean, text);
       await new Promise((r) => setTimeout(r, 1200));
     },
+    async readCandidates() {
+      const page = await getWorkingPage();
+      const READ = (): Array<{ index: number; text: string; kind: string }> => {
+        // Deterministic collector — MUST match clickCandidate's collector exactly.
+        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i]';
+        const seen = new Set<any>(); const out: any[] = [];
+        Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
+          if (seen.has(el)) return; seen.add(el);
+          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 1, height: 1 };
+          if (!rect.width || !rect.height) return; // visible only
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (text.length < 3 || text.length > 220) return;
+          out.push({ el, text });
+        });
+        const kindOf = (el: any): string => { const c = (el.className && el.className.toString ? el.className.toString() : '').toLowerCase(); const tag = (el.tagName || '').toLowerCase(); if (/popup/.test(c)) return 'popup'; if (/card/.test(c)) return 'card'; if (tag === 'tr' || /row/.test(c)) return 'row'; if (tag === 'li') return 'row'; if (tag === 'button') return 'button'; return 'element'; };
+        const byText = new Set<string>(); const res: any[] = [];
+        out.forEach((o) => { if (byText.has(o.text)) return; byText.add(o.text); res.push({ index: res.length, text: o.text, kind: kindOf(o.el) }); });
+        return res.slice(0, 40);
+      };
+      return page.evaluate<Array<{ index: number; text: string; kind: string }>>(READ);
+    },
+    async clickCandidate(index, opts) {
+      const page = await getWorkingPage();
+      const CLICK = (target: number): boolean => {
+        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i]';
+        const seen = new Set<any>(); const out: any[] = [];
+        Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
+          if (seen.has(el)) return; seen.add(el);
+          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 1, height: 1 };
+          if (!rect.width || !rect.height) return;
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (text.length < 3 || text.length > 220) return;
+          out.push({ el, text });
+        });
+        const byText = new Set<string>(); const res: any[] = [];
+        out.forEach((o) => { if (byText.has(o.text)) return; byText.add(o.text); res.push(o.el); });
+        const el = res[target]; if (!el) return false;
+        if (el.scrollIntoView) el.scrollIntoView(); el.click(); return true;
+      };
+      await page.evaluate<boolean>(CLICK as unknown as () => boolean, index);
+      await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 2500))); // panel/popup settle
+    },
     async screenshot(purpose): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();
       const dir = cfg.screenshotDir;

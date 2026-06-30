@@ -208,6 +208,12 @@ export interface BrowserDriver {
   selectByText?(selector: string, optionText: string, opts: { timeoutMs: number }): Promise<void>;
   /** Click a control by its visible text (tab/button/menu). Read-only navigation. */
   clickByText?(text: string, opts: { timeoutMs: number }): Promise<void>;
+  /** INTERACT: read NON-ANCHOR result candidates (GIS rows/cards/popups/clickable
+   *  divs/list items) in deterministic order. Read-only. */
+  readCandidates?(opts: { timeoutMs: number }): Promise<Array<{ index: number; text: string; kind: string }>>;
+  /** Click the candidate at the given deterministic index (re-collected in the
+   *  same order). Read-only navigation (opens a detail panel/popup/record). */
+  clickCandidate?(index: number, opts: { timeoutMs: number }): Promise<void>;
   /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
   act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
 }

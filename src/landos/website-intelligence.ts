@@ -173,6 +173,70 @@ export function planNavigationStrategy(
   };
 }
 
+// ── INTERACT — select a non-anchor result (GIS rows, cards, popups, divs) ────
+//
+// Modern apps return results that are NOT <a href> links: GIS map popups,
+// clickable result rows/cards, side panels, JS lists. A driver reads candidate
+// clickable elements; this scores them against the target and selects the best
+// ONLY at high confidence (no weak-match, no guessing). Generic across platforms.
+
+export interface ResultCandidate {
+  /** Stable index into the driver's deterministic candidate collection. */
+  index: number;
+  text: string;
+  /** row | card | button | popup | cell | option | element. */
+  kind: string;
+}
+
+export interface CandidateScore {
+  index: number;
+  score: number;
+  matched: string[];
+  confidence: 'high' | 'medium' | 'low';
+}
+
+function compact(s: string): string { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+/** Score one candidate against the target. Strong identifiers (APN, full
+ *  number+street address) carry the weight; owner/county/state are context only.
+ *  Pure. */
+export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; address?: string; owner?: string; county?: string; state?: string }): CandidateScore {
+  const hayRaw = c.text.toLowerCase();
+  const hayC = compact(c.text);
+  const matched: string[] = [];
+  let score = 0;
+  let strong = false;
+
+  if (key.apn) { const a = compact(key.apn); if (a.length >= 5 && hayC.includes(a)) { score += 0.6; matched.push('apn'); strong = true; } }
+  if (key.address) {
+    const num = (key.address.match(/^\s*(\d+)/) || [])[1];
+    const street = key.address.split(',')[0].replace(/^\s*\d+\s*/, '').trim().toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+    const numHit = num ? new RegExp(`\\b${num}\\b`).test(hayRaw) : false;
+    const streetHits = street.filter((w) => hayRaw.includes(w)).length;
+    if (numHit && streetHits >= 1) { score += 0.6; matched.push('address'); strong = true; }
+    else if (streetHits >= 1) { score += 0.15; matched.push('street'); }
+  }
+  if (key.owner) { const surname = key.owner.toLowerCase().replace(/[,.].*$/, '').split(/\s+/).pop() || ''; if (surname.length > 2 && hayRaw.includes(surname)) { score += 0.2; matched.push('owner'); } }
+  if (key.county && hayRaw.includes(key.county.toLowerCase())) { score += 0.1; matched.push('county'); }
+  if (key.state && new RegExp(`\\b${key.state.toLowerCase()}\\b`).test(hayRaw)) { score += 0.1; matched.push('state'); }
+
+  // HIGH only when a strong identifier (APN or full address) matched AND total
+  // clears the bar — never a weak match.
+  const confidence: CandidateScore['confidence'] = strong && score >= 0.6 ? 'high' : score >= 0.4 ? 'medium' : 'low';
+  return { index: c.index, score: Math.min(score, 1), matched, confidence };
+}
+
+/** Pick the single best candidate — returns it ONLY at high confidence; otherwise
+ *  null (caller must not click / must report a blocker). No weak-match. Pure. */
+export function pickBestCandidate(candidates: ResultCandidate[], key: { apn?: string; address?: string; owner?: string; county?: string; state?: string }): CandidateScore | null {
+  const scored = candidates.map((c) => scoreResultCandidate(c, key)).sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  if (!best || best.confidence !== 'high') return null;
+  // Reject ambiguity: a runner-up tying the best is not a confident pick.
+  if (scored[1] && scored[1].confidence === 'high' && scored[1].score === best.score) return null;
+  return best;
+}
+
 // ── VERIFY — confirm the requested page was actually reached ──────────────────
 
 export type PageType = 'record_detail' | 'results_list' | 'search_form' | 'dashboard' | 'login' | 'error' | 'unknown';

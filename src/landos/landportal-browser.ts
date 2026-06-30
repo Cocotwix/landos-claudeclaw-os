@@ -23,7 +23,7 @@ import type { PropertyPatch } from './normalized-property.js';
 import { extractRecordFacts } from './semantic-extract.js';
 import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
-  type PageObservation, type SearchMethod,
+  pickBestCandidate, type PageObservation, type SearchMethod, type ResultCandidate,
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
@@ -171,10 +171,31 @@ async function runLandPortalWorkflow(
     // ── VERIFY — confirm a record page before extracting (no false facts) ─
     obs = (await driver.observe(t())) as PageObservation;
     let verify = verifyTargetReached(obs, { expectIdentifier: input.searchKey.apn });
-    // If a results list, open the most likely record and re-verify.
-    if (verify.pageType === 'results_list') {
+    let interaction = '';
+
+    // (a) Standard anchor result → open it.
+    if (!verify.reached && (verify.pageType === 'results_list' || verify.pageType === 'dashboard')) {
       const rec = pickParcelRecordLink(obs.links, input.searchKey);
-      if (rec) { await driver.open(rec.href, t()); obs = (await driver.observe(t())) as PageObservation; verify = verifyTargetReached(obs, { expectIdentifier: input.searchKey.apn }); }
+      if (rec) { await driver.open(rec.href, t()); obs = (await driver.observe(t())) as PageObservation; verify = verifyTargetReached(obs, { expectIdentifier: input.searchKey.apn }); interaction = 'anchor result'; }
+    }
+
+    // (b) GENERIC non-anchor result interaction (GIS rows/cards/popups/JS lists):
+    //     read candidate elements, score against the parcel, click the best ONLY
+    //     at high confidence, then re-observe + re-verify. No weak-match, no guess.
+    if (!verify.reached && driver.readCandidates && driver.clickCandidate && (verify.pageType === 'results_list' || verify.pageType === 'dashboard' || verify.pageType === 'unknown')) {
+      const candidates = (await driver.readCandidates(t())) as ResultCandidate[];
+      const best = pickBestCandidate(candidates, input.searchKey);
+      if (best) {
+        await driver.clickCandidate(best.index, t());
+        obs = (await driver.observe(t())) as PageObservation;
+        verify = verifyTargetReached(obs, { expectIdentifier: input.searchKey.apn });
+        interaction = `non-anchor result (high-confidence ${best.matched.join('+') || 'match'}, score ${best.score.toFixed(2)})`;
+      } else {
+        ev.status = 'partial';
+        ev.note = `Reached a ${verify.pageType} of ${candidates.length} non-anchor result(s) but none scored a HIGH-confidence match to APN ${input.searchKey.apn || ''}/${input.searchKey.address || ''} — refusing to select (no weak-match, no false facts).`;
+        rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, confidence: understanding.confidence, used: true, navPatterns: `${strategy.method} search → results; non-anchor candidates read (${candidates.length})`, knownLimitations: [`no high-confidence result candidate for the parcel on the ${verify.pageType}`] });
+        return ev;
+      }
     }
     if (obs.url) ev.sourceUrls.push(obs.url);
 
@@ -188,15 +209,17 @@ async function runLandPortalWorkflow(
     // ── EXTRACT (verified record) + ONE screenshot ────────────────────────
     const shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, t());
     ev.screenshots.push(shot);
+    const method = `${strategy.method} search${interaction ? ` → ${interaction}` : ''} → verified record`;
     ev.fields = obs.fields;
-    ev.facts = extractRecordFacts(obs.fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' }).map((f) => ({ ...f, extractionMethod: `${strategy.method} search → verified record` }));
+    ev.facts = extractRecordFacts(obs.fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' }).map((f) => ({ ...f, extractionMethod: method }));
     ev.patch = extractLandPortalFields({ url: obs.url, fields: obs.fields, snippets: [] }).patch;
     ev.sourcesUsed = [{ type: 'landportal', url: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal', confidence: 0.85 }];
     ev.status = ev.facts.length ? 'retrieved' : 'partial';
 
-    // ── REMEMBER / IMPROVE — store the validated strategy ─────────────────
-    rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy: strategy, navPatterns: strategy.reason, authRequired: true, confidence: 'high', used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
-    ev.note = `LandPortal understood as "${understanding.platformClass}"; ${strategy.method} search reached a verified record (${verify.reason}); ${ev.facts.length} fact(s) extracted with provenance; one screenshot.`;
+    // ── REMEMBER / IMPROVE — store the validated strategy + interaction pattern ─
+    const validatedStrategy = { ...strategy, steps: interaction ? [...strategy.steps, { action: 'click' as const, text: `result candidate: ${interaction}` }] : strategy.steps, reason: `${strategy.reason}${interaction ? ` Then select ${interaction}.` : ''}` };
+    rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy, navPatterns: validatedStrategy.reason, authRequired: true, confidence: 'high', used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
+    ev.note = `LandPortal understood as "${understanding.platformClass}"; ${method} (${verify.reason}); ${ev.facts.length} fact(s) extracted with provenance; one screenshot.`;
     return ev;
   } catch (err) {
     ev.status = 'error';
