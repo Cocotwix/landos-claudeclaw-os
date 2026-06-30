@@ -1,27 +1,65 @@
-// Token + chatId come from the URL query string (set by the Telegram deep
-// link or by a saved bookmark). We persist both to sessionStorage on first
-// load so subsequent navigations keep working without rewriting the URL.
-// We never use localStorage: dashboardToken is sensitive, and storing it
-// across browser sessions would enlarge its blast radius.
+// Token + chatId come from the URL query string (set by the Telegram deep link
+// or a saved bookmark). sessionStorage keeps a tab working across navigations.
+//
+// Cross-tab persistence (deliberate, scoped, safe): the dashboard token is ALSO
+// mirrored to localStorage, but ONLY on a local dashboard origin (localhost /
+// 127.0.0.1 / [::1]), so a fresh local tab stays authenticated without re-adding
+// ?token=. Hard rules:
+//   - Only the dashboard token is persisted. NEVER LandPortal credentials,
+//     cookies, CDP data, or any browser-session secret — none of those ever
+//     touch the frontend.
+//   - The token is never logged and never rendered in the UI.
+//   - localStorage is used ONLY on a local origin; on any non-local host we fall
+//     back to sessionStorage-only (no cross-session persistence off localhost).
+//   - sessionStorage remains the per-tab source of truth and fallback.
+//   - clearDashboardToken() wipes it from both stores (logout / clear path).
+
+const TOKEN_KEY = 'claudeclaw.token';
+const CHATID_KEY = 'claudeclaw.chatId';
 
 const url = new URL(window.location.href);
 
+/** Cross-tab token persistence is allowed only on a local dashboard origin. */
+function isLocalDashboard(): boolean {
+  const h = url.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1';
+}
+const ssGet = (k: string): string => { try { return sessionStorage.getItem(k) || ''; } catch { return ''; } };
+const ssSet = (k: string, v: string): void => { try { sessionStorage.setItem(k, v); } catch {} };
+const lsGet = (k: string): string => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+const lsSet = (k: string, v: string): void => { try { localStorage.setItem(k, v); } catch {} };
+
 let cachedToken = url.searchParams.get('token') || '';
 if (cachedToken) {
-  try { sessionStorage.setItem('claudeclaw.token', cachedToken); } catch {}
+  // URL token wins and updates both stores (localStorage local-origin only).
+  ssSet(TOKEN_KEY, cachedToken);
+  if (isLocalDashboard()) lsSet(TOKEN_KEY, cachedToken);
 } else {
-  try { cachedToken = sessionStorage.getItem('claudeclaw.token') || ''; } catch {}
+  // No URL token: per-tab sessionStorage first, then cross-tab localStorage
+  // (local origin only). When hydrated from localStorage, mirror into this tab.
+  cachedToken = ssGet(TOKEN_KEY);
+  if (!cachedToken && isLocalDashboard()) {
+    cachedToken = lsGet(TOKEN_KEY);
+    if (cachedToken) ssSet(TOKEN_KEY, cachedToken);
+  }
 }
 
 let cachedChatId = url.searchParams.get('chatId') || '';
 if (cachedChatId) {
-  try { sessionStorage.setItem('claudeclaw.chatId', cachedChatId); } catch {}
+  ssSet(CHATID_KEY, cachedChatId);
 } else {
-  try { cachedChatId = sessionStorage.getItem('claudeclaw.chatId') || ''; } catch {}
+  cachedChatId = ssGet(CHATID_KEY);
 }
 
 export const dashboardToken = cachedToken;
 export const chatId = cachedChatId;
+
+/** Clear the persisted dashboard token from BOTH stores (logout / clear path).
+ *  Touches nothing else; never logs the token. */
+export function clearDashboardToken(): void {
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
+  try { localStorage.removeItem(TOKEN_KEY); } catch {}
+}
 
 function withToken(path: string): string {
   const sep = path.includes('?') ? '&' : '?';
