@@ -1967,6 +1967,7 @@ export function registerLandosRoutes(app: Hono): void {
       { rawText: text.trim(), fields: cls.parsedFields },
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
     );
+    logger.info({ event: 'acquire_lanes', lanes: (resolution.lanesAttempted ?? []).map((l) => `${l.lane}:${l.status}:${l.contributed ? 'contrib' : 'nc'}`), browser: (resolution.browserEvidence ?? []).map((b) => `${b.service}:${b.status}:${b.facts?.length ?? 0}f`) }, 'acquire_lanes');
 
     if (resolution.status === 'needs_clarification') {
       logger.info({ event: 'acquire_run', ok: false, matched: false, confidence: resolution.confidence, pipeline: 'property_resolution' }, 'acquire_run_needs_clarification');
@@ -2006,6 +2007,22 @@ export function registerLandosRoutes(app: Hono): void {
       summary: p.parcelVerified ? 'Acquire — verified parcel' : 'Acquire — matched (Confirm Before Offer)',
     });
     const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: subjectAddress });
+    // ── Auto-surface Browser Intelligence ───────────────────────────────────
+    // Property Resolution already continued into Browser Intelligence when Realie
+    // could not verify (LandPortal-first, then County Records — see resolveProperty
+    // lanes). Persist those retrieved facts to the Deal Card so Browser
+    // Intelligence appears AUTOMATICALLY; the operator never has to trigger it.
+    try {
+      const streamed = new Set<string>();
+      for (const bev of resolution.browserEvidence ?? []) {
+        for (const f of bev.facts ?? []) {
+          const key = `${f.key}|${f.sourceUrl}`;
+          if (streamed.has(key)) continue; streamed.add(key);
+          try { writeBrowserFact(dealCardId, f); } catch { /* one fact failing never blocks the card */ }
+        }
+      }
+      if (streamed.size) logger.info({ event: 'acquire_browser_intel', dealCardId, facts: streamed.size }, 'acquire_browser_intel_persisted');
+    } catch { /* non-fatal surfacing */ }
     // Run the full production DD report. reverify:true forces a FRESH full
     // property-data lookup (using the card's now-verified APN + county) rather
     // than reusing the resolution's identity-only card — otherwise acreage / land
