@@ -85,6 +85,26 @@ describe('property resolution engine', () => {
     expect(r.matchedReason).toMatch(/Confirm Before Offer/i);
   });
 
+  it('preserves the operator house number when a suggestion returns only the road segment', async () => {
+    // Photon-style highway segment (no house number). The resolved address must
+    // keep the "2510" the operator typed — never a house-number-less label.
+    const segmentSuggest = {
+      query: '2510 State Highway 153', source: 'Photon', cached: false,
+      suggestions: [{ label: 'State Highway 153, Winters, TX, 79467', line1: 'State Highway 153', city: 'Winters', state: 'TX', zip: '79467', county: 'Runnels', source: 'Photon', confidence: 0.6 }],
+    };
+    const deps: ResolutionDeps = {
+      verify: async () => needsCounty(),
+      deriveCounty: async () => ({ county: 'Runnels', state: 'TX', zip: '79567', fips: '48399', lat: 31.95, lng: -99.96 }),
+      suggest: async () => segmentSuggest,
+      now: NOW,
+    };
+    const r = await resolveProperty({ fields: { address: '2510 State Highway 153', city: 'Winters', state: 'TX', zip: '79567' } }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.property.address).toBe('2510 State Highway 153');           // house number kept
+    expect(r.property.normalizedAddress?.startsWith('2510 ')).toBe(true); // segment label got the number back
+    expect(r.property.zip).toBe('79567');                                 // operator ZIP not overwritten
+  });
+
   it('Needs Clarification when nothing credible resolves the property', async () => {
     const deps: ResolutionDeps = {
       verify: async () => noIdentity(),

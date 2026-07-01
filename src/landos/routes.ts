@@ -1984,7 +1984,17 @@ export function registerLandosRoutes(app: Hono): void {
     // Matched (Confirm Before Offer) and is NOT marked verified. Coordinates are
     // enrichment output, never identity.
     const p = resolution.property;
-    const subjectAddress = p.normalizedAddress || p.address || cls.parsedFields.address || text.trim();
+    // Subject address: when the match is NOT source-verified, preserve exactly what
+    // the operator typed (house number + ZIP) — a free geocoder's road-segment
+    // label (e.g. "State Highway 153, Winters, TX" for a typed "2510 State Highway
+    // 153, ... 79567") must never replace it. A named-source VERIFIED address wins.
+    const tf = cls.parsedFields;
+    const typedFull = tf.address
+      ? [tf.address, [[tf.city, tf.state].filter(Boolean).join(', '), tf.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
+      : undefined;
+    const subjectAddress = (!p.parcelVerified && typedFull)
+      ? typedFull
+      : (p.normalizedAddress || p.address || typedFull || text.trim());
     const { card } = upsertCardFromDukeRun({
       entity, agentId: 'acquire',
       activeInputAddress: subjectAddress,

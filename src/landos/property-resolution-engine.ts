@@ -200,8 +200,17 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       const sres = await deps.suggest(q);
       const top = sres.suggestions[0];
       if (top) {
+        // Some providers return a road/highway SEGMENT without the house number
+        // (e.g. "State Highway 153, Winters, TX" for "2510 State Highway 153").
+        // Preserve the operator's house number so corroboration never strips it.
+        const keepNum = (candidate?: string): string | undefined => {
+          if (!candidate) return candidate;
+          if (/^\s*\d/.test(candidate)) return candidate;
+          const num = fields.address?.trim().match(/^(\d+[A-Za-z]?)\b/)?.[1];
+          return num ? `${num} ${candidate}` : candidate;
+        };
         const contributed = mergeAndReport(property, 'address_suggest', top.source, {
-          address: top.line1 ?? top.label, normalizedAddress: top.label,
+          address: keepNum(top.line1 ?? top.label), normalizedAddress: keepNum(top.label),
           city: top.city, state: top.state, zip: top.zip, county: top.county, coordinates: top.coordinates,
         }, now(), top.confidence);
         record('address_suggest', true, contributed, 'suggested', `Smart Address Search corroborated: ${top.label} (${top.source}).`);
