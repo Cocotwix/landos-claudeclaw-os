@@ -511,13 +511,25 @@ interface SellerAuthorityView { nameMatch: boolean; ownerOfRecord?: string; sell
 
 function BrowserIntelligenceSection({ dealId }: { dealId?: number }) {
   const [data, setData] = useState<{ landportal: BrowserEvView; countyRecords: BrowserEvView; sellerAuthority?: SellerAuthorityView; facts?: BrowserFactView[]; countySourceMap?: any } | null>(null);
+  const [autoFacts, setAutoFacts] = useState<BrowserFactView[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Auto-load the facts Browser Intelligence wrote during Property Resolution
+  // (LandPortal + County Records after Realie) so they show WITHOUT any manual
+  // trigger. Refreshed after an on-demand retrieve.
+  function loadAutoFacts() {
+    if (!dealId) return;
+    apiGet<{ facts: BrowserFactView[] }>(`/api/landos/deal-cards/${dealId}/browser-facts`)
+      .then((r) => setAutoFacts(r.facts || []))
+      .catch(() => { /* section still usable via retrieve */ });
+  }
+  useEffect(() => { loadAutoFacts(); }, [dealId]);
 
   async function retrieve(mode: 'parcel_fact' | 'deep_record') {
     if (!dealId) return;
     setBusy(true); setErr(null);
-    try { setData(await apiPost(`/api/landos/deal-cards/${dealId}/browser-intel`, { mode })); }
+    try { setData(await apiPost(`/api/landos/deal-cards/${dealId}/browser-intel`, { mode })); loadAutoFacts(); }
     catch (e: any) { setErr(e?.message || String(e)); }
     finally { setBusy(false); }
   }
@@ -566,8 +578,24 @@ function BrowserIntelligenceSection({ dealId }: { dealId?: number }) {
           {busy && <button type="button" onClick={() => void stop()} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-status-failed)] text-[var(--color-status-failed)]">Stop</button>}
         </div>
       </div>
-      {!data && !err && <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal first (after your manual login), then County Records routed through NETR Online → official county source → semantic parcel search → facts stream onto the card as found. Read-only; no credentials, no paid actions.</div>}
+      {!data && !autoFacts.length && !err && <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal first (after your manual login), then County Records routed through NETR Online → official county source → semantic parcel search → facts stream onto the card as found. Read-only; no credentials, no paid actions.</div>}
       {err && <div class="text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+
+      {/* Facts written AUTOMATICALLY during Property Resolution (no manual trigger). */}
+      {autoFacts.length > 0 && (
+        <div class="rounded-md border border-[var(--color-border)] p-2">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Retrieved automatically after Realie ({autoFacts.length})</div>
+          <ul class="space-y-0.5">
+            {autoFacts.map((f, i) => (
+              <li key={i} class="text-[11px] text-[var(--color-text-muted)]">
+                <span class={f.status === 'extracted' ? 'text-[var(--color-status-done)]' : 'text-[var(--color-text-faint)]'}>{f.status === 'extracted' ? '✓' : '⚠'}</span>{' '}
+                <span class="text-[var(--color-text)]">{f.label}:</span> {f.value && /^https?:/i.test(f.value) ? <a href={f.value} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">{f.value.slice(0, 48)}</a> : (f.value || '—')}
+                <span class="text-[10px] text-[var(--color-text-faint)]"> [{f.sourceName || f.sourceType} · {originBadge(f.origin)}{f.status !== 'extracted' ? ` · ${f.status.replace('_', ' ')}` : ''}]</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {sa && (sa.sellerName || sa.ownerOfRecord) && (
         <div class="rounded-md border border-[var(--color-border)] p-2 text-[11px]">

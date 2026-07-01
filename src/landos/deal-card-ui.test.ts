@@ -138,6 +138,11 @@ describe('Deal Card panel — concise DD operator brief', () => {
     // Inherited/representative seller: owner-of-record vs seller + authority status.
     expect(SRC).toMatch(/Owner-of-record vs seller/);
     expect(SRC).toMatch(/Authority to sell/);
+    // Auto-load: facts written during Property Resolution show WITHOUT a manual
+    // trigger (GET browser-facts on mount + a "Retrieved automatically" panel).
+    expect(SRC).toMatch(/deal-cards\/\$\{dealId\}\/browser-facts/);
+    expect(SRC).toMatch(/loadAutoFacts/);
+    expect(SRC).toMatch(/Retrieved automatically/);
   });
 });
 
