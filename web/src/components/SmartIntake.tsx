@@ -65,7 +65,13 @@ export function SmartIntake({
 
   function choose(s: Suggestion) {
     justChosen.current = true;
-    onInput(s.label);
+    // Preserve the operator's house number when a suggestion dropped it (some
+    // providers return a highway/street SEGMENT without the number, e.g.
+    // "State Highway 153, Winters, TX" for a typed "2510 Highway 153, ...").
+    let label = s.label;
+    const typedNum = value.trim().match(/^(\d+[A-Za-z]?)\b/)?.[1];
+    if (typedNum && !/^\s*\d/.test(label)) label = `${typedNum} ${label}`;
+    onInput(label);
     setOpen(false);
     setSuggestions([]);
     setActive(-1);

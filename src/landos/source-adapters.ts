@@ -600,23 +600,45 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY',
 ]);
 
+// Spelled-out state names -> abbreviation so area signals accept "Winters, Texas".
+const STATE_NAME_TO_ABBR: Record<string, string> = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO',
+  connecticut: 'CT', delaware: 'DE', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID',
+  illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA',
+  maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN', mississippi: 'MS',
+  missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ',
+  'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH',
+  oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+  'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT', virginia: 'VA',
+  washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+};
+const STATE_NAME_ALT = Object.keys(STATE_NAME_TO_ABBR).sort((a, b) => b.length - a.length).join('|');
+function resolveState(token?: string): string | undefined {
+  if (!token) return undefined;
+  const t = token.trim();
+  if (/^[A-Za-z]{2}$/.test(t) && US_STATES.has(t.toUpperCase())) return t.toUpperCase();
+  return STATE_NAME_TO_ABBR[t.toLowerCase()];
+}
+
 /** Extract city/county/state area signals from free text. Never uses
  *  coordinates. Conservative: only what is explicitly present. */
 export function extractAreaSignals(text: string): { city?: string; county?: string; state?: string } {
   const t = (text ?? '').trim();
-  const stateMatches = (t.match(/\b([A-Z]{2})\b/g) ?? []).filter((s) => US_STATES.has(s));
-  const state = stateMatches[stateMatches.length - 1];
+  // State: 2-letter code OR spelled-out name; last valid wins (closest to "city, STATE").
+  const stateRe = new RegExp(`\\b([A-Z]{2}|${STATE_NAME_ALT})\\b`, 'gi');
+  let state: string | undefined;
+  for (const m of t.matchAll(stateRe)) { const abbr = resolveState(m[1]); if (abbr) state = abbr; }
   const countyMatch = t.match(/\b([A-Za-z][A-Za-z.'\- ]*?)\s+County\b/i);
   const county = countyMatch?.[1]?.replace(/\s+/g, ' ').trim();
-  // City directly before a 2-letter state, e.g. "Cottageville, SC", "Swansea SC",
-  // or "around Lexington, SC". Take the capitalized token(s) closest to the
-  // state and ignore a "... County" phrase (that is the county, not the city).
+  // City directly before a state (code or name), e.g. "Cottageville, SC",
+  // "Winters, Texas". Take the token(s) closest to the state; ignore a "... County".
   let city: string | undefined;
-  const cityRe = /\b([A-Z][a-zA-Z.'\-]+(?:\s+[A-Z][a-zA-Z.'\-]+)?)\s*,?\s+([A-Z]{2})\b/g;
+  const cityRe = new RegExp(`\\b([A-Z][a-zA-Z.'\\-]+(?:\\s+[A-Z][a-zA-Z.'\\-]+)?)\\s*,?\\s+([A-Z]{2}|${STATE_NAME_ALT})\\b`, 'gi');
   for (const m of t.matchAll(cityRe)) {
-    if (!US_STATES.has(m[2])) continue;
+    if (!resolveState(m[2])) continue;
     const candidate = m[1].replace(/\s+/g, ' ').trim();
     if (/\bCounty\b/i.test(candidate)) continue;
+    if (STATE_NAME_TO_ABBR[candidate.toLowerCase()]) continue; // the "city" is itself a state name
     city = candidate; // last valid match wins (closest to the state)
   }
   return {

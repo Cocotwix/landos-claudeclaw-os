@@ -22,11 +22,51 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY',
 ]);
 
-function extractState(text: string): string | undefined {
-  const matches = text.match(/\b([A-Z]{2})\b/g) ?? [];
-  const valid = matches.filter(s => US_STATES.has(s));
-  return valid[valid.length - 1];
+// Full state name -> 2-letter abbreviation, so intake accepts "Winters, Texas"
+// (spelled-out state) exactly like "Winters, TX".
+const STATE_NAME_TO_ABBR: Record<string, string> = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO',
+  connecticut: 'CT', delaware: 'DE', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID',
+  illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA',
+  maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN', mississippi: 'MS',
+  missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ',
+  'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH',
+  oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+  'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT', virginia: 'VA',
+  washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+};
+const STATE_NAME_ALT = Object.keys(STATE_NAME_TO_ABBR).sort((a, b) => b.length - a.length).join('|');
+
+/** Resolve a state token (2-letter code OR full name) to its abbreviation. */
+export function resolveStateToken(token?: string): string | undefined {
+  if (!token) return undefined;
+  const t = token.trim();
+  if (/^[A-Za-z]{2}$/.test(t) && US_STATES.has(t.toUpperCase())) return t.toUpperCase();
+  return STATE_NAME_TO_ABBR[t.toLowerCase()];
 }
+
+function extractState(text: string): string | undefined {
+  // Prefer the LAST valid state token (closest to the trailing "city, STATE").
+  // Accept both 2-letter codes and spelled-out names.
+  const re = new RegExp(`\\b([A-Z]{2}|${STATE_NAME_ALT})\\b`, 'gi');
+  let last: string | undefined;
+  for (const m of text.matchAll(re)) { const abbr = resolveStateToken(m[1]); if (abbr) last = abbr; }
+  return last;
+}
+
+// Highway / route style street (e.g. "Highway 153", "Hwy 153", "State Highway
+// 153", "TX-153", "Texas 153", "FM 153", "County Road 153") where the route
+// designator + number replace a trailing street type.
+const HIGHWAY_STREET =
+  '(?:' +
+    '(?:(?:old|new|north|south|east|west|n|s|e|w)\\s+)?' +
+    '(?:(?:us|u\\.s\\.|state|county|ranch|farm)\\s+)?' +
+    '(?:highway|hwy|route|rte|county\\s+road|ranch\\s+road|farm\\s+road|state\\s+road)' +
+    '|(?:fm|cr|sr|rr|sh|us)[-\\s]' +
+    '|[a-z]{2}-' +
+    '|(?:' + STATE_NAME_ALT + ')\\s' +
+  ')\\s*-?\\s*\\d+[A-Za-z]?';
+const HIGHWAY_ADDRESS_RE = new RegExp(`\\b(\\d+[A-Za-z]?\\s+${HIGHWAY_STREET})`, 'i');
 
 function extractLabeledFips(text: string): string | undefined {
   // Only extract FIPS when explicitly labeled to avoid confusing 5-digit zip codes
@@ -127,9 +167,9 @@ const ADDRESS_RE = new RegExp(
   `\\b(\\d+[A-Za-z]?\\s+[A-Za-z0-9][\\w ]*?\\s+(?:${STREET_TYPE_WORDS}))\\b`,
   'i',
 );
-// City + 2-letter state, with or without a comma before the state, e.g.
-// ", Cottageville, SC" or ", Arnold MD". The state is validated against US_STATES.
-const CITY_STATE_RE = /,\s*([A-Za-z][A-Za-z .'\-]*?)\s*,?\s+([A-Z]{2})\b/;
+// City + state (2-letter code OR spelled-out name), with or without a comma
+// before the state, e.g. ", Cottageville, SC", ", Arnold MD", ", Winters, Texas".
+const CITY_STATE_RE = new RegExp(`,\\s*([A-Za-z][A-Za-z .'\\-]*?)\\s*,?\\s+([A-Za-z]{2}|${STATE_NAME_ALT})\\b`, 'i');
 
 /**
  * Returns true when the message looks like a specific property address input
@@ -139,6 +179,8 @@ const CITY_STATE_RE = /,\s*([A-Za-z][A-Za-z .'\-]*?)\s*,?\s+([A-Z]{2})\b/;
 export function looksLikePropertyInput(text: string): boolean {
   // House number + street name + street type (e.g. "57 Church Road", "731 Filter Plant Rd")
   if (STREET_TYPE_RE.test(text)) return true;
+  // House number + highway/route designator (e.g. "2510 Highway 153", "410 FM 153")
+  if (HIGHWAY_ADDRESS_RE.test(text)) return true;
   // Explicit property query language
   if (
     /\b(?:due diligence|run dd|check\s+(?:this\s+)?(?:property|parcel|lot|land)|this\s+(?:property|parcel|land|lot|address))\b/i.test(
@@ -230,21 +272,18 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // absent we still return the parsed address so the resolver returns
   // ambiguous_fips and Duke resolves county via its allowed, non-coordinate
   // recovery ladder. Never block a full address with a "provide address" re-ask.
-  const addrMatch = text.match(ADDRESS_RE);
+  // A highway/route-style address ("2510 Highway 153") OR a normal street address.
+  // Highway FIRST so a trailing route number is captured (ADDRESS_RE would stop at
+  // "State Highway" and drop "153").
+  const addrMatch = text.match(HIGHWAY_ADDRESS_RE) ?? text.match(ADDRESS_RE);
   const cityStateMatch = text.match(CITY_STATE_RE);
-  const state = extractState(text);
-  if (
-    addrMatch &&
-    cityStateMatch &&
-    state &&
-    US_STATES.has(cityStateMatch[2].toUpperCase())
-  ) {
-    // Capture a 5-digit ZIP that trails the state (e.g. "SC 29435"). Used by the
-    // v2 address search as an extra context filter; ignored by the v1 path.
-    const zip = text.match(/\b[A-Z]{2}\s+(\d{5})(?:-\d{4})?\b/)?.[1];
+  const state = extractState(text); // accepts "TX" or spelled-out "Texas"
+  if (addrMatch && cityStateMatch && state) {
+    // ZIP trailing the state, whether the state is a code or a spelled-out name.
+    const zip = text.match(/\b(?:[A-Z]{2}|[A-Za-z]{4,})[, ]+(\d{5})(?:-\d{4})?\b/)?.[1];
     return {
-      address: addrMatch[1].trim(),
-      city: cityStateMatch[1].trim(),
+      address: addrMatch[1].replace(/\s+/g, ' ').trim(),
+      city: cityStateMatch[1].replace(/\s+/g, ' ').trim(),
       state,
       ...(zip ? { zip } : {}),
       ...(labeledFips ? { fips: labeledFips } : {}),

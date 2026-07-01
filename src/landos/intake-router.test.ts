@@ -19,6 +19,43 @@ describe('universal smart intake router', () => {
     expect(r.identityClass).toBe('apn_county');
   });
 
+  it('routes a HIGHWAY-style address with a spelled-out state to Property Resolution', () => {
+    const r = classifySmartIntake('2510 Highway 153, Winters, Texas');
+    expect(r.route).toBe('property_resolution');
+    expect(r.identityClass).toBe('full_address');
+    expect(r.parsedFields.address).toBe('2510 Highway 153');
+    expect(r.parsedFields.city).toBe('Winters');
+    expect(r.parsedFields.state).toBe('TX'); // "Texas" resolved to TX
+  });
+
+  it('parses common highway/route address forms (full route number preserved)', () => {
+    for (const [text, addr] of [
+      ['2510 Hwy 153, Winters, TX', '2510 Hwy 153'],
+      ['2510 State Highway 153, Winters, Texas', '2510 State Highway 153'],
+      ['2510 US Highway 153, Winters, Texas', '2510 US Highway 153'],
+      ['2510 TX-153, Winters, Texas', '2510 TX-153'],
+      ['2510 FM 153, Winters, Texas', '2510 FM 153'],
+      ['2510 County Road 153, Winters, Texas', '2510 County Road 153'],
+    ] as const) {
+      const r = classifySmartIntake(text);
+      expect(r.route, text).toBe('property_resolution');
+      expect(r.parsedFields.address, text).toBe(addr);
+      expect(r.parsedFields.state, text).toBe('TX');
+    }
+  });
+
+  it('accepts a spelled-out state on a normal street address (regression)', () => {
+    const r = classifySmartIntake('57 Church Road, Arnold, Maryland');
+    expect(r.route).toBe('property_resolution');
+    expect(r.parsedFields.state).toBe('MD');
+  });
+
+  it('preserves a trailing ZIP with a spelled-out state (selected-suggestion label)', () => {
+    const r = classifySmartIntake('2510 State Highway 153, Winters, TX, 79467');
+    expect(r.route).toBe('property_resolution');
+    expect(r.parsedFields.zip).toBe('79467');
+  });
+
   it('routes owner + city/state to Property Resolution', () => {
     const r = classifySmartIntake('Owner: Cheryl Sann, Cleveland, GA');
     expect(r.route).toBe('property_resolution');
