@@ -42,13 +42,47 @@ export interface ExtractContext {
   origin: FactOrigin;
 }
 
+// Address facts (situs / owner-mailing) are the ambiguous ones: an address on a
+// county page may be the parcel's OR the agency office's. They are parcel data
+// ONLY on a confirmed parcel record — otherwise they are classified as an agency
+// contact address (see extractAgencyContact), never a parcel fact.
+const ADDRESS_KEYS = new Set<RecordFactKey>(['situsAddress', 'mailingAddress']);
+
+// Strong, parcel-DEFINING labels a landing/contact/office/search page will not
+// carry (owner name, APN, deeded acres, land use, assessed/market value, deed
+// reference). Their presence is evidence the page is an actual parcel record.
+const STRONG_RECORD_KEYS: RecordFactKey[] = ['owner', 'apn', 'acreage', 'landUse', 'assessedValue', 'marketValue', 'deedRef'];
+
+/**
+ * How strongly the fields look like an actual PARCEL RECORD (not a landing /
+ * contact / office / search page). Counts distinct strong parcel-defining labels
+ * present with a real value. 0 => not a parcel record. Pure.
+ */
+export function parcelRecordSignal(fields: Record<string, string>): number {
+  let n = 0;
+  const counted = new Set<RecordFactKey>();
+  for (const [rawLabel, rawVal] of Object.entries(fields)) {
+    const label = rawLabel.trim(); const value = (rawVal ?? '').trim();
+    if (!label || !value) continue;
+    for (const key of STRONG_RECORD_KEYS) {
+      if (counted.has(key)) continue;
+      const spec = FACT_SPECS.find((s) => s.key === key)!;
+      if (spec.rx.test(label) && (!spec.numeric || looksNumeric(value))) { counted.add(key); n++; break; }
+    }
+  }
+  return n;
+}
+
 /**
  * Extract normalized public-record facts from visible label→value fields. Only
  * emits a fact when a labeled field semantically matches AND has a plausible
- * value (numeric specs require a digit). Confidence reflects match quality + an
- * official-vs-fallback origin. Never guesses. Pure.
+ * value (numeric specs require a digit). Situs / mailing ADDRESSES are emitted
+ * only when the page is a confirmed parcel record (opts.pageIsRecord) — otherwise
+ * an address is not assumed to be the parcel's (use extractAgencyContact instead).
+ * Confidence reflects match quality + origin. Never guesses. Pure.
  */
-export function extractRecordFacts(fields: Record<string, string>, ctx: ExtractContext): BrowserFact[] {
+export function extractRecordFacts(fields: Record<string, string>, ctx: ExtractContext, opts: { pageIsRecord?: boolean } = {}): BrowserFact[] {
+  const pageIsRecord = opts.pageIsRecord ?? true; // default keeps existing callers (LandPortal verifies first)
   const out: BrowserFact[] = [];
   const seen = new Set<RecordFactKey>();
   for (const [rawLabel, rawVal] of Object.entries(fields)) {
@@ -59,6 +93,9 @@ export function extractRecordFacts(fields: Record<string, string>, ctx: ExtractC
       if (seen.has(spec.key)) continue;
       if (!spec.rx.test(label)) continue;
       if (spec.numeric && !looksNumeric(value)) continue;
+      // Evidence-first: never write an address as parcel situs/mailing unless we
+      // are on an actual parcel record (Unknown is better than incorrect).
+      if (ADDRESS_KEYS.has(spec.key) && !pageIsRecord) continue;
       seen.add(spec.key);
       // Official county/government source reads 'high'; search-fallback 'medium'.
       const confidence: BrowserFact['confidence'] = ctx.origin === 'search_fallback' ? 'medium' : 'high';
@@ -69,6 +106,37 @@ export function extractRecordFacts(fields: Record<string, string>, ctx: ExtractC
       });
       break;
     }
+  }
+  return out;
+}
+
+// An address found on a non-parcel page (office/contact/landing) — classify it as
+// an AGENCY CONTACT address so useful info is preserved with provenance, but it is
+// NEVER written as parcel situs/mailing and never populates a parcel field.
+const AGENCY_ADDRESS_LABEL = /(physical|mailing|office|contact|street|location)\s*address|^address$|office\s*location/i;
+
+/**
+ * Classify address-like fields on a NON-record page (CAD/assessor office, tax
+ * office, recorder office, contact/footer) as an "Agency contact address". Marked
+ * needs_verification and low confidence so it can never be mistaken for verified
+ * parcel data. Never populates situs/mailing/owner. Pure.
+ */
+export function extractAgencyContact(fields: Record<string, string>, ctx: ExtractContext): BrowserFact[] {
+  const out: BrowserFact[] = [];
+  const seen = new Set<string>();
+  for (const [rawLabel, rawVal] of Object.entries(fields)) {
+    const label = rawLabel.trim(); const value = (rawVal ?? '').trim();
+    if (!label || !value) continue;
+    if (!AGENCY_ADDRESS_LABEL.test(label)) continue;
+    if (!/\d/.test(value) || value.length < 6) continue; // a real street address has a number
+    const norm = value.toLowerCase().replace(/\s+/g, ' ');
+    if (seen.has(norm)) continue; seen.add(norm);
+    out.push({
+      key: 'agencyContact', label: `${ctx.sourceName} — agency contact address (not parcel)`,
+      value: value.slice(0, 160), sourceName: ctx.sourceName, sourceType: ctx.sourceType, sourceUrl: ctx.sourceUrl,
+      confidence: 'low', origin: ctx.origin, status: 'needs_verification',
+    });
+    if (out.length >= 2) break;
   }
   return out;
 }

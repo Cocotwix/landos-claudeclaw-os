@@ -3,7 +3,7 @@ import {
   classifyCountyLink, officialDomainScore, extractCountySources, netrIsStale,
   officialSearchQuery, pickOfficialResult, searchEngineUrl, unwrapSearchResults,
 } from './netr-routing.js';
-import { extractRecordFacts, unresolvedFact } from './semantic-extract.js';
+import { extractRecordFacts, unresolvedFact, extractAgencyContact, parcelRecordSignal } from './semantic-extract.js';
 import { saveCountySources, getCountySources, isCountyCacheFresh } from './county-source-map.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import type { BrowserDriver, BrowserPageRead } from './browser-intelligence.js';
@@ -94,6 +94,44 @@ describe('Semantic record extraction (multi-state synonyms, never guesses)', () 
   it('unresolvedFact marks needs_verification (not a value)', () => {
     expect(unresolvedFact('taxStatus', ctx).status).toBe('needs_verification');
     expect(unresolvedFact('taxStatus', ctx).value).toBe('');
+  });
+});
+
+describe('Address classification — evidence-first (Unknown over incorrect)', () => {
+  const ctx = { sourceName: 'Runnels County Assessor', sourceType: 'assessor', sourceUrl: 'https://runnelscad.org', origin: 'search_fallback' as const };
+  // The exact CAD office/contact page that produced the bug.
+  const cadContactPage = { 'Physical Address': '502 2nd Street, Ballinger, TX 76821', 'Mailing Address': 'PO Box 524, Ballinger, TX 76821', 'Office Hours': '8-5' };
+  // A real parcel record.
+  const parcelRecord = { 'Owner Name': 'SMITH, JOHN', 'Parcel ID': 'R12345', 'Deeded Acres': '20.0', 'Situs': '2510 State Highway 153, Winters, TX', 'Assessed Total': '$88,000' };
+
+  it('parcelRecordSignal: a contact/office page has NO parcel signal; a record has several', () => {
+    expect(parcelRecordSignal(cadContactPage)).toBe(0);
+    expect(parcelRecordSignal(parcelRecord)).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does NOT write the CAD office address as parcel situs/mailing on a non-record page', () => {
+    const facts = extractRecordFacts(cadContactPage, ctx, { pageIsRecord: false });
+    expect(facts.find((f) => f.key === 'situsAddress')).toBeUndefined();
+    expect(facts.find((f) => f.key === 'mailingAddress')).toBeUndefined();
+  });
+
+  it('classifies the office address as an Agency contact address (needs_verification, preserved)', () => {
+    const agency = extractAgencyContact(cadContactPage, ctx);
+    expect(agency.length).toBeGreaterThanOrEqual(1);
+    const first = agency[0];
+    expect(first.key).toBe('agencyContact');
+    expect(first.value).toMatch(/502 2nd Street, Ballinger/);
+    expect(first.status).toBe('needs_verification'); // never a verified parcel fact
+    expect(first.label).toMatch(/agency contact address \(not parcel\)/i);
+    expect(first.sourceName).toBe('Runnels County Assessor'); // provenance preserved
+  });
+
+  it('DOES extract situs/mailing on a confirmed parcel record', () => {
+    const facts = extractRecordFacts(parcelRecord, ctx, { pageIsRecord: true });
+    const byKey = Object.fromEntries(facts.map((f) => [f.key, f]));
+    expect(byKey.situsAddress.value).toMatch(/2510 State Highway 153/);
+    expect(byKey.owner.value).toBe('SMITH, JOHN');
+    expect(byKey.acreage.value).toBe('20.0');
   });
 });
 

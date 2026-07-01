@@ -28,7 +28,7 @@ import {
   searchEngineUrl, unwrapSearchResults,
   COUNTY_SOURCE_TYPES, type CountySourceLink, type CountySourceType,
 } from './netr-routing.js';
-import { extractRecordFacts } from './semantic-extract.js';
+import { extractRecordFacts, extractAgencyContact, parcelRecordSignal } from './semantic-extract.js';
 import { getCountySources, saveCountySources, isCountyCacheFresh } from './county-source-map.js';
 
 /** County workflow targets (the public resources the researcher navigates). */
@@ -191,12 +191,28 @@ async function runCountyWorkflow(
         merged = { ...merged, ...(await driver.readFields({ timeoutMs })).fields };
       }
       if (stopped) break;
-      const ext = extractRecordFacts(merged, ctx).map((f) => ({ ...f, extractionMethod: method }));
-      if (ext.length === 0) {
-        emit({ key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: ctx.sourceName, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: ctx.origin, status: 'extracted', extractionMethod: 'official source link' });
-      } else {
-        for (const f of ext) emit(f); // stream each fact to the Deal Card immediately
+      // Only extract PARCEL facts (situs/mailing/owner/apn/acreage) once we have
+      // actually reached a parcel-specific record — never off a landing / contact
+      // / office / search / GIS-home page. Evidence: the search opened a record OR
+      // the page carries strong parcel-defining fields.
+      // A page is a PARCEL RECORD only if it carries TWO+ distinct parcel-defining
+      // fields (owner/APN/acreage/land-use/value/deed). A landing / contact /
+      // office / search page has none — so an office "Physical/Mailing Address" is
+      // never mistaken for the parcel's situs/mailing. Evidence over navigation:
+      // opening a link whose URL merely says "records" is NOT proof of a record.
+      const pageIsRecord = parcelRecordSignal(merged) >= 2;
+      const ext = pageIsRecord
+        ? extractRecordFacts(merged, ctx, { pageIsRecord: true }).map((f) => ({ ...f, extractionMethod: method }))
+        : [];
+      const linkFact: BrowserFact = { key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: ctx.sourceName, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: ctx.origin, status: 'extracted', extractionMethod: 'official source link' };
+      if (ext.length > 0) {
+        for (const f of ext) emit(f); // stream verified parcel facts to the Deal Card
         if (!screenshotTaken) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
+      } else {
+        // Not a parcel record: keep the official source link, and PRESERVE any
+        // office/contact address as a labeled agency contact (never parcel data).
+        emit(linkFact);
+        for (const a of extractAgencyContact(merged, ctx)) emit({ ...a, extractionMethod: 'agency contact page (not a parcel record)' });
       }
     } catch { /* try the next source; never stop on one */ }
   }
