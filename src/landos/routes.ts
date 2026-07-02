@@ -126,6 +126,7 @@ import {
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
+import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
@@ -929,9 +930,22 @@ export function registerLandosRoutes(app: Hono): void {
   });
 
   app.get('/api/landos/deal-cards/:id', (c) => {
-    const deal = getDealCard(Number(c.req.param('id')));
+    const id = Number(c.req.param('id'));
+    const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'not found' }, 404);
-    return c.json({ dealCard: deal });
+    // Canonical Business Object Spine projection (authoritative decision-grade
+    // header). Guarded so a projection issue can never break the Deal Card read.
+    let businessSpine: ReturnType<typeof assembleBusinessObjects> | undefined;
+    try { businessSpine = assembleBusinessObjects(id); } catch { businessSpine = undefined; }
+    return c.json({ dealCard: deal, businessSpine, header: businessSpine?.header });
+  });
+
+  // Executive Command / Jarvis-Neo: "What is blocking this deal, and who owns
+  // the next action?" — answered from the canonical objects, not a report.
+  app.get('/api/landos/deal-cards/:id/blockers', (c) => {
+    const answer = whatBlocksThisDeal(Number(c.req.param('id')));
+    if (!answer) return c.json({ error: 'not found' }, 404);
+    return c.json({ blockers: answer });
   });
 
   // Acquisition lane (Lead -> DD Report -> Discovery Call -> [Deeper DD] ->

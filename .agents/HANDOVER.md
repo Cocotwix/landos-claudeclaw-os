@@ -9,6 +9,7 @@
 |------|--------|-------|
 | Phase 1 Build Memory Spine | Done | Committed d8d99e4. |
 | Command + Deal Card + Department Leg Foundation | Active | LandOS-wide structural spine; reuse/harden, do not rebuild existing machinery. |
+| Business Object Spine v1 (projection-first) | Done (uncommitted) | src/landos/business-object-spine.ts (+test) projects the 5 canonical objects over existing tables; owns decision-grade / completeness / VerificationTasks / Jarvis-Neo query. Wired into GET /api/landos/deal-cards/:id (adds businessSpine + header) and new GET .../:id/blockers. 15 new tests + full suite green (only pre-existing exfiltration-guard/skill-registry infra failures remain). Not pushed. |
 
 ## Current Branch / State
 

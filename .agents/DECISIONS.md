@@ -21,4 +21,7 @@ These are durable defaults until Tyler changes them.
 | Voice is an interface layer over Command and War Room, not a department. | Voice is I/O, not business logic. |
 | Mark/ClaudeClaw's existing War Room page and cards are canonical and preserved. | War Room work is additive routing only, never a redesign. |
 | Large property reports/media/transcripts/datasets stay out of repo and laptop; storage uses adapters. | Laptop is the control center, not the warehouse. |
+| LandOS is built around canonical business objects (LeadIntakeRecord, Opportunity/Deal, PropertyIntelligencePacket, SourceEvidence, VerificationTask). The Deal Card is the rendering/operator layer, not the DB of truth. | Business intelligence must live in owned objects, not report strings or worksheets. |
+| Business Object Spine v1 is a PROJECTION layer (business-object-spine.ts) over the existing persisted tables — no new tables, no migration. It owns decision-grade, completeness, missing-critical-info, VerificationTask generation, and the Jarvis/Neo "what blocks this deal" query. | Prove the canonical contracts + logic against real Deal Card data without schema/migration risk; durable persistence is a later, separately-scoped sprint. |
+| Decision-grade is honest: missing owner / APN / acreage / verified parcel identity / offer-usable source evidence => NOT decision-grade. Parcel identity is never assumed from coordinates/proximity/nearest parcel; county links are never parcel facts. | Provider success is not business success; unknowns are surfaced, never buried. |
 
