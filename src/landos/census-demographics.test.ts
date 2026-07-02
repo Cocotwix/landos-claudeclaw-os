@@ -30,4 +30,27 @@ describe('census demographics (verified contract, honest not_configured)', () =>
     expect(r.status).toBe('error');
     expect(r.population).toBeNull();
   });
+  it('one-shot retry: a cold-start transient on the first call succeeds on the second', async () => {
+    const body = JSON.stringify([
+      ['NAME', 'B01003_001E', 'B19013_001E', 'B25001_001E', 'B25003_002E', 'B25003_003E', 'state', 'county'],
+      ['Runnels County, Texas', '9880', '52000', '5000', '3000', '1500', '48', '399'],
+    ]);
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNRESET (cold start)'); // transient first attempt
+      return { ok: true, status: 200, text: async () => body };
+    };
+    const r = await fetchCensusDemographics('48399', { env: { CENSUS_API_KEY: 'k' }, fetchImpl });
+    expect(calls).toBe(2);
+    expect(r.status).toBe('verified');
+    expect(r.population).toBe(9880);
+  });
+  it('does not retry a verified first result (no double call)', async () => {
+    const body = JSON.stringify([['NAME', 'B01003_001E', 'B19013_001E', 'B25001_001E', 'B25003_002E', 'B25003_003E', 'state', 'county'], ['White County, Georgia', '28454', '52000', '5000', '3000', '1500', '13', '311']]);
+    let calls = 0;
+    const r = await fetchCensusDemographics('13311', { env: { CENSUS_API_KEY: 'k' }, fetchImpl: async () => { calls += 1; return { ok: true, status: 200, text: async () => body }; } });
+    expect(calls).toBe(1);
+    expect(r.status).toBe('verified');
+  });
 });

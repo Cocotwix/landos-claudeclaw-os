@@ -39,9 +39,13 @@ export function emptyCensus(): CensusDemographics {
   return { status: 'not_run', county: null, state: null, fips: null, population: null, medianHouseholdIncome: null, housingUnits: null, ownerOccupied: null, renterOccupied: null, ownerPct: null, source: null, timestamp: null, note: 'Not run (no county FIPS).' };
 }
 
-function censusKey(env: Record<string, string | undefined>): string {
+// Resolve the key from the provided env. The .env fallback applies ONLY on the
+// default (production process.env) path; an explicitly-provided env object is
+// authoritative (so a test passing env:{} truly means "no key").
+function censusKey(env: Record<string, string | undefined>, allowEnvFileFallback: boolean): string {
   const v = (env[CENSUS_KEY_ENV] ?? '').trim();
   if (v) return v;
+  if (!allowEnvFileFallback) return '';
   try { return (readEnvFile([CENSUS_KEY_ENV])[CENSUS_KEY_ENV] ?? '').trim(); } catch { return ''; }
 }
 
@@ -59,33 +63,43 @@ export async function fetchCensusDemographics(fips5: string | null | undefined, 
   const fips = (fips5 ?? '').trim();
   if (!/^\d{5}$/.test(fips)) return { ...base, status: 'no_geography', note: 'No 5-digit county FIPS available for demographics.' };
   const state = fips.slice(0, 2); const county = fips.slice(2);
-  const key = censusKey(env);
+  const key = censusKey(env, deps.env === undefined);
   if (!key) return { ...base, status: 'not_configured', state, county, fips, note: 'US Census demographics not configured (no free CENSUS_API_KEY). Add the key to activate; no data invented.' };
   const year = (deps.year ?? CENSUS_ACS_YEAR).trim() || CENSUS_ACS_YEAR;
   const url = `https://api.census.gov/data/${year}/acs/acs5?get=NAME,${VARS.join(',')}&for=county:${county}&in=state:${state}`;
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as CensusFetch);
-  try {
-    const res = await fetchImpl(`${url}&key=${key}`);
-    if (!res.ok) return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: `Census HTTP ${res.status}.` };
-    const txt = await res.text();
-    let rows: string[][]; try { rows = JSON.parse(txt) as string[][]; } catch { return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: 'Census returned non-JSON (key/quota issue).' }; }
-    const header = rows[0]; const vals = rows[1];
-    if (!header || !vals) return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: 'Census returned no data row.' };
-    const get = (v: string) => numOrNull(vals[header.indexOf(v)]);
-    const owner = get('B25003_002E'); const renter = get('B25003_003E');
-    const ownerPct = owner != null && renter != null && owner + renter > 0 ? Math.round((owner / (owner + renter)) * 100) : null;
-    return {
-      status: 'verified',
-      county: vals[header.indexOf('NAME')] ?? null,
-      state, fips,
-      population: get('B01003_001E'),
-      medianHouseholdIncome: get('B19013_001E'),
-      housingUnits: get('B25001_001E'),
-      ownerOccupied: owner, renterOccupied: renter, ownerPct,
-      source: url, timestamp: now,
-      note: 'US Census ACS 5-year, county level (official supporting market context).',
-    };
-  } catch (e: unknown) {
-    return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: `Census error: ${(e as Error)?.message ?? String(e)}.` };
-  }
+
+  const attempt = async (): Promise<CensusDemographics> => {
+    try {
+      const res = await fetchImpl(`${url}&key=${key}`);
+      if (!res.ok) return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: `Census HTTP ${res.status}.` };
+      const txt = await res.text();
+      let rows: string[][]; try { rows = JSON.parse(txt) as string[][]; } catch { return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: 'Census returned non-JSON (key/quota issue).' }; }
+      const header = rows[0]; const vals = rows[1];
+      if (!header || !vals) return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: 'Census returned no data row.' };
+      const get = (v: string) => numOrNull(vals[header.indexOf(v)]);
+      const owner = get('B25003_002E'); const renter = get('B25003_003E');
+      const ownerPct = owner != null && renter != null && owner + renter > 0 ? Math.round((owner / (owner + renter)) * 100) : null;
+      return {
+        status: 'verified',
+        county: vals[header.indexOf('NAME')] ?? null,
+        state, fips,
+        population: get('B01003_001E'),
+        medianHouseholdIncome: get('B19013_001E'),
+        housingUnits: get('B25001_001E'),
+        ownerOccupied: owner, renterOccupied: renter, ownerPct,
+        source: url, timestamp: now,
+        note: 'US Census ACS 5-year, county level (official supporting market context).',
+      };
+    } catch (e: unknown) {
+      return { ...base, status: 'error', state, county, fips, source: url, timestamp: now, note: `Census error: ${(e as Error)?.message ?? String(e)}.` };
+    }
+  };
+
+  // One-shot retry: a cold-start transient (HTTP error, non-JSON, or thrown
+  // network error) gets a single second attempt so Market Pulse growth measures
+  // deterministically instead of falling back on the first call. A verified
+  // result returns immediately; a genuine failure still returns error (no loop).
+  const first = await attempt();
+  return first.status === 'error' ? await attempt() : first;
 }
