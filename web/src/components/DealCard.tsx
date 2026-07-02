@@ -1555,8 +1555,271 @@ function DdList({ title, items, empty }: { title: string; items: string[]; empty
   );
 }
 
+// ── Business Object Spine v1 (canonical projection) ────────────────────────
+// The authoritative decision-grade layer. The Deal Card RENDERS these objects
+// in plain business language; it is not the database of truth. Shape mirrors
+// BusinessObjectBundle in src/landos/business-object-spine.ts.
+interface SpineFactSlot { field: string; value: string | number | null; known: boolean; label: string; verified: boolean; evidenceRefs: string[] }
+interface SpineSourceEvidence { sourceId: string; classification: string; sourceName: string; sourceUrlOrRef: string; reliability: string; usableForOfferLogic: boolean; cardId?: number; note: string }
+interface SpineVerificationTask { taskId: string; criticality: string; question: string; reason: string; recommendedSource: string; ownerDepartment: string; blocking: boolean }
+interface SpineHeader {
+  stage: string; parcelCompleteness: number; decisionConfidence: string; decisionGrade: boolean;
+  decisionGradeReason: string; missingCriticalInfo: string[]; blockingVerificationTasks: SpineVerificationTask[];
+  nextBestAction: string; nextActionOwner: string;
+}
+interface SpinePacket {
+  owner: SpineFactSlot; apn: SpineFactSlot; county: SpineFactSlot; state: SpineFactSlot;
+  location: SpineFactSlot; acreage: SpineFactSlot; parcelIdentityVerified: boolean; parcelIdentityStatus: string;
+  parcelCompletenessScore: number; decisionGrade: boolean; decisionGradeReason: string;
+  missingCriticalInfo: string[]; sourceEvidence: SpineSourceEvidence[]; verificationTasks: SpineVerificationTask[];
+}
+interface SpineLeadIntake { provided: Record<string, unknown>; sellerStatedFacts: Array<{ kind: string; value: string }>; intakeConfidence: string }
+interface BusinessSpineView {
+  header: SpineHeader; propertyIntelligence: SpinePacket;
+  opportunity: { nextBestAction: string; nextActionOwner: string; decisionConfidence: string; criticalBlockers: string[] };
+  leadIntake: SpineLeadIntake; sourceEvidence: SpineSourceEvidence[]; verificationTasks: SpineVerificationTask[];
+}
+interface BlockAnswerView {
+  decisionGrade: boolean; decisionConfidence: string; answer: string; blockers: string[];
+  nextBestAction: string; nextActionOwner: string; blockingTasks: SpineVerificationTask[];
+}
+
+function ownerDeptLabel(d: string): string {
+  return d === 'due-diligence-research' ? 'Due Diligence' : d === 'strategy' ? 'Strategy' : d.replace(/[-_]/g, ' ');
+}
+
+function SpineFact({ label, slot }: { label: string; slot?: SpineFactSlot }) {
+  const known = slot?.known;
+  const tone = slot?.verified ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : known ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+    : 'text-[var(--color-text-faint)] border-[var(--color-border)]';
+  return (
+    <div class="flex items-baseline gap-2 text-[12px]">
+      <span class="text-[var(--color-text-faint)] w-28 shrink-0">{label}</span>
+      <span class="text-[var(--color-text)] flex-1 break-words">{known ? String(slot!.value) : '—'}</span>
+      <span class={`text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 ${tone}`}>{slot?.label ?? 'Not checked'}</span>
+    </div>
+  );
+}
+
+// The FIRST thing on an open Deal Card: what LandOS found, what's missing, the
+// evidence, whether it's decision-grade, what's blocking, and the next action —
+// all sourced from the canonical Business Object Spine, in plain language.
+function BusinessSpineSection({ spine, dealId }: { spine: BusinessSpineView | null; dealId: number }) {
+  const [ans, setAns] = useState<BlockAnswerView | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!spine) return null;
+  const h = spine.header;
+  const pkt = spine.propertyIntelligence;
+  const dg = h.decisionGrade;
+  const frame = dg ? 'border-[var(--color-status-done)]'
+    : h.decisionConfidence === 'blocked' ? 'border-[var(--color-status-failed)]'
+    : 'border-[var(--color-accent)]';
+  const dgTone = dg ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
+
+  async function checkBlockers() {
+    setBusy(true);
+    try { const r = await apiGet<{ blockers: BlockAnswerView }>(`/api/landos/deal-cards/${dealId}/blockers`); setAns(r.blockers); }
+    catch { /* header already shows the blockers */ }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div class={`rounded-lg border ${frame} bg-[var(--color-card)] p-4 space-y-3`}>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text)]">Business Intelligence</span>
+        <span class={`text-[11px] px-2 py-0.5 rounded-full border ${dgTone}`}>{dg ? 'Decision-grade' : 'Not decision-grade'}</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">Stage: {h.stage}</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">Confidence: {h.decisionConfidence}</span>
+        <span class="ml-auto text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] tabular-nums">Parcel completeness: {h.parcelCompleteness}%</span>
+      </div>
+      <div class="text-[11px] text-[var(--color-text-muted)]">{pkt.decisionGradeReason}</div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+        {/* What LandOS found */}
+        <div class="space-y-1">
+          <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">What LandOS found</div>
+          <SpineFact label="Owner" slot={pkt.owner} />
+          <SpineFact label="APN / parcel" slot={pkt.apn} />
+          <SpineFact label="Acreage" slot={pkt.acreage} />
+          <SpineFact label="County" slot={pkt.county} />
+          <SpineFact label="State" slot={pkt.state} />
+          <SpineFact label="Location" slot={pkt.location} />
+          <div class="flex items-baseline gap-2 text-[12px]">
+            <span class="text-[var(--color-text-faint)] w-28 shrink-0">Parcel identity</span>
+            <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${pkt.parcelIdentityVerified ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-text-faint)] border-[var(--color-border)]'}`}>
+              {pkt.parcelIdentityVerified ? 'Verified' : pkt.parcelIdentityStatus.replace(/_/g, ' ')}
+            </span>
+          </div>
+        </div>
+
+        {/* What's still missing */}
+        <div class="space-y-1">
+          <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">What's still missing</div>
+          {h.missingCriticalInfo.length === 0
+            ? <div class="text-[12px] text-[var(--color-status-done)]">Nothing critical missing.</div>
+            : <ul class="list-disc pl-4 space-y-0.5 text-[12px] text-[var(--color-status-failed)]">{h.missingCriticalInfo.map((m, i) => <li key={i}>{m}</li>)}</ul>}
+        </div>
+      </div>
+
+      {/* Evidence supporting the facts */}
+      <div>
+        <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Evidence ({spine.sourceEvidence.length})</div>
+        {spine.sourceEvidence.length === 0
+          ? <div class="text-[12px] text-[var(--color-text-faint)]">No source evidence attached yet.</div>
+          : (
+            <ul class="space-y-0.5">
+              {spine.sourceEvidence.slice(0, 8).map((e, i) => (
+                <li key={i} class="text-[11px] text-[var(--color-text-muted)] flex items-center gap-2">
+                  <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${e.usableForOfferLogic ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'border-[var(--color-border)] text-[var(--color-text-faint)]'}`}>{e.classification}</span>
+                  <span class="text-[var(--color-text)]">{e.sourceName}</span>
+                  <span class="text-[10px] text-[var(--color-text-faint)]">· {e.reliability}{e.usableForOfferLogic ? ' · offer-usable' : ''}</span>
+                  {e.sourceUrlOrRef && /^https?:/i.test(e.sourceUrlOrRef) && <a href={e.sourceUrlOrRef} target="_blank" rel="noreferrer" class="text-[10px] text-[var(--color-accent)] underline">source</a>}
+                </li>
+              ))}
+            </ul>
+          )}
+      </div>
+
+      {/* What's blocking this deal? — sourced from the canonical objects. */}
+      <div class="rounded-md border border-[var(--color-border)] p-2.5 space-y-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">What's blocking this deal?</span>
+          <button type="button" onClick={() => void checkBlockers()} disabled={busy}
+            class="ml-auto text-[11px] px-2 py-0.5 rounded-md border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
+            {busy ? 'Checking…' : 'Check blockers'}
+          </button>
+        </div>
+        {ans && <div class="text-[12px] text-[var(--color-text)]">{ans.answer}</div>}
+        {h.blockingVerificationTasks.length === 0
+          ? <div class="text-[12px] text-[var(--color-status-done)]">No blocking items — nothing is holding this deal back.</div>
+          : (
+            <ul class="space-y-1">
+              {h.blockingVerificationTasks.map((t) => (
+                <li key={t.taskId} class="text-[12px]">
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-status-failed)] text-[var(--color-status-failed)] mr-1">{t.criticality}</span>
+                  <span class="text-[var(--color-text)]">{t.question}</span>
+                  <div class="text-[10px] text-[var(--color-text-faint)] ml-1">Why: {t.reason} · Try: {t.recommendedSource} · Owner: {ownerDeptLabel(t.ownerDepartment)}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        <div class="text-[12px] pt-1 border-t border-[var(--color-border)]">
+          <span class="text-[var(--color-accent)] font-semibold">Next action:</span> {h.nextBestAction}
+          <span class="text-[var(--color-text-faint)]"> — owner: {ownerDeptLabel(h.nextActionOwner)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Market Pulse v1 (concise real read) ────────────────────────────────────
+// Mirrors MarketPulseRead in src/landos/market-pulse-read.ts. Answers: is the
+// area growing/stable/declining, what land goes for per acre, growth signals.
+interface MPGrowthView { status: string; direction: string; populationRecent: number | null; populationPrior: number | null; pctChange: number | null; years: [number, number] | null; source: string | null; note: string }
+interface MPPpaView { status: string; medianPpa: number | null; sampleSize: number; source: string | null; note: string }
+interface MarketPulseReadView {
+  eligible: boolean; area: { descriptor: string }; parcelVerified: boolean; label: string;
+  growth: MPGrowthView; countyPricePerAcre: MPPpaView; zipPricePerAcre: MPPpaView | null;
+  developmentSignals: { source: string; note: string }; plainEnglish: string; disclaimer: string;
+}
+
+function growthTone(dir: string): string {
+  return dir === 'growing' ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : dir === 'declining' ? 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]'
+    : 'text-[var(--color-accent)] border-[var(--color-accent)]';
+}
+
+function MarketPulseReadSection({ dealId }: { dealId: number }) {
+  const [mp, setMp] = useState<MarketPulseReadView | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true; setBusy(true);
+    apiGet<{ marketPulse: MarketPulseReadView }>(`/api/landos/deal-cards/${dealId}/market-pulse`)
+      .then((r) => { if (live) setMp(r.marketPulse); })
+      .catch(() => { /* section is optional */ })
+      .finally(() => { if (live) setBusy(false); });
+    return () => { live = false; };
+  }, [dealId]);
+  if (!mp) return busy ? <div class="text-[11px] text-[var(--color-text-faint)] px-1">Reading market pulse…</div> : null;
+  if (!mp.eligible) return null;
+  const g = mp.growth; const cp = mp.countyPricePerAcre; const zp = mp.zipPricePerAcre;
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text)]">Market Pulse</span>
+        <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{mp.area.descriptor}</span>
+        <span class={`text-[11px] px-2 py-0.5 rounded-full border ${growthTone(g.direction)}`}>{g.direction === 'unknown' ? 'growth: unknown' : g.direction}</span>
+      </div>
+      <div class="text-[12px] text-[var(--color-text)]">{mp.plainEnglish}</div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div class="text-[var(--color-text-faint)]">Population trend</div>
+          {g.status === 'measured' && g.pctChange != null
+            ? <div class="text-[var(--color-text)]">{g.populationPrior?.toLocaleString()} → {g.populationRecent?.toLocaleString()} ({g.pctChange >= 0 ? '+' : ''}{g.pctChange}%{g.years ? `, ${g.years[0]}–${g.years[1]}` : ''})</div>
+            : <div class="text-[var(--color-text-faint)]">{g.note}</div>}
+          {g.source && <a href={g.source} target="_blank" rel="noreferrer" class="text-[10px] text-[var(--color-accent)] underline">official source</a>}
+        </div>
+        <div>
+          <div class="text-[var(--color-text-faint)]">County $/acre</div>
+          {cp.status === 'measured' && cp.medianPpa != null
+            ? <div class="text-[var(--color-text)]">~${cp.medianPpa.toLocaleString()}/acre <span class="text-[10px] text-[var(--color-text-faint)]">({cp.sampleSize} comps)</span></div>
+            : <div class="text-[var(--color-text-faint)]">{cp.note}</div>}
+          {zp?.medianPpa != null && <div class="text-[var(--color-text)]">ZIP: ~${zp.medianPpa.toLocaleString()}/acre <span class="text-[10px] text-[var(--color-text-faint)]">({zp.sampleSize})</span></div>}
+        </div>
+        <div>
+          <div class="text-[var(--color-text-faint)]">Growth signals</div>
+          <div class="text-[var(--color-text-muted)]">{mp.developmentSignals.note}</div>
+          <a href={mp.developmentSignals.source} target="_blank" rel="noreferrer" class="text-[10px] text-[var(--color-accent)] underline">scan development</a>
+        </div>
+      </div>
+      {mp.disclaimer && <div class="text-[10px] text-[var(--color-text-faint)]">{mp.disclaimer}</div>}
+    </div>
+  );
+}
+
+// ── Public Records Research (unresolved-lead usefulness) ────────────────────
+// Mirrors PublicRecordsResearchPlan in src/landos/public-records-research.ts.
+interface ResearchTargetView { priority: number; kind: string; label: string; url: string; whatToExtract: string[]; searchBy: string[]; official: boolean; note: string }
+interface ResearchPlanView { eligible: boolean; targets: ResearchTargetView[]; missingCriticalFacts: string[]; nextVerificationAction: string; disclaimer: string }
+
+function PublicRecordsResearchSection({ dealId }: { dealId: number }) {
+  const [plan, setPlan] = useState<ResearchPlanView | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ researchPlan: ResearchPlanView }>(`/api/landos/deal-cards/${dealId}/research-plan`)
+      .then((r) => { if (live) setPlan(r.researchPlan); })
+      .catch(() => { /* optional */ });
+    return () => { live = false; };
+  }, [dealId]);
+  if (!plan || !plan.eligible || plan.targets.length === 0) return null;
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text)]">Public Records Research</span>
+        {plan.missingCriticalFacts.length > 0 && <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-accent)] text-[var(--color-accent)]">still need: {plan.missingCriticalFacts.join(', ')}</span>}
+      </div>
+      <div class="text-[12px] text-[var(--color-text)]"><span class="text-[var(--color-accent)] font-semibold">Next:</span> {plan.nextVerificationAction}</div>
+      <div class="space-y-1">
+        {plan.targets.map((t, i) => (
+          <div key={i} class="text-[11px] flex items-start gap-2">
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)] shrink-0">#{t.priority}</span>
+            <div class="flex-1">
+              <a href={t.url} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">{t.label}</a>
+              <span class="text-[10px] text-[var(--color-text-faint)]"> — extract: {t.whatToExtract.slice(0, 3).join(', ')}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div class="text-[10px] text-[var(--color-text-faint)]">{plan.disclaimer}</div>
+    </div>
+  );
+}
+
 export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; entity?: EntityFilter }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
+  const [spine, setSpine] = useState<BusinessSpineView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1737,8 +2000,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
       setReportWarnings([]);
       setLandScore(null);
       setLandScoreNote('');
-      const res = await apiGet<{ dealCard: DealCardDetail }>(`/api/landos/deal-cards/${id}`);
+      const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
+      setSpine(res.businessSpine ?? null);
       await loadDd(id);
       await loadStrategy(id);
       await loadMarket(id);
@@ -1746,6 +2010,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
+      setSpine(null);
       setDd(null);
       setStrategy(null);
       setMarket(null);
@@ -2173,6 +2438,19 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </span>
             </div>
           </div>
+
+          {/* 1a. BUSINESS INTELLIGENCE — canonical Business Object Spine result:
+              what LandOS found, what's missing, evidence, decision-grade, what's
+              blocking, and the next action. The first business content on the card. */}
+          <BusinessSpineSection spine={spine} dealId={deal.id} />
+
+          {/* 1a-ii. MARKET PULSE — is the area growing/stable/declining, county /
+              ZIP $/acre, growth signals. Area-level: works even when unverified. */}
+          <MarketPulseReadSection dealId={deal.id} />
+
+          {/* 1a-iii. PUBLIC RECORDS RESEARCH — the official county sources to
+              check + the next verification action. Sources to check, not facts. */}
+          <PublicRecordsResearchSection dealId={deal.id} />
 
           {/* 1b. DD + Market + Strategy operational report */}
           <Section title="DD + Market + Strategy Report">

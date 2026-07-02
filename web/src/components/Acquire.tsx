@@ -31,7 +31,7 @@ function entityLabel(e: EntityFilter): string {
 }
 
 interface AcquireResponse {
-  ok: boolean; matched?: boolean; parcelVerified?: boolean; dealCardId: number | null;
+  ok: boolean; matched?: boolean; researchCardCreated?: boolean; parcelVerified?: boolean; dealCardId: number | null;
   pipeline?: string; status?: string; message?: string; guidance?: string;
   confidence?: number; matchedReason?: string; confirmBeforeOffer?: string[]; sources?: string[];
 }
@@ -58,8 +58,14 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
       const body: Record<string, unknown> = { text };
       if (entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ') body.entity = entity;
       const res = await apiPost<AcquireResponse>('/api/landos/acquire/run', body);
-      if (res.ok && res.matched === true && res.dealCardId) {
+      if (res.dealCardId && (res.matched === true || res.researchCardCreated === true)) {
+        // Opens on a verified/matched deal OR an unresolved research card (which
+        // still shows what LandOS found/missed, market pulse, and the next
+        // verification action). Show the guidance too when it's a research card.
         if (onOpenDealCard) onOpenDealCard(res.dealCardId);
+        if (res.researchCardCreated && res.matched !== true) {
+          setNeedsClarification(res.message || res.guidance || 'Opened a research Deal Card — providers could not verify the parcel yet.');
+        }
       } else {
         setNeedsClarification(res.guidance || res.message || 'No practical match could be established. Provide APN + county, owner + city/state, or a corrected address.');
       }

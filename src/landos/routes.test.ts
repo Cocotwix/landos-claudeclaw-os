@@ -822,6 +822,68 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     }
   });
 
+  it('UNRESOLVED-BUT-USEFUL: an address that providers cannot verify opens a RESEARCH Deal Card with market pulse + research plan', async () => {
+    // Force no structured resolution (no county derivation, no suggest match, no
+    // verify) so the assistant falls back to public-records research.
+    CENSUS.county = null;
+    const prevSuggest = SUGGEST.result.suggestions;
+    SUGGEST.result.suggestions = [];
+    RESOLVER.override = null;
+    try {
+      const res = await post('/api/landos/acquire/run', { text: '2510 State Highway 153, Winters, TX', entity: 'TY_LAND_BIZ' });
+      const body = (await res.json()) as any;
+      // A useful result, not an empty shell: a research Deal Card was opened.
+      expect(body.ok).toBe(true);
+      expect(body.researchCardCreated).toBe(true);
+      expect(body.dealCardId).toBeGreaterThan(0);
+      const id = body.dealCardId;
+
+      // 1. Business Object Spine: honestly NOT decision-grade + blockers.
+      const detail = (await (await get(`/api/landos/deal-cards/${id}`)).json()) as any;
+      expect(detail.businessSpine.header.decisionGrade).toBe(false);
+      const blockers = ((await (await get(`/api/landos/deal-cards/${id}/blockers`)).json()) as any).blockers;
+      expect(blockers.blockingTasks.length).toBeGreaterThanOrEqual(4);
+
+      // 2. Market Pulse: area-level context works even unverified.
+      const mp = ((await (await get(`/api/landos/deal-cards/${id}/market-pulse`)).json()) as any).marketPulse;
+      expect(mp.eligible).toBe(true);
+      expect(typeof mp.plainEnglish).toBe('string');
+
+      // 3. Public-records research plan: official county sources + next action.
+      const plan = ((await (await get(`/api/landos/deal-cards/${id}/research-plan`)).json()) as any).researchPlan;
+      expect(plan.eligible).toBe(true);
+      expect(plan.targets.length).toBeGreaterThanOrEqual(3);
+      expect(plan.targets.some((t: any) => t.kind === 'netr')).toBe(true);
+
+      // eslint-disable-next-line no-console
+      console.log('\n=== ACCEPTANCE (unresolved): 2510 State Highway 153, Winters, TX ===\n' +
+        `Decision-grade: ${detail.businessSpine.header.decisionGrade ? 'YES' : 'NO'} | Confidence: ${detail.businessSpine.header.decisionConfidence}\n` +
+        `Missing: ${detail.businessSpine.header.missingCriticalInfo.join(', ')}\n` +
+        `Market Pulse: ${mp.plainEnglish}\n` +
+        `Next verification: ${plan.nextVerificationAction}\n` +
+        `Top research source: ${plan.targets[0].label} -> ${plan.targets[0].url}\n` +
+        `Next action: ${detail.businessSpine.header.nextBestAction} (owner: ${detail.businessSpine.header.nextActionOwner})`);
+    } finally {
+      CENSUS.county = { county: 'White', state: 'GA', zip: '30528', fips: '13311', lat: 34.597, lng: -83.766 };
+      SUGGEST.result.suggestions = prevSuggest;
+    }
+  });
+
+  it('RESOLVED lead surfaces market pulse ($/acre from comps) + a clear next action', async () => {
+    RESOLVER.override = verifiedGilstrapResolve();
+    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
+    const body = (await res.json()) as any;
+    expect(body.parcelVerified).toBe(true);
+    const id = body.dealCardId;
+    const mp = ((await (await get(`/api/landos/deal-cards/${id}/market-pulse`)).json()) as any).marketPulse;
+    expect(mp.eligible).toBe(true);
+    expect(mp.parcelVerified).toBe(true);
+    // eslint-disable-next-line no-console
+    console.log('\n=== ACCEPTANCE (resolved): 388 Gilstrap Road, Cleveland GA ===\n' +
+      `Parcel verified: ${mp.parcelVerified}\nMarket Pulse: ${mp.plainEnglish}\n` +
+      `County $/acre: ${mp.countyPricePerAcre.status === 'measured' ? '$' + mp.countyPricePerAcre.medianPpa + '/ac (' + mp.countyPricePerAcre.sampleSize + ' comps)' : mp.countyPricePerAcre.note}`);
+  }, 30000);
+
   it('VERIFIED input creates a verified Deal Card via the production DD pipeline', async () => {
     RESOLVER.override = verifiedGilstrapResolve();
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });

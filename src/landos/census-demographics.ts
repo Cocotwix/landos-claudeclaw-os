@@ -48,7 +48,7 @@ function censusKey(env: Record<string, string | undefined>): string {
 const VARS = ['B01003_001E', 'B19013_001E', 'B25001_001E', 'B25003_002E', 'B25003_003E'];
 const numOrNull = (s: string | undefined): number | null => { if (s == null) return null; const n = Number(s); return Number.isFinite(n) && n > -666666 ? n : null; };
 
-export interface CensusDeps { env?: Record<string, string | undefined>; fetchImpl?: CensusFetch; now?: () => string }
+export interface CensusDeps { env?: Record<string, string | undefined>; fetchImpl?: CensusFetch; now?: () => string; /** ACS 5-year vintage (default CENSUS_ACS_YEAR). Used to compute growth from two vintages. */ year?: string }
 
 /** Fetch county-level ACS demographics from a 5-digit FIPS. Honest not_configured
  *  when no free CENSUS_API_KEY is set (never invents a key or data). */
@@ -61,7 +61,8 @@ export async function fetchCensusDemographics(fips5: string | null | undefined, 
   const state = fips.slice(0, 2); const county = fips.slice(2);
   const key = censusKey(env);
   if (!key) return { ...base, status: 'not_configured', state, county, fips, note: 'US Census demographics not configured (no free CENSUS_API_KEY). Add the key to activate; no data invented.' };
-  const url = `https://api.census.gov/data/${CENSUS_ACS_YEAR}/acs/acs5?get=NAME,${VARS.join(',')}&for=county:${county}&in=state:${state}`;
+  const year = (deps.year ?? CENSUS_ACS_YEAR).trim() || CENSUS_ACS_YEAR;
+  const url = `https://api.census.gov/data/${year}/acs/acs5?get=NAME,${VARS.join(',')}&for=county:${county}&in=state:${state}`;
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as CensusFetch);
   try {
     const res = await fetchImpl(`${url}&key=${key}`);

@@ -110,6 +110,8 @@ import type { BrowserFact, BrowserSearchMode } from './browser-intelligence.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
+import { fetchMarketPulseRead, type PulseComp } from './market-pulse-read.js';
+import { buildPublicRecordsResearchPlan, researchPlanNextActions } from './public-records-research.js';
 import { buildDukeAnalysis } from './duke-analysis.js';
 import { buildAcePrep } from './ace-prep.js';
 import { extractAreaSignals } from './source-adapters.js';
@@ -946,6 +948,59 @@ export function registerLandosRoutes(app: Hono): void {
     const answer = whatBlocksThisDeal(Number(c.req.param('id')));
     if (!answer) return c.json({ error: 'not found' }, 404);
     return c.json({ blockers: answer });
+  });
+
+  // Market Pulse v1 — concise real read: is the area growing/stable/declining
+  // (Census growth when the free key is configured), what land goes for per acre
+  // in the county / near the ZIP (from retained comps), and a plain-English read.
+  // Area-level context: works even when the parcel is unverified. No paid call.
+  app.get('/api/landos/deal-cards/:id/market-pulse', async (c) => {
+    const id = Number(c.req.param('id'));
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const cards = (Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>;
+    const subj = (cards.find((x) => x.role === 'subject') ?? cards[0]) as Record<string, unknown> | undefined;
+    const dd = getDealCardDd(id);
+    const addr = str(subj?.active_input_address) ?? '';
+    const rows = listComps({ dealCardId: id });
+    const comps: PulseComp[] = rows.map((r) => ({
+      pricePerAcre: r.price_per_acre, price: r.price, acres: r.acres,
+      zip: (String(r.address_desc || '').match(/\b(\d{5})\b/) ?? [])[1] ?? null,
+    }));
+    const marketPulse = await fetchMarketPulseRead({
+      city: str(subj?.city) || undefined,
+      county: str(subj?.county) || dd.county || undefined,
+      state: str(subj?.state) || dd.state || undefined,
+      zip: (addr.match(/\b(\d{5})\b/) ?? [])[1],
+      fips: str(subj?.fips) || undefined,
+      parcelVerified: deal.hasVerifiedProperty === true,
+      comps,
+    });
+    return c.json({ marketPulse });
+  });
+
+  // Public-records research plan — the prioritized official county sources to
+  // check (GIS / assessor / appraisal district / tax / NETR) + the next
+  // verification action. Sources to CHECK, never facts.
+  app.get('/api/landos/deal-cards/:id/research-plan', (c) => {
+    const id = Number(c.req.param('id'));
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const cards = (Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>;
+    const subj = (cards.find((x) => x.role === 'subject') ?? cards[0]) as Record<string, unknown> | undefined;
+    const dd = getDealCardDd(id);
+    const spine = assembleBusinessObjects(id);
+    const pkt = spine?.propertyIntelligence;
+    const researchPlan = buildPublicRecordsResearchPlan({
+      county: str(subj?.county) || dd.county || undefined,
+      state: str(subj?.state) || dd.state || undefined,
+      city: str(subj?.city) || undefined,
+      apn: str(subj?.apn) || dd.apn || undefined,
+      owner: str(subj?.owner) || undefined,
+      address: str(subj?.active_input_address) || undefined,
+      known: pkt ? { owner: pkt.owner.known, apn: pkt.apn.known, acreage: pkt.acreage.known, parcelIdentity: pkt.parcelIdentityVerified } : undefined,
+    });
+    return c.json({ researchPlan });
   });
 
   // Acquisition lane (Lead -> DD Report -> Discovery Call -> [Deeper DD] ->
@@ -1984,6 +2039,39 @@ export function registerLandosRoutes(app: Hono): void {
     logger.info({ event: 'acquire_lanes', lanes: (resolution.lanesAttempted ?? []).map((l) => `${l.lane}:${l.status}:${l.contributed ? 'contrib' : 'nc'}`), browser: (resolution.browserEvidence ?? []).map((b) => `${b.service}:${b.status}:${b.facts?.length ?? 0}f`) }, 'acquire_lanes');
 
     if (resolution.status === 'needs_clarification') {
+      // A competent assistant does not return empty-handed. When the lead carries
+      // ANY usable locator (address, county/city + state, APN, or owner), open a
+      // RESEARCH Deal Card so the Business Object Spine shows what's found /
+      // missing / blocking, and attach a public-records research plan (the exact
+      // official county sources + the next verification action). The card is
+      // explicitly unverified and NO fact is fabricated.
+      const f = cls.parsedFields;
+      const enough = !!(f.address || (f.state && (f.city || f.county)) || f.apn || f.owner);
+      if (enough) {
+        const researchAddr = f.address
+          ? [f.address, [[f.city, f.state].filter(Boolean).join(', '), f.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
+          : text.trim();
+        const { card } = upsertCardFromDukeRun({
+          entity, agentId: 'acquire',
+          activeInputAddress: researchAddr,
+          city: f.city, state: f.state, county: f.county, apn: f.apn, fips: f.fips, owner: f.owner,
+          verified: false,
+          summary: 'Acquire — research lead (unresolved). Public-records research plan attached; not verified.',
+        });
+        const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: researchAddr });
+        const plan = buildPublicRecordsResearchPlan({ county: f.county, state: f.state, city: f.city, apn: f.apn, owner: f.owner, address: f.address });
+        for (const action of researchPlanNextActions(plan)) {
+          try { addCardNextAction({ cardId: card.id, action, createdBy: 'acquire-research' }); } catch { /* one action failing never blocks the card */ }
+        }
+        logger.info({ event: 'acquire_run', ok: true, matched: false, researchCard: true, confidence: resolution.confidence, dealCardId, pipeline: 'property_resolution' }, 'acquire_run_research_card');
+        return c.json({
+          ok: true, matched: false, researchCardCreated: true, parcelVerified: false, dealCardId,
+          status: 'research_card', confidence: resolution.confidence,
+          message: resolution.guidance ?? 'Unresolved by providers — opened a research Deal Card with a public-records research plan and the next verification action.',
+          guidance: resolution.guidance,
+          lanesAttempted: resolution.lanesAttempted,
+        }, 201);
+      }
       logger.info({ event: 'acquire_run', ok: false, matched: false, confidence: resolution.confidence, pipeline: 'property_resolution' }, 'acquire_run_needs_clarification');
       return c.json({
         ok: false, matched: false, parcelVerified: false, dealCardId: null,
