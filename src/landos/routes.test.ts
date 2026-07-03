@@ -7,6 +7,7 @@ import type { Hono } from 'hono';
 
 import { _initTestDatabase } from '../db.js';
 import { buildDashboardApp } from '../dashboard.js';
+import { logger } from '../logger.js';
 import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
 import { emptyLpPropertySummary } from './landportal-client.js';
 
@@ -869,6 +870,67 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     }
   });
 
+  it('operator acceptance: raw Florida input starts from raw text and continues past incomplete autocomplete', async () => {
+    const rawInput = '3401 62nd St W, Lehigh Acres FL';
+    const prevCounty = CENSUS.county;
+    const prevSuggest = SUGGEST.result.suggestions;
+    const infoSpy = vi.spyOn(logger, 'info');
+    CENSUS.county = { county: 'Lee', state: 'FL', zip: '33971', fips: '12071', lat: 26.606, lng: -81.710 };
+    SUGGEST.result.suggestions = [{
+      label: '62nd St W, Lehigh Acres, FL 33971',
+      line1: '62nd St W',
+      city: 'Lehigh Acres',
+      state: 'FL',
+      zip: '33971',
+      county: 'Lee',
+      coordinates: { lat: 26.606, lng: -81.710 },
+      source: 'Photon',
+      confidence: 0.62,
+    }];
+    try {
+      const res = await post('/api/landos/acquire/run', {
+        text: rawInput,
+        rawInput,
+        entity: 'TY_LAND_BIZ',
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as any;
+      expect(body.ok).toBe(true);
+      expect(body.pipeline).toBe('property_resolution');
+      expect(body.matched).toBe(true);
+      expect(body.parcelVerified).toBe(false);
+      expect(body.browserSessionStatus).toBe('disabled');
+      expect(body.browserEscalated).toBe(false);
+      expect(body.dealCardId).toBeGreaterThan(0);
+
+      expect(infoSpy).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'acquire_input',
+        rawInput,
+        selectedSuggestion: null,
+      }), 'acquire_input');
+
+      const row = getLandosDb().prepare(
+        `SELECT pc.active_input_address, pc.city, pc.county, pc.state, pc.verification_status
+           FROM landos_property_card pc
+           JOIN landos_deal_card_property dp ON dp.card_id = pc.id
+          WHERE dp.deal_card_id = ?`,
+      ).get(body.dealCardId) as any;
+      expect(row.active_input_address).toBe(rawInput);
+      expect(row.verification_status).toBe('unverified_lead');
+      expect(row.city).toBe('Lehigh Acres');
+      expect(row.county).toBe('Lee');
+      expect(row.state).toBe('FL');
+
+      const rpt = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/report`)).json()) as any;
+      expect(rpt.discoveryReport.comparableIntelligence).toBeDefined();
+      expect(rpt.discoveryReport.marketIntelligence).toBeDefined();
+    } finally {
+      infoSpy.mockRestore();
+      CENSUS.county = prevCounty;
+      SUGGEST.result.suggestions = prevSuggest;
+    }
+  });
+
   it('RESOLVED lead surfaces market pulse ($/acre from comps) + a clear next action', async () => {
     RESOLVER.override = verifiedGilstrapResolve();
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
@@ -898,6 +960,11 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane
     expect(rpt.govDd).toBeDefined();
     expect(rpt.preCallIntelligence).toBeDefined();
+    expect(rpt.discoveryReport.comparableIntelligence).toBeDefined();
+    expect(rpt.discoveryReport.marketIntelligence.capability).toBe('market_intelligence');
+    expect(rpt.discoveryReport.strategyEvaluation.map((s: any) => s.strategy)).toEqual([
+      'Quick Flip', 'Novation / Double Close', 'Subdivide', 'Land-Home Package', 'Improvement Then Flip',
+    ]);
     expect(rpt.report).not.toHaveProperty('redfinComps');     // legacy shape absent
     expect(rpt.report).not.toHaveProperty('strategyMatrix');
   }, 30000);

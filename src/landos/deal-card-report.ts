@@ -56,7 +56,12 @@ import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './s
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
 import type { DukePropertyData } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
-import { loadCardVisualCapture, saveCardVisualCapture, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
+import { loadCardVisualCapture, loadPropertyInspection, saveCardVisualCapture, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
+import { buildParcelFactSheet, type ParcelFactSheet } from './landportal-facts.js';
+import { addComp, listComps } from './comps.js';
+import { attachCardActivity } from './property-card.js';
+import type { ZillowFetchInput, ZillowCompsResult } from './zillow-land-comps.js';
+import type { RedfinFetchInput, RedfinCompsResult } from './redfin-land-comps.js';
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
 import { googleVisualConfigured, resolveGoogleVisualEnv } from './providers/google-visual.js';
 import { buildDdChecklist, mergeGovDdRows, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
@@ -108,6 +113,7 @@ function emptyMarketComps(): MarketCompsView {
   return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.' };
 }
 const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
+const paidCompsEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.LANDOS_ALLOW_PAID_COMPS ?? '');
 
 /**
  * Market comps with PROVIDER FAILOVER: 1) Realie premium comparables (primary —
@@ -120,7 +126,7 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
   const finalize = async (v: MarketCompsView): Promise<MarketCompsView> => {
     // ── Supplemental Zillow lane (active listings + supplemental sold). Active is
     //    NEVER labeled sold; Zillow sold kept separate from Realie's PPA band. ──
-    if (typeof q.lat === 'number' && typeof q.lng === 'number') {
+    if (paidCompsEnabled() && typeof q.lat === 'number' && typeof q.lng === 'number') {
       const { fetchZillowComps } = await import('./zillow-comps.js');
       const { withEnvFileSecrets } = await import('../env.js');
       const zc = await fetchZillowComps({ lat: q.lat, lng: q.lng, zip: q.zip }, { env: withEnvFileSecrets(['APIFY_TOKEN', 'LANDOS_ZILLOW_ACTOR']) });
@@ -196,6 +202,11 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
   };
 
   // ── 1) Realie premium comparables (primary) ────────────────────────────────
+  if (!paidCompsEnabled()) {
+    chain.push('paid_comps:disabled');
+    return await finalize({ ...emptyMarketComps(), status: 'not_configured', note: 'Paid comp providers disabled. Free/open-source land comps attempted where available; no credit-consuming comp actor was called.' });
+  }
+
   if (typeof q.lat === 'number' && typeof q.lng === 'number') {
     const { fetchRealieComps } = await import('./realie-comps.js');
     const { withEnvFileSecrets } = await import('../env.js');
@@ -257,6 +268,26 @@ function emptyGovDd(): GovDdView {
     slope: { ...nr('slope'), slopeDeg: null },
   };
 }
+
+function buildIdentityChecklistRows(verification: DukeVerificationResult): DdChecklistRow[] {
+  const id = verification.identity;
+  const source = verification.parcelVerified ? (verification.verificationSource ?? 'Verified parcel source') : null;
+  const url = id?.lpUrl || (id?.propertyId && id?.fips ? `https://landportal.com/?propertyid=${encodeURIComponent(id.propertyId)}&fips=${encodeURIComponent(id.fips)}` : null);
+  const row = (key: string, label: string, value?: string | number | null): DdChecklistRow => {
+    const v = value == null ? '' : String(value).trim();
+    return v && source
+      ? { key, label, value: v, status: 'verified', source, url, confidence: 'high' }
+      : { key, label, value: null, status: 'needs_verification', source: null };
+  };
+  return [
+    row('owner', 'Owner of record', id?.owner),
+    row('apn', 'APN / parcel ID', id?.apn),
+    row('situsAddress', 'Situs / property address', id?.situsAddress),
+    row('county', 'County', id?.county),
+    row('state', 'State', id?.state),
+    row('propertyId', 'Provider property ID', id?.propertyId),
+  ];
+}
 /** Run free government environmental DD for a verified parcel with coordinates
  *  (FEMA flood + NWI wetlands + USGS slope — all contract-verified + free, run
  *  live; injectable fetches for tests). Coordinates are SUPPORTING context only,
@@ -264,9 +295,14 @@ function emptyGovDd(): GovDdView {
 async function buildGovDd(
   verification: DukeVerificationResult,
   deps: { femaFetch?: GovFetch; nwiFetch?: GovFetch; usgsFetch?: GovFetch },
+  areaCoords?: { lat: number; lng: number } | null,
 ): Promise<GovDdView> {
-  const co = verification.coordinates;
-  if (!verification.parcelVerified || !co) return emptyGovDd();
+  // Verified parcel -> use verified-parcel coordinates. Unverified but geocoded
+  // area lead -> use the area (address-centroid) coordinates so FEMA/NWI/USGS
+  // still return usable environmental signal. Coordinates are SUPPORTING context
+  // only and never identity; the report stays labeled Not Parcel Verified.
+  const co = verification.parcelVerified ? verification.coordinates : (areaCoords ?? null);
+  if (!co) return emptyGovDd();
   const [flood, wet, slope] = await Promise.all([
     fetchFemaFlood(co.lat, co.lng, { fetchImpl: deps.femaFetch }),
     fetchNwiWetlands(co.lat, co.lng, { fetchImpl: deps.nwiFetch }),
@@ -329,6 +365,60 @@ export function buildPersistedResolver(
   };
 }
 
+/** Local-area context derived from the subject Property Card when exact parcel
+ *  identity is NOT verified. Everything here is SUPPORTING context (weaker than a
+ *  verified parcel), never identity. Used to drive area comps, census, gov-DD, and
+ *  Market Pulse so a messy/unverified lead still yields a usable pre-call report. */
+export interface ReportAreaContext {
+  address?: string; city?: string; county?: string; state?: string; zip?: string;
+  lat?: number; lng?: number; acres?: number; fips?: string;
+}
+
+/**
+ * Build the area-context locus for an UNVERIFIED lead from its subject Property
+ * Card's persisted (geocoded) fields. Returns null when there is not enough
+ * locality/coordinates to target a real area. When the card lacks a county FIPS,
+ * derives it via the free US Census geocoder (for demographics only). No paid
+ * call, no comp credit, no parcel identity — coordinates stay supporting output.
+ */
+export async function deriveAreaContext(
+  deal: DealCardDetail,
+  deps: { deriveCountyImpl?: typeof import('./providers/county-geocode.js').deriveCounty } = {},
+): Promise<ReportAreaContext | null> {
+  const pc = (deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!pc) return null;
+  const address = s(pc.active_input_address) || undefined;
+  const city = s(pc.city) || undefined;
+  let county = s(pc.county) || undefined;
+  const state = s(pc.state) || undefined;
+  const acres = typeof pc.acres === 'number' && pc.acres > 0 ? pc.acres : undefined;
+  let lat = typeof pc.lat === 'number' && pc.lat !== 0 ? pc.lat : undefined;
+  let lng = typeof pc.lng === 'number' && pc.lng !== 0 ? pc.lng : undefined;
+  const zip = address?.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1] || undefined;
+  let fips = s(pc.fips) || undefined;
+
+  const hasLocality = !!(state && (city || county || zip));
+  const hasCoords = typeof lat === 'number' && typeof lng === 'number';
+  if (!hasLocality && !hasCoords) return null;
+
+  // Backfill county FIPS (+ county/coords when the card lacks them) so demographics
+  // and comps can target the locality. Geocoder output is context only.
+  if ((!fips || !county || !hasCoords) && address) {
+    try {
+      const deriveCounty = deps.deriveCountyImpl ?? (await import('./providers/county-geocode.js')).deriveCounty;
+      const g = await deriveCounty({ address, city, state, zip });
+      if (g) {
+        if (!fips && g.fips) fips = g.fips;
+        if (!county && g.county) county = g.county;
+        if (lat === undefined && typeof g.lat === 'number') lat = g.lat;
+        if (lng === undefined && typeof g.lng === 'number') lng = g.lng;
+      }
+    } catch { /* demographics simply stays no_geography; never fail the report */ }
+  }
+
+  return { address, city, county, state, zip, lat, lng, acres, fips };
+}
+
 const REPORT_STATUS_SET = new Set<string>(DEAL_CARD_REPORT_STATUSES);
 
 // ── Public report shape ─────────────────────────────────────────────────────
@@ -380,6 +470,24 @@ export interface DealCardReportView {
    *  verification. Deep links + image placeholders/captured refs, all labeled
    *  "Visual Signal, Not Verified Fact". Built purely (no Google call here). */
   visualContext: VisualPropertyContext;
+  landportalInspection?: {
+    parcelUrl: string | null;
+    comparablesUrl: string | null;
+    parcelFacts: Record<string, string>;
+    assets: Array<{ key: string; label: string; kind: string; url: string; timestamp: string; overlay?: string; note?: string }>;
+    overlays: Array<{ overlay: string; status: string; note: string; confidence: string; screenshotUrl?: string | null }>;
+    visualObservations: Array<{ label: string; detail: string; confidence: string; evidence: string }>;
+    comparables: Array<{ rawText: string; sourceUrl: string; apn?: string | null; address?: string | null; saleDate?: string; acres?: number | null; price?: number | null; pricePerAcre?: number | null; distanceMiles?: number | null; status: string; saleListIndicator?: string; improvement: string; confidence: string }>;
+    sources: Array<{ provider: string; stage: string; status: string; confidence: string; url?: string | null; note: string }>;
+    evidence: Array<{ label: string; status: string; detail: string; confidence: string; source?: string | null; url?: string | null }>;
+    discoveryQuestions: string[];
+    missingInformation: string[];
+    /** Structured, operator-facing fact sheet derived from parcelFacts (access
+     *  interpretation, buildability, flood/wetlands, valuation, seller questions).
+     *  One source of truth for the Property Card snapshot. Always set by the report
+     *  builder; optional so lightweight test fixtures need not construct it. */
+    factSheet?: ParcelFactSheet;
+  } | null;
   /** Free government environmental DD (live where contract-verified + lat/lng
    *  available). FEMA flood is activated; others labeled honestly when absent. */
   govDd: {
@@ -426,6 +534,13 @@ export interface DealCardReportDeps {
   retrieveCompsImpl?: (q: CompQueryLite) => Promise<MarketCompsView>;
   /** Injected Census fetch for tests. Default = live (honest not_configured w/o key). */
   censusFetch?: CensusFetch;
+  /** Injected Zillow public land-comp capture (disposable browser profile). Only
+   *  supplied by the live report route → the test suite never launches a browser.
+   *  Best-effort: failure/blocked/none never blocks the report. */
+  captureZillowComps?: (input: ZillowFetchInput) => Promise<ZillowCompsResult>;
+  /** Injected Redfin public land-comp capture (its OWN disposable browser profile,
+   *  never the LandPortal or Zillow profile). Same best-effort contract. */
+  captureRedfinComps?: (input: RedfinFetchInput) => Promise<RedfinCompsResult>;
 }
 
 /** Minimal comp query the report builds from the verified parcel. */
@@ -708,11 +823,15 @@ function buildMarketLeg(
   deal: DealCardDetail,
   verification: DukeVerificationResult,
   market: DealCardMarketView,
+  areaOverride?: { city?: string; county?: string; state?: string },
 ): MarketLeg {
   const verifiedId = verification.parcelVerified ? verification.propertyData?.identity : undefined;
   const area = extractAreaSignals(`${deal.title ?? ''} ${deal.package_notes ?? ''} ${deal.seller_notes ?? ''}`);
-  const county = s(verifiedId?.county) || s(area.county);
-  const state = s(verifiedId?.state) || s(area.state);
+  // When unverified, a persisted geocoded Property Card supplies the county/state
+  // the deal title/notes lack (e.g. "Runnels County" for a bare highway address),
+  // so Market Pulse + comps still target the real local area (labeled weaker).
+  const county = s(verifiedId?.county) || s(areaOverride?.county) || s(area.county);
+  const state = s(verifiedId?.state) || s(areaOverride?.state) || s(area.state);
   const areaLabel = [county ? `${county} County` : '', state].filter(Boolean).join(', ');
 
   const pulse = marketPulseEligibility({ county: county || undefined, state: state || undefined });
@@ -907,6 +1026,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     ddFactChecklist: buildDdChecklist({}, null),
     ddCompleteness: summarizeDdCompleteness(buildDdChecklist({}, null)),
     visualContext: buildVisualPropertyContext({}, { configured: false }),
+    landportalInspection: null,
     govDd: emptyGovDd(),
     marketComps: emptyMarketComps(),
     demographics: emptyCensus(),
@@ -1044,6 +1164,35 @@ function persistReport(dealCardId: number, view: DealCardReportView, updatedBy: 
  * Deal Card does not exist. Never spends a comp credit, never fabricates parcel
  * facts/comps/demand/pricing/EVs/offers, and never mutates an external system.
  */
+/** Persist external browser land comps (Zillow/Redfin) into the unified comp
+ *  dataset (landos_comp), deduped against LandPortal comps (by price+acres) AND
+ *  every existing comp on the deal card (by address, and by price+acres). Runs in
+ *  source order so a later source dedupes against earlier ones. Returns # added. */
+function persistExternalLandComps(opts: {
+  dealCardId: number; cardId: number; entity: LandosEntity; sourceLabel: 'Zillow' | 'Redfin';
+  comps: Array<{ address: string; price: number; acres: number | null; url: string | null }>;
+  lpComparables: Array<{ price?: number | null; acres?: number | null }>;
+}): number {
+  const norm = (v: string | null | undefined): string => (v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const existing = listComps({ dealCardId: opts.dealCardId });
+  const seenAddr = new Set(existing.map((c) => norm(c.address_desc)));
+  const priceAcre = new Set<string>([
+    ...opts.lpComparables.filter((c) => c.price != null && c.acres != null).map((c) => `${c.price}:${c.acres}`),
+    ...existing.filter((c) => c.price != null && c.acres != null).map((c) => `${c.price}:${c.acres}`),
+  ]);
+  let added = 0;
+  for (const z of opts.comps) {
+    const akey = norm(z.address);
+    if (!akey || seenAddr.has(akey)) continue;                                  // dedup by address (LP has none; Zillow/Redfin do)
+    if (z.acres != null && priceAcre.has(`${z.price}:${z.acres}`)) continue;    // dedup by price+acres (vs LP + prior sources)
+    seenAddr.add(akey);
+    if (z.acres != null) priceAcre.add(`${z.price}:${z.acres}`);
+    addComp({ entity: opts.entity, dealCardId: opts.dealCardId, cardId: opts.cardId, sourceLabel: opts.sourceLabel, sourceUrl: z.url ?? '', addressDesc: z.address, price: z.price, priceKind: 'list', acres: z.acres ?? undefined, status: 'market_reference', addedBy: `${opts.sourceLabel.toLowerCase()}/browser` });
+    added++;
+  }
+  return added;
+}
+
 export async function runDealCardReport(
   dealCardId: number,
   deps: DealCardReportDeps,
@@ -1121,9 +1270,17 @@ export async function runDealCardReport(
   const landportalAttempted = verification.sourceAttempts.some((a) => a.status !== 'skipped');
   const landportalUnavailable = verification.dataGaps.includes('landportal_unavailable');
 
+  // 1b. AREA-CONTEXT LOCUS. When exact parcel identity is NOT verified but the
+  //     subject Property Card already carries a geocoded location (city/county/
+  //     state + address-centroid lat/lng from intake), use it to drive comps,
+  //     census, gov-DD, and Market Pulse as LOCAL AREA CONTEXT (weaker, clearly
+  //     "Not Parcel Verified"). Coordinates here are supporting output only and
+  //     NEVER identity — the report never flips to verified from this path.
+  const areaContext = verification.parcelVerified ? null : await deriveAreaContext(deal);
+
   // 2. Department legs (kept separate).
   const ddLeg = buildDdLeg(verification, dd);
-  const marketLeg = buildMarketLeg(deal, verification, market);
+  const marketLeg = buildMarketLeg(deal, verification, market, areaContext ?? undefined);
   const strategyLeg = buildStrategyLeg(verification, strategy);
 
   // 3. Update the three worksheets (non-destructive: lists unioned, manual
@@ -1196,32 +1353,38 @@ export async function runDealCardReport(
   // services without a capture render as placeholders + deep links.
   // Government environmental DD (FEMA/NWI/USGS) — computed first so its verified
   // facts merge into the DD checklist with their OWN per-field provenance.
-  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch });
-  const ddChecklistRows = mergeGovDdRows(
-    buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null),
-    govDd,
-  );
+  const areaCoords = areaContext && typeof areaContext.lat === 'number' && typeof areaContext.lng === 'number'
+    ? { lat: areaContext.lat, lng: areaContext.lng }
+    : null;
+  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch }, areaCoords);
+  const ddChecklistRows = [
+    ...buildIdentityChecklistRows(verification),
+    ...mergeGovDdRows(
+      buildDdChecklist(verification.propertyData?.landFacts, verification.verificationSource ?? null),
+      govDd,
+    ),
+  ];
   const vid = verification.identity;
   const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
   // ITEM 1: Google visual auto-capture/REUSE. For a verified parcel, capture once
   // (satellite + Street View) and persist to the card; on later runs reuse the
   // persisted capture (no repeat Google call). Honest no-op when not configured.
   const googleConfigured = deps.googleVisualConfigured ?? googleVisualConfigured();
-  if (visualCardId && googleConfigured && verification.parcelVerified) {
+  if (visualCardId && googleConfigured && (verification.parcelVerified || areaContext)) {
     const already = loadCardVisualCapture(visualCardId);
     // Best available address for imagery: the verified situs, else the card's
     // original input address (a verified parcel may lack a normalized situs).
-    const imageryAddress = s(vid?.situsAddress) || s((deal.propertyCards?.[0] as { active_input_address?: string } | undefined)?.active_input_address) || '';
+    const imageryAddress = s(vid?.situsAddress) || s(areaContext?.address) || s((deal.propertyCards?.[0] as { active_input_address?: string } | undefined)?.active_input_address) || '';
     const hasCoordsOrAddr = !!(verification.coordinates || imageryAddress);
     if (Object.keys(already).length === 0 && hasCoordsOrAddr) {
       // Imagery needs coordinates. When the parcel provider returns none, geocode
       // the VERIFIED address for IMAGERY ONLY (supporting context, never identity)
       // so satellite/Street-View reliably appear for a verified parcel.
-      let imageryCoords = verification.coordinates ?? null;
+      let imageryCoords = verification.parcelVerified ? (verification.coordinates ?? null) : (areaCoords ?? null);
       if (!imageryCoords && imageryAddress) {
         try {
           const { deriveCounty } = await import('./providers/county-geocode.js');
-          const g = await deriveCounty({ address: imageryAddress, city: vid?.city, state: vid?.state });
+          const g = await deriveCounty({ address: imageryAddress, city: vid?.city ?? areaContext?.city, state: vid?.state ?? areaContext?.state });
           if (g && g.lat != null && g.lng != null) imageryCoords = { lat: g.lat, lng: g.lng };
         } catch { /* supporting-only; never fail the report */ }
       }
@@ -1253,23 +1416,99 @@ export async function runDealCardReport(
   }
   const visualContext = buildVisualPropertyContext(
     {
-      address: vid?.situsAddress ?? null,
-      city: vid?.city ?? null,
-      county: vid?.county ?? null,
-      state: vid?.state ?? null,
+      address: vid?.situsAddress ?? areaContext?.address ?? null,
+      city: vid?.city ?? areaContext?.city ?? null,
+      county: vid?.county ?? areaContext?.county ?? null,
+      state: vid?.state ?? areaContext?.state ?? null,
     },
     { configured: deps.googleVisualConfigured ?? false, captured },
   );
+  const rawInspection = visualCardId ? loadPropertyInspection(visualCardId) : null;
+  const landportalInspection = rawInspection
+    ? {
+        parcelUrl: rawInspection.parcelUrl,
+        comparablesUrl: rawInspection.comparablesUrl,
+        parcelFacts: rawInspection.parcelFacts,
+        assets: [
+          ...rawInspection.assets.map((asset) => ({
+            key: asset.key,
+            label: asset.label,
+            kind: asset.kind,
+            url: `/api/landos/inspection/image?cardId=${visualCardId}&key=${encodeURIComponent(asset.key)}`,
+            timestamp: asset.timestamp,
+            overlay: asset.overlay,
+            note: asset.note,
+          })),
+          // Google Static Map (aerial) + Street View, when captured — served from
+          // the card-visual store. Supporting context: Visual Signal, Not Verified Fact.
+          ...Object.entries(loadCardVisualCapture(visualCardId!)).map(([service, a]) => ({
+            key: `google_${service}`,
+            label: service === 'maps_static' ? 'Google Aerial' : service === 'street_view_static' ? 'Google Street View' : `Google ${service}`,
+            kind: 'google',
+            url: `/api/landos/visual/image?cardId=${visualCardId}&service=${encodeURIComponent(service)}`,
+            timestamp: (a as { timestamp: string }).timestamp,
+            overlay: undefined as string | undefined,
+            note: 'Google imagery — Visual Signal, Not Verified Fact.',
+          })),
+        ],
+        overlays: rawInspection.overlays.map((overlay) => ({
+          overlay: overlay.overlay,
+          status: overlay.status,
+          note: overlay.note,
+          confidence: overlay.confidence,
+          screenshotUrl: overlay.screenshotKey
+            ? `/api/landos/inspection/image?cardId=${visualCardId}&key=${encodeURIComponent(overlay.screenshotKey)}`
+            : null,
+        })),
+        visualObservations: rawInspection.visualObservations,
+        comparables: rawInspection.comparables,
+        sources: rawInspection.sources,
+        evidence: rawInspection.evidence,
+        discoveryQuestions: rawInspection.discoveryQuestions,
+        missingInformation: rawInspection.missingInformation,
+        factSheet: buildParcelFactSheet(rawInspection.parcelFacts),
+      }
+    : null;
+
+  // ITEM: Zillow + Redfin PUBLIC land comps via ISOLATED disposable browser
+  // profiles — each its OWN throwaway profile + debug port, NEVER the LandPortal
+  // authenticated session and never each other's profile. Fully best-effort: any
+  // failure/blocked/none records a source status and NEVER blocks LandPortal, the
+  // other source, or the report. Deduped across LandPortal + prior sources and
+  // persisted into the unified comparable dataset (landos_comp) so the same
+  // Comparable Intelligence table renders them. Redfin runs AFTER Zillow so it
+  // dedupes against Zillow's just-added comps too.
+  if (visualCardId && landportalInspection?.factSheet && (deps.captureZillowComps || deps.captureRedfinComps)) {
+    const fsheet = landportalInspection.factSheet;
+    const loc = { city: fsheet.city ?? undefined, state: fsheet.stateCode ?? undefined, county: fsheet.county ?? undefined, subjectAcres: fsheet.acres ?? null };
+    const lpComparables = rawInspection?.comparables ?? [];
+    const entity = s(deal.entity) as LandosEntity;
+    if (deps.captureZillowComps) {
+      try {
+        const z = await deps.captureZillowComps(loc);
+        attachCardActivity({ cardId: visualCardId, agentId: 'zillow/browser', kind: 'zillow_comp_status', summary: `Zillow land comps: ${z.status} — ${z.comps.length} comp(s). ${z.note}` });
+        if (z.status === 'retrieved' && z.comps.length > 0) persistExternalLandComps({ dealCardId, cardId: visualCardId, entity, sourceLabel: 'Zillow', comps: z.comps, lpComparables });
+      } catch { /* Zillow best-effort — never block the report */ }
+    }
+    if (deps.captureRedfinComps) {
+      try {
+        const rf = await deps.captureRedfinComps(loc);
+        attachCardActivity({ cardId: visualCardId, agentId: 'redfin/browser', kind: 'redfin_comp_status', summary: `Redfin land comps: ${rf.status} — ${rf.comps.length} comp(s). ${rf.note}` });
+        if (rf.status === 'retrieved' && rf.comps.length > 0) persistExternalLandComps({ dealCardId, cardId: visualCardId, entity, sourceLabel: 'Redfin', comps: rf.comps, lpComparables });
+      } catch { /* Redfin best-effort — never block Zillow/LandPortal or the report */ }
+    }
+  }
 
   // ITEM 2: Apify Redfin sold comps + market metrics for the verified parcel's
   // area. Live where configured (injectable for tests); honest status otherwise.
   let marketComps = emptyMarketComps();
+  let compQuery: CompQueryLite | null = null;
   if (verification.parcelVerified) {
     const lf = verification.propertyData?.landFacts as { acres?: number; buildingAreaSqft?: number | string; buildingArea?: number | string; yearBuilt?: number | string; landUse?: string } | undefined;
     // Improved subject = has a structure (building area / year built / use code).
     const bArea = Number(String(lf?.buildingAreaSqft ?? lf?.buildingArea ?? '').replace(/[^0-9.]/g, '')) || 0;
     const subjectImproved = bArea > 0 || (!!lf?.yearBuilt && Number(lf.yearBuilt) > 1900) || /home|house|dwelling|residence|mobile|improv|structure/i.test(lf?.landUse ?? '');
-    const q: CompQueryLite = {
+    compQuery = {
       improved: subjectImproved,
       address: vid?.situsAddress ?? undefined,
       city: vid?.city ?? undefined,
@@ -1281,17 +1520,36 @@ export async function runDealCardReport(
       lat: verification.coordinates?.lat,
       lng: verification.coordinates?.lng,
     };
+  } else if (areaContext && (areaCoords || (areaContext.state && (areaContext.city || areaContext.zip || areaContext.county)))) {
+    // Local Area Context comps: countywide / nearby $/acre from the geocoded
+    // address centroid. Clearly weaker than parcel-specific comps (the report is
+    // labeled Not Parcel Verified), but real, non-fabricated, and operator-usable.
+    compQuery = {
+      improved: false,
+      address: areaContext.address,
+      city: areaContext.city,
+      county: areaContext.county,
+      state: areaContext.state,
+      zip: areaContext.zip,
+      acres: areaContext.acres,
+      lat: areaCoords?.lat,
+      lng: areaCoords?.lng,
+    };
+  }
+  if (compQuery) {
     try {
-      marketComps = await (deps.retrieveCompsImpl ?? liveMarketComps)(q);
+      marketComps = await (deps.retrieveCompsImpl ?? liveMarketComps)(compQuery);
     } catch (e: unknown) {
       marketComps = { ...emptyMarketComps(), status: 'error', note: `Comp retrieval error: ${(e as Error)?.message ?? String(e)}.` };
     }
   }
 
-  // Census demographics (supporting market context) for the verified parcel's county.
+  // Census demographics (supporting market context). Verified parcel uses its
+  // county FIPS; an unverified area lead uses the FIPS derived for its locality.
   let demographics = emptyCensus();
-  if (verification.parcelVerified) {
-    demographics = await fetchCensusDemographics(verification.identity?.fips, { fetchImpl: deps.censusFetch });
+  const demographicsFips = verification.parcelVerified ? verification.identity?.fips : areaContext?.fips;
+  if (demographicsFips) {
+    demographics = await fetchCensusDemographics(demographicsFips, { fetchImpl: deps.censusFetch });
   }
 
   const view: DealCardReportView = {
@@ -1316,6 +1574,7 @@ export async function runDealCardReport(
     ddFactChecklist: ddChecklistRows,
     ddCompleteness: summarizeDdCompleteness(ddChecklistRows),
     visualContext,
+    landportalInspection,
     govDd,
     marketComps,
     demographics,

@@ -238,7 +238,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   // missing-field analysis then decides what County Records must fill, so nothing
   // is collected twice. Parked + honest until an authenticated session is enabled;
   // the structured patch (not the screenshot) is the real contribution.
-  const searchKey: BrowserSearchKey = { address: fields.address, apn: fields.apn, owner: fields.owner, county: fields.county, state: fields.state };
+  const searchKey: BrowserSearchKey = { address: fields.address, apn: fields.apn, owner: fields.owner, city: fields.city, county: fields.county, state: fields.state, zip: fields.zip };
   if (deps.landPortalBrowser) {
     try {
       const lp = await deps.landPortalBrowser.runWorkflow({ searchKey }, { timeoutMs });

@@ -3,7 +3,7 @@ import { RefreshCw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Pill } from '@/components/Pill';
-import { apiGet, apiPatch, apiPost } from '@/lib/api';
+import { apiGet, apiPatch, apiPost, dashboardToken } from '@/lib/api';
 
 // Property/Lead Kanban board. Property-centered, not chat-centered: each card is
 // a lead/property with all its memory behind it. Display + status moves only;
@@ -75,6 +75,70 @@ interface DealReview {
   propertyCards: any[];
 }
 
+interface FactRow { key: string; label: string; value: string; status: 'verified' | 'needs_verification' }
+interface FactSheet {
+  apn: string | null; owner: string | null; parcelAddress: string | null;
+  city: string | null; stateCode: string | null; county: string | null;
+  acres: number | null; acresLabel: string | null;
+  access: { label: string; landLocked: string | null; roadFrontage: string | null; roadFrontageFt: number | null };
+  buildability: { label: string; pct: string | null; acres: string | null };
+  environment: { femaFloodZone: string | null; femaCoveragePct: string | null; wetlandsPct: string | null; label: string };
+  water: { present: boolean; label: string | null };
+  valuation: {
+    lastSalePrice: number | null; lastSalePriceLabel: string | null; lastSaleDate: string | null;
+    assessedValue: string | null; totalMarketValue: string | null; taxAmount: string | null;
+    lpEstimatePrice: string | null; lpEstimatePpa: string | null;
+  };
+  centroid: { lat: number | null; lng: number | null };
+  snapshot: FactRow[];
+  sellerQuestions: string[];
+  completeness: { exposed: number; total: number };
+}
+
+interface DiscoveryReport {
+  parcelVerified: boolean;
+  contextLabel: string;
+  headline: string;
+  confidence: string;
+  landportalInspection?: null | {
+    parcelUrl: string | null;
+    comparablesUrl: string | null;
+    parcelFacts: Record<string, string>;
+    assets: Array<{ key: string; label: string; kind: string; url: string; timestamp: string; overlay?: string; note?: string }>;
+    overlays: Array<{ overlay: string; status: string; note: string; confidence: string; screenshotUrl?: string | null }>;
+    visualObservations: Array<{ label: string; detail: string; confidence: string; evidence: string }>;
+    comparables: Array<{ rawText: string; sourceUrl: string; apn?: string | null; address?: string | null; acres?: number | null; price?: number | null; pricePerAcre?: number | null; status: string; confidence: string }>;
+    discoveryQuestions: string[];
+    missingInformation: string[];
+    factSheet?: FactSheet;
+  };
+  comparableIntelligence?: {
+    subjectClassification: { type: string; confidence: string; note: string };
+    selectedComparables: Array<{ apn?: string | null; address: string | null; acreage: number | null; salePrice: number | null; pricePerAcre: number | null; saleDate: string | null; status: string; source: string; sourceUrl: string | null; confidence: string }>;
+    estimatedPricePerAcre: { low: number | null; mid: number | null; high: number | null };
+    estimatedMarketValue: { low: number | null; mid: number | null; high: number | null } | null;
+    confidence: string;
+    evidenceUsed: string[];
+    evidenceMissing: string[];
+  };
+  marketIntelligence?: {
+    marketPulse: string;
+    confidence: string;
+    opportunities: string[];
+    risks: string[];
+    missingInformation: string[];
+  };
+  strategyEvaluation: Array<{ strategy: string; verdict: string; potential?: string; reason: string; pricingLogic: string; mainRisk: string; acquisitionRange?: { low: number; high: number } | null }>;
+  roughOfferRange: {
+    available: boolean;
+    marketValue: { low: number | null; mid: number | null; high: number | null } | null;
+    acquisition: { low: number | null; high: number | null } | null;
+    pricePerAcre: { low: number | null; mid: number | null; high: number | null };
+    confidence: string;
+    note: string;
+  };
+}
+
 // Stage -> primary owner role lane. Display only; mirrors the backend routing
 // map in src/landos/routing-map.ts (KANBAN_ROUTING). Keep these keys in sync
 // with the kanban_status values; a missing key falls back to no owner label.
@@ -144,6 +208,7 @@ export function PropertyBoard() {
   const [busy, setBusy] = useState(false);
   const [comps, setComps] = useState<Comp[]>([]);
   const [dealReview, setDealReview] = useState<DealReview | null>(null);
+  const [discoveryReport, setDiscoveryReport] = useState<DiscoveryReport | null>(null);
   const [showCompForm, setShowCompForm] = useState(false);
   const [compBusy, setCompBusy] = useState(false);
   const emptyComp = {
@@ -241,15 +306,20 @@ export function PropertyBoard() {
         try {
           const dr = await apiGet<{ dealCard: DealReview }>(`/api/landos/deal-cards/${res.dealCardId}`);
           setDealReview(dr.dealCard);
+          const report = await apiGet<{ discoveryReport?: DiscoveryReport }>(`/api/landos/deal-cards/${res.dealCardId}/report`);
+          setDiscoveryReport(report.discoveryReport ?? null);
         } catch {
           setDealReview(null);
+          setDiscoveryReport(null);
         }
       } else {
         setDealReview(null);
+        setDiscoveryReport(null);
       }
     } catch {
       setComps([]);
       setDealReview(null);
+      setDiscoveryReport(null);
     }
   }
 
@@ -377,8 +447,8 @@ export function PropertyBoard() {
       </div>
 
       {selected && (
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setSelected(null)}>
-          <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-4" onClick={() => setSelected(null)}>
+          <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl w-[92vw] h-[92vh] max-w-[1440px] overflow-y-auto p-5 sm:p-6 space-y-4 text-[13px]" onClick={(e) => e.stopPropagation()}>
             <div class="flex items-center gap-2 flex-wrap">
               <Pill tone={selected.verification_status === 'verified_property' ? 'done' : 'neutral'}>{selected.verification_status}</Pill>
               <span class="text-[14px] font-semibold text-[var(--color-text)]">{selected.active_input_address}</span>
@@ -386,7 +456,7 @@ export function PropertyBoard() {
               {/* Run Duke Report with a chosen comp source. Redfin/Zillow uses no
                   comp credit; LandPortal Comps spends one LP comp credit for this
                   run (explicit approval). No Partial-vs-Full split; no hidden spend. */}
-              <div class="ml-auto flex items-center gap-1.5">
+              <div class="hidden">
                 <div class="flex items-center rounded-md overflow-hidden border border-[var(--color-border)] text-[10px]">
                   <button
                     type="button"
@@ -433,7 +503,9 @@ export function PropertyBoard() {
               )}
             </div>
 
-            {dealReview && (
+            <OperatorInspectionBrief selected={selected} discoveryReport={discoveryReport} manualComps={comps} />
+
+            {false && dealReview && (
               <div class="border border-[var(--color-border)] rounded-lg p-3 space-y-2 bg-[var(--color-bg)]">
                 <div class="flex items-center gap-2 flex-wrap">
                   <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Deal Review</span>
@@ -554,10 +626,17 @@ export function PropertyBoard() {
               </div>
             )}
 
-            <DetailList title="Next actions" items={selected.nextActions.map((n: any) => `${n.action} (${n.status})`)} />
-            <DetailList title="Source evidence" items={selected.sourceEvidence.map((s: any) => `${s.fact} — ${s.source_type}${s.usable_for_offer_logic ? ' (offer-usable)' : ''}`)} />
-            <DetailList title="Facts" items={selected.facts.map((f: any) => `${f.fact}: ${f.value} [${f.label}]`)} />
-            <DetailList title="Activity" items={selected.activity.map((a: any) => `${a.agent_id}: ${a.summary}`)} />
+            {/* Engineering / audit detail — collapsed out of the primary operator
+                view (no browser-escalation noise or workflow internals up front). */}
+            <details class="border-t border-[var(--color-border)] pt-2">
+              <summary class="text-[11px] cursor-pointer text-[var(--color-text-faint)] uppercase tracking-wider">Activity &amp; audit log</summary>
+              <div class="pt-2 space-y-2">
+                <DetailList title="Next actions" items={selected.nextActions.map((n: any) => `${n.action} (${n.status})`)} />
+                <DetailList title="Source evidence" items={selected.sourceEvidence.map((s: any) => `${s.fact} — ${s.source_type}${s.usable_for_offer_logic ? ' (offer-usable)' : ''}`)} />
+                <DetailList title="Facts" items={selected.facts.map((f: any) => `${f.fact}: ${f.value} [${f.label}]`)} />
+                <DetailList title="Activity" items={selected.activity.map((a: any) => `${a.agent_id}: ${a.summary}`)} />
+              </div>
+            </details>
 
             {/* Comps — manual entry. A comp never verifies the parcel or changes
                 identity/owner/contiguity/verification; source + status stay visible. */}
@@ -574,7 +653,7 @@ export function PropertyBoard() {
               </div>
 
               {comps.length === 0 && !showCompForm && (
-                <div class="text-[11.5px] text-[var(--color-text-muted)]">No comps yet.</div>
+                <div class="text-[12px] text-[var(--color-text-muted)]">No manually-added comps. Market comps appear above in Comparable Intelligence.</div>
               )}
 
               {comps.length > 0 && (
@@ -651,6 +730,330 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
       <ul class="list-disc pl-5 text-[11.5px] text-[var(--color-text-muted)] space-y-0.5">
         {items.map((i, idx) => <li key={idx}>{i}</li>)}
       </ul>
+    </div>
+  );
+}
+
+function withToken(url: string): string {
+  if (!url.startsWith('/api/')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+}
+
+type GalleryImage = { url: string; label: string; kind: string; note?: string };
+type UnifiedComp = { source: string; apn: string | null; address: string | null; acres: number | null; price: number | null; ppa: number | null; status: string; confidence: string };
+
+const GALLERY_ORDER = ['parcel_page', 'parcel_boundary', 'comparables_map', 'google', 'parcel_3d', 'overlay'];
+
+// Build the visual gallery from LandPortal inspection assets, suppressing
+// duplicates by label+kind and by URL so three near-identical captures never
+// read as three distinct pieces of evidence.
+function buildGallery(inspection: DiscoveryReport['landportalInspection'] | null | undefined): GalleryImage[] {
+  const assets = inspection?.assets ?? [];
+  const sorted = [...assets].sort((a, b) => {
+    const ai = GALLERY_ORDER.indexOf(a.kind); const bi = GALLERY_ORDER.indexOf(b.kind);
+    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+  });
+  const seen = new Set<string>();
+  const out: GalleryImage[] = [];
+  for (const a of sorted) {
+    const label = a.label || a.kind;
+    const sig = `${label}|${a.kind}`.toLowerCase();
+    if (seen.has(sig) || seen.has(a.url)) continue;
+    seen.add(sig); seen.add(a.url);
+    out.push({ url: withToken(a.url), label, kind: a.kind, note: a.note });
+  }
+  return out;
+}
+
+// ONE normalized comparable dataset feeding all comp displays. LandPortal comps
+// first (selected/normalized), then manual comps, deduped by APN, then by
+// price+acres, then by address. No comp appears twice under different sources.
+function buildUnifiedComps(discoveryReport: DiscoveryReport | null, manualComps: Comp[]): UnifiedComp[] {
+  const rows: UnifiedComp[] = [];
+  const ci = discoveryReport?.comparableIntelligence;
+  const lp = (ci?.selectedComparables?.length ? ci.selectedComparables : null)
+    ?? (discoveryReport?.landportalInspection?.comparables ?? []).map((c) => ({
+      apn: c.apn ?? null, address: c.address ?? null, acreage: c.acres ?? null,
+      salePrice: c.price ?? null, pricePerAcre: c.pricePerAcre ?? null, saleDate: null,
+      status: c.status, source: 'LandPortal', sourceUrl: c.sourceUrl, confidence: c.confidence,
+    }));
+  for (const c of lp) rows.push({ source: c.source || 'LandPortal', apn: c.apn ?? null, address: c.address ?? null, acres: c.acreage ?? null, price: c.salePrice ?? null, ppa: c.pricePerAcre ?? null, status: c.status, confidence: c.confidence });
+  for (const m of manualComps) rows.push({ source: m.source_label, apn: m.apn || null, address: m.address_desc || null, acres: m.acres, price: m.price, ppa: m.price_per_acre, status: m.status, confidence: 'manual' });
+  const seen = new Set<string>();
+  const out: UnifiedComp[] = [];
+  for (const r of rows) {
+    const key = r.apn ? `apn:${r.apn.toLowerCase()}`
+      : (r.price != null && r.acres != null) ? `pa:${r.price}:${r.acres}`
+      : r.address ? `ad:${r.address.toLowerCase()}`
+      : `x:${out.length}`;
+    if (seen.has(key)) continue;
+    seen.add(key); out.push(r);
+  }
+  return out;
+}
+
+function Lightbox({ images, index, onClose, onNav }: { images: GalleryImage[]; index: number; onClose: () => void; onNav: (i: number) => void }) {
+  const img = images[index];
+  if (!img) return null;
+  const prev = () => onNav((index - 1 + images.length) % images.length);
+  const next = () => onNav((index + 1) % images.length);
+  return (
+    <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4" onClick={onClose}>
+      <button type="button" onClick={(e) => { e.stopPropagation(); prev(); }} class="absolute left-4 text-white/80 hover:text-white text-3xl px-3 py-2" aria-label="Previous">‹</button>
+      <figure class="m-0 max-w-[88vw] max-h-[88vh] flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
+        <img src={img.url} alt={img.label} class="max-w-[88vw] max-h-[80vh] object-contain rounded-lg border border-white/20" />
+        <figcaption class="text-[13px] text-white/90 mt-2 text-center">{img.label} <span class="text-white/50">({index + 1}/{images.length})</span>{img.note ? <div class="text-[11px] text-white/50">{img.note}</div> : null}</figcaption>
+      </figure>
+      <button type="button" onClick={(e) => { e.stopPropagation(); next(); }} class="absolute right-4 text-white/80 hover:text-white text-3xl px-3 py-2" aria-label="Next">›</button>
+      <button type="button" onClick={onClose} class="absolute top-4 right-4 text-white/80 hover:text-white text-[13px] px-3 py-1.5 rounded-md border border-white/30">Close ✕</button>
+    </div>
+  );
+}
+
+function potentialTone(p: string): string {
+  return p === 'High Potential' ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : p === 'Moderate Potential' ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+    : p === 'Low Potential' ? 'text-[var(--color-text-muted)] border-[var(--color-border)]'
+    : 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
+}
+
+function ReadinessChip({ label, tone }: { label: string; tone: 'good' | 'warn' | 'neutral' }) {
+  const cls = tone === 'good' ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : tone === 'warn' ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+    : 'text-[var(--color-text-faint)] border-[var(--color-border)]';
+  return <span class={`text-[11px] px-2 py-0.5 rounded-full border ${cls}`}>{label}</span>;
+}
+
+function WorkspaceSection({ title, children, accent }: { title: string; children: any; accent?: boolean }) {
+  return (
+    <section class={`rounded-lg border p-4 space-y-2 ${accent ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'} bg-[var(--color-bg)]`}>
+      <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{title}</div>
+      {children}
+    </section>
+  );
+}
+
+function OperatorInspectionBrief({ selected, discoveryReport, manualComps }: { selected: CardDetail; discoveryReport: DiscoveryReport | null; manualComps: Comp[] }) {
+  const [lightbox, setLightbox] = useState<number | null>(null);
+  const inspection = discoveryReport?.landportalInspection ?? null;
+  const fs = inspection?.factSheet;
+  const compIntel = discoveryReport?.comparableIntelligence;
+  const marketIntel = discoveryReport?.marketIntelligence;
+  const strategies = discoveryReport?.strategyEvaluation ?? [];
+  const topStrategy = strategies.find((s) => s.verdict === 'viable') ?? strategies.find((s) => s.verdict === 'maybe');
+  const gallery = buildGallery(inspection);
+  const unifiedComps = buildUnifiedComps(discoveryReport, manualComps);
+
+  // Comp Sources status — which sources were attempted and what each returned.
+  // Counts come from the unified table; per-source result (blocked/none/error)
+  // from the persisted status activities. Operator-facing, not the full log.
+  const srcCount = (name: string) => unifiedComps.filter((c) => c.source === name).length;
+  const parseExtStatus = (kind: string): { status: string; count: number } | null => {
+    const a = (selected.activity ?? []).find((x: any) => x.kind === kind);
+    const m = a && String((a as any).summary || '').match(/comps:\s*([a-z]+)\s*[—-]\s*(\d+)/i);
+    return m ? { status: m[1].toLowerCase(), count: Number(m[2]) } : null;
+  };
+  const extSource = (name: string, kind: string): { name: string; text: string; ok: boolean } | null => {
+    const shown = srcCount(name);
+    const st = parseExtStatus(kind);
+    if (!st) return shown > 0 ? { name, text: `✓ ${shown} land comps`, ok: true } : null;
+    if (st.status === 'retrieved') return { name, text: `✓ ${shown || st.count} land comps`, ok: true };
+    if (st.status === 'blocked') return { name, text: 'blocked', ok: false };
+    if (st.status === 'none') return { name, text: 'none found', ok: false };
+    if (st.status === 'error') return { name, text: 'unavailable', ok: false };
+    if (st.status === 'disabled') return { name, text: 'not run', ok: false };
+    return { name, text: st.status, ok: false };
+  };
+  const lpCompCount = srcCount('LandPortal');
+  const compSources = [
+    { name: 'LandPortal', text: lpCompCount > 0 ? `✓ ${lpCompCount} listed comps` : 'none', ok: lpCompCount > 0 },
+    extSource('Zillow', 'zillow_comp_status'),
+    extSource('Redfin', 'redfin_comp_status'),
+  ].filter((s): s is { name: string; text: string; ok: boolean } => !!s);
+
+  if (!discoveryReport) {
+    return (
+      <div class="border border-[var(--color-border)] rounded-lg p-4 bg-[var(--color-bg)] text-[13px] text-[var(--color-text-muted)]">
+        Acquisition workspace is not loaded yet. Refresh the card after the property report finishes.
+      </div>
+    );
+  }
+
+  // Market value read (Low confidence — LandPortal listed/asking evidence).
+  const compPrices = unifiedComps.map((c) => c.price).filter((n): n is number => typeof n === 'number' && n > 0).sort((a, b) => a - b);
+  // Prefer the analytical estimate band over the raw min/max spread (tighter, less
+  // skewed by a single outlier comp), falling back to the comp range.
+  const mvLow = compIntel?.estimatedMarketValue?.low ?? compPrices[0] ?? null;
+  const mvHigh = compIntel?.estimatedMarketValue?.high ?? compPrices[compPrices.length - 1] ?? null;
+  const mvMid = compIntel?.estimatedMarketValue?.mid
+    ?? (fs?.valuation.lpEstimatePrice ? Number(fs.valuation.lpEstimatePrice.replace(/[^0-9.]/g, '')) : null)
+    ?? (mvLow != null && mvHigh != null ? Math.round((mvLow + mvHigh) / 2) : null);
+  const noSoldComps = unifiedComps.every((c) => c.status !== 'sold' && c.status !== 'verified_sale');
+
+  // Decision-first read: recommended strategy (highest potential), offer range,
+  // top concerns / opportunities. This is what Tyler looks at before dialing.
+  const potentialRank: Record<string, number> = { 'High Potential': 3, 'Moderate Potential': 2, 'Low Potential': 1, 'Not Recommended': 0 };
+  const ranked = [...strategies].sort((a, b) => (potentialRank[b.potential || ''] || 0) - (potentialRank[a.potential || ''] || 0));
+  const recommended = ranked.find((s) => (potentialRank[s.potential || ''] || 0) >= 2) ?? ranked[0];
+  const offerRange = recommended?.acquisitionRange
+    ?? discoveryReport.roughOfferRange?.acquisition
+    ?? (mvMid != null ? { low: Math.round(0.4 * mvMid), high: Math.round(0.6 * mvMid) } : null);
+  const concerns = [
+    // Never imply comps are missing when LandPortal comps exist — filter comp-gap
+    // noise and state the real reason confidence is low (asking vs sold evidence).
+    ...(marketIntel?.risks ?? []).filter((r) => !/comparable evidence gap|no comp|missing comp|gather comp|comp band/i.test(r)),
+    ...(fs && fs.access.landLocked && /yes/i.test(fs.access.landLocked) ? ['Parcel may be landlocked — confirm legal access.'] : []),
+    'Pricing confidence is low — current evidence is LandPortal listed/asking comps; sold comp support still needed.',
+  ].slice(0, 3);
+  const opportunities = [
+    ...(marketIntel?.opportunities ?? []),
+    ...(fs && fs.water.present ? [`${fs.water.label} — potential amenity/appeal (verify easements).`] : []),
+    ...(fs && fs.buildability.pct ? [`${fs.buildability.pct} buildable, ${fs.environment.femaFloodZone && /not in/i.test(fs.environment.femaFloodZone) ? 'not in a flood hazard area' : 'low mapped environmental constraint'}.`] : []),
+  ].slice(0, 3);
+
+  return (
+    <div class="space-y-4">
+      {lightbox != null && <Lightbox images={gallery} index={lightbox} onClose={() => setLightbox(null)} onNav={setLightbox} />}
+
+      {/* Discovery Snapshot — the decision-first read */}
+      <WorkspaceSection title="Discovery Snapshot" accent>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+          <div class="text-[13px]"><span class="text-[var(--color-text-faint)]">Can I buy this?</span> <span class="text-[var(--color-text)]">{discoveryReport.parcelVerified ? 'Yes — parcel identity verified, discovery call can proceed.' : 'Not yet — verify the exact parcel before pricing with conviction.'}</span></div>
+          <div class="text-[13px]"><span class="text-[var(--color-text-faint)]">Recommended strategy</span> <span class="text-[var(--color-text)]">{recommended ? `${recommended.strategy}` : '—'}</span>{recommended?.potential ? <span class={`ml-1.5 text-[11px] px-2 py-0.5 rounded-full border ${potentialTone(recommended.potential)}`}>{recommended.potential}</span> : null}</div>
+          <div class="text-[13px]"><span class="text-[var(--color-text-faint)]">Estimated Market Value</span> <span class="text-[var(--color-text)]">{mvLow != null && mvHigh != null ? `${formatMoney(mvLow)} – ${formatMoney(mvHigh)}` : mvMid != null ? formatMoney(mvMid) : 'Needs comps'}</span> <span class="text-[var(--color-accent)] text-[11px]">Low confidence</span></div>
+          <div class="text-[13px]"><span class="text-[var(--color-text-faint)]">Recommended Offer Range</span> <span class="text-[var(--color-status-done)] font-semibold">{offerRange ? `${formatMoney(offerRange.low)} – ${formatMoney(offerRange.high)}` : '—'}</span> <span class="text-[var(--color-text-faint)] text-[11px]">(40–60% of value)</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 pt-1">
+          <div class="text-[12px]"><span class="text-[var(--color-status-failed)]">Top concerns</span><ul class="list-disc pl-5 text-[var(--color-text-muted)]">{concerns.map((c, i) => <li key={i}>{c}</li>)}</ul></div>
+          <div class="text-[12px]"><span class="text-[var(--color-status-done)]">Top opportunities</span><ul class="list-disc pl-5 text-[var(--color-text-muted)]">{opportunities.length ? opportunities.map((o, i) => <li key={i}>{o}</li>) : <li>Clean infill lot — see snapshot.</li>}</ul></div>
+        </div>
+      </WorkspaceSection>
+
+      {/* Acquisition Readiness */}
+      <WorkspaceSection title="Acquisition Readiness" accent>
+        <div class="text-[13px] text-[var(--color-text)]">
+          {discoveryReport.parcelVerified
+            ? 'Parcel identity verified. Discovery call can proceed. Pricing confidence is low because current valuation is based on listed or asking evidence, not confirmed sold comps.'
+            : 'Parcel identity is not verified. Confirm the exact parcel (APN + county, official record, or LandPortal property ID + FIPS) before discussing price with conviction.'}
+        </div>
+        <div class="flex flex-wrap gap-1.5 pt-0.5">
+          {discoveryReport.parcelVerified && <ReadinessChip label="Ready for discovery call" tone="good" />}
+          <ReadinessChip label="Low pricing confidence" tone="warn" />
+          {noSoldComps && <ReadinessChip label="Needs sold comp support" tone="warn" />}
+          <ReadinessChip label="Needs utility verification" tone="warn" />
+          <ReadinessChip label="No obvious fatal issue found in first-pass review" tone="neutral" />
+        </div>
+        {topStrategy && <div class="text-[12px] text-[var(--color-text-muted)] pt-1"><span class="text-[var(--color-text)]">Strongest path:</span> {topStrategy.strategy} — {topStrategy.reason}</div>}
+      </WorkspaceSection>
+
+      {/* Visuals */}
+      <WorkspaceSection title="Visuals">
+        {gallery.length ? (
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {gallery.map((img, i) => (
+              <figure key={img.url} class="m-0 cursor-zoom-in group" onClick={() => setLightbox(i)}>
+                <img src={img.url} alt={img.label} class="w-full h-44 object-cover rounded-lg border border-[var(--color-border)] group-hover:border-[var(--color-accent)] transition-colors" loading="lazy" />
+                <figcaption class="text-[11px] text-[var(--color-text-muted)] mt-1">{img.label}{img.kind === 'overlay' ? ' · visual signal only' : ''}</figcaption>
+              </figure>
+            ))}
+          </div>
+        ) : (
+          <div class="text-[12px] text-[var(--color-text-muted)]">No LandPortal visuals captured yet.</div>
+        )}
+        <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal parcel + comps map + overlays and Google Aerial / Street View. Overlays and Google imagery are Visual Signal, Not Verified Fact.</div>
+      </WorkspaceSection>
+
+      {/* Property Snapshot */}
+      <WorkspaceSection title="Property Snapshot">
+        {fs ? (
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+            {fs.snapshot.map((row) => (
+              <div key={row.key} class="text-[12.5px] flex gap-2">
+                <span class="text-[var(--color-text-faint)] w-36 shrink-0">{row.label}</span>
+                <span class={row.status === 'verified' ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)] italic'}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div class="text-[12px] text-[var(--color-text-muted)]">Parcel fact sheet not available — re-run the property inspection.</div>
+        )}
+      </WorkspaceSection>
+
+      {/* Comparable Intelligence (one unified dataset) */}
+      <WorkspaceSection title="Comparable Intelligence">
+        {/* Comp Sources — attempted sources + what each returned (concise). */}
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] pb-1">
+          <span class="text-[var(--color-text-faint)] uppercase tracking-wider text-[10px]">Comp Sources</span>
+          {compSources.map((s) => (
+            <span key={s.name} class={s.ok ? 'text-[var(--color-status-done)]' : 'text-[var(--color-text-faint)]'}>
+              <span class="text-[var(--color-text)]">{s.name}</span> {s.text}
+            </span>
+          ))}
+        </div>
+        {unifiedComps.length ? (
+          <div class="overflow-x-auto">
+            <table class="w-full text-[12px] border-collapse">
+              <thead>
+                <tr class="text-[var(--color-text-faint)] text-left">
+                  <th class="py-1 pr-3 font-medium">Source</th><th class="py-1 pr-3 font-medium">APN / Address</th>
+                  <th class="py-1 pr-3 font-medium">Acres</th><th class="py-1 pr-3 font-medium">Price</th>
+                  <th class="py-1 pr-3 font-medium">$/ac</th><th class="py-1 pr-3 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unifiedComps.map((c, i) => (
+                  <tr key={i} class="border-t border-[var(--color-border)]">
+                    <td class="py-1 pr-3">{c.source}</td>
+                    <td class="py-1 pr-3 text-[var(--color-text-muted)]">{c.apn ?? c.address ?? '—'}</td>
+                    <td class="py-1 pr-3">{c.acres != null ? `${c.acres}` : '—'}</td>
+                    <td class="py-1 pr-3 text-[var(--color-text)]">{c.price != null ? formatMoney(c.price) : '—'}</td>
+                    <td class="py-1 pr-3 text-[var(--color-text-muted)]">{c.ppa != null ? formatMoney(c.ppa) : '—'}</td>
+                    <td class="py-1 pr-3 text-[var(--color-text-faint)]">{c.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div class="text-[12px] text-[var(--color-text-muted)]">No comparable rows captured yet.</div>
+        )}
+        <div class="text-[11px] text-[var(--color-text-faint)]">LandPortal visible comps (no comp report purchased){(() => { const ext = [...new Set(unifiedComps.map((c) => c.source).filter((s) => /zillow|redfin/i.test(s)))]; return ext.length ? ` · plus public ${ext.join(' + ')} land comps (browser search).` : '.'; })()}</div>
+      </WorkspaceSection>
+
+      {/* Market Value + confidence */}
+      <WorkspaceSection title="Market Value">
+        <div class="text-[13px] text-[var(--color-text)]">
+          Estimated Market Value: {mvLow != null && mvHigh != null ? `${formatMoney(mvLow)} – ${formatMoney(mvHigh)}` : mvMid != null ? formatMoney(mvMid) : 'Needs sold comps'}
+          {mvMid != null && <span class="text-[var(--color-text-muted)]"> · mid ~{formatMoney(mvMid)}</span>}
+        </div>
+        <div class="text-[12px] text-[var(--color-text-muted)]">Evidence: LandPortal listed/asking comparable evidence{fs?.valuation.totalMarketValue ? ` · county market value ${fs.valuation.totalMarketValue}` : ''}. <span class="text-[var(--color-accent)]">Confidence: Low</span> until sold comps are confirmed. Not final underwriting.</div>
+        {marketIntel && <div class="text-[12px] text-[var(--color-text-muted)] pt-1">{marketIntel.marketPulse}</div>}
+      </WorkspaceSection>
+
+      {/* Five Acquisition Strategies */}
+      <WorkspaceSection title="Acquisition Strategies">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {ranked.map((s) => (
+            <div key={s.strategy} class="rounded-md border border-[var(--color-border)] p-2.5 space-y-1">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-[12.5px] font-semibold text-[var(--color-text)]">{s.strategy}</span>
+                <span class={`text-[11px] px-2 py-0.5 rounded-full border ${potentialTone(s.potential || '')}`}>{s.potential || s.verdict}</span>
+                {s.acquisitionRange && <span class="text-[11px] text-[var(--color-status-done)]">acquire {formatMoney(s.acquisitionRange.low)}–{formatMoney(s.acquisitionRange.high)}</span>}
+              </div>
+              <div class="text-[12px] text-[var(--color-text-muted)]">{s.reason}</div>
+              {s.pricingLogic && <div class="text-[11px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text-faint)]">Pricing:</span> {s.pricingLogic}</div>}
+              {s.mainRisk && <div class="text-[11px]"><span class="text-[var(--color-status-failed)]">Risk:</span> <span class="text-[var(--color-text-muted)]">{s.mainRisk}</span></div>}
+            </div>
+          ))}
+        </div>
+      </WorkspaceSection>
+
+      {/* Seller Call Questions (property-specific) */}
+      <WorkspaceSection title="Seller Call Questions">
+        <ul class="list-disc pl-5 space-y-1 text-[12.5px] text-[var(--color-text-muted)]">
+          {(fs?.sellerQuestions ?? inspection?.discoveryQuestions ?? []).map((q, i) => <li key={i}>{q}</li>)}
+        </ul>
+      </WorkspaceSection>
     </div>
   );
 }

@@ -23,6 +23,7 @@ import {
   type ReadOnlyAction,
 } from './browser-retrieval.js';
 import type { PropertyPatch } from './normalized-property.js';
+import type { PendingLandPortalInspectionRecord } from './property-card.js';
 
 export type BrowserMode = 'workflow' | 'ask';
 export const BROWSER_MODES: readonly BrowserMode[] = ['workflow', 'ask'];
@@ -108,8 +109,10 @@ export interface BrowserSearchKey {
   address?: string;
   apn?: string;
   owner?: string;
+  city?: string;
   county?: string;
   state?: string;
+  zip?: string;
 }
 
 export interface BrowserQuestionRoute {
@@ -190,8 +193,25 @@ export interface BrowserDriver {
   search(query: string, opts: { timeoutMs: number }): Promise<BrowserPageRead>;
   /** Read all visible fields on the current page. action='read'. */
   readFields(opts: { timeoutMs: number }): Promise<BrowserPageRead>;
-  /** Capture ONE screenshot of the current page. action='capture_screenshots'. */
-  screenshot(purpose: string, opts: { timeoutMs: number }): Promise<BrowserScreenshot>;
+  /** Full-panel read: opens the parcel's deep link in a fresh tab and reads
+   *  label/value pairs from definition lists, two-cell rows, AND two-span detail
+   *  rows WITHOUT an off-screen filter (captures below-the-fold valuation/zoning/
+   *  environmental/terrain sections). Optional; live driver only. */
+  readFullPanel?(url: string, opts: { timeoutMs: number }): Promise<BrowserPageRead>;
+  /** ONE-PASS LandPortal capture on the deep-link full view: parcel fields + a
+   *  wide parcel screenshot + all comparable rows + the real "Show on Map" comps
+   *  map screenshot (mapReached proves it was clicked). Optional; live driver only. */
+  captureLandPortalVisuals?(url: string, opts: { timeoutMs: number }): Promise<{
+    fields: Record<string, string>;
+    parcelShotPath: string | null;
+    compsMapShotPath: string | null;
+    compRows: string[];
+    mapReached: boolean;
+    capturedAtIso: string;
+  }>;
+  /** Capture ONE screenshot of the current page. action='capture_screenshots'.
+   *  fullPage captures the entire scrollable page (uncropped) when supported. */
+  screenshot(purpose: string, opts: { timeoutMs: number; fullPage?: boolean }): Promise<BrowserScreenshot>;
   /** Read visible anchor links (text + href) — used for NETR routing. Read-only. */
   readLinks?(opts: { timeoutMs: number }): Promise<Array<{ text: string; href: string }>>;
   /** Read the page's forms (inputs + labels/placeholders + submit) for semantic
@@ -287,6 +307,8 @@ export interface BrowserEvidence {
   sourceUrls: string[];
   /** Short, operator-facing note. Never a raw log dump. */
   note: string;
+  /** Optional structured LandPortal inspection payload for persistence/reporting. */
+  inspection?: PendingLandPortalInspectionRecord;
 }
 
 /** Record a forbidden action as blocked (never performed). The single place a

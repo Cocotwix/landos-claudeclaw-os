@@ -433,6 +433,65 @@ interface ExecSummaryView {
   dealEconomics: { available: boolean; estValueLow: number | null; estValueMid: number | null; estValueHigh: number | null; acquisitionRange: [number, number] | null; roughSpread: [number, number] | null; confidence: string; missingCostItems: string[]; whyUnderwritingLater: string };
   topRisks: string[]; sellerQuestions: string[]; verifyBeforeOffer: string[]; nextSteps: string[]; confidence: string;
 }
+// Discovery Call Intelligence Report (Acquisition Specialist v1) — mirrors
+// DiscoveryCallReport in src/landos/discovery-call-report.ts.
+interface DiscoveryReportView {
+  available: boolean;
+  parcelVerified: boolean;
+  contextLabel: string;
+  headline: string;
+  disclaimer: string;
+  confidence: string;
+  smartInput: {
+    rawInput: string; interpretedAs: string;
+    resolvedFields: Array<{ label: string; value: string }>;
+    resolutionPath: string; parcelStatus: string; parcelVerified: boolean; note: string;
+  };
+  landportalInspection?: null | {
+    parcelUrl: string | null;
+    comparablesUrl: string | null;
+    parcelFacts: Record<string, string>;
+    assets: Array<{ key: string; label: string; kind: string; url: string; timestamp: string; overlay?: string; note?: string }>;
+    overlays: Array<{ overlay: string; status: string; note: string; confidence: string; screenshotUrl?: string | null }>;
+    visualObservations: Array<{ label: string; detail: string; confidence: string; evidence: string }>;
+    comparables: Array<{ rawText: string; sourceUrl: string; apn?: string | null; address?: string | null; saleDate?: string; acres?: number | null; price?: number | null; pricePerAcre?: number | null; distanceMiles?: number | null; status: string; saleListIndicator?: string; improvement: string; confidence: string }>;
+    sources: Array<{ provider: string; stage: string; status: string; confidence: string; url?: string | null; note: string }>;
+    evidence: Array<{ label: string; status: string; detail: string; confidence: string; source?: string | null; url?: string | null }>;
+    discoveryQuestions: string[];
+    missingInformation: string[];
+  };
+  comparableIntelligence?: {
+    subjectClassification: { type: string; confidence: string; evidence: string[]; note: string };
+    acreageBand: string | null;
+    comparables: Array<{ address: string | null; acreage: number | null; salePrice: number | null; pricePerAcre: number | null; saleDate: string | null; status: string; propertyType: string; source: string; sourceUrl: string | null; confidence: string; notes: string[]; parsingErrors: string[] }>;
+    selectedComparables: Array<{ address: string | null; acreage: number | null; salePrice: number | null; pricePerAcre: number | null; saleDate: string | null; status: string; propertyType: string; source: string; sourceUrl: string | null; confidence: string; notes: string[]; parsingErrors: string[] }>;
+    estimatedPricePerAcre: { low: number | null; mid: number | null; high: number | null };
+    estimatedMarketValue: { low: number | null; mid: number | null; high: number | null } | null;
+    confidence: string;
+    evidenceUsed: string[];
+    evidenceMissing: string[];
+    factorsAffectingValue: string[];
+  };
+  marketIntelligence?: {
+    label: string;
+    confidence: string;
+    facts: Array<{ label: string; status: string; value: string | null; confidence: string; source: string | null; note: string }>;
+    marketPulse: string;
+    opportunities: string[];
+    risks: string[];
+    sources: Array<{ source: string; url?: string | null; status: string; note: string }>;
+    missingInformation: string[];
+  };
+  strategyEvaluation: Array<{ strategy: string; verdict: string; reason: string; pricingLogic: string; mainRisk: string }>;
+  roughOfferRange: {
+    basis: string; available: boolean; acres: number | null;
+    pricePerAcre: { low: number | null; mid: number | null; high: number | null };
+    marketValue: { low: number | null; mid: number | null; high: number | null } | null;
+    acquisition: { low: number | null; high: number | null } | null;
+    perAcreAcquisition: { low: number | null; high: number | null } | null;
+    confidence: string; whatCouldChange: string[]; note: string;
+  };
+}
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
 function ExecutiveSummarySection({ es }: { es?: ExecSummaryView | null }) {
   if (!es) return null;
@@ -487,6 +546,344 @@ function ExecutiveSummarySection({ es }: { es?: ExecSummaryView | null }) {
         {es.topRisks.slice(0, 4).map((r, i) => <div key={i} class="text-[11px] text-[var(--color-text-muted)]">• {r}</div>)}
       </div>
       {es.nextSteps.length > 0 && <div class="text-[11px]"><span class="text-[var(--color-accent)]">Next:</span> {es.nextSteps.join(' → ')}</div>}
+    </div>
+  );
+}
+
+// ── Discovery Call Intelligence Report (Acquisition Specialist v1) ────────────
+// The cohesive, operator-facing pre-call report: six labeled sections in the
+// exact order Tyler runs a lead against. Pulls Smart Input, the five strategy
+// evaluations, and the offer range from the backend discovery report; Parcel
+// Intelligence / Comps / Market Pulse render from the report + executive summary.
+function verdictTone(v: string): string {
+  return v === 'viable' ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : v === 'not viable' ? 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]'
+    : 'text-[var(--color-accent)] border-[var(--color-accent)]';
+}
+function DiscoverySection({ n, title, children }: { n: number; title: string; children: any }) {
+  return (
+    <div class="rounded-md border border-[var(--color-border)] p-3 space-y-1.5">
+      <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{n}. {title}</div>
+      {children}
+    </div>
+  );
+}
+function inspectionFactValue(facts: Record<string, string> | undefined, ...keys: string[]): string {
+  const map = facts ?? {};
+  for (const key of keys) {
+    const value = map[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return 'Not Found';
+}
+function DiscoveryCallReportSection({ dcr, report, es }: { dcr?: DiscoveryReportView | null; report: ReportView; es?: ExecSummaryView | null }) {
+  if (!dcr) return null;
+  const token = dashboardToken();
+  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+  const fact = (key: string): string | null => (report.ddFactChecklist ?? []).find((r) => r.key === key)?.value ?? null;
+  const mc = report.marketComps;
+  const m = mc?.metrics;
+  const or = dcr.roughOfferRange;
+  const verifiedTone = dcr.parcelVerified ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : 'text-[var(--color-accent)] border-[var(--color-accent)]';
+  const parcelFacts: Array<[string, string | null]> = [
+    ['Owner', fact('owner')], ['APN', fact('apn')], ['Acreage', fact('acres')],
+    ['County', fact('county')], ['Zoning', fact('zoning')], ['Land use', fact('landUse')],
+    ['Flood', fact('flood')], ['Wetlands', fact('wetlands')], ['Slope', fact('slope')],
+  ];
+  const soldExamples = (mc?.sold ?? []).filter((c) => c.pricePerAcre != null).slice(0, 5);
+  const inspection = dcr.landportalInspection;
+  const compIntel = dcr.comparableIntelligence;
+  const marketIntel = dcr.marketIntelligence;
+  const parcelShots = (inspection?.assets ?? []).filter((a) => a.kind === 'parcel_page' || a.kind === 'parcel_3d');
+  const overlayShots = (inspection?.assets ?? []).filter((a) => a.kind === 'overlay');
+  const comparablesShot = (inspection?.assets ?? []).find((a) => a.kind === 'comparables_map');
+  const operatorFacts: Array<[string, string]> = inspection ? [
+    ['APN', inspectionFactValue(inspection.parcelFacts, 'Parcel ID', 'APN')],
+    ['Owner', inspectionFactValue(inspection.parcelFacts, 'Owner Name', 'Owner')],
+    ['Acreage', inspectionFactValue(inspection.parcelFacts, 'Acres', 'Calc Acres', 'MLS Acres')],
+    ['Legal Description', inspectionFactValue(inspection.parcelFacts, 'Legal Description')],
+    ['Road Frontage', inspectionFactValue(inspection.parcelFacts, 'Road Frontage')],
+    ['Road Type', inspectionFactValue(inspection.parcelFacts, 'Road Type')],
+    ['Access', inspectionFactValue(inspection.parcelFacts, 'Access', 'Land Locked')],
+    ['Utilities', inspectionFactValue(inspection.parcelFacts, 'Utilities', 'Utility Power')],
+    ['Buildability', inspectionFactValue(inspection.parcelFacts, 'Buildability', 'Building SqFt')],
+    ['FEMA / Flood', inspection?.overlays?.some((o) => o.overlay === 'FEMA Floodplain' && o.status !== 'not_found') ? 'Overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
+    ['Wetlands', inspection?.overlays?.some((o) => o.overlay === 'Wetlands' && o.status !== 'not_found') ? 'Overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
+    ['Soil', inspection?.overlays?.some((o) => o.overlay === 'Soil' && o.status !== 'not_found') ? 'Overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
+    ['Terrain / Slope', inspection?.overlays?.some((o) => o.overlay === 'Contours' && o.status !== 'not_found') ? 'Contours overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
+    ['Water Features', inspectionFactValue(inspection.parcelFacts, 'Water Feature type(s)', 'Water Feature')],
+    ['Parcel Shape', inspectionFactValue(inspection.parcelFacts, 'Parcel Shape')],
+    ['Zoning', inspectionFactValue(inspection.parcelFacts, 'Zoning')],
+    ['HOA', inspectionFactValue(inspection.parcelFacts, 'HOA')],
+  ] : [];
+  const topStrategy = dcr.strategyEvaluation.find((s) => s.verdict === 'viable') ?? dcr.strategyEvaluation.find((s) => s.verdict === 'maybe') ?? null;
+  const nextVerifications = [
+    ...(inspection?.missingInformation ?? []),
+    ...(compIntel?.evidenceMissing ?? []),
+    ...(marketIntel?.missingInformation ?? []),
+  ].filter(Boolean).slice(0, 5);
+  const promising = [
+    ...(inspection?.visualObservations?.map((o) => `${o.label}: ${o.detail}`) ?? []),
+    ...(marketIntel?.opportunities ?? []),
+  ].slice(0, 4);
+  const concerns = [
+    ...(marketIntel?.risks ?? []),
+    ...(inspection?.missingInformation ?? []).map((x) => `${x} still needs confirmation.`),
+  ].slice(0, 4);
+
+  return (
+    <div class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[13px] font-bold uppercase tracking-wider text-[var(--color-accent)]">Seller Call Brief</span>
+        <span class={`text-[10px] px-2 py-0.5 rounded-full border ${verifiedTone}`}>{dcr.contextLabel}</span>
+        <span class="ml-auto text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">confidence: {dcr.confidence}</span>
+      </div>
+      <div class="text-[12px] font-semibold text-[var(--color-text)]">{dcr.headline}</div>
+      <div class="text-[10px] text-[var(--color-text-faint)] italic">{dcr.disclaimer}</div>
+
+      <div class="rounded-md border border-[var(--color-border)] p-3 space-y-1.5">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Operator Summary</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+          <div class="text-[11px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text)]">Can I buy this property?</span> {dcr.parcelVerified ? 'Yes, parcel identity is verified. Use the pricing and market sections as discovery-call guidance only.' : 'Not confidently yet. Resolve the exact parcel before discussing price with conviction.'}</div>
+          <div class="text-[11px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text)]">What is the opportunity?</span> {topStrategy ? `${topStrategy.strategy}: ${topStrategy.reason}` : 'No clear path yet.'}</div>
+          <div class="text-[11px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text)]">Estimated Market Value</span> {compIntel?.estimatedMarketValue ? `${usd(compIntel.estimatedMarketValue.mid)} (${compIntel.confidence} confidence)` : 'Not supported yet by current evidence.'}</div>
+          <div class="text-[11px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text)]">Recommended Next Step</span> {nextVerifications[0] ?? 'Use the discovery questions below to close the remaining gaps.'}</div>
+        </div>
+        {promising.length > 0 && <div class="text-[10px] text-[var(--color-text-muted)]">What appears promising: {promising.join(' ')}</div>}
+        {concerns.length > 0 && <div class="text-[10px] text-[var(--color-text-muted)]">What concerns exist: {concerns.join(' ')}</div>}
+      </div>
+
+      {/* 1. Smart Input Interpretation */}
+      <DiscoverySection n={1} title="Smart Input Interpretation">
+        <div class="text-[11px] text-[var(--color-text-muted)]">You entered: <span class="text-[var(--color-text)]">{dcr.smartInput.rawInput || '—'}</span></div>
+        <div class="text-[11px] text-[var(--color-text-muted)]">Interpreted as: {dcr.smartInput.interpretedAs}</div>
+        <div class="flex flex-wrap gap-1 pt-0.5">
+          {dcr.smartInput.resolvedFields.map((f, i) => (
+            <span key={i} class="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]">{f.label}: <span class="text-[var(--color-text)]">{f.value}</span></span>
+          ))}
+        </div>
+        <div class="text-[10px] text-[var(--color-text-faint)]">Path: {dcr.smartInput.resolutionPath}</div>
+        <div class="text-[10px] text-[var(--color-text-faint)]">{dcr.smartInput.note}</div>
+      </DiscoverySection>
+
+      {/* 2. Parcel Intelligence */}
+      <DiscoverySection n={2} title="Parcel Intelligence">
+        <div class="grid grid-cols-2 gap-x-3 gap-y-0.5">
+          {parcelFacts.filter(([, v]) => v).map(([label, v], i) => (
+            <div key={i} class="text-[11px] text-[var(--color-text-muted)]">{label}: <span class="text-[var(--color-text)]">{v}</span></div>
+          ))}
+        </div>
+        {parcelFacts.every(([, v]) => !v) && <div class="text-[11px] text-[var(--color-text-faint)]">No verified parcel facts yet — see the Parcel Intelligence map + DD checklist below.</div>}
+        {!dcr.parcelVerified && <div class="text-[10px] text-[var(--color-text-faint)]">Local area context — parcel identity not verified. Full detail in the sections below.</div>}
+      </DiscoverySection>
+
+      <DiscoverySection n={3} title="Property Snapshot">
+        {inspection?.parcelUrl && <div class="text-[10px] text-[var(--color-text-faint)]">Parcel source: <a href={inspection.parcelUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">LandPortal parcel page</a></div>}
+        {parcelShots.length > 0 && (
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            {parcelShots.map((asset) => (
+              <figure key={asset.key} class="m-0">
+                <img src={withToken(asset.url)} alt={asset.label} class="w-full h-40 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+                <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{asset.label}</figcaption>
+              </figure>
+            ))}
+          </div>
+        )}
+        {comparablesShot && (
+          <figure class="m-0 pt-1">
+            <img src={withToken(comparablesShot.url)} alt={comparablesShot.label} class="w-full h-44 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+            <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{comparablesShot.label}</figcaption>
+          </figure>
+        )}
+        {operatorFacts.length > 0 && (
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 pt-1">
+            {operatorFacts.map(([label, value]) => (
+              <div key={label} class="text-[10px] text-[var(--color-text-muted)]">{label}: <span class="text-[var(--color-text)]">{value}</span></div>
+            ))}
+          </div>
+        )}
+        {inspection && Object.keys(inspection.parcelFacts).length > 0 && (
+          <details>
+            <summary class="text-[10px] cursor-pointer text-[var(--color-text-faint)]">All captured parcel facts</summary>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 pt-1">
+              {Object.entries(inspection.parcelFacts).map(([label, value]) => (
+                <div key={label} class="text-[10px] text-[var(--color-text-muted)]">{label}: <span class="text-[var(--color-text)]">{value}</span></div>
+              ))}
+            </div>
+          </details>
+        )}
+        {inspection?.visualObservations?.length ? (
+          <div class="space-y-1 pt-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Visual investor observations</div>
+            {inspection.visualObservations.map((item, i) => (
+              <div key={i} class="text-[11px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text)]">{item.label}:</span> {item.detail}
+                <span class="text-[10px] text-[var(--color-text-faint)]"> [Visual Signal | Not Verified Fact | {item.confidence}]</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {inspection?.overlays?.length ? (
+          <div class="space-y-1 pt-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Basemaps &amp; overlays</div>
+            {inspection.overlays.map((item, i) => (
+              <div key={i} class="text-[10px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text)]">{item.overlay}:</span> {item.note}
+                <span class="text-[var(--color-text-faint)]"> [{item.status} | {item.confidence}]</span>
+              </div>
+            ))}
+            {overlayShots.length > 0 && (
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                {overlayShots.map((asset) => (
+                  <figure key={asset.key} class="m-0">
+                    <img src={withToken(asset.url)} alt={asset.label} class="w-full h-36 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+                    <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{asset.label} | visual signal only</figcaption>
+                  </figure>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+        {inspection?.sources?.length ? (
+          <div class="space-y-1 pt-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Sources</div>
+            {inspection.sources.map((src, i) => (
+              <div key={i} class="text-[10px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text)]">{src.provider}</span> | {src.status} | {src.confidence}
+                {src.url ? <> | <a href={src.url} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">source</a></> : null}
+                {src.note ? ` | ${src.note}` : ''}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {inspection?.evidence?.length ? (
+          <div class="space-y-1 pt-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Evidence</div>
+            {inspection.evidence.slice(0, 12).map((item, i) => (
+              <div key={i} class="text-[10px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text)]">{item.label}</span> | {item.status} | {item.confidence} | {item.detail}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {inspection?.discoveryQuestions?.length ? (
+          <div class="space-y-1 pt-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Discovery call questions</div>
+            {inspection.discoveryQuestions.map((q, i) => <div key={i} class="text-[10px] text-[var(--color-text-muted)]">• {q}</div>)}
+          </div>
+        ) : null}
+        {inspection?.missingInformation?.length ? (
+          <div class="space-y-1 pt-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Missing information</div>
+            {inspection.missingInformation.map((item, i) => <div key={i} class="text-[10px] text-[var(--color-text-muted)]">• {item}</div>)}
+          </div>
+        ) : null}
+      </DiscoverySection>
+
+      {/* 4. Comps / Land Price */}
+      <DiscoverySection n={4} title="Market Value Evidence">
+        {compIntel && (
+          <div class="rounded border border-[var(--color-border)] p-2 mb-2 space-y-1">
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Comparable intelligence</div>
+            <div class="text-[11px] text-[var(--color-text-muted)]">Subject type: <span class="text-[var(--color-text)]">{compIntel.subjectClassification.type.replace(/_/g, ' ')}</span> ({compIntel.subjectClassification.confidence}){compIntel.acreageBand ? ` | acreage band ${compIntel.acreageBand}` : ''}</div>
+            {compIntel.estimatedMarketValue && <div class="text-[11px] text-[var(--color-text-muted)]">Estimated market value: <span class="text-[var(--color-status-done)]">{usd(compIntel.estimatedMarketValue.mid)}</span> ({usd(compIntel.estimatedPricePerAcre.mid)}/ac, conf {compIntel.confidence})</div>}
+            {compIntel.evidenceUsed.length > 0 && <div class="text-[10px] text-[var(--color-text-faint)]">Evidence source: {compIntel.evidenceUsed.slice(0, 2).join(' ')}</div>}
+            {compIntel.evidenceMissing.length > 0 && <div class="text-[10px] text-[var(--color-text-faint)]">Missing: {compIntel.evidenceMissing.slice(0, 4).join(', ')}</div>}
+          </div>
+        )}
+        {m && m.soldMedianPpa != null ? (
+          <>
+            <div class="text-[12px] font-semibold text-[var(--color-status-done)]">{usd(m.soldMedianPpa)}/acre <span class="text-[10px] font-normal text-[var(--color-text-faint)]">(band {usd(m.ppaMin)}–{usd(m.ppaMax)})</span></div>
+            <div class="text-[11px] text-[var(--color-text-muted)]">{mc?.soldCount ?? 0} sold · {mc?.activeCount ?? 0} active{m.domMedian != null ? ` · ~${m.domMedian} days on market` : ''}{!dcr.parcelVerified ? ' · area-level (weaker)' : ''}</div>
+            {soldExamples.length > 0 && (
+              <div class="pt-0.5 space-y-0.5">
+                {soldExamples.map((c, i) => (
+                  <div key={i} class="text-[10px] text-[var(--color-text-faint)]">{c.addressDesc ?? c.sourceLabel}: {usd(c.price)}{c.acres ? ` · ${c.acres} ac` : ''}{c.pricePerAcre ? ` · ${usd(c.pricePerAcre)}/ac` : ''}{c.sourceUrl ? <> · <a href={c.sourceUrl} target="_blank" class="text-[var(--color-accent)] underline">source</a></> : null}</div>
+                ))}
+              </div>
+            )}
+            {mc?.sparseExplanation && <div class="text-[10px] text-[var(--color-text-faint)]">{mc.sparseExplanation}</div>}
+          </>
+        ) : or.pricePerAcre.mid != null ? (
+          <>
+            <div class="text-[12px] font-semibold text-[var(--color-accent)]">{usd(or.pricePerAcre.mid)}/acre <span class="text-[10px] font-normal text-[var(--color-text-faint)]">(asking — active listings, not sold)</span></div>
+            <div class="text-[11px] text-[var(--color-text-muted)]">{mc?.activeCount ?? 0} active land listings nearby · no recent sold comps. Land usually sells at/below asking — treat as weaker area context.</div>
+          </>
+        ) : (
+          <div class="text-[11px] text-[var(--color-text-faint)]">No sold-comp price band yet. {mc?.note ?? 'Widen the comp search or confirm the area.'}</div>
+        )}
+        {inspection?.comparablesUrl && <div class="text-[10px] text-[var(--color-text-faint)] pt-1">LandPortal comparables: <a href={inspection.comparablesUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">open map</a></div>}
+        {((compIntel?.selectedComparables?.length ?? 0) > 0 || (compIntel?.comparables?.length ?? 0) > 0 || inspection?.comparables?.length) ? (
+          <div class="pt-1 space-y-1">
+            {((compIntel?.selectedComparables?.length ?? 0) > 0 ? compIntel?.selectedComparables : (compIntel?.comparables ?? inspection.comparables)).map((comp: any, i) => (
+              <div key={i} class="text-[10px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text)]">{comp.status}</span>
+                {comp.address ? ` | ${comp.address}` : ''}{comp.apn ? ` | APN ${comp.apn}` : ''}{(comp.saleDate) ? ` | ${comp.saleDate}` : ''}{(comp.acreage ?? comp.acres) != null ? ` | ${comp.acreage ?? comp.acres} ac` : ''}{(comp.salePrice ?? comp.price) != null ? ` | ${usd(comp.salePrice ?? comp.price)}` : ''}{comp.pricePerAcre != null ? ` | ${usd(comp.pricePerAcre)}/ac` : ''}{comp.distanceMiles != null ? ` | ${comp.distanceMiles} mi` : ''}{comp.saleListIndicator && comp.saleListIndicator !== 'unknown' ? ` | ${comp.saleListIndicator}` : ''}{(comp.propertyType ?? comp.improvement) && (comp.propertyType ?? comp.improvement) !== 'unknown' ? ` | ${(comp.propertyType ?? comp.improvement).replace(/_/g, ' ')}` : ''}{comp.confidence ? ` | conf ${comp.confidence}` : ''}
+                {comp.sourceUrl ? <> | <a href={comp.sourceUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">source</a></> : null}
+                {comp.parsingErrors?.length ? <span class="text-[var(--color-status-failed)]"> | check parse</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </DiscoverySection>
+
+      {/* 5. Market Pulse */}
+      <DiscoverySection n={5} title="Surrounding Market">
+        {marketIntel ? (
+          <>
+            <div class="text-[11px] text-[var(--color-text-muted)]">{marketIntel.marketPulse}</div>
+            <div class="text-[10px] text-[var(--color-text-faint)]">{marketIntel.label} | confidence {marketIntel.confidence}</div>
+            {marketIntel.opportunities.length > 0 && <div class="text-[10px] text-[var(--color-text-muted)]">Opportunities: {marketIntel.opportunities.slice(0, 3).join(' ')}</div>}
+            {marketIntel.risks.length > 0 && <div class="text-[10px] text-[var(--color-text-muted)]">Risks: {marketIntel.risks.slice(0, 3).join(' ')}</div>}
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 pt-1">
+              {marketIntel.facts.filter((f) => f.value).slice(0, 8).map((f, i) => (
+                <div key={i} class="text-[10px] text-[var(--color-text-muted)]">{f.label}: <span class="text-[var(--color-text)]">{f.value}</span> <span class="text-[var(--color-text-faint)]">[{f.status}]</span></div>
+              ))}
+            </div>
+          </>
+        ) : es ? (
+          <>
+            <div class="text-[11px] text-[var(--color-text-muted)]">{es.marketPulse.interpretation}</div>
+            <div class="text-[11px] text-[var(--color-text-muted)]">{es.marketPulse.whatThisMeans}</div>
+            {es.marketPulse.growthDrivers.available && <div class="text-[10px] text-[var(--color-text-faint)]">Growth: {es.marketPulse.growthDrivers.summary}</div>}
+          </>
+        ) : <div class="text-[11px] text-[var(--color-text-faint)]">Market read pending.</div>}
+      </DiscoverySection>
+
+      {/* 5. Initial Strategy Evaluation — exactly five */}
+      <DiscoverySection n={6} title="Acquisition Paths">
+        <div class="space-y-1.5">
+          {dcr.strategyEvaluation.map((s, i) => (
+            <div key={i} class="rounded border border-[var(--color-border)] p-2 space-y-0.5">
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] font-semibold text-[var(--color-text)]">{s.strategy}</span>
+                <span class={`text-[9px] px-1.5 py-0.5 rounded-full border ${verdictTone(s.verdict)}`}>{s.verdict}</span>
+              </div>
+              <div class="text-[10px] text-[var(--color-text-muted)]">{s.reason}</div>
+              <div class="text-[10px] text-[var(--color-text-muted)]"><span class="text-[var(--color-text-faint)]">Pricing:</span> {s.pricingLogic}</div>
+              <div class="text-[10px] text-[var(--color-text-muted)]"><span class="text-[var(--color-status-failed)]">Risk:</span> {s.mainRisk}</div>
+            </div>
+          ))}
+        </div>
+      </DiscoverySection>
+
+      {/* 6. Rough Offer Range */}
+      <DiscoverySection n={7} title="Discovery Call Range">
+        {or.available ? (
+          <>
+            {or.acquisition ? (
+              <div class="text-[13px] font-semibold text-[var(--color-status-done)]">{usd(or.acquisition.low)} – {usd(or.acquisition.high)} <span class="text-[10px] font-normal text-[var(--color-text-faint)]">(40–60% of ~{usd(or.marketValue?.mid)} market value)</span></div>
+            ) : or.perAcreAcquisition ? (
+              <div class="text-[13px] font-semibold text-[var(--color-status-done)]">{usd(or.perAcreAcquisition.low)} – {usd(or.perAcreAcquisition.high)} / acre <span class="text-[10px] font-normal text-[var(--color-text-faint)]">(40–60% of ~{usd(or.pricePerAcre.mid)}/ac — provide acreage for a total)</span></div>
+            ) : null}
+            <div class="text-[11px] text-[var(--color-text-muted)]">{or.note}</div>
+            <div class="text-[10px] text-[var(--color-text-faint)]">Confidence: {or.confidence} · basis: {or.basis}{!dcr.parcelVerified ? ' (parcel not verified — weaker)' : ''}</div>
+            {or.whatCouldChange.length > 0 && <div class="text-[10px] text-[var(--color-text-faint)]">What could change it: {or.whatCouldChange.slice(0, 6).join('; ')}</div>}
+          </>
+        ) : (
+          <div class="text-[11px] text-[var(--color-text-faint)]">{or.note}</div>
+        )}
+      </DiscoverySection>
     </div>
   );
 }
@@ -1869,6 +2266,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   const [briefing, setBriefing] = useState<BriefingView | null>(null);
   const [preCall, setPreCall] = useState<PreCallView | null>(null);
   const [execSummary, setExecSummary] = useState<ExecSummaryView | null>(null);
+  const [discoveryReport, setDiscoveryReport] = useState<DiscoveryReportView | null>(null);
   const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -1909,9 +2307,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
   async function loadReport(id: number) {
     try {
-      const res = await apiGet<{ report: ReportView; executiveSummary?: ExecSummaryView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${id}/report`);
+      const res = await apiGet<{ report: ReportView; executiveSummary?: ExecSummaryView; discoveryReport?: DiscoveryReportView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${id}/report`);
       setReport(res.report);
       setExecSummary(res.executiveSummary ?? null);
+      setDiscoveryReport(res.discoveryReport ?? null);
       setReadiness(res.readiness ?? null);
       setBriefing(res.briefing ?? null);
       setPreCall(res.preCallIntelligence ?? null);
@@ -1919,6 +2318,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     } catch {
       setReport(null);
       setExecSummary(null);
+      setDiscoveryReport(null);
       setReadiness(null);
       setBriefing(null);
       setPreCall(null);
@@ -2519,6 +2919,11 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
                 {/* 2. AT-A-GLANCE LAND FACTS — single home for flood/wetlands/slope/type. */}
                 <AtAGlanceStrip report={report} propertyType={propertyType} />
+
+                {/* ACQUISITION SPECIALIST v1 — the cohesive Discovery Call
+                    Intelligence Report: Smart Input, Parcel Intelligence, Comps,
+                    Market Pulse, the five strategy evaluations, and the offer range. */}
+                <DiscoveryCallReportSection dcr={discoveryReport} report={report} es={execSummary} />
 
                 {/* 3-5, 7, 8. EXECUTIVE SUMMARY — 40–60% preliminary range, deal
                     economics, best first-glance strategy, top risks/blockers. */}

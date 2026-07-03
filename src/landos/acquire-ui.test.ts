@@ -19,6 +19,9 @@ describe('Acquire — one-button Property Analysis', () => {
 
   it('the primary action posts to the CURRENT production DD endpoint (not the legacy one)', () => {
     expect(SRC).toMatch(/apiPost<[^>]*>\('\/api\/landos\/acquire\/run'/);
+    expect(SRC).toMatch(/const rawInput = text\.trim\(\)/);
+    expect(SRC).toMatch(/text: rawInput, rawInput/);
+    expect(SRC).not.toMatch(/selectedSuggestion/);
     // the legacy one-button orchestration endpoint is no longer wired to the button
     expect(SRC).not.toMatch(/'\/api\/landos\/property-analysis'/);
   });
@@ -31,9 +34,11 @@ describe('Acquire — one-button Property Analysis', () => {
     expect(SRC).not.toMatch(/if\s*\(res\.dealCardId\s*&&\s*onOpenDealCard\)/);
   });
 
-  it('uses the Universal Smart Intake input (autocomplete) instead of a bare textarea', () => {
+  it('uses the Universal Smart Intake input instead of a bare textarea', () => {
     expect(SRC).toMatch(/import \{ SmartIntake \}/);
     expect(SRC).toMatch(/<SmartIntake/);
+    expect(SRC).not.toMatch(/selectedSuggestion=\{/);
+    expect(SRC).not.toMatch(/onSelectSuggestion=\{/);
   });
 
   it('on no practical match it shows guidance and opens nothing (never an empty shell)', () => {

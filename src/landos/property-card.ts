@@ -20,6 +20,10 @@
 // No network, no .env, no secrets. landos.db is gitignored; this stores
 // metadata and agent work references, never property work product in the repo.
 
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+
 import {
   getLandosDb,
   landosAudit,
@@ -212,11 +216,21 @@ function findExistingCard(input: UpsertPropertyCardInput): PropertyCardRow | und
   // unverified_lead or address_matched card.
   const key = normalizeAddressKey(input.activeInputAddress);
   if (key) {
-    return db.prepare(
+    const weak = db.prepare(
       `SELECT * FROM landos_property_card
        WHERE entity = ? AND address_key = ?
          AND verification_status IN ('unverified_lead','address_matched')
        ORDER BY id DESC LIMIT 1`,
+    ).get(input.entity, key) as PropertyCardRow | undefined;
+    if (weak) return weak;
+
+    // If an exact same-address verified card already exists, reuse it instead of
+    // creating a weaker duplicate. This preserves the verified identity fields;
+    // it does not verify a new parcel from address-only evidence.
+    return db.prepare(
+      `SELECT * FROM landos_property_card
+       WHERE entity = ? AND address_key = ? AND verification_status = 'verified_property'
+       ORDER BY updated_at DESC, id DESC LIMIT 1`,
     ).get(input.entity, key) as PropertyCardRow | undefined;
   }
   return undefined;
@@ -266,7 +280,7 @@ export function upsertPropertyCard(
   // by cardId. findExistingCard already enforces this for address matching;
   // this guard guarantees the status decision below can never preserve
   // verified_property from a weak match.
-  if (existing?.verification_status === 'verified_property' && !strong && input.cardId === undefined) {
+  if (existing?.verification_status === 'verified_property' && !strong && input.cardId === undefined && existing.address_key !== normalizeAddressKey(input.activeInputAddress)) {
     existing = undefined;
   }
 
@@ -300,6 +314,7 @@ export function upsertPropertyCard(
   pushPrior(input.priorInputAddress);
 
   const isVerifiedNow = verificationStatus === 'verified_property';
+  const summaryToPersist = existing?.verification_status === 'verified_property' && !strong ? '' : (input.summary ?? '');
 
   if (existing) {
     // A verified parcel no longer "needs parcel verification": advance the kanban
@@ -353,7 +368,7 @@ export function upsertPropertyCard(
       effectiveSource, effectiveSource,
       input.propertyId ?? null,
       input.parcelId ?? null,
-      input.summary ?? '', input.summary ?? '',
+      summaryToPersist, summaryToPersist,
       now,
       now,
       existing.id,
@@ -530,6 +545,205 @@ export function loadCardVisualCapture(cardId: number): Record<string, CardVisual
   } catch {
     return {};
   }
+}
+
+export interface LandPortalInspectionAsset {
+  key: string;
+  label: string;
+  kind: 'parcel_page' | 'parcel_3d' | 'parcel_boundary' | 'overlay' | 'comparables_map';
+  purpose: string;
+  storedPath: string;
+  timestamp: string;
+  overlay?: string;
+  note?: string;
+}
+
+export interface LandPortalOverlayObservation {
+  overlay: string;
+  status: 'captured' | 'observed' | 'not_found';
+  note: string;
+  confidence: 'medium' | 'low';
+  screenshotKey?: string;
+}
+
+export interface LandPortalVisualObservation {
+  label: string;
+  detail: string;
+  confidence: 'medium' | 'low';
+  evidence: string;
+}
+
+export interface LandPortalComparableRecord {
+  rawText: string;
+  sourceUrl: string;
+  apn?: string | null;
+  address?: string | null;
+  saleDate?: string;
+  acres?: number | null;
+  price?: number | null;
+  pricePerAcre?: number | null;
+  distanceMiles?: number | null;
+  status: 'sold' | 'active' | 'listed' | 'unknown';
+  saleListIndicator?: 'sale' | 'list' | 'unknown';
+  improvement: 'vacant' | 'improved' | 'unknown';
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface PropertyInspectionSource {
+  provider: string;
+  stage: string;
+  status: 'used' | 'fallback' | 'not_attempted' | 'not_configured' | 'partial' | 'error';
+  confidence: 'high' | 'medium' | 'low';
+  url?: string | null;
+  note: string;
+}
+
+export interface PropertyInspectionEvidence {
+  label: string;
+  status: 'verified' | 'observed' | 'estimated' | 'unknown' | 'needs_verification';
+  detail: string;
+  confidence: 'high' | 'medium' | 'low';
+  source?: string | null;
+  url?: string | null;
+}
+
+export interface PropertyInspectionRecord {
+  parcelUrl: string | null;
+  comparablesUrl: string | null;
+  parcelFacts: Record<string, string>;
+  assets: LandPortalInspectionAsset[];
+  overlays: LandPortalOverlayObservation[];
+  visualObservations: LandPortalVisualObservation[];
+  comparables: LandPortalComparableRecord[];
+  sources: PropertyInspectionSource[];
+  evidence: PropertyInspectionEvidence[];
+  discoveryQuestions: string[];
+  missingInformation: string[];
+}
+
+interface PendingLandPortalInspectionAsset {
+  key: string;
+  label: string;
+  kind: LandPortalInspectionAsset['kind'];
+  purpose: string;
+  sourcePath: string;
+  timestamp: string;
+  overlay?: string;
+  note?: string;
+}
+
+export interface PendingPropertyInspectionRecord {
+  parcelUrl: string | null;
+  comparablesUrl: string | null;
+  parcelFacts: Record<string, string>;
+  assets: PendingLandPortalInspectionAsset[];
+  overlays: LandPortalOverlayObservation[];
+  visualObservations: LandPortalVisualObservation[];
+  comparables: LandPortalComparableRecord[];
+  sources?: PropertyInspectionSource[];
+  evidence?: PropertyInspectionEvidence[];
+  discoveryQuestions?: string[];
+  missingInformation?: string[];
+}
+
+export type LandPortalInspectionRecord = PropertyInspectionRecord;
+export type PendingLandPortalInspectionRecord = PendingPropertyInspectionRecord;
+
+function inspectionFileName(cardId: number, key: string, sourcePath: string): string {
+  const ext = path.extname(sourcePath).toLowerCase() || '.png';
+  const digest = crypto.createHash('sha256').update(`${cardId}:${key}:${sourcePath}`).digest('hex').slice(0, 12);
+  const safeKey = key.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+  return `landportal_${cardId}_${safeKey}_${digest}${ext}`;
+}
+
+function visualsDir(): string {
+  return path.join(process.cwd(), 'store', 'visuals');
+}
+
+function copyInspectionAsset(cardId: number, asset: PendingLandPortalInspectionAsset): LandPortalInspectionAsset | null {
+  if (!asset.sourcePath) return null;
+  try {
+    const source = path.resolve(asset.sourcePath);
+    if (!fs.existsSync(source)) return null;
+    const dir = visualsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, inspectionFileName(cardId, asset.key, source));
+    fs.copyFileSync(source, dest);
+    return {
+      key: asset.key,
+      label: asset.label,
+      kind: asset.kind,
+      purpose: asset.purpose,
+      storedPath: dest,
+      timestamp: asset.timestamp,
+      overlay: asset.overlay,
+      note: asset.note,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the latest LandPortal parcel inspection for a property card. */
+export function savePropertyInspection(cardId: number, inspection: PendingPropertyInspectionRecord): void {
+  const assets = inspection.assets
+    .map((asset) => copyInspectionAsset(cardId, asset))
+    .filter((asset): asset is LandPortalInspectionAsset => !!asset);
+  const payload: PropertyInspectionRecord = {
+    parcelUrl: inspection.parcelUrl,
+    comparablesUrl: inspection.comparablesUrl,
+    parcelFacts: inspection.parcelFacts,
+    assets,
+    overlays: inspection.overlays,
+    visualObservations: inspection.visualObservations,
+    comparables: inspection.comparables,
+    sources: inspection.sources ?? [],
+    evidence: inspection.evidence ?? [],
+    discoveryQuestions: inspection.discoveryQuestions ?? [],
+    missingInformation: inspection.missingInformation ?? [],
+  };
+  attachCardActivity({
+    cardId,
+    agentId: 'acquisition-specialist',
+    kind: 'property_inspection',
+    summary: `Captured property inspection (${assets.length} image(s), ${payload.comparables.length} comparable row(s)).`,
+    ref: JSON.stringify(payload),
+  });
+}
+
+/** Load the newest persisted LandPortal inspection for a property card. */
+export function loadPropertyInspection(cardId: number): PropertyInspectionRecord | null {
+  const row = getLandosDb()
+    .prepare("SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind IN ('property_inspection','landportal_inspection') ORDER BY created_at DESC, id DESC LIMIT 1")
+    .get(cardId) as { ref: string } | undefined;
+  if (!row?.ref) return null;
+  try {
+    const parsed = JSON.parse(row.ref) as PropertyInspectionRecord;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      parcelUrl: typeof parsed.parcelUrl === 'string' ? parsed.parcelUrl : null,
+      comparablesUrl: typeof parsed.comparablesUrl === 'string' ? parsed.comparablesUrl : null,
+      parcelFacts: parsed.parcelFacts && typeof parsed.parcelFacts === 'object' ? parsed.parcelFacts : {},
+      assets: Array.isArray(parsed.assets) ? parsed.assets : [],
+      overlays: Array.isArray(parsed.overlays) ? parsed.overlays : [],
+      visualObservations: Array.isArray(parsed.visualObservations) ? parsed.visualObservations : [],
+      comparables: Array.isArray(parsed.comparables) ? parsed.comparables : [],
+      sources: Array.isArray(parsed.sources) ? parsed.sources : [],
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+      discoveryQuestions: Array.isArray(parsed.discoveryQuestions) ? parsed.discoveryQuestions : [],
+      missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveLandPortalInspection(cardId: number, inspection: PendingLandPortalInspectionRecord): void {
+  savePropertyInspection(cardId, inspection);
+}
+
+export function loadLandPortalInspection(cardId: number): LandPortalInspectionRecord | null {
+  return loadPropertyInspection(cardId);
 }
 
 export function addCardNextAction(input: { cardId: number; action: string; createdBy?: string }): number {

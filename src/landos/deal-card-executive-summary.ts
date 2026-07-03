@@ -221,15 +221,20 @@ function buildMarketVerdict(s: { direction: MarketDirection; directionPct: numbe
 function buildAcquisitionRange(report: DealCardReportView, pulse: MarketPulseSynthesis): PreliminaryAcquisitionRange {
   const acres = acresOf(report);
   const { p25, median, p75 } = pulse.pricePerAcre;
-  const available = !!(report.parcelVerified && acres && median);
+  // Price a range whenever a sold-comp band + acreage exist. When the parcel is
+  // NOT verified this is LOCAL AREA CONTEXT (weaker) — computed, but capped to low
+  // confidence and clearly labeled, per the pre-discovery-call intelligence mandate.
+  const available = !!(acres && median);
   const assumptions = [
     'Pre-call planning estimate only — NOT an approved offer or final underwriting.',
-    'Based on verified Realie sold comps (price-per-acre) applied to verified acreage.',
+    report.parcelVerified
+      ? 'Based on verified Realie sold comps (price-per-acre) applied to verified acreage.'
+      : 'LOCAL AREA CONTEXT (parcel not verified): area sold comps (price-per-acre) applied to the lead acreage — weaker than a parcel-specific estimate.',
     'Assumes a clean, marketable, vacant parcel; no title/access/buildability confirmed yet.',
     "Acquisition band reflects Tyler's ~40–60% of market-value philosophy.",
   ];
   if (!available) {
-    return { available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null, acquisition40: null, acquisition60: null, recommendedRange: null, confidence: 'none', assumptions, increaseValueIf: [], decreaseValueIf: [], note: report.parcelVerified ? 'No verified sold comps + acreage yet — gather comps to price a range.' : 'Parcel not verified — range withheld until identity is confirmed.' };
+    return { available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null, acquisition40: null, acquisition60: null, recommendedRange: null, confidence: 'none', assumptions, increaseValueIf: [], decreaseValueIf: [], note: acres ? 'No sold-comp price band yet — gather comps to price a range.' : median ? 'Area $/acre known but acreage is unknown — provide acreage to compute a total value/offer.' : 'No sold comps + acreage yet — gather comps to price a range.' };
   }
   const a = acres as number;
   const estMid = (median as number) * a;
@@ -237,15 +242,19 @@ function buildAcquisitionRange(report: DealCardReportView, pulse: MarketPulseSyn
   const estHigh = (p75 ?? median!) * a;
   const acq40 = 0.40 * estMid;
   const acq60 = 0.60 * estMid;
+  // Unverified area context is inherently weaker: cap confidence at 'low'.
+  const rawConf = pulse.confidence === 'none' ? 'low' : pulse.confidence;
+  const confidence: PreliminaryAcquisitionRange['confidence'] = report.parcelVerified ? rawConf : 'low';
+  const contextPrefix = report.parcelVerified ? 'Preliminary acquisition target' : 'Local-area acquisition target (parcel NOT verified — weaker)';
   return {
     available: true, acres: a,
     estConservativeValue: Math.round(estLow), estMarketRange: [Math.round(estLow), Math.round(estHigh)], estMidValue: Math.round(estMid),
     acquisition40: Math.round(acq40), acquisition60: Math.round(acq60), recommendedRange: [Math.round(acq40), Math.round(acq60)],
-    confidence: pulse.confidence === 'none' ? 'low' : pulse.confidence,
+    confidence,
     assumptions,
     increaseValueIf: ['Confirmed road frontage + legal access', 'Confirmed buildable / low slope', 'Utilities at the road', 'Clean title + no liens', 'Higher-and-better use (subdivision / infill)'],
     decreaseValueIf: ['Wetlands / FEMA flood coverage', 'Landlocked or shared access', 'Steep slope / unbuildable', 'Back taxes / liens / probate', 'Deed/boundary issues'],
-    note: `Preliminary acquisition target: ${money(acq40)}–${money(acq60)} (≈40–60% of an estimated ${money(estMid)} market value at ${money(median)}/acre × ${a} ac). Confirm with tighter sold comps + costs before any offer.`,
+    note: `${contextPrefix}: ${money(acq40)}–${money(acq60)} (≈40–60% of an estimated ${money(estMid)} market value at ${money(median)}/acre × ${a} ac). Confirm with tighter sold comps + costs before any offer.`,
   };
 }
 
@@ -253,7 +262,7 @@ function topRisks(report: DealCardReportView): string[] {
   const out = [...(report.riskFlags ?? [])];
   const g = report.govDd;
   if (g?.flood && g.flood.status === 'verified' && g.flood.zone && !/^x$/i.test(g.flood.zone)) out.push(`FEMA flood zone ${g.flood.zone} (verified) — confirm extent.`);
-  if (g?.wetlands && g.wetlands.status === 'verified' && g.wetlands.type) out.push(`Wetlands present (NWI: ${g.wetlands.type}) — confirm coverage.`);
+  if (g?.wetlands && g.wetlands.status === 'verified' && g.wetlands.type && !/^none/i.test(g.wetlands.type.trim())) out.push(`Wetlands present (NWI: ${g.wetlands.type}) — confirm coverage.`);
   if (g?.slope && g.slope.status === 'verified' && g.slope.slopeDeg != null && g.slope.slopeDeg > 10) out.push(`Elevated slope ~${g.slope.slopeDeg}° — confirm buildable area.`);
   if (out.length === 0) out.push('No major red flags surfaced yet — access, title, and buildability still need confirmation.');
   return out.slice(0, 6);
@@ -270,7 +279,7 @@ function buildStrategyRanking(report: DealCardReportView, pulse: MarketPulseSynt
   const improved = buildingArea > 0 || /home|house|improv|dwelling|residence|mobile/.test(landUse);
   const g = report.govDd;
   const flood = !!(g?.flood && g.flood.status === 'verified' && g.flood.zone && !/^x$/i.test(g.flood.zone));
-  const wetlands = !!(g?.wetlands && g.wetlands.status === 'verified' && g.wetlands.type);
+  const wetlands = !!(g?.wetlands && g.wetlands.status === 'verified' && g.wetlands.type && !/^none/i.test(g.wetlands.type.trim()));
   const steep = !!(g?.slope && g.slope.status === 'verified' && g.slope.slopeDeg != null && g.slope.slopeDeg > 12);
   const landlocked = (report.riskFlags ?? []).some((r) => /landlock|no legal access/i.test(r));
   const liquid = pulse.realieSoldCount >= 3 && pulse.zillowActiveCount >= 5;
@@ -334,7 +343,7 @@ export function buildExecutiveSummary(report: DealCardReportView, growth?: Growt
     marketPulse: pulse,
     preliminaryAcquisitionRange: range,
     strategyRanking,
-    strongestStrategy: { strategy: verified ? topStrategy.strategy : (report.mostViableStrategy || '(pending verified data)'), why: verified ? `${topStrategy.reason} (Risk: ${topStrategy.risk})` : 'Blocked until identity is verified.' },
+    strongestStrategy: { strategy: (verified || range.available) ? topStrategy.strategy : (report.mostViableStrategy || '(pending verified data)'), why: (verified || range.available) ? `${topStrategy.reason} (Risk: ${topStrategy.risk})${verified ? '' : ' [local area context — verify parcel before any offer]'}` : 'Blocked until identity is verified.' },
     dealEconomics,
     topRisks: topRisks(report),
     sellerQuestions: [

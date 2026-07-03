@@ -50,22 +50,23 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
   // shell. The open is gated on res.matched (a credible match), not on legal-grade
   // verification: pre-call DD is practical intelligence, not title work.
   async function runPropertyAnalysis() {
-    if (!text.trim()) return;
+    const rawInput = text.trim();
+    if (!rawInput) return;
     setRunning(true);
     setError(null);
     setNeedsClarification(null);
     try {
-      const body: Record<string, unknown> = { text };
+      const body: Record<string, unknown> = { text: rawInput, rawInput };
       if (entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ') body.entity = entity;
       const res = await apiPost<AcquireResponse>('/api/landos/acquire/run', body);
-      if (res.dealCardId && (res.matched === true || res.researchCardCreated === true)) {
+      if (res.ok && res.matched === true && res.dealCardId) {
+        if (onOpenDealCard) onOpenDealCard(res.dealCardId);
+      } else if (res.dealCardId && res.researchCardCreated === true) {
         // Opens on a verified/matched deal OR an unresolved research card (which
         // still shows what LandOS found/missed, market pulse, and the next
         // verification action). Show the guidance too when it's a research card.
         if (onOpenDealCard) onOpenDealCard(res.dealCardId);
-        if (res.researchCardCreated && res.matched !== true) {
-          setNeedsClarification(res.message || res.guidance || 'Opened a research Deal Card — providers could not verify the parcel yet.');
-        }
+        setNeedsClarification(res.message || res.guidance || 'Opened a research Deal Card — providers could not verify the parcel yet.');
       } else {
         setNeedsClarification(res.guidance || res.message || 'No practical match could be established. Provide APN + county, owner + city/state, or a corrected address.');
       }
@@ -103,7 +104,7 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
             {running ? 'Running Property Analysis…' : 'Run Property Analysis'}
           </button>
           <span class="text-[10px] text-[var(--color-text-faint)]">
-            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. A Deal Card opens on a credible match; unknown fields ride along as Confirm Before Offer. No practical match returns the smallest next identifier.
+            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. Raw input always submits exactly as typed. Address matching and parcel identity are handled downstream by Property Resolution. A Deal Card opens on a credible match; unknown fields ride along as Confirm Before Offer. No practical match returns the smallest next identifier.
           </span>
         </div>
       </div>

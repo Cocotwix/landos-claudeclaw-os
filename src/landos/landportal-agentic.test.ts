@@ -64,6 +64,9 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
     expect(conflict).toBeTruthy();
     expect(conflict!.status).toBe('needs_verification');
     expect(conflict!.value).toMatch(/021 033 002.*does not match.*021 033C/);
+    expect(ev.inspection?.parcelUrl).toBe('https://landportal.com/?property=abc');
+    expect(ev.inspection?.parcelFacts['Parcel ID']).toBe('021 033C');
+    expect((ev.inspection?.assets ?? []).some((a) => a.kind === 'parcel_page')).toBe(true);
     // facts streamed incrementally to the Deal Card
     expect(streamed.length).toBe(ev.facts.length);
     expect(streamed.some((f) => f.key === 'owner')).toBe(true);
@@ -71,7 +74,7 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
 
   it('refuses to extract when NO candidate is a confident, address-consistent match (no false facts)', async () => {
     const lp = makeLandPortalBrowser({ driver: landPortalFake({
-      panelAddress: 'GILSTRAP RD', panelApn: '021 033C',
+      panelAddress: 'NOWHERE LANE', panelApn: '021 033C',
       candidates: ['100, Nowhere Lane Butte CA', '200, Elsewhere St Macon MO'], // none matches 388 Gilstrap
     }) });
     const ev = await lp.runWorkflow(

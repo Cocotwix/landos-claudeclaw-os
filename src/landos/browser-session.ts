@@ -466,6 +466,102 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const read = await readPage(page);
       return { url: read.url, fields: read.fields, snippets: read.snippets };
     },
+    // ONE-PASS LandPortal capture in a FRESH deep-link tab: full parcel fields +
+    // a wide parcel screenshot + all comparable rows (expands "View all") + clicks
+    // the real "Show on Map" anchor (js-lp-estimate-show-on-map) and screenshots
+    // the comps map. Proves the map was reached (mapReached) and never touches a
+    // paid Comp/Slope report control. Read-only; closes the tab it opened.
+    async captureLandPortalVisuals(url: string, opts: { timeoutMs: number }) {
+      const empty = { fields: {} as Record<string, string>, parcelShotPath: null as string | null, compsMapShotPath: null as string | null, compRows: [] as string[], mapReached: false, capturedAtIso: now() };
+      await ensureBrowserSession(deps);
+      if (!state.browser) return empty;
+      const page = await state.browser.newPage();
+      const dir = cfg.screenshotDir;
+      try { (await import('fs')).mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const FIELDS = (): { fields: Record<string, string> } => {
+        const fields: Record<string, string> = {};
+        const add = (k: string, v: string) => { const key = (k || '').replace(/\s+/g, ' ').trim().replace(/[:#]+$/, ''); const val = (v || '').replace(/\s+/g, ' ').trim(); if (key && val && key.length <= 48 && !fields[key]) fields[key] = val; };
+        const hidden = (el: any): boolean => { const s = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null; return !!(s && (s.display === 'none' || s.visibility === 'hidden')); };
+        document.querySelectorAll('dl').forEach((dl: any) => { const dt = dl.querySelectorAll('dt'); const dd = dl.querySelectorAll('dd'); for (let i = 0; i < Math.min(dt.length, dd.length); i++) add(dt[i].textContent || '', dd[i].textContent || ''); });
+        document.querySelectorAll('tr').forEach((tr: any) => { const c = tr.querySelectorAll('th,td'); if (c.length === 2) add(c[0].textContent || '', c[1].textContent || ''); });
+        document.querySelectorAll('p,div,li').forEach((el: any) => { if (hidden(el)) return; const sp = el.querySelectorAll(':scope > span'); if (sp.length === 2) add(sp[0].textContent || '', sp[1].textContent || ''); });
+        return { fields };
+      };
+      const COMP_ROWS = (): string[] => {
+        const out: string[] = []; const seen = new Set<string>();
+        document.querySelectorAll('*').forEach((el: any) => {
+          if (el.children && el.children.length > 2) return;
+          const t = (el.textContent || '').replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
+          if (/^\$[\d,]+\s+Acres?:\s*[\d.]+/i.test(t) && t.length < 90 && !seen.has(t)) { seen.add(t); out.push(t); }
+        });
+        return out.slice(0, 30);
+      };
+      try {
+        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
+        await (page as unknown as { bringToFront?: () => Promise<void> }).bringToFront?.();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
+        await sleep(6500);
+        const parcelFile = path.join(dir, `landportal-parcel-${Date.now()}.png`);
+        await page.screenshot({ path: parcelFile });
+        // Read the full parcel fact sheet on the parcel view (before the map click).
+        const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+        // Expand "View all" so every comp row is in the DOM, then read them.
+        await page.evaluate(() => { const els = Array.from(document.querySelectorAll('button,a,span,div')) as any[]; const va = els.find((e) => /^view all/i.test((e.textContent || '').replace(/\s+/g, ' ').trim()) && (e.children || []).length === 0); if (va) va.click(); });
+        await sleep(1500);
+        const compRows = await page.evaluate<string[]>(COMP_ROWS as unknown as () => string[]);
+        // Click the real comps "Show on Map" anchor (free; never the paid Comp Report).
+        const mapReached = await page.evaluate<boolean>((() => { const a = (document.querySelector('a.js-lp-estimate-show-on-map') as any) || Array.from(document.querySelectorAll('a')).find((x: any) => /^show on map$/i.test((x.textContent || '').trim())); if (a) { a.scrollIntoView(); a.click(); return true; } return false; }) as unknown as () => boolean);
+        await sleep(6000);
+        let compsMapShotPath: string | null = null;
+        if (mapReached) { const compsFile = path.join(dir, `landportal-compsmap-${Date.now()}.png`); await page.screenshot({ path: compsFile }); compsMapShotPath = compsFile; }
+        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, compRows: compRows ?? [], mapReached, capturedAtIso: now() };
+      } catch {
+        return empty;
+      } finally {
+        try { await (page as unknown as { close?: () => Promise<void> }).close?.(); } catch { /* leave tab */ }
+      }
+    },
+    // Full-panel read: opens the parcel's canonical deep link in a FRESH tab (the
+    // reused working tab is throttled/stale and only paints the collapsed MLS
+    // block), waits for the SPA to fully render, then captures label/value pairs
+    // from definition lists, two-cell rows, AND two-span detail rows WITHOUT an
+    // off-screen filter (LandPortal's valuation/zoning/environmental/terrain rows
+    // sit below the fold as two-span rows). Closes the tab it opened; never closes
+    // the operator's browser. Read-only navigation to the SAME verified parcel.
+    async readFullPanel(url: string, opts: { timeoutMs: number }) {
+      await ensureBrowserSession(deps);
+      if (!state.browser) return { url, fields: {}, snippets: [] };
+      const page = await state.browser.newPage();
+      const FULL = (): { fields: Record<string, string>; snippets: string[] } => {
+        const fields: Record<string, string> = {};
+        const add = (k: string, v: string) => {
+          const key = (k || '').replace(/\s+/g, ' ').trim().replace(/[:#]+$/, '');
+          const val = (v || '').replace(/\s+/g, ' ').trim();
+          if (key && val && key.length <= 48 && !fields[key]) fields[key] = val;
+        };
+        const hidden = (el: any): boolean => {
+          if (!el) return true;
+          const st = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
+          return !!(st && (st.display === 'none' || st.visibility === 'hidden'));
+        };
+        document.querySelectorAll('dl').forEach((dl: any) => { const dt = dl.querySelectorAll('dt'); const dd = dl.querySelectorAll('dd'); for (let i = 0; i < Math.min(dt.length, dd.length); i++) add(dt[i].textContent || '', dd[i].textContent || ''); });
+        document.querySelectorAll('tr').forEach((tr: any) => { const c = tr.querySelectorAll('th,td'); if (c.length === 2) add(c[0].textContent || '', c[1].textContent || ''); });
+        document.querySelectorAll('p,div,li').forEach((el: any) => { if (hidden(el)) return; const sp = el.querySelectorAll(':scope > span'); if (sp.length === 2) add(sp[0].textContent || '', sp[1].textContent || ''); });
+        const snippets: string[] = [];
+        document.querySelectorAll('h1,h2,h3').forEach((h: any) => { const t = (h.textContent || '').trim(); if (t) snippets.push(t.slice(0, 120)); });
+        return { fields, snippets: snippets.slice(0, 8) };
+      };
+      try {
+        await page.bringToFront?.();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
+        await new Promise((r) => setTimeout(r, 6500)); // let the SPA fully render the detail panel
+        const out = await page.evaluate<{ fields: Record<string, string>; snippets: string[] }>(FULL as unknown as () => { fields: Record<string, string>; snippets: string[] });
+        return { url: page.url(), fields: out.fields ?? {}, snippets: out.snippets ?? [] };
+      } finally {
+        try { await (page as unknown as { close?: () => Promise<void> }).close?.(); } catch { /* leave the tab if close is unavailable */ }
+      }
+    },
     async readLinks() {
       const page = await getWorkingPage();
       const READ_LINKS = (): Array<{ text: string; href: string }> => {
@@ -647,7 +743,12 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const byText = new Set<string>(); const res: any[] = [];
         out.forEach((o) => { if (byText.has(o.text)) return; byText.add(o.text); res.push(o.el); });
         const el = res[target]; if (!el) return false;
-        if (el.scrollIntoView) el.scrollIntoView(); el.click(); return true;
+        const clickable = (el.matches && el.matches('a,button,[role=button],[onclick]'))
+          ? el
+          : (el.querySelector && el.querySelector('a[href],button,[role=button],[onclick]')) || el;
+        if (clickable.scrollIntoView) clickable.scrollIntoView();
+        clickable.click();
+        return true;
       };
       await page.evaluate<boolean>(CLICK as unknown as () => boolean, index);
       await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 2500))); // panel/popup settle
@@ -725,12 +826,13 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       }
       return confirmed;
     },
-    async screenshot(purpose): Promise<BrowserScreenshot> {
+    async screenshot(purpose, opts): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();
       const dir = cfg.screenshotDir;
       const file = path.join(dir, `${id}-${Date.now()}.png`);
       try { (await import('fs')).mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
-      await page.screenshot({ path: file });
+      // fullPage captures the ENTIRE property view / comps map + sidebar uncropped.
+      await page.screenshot({ path: file, fullPage: (opts as { fullPage?: boolean } | undefined)?.fullPage === true });
       return { path: file, capturedAtIso: now(), purpose };
     },
   };

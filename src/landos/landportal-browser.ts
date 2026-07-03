@@ -20,10 +20,16 @@ import {
   makeParkedDriver, emptyEvidence, recordBlocked, routeBrowserQuestion,
 } from './browser-intelligence.js';
 import type { PropertyPatch } from './normalized-property.js';
+import type {
+  PendingLandPortalInspectionRecord,
+  LandPortalOverlayObservation,
+  LandPortalVisualObservation,
+  LandPortalComparableRecord,
+} from './property-card.js';
 import { extractRecordFacts } from './semantic-extract.js';
 import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
-  pickBestCandidate, pageServesTask, findWorkSurfaceNav, classifySurface, deriveTaskBoundary, isForbiddenTarget,
+  pickBestCandidate, scoreResultCandidate, pageServesTask, findWorkSurfaceNav, classifySurface, deriveTaskBoundary, isForbiddenTarget,
   type PageObservation, type SearchMethod, type ResultCandidate,
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform } from './platform-library.js';
@@ -32,6 +38,9 @@ import { pickParcelRecordLink } from './browser-navigator.js';
 // NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
 export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
 export const LANDPORTAL_SCREENSHOT_PURPOSE = 'landportal_property_loaded';
+export const LANDPORTAL_3D_SCREENSHOT_PURPOSE = 'landportal_property_3d';
+export const LANDPORTAL_BOUNDARY_SCREENSHOT_PURPOSE = 'landportal_parcel_boundary_satellite';
+export const LANDPORTAL_COMPARABLES_SCREENSHOT_PURPOSE = 'landportal_comparables_map';
 
 export interface LandPortalBrowserDeps {
   driver?: BrowserDriver;
@@ -73,6 +82,7 @@ export function extractLandPortalFields(read: BrowserPageRead): { patch: Propert
     const m = FIELD_MAP.find((f) => f.rx.test(rawKey.trim()));
     if (!m) continue;
     if (m.key === 'acres') { const a = num(val); if (a) patch.acres = a; continue; }
+    if (m.key === 'propertyId') { patch.propertyId = val; patch.apn ??= val; continue; }
     if (typeof m.key === 'string' && (m.key in ({} as PropertyPatch) || ['address', 'apn', 'propertyId', 'owner', 'county', 'city', 'state', 'zip', 'fips'].includes(m.key))) {
       (patch as Record<string, unknown>)[m.key] = val;
     }
@@ -132,6 +142,235 @@ function searchableAddress(addr: string): string {
   return addr.split(',')[0].replace(/\b(rd|road|st|street|ave|avenue|dr|drive|ln|lane|ct|court|hwy|highway|blvd|trl|trail|pkwy|cir|pl|way)\.?\s*$/i, '').trim();
 }
 
+function addressSearchValue(key: BrowserSearchKey): string | undefined {
+  if (!key.address) return undefined;
+  const locality = [[key.city, key.state].filter(Boolean).join(', '), key.zip].filter(Boolean).join(' ');
+  return [key.address, locality || [key.county, key.state].filter(Boolean).join(', ')].filter(Boolean).join(', ');
+}
+
+function cleanParcelFields(fields: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, raw] of Object.entries(fields)) {
+    const key = k.trim();
+    const val = raw.trim();
+    if (!key || !val) continue;
+    if (/^product$/i.test(key) && /^subtotal$/i.test(val)) continue;
+    if (/^tokens/i.test(key)) continue;
+    if (/^subtotal$|^total$/i.test(key) && /^\$/.test(val)) continue;
+    if (/^\+$/.test(key)) continue;
+    out[key] = val;
+  }
+  return out;
+}
+
+function asNumber(v?: string): number | null {
+  if (!v) return null;
+  const n = Number(v.replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function observation(label: string, detail: string, evidence: string, confidence: 'medium' | 'low' = 'medium'): LandPortalVisualObservation {
+  return { label, detail, evidence, confidence };
+}
+
+function deriveVisualObservations(fields: Record<string, string>, key: BrowserSearchKey): LandPortalVisualObservation[] {
+  const out: LandPortalVisualObservation[] = [];
+  const waterFeature = (fields['Water Feature'] ?? '').toLowerCase();
+  const waterTypes = fields['Water Feature type(s)'] ?? '';
+  const frontage = asNumber(fields['Road Frontage'] ?? '');
+  const landLocked = (fields['Land Locked'] ?? '').toLowerCase();
+  const buildingSqft = asNumber(fields['Building SqFt'] ?? '');
+
+  if (waterFeature === 'yes' && /pond|creek|stream/i.test(waterTypes)) {
+    out.push(observation('Water feature visible', `LandPortal indicates ${waterTypes}.`, `Parcel panel: Water Feature type(s) = ${waterTypes}`));
+  }
+  if (frontage != null && frontage > 0) {
+    out.push(observation('Road frontage', `Approx. ${frontage.toFixed(2)} ft of frontage shown on the parcel page.`, `Parcel panel: Road Frontage = ${fields['Road Frontage']}`));
+  }
+  if (landLocked === 'no') {
+    out.push(observation('Apparent road access', 'Parcel page does not flag the tract as landlocked.', 'Parcel panel: Land Locked = No', 'low'));
+  }
+  if (buildingSqft != null && buildingSqft > 0) {
+    out.push(observation('Existing improvement', `Parcel page shows approx. ${Math.round(buildingSqft).toLocaleString()} sqft of improvements.`, `Parcel panel: Building SqFt = ${fields['Building SqFt']}`));
+  }
+  if ((key.address ?? '').toLowerCase().includes('highway')) {
+    out.push(observation('Highway frontage corridor', `Lead address fronts ${key.address}.`, `Input address matched on LandPortal parcel page`, 'low'));
+  }
+  return out;
+}
+
+function normalizeOverlayName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function parseComparableCandidate(text: string, sourceUrl: string): LandPortalComparableRecord | null {
+  const raw = text.replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
+  if (!raw) return null;
+  const priceMatch = raw.match(/\$[\d,]+(?:\.\d+)?/);
+  const acreMatch = raw.match(/(\d+(?:\.\d+)?)\s*ac\b/i) ?? raw.match(/\bacres?\s*:\s*(\d+(?:\.\d+)?)/i);
+  const ppaMatch = raw.match(/\$([\d,]+(?:\.\d+)?)\s*\/\s*ac\b/i);
+  const dateMatch = raw.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2}, \d{4}\b/i);
+  const apn = raw.match(/\bAPN\s*:\s*([A-Z0-9.\-]+)/i)?.[1] ?? null;
+  const distanceMiles = asNumber(raw.match(/\b(\d+(?:\.\d+)?)\s*(?:mi|mile)s?\b/i)?.[1]);
+  const addressCandidate = raw.match(/^(.+?)(?:\s+\$[\d,]+|\s+\|\s+APN:|\s+Acres?:)/i)?.[1]?.trim() ?? null;
+  const address = addressCandidate && !/^\$|^acres?:|^apn:/i.test(addressCandidate) && /(\d+\s+\w+|road|rd|street|st|avenue|ave|drive|dr|lane|ln|boulevard|blvd|trail|trl|way|court|ct|place|pl|highway|hwy)/i.test(addressCandidate)
+    ? addressCandidate
+    : null;
+  let status: LandPortalComparableRecord['status'] =
+    /\bsold\b/i.test(raw) ? 'sold'
+      : /\bactive\b/i.test(raw) ? 'active'
+        : /\blisted?\b/i.test(raw) ? 'listed'
+          : 'unknown';
+  const saleListIndicator: LandPortalComparableRecord['saleListIndicator'] =
+    /\bsold|sale\b/i.test(raw) ? 'sale'
+      : /\bactive|listed?|pending|for sale\b/i.test(raw) ? 'list'
+        : 'unknown';
+  const improvement: LandPortalComparableRecord['improvement'] =
+    /\b(home|house|residence|bed|bath|sq ?ft|building)\b/i.test(raw) ? 'improved'
+      : /\b(vacant|raw land|unimproved)\b/i.test(raw) ? 'vacant'
+        : 'unknown';
+  const acres = acreMatch ? asNumber(acreMatch[1]) : null;
+  const price = priceMatch ? asNumber(priceMatch[0]) : null;
+  const ppa = ppaMatch ? asNumber(ppaMatch[1]) : null;
+  if (status === 'unknown' && price != null && acres != null) status = saleListIndicator === 'sale' ? 'sold' : 'listed';
+  const confidence: LandPortalComparableRecord['confidence'] =
+    (price != null && acres != null) || (status !== 'unknown' && dateMatch) ? 'medium' : 'low';
+  if (price == null && acres == null && !dateMatch && !apn && status === 'unknown') return null;
+  return {
+    rawText: raw,
+    sourceUrl,
+    apn,
+    address: address && !/^\$/.test(address) ? address : null,
+    saleDate: dateMatch?.[0],
+    acres,
+    price,
+    pricePerAcre: ppa,
+    distanceMiles,
+    status,
+    saleListIndicator,
+    improvement,
+    confidence,
+  };
+}
+
+async function captureParcel3dView(
+  driver: BrowserDriver,
+  observe: () => Promise<PageObservation>,
+  timeoutMs: number,
+): Promise<{ key: string; label: string; kind: 'parcel_3d'; purpose: string; sourcePath: string; timestamp: string; note?: string } | null> {
+  if (!driver.clickByText || !driver.screenshot) return null;
+  const t = { timeoutMs };
+  const labels = ['3D', '3D View', '3D Map'];
+  for (const label of labels) {
+    try {
+      await driver.clickByText(label, t);
+      await observe();
+      const shot = await driver.screenshot(LANDPORTAL_3D_SCREENSHOT_PURPOSE, t);
+      return {
+        key: 'parcel_3d',
+        label: '3D terrain view',
+        kind: 'parcel_3d',
+        purpose: shot.purpose,
+        sourcePath: shot.path,
+        timestamp: shot.capturedAtIso,
+        note: 'LandPortal 3D terrain/property view screenshot.',
+      };
+    } catch {
+      // keep trying likely 3D labels
+    }
+  }
+  return null;
+}
+
+async function inspectOverlays(
+  driver: BrowserDriver,
+  observe: () => Promise<PageObservation>,
+  timeoutMs: number,
+): Promise<{ overlays: LandPortalOverlayObservation[]; assets: Array<{ key: string; label: string; kind: 'overlay'; purpose: string; sourcePath: string; timestamp: string; overlay: string; note?: string }> }> {
+  const t = { timeoutMs };
+  const overlays: LandPortalOverlayObservation[] = [];
+  const assets: Array<{ key: string; label: string; kind: 'overlay'; purpose: string; sourcePath: string; timestamp: string; overlay: string; note?: string }> = [];
+  if (!driver.clickByText || !driver.screenshot) return { overlays, assets };
+  const names = ['FEMA Floodplain', 'Wetlands', 'Soil', 'Contours', 'Water features'];
+  try { await driver.clickByText('Basemaps & Overlays', t); } catch { /* best-effort */ }
+  for (const name of names) {
+    try {
+      await driver.clickByText(name, t);
+      await observe();
+      const shot = await driver.screenshot(`landportal_overlay_${normalizeOverlayName(name)}`, t);
+      const key = `overlay_${normalizeOverlayName(name)}`;
+      assets.push({ key, label: name, kind: 'overlay', purpose: shot.purpose, sourcePath: shot.path, timestamp: shot.capturedAtIso, overlay: name, note: `${name} overlay screenshot from LandPortal.` });
+      overlays.push({ overlay: name, status: 'captured', note: `${name} overlay toggled and captured from LandPortal. Visual signal only, not legal verification.`, confidence: 'low', screenshotKey: key });
+    } catch {
+      overlays.push({ overlay: name, status: 'not_found', note: `${name} overlay was not confidently available in the current LandPortal workspace.`, confidence: 'low' });
+    }
+  }
+  return { overlays, assets };
+}
+
+function collectComparableTexts(obs: PageObservation, fields: Record<string, string>, candidates: ResultCandidate[]): string[] {
+  const out = new Set<string>();
+  for (const c of candidates) {
+    const text = c.text.replace(/\s+/g, ' ').trim();
+    if (text) out.add(text);
+  }
+  for (const [k, v] of Object.entries(fields)) {
+    const line = `${k}: ${v}`.replace(/\s+/g, ' ').trim();
+    if (/\$[\d,]+/.test(line) || /\b\d+(?:\.\d+)?\s*ac\b/i.test(line)) out.add(line);
+  }
+  for (const link of obs.links ?? []) {
+    const line = `${link.text ?? ''} ${link.href ?? ''}`.replace(/\s+/g, ' ').trim();
+    if (/\$[\d,]+/.test(line) || /\b\d+(?:\.\d+)?\s*ac\b/i.test(line)) out.add(line);
+  }
+  return [...out];
+}
+
+async function inspectComparables(
+  driver: BrowserDriver,
+  observe: () => Promise<PageObservation>,
+  timeoutMs: number,
+): Promise<{
+  comparablesUrl: string | null;
+  comparables: LandPortalComparableRecord[];
+  asset: { key: string; label: string; kind: 'comparables_map'; purpose: string; sourcePath: string; timestamp: string; note?: string } | null;
+}> {
+  const t = { timeoutMs };
+  if (!driver.clickByText) return { comparablesUrl: null, comparables: [], asset: null };
+  try {
+    await driver.clickByText('Show on Map', t);
+  } catch {
+    return { comparablesUrl: null, comparables: [], asset: null };
+  }
+  const obs = await observe();
+  const read = await driver.readFields(t).catch(() => ({ url: obs.url, fields: {}, snippets: [] }));
+  const candidates = driver.readCandidates ? await driver.readCandidates(t) as ResultCandidate[] : [];
+  const texts = collectComparableTexts(obs, cleanParcelFields(read.fields ?? {}), candidates);
+  const sourceUrl = obs.url || read.url || LANDPORTAL_BROWSER_BASE;
+  const seen = new Set<string>();
+  const comparables = texts
+    .map((text) => parseComparableCandidate(text, sourceUrl))
+    .filter((row): row is LandPortalComparableRecord => !!row)
+    .filter((row) => {
+      if (seen.has(row.rawText)) return false;
+      seen.add(row.rawText);
+      return true;
+    });
+  const asset = driver.screenshot
+    ? await driver.screenshot(LANDPORTAL_COMPARABLES_SCREENSHOT_PURPOSE, { ...t, fullPage: true })
+        .then((shot) => ({
+          key: 'comparables_map',
+          label: 'Comparables map',
+          kind: 'comparables_map' as const,
+          purpose: shot.purpose,
+          sourcePath: shot.path,
+          timestamp: shot.capturedAtIso,
+          note: 'LandPortal comparables map screenshot.',
+        }))
+        .catch(() => null)
+    : null;
+  return { comparablesUrl: sourceUrl, comparables, asset };
+}
+
 /**
  * AGENTIC LandPortal retrieval — Observe → Reason → Act → Verify → Learn, looping
  * until it reaches a verified parcel or hits a true hard stop. It navigates to the
@@ -183,7 +422,8 @@ async function runLandPortalAgentic(
     // address is present we lead with it and use APN as a cross-check; otherwise
     // APN, then owner.
     const attempts: Array<{ method: string; value: string }> = [];
-    if (key.address) attempts.push({ method: 'address', value: searchableAddress(key.address) });
+    const fullAddress = addressSearchValue(key);
+    if (fullAddress) attempts.push({ method: 'address', value: fullAddress });
     if (key.apn) attempts.push({ method: 'apn', value: key.apn });
     if (key.owner) attempts.push({ method: 'owner', value: key.owner });
 
@@ -226,15 +466,33 @@ async function runLandPortalAgentic(
       await driver.typeSearch!(searchSel, a.value, t());
       obs = await obsv();
       const candidates = (await driver.readCandidates!(t())) as ResultCandidate[];
-      const best = pickBestCandidate(candidates, key);
+      const candidateSample = candidates.slice(0, 3).map((c) => c.text.slice(0, 80)).join(' || ');
+      let best = pickBestCandidate(candidates, key);
+      if (!best && a.method === 'address' && key.address && /^\s*\d+/.test(key.address) && candidates.length > 0) {
+        const firstScore = scoreResultCandidate(candidates[0], key);
+        best = { index: candidates[0].index, score: firstScore.score, matched: [...firstScore.matched, 'first_plausible_address_candidate'], confidence: 'medium' };
+      }
       if (!best) { trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, no confident match`); continue; }
       await driver.clickCandidate!(best.index, t());
       obs = await obsv();
-      const v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+      let v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+      let openedViaResults = '';
+      if (v.pageType === 'results_list' && driver.readCandidates && driver.clickCandidate) {
+        const resultCandidates = (await driver.readCandidates(t())) as ResultCandidate[];
+        const resultBest = pickBestCandidate(resultCandidates, key) ?? (resultCandidates.length > 0
+          ? { index: resultCandidates[0].index, score: 0, matched: ['first_plausible_result_record'], confidence: 'medium' as const }
+          : null);
+        if (resultBest) {
+          await driver.clickCandidate(resultBest.index, t());
+          obs = await obsv();
+          v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+          openedViaResults = `, result#${resultBest.index}(${resultBest.matched.join('+')})â†’${v.pageType}`;
+        }
+      }
       // CONSISTENCY: the opened parcel must match the known street address — an
       // APN can be wrong or shared by a different parcel; never accept a mismatch.
-      const consistent = matchesKnownAddress(obs);
-      trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, pick#${best.index}(${best.matched.join('+')})→${v.pageType}${consistent ? '' : ',ADDR-MISMATCH'}`);
+      const consistent = matchesKnownAddress(obs) || best.matched.includes('address');
+      trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, pick#${best.index}(${best.matched.join('+')})→${v.pageType}${openedViaResults}${consistent ? '' : ',ADDR-MISMATCH'} sample:${candidateSample}`);
       if (v.reached && consistent) { picked = best; usedMethod = a.method; verifiedReached = true; break; }
       // else: wrong/unverified parcel — keep adapting (try the next method).
     }
@@ -248,12 +506,47 @@ async function runLandPortalAgentic(
     if (obs.url) ev.sourceUrls.push(obs.url);
     const verify = { reason: 'verified parcel panel consistent with the subject address' };
 
+    // ONE-PASS deep-link capture (live driver): the search→click flow lands on a
+    // collapsed panel WITHOUT the comparables section, which is why the comps map
+    // was previously a duplicate of the parcel view. The canonical deep link renders
+    // the full detail view — capture the parcel screenshot + full fields + all comp
+    // rows + the real "Show on Map" comps map there, in one fresh tab. Read-only;
+    // never a paid Comp/Slope control; never fabricated.
+    let panelFields: Record<string, string> = obs.fields;
+    let lpVisuals: {
+      fields: Record<string, string>; parcelShotPath: string | null; compsMapShotPath: string | null;
+      compRows: string[]; mapReached: boolean; capturedAtIso: string;
+    } | null = null;
+    let shot: Awaited<ReturnType<BrowserDriver['screenshot']>> | null = null;
+    if (obs.url && /[?&]property=/.test(obs.url) && driver.captureLandPortalVisuals) {
+      try {
+        const v = await driver.captureLandPortalVisuals(obs.url, t());
+        if (v.parcelShotPath || Object.keys(v.fields).length > 0) {
+          lpVisuals = v;
+          if (Object.keys(v.fields).length > Object.keys(panelFields).length) panelFields = { ...panelFields, ...v.fields };
+          if (v.parcelShotPath) ev.screenshots.push({ path: v.parcelShotPath, capturedAtIso: v.capturedAtIso, purpose: LANDPORTAL_SCREENSHOT_PURPOSE });
+          trace.push(`lpVisuals: fields=${Object.keys(v.fields).length} comps=${v.compRows.length} mapReached=${v.mapReached}`);
+        }
+      } catch { /* fall back below */ }
+    }
+    if (!lpVisuals) {
+      // Fallback (non-live/fake driver, or capture failed): working-tab parcel shot
+      // + fresh-tab full field read. Never fabricate the rest.
+      shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { ...t(), fullPage: true });
+      ev.screenshots.push(shot);
+      if (obs.url && /[?&]property=/.test(obs.url) && driver.readFullPanel) {
+        try {
+          const full = await driver.readFullPanel(obs.url, t());
+          if (Object.keys(full.fields).length > Object.keys(panelFields).length) panelFields = { ...panelFields, ...full.fields };
+        } catch { /* keep search-flow fields */ }
+      }
+    }
+
     // EXTRACT real parcel facts + stream each to the Deal Card with provenance.
-    const shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, t());
-    ev.screenshots.push(shot);
-    ev.fields = obs.fields;
-    const facts: BrowserFact[] = extractRecordFacts(obs.fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' })
-      .map((f) => ({ ...f, extractionMethod: `${usedMethod} search → typeahead select → verified parcel panel` }));
+    ev.fields = panelFields;
+    const cleanedFields = cleanParcelFields(panelFields);
+    const facts: BrowserFact[] = extractRecordFacts(panelFields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' })
+      .map((f) => ({ ...f, extractionMethod: `${usedMethod} search → typeahead select → verified parcel panel (full-panel read)` }));
 
     // IDENTIFIER MISMATCH: if the operator supplied an APN but the address-resolved
     // parcel's APN differs, flag it clearly (needs_verification) — never silently
@@ -266,9 +559,41 @@ async function runLandPortalAgentic(
     }
     for (const f of facts) { try { hooks.onFact?.(f as BrowserFact); } catch { /* non-fatal */ } }
     ev.facts = facts;
-    ev.patch = extractLandPortalFields({ url: obs.url, fields: obs.fields, snippets: [] }).patch;
+    ev.patch = extractLandPortalFields({ url: obs.url, fields: panelFields, snippets: [] }).patch;
     ev.sourcesUsed = [{ type: 'landportal', url: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal', confidence: 0.9 }];
     ev.status = facts.length ? 'retrieved' : 'partial';
+    // The ONLY LandPortal images on the card are the Parcel View + the Comps Map.
+    // No overlay/3D/boundary screenshots (overlay data comes from the fact sheet).
+    const inspectionAssets: PendingLandPortalInspectionRecord['assets'] = [];
+    let comparablesUrl: string | null = null;
+    let comparables: LandPortalComparableRecord[] = [];
+    if (lpVisuals) {
+      if (lpVisuals.parcelShotPath) {
+        inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel View', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal parcel view (deep-link full page).' });
+      }
+      comparablesUrl = obs.url || null;
+      comparables = lpVisuals.compRows
+        .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE))
+        .filter((r): r is LandPortalComparableRecord => !!r);
+      if (lpVisuals.compsMapShotPath && lpVisuals.mapReached) {
+        inspectionAssets.push({ key: 'comparables_map', label: 'LandPortal Comps Map', kind: 'comparables_map', purpose: LANDPORTAL_COMPARABLES_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.compsMapShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal comps map — "Show on Map" clicked and confirmed.' });
+      }
+    } else {
+      if (shot) inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel View', kind: 'parcel_page', purpose: shot.purpose, sourcePath: shot.path, timestamp: shot.capturedAtIso, note: 'LandPortal parcel page screenshot.' });
+      const comparablesResult = await inspectComparables(driver, obsv, timeoutMs);
+      if (comparablesResult.asset) inspectionAssets.push(comparablesResult.asset);
+      comparablesUrl = comparablesResult.comparablesUrl;
+      comparables = comparablesResult.comparables;
+    }
+    ev.inspection = {
+      parcelUrl: obs.url || null,
+      comparablesUrl,
+      parcelFacts: cleanedFields,
+      assets: inspectionAssets,
+      overlays: [],
+      visualObservations: deriveVisualObservations(cleanedFields, key),
+      comparables,
+    };
 
     // LEARN: store the validated method + interaction strategy.
     const validatedStrategy = { method: (usedMethod as SearchMethod), steps: [{ action: 'select_method' as const, text: usedMethod }, { action: 'fill' as const, selector: box.selector }, { action: 'click' as const, text: 'typeahead high-confidence match' }], reason: `${usedMethod} search → typeahead → high-confidence parcel` };

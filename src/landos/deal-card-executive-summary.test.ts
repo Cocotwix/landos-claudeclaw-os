@@ -75,14 +75,22 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(de.whyUnderwritingLater).toMatch(/post-discovery|final underwriting/i);
   });
   it('Deal Economics is honestly unavailable when no comps', () => {
-    const de = buildExecutiveSummary(verifiedReport({ parcelVerified: false })).dealEconomics;
+    // No sold-comp band at all (verified or not) -> no economics, never fabricated.
+    const noComps = { ...verifiedReport().marketComps, soldCount: 0, sold: [], metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null } } as never;
+    const de = buildExecutiveSummary(verifiedReport({ parcelVerified: false, marketComps: noComps })).dealEconomics;
     expect(de.available).toBe(false);
   });
 
-  it('withholds the range honestly when NOT verified (no fabrication)', () => {
+  it('computes a WEAKER local-area range when NOT verified but comps + acreage exist', () => {
+    // Pre-discovery-call mandate: unverified leads still get an area $/acre-based
+    // range, computed from real comps but capped to low confidence and labeled
+    // "local area context, not parcel verified". Never withheld just for being unverified.
     const es = buildExecutiveSummary(verifiedReport({ parcelVerified: false }));
-    expect(es.preliminaryAcquisitionRange.available).toBe(false);
-    expect(es.headline).toMatch(/needs verification/i);
+    const r = es.preliminaryAcquisitionRange;
+    expect(r.available).toBe(true);
+    expect(r.acquisition40).toBe(20000);
+    expect(r.confidence).toBe('low');
+    expect(r.note.toLowerCase()).toMatch(/not verified|local.area/);
   });
   it('withholds the range when verified but no sold comps (estimate only on evidence)', () => {
     const es = buildExecutiveSummary(verifiedReport({ marketComps: { ...verifiedReport().marketComps, soldCount: 0, metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null } } as never }));
