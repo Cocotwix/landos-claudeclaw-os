@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { _initTestLandosDb } from './db.js';
 import { makeFixtureMarketProvider } from './market-browser-provider.js';
 import { ingestMarketSnapshots } from './market-matrix-store.js';
-import { resolveMarketMatrix, currentPeriod } from './market-matrix-read.js';
+import { resolveMarketMatrix, currentPeriod, acreageBandForAcres, buildMarketMatrixReportSection, resolveMarketMatrixSection } from './market-matrix-read.js';
 
 async function ingestFixture() {
   const extraction = await makeFixtureMarketProvider().extract();
@@ -55,5 +55,33 @@ describe('resolveMarketMatrix (Property Card consumption)', () => {
   it('currentPeriod computes a YYYY-Qn key', () => {
     expect(currentPeriod(new Date('2026-05-15T00:00:00Z'))).toBe('2026-Q2');
     expect(currentPeriod(new Date('2026-11-15T00:00:00Z'))).toBe('2026-Q4');
+  });
+
+  it('acreageBandForAcres maps acres → band (default 2-5)', () => {
+    expect(acreageBandForAcres(3)).toBe('2-5');
+    expect(acreageBandForAcres(7)).toBe('5-10');
+    expect(acreageBandForAcres(15)).toBe('10-20');
+    expect(acreageBandForAcres(80)).toBe('50+');
+    expect(acreageBandForAcres(null)).toBe('2-5');
+    expect(acreageBandForAcres(1)).toBe('2-5'); // below 5 → closest supported band
+  });
+
+  it('buildMarketMatrixReportSection formats the operator section from ONE resolver (no dup logic)', () => {
+    const section = resolveMarketMatrixSection({ state: 'GA', county: '13089', acres: 3, nowPeriod: '2026-Q2' });
+    expect(section.available).toBe(true);
+    expect(section.coverageLevel).toBe('county');
+    expect(section.period).toBe('2026-Q2');
+    // required operator fields present, each with a value or explicit Unknown
+    const labels = section.fields.map((f) => f.label);
+    expect(labels).toEqual(['Price per Acre', 'Days on Market', 'Sell-Through Rate', 'Absorption Rate', 'Months of Supply', 'Population', 'Population Density', 'Population Growth']);
+    const ppa = section.fields.find((f) => f.label === 'Price per Acre');
+    expect(ppa?.value).toBe('$121,500');
+    expect(ppa?.unknown).toBe(false);
+  });
+
+  it('unavailable geography yields an honest, non-fabricated section', () => {
+    const section = buildMarketMatrixReportSection(resolveMarketMatrix({ state: 'GA', county: '13333', acreageBand: '2-5' }));
+    expect(section.available).toBe(false);
+    expect(section.fields.every((f) => f.unknown)).toBe(true);
   });
 });

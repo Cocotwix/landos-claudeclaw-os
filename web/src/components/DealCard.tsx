@@ -435,7 +435,25 @@ interface ExecSummaryView {
 }
 // Discovery Call Intelligence Report (Acquisition Specialist v1) — mirrors
 // DiscoveryCallReport in src/landos/discovery-call-report.ts.
+// Master Market Matrix section (single source of truth; Property Card + Discovery
+// Report both render this). Mirrors MarketMatrixReportSection.
+interface MarketMatrixView {
+  available: boolean;
+  coverageLevel: string;
+  coverageLabel: string;
+  acreageBandUsed: string | null;
+  period: string | null;
+  snapshotDate: string | null;
+  staleness: string;
+  isStale: boolean;
+  confidence: string | null;
+  source: string | null;
+  fields: Array<{ label: string; value: string | null; unknown: boolean }>;
+  talkingPoints: string[];
+  note: string;
+}
 interface DiscoveryReportView {
+  marketMatrix?: MarketMatrixView;
   available: boolean;
   parcelVerified: boolean;
   contextLabel: string;
@@ -560,6 +578,40 @@ function verdictTone(v: string): string {
     : v === 'not viable' ? 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]'
     : 'text-[var(--color-accent)] border-[var(--color-accent)]';
 }
+// Master Market Matrix intelligence panel — rendered on the Property Card AND in
+// the Discovery Call Report from the SAME resolved section (one source of truth).
+function MarketMatrixPanel({ mm, compact = false }: { mm?: MarketMatrixView | null; compact?: boolean }) {
+  if (!mm) return null;
+  if (!mm.available) {
+    return (
+      <div class="rounded-md border border-dashed border-[var(--color-border)] p-2.5 text-[11px] text-[var(--color-text-faint)]">
+        Market Matrix: no snapshot for this geography/acreage yet ({mm.coverageLabel}). A Browser Agent ingestion candidate — nothing fabricated.
+      </div>
+    );
+  }
+  return (
+    <div class="rounded-md border border-[var(--color-accent)]/40 bg-[var(--color-card)] p-2.5 space-y-1.5">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">Market Matrix</span>
+        <span class="text-[9px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{mm.coverageLabel}</span>
+        {mm.acreageBandUsed && <span class="text-[9px] text-[var(--color-text-faint)]">{mm.acreageBandUsed}</span>}
+        <span class="ml-auto text-[9px] text-[var(--color-text-faint)]">{mm.period ?? '—'} · confidence {mm.confidence ?? '—'}{mm.isStale ? ' · stale' : ''}</span>
+      </div>
+      <div class={`grid ${compact ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2 sm:grid-cols-4'} gap-x-3 gap-y-0.5`}>
+        {mm.fields.map((f, i) => (
+          <div key={i} class="text-[10px] text-[var(--color-text-muted)]">{f.label}: <span class={f.unknown ? 'text-[var(--color-text-faint)] italic' : 'text-[var(--color-text)]'}>{f.value ?? 'Unknown'}</span></div>
+        ))}
+      </div>
+      {!compact && mm.talkingPoints.length > 0 && (
+        <div class="pt-0.5 space-y-0.5">
+          {mm.talkingPoints.slice(0, 3).map((t, i) => <div key={i} class="text-[10px] text-[var(--color-text-faint)]">• {t}</div>)}
+        </div>
+      )}
+      <div class="text-[9px] text-[var(--color-text-faint)]">Source: {mm.source ?? 'Market Matrix'} · {mm.staleness}</div>
+    </div>
+  );
+}
+
 function DiscoverySection({ n, title, children }: { n: number; title: string; children: any }) {
   return (
     <div class="rounded-md border border-[var(--color-border)] p-3 space-y-1.5">
@@ -829,6 +881,8 @@ function DiscoveryCallReportSection({ dcr, report, es }: { dcr?: DiscoveryReport
 
       {/* 5. Market Pulse */}
       <DiscoverySection n={5} title="Surrounding Market">
+        {/* Master Market Matrix (single source of truth) — ZIP→County→State fallback. */}
+        <MarketMatrixPanel mm={dcr.marketMatrix} />
         {marketIntel ? (
           <>
             <div class="text-[11px] text-[var(--color-text-muted)]">{marketIntel.marketPulse}</div>
@@ -1450,7 +1504,7 @@ function HeaderField({ label, value }: { label: string; value?: string | null })
 
 // Property Header — large, readable identity line: seller, address, APN, county,
 // state, acreage, verification, entity, stage. Pulls from the DD fact checklist.
-function PropertyHeaderSection({ report, entity, stageLabel, seller }: { report: ReportView; entity: string; stageLabel?: string; seller?: string }) {
+function PropertyHeaderSection({ report, entity, stageLabel, seller, marketMatrix }: { report: ReportView; entity: string; stageLabel?: string; seller?: string; marketMatrix?: MarketMatrixView | null }) {
   const fact = (key: string): string | null => (report.ddFactChecklist ?? []).find((r) => r.key === key)?.value ?? null;
   const address = fact('situsAddress') ?? fact('address') ?? null;
   const apn = fact('apn') ?? fact('parcelId') ?? null;
@@ -1474,6 +1528,9 @@ function PropertyHeaderSection({ report, entity, stageLabel, seller }: { report:
         <HeaderField label="Business entity" value={entity} />
         <HeaderField label="Stage" value={stageLabel} />
       </div>
+      {/* Market Matrix intelligence for this property (compact) — same source of
+          truth the Discovery Call Report uses. */}
+      {marketMatrix && <MarketMatrixPanel mm={marketMatrix} compact />}
     </div>
   );
 }
@@ -2915,7 +2972,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
                 {/* 1. PROPERTY LOCATION + PARCEL DETAILS — single home for
                     address / APN / county / state / acreage / verification. */}
-                <PropertyHeaderSection report={report} entity={entity} stageLabel={readiness?.workflowStageLabel} seller={seller?.name ?? undefined} />
+                <PropertyHeaderSection report={report} entity={entity} stageLabel={readiness?.workflowStageLabel} seller={seller?.name ?? undefined} marketMatrix={discoveryReport?.marketMatrix} />
 
                 {/* 2. AT-A-GLANCE LAND FACTS — single home for flood/wetlands/slope/type. */}
                 <AtAGlanceStrip report={report} propertyType={propertyType} />

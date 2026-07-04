@@ -164,6 +164,9 @@ function readAllRows(): { headers: string[]; rows: RawRowDump[] } {
 export interface LiveMarketBackendOptions {
   /** Max counties to ZIP-expand (bounds runtime; all county rows are still read). */
   maxCountiesForZip?: number;
+  /** Resume intelligently: county FIPS whose ZIPs are already collected — skip
+   *  re-expanding them (they are still re-read as county rows, idempotently). */
+  skipCountyFips?: string[];
   /** Poll budget for the grid to finish loading. */
   gridLoadPolls?: number;
   onProgress?: (m: string) => void;
@@ -265,6 +268,7 @@ export function buildRawTableFromDump(
 
 export function makeLiveMarketResearchBackend(opts: LiveMarketBackendOptions = {}): MarketResearchBackend {
   const maxZip = opts.maxCountiesForZip ?? 10;
+  const skip = new Set(opts.skipCountyFips ?? []);
   const log = (m: string) => opts.onProgress?.(m);
 
   return {
@@ -348,7 +352,10 @@ export function makeLiveMarketResearchBackend(opts: LiveMarketBackendOptions = {
             const rows = Array.from((document as any).querySelectorAll(`tr.county-row[data-state="${st}"]`)) as any[];
             return rows.map((r) => r.getAttribute('data-fips') || '').filter(Boolean);
           }), stateAbbr);
-          const toExpand = countyFips.slice(0, maxZip);
+          // Resume intelligently: skip counties already ZIP-collected.
+          const remaining = countyFips.filter((f) => !skip.has(f));
+          if (skip.size) log(`resume: ${skip.size} counties already have ZIPs; expanding ${Math.min(remaining.length, maxZip)} of ${remaining.length} remaining`);
+          const toExpand = remaining.slice(0, maxZip);
           let expanded = 0;
           for (const fips of toExpand) {
             const r = await page.evaluate<string>(withArgs(expandIfCollapsed), `${LP.rows.county}[data-fips="${fips}"]`);

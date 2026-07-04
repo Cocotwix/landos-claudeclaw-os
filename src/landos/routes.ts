@@ -129,7 +129,7 @@ import {
   getHeatmapData, getCountyDrilldown, listReviewQueue, listCountyRef, listFlaggedSnapshots,
 } from './market-matrix-store.js';
 import { makeFixtureMarketProvider, makeLiveBrowserMarketProvider, delegateMarketResearchToBrowserAgent, pickMarketResearchBackend } from './market-browser-provider.js';
-import { resolveMarketMatrix } from './market-matrix-read.js';
+import { resolveMarketMatrix, resolveMarketMatrixSection } from './market-matrix-read.js';
 import { playbookInfo, listBrowserAgentRuns } from './browser-agent.js';
 import {
   landportalMarketResearchPlaybook, DRILL_DEEP_ACREAGE_LABEL, isSupportedBand,
@@ -1427,6 +1427,17 @@ export function registerLandosRoutes(app: Hono): void {
     };
   };
 
+  // Resolve the deal's geography against the master Market Matrix (single source
+  // of truth). The Property Card AND the Discovery Call Report both render this.
+  const marketMatrixFor = (deal: unknown) => {
+    const d = deal as { title?: string; propertyCards?: Array<Record<string, unknown>> };
+    const pc = d.propertyCards?.[0] ?? {};
+    const sv = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    const zip = sv(pc.zip) ?? (sv(pc.active_input_address) ?? sv(d.title))?.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1];
+    const acres = typeof pc.acres === 'number' && pc.acres > 0 ? pc.acres : null;
+    return resolveMarketMatrixSection({ state: sv(pc.state), county: sv(pc.fips) ?? sv(pc.county), zip, acres, side: 'sold' });
+  };
+
   app.get('/api/landos/deal-cards/:id/report', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -1449,7 +1460,9 @@ export function registerLandosRoutes(app: Hono): void {
     const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
     const executiveSummary = buildExecutiveSummary(report, growthSummary);
     const discoveryReport = buildDiscoveryCallReport(report, executiveSummary, buildDiscoveryIntake(deal));
-    return c.json({ report, executiveSummary, discoveryReport, growthSummary, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
+    const marketMatrix = marketMatrixFor(deal);
+    discoveryReport.marketMatrix = marketMatrix;
+    return c.json({ report, executiveSummary, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
   });
 
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
@@ -1488,7 +1501,9 @@ export function registerLandosRoutes(app: Hono): void {
     const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
     const executiveSummary = buildExecutiveSummary(result.report, growthSummary);
     const discoveryReport = deal ? buildDiscoveryCallReport(result.report, executiveSummary, buildDiscoveryIntake(deal)) : undefined;
-    return c.json({ ...result, executiveSummary, discoveryReport, growthSummary, readiness, briefing, preCallIntelligence, propertyType, govDd: result.report.govDd, browserMarketIntel });
+    const marketMatrix = deal ? marketMatrixFor(deal) : undefined;
+    if (discoveryReport && marketMatrix) discoveryReport.marketMatrix = marketMatrix;
+    return c.json({ ...result, executiveSummary, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, govDd: result.report.govDd, browserMarketIntel });
   });
 
   // ── Post-discovery DD layer ─────────────────────────────────────────────

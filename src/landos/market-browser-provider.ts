@@ -155,10 +155,16 @@ export type MarketResearchBackendMode = 'operational' | 'live';
  * never fabricates rows. When a live visual driver exists it implements
  * MarketResearchBackend and replaces the parked one here.
  */
-export function pickMarketResearchBackend(mode: MarketResearchBackendMode): MarketResearchBackend {
+export interface LiveExtractionOptions {
+  maxCountiesForZip?: number;
+  skipCountyFips?: string[];
+  onProgress?: (m: string) => void;
+}
+
+export function pickMarketResearchBackend(mode: MarketResearchBackendMode, live: LiveExtractionOptions = {}): MarketResearchBackend {
   return mode === 'operational'
     ? makeReplayMarketResearchBackend(drillDeepTableForState)
-    : makeLiveMarketResearchBackend();
+    : makeLiveMarketResearchBackend(live);
 }
 
 export interface MarketResearchDelegation {
@@ -176,14 +182,14 @@ export interface MarketResearchDelegation {
  */
 export async function delegateMarketResearchToBrowserAgent(
   request: MarketResearchRequest,
-  opts: { mode?: MarketResearchBackendMode; ingest?: boolean } = {},
+  opts: { mode?: MarketResearchBackendMode; ingest?: boolean; live?: LiveExtractionOptions } = {},
 ): Promise<MarketResearchDelegation> {
   const mode = opts.mode ?? 'operational';
   // Warm the persistent Chrome session first for a live run so the backend's
   // configured() reflects a real connection (else the agent honestly reports
   // not_configured without touching a browser).
   if (mode === 'live') { try { await ensureBrowserSession(); } catch { /* backend reports honestly */ } }
-  const backend = pickMarketResearchBackend(mode);
+  const backend = pickMarketResearchBackend(mode, opts.live ?? {});
   let captured: IngestResult | null = null;
   const sink = opts.ingest === false
     ? undefined

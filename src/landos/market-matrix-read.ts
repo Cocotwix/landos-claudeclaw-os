@@ -14,7 +14,7 @@ import { listCountyRef } from './market-matrix-store.js';
 import {
   emptyMetrics, comparePeriods, parsePeriod, isCountyFips, STATE_FIPS,
   ACREAGE_BAND_LABEL, MARKET_METRIC_LABEL,
-  type MarketMetrics, type MarketSide, type AcreageBand, type Confidence,
+  type MarketMetrics, type MarketMetric, type MarketSide, type AcreageBand, type Confidence,
 } from './market-matrix.js';
 
 export type MatchLevel = 'zip' | 'county' | 'county_all_acreage' | 'state' | 'unavailable';
@@ -228,6 +228,107 @@ export function resolveMarketMatrix(input: {
       ? `No Market Matrix snapshot for ${countyName || state || 'this area'} (${ACREAGE_BAND_LABEL[band]}, ${side}). This county is a Browser Agent ingestion candidate; nothing is fabricated.`
       : 'No resolvable geography (need state + county or ZIP) to consume the Market Matrix.',
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Operator-facing report section — one source of truth for the Property Card
+// AND the Discovery Call Report. Both render this; no duplicate calculation.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Map a property's acreage to the Market Matrix band whose data should apply.
+ *  Below 5 ac → 2–5 (the closest supported band); otherwise the natural band.
+ *  null → 2–5 (the default operating band). The resolver's fallback chain then
+ *  fills in from County/State when a band is missing — never fabricates. */
+export function acreageBandForAcres(acres: number | null | undefined): AcreageBand {
+  if (typeof acres !== 'number' || !Number.isFinite(acres) || acres <= 0) return '2-5';
+  if (acres < 5) return '2-5';
+  if (acres < 10) return '5-10';
+  if (acres < 20) return '10-20';
+  if (acres < 50) return '20-50';
+  return '50+';
+}
+
+export interface MarketMatrixReportField { label: string; value: string | null; unknown: boolean }
+export interface MarketMatrixReportSection {
+  available: boolean;
+  coverageLevel: MatchLevel;
+  coverageLabel: string;
+  acreageBandRequested: string;
+  acreageBandUsed: string | null;
+  side: MarketSide;
+  period: string | null;
+  snapshotDate: string | null;
+  staleness: string;
+  isStale: boolean;
+  confidence: Confidence | null;
+  source: string | null;
+  provider: string | null;
+  fields: MarketMatrixReportField[];
+  talkingPoints: string[];
+  note: string;
+}
+
+function fmtMetricValue(m: MarketMetric, v: number | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  if (m === 'medianPrice' || m === 'medianPricePerAcre') return `$${Math.round(v).toLocaleString()}`;
+  if (m === 'sellThroughRate' || m === 'absorptionRate' || m === 'populationGrowth') return `${v}%`;
+  if (m === 'daysOnMarket') return `${Math.round(v)} days`;
+  if (m === 'monthsOfSupply') return `${v} mo`;
+  return Math.round(v).toLocaleString();
+}
+
+/**
+ * Build the operator-facing Market Intelligence section from a resolved Market
+ * Matrix packet. Every metric is shown with its real value OR "Unknown" (never
+ * guessed, never zero). This is consumed IDENTICALLY by the Property Card and the
+ * Discovery Call Report so there is one source of truth and no duplicate logic.
+ */
+export function buildMarketMatrixReportSection(res: MarketMatrixResolution): MarketMatrixReportSection {
+  const M = res.metrics;
+  const f = (m: MarketMetric, label: string): MarketMatrixReportField => {
+    const value = fmtMetricValue(m, M ? M[m] : null);
+    return { label, value, unknown: value === null };
+  };
+  const fields: MarketMatrixReportField[] = [
+    f('medianPricePerAcre', 'Price per Acre'),
+    f('daysOnMarket', 'Days on Market'),
+    f('sellThroughRate', 'Sell-Through Rate'),
+    f('absorptionRate', 'Absorption Rate'),
+    f('monthsOfSupply', 'Months of Supply'),
+    f('population', 'Population'),
+    f('populationDensity', 'Population Density'),
+    f('populationGrowth', 'Population Growth'),
+  ];
+  return {
+    available: res.available,
+    coverageLevel: res.matchLevel,
+    coverageLabel: MATCH_LEVEL_LABEL[res.matchLevel],
+    acreageBandRequested: ACREAGE_BAND_LABEL[res.acreageBandRequested],
+    acreageBandUsed: res.acreageBandUsed ? ACREAGE_BAND_LABEL[res.acreageBandUsed] : null,
+    side: res.side,
+    period: res.period,
+    snapshotDate: res.period,
+    staleness: res.staleness.label,
+    isStale: res.staleness.isStale,
+    confidence: res.confidence,
+    source: res.source ?? res.provider,
+    provider: res.provider,
+    fields,
+    talkingPoints: res.talkingPoints,
+    note: res.available
+      ? `Market Matrix ${MATCH_LEVEL_LABEL[res.matchLevel].toLowerCase()} for ${ACREAGE_BAND_LABEL[res.acreageBandUsed ?? res.acreageBandRequested].toLowerCase()}, ${res.side}, ${res.period}. Confidence ${res.confidence}. ${res.staleness.label}.`
+      : res.note,
+  };
+}
+
+/** One-call convenience: resolve a property's geography against the Market Matrix
+ *  and format the operator section. Used by the deal-card report route. */
+export function resolveMarketMatrixSection(input: {
+  state?: string; county?: string; zip?: string; acres?: number | null; side?: MarketSide; nowPeriod?: string;
+}): MarketMatrixReportSection {
+  const band = acreageBandForAcres(input.acres ?? null);
+  const res = resolveMarketMatrix({ state: input.state, county: input.county, zip: input.zip, acreageBand: band, side: input.side ?? 'sold', nowPeriod: input.nowPeriod });
+  return buildMarketMatrixReportSection(res);
 }
 
 export { STATE_FIPS };

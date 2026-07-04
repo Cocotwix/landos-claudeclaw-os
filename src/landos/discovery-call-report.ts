@@ -22,6 +22,7 @@ import type { ExecutiveSummary } from './deal-card-executive-summary.js';
 import { computeOfferLanes, GLOBAL_MIN_NET_PROFIT_USD, type OfferLane } from './offer-engine.js';
 import { buildComparableIntelligence, type ComparableIntelligence } from './comparable-intelligence.js';
 import { buildMarketIntelligence, type MarketIntelligence } from './market-intelligence.js';
+import type { MarketMatrixReportSection } from './market-matrix-read.js';
 
 const money = (n: number | null | undefined): string => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
 
@@ -426,6 +427,10 @@ export interface DiscoveryCallReport {
   landportalInspection?: DealCardReportView['landportalInspection'];
   comparableIntelligence: ComparableIntelligence;
   marketIntelligence: MarketIntelligence;
+  /** Master Market Matrix intelligence for this geography + acreage band (ZIP →
+   *  County → County-All → State → Unavailable). Attached by the report route from
+   *  the single Market Matrix source of truth. Additive; never fabricated. */
+  marketMatrix?: MarketMatrixReportSection;
   strategyEvaluation: StrategyEvaluation[];
   roughOfferRange: RoughOfferRange;
   confidence: 'high' | 'medium' | 'low';
