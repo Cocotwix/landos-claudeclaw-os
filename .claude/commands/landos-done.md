@@ -1,29 +1,18 @@
 ---
-description: "Close out a LandOS build session with memory updates"
+description: "Compatibility alias for /done-landos"
 ---
 
 # landos-done
 
-Use this when the current LandOS work session is ready to close.
+Compatibility alias: prefer `/done-landos`.
 
-## Required output
+Follow `.claude/commands/done-landos.md`.
 
-1. Summarize what changed.
-2. List files changed.
-3. List tests run.
-4. List live verification, if any.
-5. Summarize any blockers or follow-up items.
+Closeout must update `LANDOS_CURRENT_STATE.md`, `.landos/CHAT_CONTEXT.md`,
+`.landos/HANDOVER.md`, `.landos/OPERATOR_QA.md`, `.landos/BUSINESS_QA.md`,
+`.landos/CURRENT_SPRINT.md`, `.landos/PROJECT_MEMORY.md`,
+`.landos/DECISIONS.md`, and `.landos/KNOWN_LIMITATIONS.md` when relevant.
+Do not claim completion until engineering QA, Operator QA, Business QA, and
+memory updates are handled or an approval gate blocks progress.
 
-## Memory updates
-
-- Update `.agents/HANDOVER.md`.
-- Update `.agents/CURRENT_STATE.md` only if the architecture or operating model changed.
-- Update `.agents/PROJECT_MEMORY.md` only for durable lessons, decisions, or gotchas.
-- Update `.agents/DECISIONS.md` only for durable decisions.
-
-## Rules
-
-- Do not commit or push unless Tyler explicitly approves.
-- Do not broaden the scope into a new feature sprint.
-- Do not write secrets, tokens, credentials, or private data.
-
+Do not push or deploy.

@@ -46,10 +46,10 @@ Two browser agents are recognized product requirements; the architecture leaves 
 - Comp failover chain (in `deal-card-report.ts` market lane): Realie sold → Zillow supplemental → browser evidence → provider_error → no_comps; all rows provider-attributed; persisted in `marketComps` (sold/active/supplementalSold/valuation/metrics/providers/providerChain).
 - DD checklist (`dd-checklist.ts`) carries **per-field provenance**; FEMA/NWI/USGS merge with their own source labels.
 
-## Cost / safety governance (working-product mode, 2026-06-27)
+## Cost / safety governance (autonomy mode, 2026-07-04)
 - **Configured operational providers are approved for normal use** to complete business milestones (Apify Redfin, Google Maps/Street View/Static Maps, free gov APIs). Usage is logged; provenance preserved; no duplicate/runaway calls; secrets never leaked.
 - `realie-trial-guard.ts` — local, gitignored trial counter that **logs** Realie usage and enforces a per-sprint allowance; reuse persisted verification first.
-- Hard stops only: machine safety, secret exposure, deletion/destruction, irreversible data loss.
+- Only approval gates: secrets, `.env`, API keys/passwords, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments.
 - Approval/audit spine, rubric, offer engine, departments/agent roster (`db.ts`, `rubric.ts`, `offer-engine.ts`, `departments.ts`, `agent-roster.ts`). Cost + model-call logging tables.
 
 ## Storage separation
@@ -59,3 +59,16 @@ Two browser agents are recognized product requirements; the architecture leaves 
 
 ## Tech reality (current)
 Node 22 + TypeScript; Hono (dashboard API); better-sqlite3; React/Preact + Vite (web); vitest (1200+ tests); `@anthropic-ai/claude-agent-sdk` (Claude auth via local session); Ollama (local Gemma). Playwright is install-gated (imagery); no heavy browser-automation deps installed.
+## Governance Update - Autonomy Mode (2026-07-04)
+
+LandOS, Claude Code, Codex, and future build agents operate autonomously by
+default. Agents continue until the business outcome is complete unless they hit
+one of the only approval gates: secrets, `.env`, API keys/passwords, paid APIs,
+external accounts, money, destructive deletes, `git push`, or deployments.
+
+Configured non-paid operational providers, local dashboard/database checks,
+tests, builds, local server restarts, repo-local edits, Operator QA, Business
+QA, and session-memory updates are autonomous execution work.
+
+Operator QA and Business QA are part of the architecture's completion standard,
+not optional reporting.

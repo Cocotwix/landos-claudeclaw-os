@@ -1,37 +1,42 @@
-Run a quick LandOS status check. Report the following in a compact format:
+# landos-status
 
-**1. Git status**
-Run `git status --short` and report the result. Flag any staged files (there should be none unless Tyler approved staging).
+Run a quick LandOS status check and identify the next exact task.
 
-**2. Current state summary**
-Read `docs/landos/LandOS_Current_State.md` and report:
-- Latest commit
-- Active build issue (one line)
-- Server status
-- Next exact action
+## Checks
 
-**3. Active sprint**
-Read `docs/landos/LandOS_Active_Plans.md` and report:
-- Active sprint name and status
-- What is complete vs. not yet done (based on what exists in the repo)
+1. Git status
+   - Run `git status --short`.
+   - Flag staged files, modified files, and untracked files.
 
-**4. Agent roster**
-List the folders in `landos-agents/` and confirm which have an `agent.yaml` file.
+2. Recent commits
+   - Run `git log --oneline -5`.
 
-**5. Untracked files**
-From git status, list any untracked files that are sprint deliverables not yet staged.
+3. Current state
+   - Read `LANDOS_CURRENT_STATE.md`.
+   - Read `.landos/CHAT_CONTEXT.md`.
+   - Read `.landos/CURRENT_SPRINT.md`.
+   - Read `.landos/KNOWN_LIMITATIONS.md`.
 
-Report format — keep it tight, no padding:
+4. QA memory
+   - Read `.landos/OPERATOR_QA.md`.
+   - Read `.landos/BUSINESS_QA.md`.
 
-```
+5. Reference assets
+   - List `docs/reference-ui/`.
+
+## Report Format
+
+```markdown
 Git: <clean / N modified / N untracked>
 Latest commit: <hash + message>
-Active issue: <one line>
-Server: <status>
+Business objective: <one line>
+Dashboard state: <one line>
+Sprint: <name> - <complete / in progress / blocked>
+Operator QA: <latest>
+Business QA: <latest>
+Conversation context: <one line>
+Current blocker: <one line or None>
 Next action: <one line>
-
-Sprint: <name> — <complete / in progress / blocked>
-Untracked sprint files: <list or "None">
-
-Agents: <count active> active, <count shells> shells
+Reference assets: <summary>
+Known limitations: <blocking count / summary>
 ```

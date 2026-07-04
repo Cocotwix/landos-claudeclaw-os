@@ -35,18 +35,19 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 - **Coordinates ARE allowed for supporting workflows**: opening county GIS/imagery/maps, supporting record searches, and comparable discovery.
 - **Nearest-parcel logic is banned for subject identity** and allowed **only for comparable discovery** (rural parcels often have only an APN/coordinates). Comp candidates never overwrite subject APN/ownership/acreage/identity. Subject verification and comp discovery are kept fully separate.
 
-## Realie / cost governance (settled)
-- Realie adapter matches the **verified official contract**: base `https://app.realie.ai/api`; `GET /public/property/address/` (state+address) and `GET /public/property/parcelId/` (state+county+parcelId); auth header `Authorization: <raw key>` (not Bearer — confirmed by live call #1); response normalized from `property.*`. Location/lat-long/nearest endpoints are not used for subject identity.
-- **Canonical FIPS is the 5-digit `fipsState`+`fipsCounty`**; parts preserved; partial FIPS never faked.
-- **Every live Realie call is manually approved by Tyler immediately beforehand.** A local, gitignored trial guard (`store/realie-trial-counter.json`) enforces an approved budget (15), shows a pre-call confirmation, and records each call (timestamp/endpoint/identifier-type/success/remaining) — never the key or response bodies. Tests/dashboard/workflows never auto-consume Realie calls.
 
-## Execution policy — working-product mode (settled 2026-06-27)
-- LandOS is in **working-product mode**. Configured operational providers may be used to complete approved business milestones; do not block on normal configured API usage. The agent builds without per-step approval.
-- **Configured operational providers approved for normal use:** Apify Redfin (live comps/market), Google Maps / Street View / Static Maps (visual context), free government APIs (FEMA / USFWS-NWI / USGS / Census), and any other configured operational provider required to complete a department. Log usage, avoid duplicate/runaway calls, preserve provenance, protect secrets.
-- **Realie** is the one budgeted provider: a local trial counter logs usage; reuse persisted verification; never waste or loop calls; stop only if a sprint's stated allowance would be exceeded.
-- **The only hard stops** (require Tyler's explicit approval): (1) commands that could harm the local machine or pose a security risk, (2) exposing `.env`/keys/secrets, (3) deleting/overwriting/destroying files or data, (4) any irreversible data loss.
-- **Git hygiene still applies:** stage only intended files (never `git add .`); commit/push scoped changes to complete approved milestones; never commit `.env`, secrets, logs, generated reports, property work product, or the trial counter.
-- This replaces the prior per-call paid-approval regime; the old "approve every comp/paid call" rules are retired.
+## Provider / cost governance (settled)
+- Provider adapters preserve verified contracts and provenance. Location/lat-long/nearest endpoints are not used for subject identity.
+- Canonical FIPS is the 5-digit `fipsState`+`fipsCounty`; parts are preserved and partial FIPS is never faked.
+- Default is autonomy for configured non-paid provider use. Paid APIs, credit-consuming endpoints, money, external accounts, and secrets remain approval gates.
+
+
+## Execution policy - autonomy mode (settled 2026-07-04)
+- LandOS is in autonomy mode. The agent builds without per-step approval.
+- Configured non-paid operational providers may be used to complete business milestones. Log usage, avoid duplicate/runaway calls, preserve provenance, protect secrets.
+- The only approval gates are secrets, `.env`, API keys/passwords, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments.
+- Git hygiene still applies: never commit `.env`, secrets, logs, generated reports, property work product, or local trial counters. Do not `git push` without approval.
+- Operator QA and Business QA are required before claiming implementation completion.
 
 ## Due Diligence department production-ready (settled — audit baseline fb63e94, 2026-06-28)
 - The **DD / Pre-Call Intelligence department is production-ready** for real pre-call use on verified parcels (audit passed: 1391 tests, tsc clean, build clean, no code changes needed).
@@ -57,8 +58,8 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 
 ## Post-discovery DD (settled)
 - **Two workflows:** pre-discovery stays fast (Lead → Deal Card → quick DD → market pulse → visual → Discovery Call Report). Post-discovery DD is a separate, deeper stage entered only after Tyler decides a lead is worth pursuing.
-- **County Records Browser Agent is a post-discovery verification specialist** — NOT part of the automatic pre-discovery workflow. It runs only when manually triggered from a Deal Card; it stays dormant (no execution) until the visual stack is wired + approved. Tasks are bounded (max interactions/time, stop conditions); subject identity requires exact official identifiers (coordinates/nearest/geocoder can never verify).
-- **Free gov DD providers** (FEMA flood, NWI wetlands, USGS slope, Census demographics) are provider-agnostic and **dormant by default** (`LANDOS_LIVE_GOV_DD`); they return Unknown / Needs Verification until activation is approved. They are free, but live activation + first smoke still require approval.
+- **County Records Browser Agent is a post-discovery verification specialist** - NOT part of the automatic pre-discovery workflow. Tasks are bounded (max interactions/time, stop conditions); subject identity requires exact official identifiers (coordinates/nearest/geocoder can never verify). Browser execution is autonomous when read-only and non-paid; external mutation, paid tools, secrets, and account changes remain gated.
+- **Free gov DD providers** (FEMA flood, NWI wetlands, USGS slope, Census demographics) are provider-agnostic. Free/read-only activation and smoke tests are autonomous when credentials are already configured or not required; secrets, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments remain gated.
 - **Seller-stated facts** recorded post-discovery are always labeled **Seller-stated, never Verified**; they affect missing-facts/risk/next-action/stage but never count as verified data.
 - **Underwriting "prep" ≠ final underwriting** — placeholders + gates + readiness state only; no binding offer is computed pre- or post-discovery by the prep layer.
 - **No-migration persistence:** post-discovery seller facts + county records are stored on the subject property card via `landos_card_activity` (no schema change; migrations remain gated).
@@ -66,5 +67,18 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 
 ## Governance (settled — this milestone)
 - Governance lives in `docs/governance/` under version control. Authority hierarchy: **Founder Vision > Operating Charter / Product Principles > Decision Log / Roadmap / Architecture / Build Journal**.
-- Founder-controlled docs (Founder Vision, Operating Charter, Product Principles, Vision pointer) are **not modified without Tyler's approval**. Implementation-maintained docs (this log, Roadmap, Architecture, Build Journal) are kept current after major milestones.
+- Founder-controlled docs preserve Tyler's product doctrine. When Tyler explicitly asks for a governance reset, update the affected docs directly and preserve LandOS as the source of truth.
 - Implementation/tech named in the Vision (Python/FastAPI, Realie, R2, Claude, etc.) are **implementation examples at time of writing**, not permanent requirements. The current implementation is Node/TypeScript; capabilities are stable, providers/tech are replaceable.
+## 2026-07-04 - Autonomy is the default governance standard
+
+- Default is autonomy for LandOS, future ClaudeClaw-based systems, Codex,
+  Claude Code, and future build agents.
+- The only approval gates are secrets, `.env`, API keys/passwords, paid APIs,
+  external accounts, money, destructive deletes, `git push`, and deployments.
+- Everything else is approved for autonomous execution inside the current
+  mission.
+- Agents should continue until the business outcome is complete, including
+  engineering QA, Operator QA, Business QA, and memory updates.
+- Approval-drip, micro-prompts, premature stopping, and "tests passed but the
+  operator cannot use it" are governance failures.
+

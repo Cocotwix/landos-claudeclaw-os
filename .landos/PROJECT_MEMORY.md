@@ -26,4 +26,20 @@ This file stores durable lessons, solved problems, and gotchas.
   Storage policy formalizes this; it does not need new ignore rules.
 - The LandOS structure spine lives in src/landos/landos-structure.ts and
   references existing department-registry IDs via registryRef.
-
+- Cross-session continuity must be repo-native, LandOS-native, and
+  vendor-neutral. Use `LANDOS_CURRENT_STATE.md`, `.landos/HANDOVER.md`,
+  `.landos/OPERATOR_QA.md`, `.landos/BUSINESS_QA.md`,
+  `.landos/PROJECT_MEMORY.md`, `.landos/CHAT_CONTEXT.md`, and
+  `/continue-landos` instead of asking Tyler to restate current status.
+- Operator acceptance is browser-visible, not code-visible. A test pass or
+  persisted DB row is not enough if Tyler cannot see the output in the real
+  dashboard.
+- Reference UI artifacts belong in `docs/reference-ui/` only when they are
+  redacted and do not contain secrets, real APNs, seller details, private
+  addresses, or property work product.
+- Default governance is autonomy. Do not create approval-drip, micro-prompts, or
+  premature stopping. Stop only for secrets, `.env`, API keys/passwords, paid
+  APIs, external accounts, money, destructive deletes, `git push`, or
+  deployments.
+- Every implementation sprint must end with engineering QA, Operator QA,
+  Business QA, and durable memory updates. Tests alone are not done.

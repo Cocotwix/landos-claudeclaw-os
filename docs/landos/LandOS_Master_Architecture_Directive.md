@@ -21,16 +21,27 @@ This is not a planning exercise. Do not produce a phased roadmap or a "build thi
 
 ## HARD RULES (NON-NEGOTIABLE, APPLY TO EVERYTHING BELOW)
 
+**Autonomy**
+- Default is autonomy. Continue until the business outcome is complete unless one of the hard approval gates below is reached.
+- Do not create approval-drip, micro-prompts, or premature stopping.
+- Engineering QA, Operator QA, Business QA, and memory updates are part of completion.
+
 **Secrets**
 - Never read or print .env unless Tyler explicitly approves in the current exchange and there is no safer path.
-- Never print tokens, JWTs, API keys, credentials, Telegram tokens, dashboard tokens, Gemini keys, or LandPortal tokens.
-- Never commit or stage .env. Never use `git add .`. Never stage unrelated files. Never commit or push without Tyler's explicit approval of the exact files.
+- Never print tokens, JWTs, API keys, credentials, Telegram tokens, dashboard tokens, Gemini keys, LandPortal tokens, cookies, or passwords.
+- Never commit or stage .env.
 
-**Paid tools**
+**Paid tools / money**
 - Never call lp_comp_report_create unless Tyler explicitly approves spending one LandPortal comp credit in the same exchange.
 - Never call lp_comp_report_get unless a report already exists and Tyler approved the comp workflow.
-- Never call paid Google Maps/Street View/satellite APIs. Street View and Google Earth are clickable links only.
+- Never call paid APIs, paid Google Maps/Street View/satellite APIs, paid exports, purchases, subscriptions, billing actions, ad spend, contracts, or any money-moving workflow without approval.
 - Never enable Pika, daily.co, Google Meet joining, Gemini Live, or any potentially paid meeting feature without explicit approval.
+
+**Git / deployment**
+- Do not `git push` without Tyler approval.
+- Do not deploy without Tyler approval.
+- Exact-file staging and local commits are allowed only when the task asks for a commit workflow or Tyler approves the commit.
+- Never stage unrelated files.
 
 **Parcel identity (most important property rule)**
 - Never identify a parcel from coordinates, geocoders, map pins, nearest-parcel lookup, road midpoint, town centroid, ZIP centroid, map bounds, or visual proximity.
@@ -77,7 +88,7 @@ Before writing any code, inspect and report concisely:
 - Obsidian vault integration points and configured paths (do not print private paths in output unless Tyler asks).
 - How dashboard panels/sections are added, so LandOS sections integrate natively.
 
-Then state the smallest coherent implementation plan as one bundled scope and proceed. Do not drip approvals: bundle safe reads, builds, local tests, and file creation into scoped sequences. Keep separate explicit approvals ONLY for: destructive commands, deleting files, stopping unknown processes, broad writes outside the workspace, git staging/commits/pushes, paid API or credit usage, secrets/.env access, installing new packages or system software, and connecting external services.
+Then state the smallest coherent implementation plan as one bundled scope and proceed. Do not drip approvals: bundle safe reads, builds, local tests, local server checks, and file creation into scoped sequences. Keep separate explicit approvals ONLY for: secrets, `.env`, API keys/passwords, paid APIs, external accounts, money, destructive deletes/resets/cleans, `git push`, and deployments.
 
 ---
 
@@ -102,7 +113,7 @@ Inputs: APN, address, owner name, or LandPortal property ID (+FIPS). Flow:
 8. Write the markdown Partial Report to Obsidian and generate a PDF to the local output location (neither in the repo).
 9. Recommend whether a Full Report justifies one comp credit; request explicit approval before any paid call.
 - Performance: target under 2 minutes, hard default ceiling 3 minutes; defer non-essential research rather than blowing the budget. Preserve the ~1:52 / 3-tool-call fast-path behavior.
-- Full Report mode exists but is approval-gated end to end. If only aggregate valuation fields return, state that valuation transparency is reduced; never claim individual comp review without individual comp rows.
+- Full Report mode exists but paid/credit-consuming calls are approval-gated. If only aggregate valuation fields return, state that valuation transparency is reduced; never claim individual comp review without individual comp rows.
 
 ### C. Offer engine and strategy matrix
 Config-driven (YAML or DB-backed rules table), strategy-specific, percentage-based:
@@ -141,7 +152,7 @@ Organize as departments with agent personas inside (repo-backed in landos-agents
 Today/daily brief; Leads; Properties; Deals pipeline (entity-filterable everywhere); Offer Queue; Due Diligence Queue; Seller Follow-Up; Approvals (the central gate UI: pending approvals with context, approve/reject, audit-logged); Risks; Model Cost & Routing; Research Queue (market/industry/AI-evolution items with score and route); Security Reviews; Playbooks & Rules (with draft/approved status); Audit Log. Reuse existing dashboard patterns and components; mobile-friendly rendering. Do not build War Room/voice/avatars.
 
 ### H. Approval gates and audit
-- DB-backed approval framework: any gated action (seller messages, CRM changes, paid credits/APIs, offers/prices, file deletion, repo/package installs, config/security changes, data export, new external connections, ad changes, contract edits) creates an approval record and blocks until Tyler approves in dashboard or chat. Every gated action and every agent run writes audit_log entries.
+- DB-backed approval framework: gated actions are secrets, `.env`, API keys/passwords, paid credits/APIs, external account mutation, money, destructive deletes, `git push`, and deployments. Every gated action and every agent run writes audit_log entries.
 
 ### I. Knowledge and training pipeline
 - Implement the staged flow as data + folders: raw training → transcript → cleaned → summary → extracted lessons → candidate playbook → human-reviewed playbook → approved rule → agent instruction update, with a versioned change log. Raw material never auto-becomes behavior; no agent edits its own rules without approval.
@@ -163,6 +174,6 @@ Today/daily brief; Leads; Properties; Deals pipeline (entity-filterable everywhe
 - Approval framework blocks a gated action until approved; audit_log captures it.
 - Model router logs a model_call with cost estimate for at least one non-Claude provider configured in env (do not print keys).
 - Entity filter cleanly separates LAND_ALLY and TY_LAND_BIZ records.
-- No secrets printed anywhere. `git status` shown; nothing staged, committed, or pushed without Tyler's explicit file-by-file approval.
+- No secrets printed anywhere. `git status` shown; no `git push` or deployment without Tyler approval.
 
 The standard: a working LandOS that is fast, accurate, safe, dashboard/mobile friendly, and useful in live acquisition work — for both businesses, starting now.

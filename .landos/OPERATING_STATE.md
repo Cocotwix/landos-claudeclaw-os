@@ -16,6 +16,12 @@ LandOS retrieves data, labels source and confidence, shows gaps, and recommends 
 - Prefer source labels and confidence labels over implied certainty.
 - Keep area-level context available even when parcel verification is incomplete.
 - Treat technical run details as support material, not the main business surface.
+- Default is autonomy. Continue until the business outcome is complete unless a
+  hard approval gate is reached.
+- Every implementation sprint ends with engineering QA, Operator QA, Business
+  QA, and session-memory updates.
+- Passing tests is not enough if Tyler cannot use the dashboard or the
+  department does not create measurable business value.
 
 ## Structure Categories
 
@@ -34,4 +40,3 @@ as department legs:
 No department is the center of gravity. LandOS Command is the only orchestrator.
 The canonical structure layer (src/landos/landos-structure.ts) references the
 existing department-registry.ts IDs rather than redefining departments.
-

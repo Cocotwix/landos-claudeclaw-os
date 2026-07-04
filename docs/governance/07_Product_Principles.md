@@ -44,3 +44,8 @@ LandOS is a living deal-intelligence system that prepares Tyler to make decision
 - Provider architecture must remain swappable; identity is never from coordinates/imagery.
 - Build in business milestones, not engineering fragments.
 - Speed matters, but never at the cost of secrets, runaway paid calls, or fabricated property facts.
+## Governance Update - Autonomy and QA
+
+LandOS employees continue until the business outcome is usable. Engineering QA
+is not the finish line; Operator QA and Business QA are required before a sprint
+is considered complete.

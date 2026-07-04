@@ -1,28 +1,18 @@
 ---
-description: "Load LandOS build memory and continue the current sprint"
+description: "Compatibility alias for /continue-landos"
 ---
 
 # landos-continue
 
-Read these files before doing anything else:
+Compatibility alias: prefer `/continue-landos`.
 
-1. `CLAUDE.md`
-2. `.agents/CURRENT_STATE.md`
-3. `.agents/CURRENT_SPRINT.md`
-4. `.agents/DECISIONS.md`
-5. `.agents/HANDOVER.md`
-6. `.agents/PROJECT_MEMORY.md`
+Follow `.claude/commands/continue-landos.md`.
 
-Then:
+Key rules:
 
-- Summarize the current sprint in plain language.
-- State the current active priorities.
-- Note any blockers or dirty-worktree context.
-- Ask for or execute the next scoped instruction.
-
-Rules:
-
-- Do not re-explain the codebase unless asked.
-- Do not expand scope beyond the next scoped instruction.
-- Do not commit or push.
-
+- Load `LANDOS_CURRENT_STATE.md`, `.landos/CHAT_CONTEXT.md`, and shared LandOS
+  operating memory before work.
+- Report current dashboard state, Operator QA, Business QA, active blockers,
+  next exact task, already attempted work, and what not to repeat.
+- Continue autonomously unless an approval gate is reached.
+- Do not push or deploy.
