@@ -64,7 +64,7 @@ Execute. Don't explain what you're about to do — just do it. When [YOUR NAME] 
 - **Tools available**: Bash, file system, web search, browser automation, and all MCP servers configured in Claude settings
 - **This project** lives at the directory where `CLAUDE.md` is located — use `git rev-parse --show-toplevel` to find it if needed
 - **Obsidian vault**: `[YOUR_OBSIDIAN_VAULT_PATH]` — use Read/Glob/Grep tools to access notes
-- **Gemini API key**: stored in this project's `.env` as `GOOGLE_API_KEY` — use this when video understanding is needed. When [YOUR NAME] sends a video file, use the `gemini-api-dev` skill with this key to analyze it.
+- **Gemini API key**: may be configured in the environment. Do not read or print `.env`; if a task needs a key that is not already available through configured tooling, ask for the minimum safe confirmation.
 
 <!-- Add any other tools, directories, or services relevant to your setup here -->
 
@@ -249,123 +249,112 @@ print('Checkpoint saved.')
 
 These rules apply to all LandOS build work in this repo, including Duke, Ace, Cal, Finn, Rex, Drew, Mia, Lou, and any future agents.
 
-## Operating style
+## Operating Style
 
-You are the build operator, not a command by command assistant.
+You are the build operator, not a command-by-command assistant.
 
-Manage work by outcome.
+Default is autonomy. Manage work by outcome. Continue until the business outcome is complete unless a hard approval gate is reached.
 
-Do not turn simple scoped tasks into dozens of approvals.
+Do not create approval-drip, micro-prompts, premature stopping, or engineering-only completion.
 
 For each build task:
 
 1. State the objective.
 2. State expected files changed.
 3. State risk gates.
-4. Ask once before edits if edits are needed.
-5. Make only approved edits.
-6. Use native read only tools for inspection whenever possible.
-7. Batch safe verification checks.
-8. Show the result clearly.
-9. Ask before risky actions unless already explicitly approved.
+4. Inspect the current implementation.
+5. Make the smallest safe implementation that finishes the business outcome.
+6. Batch safe verification checks.
+7. Run engineering QA.
+8. Run Operator QA.
+9. Run Business QA.
+10. Update session memory.
+11. Show the result clearly.
 
-## Read only work
+## Approval Gates
 
-Tyler does not need to approve harmless read only inspection work.
+The only approval gates are:
 
-For basic file inspection, prefer Claude Code native tools:
-Read for reading known files.
-Grep or Search for finding text.
-Glob for locating files.
+1. secrets
+2. `.env`
+3. API keys
+4. passwords
+5. paid APIs
+6. external accounts
+7. money
+8. destructive deletes, resets, cleans, or irreversible data loss
+9. `git push`
+10. production deployments or deployments
 
-Do not use PowerShell, Bash, or shell commands for simple read only source checks unless actually necessary.
+Everything else is approved for autonomous execution inside the current mission.
 
-Avoid shell commands for:
-Select-String
-Get-Content
-cat
-grep
-findstr
-custom PowerShell filtering
-custom Bash filtering
-script blocks
-large folder scans when a specific file is known
+## Execution Policy
 
-Use shell commands only when they are actually needed, such as:
-git status
-git diff before final verification
-node --check
-npm test
-npm run build
-server start or stop
-commit and push
-
-If Claude Code's permission system still forces approval for a read only command, say:
-Permission system requires approval, but this is read only and scoped.
-
-Then keep the command as narrow as possible.
-
-## Execution policy (working-product mode)
-
-LandOS is a working product. Configured operational providers may be used to complete approved business milestones. Do not block on normal configured API usage.
+Create/edit repo-local files, run tests/builds, use configured non-paid providers, run local dashboard verification, start/restart local dev servers when needed, and update session memory without per-step approval.
 
 When using providers: log usage, avoid runaway loops, avoid duplicate calls, preserve provider provenance, and protect secrets.
 
-The only required protections — always stop and ask before:
-1. running commands that could harm Tyler's local machine or pose a security risk
-2. exposing `.env`, API keys, tokens, or any secret (never print them)
-3. deleting, overwriting, or destroying files / data without Tyler's explicit approval
-4. any irreversible data loss
+Paid or credit-consuming provider calls remain gated. Reuse persisted verification; never waste or loop provider calls.
 
-Otherwise: build. Create/edit files, run the test suite/build, use configured providers (Apify Redfin, Google Maps/Street View/Static Maps, free government APIs, Realie within its allowance), and commit/push scoped changes to complete approved milestones without per-step approval.
+## QA Rules
 
-Realie remains call-budgeted: a local trial counter logs usage. Reuse persisted verification; never waste or loop calls. Stop only if a sprint's stated Realie allowance would be exceeded.
+Every implementation sprint ends with:
 
-## Git rules
+1. Engineering QA.
+2. Operator QA.
+3. Business QA.
+4. Durable session-memory updates.
 
-Never use git add . — stage only the exact files for the milestone. Before commit, confirm the staged list is limited to the intended files. Use clear commit messages. Commit and push scoped changes to complete approved milestones (no per-step approval needed). Never commit logs, `.env`/secrets, the trial counter, generated reports, Obsidian/property work product, temporary files, or unrelated changes.
+Passing tests is not enough. For dashboard work, inspect the real dashboard and ask: Would Tyler actually use this instead of the existing tool?
 
-## Provider usage rules
+For department work, evaluate the department as an employee and ask: Does this employee create measurable business value?
 
-Configured operational providers are approved for normal operational use to complete business milestones: Apify Redfin (live comps/market), Google Maps / Street View / Static Maps (visual context), free government APIs (FEMA/USFWS-NWI/USGS/Census), and any other configured operational provider required. Log usage, avoid duplicate/runaway calls, preserve provenance, and never leak keys. Realie is budgeted (see Execution policy). Do not use paid providers in tests or hidden loops.
+## Git Rules
 
-## Local and repo safety
+Do not `git push` without Tyler approval.
 
-Do not print .env values.
+Do not commit unless the task asks for a commit workflow or Tyler approves the commit. When committing, stage exact files only and verify the staged list. Never commit logs, `.env`/secrets, the trial counter, generated reports, Obsidian/property work product, temporary files, or unrelated changes.
+
+## Provider Usage Rules
+
+Configured non-paid operational providers are approved for normal operational use to complete business milestones. Log usage, avoid duplicate/runaway calls, preserve provenance, and never leak keys. Do not use paid providers, credit-consuming endpoints, money, or external account mutations without approval.
+
+## Local and Repo Safety
+
+Do not print `.env` values.
 Do not print tokens.
 Do not expose secrets.
-Do not write property specific due diligence work product into the GitHub repo.
-Do not create property specific Obsidian reports unless Tyler explicitly asks.
-Do not modify Land Ally systems, documents, workflows, or records unless Tyler explicitly authorizes it.
+Do not write property-specific due diligence work product into the GitHub repo.
+Do not create property-specific Obsidian reports unless Tyler explicitly asks.
+Do not mutate Land Ally systems, documents, workflows, or records unless Tyler explicitly authorizes it.
 
-## Agent build rule
+## Agent Build Rule
 
 These rules apply to every current and future LandOS agent.
 
 Do not require Tyler to repeat these rules when creating or modifying a new agent.
 
-## Superpowers usage policy
+## Superpowers Usage Policy
 
 Superpowers is installed locally for this repo. LandOS rules override Superpowers wherever they conflict.
 
 Superpowers may be used for:
-complex architecture work
-debugging
-TDD
-multi-file workflow blocks
-new agent builds
+- complex architecture work
+- debugging
+- TDD
+- multi-file workflow blocks
+- new agent builds
 
 Superpowers must not be used to create approval spam.
 
 Do not use Superpowers for:
-tiny edits
-simple approvals
-shortcut checks
-git status checks
-fast operational fixes
+- tiny edits
+- simple approvals
+- shortcut checks
+- git status checks
+- fast operational fixes
 
 Hard limits:
-No auto worktrees.
-No deletions or destructive actions without Tyler's approval.
-No secret/.env exposure.
-No auto subagent dispatch unless Tyler explicitly approves.
+- No deletions or destructive actions without Tyler approval.
+- No secret or `.env` exposure.
+- No paid APIs, money, external-account mutation, push, or deployment without Tyler approval.
