@@ -49,6 +49,24 @@ export const DEPARTMENTS: readonly Department[] = [
     ],
   },
   {
+    id: 'market_intelligence',
+    label: 'Market Intelligence',
+    status: 'active',
+    description: 'Owns the Market Matrix — the master market-intelligence database answering "where should Tyler buy land?". Builds county-level market facts (PPA, DOM, sell-through, absorption, population growth) by geography + acreage band + quarter, runs deterministic MarketQueries + rankings, and serves every other department instead of duplicate market analysis. Facts only; the database computes, the AI interprets.',
+    agents: [
+      { agentId: 'market-intelligence', name: 'Mara', role: 'Market intelligence and the Market Matrix', status: 'active' },
+    ],
+  },
+  {
+    id: 'browser_agent',
+    label: 'Browser Agent',
+    status: 'active',
+    description: 'Owns browser automation for LandOS. Executes Browser Playbooks (reusable per-website navigation + extraction recipes) and returns validated-shape structured data to whichever department delegated the work. Playbook #1 is LandPortal Market Research (Market Research → Drill Deep only). It does NOT own any business domain — Market Intelligence owns market data and delegates browser collection here; future departments (county GIS, FEMA, assessor, zoning) will add their own playbooks. Read-only; never stores credentials.',
+    agents: [
+      { agentId: 'browser-agent', name: 'Web', role: 'Browser automation and Browser Playbook execution', status: 'active' },
+    ],
+  },
+  {
     id: 'finance_risk',
     label: 'Finance & Risk',
     status: 'planned',

@@ -118,6 +118,23 @@ import { fetchMarketPulseRead, type PulseComp } from './market-pulse-read.js';
 import { buildPublicRecordsResearchPlan, researchPlanNextActions } from './public-records-research.js';
 import { buildDukeAnalysis } from './duke-analysis.js';
 import { buildAcePrep } from './ace-prep.js';
+import {
+  parseMarketQuery, defaultMarketQuery, ACREAGE_BANDS, MARKET_METRICS, MARKET_SIDES,
+  isAcreageBand, isMarketSide, isMarketMetric,
+  type MarketQuery, type AcreageBand, type MarketSide, type MarketMetric,
+} from './market-matrix.js';
+import {
+  ingestMarketSnapshots, runMarketQueryWithExplanation, getMatrixCoverage,
+  saveMarketQuery, listMarketQueries, getMarketQueryById, deleteMarketQuery,
+  getHeatmapData, getCountyDrilldown, listReviewQueue, listCountyRef, listFlaggedSnapshots,
+} from './market-matrix-store.js';
+import { makeFixtureMarketProvider, makeLiveBrowserMarketProvider, delegateMarketResearchToBrowserAgent, pickMarketResearchBackend } from './market-browser-provider.js';
+import { resolveMarketMatrix } from './market-matrix-read.js';
+import { playbookInfo, listBrowserAgentRuns } from './browser-agent.js';
+import {
+  landportalMarketResearchPlaybook, DRILL_DEEP_ACREAGE_LABEL, isSupportedBand,
+  LANDPORTAL_MARKET_PLAYBOOK_ID, LANDPORTAL_MARKET_ALLOWED_SCOPE,
+} from './browser-playbook-landportal-market.js';
 import { extractAreaSignals } from './source-adapters.js';
 import { planLandosIntake } from './intake-planner.js';
 import { departmentRegistrySummary } from './department-registry.js';
@@ -2683,6 +2700,216 @@ export function registerLandosRoutes(app: Hono): void {
     const { store, backend } = await resolveKnowledgeStore();
     const scorecard = await loadScorecard(store);
     return c.json({ backend, scorecard });
+  });
+
+  // ── Market Intelligence — Market Matrix ─────────────────────────────
+  // The master market-intelligence database. The database COMPUTES rankings;
+  // the AI layer only INTERPRETS. Facts only; unknown is grey, never zero.
+  const parseQueryBody = (raw: unknown): MarketQuery => {
+    const q = defaultMarketQuery();
+    const b = (raw ?? {}) as Partial<MarketQuery>;
+    if (isMarketSide(b.side)) q.side = b.side;
+    if (isAcreageBand(b.acreageBand)) q.acreageBand = b.acreageBand;
+    if (typeof b.period === 'string') q.period = b.period;
+    if (b.scope && typeof b.scope === 'object') {
+      q.scope = {
+        states: Array.isArray(b.scope.states) ? b.scope.states.filter((s): s is string => typeof s === 'string') : undefined,
+        counties: Array.isArray(b.scope.counties) ? b.scope.counties.filter((s): s is string => typeof s === 'string') : undefined,
+        zips: Array.isArray(b.scope.zips) ? b.scope.zips.filter((s): s is string => typeof s === 'string') : undefined,
+      };
+    }
+    if (Array.isArray(b.thresholds)) {
+      q.thresholds = b.thresholds.filter((t) => t && isMarketMetric(t.metric) && ['gte', 'lte', 'gt', 'lt', 'eq'].includes(t.op) && Number.isFinite(t.value));
+    }
+    if (b.sort && isMarketMetric(b.sort.metric) && (b.sort.direction === 'asc' || b.sort.direction === 'desc')) q.sort = b.sort;
+    if (typeof b.limit === 'number' && b.limit > 0) q.limit = Math.floor(b.limit);
+    return q;
+  };
+
+  app.get('/api/landos/market/matrix/overview', (c) => {
+    return c.json({
+      coverage: getMatrixCoverage(),
+      savedQueries: listMarketQueries(),
+      dimensions: { acreageBands: ACREAGE_BANDS, metrics: MARKET_METRICS, sides: MARKET_SIDES },
+    });
+  });
+
+  // Ingest the captured browser-extraction fixture through the SINGLE pipeline.
+  app.post('/api/landos/market/matrix/ingest-fixture', async (c) => {
+    const provider = makeFixtureMarketProvider();
+    const extraction = await provider.extract();
+    const result = ingestMarketSnapshots(extraction.snapshots);
+    landosAudit('market-intelligence', 'market_matrix_ingest_fixture', `accepted ${result.accepted} / rejected ${result.rejected}`, { refTable: 'landos_market_snapshot' });
+    return c.json({ provider: extraction.provider, status: extraction.status, note: extraction.note, result, coverage: getMatrixCoverage() });
+  });
+
+  // Ingest arbitrary payloads (live extraction path + tests use this identical
+  // pipeline). Validation rejects invalid records into the review queue.
+  app.post('/api/landos/market/matrix/ingest', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const payloads = Array.isArray(body.snapshots) ? body.snapshots : Array.isArray(body) ? body : [];
+    const result = ingestMarketSnapshots(payloads);
+    landosAudit('market-intelligence', 'market_matrix_ingest', `accepted ${result.accepted} / rejected ${result.rejected}`, { refTable: 'landos_market_snapshot' });
+    return c.json({ result, coverage: getMatrixCoverage() });
+  });
+
+  // Live Browser Agent extraction → identical ingestion pipeline (honest
+  // not_configured until a visual backend is wired; never fabricates rows).
+  app.post('/api/landos/market/matrix/extract-live', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const provider = makeLiveBrowserMarketProvider();
+    const extraction = await provider.extract({
+      state: str(body.state), acreageBand: str(body.acreageBand), side: str(body.side), period: str(body.period),
+    });
+    const result = extraction.snapshots.length ? ingestMarketSnapshots(extraction.snapshots) : { total: 0, accepted: 0, rejected: 0, items: [] };
+    return c.json({ provider: extraction.provider, status: extraction.status, note: extraction.note, result, coverage: getMatrixCoverage() });
+  });
+
+  // Execute a MarketQuery (structured OR natural-language). The DB computes the
+  // ranking; the explanation reports those exact results (never overrides them).
+  app.post('/api/landos/market/matrix/query', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    let query: MarketQuery;
+    let parse: ReturnType<typeof parseMarketQuery> | undefined;
+    if (typeof body.nl === 'string' && body.nl.trim()) {
+      parse = parseMarketQuery(body.nl);
+      query = parse.query;
+    } else {
+      query = parseQueryBody(body.query ?? body);
+    }
+    const { result, explanation } = runMarketQueryWithExplanation(query);
+    return c.json({ query, parse, result, explanation });
+  });
+
+  app.get('/api/landos/market/matrix/saved', (c) => c.json({ savedQueries: listMarketQueries() }));
+
+  app.post('/api/landos/market/matrix/saved', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const name = str(body.name);
+    if (!name) return c.json({ error: 'name required' }, 400);
+    const query = parseQueryBody(body.query ?? {});
+    const id = saveMarketQuery({ name, description: str(body.description) ?? '', query, entity: entityParam(str(body.entity)) ?? null });
+    return c.json({ id, savedQueries: listMarketQueries() });
+  });
+
+  app.delete('/api/landos/market/matrix/saved/:id', (c) => {
+    const ok = deleteMarketQuery(Number(c.req.param('id')));
+    return c.json({ deleted: ok, savedQueries: listMarketQueries() });
+  });
+
+  app.post('/api/landos/market/matrix/saved/:id/run', (c) => {
+    const saved = getMarketQueryById(Number(c.req.param('id')));
+    if (!saved) return c.json({ error: 'saved query not found' }, 404);
+    const { result, explanation } = runMarketQueryWithExplanation(saved.query);
+    return c.json({ saved, query: saved.query, result, explanation });
+  });
+
+  app.get('/api/landos/market/matrix/heatmap', (c) => {
+    const state = str(c.req.query('state'));
+    if (!state) return c.json({ error: 'state required' }, 400);
+    const metric = str(c.req.query('metric'));
+    const side = str(c.req.query('side'));
+    const band = str(c.req.query('band'));
+    return c.json(getHeatmapData({
+      state,
+      metric: (isMarketMetric(metric) ? metric : 'medianPricePerAcre') as MarketMetric,
+      side: (isMarketSide(side) ? side : 'sold') as MarketSide,
+      acreageBand: (isAcreageBand(band) ? band : '2-5') as AcreageBand,
+      period: str(c.req.query('period')),
+    }));
+  });
+
+  app.get('/api/landos/market/matrix/county/:fips', (c) => {
+    const d = getCountyDrilldown(c.req.param('fips'));
+    return d ? c.json(d) : c.json({ error: 'county not found in Market Matrix' }, 404);
+  });
+
+  app.get('/api/landos/market/matrix/county-ref', (c) => c.json({ counties: listCountyRef(str(c.req.query('state'))) }));
+
+  app.get('/api/landos/market/matrix/review-queue', (c) => c.json({ items: listReviewQueue(str(c.req.query('status')) ?? 'open') }));
+
+  // Flagged snapshots: accepted into the matrix but carrying data-quality flags
+  // (e.g. LandPortal STR > 100%) — surfaced for review, never hidden.
+  app.get('/api/landos/market/matrix/flagged', (c) => c.json({ flagged: listFlaggedSnapshots() }));
+
+  // Property Card consumption: fallback ZIP → County → County(All) → State.
+  app.post('/api/landos/market/matrix/property-resolve', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const band = str(body.acreageBand);
+    const side = str(body.side);
+    return c.json({
+      resolution: resolveMarketMatrix({
+        state: str(body.state), county: str(body.county), zip: str(body.zip),
+        acreageBand: isAcreageBand(band) ? band : undefined,
+        side: isMarketSide(side) ? side : undefined,
+      }),
+    });
+  });
+
+  // ── Browser Agent — its own employee; owns browser automation ───────
+  // The Browser Agent EXECUTES Browser Playbooks and returns validated-shape
+  // data. Market Intelligence delegates market collection here. The agent never
+  // permanently knows any website; LandPortal Market Research is Playbook #1.
+  const browserAgentSummary = () => {
+    const operationalBackend = pickMarketResearchBackend('operational');
+    const info = playbookInfo(landportalMarketResearchPlaybook, operationalBackend);
+    const runs = listBrowserAgentRuns(undefined, 50);
+    return {
+      employee: { id: 'browser_agent', name: 'Web', role: 'Browser automation and Browser Playbook execution' },
+      liveVisualNavigation: 'not_wired' as const,
+      liveVisualNote: 'No authenticated visual browser backend is wired in this environment. The operational backend is the captured Drill Deep replay (identical pipeline); a real live session would implement the same MarketResearchBackend and fail honestly (awaiting_authentication) until authenticated.',
+      playbooks: [{
+        ...info,
+        acreageBands: Object.entries(DRILL_DEEP_ACREAGE_LABEL).map(([band, label]) => ({ band, uiLabel: label, supported: label !== null })),
+        pageState: { status: 'Sold', data: 'Land', time: '1 Year', acreage: '2–5 Acres' },
+      }],
+      totals: { runs: runs.length, lastRunAt: runs[0]?.createdAt ?? null },
+      recentRuns: runs.slice(0, 10),
+    };
+  };
+
+  app.get('/api/landos/browser-agent/status', (c) => c.json(browserAgentSummary()));
+
+  app.get('/api/landos/browser-agent/runs', (c) => {
+    const playbook = str(c.req.query('playbook'));
+    return c.json({ runs: listBrowserAgentRuns(playbook, 50) });
+  });
+
+  // Run the LandPortal Market Research playbook via the Browser Agent. mode:
+  // 'operational' (default) uses the captured Drill Deep replay and flows results
+  // through the IDENTICAL ingestion pipeline; 'live' uses a real visual session
+  // (parked here → honest not_configured/awaiting_authentication, no fabrication).
+  app.post('/api/landos/browser-agent/playbooks/:id/run', async (c) => {
+    const id = c.req.param('id');
+    if (id !== LANDPORTAL_MARKET_PLAYBOOK_ID) return c.json({ error: `unknown playbook "${id}"` }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const state = (str(body.state) ?? 'GA').toUpperCase();
+    const band = str(body.acreageBand);
+    const side = str(body.side);
+    const mode = str(body.mode) === 'live' ? 'live' as const : 'operational' as const;
+    if (band && isAcreageBand(band) && !isSupportedBand(band)) {
+      return c.json({ error: `acreage band "${band}" not supported yet (v1: 2–5 acres)` }, 400);
+    }
+    const delegation = await delegateMarketResearchToBrowserAgent(
+      { state, acreageBand: isAcreageBand(band) ? band : undefined, side: isMarketSide(side) ? side : undefined },
+      { mode },
+    );
+    landosAudit('browser-agent', 'browser_playbook_run', `${id} (${mode}) → ${delegation.run.status}; captured ${delegation.run.rowsCaptured} accepted ${delegation.run.rowsAccepted} flagged ${delegation.run.rowsFlagged} rejected ${delegation.run.rowsRejected}`, { refTable: 'landos_browser_agent_run' });
+    const ing = delegation.ingest;
+    const sample = (cat: string) => (ing?.items ?? []).filter((i) => i.category === cat).slice(0, 3).map((i) => ({ label: i.label, reasons: cat === 'rejected' ? i.errors : i.flags }));
+    return c.json({
+      run: delegation.run,
+      allowedScope: LANDPORTAL_MARKET_ALLOWED_SCOPE,
+      note: delegation.extraction.note,
+      diagnostics: delegation.extraction.diagnostics ?? null,
+      // Data-quality report: counts + WHY records entered each category.
+      dataQuality: ing ? {
+        total: ing.total, accepted: ing.accepted, flagged: ing.flagged, unknown: ing.unknown, rejected: ing.rejected,
+        samples: { flagged: sample('flagged'), rejected: sample('rejected'), unknown: sample('unknown') },
+      } : null,
+      ingest: ing,
+      coverage: getMatrixCoverage(),
+    });
   });
 
   // ── Source Evidence Standard check ──────────────────────────────────

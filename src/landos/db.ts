@@ -1037,6 +1037,13 @@ function createLandosSchema(db: Database.Database): void {
   addColumn('landos_property_card', 'lng', `lng REAL`);
   // Platform Intelligence: learned allowed/restricted/forbidden work surfaces.
   addColumn('landos_platform_intel', 'task_boundary_json', `task_boundary_json TEXT NOT NULL DEFAULT '{}'`);
+  // Market Matrix: per-snapshot data-quality flags (accepted-but-unusual values,
+  // e.g. LandPortal STR > 100%). Migration for existing store DBs.
+  addColumn('landos_market_snapshot', 'flags_json', `flags_json TEXT NOT NULL DEFAULT '[]'`);
+  // Browser Agent run: data-quality breakdown (flagged / unknown) alongside
+  // accepted / rejected. Migration for existing store DBs.
+  addColumn('landos_browser_agent_run', 'rows_flagged', `rows_flagged INTEGER NOT NULL DEFAULT 0`);
+  addColumn('landos_browser_agent_run', 'rows_unknown', `rows_unknown INTEGER NOT NULL DEFAULT 0`);
 
   // Acquisitions department (CRM-independent intelligence layer) — one row per
   // Deal Card holding the seller profile, communication log, discovery notes, and
@@ -1158,6 +1165,111 @@ function createLandosSchema(db: Database.Database): void {
       UNIQUE(platform)
     );
     CREATE INDEX IF NOT EXISTS idx_platform_intel ON landos_platform_intel(platform);
+
+    -- ── Market Matrix (Market Intelligence department) ───────────────────
+    -- The master market-intelligence database: FACTUAL market metrics per
+    -- geography (county FIPS / state / ZIP) + acreage band + market side +
+    -- quarter. Facts only — derived scores are NEVER stored (they compute at
+    -- read time). Every row carries full provenance (provider / source ref /
+    -- extraction timestamp / agent run id) + confidence. Unknown metrics are
+    -- stored as null inside metrics_json, never 0. Lives in store/landos.db
+    -- (gitignored) — no property-specific work product, no secrets.
+    CREATE TABLE IF NOT EXISTS landos_market_snapshot (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_key        TEXT NOT NULL UNIQUE,
+      geo_level           TEXT NOT NULL DEFAULT 'county'
+                          CHECK (geo_level IN ('county','state','zip')),
+      state               TEXT NOT NULL DEFAULT '',
+      fips                TEXT NOT NULL DEFAULT '',
+      county_name         TEXT NOT NULL DEFAULT '',
+      zip                 TEXT NOT NULL DEFAULT '',
+      acreage_band        TEXT NOT NULL DEFAULT 'all',
+      side                TEXT NOT NULL DEFAULT 'sold'
+                          CHECK (side IN ('sold','for_sale')),
+      period              TEXT NOT NULL DEFAULT '',
+      metrics_json        TEXT NOT NULL DEFAULT '{}',
+      confidence          TEXT NOT NULL DEFAULT 'low',
+      provider            TEXT NOT NULL DEFAULT '',
+      source_ref          TEXT NOT NULL DEFAULT '',
+      extraction_ts       TEXT NOT NULL DEFAULT '',
+      agent_run_id        TEXT NOT NULL DEFAULT '',
+      flags_json          TEXT NOT NULL DEFAULT '[]',
+      ingested_at         INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_snapshot_county ON landos_market_snapshot(fips, side, acreage_band, period DESC);
+    CREATE INDEX IF NOT EXISTS idx_market_snapshot_state ON landos_market_snapshot(state, geo_level, side, acreage_band);
+    CREATE INDEX IF NOT EXISTS idx_market_snapshot_zip ON landos_market_snapshot(zip, side, acreage_band, period DESC);
+
+    -- Saved MarketQueries — reusable structured market searches that become
+    -- durable business assets future departments can consume. query_json holds
+    -- the full MarketQuery object; no results are cached (results recompute).
+    CREATE TABLE IF NOT EXISTS landos_market_query (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity        TEXT,
+      name          TEXT NOT NULL DEFAULT '',
+      description   TEXT NOT NULL DEFAULT '',
+      query_json    TEXT NOT NULL DEFAULT '{}',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_query_name ON landos_market_query(name, created_at DESC);
+
+    -- Ingestion review queue — records REJECTED by validation are parked here
+    -- with their exact errors and provenance. Never silently repaired; they
+    -- become future Browser Agent / data-quality work.
+    CREATE TABLE IF NOT EXISTS landos_market_review_queue (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider      TEXT NOT NULL DEFAULT '',
+      raw_json      TEXT NOT NULL DEFAULT '{}',
+      errors_json   TEXT NOT NULL DEFAULT '[]',
+      status        TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open','dismissed','resolved')),
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_review_queue ON landos_market_review_queue(status, created_at DESC);
+
+    -- County reference (FIPS identity). County NAME is display-only; the 5-digit
+    -- FIPS is identity. Seeded from a reference dataset so the heatmap can render
+    -- counties with no data as grey (Unknown, never zero) and exclusion reporting
+    -- knows the full county universe in a state.
+    CREATE TABLE IF NOT EXISTS landos_market_county_ref (
+      fips          TEXT PRIMARY KEY,
+      state         TEXT NOT NULL DEFAULT '',
+      county_name   TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_county_ref_state ON landos_market_county_ref(state, county_name);
+
+    -- Browser Agent run log — the Browser Agent is its OWN employee that owns
+    -- browser automation and EXECUTES Browser Playbooks. This table records every
+    -- playbook run (not the market data itself — that lives in the Market Matrix)
+    -- so the Browser Agent has honest operational status: last run, outcome, the
+    -- playbook used, the navigation scope actually visited, and the row counts a
+    -- consuming department reported back after ingesting the returned payloads.
+    -- The Browser Agent never stores site logic here; playbooks own that.
+    CREATE TABLE IF NOT EXISTS landos_browser_agent_run (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_run_id      TEXT NOT NULL UNIQUE,
+      playbook_id       TEXT NOT NULL DEFAULT '',
+      playbook_label    TEXT NOT NULL DEFAULT '',
+      provider          TEXT NOT NULL DEFAULT '',
+      status            TEXT NOT NULL DEFAULT 'not_configured'
+                        CHECK (status IN ('not_configured','configured','running','succeeded','failed','awaiting_authentication')),
+      request_json      TEXT NOT NULL DEFAULT '{}',
+      scope_visited     TEXT NOT NULL DEFAULT '[]',
+      source_page       TEXT NOT NULL DEFAULT '',
+      rows_captured     INTEGER NOT NULL DEFAULT 0,
+      rows_accepted     INTEGER NOT NULL DEFAULT 0,
+      rows_flagged      INTEGER NOT NULL DEFAULT 0,
+      rows_unknown      INTEGER NOT NULL DEFAULT 0,
+      rows_rejected     INTEGER NOT NULL DEFAULT 0,
+      review_queued     INTEGER NOT NULL DEFAULT 0,
+      duration_ms       INTEGER NOT NULL DEFAULT 0,
+      screenshots_json  TEXT NOT NULL DEFAULT '[]',
+      note              TEXT NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_agent_run ON landos_browser_agent_run(playbook_id, created_at DESC);
   `);
 }
 

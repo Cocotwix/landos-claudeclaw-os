@@ -215,6 +215,25 @@ export async function browserSessionHealth(deps: SessionDeps = {}): Promise<Brow
 
 export function browserSessionStatus(): BrowserSessionStatus { return state.status; }
 
+/**
+ * Lend the single persistent working tab to a read-only routine (e.g. a Browser
+ * Playbook that must drive a multi-step page it can't express through the generic
+ * BrowserDriver primitives). Ensures the session is live first; if it is not, the
+ * routine is NOT run and { ok:false, status } is returned so the caller can report
+ * an honest blocker. The routine must stay read-only (navigate / read / expand /
+ * screenshot) — never a paid, write, or billing action. Never returns cookies.
+ */
+export async function withWorkingPage<T>(
+  fn: (page: PageLike) => Promise<T>,
+  deps: SessionDeps = {},
+): Promise<{ ok: boolean; status: BrowserSessionStatus; value?: T }> {
+  const status = await ensureBrowserSession(deps);
+  if (status !== 'live' && status !== 'auth_needed') return { ok: false, status };
+  const page = await getWorkingPage();
+  const value = await fn(page);
+  return { ok: true, status, value };
+}
+
 /** Disconnect (NOT close) — the operator's browser stays open all day. */
 export async function disconnectBrowserSession(): Promise<void> {
   try { if (state.browser) await state.browser.disconnect(); } catch { /* ignore */ }

@@ -19,6 +19,8 @@ import { WarRoom } from '@/pages/WarRoom';
 import { AgentFiles } from '@/pages/AgentFiles';
 import { LandOS } from '@/pages/LandOS';
 import { PropertyBoard } from '@/pages/PropertyBoard';
+import { MarketIntelligence } from '@/pages/MarketIntelligence';
+import { BrowserAgent } from '@/pages/BrowserAgent';
 import { Forge } from '@/pages/Forge';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
@@ -51,6 +53,8 @@ export function App() {
           <Route path="/mission"><MissionControl /></Route>
           <Route path="/landos"><LandOS /></Route>
           <Route path="/board"><PropertyBoard /></Route>
+          <Route path="/market"><MarketIntelligence /></Route>
+          <Route path="/browser-agent"><BrowserAgent /></Route>
           <Route path="/forge"><Forge /></Route>
           <Route path="/scheduled"><Scheduled /></Route>
           <Route path="/agents"><Agents /></Route>

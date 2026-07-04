@@ -2,7 +2,7 @@ import {
   LayoutGrid, ListTodo, Users, MessageSquare,
   Brain, Network, Activity, ShieldCheck,
   Swords, Landmark, Hammer, KanbanSquare,
-  Settings,
+  Settings, Map, Bot,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -23,6 +23,8 @@ export const ROUTES: RouteDef[] = [
   { path: '/mission',    label: 'Mission Control', section: 'workspace',    icon: LayoutGrid,    shortcut: 'g m' },
   { path: '/landos',     label: 'LandOS',          section: 'workspace',    icon: Landmark,      shortcut: 'g l' },
   { path: '/board',      label: 'Property Board',  section: 'workspace',    icon: KanbanSquare,  shortcut: 'g b' },
+  { path: '/market',     label: 'Market Intelligence', section: 'workspace', icon: Map,          shortcut: 'g i' },
+  { path: '/browser-agent', label: 'Browser Agent', section: 'workspace',   icon: Bot,           shortcut: 'g r' },
   { path: '/forge',      label: 'Forge',           section: 'workspace',    icon: Hammer,        shortcut: 'g f' },
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },

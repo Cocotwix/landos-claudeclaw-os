@@ -15,3 +15,9 @@ process.env.DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://dash.test.exam
 // token test. Tests set tokens via process.env only; runtime never sets this
 // flag, so the production .env fallback is unchanged.
 process.env.LANDOS_DISABLE_DOTENV_FALLBACK = '1';
+// Hard-disable the live browser session in ALL tests: BROWSER_INTEL_LIVE may be
+// enabled in the developer's .env with a real Chrome answering on the CDP port,
+// and the Browser Agent's 'live' market backend calls ensureBrowserSession().
+// Force every test onto the injected-fake / replay paths so the suite can never
+// connect to or drive a real browser. Runtime is unaffected (it reads .env).
+process.env.BROWSER_INTEL_LIVE = '0';
