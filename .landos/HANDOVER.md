@@ -90,6 +90,29 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-05 - Runtime wiring fix: Browser Training usage 404 (stale build)
+
+- Symptom: `/browser-training` loaded then showed `GET /api/landos/training/usage failed: 404`.
+- Diagnosis: not a routing bug. `app.get('/api/landos/training/usage')` is in `routes.ts`
+  and `registerLandosRoutes` is mounted in `dashboard.ts`. The LIVE service was
+  `node dist\index.js` (PID 218872) built from a STALE `dist` (Jul 5 02:13, pre-sprint),
+  so the compiled server had none of the training routes. Confirmed: running server
+  404'd training/usage but 200'd the older browser-agent/status. No prod hot reload.
+- Fix: `npm run build` (vite + tsc) recompiled `dist` (17:03) — `dist/landos/routes.js`
+  now contains `training/usage` + all training modules. Killed the stale :3141 listener
+  and started a fresh detached `node dist/index.js` (PID 45932) with start.bat-style log
+  redirection.
+- Verified LIVE (:3141): `/browser-training` 200; training usage/sessions/playbooks/
+  knowledge all 200; usage returns a real body; WS bridge logged
+  "Browser Training WebSocket active at /ws/landos/training". Exercised the session flow
+  via API: create → nav event (ok) → paid "Buy Report" click STOPPED by guard
+  (Approval Required, session paused) → `/end` synthesized a draft. 404 resolved.
+- Remaining: the live voice/screen loop (getDisplayMedia + mic + Gemini Live WS) needs a
+  real browser to accept — headless can't drive it. QA residue: one test session + a
+  `qa_runtime_wiring_test` DRAFT playbook in the live DB (inert; no delete endpoint).
+- No source changed (source was already correct); only `dist` rebuilt + service restarted.
+  Not committed. Updated OPERATOR_QA / BUSINESS_QA / KNOWN_LIMITATIONS.
+
 ### 2026-07-05 - Per-field selector capture (teach fields by voice)
 
 - Goal: a trained playbook should learn WHICH DOM elements hold the fields we

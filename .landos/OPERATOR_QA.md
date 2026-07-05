@@ -123,6 +123,17 @@ If no, continue improving unless an approval gate blocks progress.
 - Classification: UI wiring + persistence + integration — complete for dry-run + safety; live LandPortal replay pending operator Chrome.
 - Next exact task: capture per-field selectors during training so extraction populates automatically, then run a real live LandPortal Map Search from the operator browser.
 
+### 2026-07-05 - Runtime wiring fix: Browser Training usage 404 (stale server build)
+
+- Symptom: `/browser-training` loaded but immediately showed `GET /api/landos/training/usage failed: 404`.
+- Root cause: NOT a routing bug. The route exists in source (`routes.ts` `app.get('/api/landos/training/usage')`) and `registerLandosRoutes` is mounted (`dashboard.ts:4016`). The RUNNING service was `node dist\index.js` (PID 218872) built from a STALE `dist` dated Jul 5 02:13 — before this sprint's training work — so the compiled server had no training routes. Confirmed: running server returned 404 for training/usage but 200 for the older browser-agent/status. There is no prod hot-reload; `dist` must be rebuilt and the service restarted after route changes.
+- Fix: `npm run build` (vite + tsc) → `dist/landos/routes.js` recompiled (17:03) and now contains `training/usage` + all training modules. Killed the stale listener on :3141 and started a fresh detached `node dist/index.js` (PID 45932) with the same `logs/start-*.log` redirection as start.bat.
+- Verified LIVE on :3141 (post-restart): `/browser-training` SPA 200; training/usage 200 (real body: gemini model, today/week/month/lifetime + playbooksCreated); training/sessions 200; training/playbooks 200; training/knowledge 200. WS bridge registered — log line "Browser Training WebSocket active at /ws/landos/training" (PID 45932) in both start-out.log and main.log.
+- Backend session flow exercised live (API): created a test session (id 1), a normal nav event recorded (approvalRequired=false), a paid "Buy Report" click STOPPED by the guard (approvalRequired=true, "Stopped — Approval Required", session→paused), GET session returned status=paused/approvalRequired=true/3 events, and `/end` synthesized a draft playbook (Gemini reachable on the live key). The 404 is gone.
+- Next failure (expected, not a bug): the actual voice/screen loop (getDisplayMedia + mic + Gemini Live WebSocket) can only be exercised from a real browser with mic + screen share — headless API/CLI can't drive it. That is the remaining manual acceptance.
+- QA residue in the LIVE landos.db: one ended test session + one `qa_runtime_wiring_test` DRAFT playbook (drafts cannot execute; harmless). Usage now shows 1 lifetime session / 1 playbook. Tyler may delete if he wants a clean counter (no delete endpoint yet; would need a direct DB op).
+- Classification: stale build/server (resolved by rebuild + restart). Files changed this step: none (source already correct); only `dist` rebuilt + service restarted.
+
 ## QA Entry Template
 
 ```markdown
