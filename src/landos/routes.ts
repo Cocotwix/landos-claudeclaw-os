@@ -201,6 +201,42 @@ function entityParam(raw: string | undefined): string | undefined {
   return (LANDOS_ENTITIES as readonly string[]).includes(raw) ? raw : undefined;
 }
 
+/** At-a-glance "workspace readiness" summary for each property card so the
+ *  operator can see, on the board, which properties already have real intelligence
+ *  (inspection, visuals, comps, seller questions) without opening each one.
+ *
+ *  Counts reflect the CURRENT persisted state, not activity history: inspection
+ *  visuals + seller questions come from the latest inspection (loadPropertyInspection
+ *  — deduped, LIMIT 1), plus persisted Google captures; comps are the actual
+ *  landos_comp rows. Earlier this summed every inspection re-run and inflated the
+ *  numbers (e.g. 79 "visuals" = ~8 counted 10×); those inflated counts were noise,
+ *  not real signal. No fabrication, no artificial gaps — a card with no data reads 0. */
+export function withPropertyWorkspaceSummary<T extends { id: number }>(cards: T[]): Array<T & {
+  workspace_has_inspection: boolean;
+  workspace_visual_count: number;
+  workspace_comp_count: number;
+  workspace_seller_question_count: number;
+}> {
+  const db = getLandosDb();
+  const compCount = db.prepare('SELECT COUNT(1) AS n FROM landos_comp WHERE card_id = ?');
+  // Presence is an existence check (robust to a malformed latest ref); the visual
+  // and seller-question counts come from the latest PARSEABLE inspection.
+  const hasInspectionRow = db.prepare("SELECT 1 FROM landos_card_activity WHERE card_id = ? AND kind IN ('property_inspection','landportal_inspection') LIMIT 1");
+  return cards.map((card) => {
+    const inspection = loadPropertyInspection(card.id); // latest parseable, deduped (or null)
+    const googleVisuals = Object.keys(loadCardVisualCapture(card.id)).length; // persisted captures
+    const comps = compCount.get(card.id) as { n: number } | undefined;
+    return {
+      ...card,
+      workspace_has_inspection: !!hasInspectionRow.get(card.id),
+      // Inspection screenshots/overlays (current set) + distinct Google captures.
+      workspace_visual_count: (inspection?.assets.length ?? 0) + googleVisuals,
+      workspace_comp_count: comps?.n ?? 0,
+      workspace_seller_question_count: inspection?.discoveryQuestions.length ?? 0,
+    };
+  });
+}
+
 function suppressWeakerDuplicatePropertyCards<T extends { id: number; address_key?: string | null; verification_status?: string | null }>(cards: T[]): T[] {
   const verifiedAddressKeys = new Set(cards
     .filter((card) => card.verification_status === 'verified_property' && (card.address_key ?? '').trim())
@@ -786,11 +822,11 @@ export function registerLandosRoutes(app: Hono): void {
     const entity = entityParam(c.req.query('entity'));
     const ks = c.req.query('kanbanStatus');
     const vs = c.req.query('verificationStatus');
-    const cards = suppressWeakerDuplicatePropertyCards(listPropertyCards({
+    const cards = withPropertyWorkspaceSummary(suppressWeakerDuplicatePropertyCards(listPropertyCards({
       entity,
       kanbanStatus: (KANBAN_STATUSES as readonly string[]).includes(ks ?? '') ? (ks as KanbanStatus) : undefined,
       verificationStatus: (CARD_VERIFICATION_STATUSES as readonly string[]).includes(vs ?? '') ? (vs as CardVerificationStatus) : undefined,
-    }));
+    })));
     return c.json({
       cards,
     });
@@ -799,7 +835,7 @@ export function registerLandosRoutes(app: Hono): void {
   // Kanban board: cards grouped by status column (property-centered).
   app.get('/api/landos/board', (c) => {
     const entity = entityParam(c.req.query('entity'));
-    const cards = suppressWeakerDuplicatePropertyCards(listPropertyCards({ entity, limit: 500 }));
+    const cards = withPropertyWorkspaceSummary(suppressWeakerDuplicatePropertyCards(listPropertyCards({ entity, limit: 500 })));
     const columns: Record<string, unknown[]> = {};
     for (const s of KANBAN_STATUSES) columns[s] = [];
     for (const card of cards) columns[(card as { kanban_status: string }).kanban_status]?.push(card);

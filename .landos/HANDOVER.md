@@ -90,6 +90,24 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-05 - Property Board workspace-readiness summary (finished pre-existing work)
+
+- Picked up the uncommitted `withPropertyWorkspaceSummary` (routes.ts) +
+  PropertyBoard.tsx badge work and turned it into a usable operator capability:
+  each kanban card shows Inspection · N visuals · N comps · N seller Qs.
+- Fixed a real defect: the backend summed counts across every inspection re-run
+  and inflated them (one card read 79 visuals / 48 seller questions). Rewrote it to
+  read CURRENT state via `loadPropertyInspection` (latest, deduped) +
+  `loadCardVisualCapture`; presence is a robust existence check. Field names now
+  `workspace_has_inspection` / `workspace_visual_count` / `workspace_comp_count` /
+  `workspace_seller_question_count`. Exported for testing.
+- QA: typecheck clean; new `property-workspace-summary` 4/4; route/board 101/101;
+  full `src/landos` 1815/1816 (1 PRE-EXISTING `property-card` failure, unrelated).
+  Web + server builds clean; restarted (PID 227796); live `/board` returns honest
+  per-card counts; served bundle renders badges + tooltips. Not committed.
+- Note: the routes.ts change is now the buildability-committed hunk PLUS this
+  workspace hunk; PropertyBoard.tsx is fully this feature. Both still local.
+
 ### 2026-07-04 - USGS slope wired into the Buildability factor
 
 - `reconcileBuildability()` (deal-card-report.ts) scores Buildability from two

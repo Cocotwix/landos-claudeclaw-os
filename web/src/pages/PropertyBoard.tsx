@@ -23,6 +23,12 @@ interface Card {
   summary: string;
   open_risks: string; // JSON array string from the board payload (may be '[]')
   updated_at: number;
+  // Workspace-readiness summary (from the board payload): what intelligence this
+  // property already has, so the operator can prioritise from the board.
+  workspace_has_inspection?: boolean;
+  workspace_visual_count?: number;
+  workspace_comp_count?: number;
+  workspace_seller_question_count?: number;
 }
 
 interface CardDetail extends Card {
@@ -437,6 +443,14 @@ export function PropertyBoard() {
                       <div class="text-[10px] text-[var(--color-text-faint)] truncate">
                         {[card.county, card.state].filter(Boolean).join(', ')}
                       </div>
+                      {(card.workspace_has_inspection || card.workspace_visual_count || card.workspace_comp_count || card.workspace_seller_question_count) ? (
+                        <div class="mt-2 flex flex-wrap gap-1">
+                          {card.workspace_has_inspection ? <span class="text-[9.5px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]" title="This property has an inspection on file">Inspection</span> : null}
+                          {card.workspace_visual_count ? <span class="text-[9.5px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]" title="Captured visuals (satellite / street / overlays)">{card.workspace_visual_count} visual{card.workspace_visual_count === 1 ? '' : 's'}</span> : null}
+                          {card.workspace_comp_count ? <span class="text-[9.5px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]" title="Comparable sales collected">{card.workspace_comp_count} comp{card.workspace_comp_count === 1 ? '' : 's'}</span> : null}
+                          {card.workspace_seller_question_count ? <span class="text-[9.5px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]" title="Seller/discovery questions prepared">{card.workspace_seller_question_count} seller Q{card.workspace_seller_question_count === 1 ? '' : 's'}</span> : null}
+                        </div>
+                      ) : null}
                     </button>
                   ))}
                 </div>

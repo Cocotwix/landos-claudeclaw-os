@@ -69,6 +69,15 @@ If no, continue improving unless an approval gate blocks progress.
 - Engineering QA: typecheck clean; `land-score-provider-data` 8/8 (5 new slope tests), `deal-card-report` 24/24, `land-score` 6/6, report-consumer sweep 35/35. Web + server builds clean.
 - Result: PASS. Classification: resolved.
 
+### 2026-07-05 - Property Board workspace-readiness summary (finished pre-existing work)
+
+- Capability: each kanban card on the Property Board now shows at-a-glance badges — **Inspection · N visuals · N comps · N seller Qs** — so the operator can scan the board and see which properties already have real intelligence without opening each one. Backend `withPropertyWorkspaceSummary` decorates `GET /api/landos/board` (+ `/property-cards`); PropertyBoard.tsx renders the badges (with tooltips).
+- Root defect found + fixed: the pre-existing backend summed asset/question counts across EVERY inspection re-run, inflating them (e.g. one card read **79 visuals / 48 seller questions** = ~4/2 counted ~10×). Rewrote it to read the CURRENT persisted state via `loadPropertyInspection` (latest, deduped) + `loadCardVisualCapture`, and comp count from `landos_comp`. Presence is a robust existence check (survives a malformed latest ref). No fabrication; a card with no data reads 0/false.
+- Live (restarted compiled server, PID 227796) `GET /board`: card #1 inspection·10 visuals·0 comps·0 sellerQ; card #2 ·10·0·6; card #3 ·4·15·2; card #5 ·4·14·2 (card #4 correctly suppressed as a weak duplicate). Honest, no inflation.
+- Dashboard: served bundle `assets/index-CvaSoLTa.js` (HTTP 200) renders the badges + tooltips. Reload verified.
+- Engineering QA: typecheck clean; new `property-workspace-summary` 4/4; route/board sweep 101/101; full `src/landos` 1815/1816 (the 1 failure is the PRE-EXISTING `property-card` weak-duplicate-merge test, unrelated). Web + server builds clean.
+- Result: PASS. Classification: resolved (feature finished + made honest + operator-visible).
+
 ## QA Entry Template
 
 ```markdown
