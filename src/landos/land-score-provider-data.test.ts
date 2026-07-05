@@ -66,3 +66,58 @@ describe('Land Score consumes approved provider (LandPortal) data', () => {
     expect(byId.wetlands.dataGap).toBe(false);  // NWI verified none mapped → 0%
   });
 });
+
+// USGS 3DEP slope (degrees) → Buildability factor, cross-checked with LandPortal.
+function slopeGovDd(slopeDeg: number | null, status = 'verified') {
+  return {
+    flood: { status: 'not_run', zone: null, note: '', source: null, timestamp: null },
+    wetlands: { status: 'not_run', type: null, note: '', source: null, timestamp: null },
+    slope: { status, slopeDeg, note: '', source: null, timestamp: null },
+  };
+}
+
+describe('USGS slope wired into Buildability', () => {
+  it('USGS slope FILLS buildability when LandPortal did not return it (no artificial gap)', () => {
+    const thin = buildParcelFactSheet({ Acres: '10', 'Road Frontage': '200 ft' }); // no Buildability field
+    const inputs = landFactsForScore(undefined, thin, slopeGovDd(5.5)); // 5.5° ≈ 9.6% → workable → 70
+    const score = computeLandScore(inputs);
+    const bf = score.factors.find((f) => f.id === 'slope_buildability')!;
+    expect(bf.dataGap).toBe(false);
+    expect(inputs.buildability?.pct).toBe(70);
+    expect(inputs.buildability?.conflict).toBe(false);
+    expect(inputs.buildability?.basis).toMatch(/USGS/i);
+    expect(bf.points).toBeGreaterThan(0);
+  });
+
+  it('slope thresholds: <5% best, 5–10% workable, 10–15% reduced, ≥15% concern', () => {
+    const fs = (deg: number) => landFactsForScore(undefined, buildParcelFactSheet({ Acres: '5' }), slopeGovDd(deg)).buildability?.pct;
+    expect(fs(1)).toBe(90);    // ~1.7% slope → strong
+    expect(fs(5.5)).toBe(70);  // ~9.6% slope → workable
+    expect(fs(6.5)).toBe(40);  // ~11.4% slope → reduced
+    expect(fs(12)).toBe(15);   // ~21% slope → major concern
+  });
+
+  it('LandPortal + USGS AGREE → no conflict, both named (stronger confidence)', () => {
+    const full = buildParcelFactSheet({ Acres: '1', 'Buildability total (%)': '92' });
+    const inputs = landFactsForScore(undefined, full, slopeGovDd(1)); // ~1.7% → USGS 90, LP 92 → aligned
+    expect(inputs.buildability?.pct).toBe(92);           // scored on LandPortal
+    expect(inputs.buildability?.conflict).toBe(false);
+    expect(inputs.buildability?.basis).toMatch(/LandPortal.*USGS.*aligned/i);
+  });
+
+  it('LandPortal + USGS MATERIALLY DISAGREE → conflict surfaced, scored on LandPortal (never ignored)', () => {
+    const full = buildParcelFactSheet({ Acres: '1', 'Buildability total (%)': '95' });
+    const inputs = landFactsForScore(undefined, full, slopeGovDd(6.5)); // ~11.4% → USGS 40 vs LP 95
+    expect(inputs.buildability?.pct).toBe(95);            // LandPortal not ignored
+    expect(inputs.buildability?.conflict).toBe(true);
+    expect(inputs.buildability?.basis).toMatch(/disagree/i);
+  });
+
+  it('no slope + no LandPortal buildability → honest gap (not fabricated)', () => {
+    const thin = buildParcelFactSheet({ Acres: '5' });
+    const inputs = landFactsForScore(undefined, thin, slopeGovDd(null, 'needs_verification'));
+    expect(inputs.buildability).toBeNull();
+    const bf = computeLandScore(inputs).factors.find((f) => f.id === 'slope_buildability')!;
+    expect(bf.dataGap).toBe(true);
+  });
+});

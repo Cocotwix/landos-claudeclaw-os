@@ -90,6 +90,23 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-04 - USGS slope wired into the Buildability factor
+
+- `reconcileBuildability()` (deal-card-report.ts) scores Buildability from two
+  approved sources: LandPortal buildability % + USGS 3DEP avg slope (degrees →
+  slope-percent via tan). Thresholds: <5% best, 5–10% workable, 10–15% reduced,
+  ≥15% concern. Aligned → cross-checked note; material disagreement (≥25 pts) →
+  scored on LandPortal (never ignored) + loud conflict flag; USGS-only → fills the
+  buildability the provider didn't return (no artificial gap). Source is named on
+  the factor's basis line; conflicts appear in Score flags. Report + `/land-score`
+  route both apply it (route reuses persisted gov-DD, no new fetch).
+- Live (restarted, PID 226380), POST+GET agree: card #1 (no LP buildability)
+  Buildability 0→**8/10** via USGS (total 50→58); card #5 Buildability **10/10** on
+  LP 95%, USGS 10.3% slope disagreement surfaced as a conflict flag (total 77).
+- QA: typecheck clean; `land-score-provider-data` 8/8 (5 new slope tests), report
+  + consumers 35/35, web+server builds clean. Dashboard renders factor basis +
+  flags. See OPERATOR_QA / BUSINESS_QA / KNOWN_LIMITATIONS. Not committed.
+
 ### 2026-07-04 - Product correction: approved provider data is usable (docs + Land Score)
 
 - Governance correction (Tyler-directed): LandOS is a business operating system,

@@ -59,6 +59,16 @@ If no, continue improving unless an approval gate blocks progress.
 - Engineering QA: typecheck clean; new `land-score-provider-data` 3/3, `deal-card-report` 24/24, `land-score` 6/6; full `src/landos` suite 1806/1807 (the 1 failure — `property-card.test.ts` weak-duplicate-merge — is PRE-EXISTING at commit 60c8378, confirmed by stashing my changes; unrelated to this sprint, I do not touch property-card.ts/db.ts). Web + server builds clean.
 - Result: PASS. Classification: resolved.
 
+### 2026-07-04 - USGS slope wired into the Buildability factor
+
+- Change: `reconcileBuildability()` scores the Land Score Buildability factor from TWO approved-provider sources — LandPortal buildability % (direct usable-area measure) and USGS 3DEP average slope (converted from degrees to slope-percent). Thresholds (flatter is better): <5% strong (best), 5–10% workable, 10–15% reduced, ≥15% major concern. Both used: aligned → cross-checked note; materially different (≥25 pt gap) → scored on LandPortal (never ignored) with a loud conflict flag; USGS-only → fills a buildability the provider didn't return (no artificial gap). Report + `/land-score` route both apply it.
+- Live (restarted compiled server, PID 226380), POST and GET agree:
+  - **Card #1 (thin read, no LandPortal buildability): Buildability 0/10 gap → 8/10; total 50 → 58/100.** Basis "USGS avg slope 9.6% → ~70% usable (LandPortal buildability not returned)". Confirms buildability score changes where USGS data exists.
+  - **Card #5 (full read): Buildability stays 10/10 on LandPortal 95.04%; total 77/100.** USGS avg slope 10.3% (~40% usable) materially disagrees → conflict flag surfaced ("scored on LandPortal, verify terrain"). Confirms LandPortal buildability still works and conflicts are shown.
+- Dashboard: served bundle renders the Land Score section, each factor's basis (the Buildability source line), and Score flags (the conflict) — HTTP 200, reload verified.
+- Engineering QA: typecheck clean; `land-score-provider-data` 8/8 (5 new slope tests), `deal-card-report` 24/24, `land-score` 6/6, report-consumer sweep 35/35. Web + server builds clean.
+- Result: PASS. Classification: resolved.
+
 ## QA Entry Template
 
 ```markdown

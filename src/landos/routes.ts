@@ -2571,7 +2571,17 @@ export function registerLandosRoutes(app: Hono): void {
     const subjectCardId = ((verifiedCard?.id ?? (deal.propertyCards?.[0] as { id?: number } | undefined)?.id)) as number | undefined;
     const inspection = subjectCardId ? loadPropertyInspection(subjectCardId) : null;
     const factSheet = inspection ? buildParcelFactSheet(inspection.parcelFacts) : null;
-    const landScore = computeLandScore(landFactsForScore(verification.propertyData, factSheet));
+    // Reuse the persisted live gov-DD (FEMA/NWI/USGS) so Buildability gets the USGS
+    // slope cross-check here too (no new fetch; empty gov-DD when no report yet).
+    const scoreInputs = landFactsForScore(verification.propertyData, factSheet, getDealCardReport(id).govDd);
+    const landScore = computeLandScore(scoreInputs);
+    if (landScore && scoreInputs.buildability) {
+      const bf = landScore.factors.find((f) => f.id === 'slope_buildability');
+      if (bf && !bf.dataGap) {
+        bf.basis = scoreInputs.buildability.basis;
+        if (scoreInputs.buildability.conflict) landScore.flags.push(`Buildability sources disagree — ${scoreInputs.buildability.basis}.`);
+      }
+    }
     return c.json({ landScore, parcelVerified: true, note: '' });
   });
 

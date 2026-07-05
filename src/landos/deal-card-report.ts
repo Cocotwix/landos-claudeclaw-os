@@ -332,6 +332,61 @@ function usdNum(v: string | null | undefined): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+/** Buildability provenance for the Land Score slope factor — which approved
+ *  provider(s) the buildability came from and whether they agree. */
+export interface BuildabilityProvenance {
+  pct: number;
+  /** True when LandPortal buildability and USGS slope materially disagree. */
+  conflict: boolean;
+  /** Operator-facing source line shown under the factor (names the source). */
+  basis: string;
+}
+
+/** Slope PERCENT (flatter is better) → estimated usable/buildable share of the
+ *  parcel. Thresholds per Tyler: <5% strong (best), 5–10% still workable,
+ *  10–15% harder/reduced, >=15% major concern. Under 10% generally buildable. */
+function buildabilityFromSlopePct(slopePct: number): number {
+  if (slopePct < 5) return 90;    // 0–5%: strong buildability (best)
+  if (slopePct < 10) return 70;   // 5–10%: still generally workable
+  if (slopePct < 15) return 40;   // 10–15%: harder, reduced score
+  return 15;                      // >=15%: major buildability concern
+}
+
+/**
+ * Reconcile buildability from two APPROVED PROVIDER sources: the provider
+ * buildability % (LandPortal fact sheet / a fresh resolve — a direct usable-area
+ * measure) and USGS 3DEP average slope (terrain). USGS slope arrives in DEGREES
+ * and is converted to slope percent (tan). Both are used: aligned => stronger
+ * confidence; materially different => scored on LandPortal (never ignored) with
+ * the conflict surfaced; USGS-only => fills the buildability the provider did not
+ * return (no artificial gap). Neutral null when neither source has a value.
+ */
+function reconcileBuildability(providerBuild: number | undefined, govDd?: GovDdView): BuildabilityProvenance | null {
+  let usgsSlopePct: number | undefined;
+  if (govDd?.slope && govDd.slope.status === 'verified' && typeof govDd.slope.slopeDeg === 'number') {
+    usgsSlopePct = Math.round(Math.tan((govDd.slope.slopeDeg * Math.PI) / 180) * 100 * 10) / 10;
+  }
+  const usgsBuild = usgsSlopePct !== undefined ? buildabilityFromSlopePct(usgsSlopePct) : undefined;
+
+  if (providerBuild !== undefined && usgsBuild !== undefined) {
+    const conflict = Math.abs(providerBuild - usgsBuild) >= 25;
+    return {
+      pct: providerBuild, // LandPortal / provider is primary — never ignored.
+      conflict,
+      basis: conflict
+        ? `LandPortal buildability ${providerBuild}% vs USGS avg slope ${usgsSlopePct}% (~${usgsBuild}% usable) — sources disagree; scored on LandPortal, verify terrain`
+        : `LandPortal buildability ${providerBuild}% · USGS avg slope ${usgsSlopePct}% aligned (cross-checked)`,
+    };
+  }
+  if (providerBuild !== undefined) {
+    return { pct: providerBuild, conflict: false, basis: `LandPortal buildability ${providerBuild}%` };
+  }
+  if (usgsBuild !== undefined) {
+    return { pct: usgsBuild, conflict: false, basis: `USGS avg slope ${usgsSlopePct}% → ~${usgsBuild}% usable (LandPortal buildability not returned)` };
+  }
+  return null;
+}
+
 /**
  * Build the land facts + valuation + similars the Land Score scores, consuming
  * APPROVED PROVIDER DATA the report already has (2026-07-04 product correction —
@@ -344,14 +399,15 @@ function usdNum(v: string | null | undefined): number | undefined {
  *   3. live gov-DD (FEMA/NWI) as a cross-check, but only the clearly-safe
  *      "verified, outside the hazard => 0%" direction. A present hazard needs a
  *      percentage from an approved provider and is NEVER inferred here.
- * Gap-fill only: an earlier, stronger source is never overwritten. A value no
- * approved provider gave stays a true gap (scored 0 by the rubric, never faked).
+ * Buildability specifically uses BOTH LandPortal buildability % and USGS slope
+ * (see reconcileBuildability). Gap-fill only: an earlier, stronger source is
+ * never overwritten. A value no approved provider gave stays a true gap.
  */
 export function landFactsForScore(
   propertyData: DukePropertyData | undefined,
   factSheet: ParcelFactSheet | null | undefined,
   govDd?: GovDdView,
-): { landFacts: DukeLandFacts; valuation: DukeValuation; similars: DukeSimilars } {
+): { landFacts: DukeLandFacts; valuation: DukeValuation; similars: DukeSimilars; buildability: BuildabilityProvenance | null } {
   const lf: DukeLandFacts = { ...(propertyData?.landFacts ?? {}) };
   const val: DukeValuation = { ...(propertyData?.valuation ?? {}) };
   const sim: DukeSimilars = { ...(propertyData?.similars ?? {}) };
@@ -362,7 +418,6 @@ export function landFactsForScore(
     if (lf.landLocked === undefined && factSheet.access.landLocked) lf.landLocked = factSheet.access.landLocked;
     if (lf.wetlandsPct === undefined) { const n = pctNum(factSheet.environment.wetlandsPct); if (n !== undefined) lf.wetlandsPct = n; }
     if (lf.femaPct === undefined) { const n = pctNum(factSheet.environment.femaCoveragePct); if (n !== undefined) lf.femaPct = n; }
-    if (lf.buildabilityPct === undefined) { const n = pctNum(factSheet.buildability.pct); if (n !== undefined) lf.buildabilityPct = n; }
     if (val.tlpEstimate === undefined) { const n = usdNum(factSheet.valuation.lpEstimatePrice) ?? usdNum(factSheet.valuation.totalMarketValue); if (n !== undefined) val.tlpEstimate = n; }
     if (val.tlpPpa === undefined) { const n = usdNum(factSheet.valuation.lpEstimatePpa); if (n !== undefined) val.tlpPpa = n; }
   }
@@ -377,7 +432,11 @@ export function landFactsForScore(
     }
   }
 
-  return { landFacts: lf, valuation: val, similars: sim };
+  // Buildability: LandPortal buildability % (direct measure) + USGS slope (terrain).
+  const buildability = reconcileBuildability(lf.buildabilityPct ?? pctNum(factSheet?.buildability.pct), govDd);
+  if (buildability) lf.buildabilityPct = buildability.pct;
+
+  return { landFacts: lf, valuation: val, similars: sim, buildability };
 }
 
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
@@ -1631,9 +1690,22 @@ export async function runDealCardReport(
   // acreage, valuation) so LandPortal data is scored, not ignored (2026-07-04
   // product correction), cross-checked by live gov-DD. Only scored when identity is
   // source-verified; a value no approved provider gave stays a loud data gap.
-  const landScore = verification.parcelVerified
-    ? computeLandScore(landFactsForScore(verification.propertyData, landportalInspection?.factSheet, govDd))
+  const scoreInputs = verification.parcelVerified
+    ? landFactsForScore(verification.propertyData, landportalInspection?.factSheet, govDd)
     : null;
+  const landScore = scoreInputs ? computeLandScore(scoreInputs) : null;
+  // Name the Buildability source (LandPortal buildability % and/or USGS slope) on
+  // the factor, and surface a loud flag when the two approved sources materially
+  // disagree (never a silent gap; LandPortal is never ignored).
+  if (landScore && scoreInputs?.buildability) {
+    const bf = landScore.factors.find((f) => f.id === 'slope_buildability');
+    if (bf && !bf.dataGap) {
+      bf.basis = scoreInputs.buildability.basis;
+      if (scoreInputs.buildability.conflict) {
+        landScore.flags.push(`Buildability sources disagree — ${scoreInputs.buildability.basis}.`);
+      }
+    }
+  }
 
   const view: DealCardReportView = {
     exists: true,
