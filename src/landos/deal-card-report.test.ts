@@ -508,4 +508,14 @@ describe('Deal Card report — unverified parcel path', () => {
     expect(r.parcelVerified).toBe(false);
     expect(r.creditUsage.compCreditUsed).toBe(false);
   });
+
+  it('unwraps nested persisted-source labels so re-runs do not accumulate "(orig: (orig: ...))"', async () => {
+    const resolve = buildPersistedResolver({
+      id: 5, apn: 'V50', county: 'Lexington', state: 'SC',
+      verification_source: 'Persisted verified Property Card (orig: Persisted verified Property Card (orig: LandPortal Map Search parcel panel (browser read-only)))',
+    });
+    const result = await resolve({ text: 'x' } as never, 1000);
+    expect(result.source).toBe('Persisted verified Property Card (orig: LandPortal Map Search parcel panel (browser read-only))');
+    expect((result.source ?? '').match(/orig:/g)?.length).toBe(1); // exactly one level, never nested
+  });
 });

@@ -469,7 +469,15 @@ export function buildPersistedResolver(
     const lat = typeof pc.lat === 'number' ? pc.lat : null;
     const lng = typeof pc.lng === 'number' ? pc.lng : null;
     if (lat !== null && lng !== null && (lat !== 0 || lng !== 0)) { summary.lat = String(lat); summary.lng = String(lng); }
-    const origSource = s(pc.verification_source);
+    // Unwrap any prior "Persisted verified Property Card (orig: X)" wrapping to the
+    // INNERMOST original source, so repeated report re-runs don't nest the label
+    // ("(orig: (orig: (orig: ...)))") in the report header.
+    let origSource = s(pc.verification_source);
+    while (/^Persisted verified Property Card/.test(origSource)) {
+      const m = /\(orig:\s*(.*)\)\s*$/.exec(origSource);
+      if (!m) break;
+      origSource = m[1].trim();
+    }
     return {
       verified: true,
       status: 'verified',

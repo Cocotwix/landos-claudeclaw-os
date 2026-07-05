@@ -78,6 +78,20 @@ If no, continue improving unless an approval gate blocks progress.
 - Engineering QA: typecheck clean; new `property-workspace-summary` 4/4; route/board sweep 101/101; full `src/landos` 1815/1816 (the 1 failure is the PRE-EXISTING `property-card` weak-duplicate-merge test, unrelated). Web + server builds clean.
 - Result: PASS. Classification: resolved (feature finished + made honest + operator-visible).
 
+### 2026-07-05 - VISUAL Operator QA: Acquire → Deal Card → Report (root-cause fixes)
+
+- New capability: visual Operator QA is now real. Puppeteer (bundled Chrome) opens the live dashboard, screenshots the Deal Card, and the screenshot is read back like an operator would see it. Backend payloads/tests are no longer the acceptance bar.
+- Deep-link added: `/landos?deal=<id>` opens a Deal Card directly (linkable + deterministic QA).
+- ROOT CAUSE (found visually, invisible to backend tests): the ENTIRE rich report block failed to render. `DiscoveryCallReportSection` called `dashboardToken()` but `dashboardToken` is a const value, not a function → TypeError crashed the block. The backend report was complete; the UI threw and rendered nothing (no At-a-Glance, Land Score, comps, visuals, discovery). This is exactly why the operator saw a Deal Card "missing too much." Fixed (use the value).
+- Second bug: the Discovery "Property Snapshot" read wrong LandPortal keys (`'Buildability'` → Building SqFt = 0) and read FEMA/Wetlands/Slope from overlays that don't exist → showed Buildability 0 / FEMA Not Found / Wetlands Not Found / Slope Not Found while the rest of the card had the real values (contradictory panels). Fixed to read the parsed `factSheet` (Buildability 95.04%, FEMA "Not in a flood hazard area · coverage 0%", Wetlands 0%, Slope 6.13%).
+- Third fix: report header showed a 7-deep nested `(orig: (orig: ...))` verification-source from repeated re-runs. Now unwrapped to one level.
+- VISUALLY CONFIRMED on a verified card (screenshots in gitignored `store/`: _dc5_before crash, _dc5_after rendered, _dc5_atglance, _dc5_visual): At a Glance (slope ~5.9° from USGS, flood Zone X, wetlands); Land Score 77/100 PURSUE with all six factor bars + the LandPortal-vs-USGS buildability conflict flag; Seller Call Brief; Property Snapshot (road frontage 166 ft, landlocked No, buildability 95%, FEMA 0%, wetlands 0%, slope 6.13%); Comparable Intelligence (~$11.9k est.); Market Pulse; Strategy; Next Action; and Google Visual Context showing REAL satellite + Street View images.
+- Fresh Acquire lead run end-to-end (deal 8, "matched, not parcel-verified"): renders with no crash; gov-DD slope 4.2° + FEMA + NWI verified; Google satellite/Street View captured; demographics + Market Pulse. Land Score correctly NULL (never scored from unverified). Parcel facts thin (area context) — see limitations.
+- Discovery-ready: YES for the verified card. Offer-ready: NO (no sold comps — paid comp credits gated; valuation is asking-market only; access/title/utilities unconfirmed).
+- Screenshots captured (NOT committed — contain a real property/owner): store/_dc5_before.png, _dc5_after.png, _dc5_atglance.png, _dc5_visual.png, _dc8.png.
+- Engineering QA: server tsc clean; `deal-card-report` + `land-score-provider-data` 33/33 (incl. new source-unwrap test); web + server builds clean; my web files (DealCard/LandOS) typecheck clean. Restarted; 0 browser console errors on the Deal Card.
+- Result: PASS for making the report operator-visible/usable. Classification: resolved (2 render bugs + 1 data-label bug).
+
 ## QA Entry Template
 
 ```markdown

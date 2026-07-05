@@ -75,6 +75,22 @@ export function LandOS() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
 
+  // Deep-link support: `?deal=<id>` opens that Deal Card directly (linkable/
+  // bookmarkable + deterministic operator QA). `?view=<view>` opens a named tab.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const deal = Number(q.get('deal'));
+    if (Number.isInteger(deal) && deal > 0) {
+      setSelectedDealCardId(deal);
+      setView('dealcard');
+      return;
+    }
+    const v = q.get('view');
+    if (v && ['overview', 'acquire', 'intake', 'command', 'dealcard', 'costcontrol', 'org', 'router', 'knowledge'].includes(v)) {
+      setView(v as LandosView);
+    }
+  }, []);
+
   async function load() {
     try {
       setLoading(true);

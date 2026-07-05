@@ -633,7 +633,7 @@ function inspectionFactValue(facts: Record<string, string> | undefined, ...keys:
 }
 function DiscoveryCallReportSection({ dcr, report, es }: { dcr?: DiscoveryReportView | null; report: ReportView; es?: ExecSummaryView | null }) {
   if (!dcr) return null;
-  const token = dashboardToken();
+  const token = dashboardToken; // a const value, not a function — calling it threw and crashed the whole report block
   const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
   const fact = (key: string): string | null => (report.ddFactChecklist ?? []).find((r) => r.key === key)?.value ?? null;
   const mc = report.marketComps;
@@ -647,6 +647,7 @@ function DiscoveryCallReportSection({ dcr, report, es }: { dcr?: DiscoveryReport
   ];
   const soldExamples = (mc?.sold ?? []).filter((c) => c.pricePerAcre != null).slice(0, 5);
   const inspection = dcr.landportalInspection;
+  const fs = inspection?.factSheet; // correctly-parsed LandPortal facts (right keys + % formatting)
   const compIntel = dcr.comparableIntelligence;
   const marketIntel = dcr.marketIntelligence;
   const parcelShots = (inspection?.assets ?? []).filter((a) => a.kind === 'parcel_page' || a.kind === 'parcel_3d');
@@ -659,13 +660,19 @@ function DiscoveryCallReportSection({ dcr, report, es }: { dcr?: DiscoveryReport
     ['Legal Description', inspectionFactValue(inspection.parcelFacts, 'Legal Description')],
     ['Road Frontage', inspectionFactValue(inspection.parcelFacts, 'Road Frontage')],
     ['Road Type', inspectionFactValue(inspection.parcelFacts, 'Road Type')],
-    ['Access', inspectionFactValue(inspection.parcelFacts, 'Access', 'Land Locked')],
+    // Landlocked / access, buildability, FEMA, wetlands, slope come from the
+    // PARSED fact sheet (correct LandPortal keys + % formatting) — earlier this
+    // read the wrong keys ('Buildability' → Building SqFt = 0) and overlays that
+    // don't exist, so it showed 0 / Not Found while the rest of the card had the
+    // real values. Fall back to the raw parcel facts with the correct keys.
+    ['Landlocked', inspectionFactValue(inspection.parcelFacts, 'Land Locked')],
     ['Utilities', inspectionFactValue(inspection.parcelFacts, 'Utilities', 'Utility Power')],
-    ['Buildability', inspectionFactValue(inspection.parcelFacts, 'Buildability', 'Building SqFt')],
-    ['FEMA / Flood', inspection?.overlays?.some((o) => o.overlay === 'FEMA Floodplain' && o.status !== 'not_found') ? 'Overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
-    ['Wetlands', inspection?.overlays?.some((o) => o.overlay === 'Wetlands' && o.status !== 'not_found') ? 'Overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
-    ['Soil', inspection?.overlays?.some((o) => o.overlay === 'Soil' && o.status !== 'not_found') ? 'Overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
-    ['Terrain / Slope', inspection?.overlays?.some((o) => o.overlay === 'Contours' && o.status !== 'not_found') ? 'Contours overlay captured (Visual Signal, Not Verified Fact)' : 'Not Found'],
+    ['Buildability', fs?.buildability.pct ?? inspectionFactValue(inspection.parcelFacts, 'Buildability total (%)', 'Buildability total')],
+    ['FEMA / Flood', fs?.environment.femaFloodZone
+      ? `${fs.environment.femaFloodZone}${fs.environment.femaCoveragePct ? ` · coverage ${fs.environment.femaCoveragePct}` : ''}`
+      : inspectionFactValue(inspection.parcelFacts, 'FEMA Flood Zone', 'FEMA Coverage (%)')],
+    ['Wetlands', fs?.environment.wetlandsPct ?? inspectionFactValue(inspection.parcelFacts, 'Wetlands Coverage (%)', 'Wetlands Coverage')],
+    ['Terrain / Slope', inspectionFactValue(inspection.parcelFacts, 'Slope Avg')],
     ['Water Features', inspectionFactValue(inspection.parcelFacts, 'Water Feature type(s)', 'Water Feature')],
     ['Parcel Shape', inspectionFactValue(inspection.parcelFacts, 'Parcel Shape')],
     ['Zoning', inspectionFactValue(inspection.parcelFacts, 'Zoning')],

@@ -90,6 +90,33 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-05 - VISUAL Operator QA + Acquire→Deal Card→Report fixes
+
+- Established visual Operator QA: Puppeteer (bundled Chrome) screenshots the live
+  dashboard Deal Card and the image is read back. Helper scripts: scripts/_shot*.mjs,
+  _console.mjs, _stack.mjs (scratch). Added `/landos?deal=<id>` deep-link.
+- ROOT CAUSE (invisible to backend tests, found only by opening the UI): the whole
+  rich report block crashed because `DiscoveryCallReportSection` called
+  `dashboardToken()` — a const value, not a function. Fixed. This is why the
+  operator saw a Deal Card "missing too much" — report was complete, UI threw.
+- Also fixed: Discovery "Property Snapshot" read wrong LandPortal keys
+  ('Buildability'→Building SqFt=0) + non-existent overlays for FEMA/wetlands/slope
+  → now reads the parsed `factSheet` (real values). And unwrapped the nested
+  `(orig: (orig: ...))` verification-source label (backend, deal-card-report.ts).
+- Visually confirmed (verified card): At-a-Glance, Land Score 77/100 PURSUE with
+  factor bars + buildability conflict, Property Snapshot facts, Comparable
+  Intelligence, Market Pulse, Strategy, next action, and REAL Google satellite +
+  Street View images. Fresh Acquire lead (deal 8, matched-not-verified) renders
+  end-to-end with gov-DD slope 4.2°, visuals, market; Land Score null (correct).
+- Files: web/src/components/DealCard.tsx (dashboardToken + Property Snapshot),
+  web/src/pages/LandOS.tsx (deep-link), src/landos/deal-card-report.ts
+  (source-label unwrap) + deal-card-report.test.ts (unwrap test).
+- QA: server tsc clean; report tests 33/33; web+server builds clean; restarted;
+  0 console errors. Discovery-ready YES (verified card); offer-ready NO (no sold
+  comps — gated). Limitations recorded: LandPortal auth browser flow not runnable
+  headless; no 3D/terrain + Street View heading; web not typechecked in build.
+  Screenshots in gitignored store/ (real property — not committed). NOT committed.
+
 ### 2026-07-05 - Property Board workspace-readiness summary (finished pre-existing work)
 
 - Picked up the uncommitted `withPropertyWorkspaceSummary` (routes.ts) +
