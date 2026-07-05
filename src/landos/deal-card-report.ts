@@ -54,7 +54,7 @@ import { buildDukeAnalysis } from './duke-analysis.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD } from './offer-engine.js';
 import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './source-adapters.js';
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
-import type { DukePropertyData } from './duke-property-data.js';
+import type { DukePropertyData, DukeLandFacts, DukeValuation, DukeSimilars } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
 import { loadCardVisualCapture, loadPropertyInspection, saveCardVisualCapture, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
 import { buildParcelFactSheet, type ParcelFactSheet } from './landportal-facts.js';
@@ -69,6 +69,7 @@ import { fetchFemaFlood, fetchNwiWetlands, fetchUsgsSlope, type GovFetch } from 
 import { fetchCensusDemographics, emptyCensus, type CensusDemographics, type CensusFetch } from './census-demographics.js';
 import { buildLandPpaBand } from './comp-valuation-band.js';
 import type { CompClass } from './comp-classification.js';
+import { computeLandScore, type LandScoreResult } from './land-score.js';
 
 export interface MarketCompView {
   price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
@@ -315,6 +316,70 @@ async function buildGovDd(
   };
 }
 
+// ── Land Score inputs from approved-provider data ────────────────────────────
+// Parse a percentage-ish provider value ("28.10 %", "0") to a number.
+function pctNum(v: string | null | undefined): number | undefined {
+  if (v == null) return undefined;
+  const m = String(v).replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  const n = m ? Number(m[0]) : NaN;
+  return Number.isFinite(n) ? n : undefined;
+}
+// Parse a $ provider value ("$12,602") to a positive number.
+function usdNum(v: string | null | undefined): number | undefined {
+  if (v == null) return undefined;
+  const m = String(v).replace(/[,$]/g, '').match(/-?\d+(?:\.\d+)?/);
+  const n = m ? Number(m[0]) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Build the land facts + valuation + similars the Land Score scores, consuming
+ * APPROVED PROVIDER DATA the report already has (2026-07-04 product correction —
+ * LandOS uses approved provider data for pre-contract work and never treats it as
+ * missing just because it did not come from a county website):
+ *   1. verified property data (a fresh Realie/LandPortal resolve — richest), then
+ *   2. the LandPortal parcel fact sheet (road frontage, landlocked, wetlands %,
+ *      FEMA %, buildability %, acreage, LP valuation) — the fix so a persisted
+ *      verified parcel's LandPortal facts are SCORED, not ignored, and finally
+ *   3. live gov-DD (FEMA/NWI) as a cross-check, but only the clearly-safe
+ *      "verified, outside the hazard => 0%" direction. A present hazard needs a
+ *      percentage from an approved provider and is NEVER inferred here.
+ * Gap-fill only: an earlier, stronger source is never overwritten. A value no
+ * approved provider gave stays a true gap (scored 0 by the rubric, never faked).
+ */
+export function landFactsForScore(
+  propertyData: DukePropertyData | undefined,
+  factSheet: ParcelFactSheet | null | undefined,
+  govDd?: GovDdView,
+): { landFacts: DukeLandFacts; valuation: DukeValuation; similars: DukeSimilars } {
+  const lf: DukeLandFacts = { ...(propertyData?.landFacts ?? {}) };
+  const val: DukeValuation = { ...(propertyData?.valuation ?? {}) };
+  const sim: DukeSimilars = { ...(propertyData?.similars ?? {}) };
+
+  if (factSheet) {
+    if (lf.acres === undefined && typeof factSheet.acres === 'number') lf.acres = factSheet.acres;
+    if (lf.roadFrontageFt === undefined && typeof factSheet.access.roadFrontageFt === 'number') lf.roadFrontageFt = factSheet.access.roadFrontageFt;
+    if (lf.landLocked === undefined && factSheet.access.landLocked) lf.landLocked = factSheet.access.landLocked;
+    if (lf.wetlandsPct === undefined) { const n = pctNum(factSheet.environment.wetlandsPct); if (n !== undefined) lf.wetlandsPct = n; }
+    if (lf.femaPct === undefined) { const n = pctNum(factSheet.environment.femaCoveragePct); if (n !== undefined) lf.femaPct = n; }
+    if (lf.buildabilityPct === undefined) { const n = pctNum(factSheet.buildability.pct); if (n !== undefined) lf.buildabilityPct = n; }
+    if (val.tlpEstimate === undefined) { const n = usdNum(factSheet.valuation.lpEstimatePrice) ?? usdNum(factSheet.valuation.totalMarketValue); if (n !== undefined) val.tlpEstimate = n; }
+    if (val.tlpPpa === undefined) { const n = usdNum(factSheet.valuation.lpEstimatePpa); if (n !== undefined) val.tlpPpa = n; }
+  }
+
+  // Gov-DD cross-check: only the clearly-safe "verified, outside the hazard" case.
+  if (govDd) {
+    if (lf.femaPct === undefined && govDd.flood.status === 'verified' && govDd.flood.zone) {
+      if (/not in|minimal|no special|zone x|^x$/i.test(govDd.flood.zone.trim())) lf.femaPct = 0;
+    }
+    if (lf.wetlandsPct === undefined && govDd.wetlands.status === 'verified' && govDd.wetlands.type) {
+      if (/none|no wetland|not mapped/i.test(govDd.wetlands.type.trim())) lf.wetlandsPct = 0;
+    }
+  }
+
+  return { landFacts: lf, valuation: val, similars: sim };
+}
+
 // ── Persisted verified reuse (no provider call) ──────────────────────────────
 
 /**
@@ -501,6 +566,12 @@ export interface DealCardReportView {
   /** US Census ACS county demographics (supporting market context; never identity).
    *  Honest not_configured when no free CENSUS_API_KEY. */
   demographics: CensusDemographics;
+  /** LandOS 100-point Land Score computed from the SAME verified property data the
+   *  report used (never a separate re-resolve). Null when the parcel is not
+   *  source-verified (never scored from unverified data). Missing source fields
+   *  score 0 as loud data gaps, never inferred. Integrated so the score renders
+   *  inline in the report instead of a separate on-demand action. */
+  landScore: LandScoreResult | null;
   creditUsage: {
     landportalNonCreditUsed: boolean;
     compCreditUsed: false;
@@ -1030,6 +1101,7 @@ function emptyReport(dealCardId: number): DealCardReportView {
     govDd: emptyGovDd(),
     marketComps: emptyMarketComps(),
     demographics: emptyCensus(),
+    landScore: null,
     creditUsage: {
       landportalNonCreditUsed: false,
       compCreditUsed: false,
@@ -1552,6 +1624,17 @@ export async function runDealCardReport(
     demographics = await fetchCensusDemographics(demographicsFips, { fetchImpl: deps.censusFetch });
   }
 
+  // LandOS 100-point Land Score — computed from the SAME approved-provider data the
+  // report already resolved (NOT a separate re-resolve, which fails for parcels
+  // verified via a persisted browser read). Consumes verified property data AND the
+  // LandPortal parcel fact sheet (road frontage, wetlands, FEMA, buildability,
+  // acreage, valuation) so LandPortal data is scored, not ignored (2026-07-04
+  // product correction), cross-checked by live gov-DD. Only scored when identity is
+  // source-verified; a value no approved provider gave stays a loud data gap.
+  const landScore = verification.parcelVerified
+    ? computeLandScore(landFactsForScore(verification.propertyData, landportalInspection?.factSheet, govDd))
+    : null;
+
   const view: DealCardReportView = {
     exists: true,
     dealCardId,
@@ -1578,6 +1661,7 @@ export async function runDealCardReport(
     govDd,
     marketComps,
     demographics,
+    landScore,
     creditUsage: {
       landportalNonCreditUsed: landportalAttempted && !landportalUnavailable,
       compCreditUsed: false,

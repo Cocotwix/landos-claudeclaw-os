@@ -232,6 +232,9 @@ interface ReportView {
   ddCompleteness?: { total: number; verified: number; needsVerification: number; percentComplete: number; label: string };
   visualContext?: VisualContextView;
   marketComps?: MarketCompsView;
+  /** LandOS 100-point Land Score computed inline with the report from the same
+   *  verified property data. Null when the parcel is not source-verified. */
+  landScore?: LandScoreView | null;
   /** Browser Intelligence evidence (LandPortal-first, then County gap-fill).
    *  Surfaced as a clean status block — never raw logs or workflow internals. */
   browserEvidence?: BrowserEvidenceView[];
@@ -1597,6 +1600,79 @@ function ppaByAcreageBand(rows: MarketCompRowView[]): Array<{ band: string; ppa:
     return { band: b.band, ppa: median(ppas) ?? 0, count: ppas.length };
   }).filter((x) => x.count > 0);
 }
+// Land Score — the deterministic 100-point rubric, rendered inline in the report
+// from the SAME verified property data (never a separate re-resolve). Missing
+// source fields score 0 as loud data gaps, never inferred. Honest empty state
+// when the parcel is not source-verified.
+function landScoreVerdictClass(verdict: string, dataLimited: boolean): string {
+  // A verdict driven by missing enrichment (severely reduced confidence) is NOT a
+  // real pass/fail — never color it red/green, or the operator misreads a
+  // data-starved parcel as a confirmed bad deal.
+  if (dataLimited) return 'text-[var(--color-text-muted)] border-[var(--color-border)]';
+  const v = (verdict || '').toLowerCase();
+  if (/pursue|strong|good|buy/.test(v)) return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
+  if (/pass|avoid|poor|weak/.test(v)) return 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
+  return 'text-[var(--color-text-muted)] border-[var(--color-border)]';
+}
+function LandScoreSection({ ls, parcelVerified }: { ls?: LandScoreView | null; parcelVerified: boolean }) {
+  const gapCount = ls ? ls.factors.filter((f) => f.dataGap).length : 0;
+  const dataLimited = !!ls && (ls.confidence === 'severely_reduced' || gapCount >= 3);
+  return (
+    <Section title="Land Score">
+      {!ls && (
+        <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3">
+          {parcelVerified
+            ? 'Land Score pending — re-run the report to compute the 100-point rubric from the verified parcel data.'
+            : 'Land Score is only computed once parcel identity is source-verified (never scored from unverified data).'}
+        </div>
+      )}
+      {ls && (
+        <div>
+          <div class="flex items-center gap-3 flex-wrap mb-3">
+            <span class="text-[26px] font-semibold tabular-nums leading-none">
+              {ls.score}<span class="text-[15px] text-[var(--color-text-faint)]">/{ls.maxScore}</span>
+            </span>
+            <span class={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${landScoreVerdictClass(ls.verdict, dataLimited)}`}>
+              {dataLimited ? 'Data-limited' : ls.verdict}
+            </span>
+            <span class="text-[10px] text-[var(--color-text-faint)]">confidence: {ls.confidence.replace(/_/g, ' ')}</span>
+          </div>
+          {dataLimited && (
+            <div class="mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-1.5 text-[11px] text-[var(--color-text-muted)]">
+              This score is limited by {gapCount} missing data point{gapCount === 1 ? '' : 's'} (scored 0, never guessed) — it reflects incomplete enrichment, not a confirmed poor property. Verify access, wetlands, flood, slope, and valuation to get a real score.
+            </div>
+          )}
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
+            {ls.factors.map((f) => {
+              const pct = f.maxPoints > 0 ? Math.round((f.points / f.maxPoints) * 100) : 0;
+              return (
+                <div key={f.id}>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-[11px] text-[var(--color-text-muted)]">
+                      {f.label}
+                      {f.dataGap && <span class="text-[var(--color-status-failed)]"> · data gap</span>}
+                    </span>
+                    <span class="text-[11px] tabular-nums text-[var(--color-text)]">{f.points}/{f.maxPoints}</span>
+                  </div>
+                  <div class="h-1.5 rounded-full bg-[var(--color-border)] overflow-hidden mt-0.5">
+                    <div
+                      class={`h-full rounded-full ${f.dataGap ? 'bg-[var(--color-status-failed)]' : 'bg-[var(--color-accent)]'}`}
+                      style={{ width: `${f.dataGap ? 100 : pct}%`, opacity: f.dataGap ? 0.35 : 1 }}
+                    />
+                  </div>
+                  {f.basis && <div class="text-[9.5px] text-[var(--color-text-faint)] mt-0.5">{f.basis}</div>}
+                </div>
+              );
+            })}
+          </div>
+          {ls.flags.length > 0 && <DdList title="Score flags" items={ls.flags} empty="No flags" />}
+          <div class="text-[10px] text-[var(--color-text-faint)] mt-2">{ls.note}</div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function MarketPulseSection({ mp, mc }: { mp?: MarketPulseView | null; mc?: MarketCompsView | null }) {
   if (!mp) return null;
   const usd = (n: number | null) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
@@ -2976,6 +3052,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
                 {/* 2. AT-A-GLANCE LAND FACTS — single home for flood/wetlands/slope/type. */}
                 <AtAGlanceStrip report={report} propertyType={propertyType} />
+
+                {/* 6. LAND SCORE — deterministic 100-pt rubric, computed inline from
+                    the verified parcel data (no separate re-resolve / button). */}
+                <LandScoreSection ls={report.landScore} parcelVerified={report.parcelVerified} />
 
                 {/* ACQUISITION SPECIALIST v1 — the cohesive Discovery Call
                     Intelligence Report: Smart Input, Parcel Intelligence, Comps,

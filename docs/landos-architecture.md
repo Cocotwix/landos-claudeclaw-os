@@ -1,4 +1,4 @@
-# LandOS — Master Architecture (Source of Truth)
+# LandOS — Master Architecture
 
 LandOS is the operating system for a land‑investing business. It is **not** a
 Duke‑centric tool. Duke is one lane — the **Due Diligence Specialist**. The

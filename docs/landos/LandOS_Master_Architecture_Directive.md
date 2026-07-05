@@ -164,7 +164,7 @@ Today/daily brief; Leads; Properties; Deals pipeline (entity-filterable everywhe
 
 ## WRITING AND COMMUNICATION RULES
 - Be direct, practical, exact. One best next step when one path is best. No option overload. No em dashes in seller-facing or business writing. Seller-facing drafts use smooth, human, conversational wording and never expose internal numbers or profit logic.
-- Never infer an uploaded or referenced file's contents from its name — open and verify before using it as source of truth.
+- Never infer an uploaded or referenced file's contents from its name — open and read it before relying on it.
 - When presenting an approval menu choice, state the exact safest option.
 
 ## ACCEPTANCE CHECKS (RUN BEFORE REPORTING DONE)

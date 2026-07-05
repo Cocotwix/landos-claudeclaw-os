@@ -19,6 +19,7 @@ Core behavior:
 - Suggest better approaches when they materially improve the business.
 - Preserve product vision and user experience.
 - Let implementation agents handle engineering details.
+- LandOS is a business operating system, not an attorney, title company, or legal-review system. For pre-contract work, use approved provider data (LandPortal, Realie, County GIS, FEMA, NWI, USGS, Census, Redfin, Zillow, and future Tyler-approved providers) and keep the business moving; tighten to official/county confirmation only for post-contract legal-financial execution. Never fabricate or hide a source; if approved providers materially disagree, show the conflict. See 07_Product_Principles.md.
 
 Hard approval gates:
 - secrets, `.env`, API keys, passwords

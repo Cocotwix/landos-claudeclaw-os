@@ -287,11 +287,19 @@ describe('Deal Card report — verified parcel path', () => {
     expect(dd.sourceLinks.length).toBeGreaterThanOrEqual(1);
     expect(dd.apnLabel).toBe('Verified');
 
+    // Land Score is computed INLINE from the same verified property data (never a
+    // separate re-resolve) and persists through reload.
+    expect(r.landScore).not.toBeNull();
+    expect(r.landScore!.factors.length).toBeGreaterThan(0);
+    expect(r.landScore!.maxScore).toBeGreaterThan(0);
+
     // Reload safety: the persisted report matches.
     const reloaded = getDealCardReport(id);
     expect(reloaded.exists).toBe(true);
     expect(reloaded.parcelVerified).toBe(true);
     expect(reloaded.reportStatus).toBe(r.reportStatus);
+    expect(reloaded.landScore).not.toBeNull();
+    expect(reloaded.landScore!.score).toBe(r.landScore!.score);
   });
 
   it('applies Strategy logic without fabricating an offer (readiness needs_confirmation, never ready_for_offer)', async () => {

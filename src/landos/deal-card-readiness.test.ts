@@ -23,6 +23,7 @@ function fakeReport(over: Partial<DealCardReportView> = {}): DealCardReportView 
     govDd: { flood: { status: 'not_run', zone: null, note: 'x', source: null, timestamp: null }, wetlands: { status: 'not_run', type: null, note: 'x', source: null, timestamp: null }, slope: { status: 'not_run', slopeDeg: null, note: 'x', source: null, timestamp: null } },
     marketComps: { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'x' },
     demographics: { status: 'not_run', county: null, state: null, fips: null, population: null, medianHouseholdIncome: null, housingUnits: null, ownerOccupied: null, renterOccupied: null, ownerPct: null, source: null, timestamp: null, note: 'x' },
+    landScore: null,
     creditUsage: { landportalNonCreditUsed: false, compCreditUsed: false, note: '' },
     generatedAt: 1000,
     updatedBy: 't',

@@ -22,9 +22,31 @@ LandOS is a living deal-intelligence system that prepares Tyler to make decision
 - But "Unknown" is NOT the default answer when evidence exists. Do not refuse to estimate, interpret, rank strategies, or give a preliminary acquisition range just because some fields are incomplete. Estimate from what is verified, label the confidence, and name the unknowns.
 - Incomplete DD never blocks useful synthesis. Show the best operator-ready intelligence available now, with gaps clearly marked as DD follow-ups.
 
+## Approved provider data — use it (pre-contract) [2026-07-04, Tyler product correction]
+
+LandOS is **not** an attorney, title company, regulator, or legal-review system. It is an AI operating company that helps run Tyler's land business. LandOS had drifted toward legal-style verification and started blocking normal business execution by treating approved provider data as missing or unusable. That is wrong. This section is the correction; future builders must not repeat that mistake.
+
+**For pre-contract business work, LandOS uses approved provider data.**
+
+Approved providers include **LandPortal, Realie, County GIS, FEMA, NWI, USGS, Census, Redfin, Zillow, and any future provider Tyler approves.**
+
+If an approved provider returns road frontage, wetlands, FEMA/flood, slope, acreage, zoning, comps, market data, utilities, or similar deal data, LandOS **uses it** — in reports, scoring (including Land Score), recommendations, Deal Cards, Discovery Call Reports, strategy, market research, and underwriting.
+
+**Do not treat approved provider data as missing just because it did not come directly from a county government website.**
+
+**Language.** Do not use: *source of truth, canonical source, legal-grade verification, authoritative source, ultimate verification.* Use plain business language instead: *data source, where this came from, we got this from LandPortal, we got this from Realie, seller told us this, we don't have this yet, worth double-checking before closing.*
+
+**Before contract:** use approved provider data, make the report, score the property, recommend strategy, prepare the operator, and keep the business moving.
+
+**After contract / legal-financial execution** (deeds, title, liens, ownership disputes, closing, money movement, recording, legal disputes, permitting decisions): tighten the standard where needed. That is where county/official confirmation earns its place — not in pre-call work.
+
+**Unknown** means no approved provider gave us the information. Unknown does **not** mean the data came from LandPortal instead of the county.
+
+Never fabricate. Never hallucinate. Never hide the source. If approved providers **materially disagree**, show the conflict clearly. Otherwise, use the data and continue.
+
 ## Property resolution model (pre-call DD)
 
-**Pre-call Due Diligence is practical property intelligence, not legal-grade title verification.** The objective is simple: **resolve the intended property, then run the report.** The goal is to help the operator have an informed seller conversation — not title work, not final underwriting, not legal confirmation.
+**Pre-call Due Diligence is practical property intelligence for running an informed seller call — not title, closing, or legal verification.** The objective is simple: **resolve the intended property, then run the report.** The goal is to help the operator have an informed seller conversation — not title work, not final underwriting, not legal confirmation.
 
 - **The system is property-first, not provider-first.** The Property Resolution Engine searches every practical lane (Realie/LandPortal exact resolve, free Census county derivation, free address suggest, county GIS/NETR/browser lanes, the LandOS cache) until the intended property is resolved or every reasonable lane is exhausted. It never stops because one provider failed.
 - **Resolution returns exactly two outcomes: Matched or Needs Clarification.**
@@ -38,7 +60,7 @@ LandOS is a living deal-intelligence system that prepares Tyler to make decision
 
 ## Structure principles
 
-- Deal Card is the single source of truth; every section consumes the same verified facts (no contradictory panels).
+- The Deal Card is the one working record for a deal; every section reads the same data so panels never contradict each other.
 - Discovery Call Report is a pre-call snapshot of the Deal Card.
 - Visual context (imagery) is required where available, but is not parcel verification.
 - Provider architecture must remain swappable; identity is never from coordinates/imagery.

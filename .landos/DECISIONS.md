@@ -10,8 +10,9 @@ These are durable defaults until Tyler changes them.
 | Retrieval lanes return found/not_found/data_gap/etc. | Honest status is better than false certainty. |
 | LandOS helps Tyler decide but does not make the final decision. | Tyler remains the operator and owner. |
 | Property verification rules reject coordinates/geocoder/proximity identity. | Exact parcel identity must stay exact. |
-| LandPortal is a data source, not truth. | Source labels and confidence matter. |
-| Assessor and official record are highest-confidence for official property facts. | Official records outrank convenient lookup. |
+| For pre-contract work, LandOS uses approved provider data (LandPortal, Realie, County GIS, FEMA, NWI, USGS, Census, Redfin, Zillow, + future Tyler-approved). Provider-returned deal data is used in reports, scoring, Deal Cards, strategy, and underwriting. | LandOS is a business operating system, not an attorney/title company. Provider data is not "missing" just because it did not come from a county website. See 07_Product_Principles.md + 02_Decision_Log 2026-07-04. |
+| Each fact carries where it came from and how confident we are (data source + confidence label). | Plain business language, not "source of truth" — show the source, use the data, continue. |
+| County/official/assessor confirmation is required for post-contract legal-financial execution (title, deeds, liens, ownership disputes, closing, money movement, recording, permitting) — not for pre-call work. | Tighten the standard only where legal/financial execution is involved; pre-contract runs on approved provider data. |
 | Redfin/Zillow sold context is area-level market context and should continue when LandPortal fails. | Market context should not be blocked by one source. |
 | Paid comp credits require explicit approval. | Cost control stays explicit. |
 | LandOS structure has four categories: department legs, shared surfaces, shared records, interface layers. | Not every concept is a department; War Room/Deal Cards/Voice are not legs. |

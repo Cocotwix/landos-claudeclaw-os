@@ -7,7 +7,7 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 
 ## Product / philosophy (foundational — stable)
 - LandOS is the operating system; it is a **living deal-intelligence system, not a report generator**. Duke is only one agent (Due Diligence), not the center.
-- **Deal Card is the living source of truth**; it updates as new information arrives.
+- **Deal Card is the living working record** for a deal; it updates as new information arrives.
 - **Discovery Call Report is a pre-call snapshot artifact**, not the product.
 - **Dashboard-first** operator workflow; fast operator experience.
 - **Local Market Pulse** is part of the operating workflow (and the Discovery Call Report).
@@ -19,7 +19,7 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 ## Architecture (settled)
 - **Capability-over-vendor:** business logic requests capabilities (parcel identity, ownership, zoning, comps, AI reasoning, storage, …). Providers sit behind capability interfaces and are interchangeable. LandOS owns capabilities, not vendors.
 - **Universal Smart Intake is the permanent front door** (`intake-router.ts`). Every transport enters one intake; it classifies + routes to the owning department's *intent*. Future departments **register an intent (data), never redesign the intake**. Only the Property Resolution route is operational today.
-- **Property-first resolution, not provider-first** (`property-resolution-engine.ts`). The engine runs every practical lane and returns exactly **Matched** or **Needs Clarification**. Pre-call DD is **practical property intelligence, not legal-grade title verification**: a credible match (named-source verification OR independent corroboration) runs the full report; unknown fields become **Confirm Before Offer**; offer-stage numbers still require named-source verification. It never stops because one provider failed and never opens an empty shell. (Supersedes the prior "verified-first, no Deal Card unless parcelVerified" Acquire contract.)
+- **Property-first resolution, not provider-first** (`property-resolution-engine.ts`). The engine runs every practical lane and returns exactly **Matched** or **Needs Clarification**. Pre-call DD is **practical property intelligence for a seller call, not title/closing/legal verification**: a credible match (approved-provider match OR independent corroboration) runs the full report; unknown fields become **Confirm Before Offer**; offer-stage numbers still lean on approved-provider data, with county/official confirmation reserved for post-contract execution. It never stops because one provider failed and never opens an empty shell. (Supersedes the prior "verified-first, no Deal Card unless parcelVerified" Acquire contract.)
 - **One Normalized Property Object** (`normalized-property.ts`) is returned by every lane and consumed by the DD engine and every future department — sourced evidence, confidence, and missing fields. Coordinates remain supporting-only, never identity.
 - **Browser retrieval lanes are read-only and parked** (`browser-retrieval.ts`): public search, NETR navigation, county GIS, and STRICT read-only LandPortal/Land ID. Contracts + NETR workflow defined; execution gated on the (uninstalled) visual stack and, for LandPortal/Land ID, an existing authenticated session — credentials are never stored. Forbidden actions (paid report, credits, purchase, billing, any write) are blocked by contract.
 - **Parcel identity capability router** (`parcel-capability.ts`) is the single boundary for parcel verification. The live DD path (`duke-preflight`, `property-analysis`, routes) goes through it — **never imports a vendor client directly** (guarded by a regression test).
@@ -67,7 +67,7 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 
 ## Governance (settled — this milestone)
 - Governance lives in `docs/governance/` under version control. Authority hierarchy: **Founder Vision > Operating Charter / Product Principles > Decision Log / Roadmap / Architecture / Build Journal**.
-- Founder-controlled docs preserve Tyler's product doctrine. When Tyler explicitly asks for a governance reset, update the affected docs directly and preserve LandOS as the source of truth.
+- Founder-controlled docs preserve Tyler's product doctrine. When Tyler explicitly asks for a governance reset, update the affected docs directly and keep LandOS's operating doctrine intact.
 - Implementation/tech named in the Vision (Python/FastAPI, Realie, R2, Claude, etc.) are **implementation examples at time of writing**, not permanent requirements. The current implementation is Node/TypeScript; capabilities are stable, providers/tech are replaceable.
 ## 2026-07-04 - Autonomy is the default governance standard
 
@@ -81,4 +81,31 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
   engineering QA, Operator QA, Business QA, and memory updates.
 - Approval-drip, micro-prompts, premature stopping, and "tests passed but the
   operator cannot use it" are governance failures.
+
+## 2026-07-04 - Approved provider data is usable for pre-contract work (product correction)
+
+- LandOS is not an attorney, title company, regulator, or legal-review system.
+  It had drifted toward legal-style verification and started treating approved
+  provider data as missing/unusable, which blocked normal business execution.
+  This decision reverses that drift.
+- **For pre-contract business work, LandOS uses approved provider data.** Approved
+  providers: LandPortal, Realie, County GIS, FEMA, NWI, USGS, Census, Redfin,
+  Zillow, and any future provider Tyler approves.
+- Provider-returned deal data (road frontage, wetlands, FEMA/flood, slope,
+  acreage, zoning, comps, market data, utilities, etc.) is **used** in reports,
+  scoring (incl. Land Score), recommendations, Deal Cards, Discovery Call
+  Reports, strategy, market research, and underwriting. Do not treat it as
+  missing just because it did not come from a county website.
+- **Unknown** = no approved provider gave us the info — NOT "it came from
+  LandPortal instead of the county."
+- **Post-contract / legal-financial execution** (title, deeds, liens, ownership
+  disputes, closing, money movement, recording, permitting) is where the
+  standard tightens and official confirmation is required.
+- Banned language: *source of truth, canonical source, legal-grade verification,
+  authoritative source, ultimate verification.* Use plain business language.
+- Guardrails unchanged: never fabricate, never hallucinate, never hide the
+  source; if approved providers materially disagree, show the conflict.
+- See 07_Product_Principles.md "Approved provider data — use it (pre-contract)".
+- Supersedes the ".landos/DECISIONS.md" line that ranked assessor/official
+  records above approved-provider lookups for pre-contract work.
 

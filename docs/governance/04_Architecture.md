@@ -19,7 +19,7 @@ Update Rule: CC updates when the implementation architecture changes. Describe t
 ## Model router
 - Provider-agnostic registry (`provider-registry.ts`) over execution environments; capability scoring + routing (`capability-router.ts`); execution clients (`model-execution.ts`: Claude via injected SDK runner, OpenAI/OpenRouter/LM Studio/vLLM OpenAI-compatible, Gemini, Ollama).
 - `model-router-service.ts` — safe-mode-aware execution: override → route by capability → execute → deterministic Claude fallback → telemetry. **Safe mode (Claude-only) is the default.**
-- `router-runtime-config.ts` — effective live-routing + Ollama host + internal-id→Ollama-tag map resolved as **persisted dashboard_settings → env → default** (single source of truth; survives restart). High-stakes pinned to Claude.
+- `router-runtime-config.ts` — effective live-routing + Ollama host + internal-id→Ollama-tag map resolved as **persisted dashboard_settings → env → default** (one resolution order; survives restart). High-stakes pinned to Claude.
 
 ## Knowledge layer
 - `knowledge-store.ts` (interface + `LocalFsKnowledgeStore`, default, no creds) and `knowledge-store-r2.ts` (R2/S3 backend, lazy SDK, config-gated selection, presence-only status). Path conventions under `R2_PATHS`.

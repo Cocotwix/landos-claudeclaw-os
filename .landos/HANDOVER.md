@@ -90,6 +90,54 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-04 - Product correction: approved provider data is usable (docs + Land Score)
+
+- Governance correction (Tyler-directed): LandOS is a business operating system,
+  not an attorney/title company. It had drifted to legal-style verification and
+  was treating approved provider data as missing/unusable. Corrected the doctrine
+  so future builders don't repeat it.
+- Docs updated: `07_Product_Principles.md` (new "Approved provider data — use it
+  (pre-contract)" section + banned-language list + pre/post-contract split),
+  `02_Decision_Log.md` (settled decision entry), `01_Vision.md`,
+  `05_Operating_Charter.md`, `.landos/DECISIONS.md`, `.landos/OPERATING_STATE.md`,
+  `docs/landos-architecture.md`, `LandOS_Master_Architecture_Directive.md`,
+  `04_Architecture.md`, and the duke-area-only agent skill. Removed
+  "source of truth / canonical / legal-grade / authoritative / ultimate
+  verification" framing (except where they're now listed as banned) and the
+  "official records outrank approved-provider lookups" rule for pre-contract work.
+- Code: `landFactsForScore()` feeds the Land Score from approved-provider data the
+  report already has — verified property data → LandPortal parcel fact sheet
+  (road frontage, wetlands, FEMA, buildability, acreage, valuation) → gov-DD
+  cross-check (verified "outside the hazard" → 0%). LandPortal data is scored, not
+  ignored; only genuinely-absent fields gap. Report + `/land-score` route both use it.
+- Live (restarted compiled server): card #5 (full LandPortal read) 9→**77/100
+  PURSUE, full confidence**; card #1 (thin read) 15→**50/100** with FEMA +
+  buildability honest gaps. POST + GET agree; dashboard renders it.
+- QA: typecheck clean; new `land-score-provider-data` 3/3; full `src/landos`
+  1806/1807 (1 PRE-EXISTING unrelated `property-card` failure, confirmed by
+  stashing). Web + server builds clean. See OPERATOR_QA / BUSINESS_QA / KNOWN_LIMITATIONS.
+- Not committed.
+
+### 2026-07-04 - Due Diligence Report: Land Score integration
+
+- Integrated Land Score into the ONE DD/Property Report. It was silently broken
+  (null for every verified property) because the Land Score path re-resolved the
+  parcel from scratch, which fails for parcels verified via a persisted browser
+  read. Now computed inside `runDealCardReport` from the same persisted verified
+  property data; standalone `/land-score` route reuses the persisted card too.
+- Added `landScore` to `DealCardReportView` (survives persist/reload via the
+  `rowToView` JSON spread) and a first-class `LandScoreSection` in `DealCard.tsx`
+  (score, verdict, confidence, 6-factor bar breakdown, loud data-gap flags).
+- Honest "Data-limited" framing: browser-verified parcels have only identity +
+  acreage, so most factors are data gaps; the UI shows a neutral badge + caveat
+  instead of a misleading pass/fail. Verified cards #1 → 15/100, #5 → 9/100.
+- Engineering QA: typecheck clean; `deal-card-report` 24/24, `land-score` 6/6,
+  touched suite 60/60; web + server builds clean. Operator QA: live GET on :3141
+  returns `landScore` for both verified cards (recorded in OPERATOR_QA.md).
+- Open: (1) restart the ClaudeClaw service so the compiled server computes the
+  score on POST `/report/run` (dist built); (2) wire live gov-DD (FEMA/NWI/USGS)
+  into the rubric so environmental factors score instead of gap. Not committed.
+
 ### 2026-07-04 - Cross-Session Continuity Setup
 
 - Added LandOS-native continuation/closeout/operator-QA command prompts.

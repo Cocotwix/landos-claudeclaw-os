@@ -31,7 +31,8 @@ import {
   getModel,
   suggestModelForOrientation,
 } from './model-providers.js';
-import { computeLandScoreFromPropertyData } from './land-score.js';
+import { computeLandScoreFromPropertyData, computeLandScore } from './land-score.js';
+import { buildParcelFactSheet } from './landportal-facts.js';
 import { captureImagery } from './imagery-capture.js';
 import {
   preflightLiveData,
@@ -153,7 +154,7 @@ import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-s
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
-import { getDealCardReport, getDealCardReportSummary, runDealCardReport } from './deal-card-report.js';
+import { getDealCardReport, getDealCardReportSummary, runDealCardReport, buildPersistedResolver, buildIdentityText, landFactsForScore } from './deal-card-report.js';
 import { computeDealCardReadiness } from './deal-card-readiness.js';
 import { govDdProvidersStatus } from './providers/gov-dd-providers.js';
 import { addSellerStatedFact, loadSellerStatedFacts, summarizeSellerFacts, SELLER_FACT_KINDS, isSellerFactKind } from './seller-stated-facts.js';
@@ -2543,19 +2544,35 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    // REUSE the persisted verified Property Card (same as runDealCardReport) so a
+    // parcel verified via a persisted browser read scores instead of failing a
+    // fresh re-resolve. Only fall back to a live resolve when no verified card is
+    // linked. Never scored from unverified data.
+    const verifiedCard = (deal.propertyCards as Array<Record<string, unknown>> | undefined)?.find(
+      (cd) => cd.verification_status === 'verified_property' &&
+        (String(cd.apn ?? '').trim() || String(cd.lp_property_id ?? '').trim() || String(cd.parcel_id ?? '').trim() || String(cd.active_input_address ?? '').trim()),
+    );
     const prop = deal.propertyCards?.[0] as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null } | undefined;
-    const lookup = prop?.active_input_address || prop?.apn || deal.title;
+    const identityText = buildIdentityText(deal, getDealCardDd(id));
+    const lookup = identityText || prop?.active_input_address || prop?.apn || deal.title;
     if (!lookup) {
       return c.json({ landScore: null, parcelVerified: false, note: 'No parcel identifier on this Deal Card to resolve.' });
     }
     const verification = await runDukeVerification(lookup, {
-      resolve: resolveParcelIdentityResult,
+      resolve: verifiedCard ? buildPersistedResolver(verifiedCard) : resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
-    if (!verification.parcelVerified || !verification.propertyData) {
+    if (!verification.parcelVerified) {
       return c.json({ landScore: null, parcelVerified: false, note: 'Parcel not source-verified — Land Score not computed (never scored from unverified data).' });
     }
-    return c.json({ landScore: computeLandScoreFromPropertyData(verification.propertyData), parcelVerified: true, note: '' });
+    // Consume approved-provider data: verified property data + the LandPortal
+    // parcel fact sheet (road frontage, wetlands, FEMA, buildability, acreage,
+    // valuation) so LandPortal data is scored, not ignored (2026-07-04 correction).
+    const subjectCardId = ((verifiedCard?.id ?? (deal.propertyCards?.[0] as { id?: number } | undefined)?.id)) as number | undefined;
+    const inspection = subjectCardId ? loadPropertyInspection(subjectCardId) : null;
+    const factSheet = inspection ? buildParcelFactSheet(inspection.parcelFacts) : null;
+    const landScore = computeLandScore(landFactsForScore(verification.propertyData, factSheet));
+    return c.json({ landScore, parcelVerified: true, note: '' });
   });
 
   // On-demand SUPPORTING imagery for a Deal Card. Stub returns

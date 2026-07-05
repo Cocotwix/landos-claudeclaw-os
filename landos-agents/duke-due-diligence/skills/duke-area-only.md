@@ -74,7 +74,7 @@ Include when available from the one search:
 - County economic or planning indicators from official sources
 - Flood, wetlands, zoning, or utility context from official sources only (FEMA, NRCS, NWI, county GIS, state utility commission)
 
-**Source requirement:** Cite every source used. Third-party aggregators must be labeled as such. Prefer official, first-party, or authoritative sources.
+**Source requirement:** Cite every source used (say where each fact came from). Label third-party aggregators as such. Approved provider data (LandPortal, Realie, County GIS, FEMA, NWI, USGS, Census, Redfin, Zillow) is usable for pre-contract work; county/official confirmation is for post-contract legal-financial execution.
 
 **Do NOT include in Area Only output:**
 - Parcel-specific ownership or land use summary
