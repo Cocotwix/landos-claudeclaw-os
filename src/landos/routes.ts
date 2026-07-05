@@ -107,7 +107,7 @@ import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
-import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession } from './browser-session.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession, withWorkingPage } from './browser-session.js';
 import { getCountySources } from './county-source-map.js';
 import { writeBrowserFact, listBrowserFacts, requestCancel, isCancelled, clearCancel, markStoppedByOperator } from './browser-fact-store.js';
 import { assessSellerAuthority } from './seller-authority.js';
@@ -137,6 +137,17 @@ import {
   LANDPORTAL_MARKET_PLAYBOOK_ID, LANDPORTAL_MARKET_ALLOWED_SCOPE,
 } from './browser-playbook-landportal-market.js';
 import { extractAreaSignals } from './source-adapters.js';
+import {
+  startSession, endSession, recordBrowserEvent, synthesizePlaybook, extractKnowledge,
+  usageRollup, listTrainingSessions, listTrainingEvents, getTrainingSession,
+  listKnowledge as listTrainingKnowledge,
+} from './browser-training.js';
+import {
+  listLatestPlaybooks, listPlaybookVersions, editPlaybook, decidePlaybook, setKnowledgeStatus,
+  getPlaybook as getTrainingPlaybook, listTrainingExecutions,
+} from './browser-training-db.js';
+import { replayPlaybook } from './browser-training-replay.js';
+import { runTrainedPlaybook } from './trained-playbook-runner.js';
 import { planLandosIntake } from './intake-planner.js';
 import { departmentRegistrySummary } from './department-registry.js';
 import {
@@ -2989,6 +3000,150 @@ export function registerLandosRoutes(app: Hono): void {
       coverage: getMatrixCoverage(),
     });
   });
+
+  // ── Browser Training Department ─────────────────────────────────────
+  // Teach browser agents by demonstration. Sessions are started manually here;
+  // the realtime voice/vision loop runs over the /ws/landos/training socket.
+  app.get('/api/landos/training/sessions', (c) =>
+    c.json({ sessions: listTrainingSessions(50), usage: usageRollup() }),
+  );
+
+  app.post('/api/landos/training/sessions', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const surface = str(body.surface);
+    const session = startSession({
+      title: str(body.title) ?? '',
+      website: str(body.website) ?? '',
+      surface: surface === 'window' || surface === 'desktop' ? surface : 'tab',
+      dealCardId: Number.isFinite(Number(body.dealCardId)) ? Number(body.dealCardId) : null,
+    });
+    return c.json({ session });
+  });
+
+  app.get('/api/landos/training/sessions/:id', (c) => {
+    const id = Number(c.req.param('id'));
+    const session = getTrainingSession(id);
+    if (!session) return c.json({ error: 'not found' }, 404);
+    return c.json({ session, events: listTrainingEvents(id), knowledge: listTrainingKnowledge({ sessionId: id }) });
+  });
+
+  // Record a browser event from the front-end (security guard runs server-side).
+  app.post('/api/landos/training/sessions/:id/events', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!getTrainingSession(id)) return c.json({ error: 'not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const kind = str(body.kind);
+    if (kind !== 'nav' && kind !== 'click' && kind !== 'input' && kind !== 'screenshot') {
+      return c.json({ error: 'invalid kind' }, 400);
+    }
+    const res = recordBrowserEvent({
+      sessionId: id,
+      kind,
+      url: str(body.url),
+      selector: str(body.selector),
+      controlText: str(body.controlText),
+      field: (body.field as { name?: string; type?: string; value?: string }) ?? undefined,
+    });
+    return c.json({ approvalRequired: res.approvalRequired, reason: res.reason, seq: res.stored.seq });
+  });
+
+  // End a session, then synthesize a draft playbook + extract knowledge.
+  app.post('/api/landos/training/sessions/:id/end', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!getTrainingSession(id)) return c.json({ error: 'not found' }, 404);
+    endSession(id, 'ended');
+    const playbook = await synthesizePlaybook(id);
+    const knowledge = await extractKnowledge(id);
+    return c.json({ playbook, knowledge });
+  });
+
+  // Playbooks: list latest, versions, edit (new version), approve/reject.
+  app.get('/api/landos/training/playbooks', (c) => c.json({ playbooks: listLatestPlaybooks(50) }));
+
+  app.get('/api/landos/training/playbooks/:id', (c) => {
+    const pb = getTrainingPlaybook(Number(c.req.param('id')));
+    if (!pb) return c.json({ error: 'not found' }, 404);
+    return c.json({ playbook: pb, versions: listPlaybookVersions(pb.slug) });
+  });
+
+  app.post('/api/landos/training/playbooks/:id/edit', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!getTrainingPlaybook(id)) return c.json({ error: 'not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const next = editPlaybook(id, (body.body as Record<string, unknown>) ?? {}, str(body.name));
+    return c.json({ playbook: next });
+  });
+
+  app.post('/api/landos/training/playbooks/:id/decide', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!getTrainingPlaybook(id)) return c.json({ error: 'not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const decision = str(body.decision) === 'approved' ? 'approved' : 'rejected';
+    const pb = decidePlaybook(id, decision, str(body.decidedBy) ?? 'Tyler');
+    landosAudit('browser-training', `training_playbook_${decision}`, `${pb.slug} v${pb.version}`, {
+      refTable: 'landos_training_playbook',
+      refId: pb.id,
+    });
+    return c.json({ playbook: pb });
+  });
+
+  // Replay an approved/draft playbook against a test property via CDP.
+  app.post('/api/landos/training/playbooks/:id/replay', async (c) => {
+    const id = Number(c.req.param('id'));
+    const pb = getTrainingPlaybook(id);
+    if (!pb) return c.json({ error: 'not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const vars = (body.vars as Record<string, string>) ?? {};
+    const result = await replayPlaybook(
+      pb.body as never,
+      async () => {
+        const held = await withWorkingPage(async (page) => page);
+        if (!held.ok || !held.value) throw new Error(`browser session ${held.status}`);
+        return held.value;
+      },
+      { vars },
+    );
+    return c.json({ result });
+  });
+
+  // Execute an APPROVED trained playbook through the Browser Agent executor.
+  // Dry-run by default; live must be explicit. Paid actions auto-stop.
+  app.post('/api/landos/training/playbooks/:id/execute', async (c) => {
+    const id = Number(c.req.param('id'));
+    const pb = getTrainingPlaybook(id);
+    if (!pb) return c.json({ error: 'not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const mode = str(body.mode) === 'live' ? 'live' : 'dry_run';
+    const vars = (body.vars as Record<string, string>) ?? {};
+    const dealCardId = Number.isFinite(Number(body.dealCardId)) ? Number(body.dealCardId) : undefined;
+    const result = await runTrainedPlaybook(id, { mode, vars, dealCardId });
+    if (!result.ok) return c.json({ error: result.error }, 400);
+    return c.json({ execution: result.execution, agentRunId: result.agentRunId });
+  });
+
+  app.get('/api/landos/training/playbooks/:id/executions', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!getTrainingPlaybook(id)) return c.json({ error: 'not found' }, 404);
+    return c.json({ executions: listTrainingExecutions(id, 25) });
+  });
+
+  // Knowledge: confirm/save or discard extracted knowledge at session end.
+  app.get('/api/landos/training/knowledge', (c) =>
+    c.json({ knowledge: listTrainingKnowledge({ status: 'proposed' }) }),
+  );
+  app.post('/api/landos/training/knowledge/:id/decide', async (c) => {
+    const id = Number(c.req.param('id'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const save = str(body.decision) === 'save';
+    setKnowledgeStatus(id, save ? 'saved' : 'discarded');
+    landosAudit('browser-training', `training_knowledge_${save ? 'saved' : 'discarded'}`, `knowledge ${id}`, {
+      refTable: 'landos_training_knowledge',
+      refId: id,
+    });
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/landos/training/usage', (c) => c.json({ usage: usageRollup() }));
 
   // ── Source Evidence Standard check ──────────────────────────────────
   app.post('/api/landos/source-evidence/check', async (c) => {

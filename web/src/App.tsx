@@ -21,6 +21,7 @@ import { LandOS } from '@/pages/LandOS';
 import { PropertyBoard } from '@/pages/PropertyBoard';
 import { MarketIntelligence } from '@/pages/MarketIntelligence';
 import { BrowserAgent } from '@/pages/BrowserAgent';
+import { BrowserTraining } from '@/pages/BrowserTraining';
 import { Forge } from '@/pages/Forge';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
@@ -55,6 +56,7 @@ export function App() {
           <Route path="/board"><PropertyBoard /></Route>
           <Route path="/market"><MarketIntelligence /></Route>
           <Route path="/browser-agent"><BrowserAgent /></Route>
+          <Route path="/browser-training"><BrowserTraining /></Route>
           <Route path="/forge"><Forge /></Route>
           <Route path="/scheduled"><Scheduled /></Route>
           <Route path="/agents"><Agents /></Route>

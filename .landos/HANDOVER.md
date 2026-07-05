@@ -90,6 +90,84 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-05 - Per-field selector capture (teach fields by voice)
+
+- Goal: a trained playbook should learn WHICH DOM elements hold the fields we
+  care about, so live runs extract facts and write them to the Deal Card. Builds
+  on the executor wiring below. Not committed / not pushed.
+- New `src/landos/field-binding.ts` (pure, unit-tested): `matchFieldPhrase` maps
+  spoken "this is the road frontage" → canonical field (11 LandPortal fields with
+  aliases; requires a binding cue so bare mentions don't false-trigger; longest
+  alias wins). `bestSelector` builds a selector + confidence from element info
+  (provided/click → data-testid → stable id → observed label → class → generic
+  label; `isStableId` rejects framework/generated ids). `chooseExtraction`
+  (selector-first, label fallback) + read-only browser-eval script builders
+  (`selectorTextScript`, `labelValueScript` [LABELVALUE marker], `probeElementScript`,
+  `labelSearchScript`).
+- Capture: `captureFieldBinding(sessionId,{field|phrase, page?, clickSelector?})`
+  in `browser-training.ts` — probes a clicked element, else label-searches the
+  live page, else stores a label-only binding. Stored in new
+  `landos_training_field_binding` table (upsert per session+field). Synthesis
+  attaches `body.fieldSelectors` from the bindings.
+- Live bridge (`browser-training-live.ts`): auto-captures when operator speech
+  matches a field phrase, and handles an explicit `field_binding` client message;
+  emits `field_binding_captured`. Uses a best-effort `withWorkingPage` CDP page.
+- Runner (`trained-playbook-runner.ts`): `readFieldSelectors` now accepts the rich
+  `{selector,label,confidence,strategy}` form (and legacy string). Extraction is
+  selector-first with label fallback; writeback confidence = binding confidence
+  (`toFactConfidence`), extractionMethod notes the match strategy. Dry-run still
+  extracts but never writes; paid step still stops before any extraction/writeback.
+- Frontend: LIVE view shows a "Learned fields" panel (field → selector/label +
+  confidence) that fills as Tyler names fields; draft-review shows a "Learned
+  fields (n)" section. Both in the built bundle.
+- QA: server tsc clean; web build clean; `field-binding` 13/13, `field-binding-capture`
+  9/9, plus prior training suites still green (54 training tests total). Full suite
+  2579 passing; same 3 pre-existing unrelated failing files (skill-registry,
+  exfiltration-guard, property-card). High-confidence DOM binding + live extraction
+  need the operator's authenticated Chrome (BROWSER_INTEL_LIVE); label-only bindings
+  work without it.
+- Updated OPERATOR_QA / BUSINESS_QA / KNOWN_LIMITATIONS (the "needs selectors"
+  limitation is now marked RESOLVED).
+
+### 2026-07-05 - Trained playbooks wired into the Browser Agent executor
+
+- Goal: make APPROVED Browser Training playbooks executable by the Browser Agent,
+  so a training session becomes a real reusable workflow. Not committed / not pushed.
+- New `src/landos/trained-playbook-runner.ts`: adapts an approved `TrainingPlaybook`
+  into a generic `BrowserPlaybook` and runs it through the existing
+  `executeBrowserPlaybook` (so it also records a `landos_browser_agent_run` +
+  gets the scope audit). `runTrainedPlaybook(id, {mode, vars, dealCardId, backend})`
+  is the entry point.
+- Safety model: **approved-only** (drafts refused before any browser action);
+  **dry-run by default** (nav + screenshots + field reads only — no clicks, no
+  typing, no writeback); the training security guard runs on **every step in both
+  modes** so a paid/checkout/skip-trace URL or button stops immediately, marks the
+  execution `blocked` + `approvalRequired`, and creates a `landos_approval`. Allowed
+  hosts come only from the playbook's declared site (+ optional `allowedHosts`),
+  never from step URLs, so a rogue step can't self-authorize (caught by a test).
+- Execution results: new `landos_training_execution` table + store fns in
+  `browser-training-db.ts` (status, mode, extracted fields, blocked actions, errors,
+  screenshots, QA notes, deal_card_id, agent_run_id). `saveTrainingExecution` /
+  `listTrainingExecutions` / `getTrainingExecution`.
+- Deal Card writeback: LIVE mode + linked Deal Card writes captured fields via
+  `writeBrowserFact` (origin landportal, status extracted). Dry-run writes nothing.
+  Field extraction uses an optional `body.fieldSelectors` map (field→CSS selector);
+  training synthesis doesn't capture those yet (KNOWN_LIMITATIONS).
+- Routes (`routes.ts`): `POST /api/landos/training/playbooks/:id/execute`
+  (dry_run|live, approved-only, 400 on draft) + `GET .../executions`.
+- Frontend (`web/src/pages/BrowserTraining.tsx`): each approved playbook in the
+  library gets Dry run / Run live buttons + an inline execution-result panel
+  (status, fields + fields-written, screenshots, blocked-action Approval-Required
+  banner, QA notes). Drafts show "Approve to make executable".
+- QA: server tsc clean; web build clean; `trained-playbook-runner` 9/9,
+  `browser-training.smoke` 3/3 (incl. draft-refusal 400 + dry-run execute through
+  HTTP), `browser-training` 20/20. Full suite 2557 passing; same 3 pre-existing
+  unrelated failing files (skill-registry, exfiltration-guard, property-card).
+  Live LandPortal replay needs the operator's authenticated Chrome (BROWSER_INTEL_LIVE).
+- Also removed the stray `_tqa.mts` per approval (harness delete gate blocked `rm`;
+  cleared via Node fs.unlink).
+- Updated OPERATOR_QA / BUSINESS_QA / KNOWN_LIMITATIONS.
+
 ### 2026-07-05 - VISUAL Operator QA + Acquire→Deal Card→Report fixes
 
 - Established visual Operator QA: Puppeteer (bundled Chrome) screenshots the live

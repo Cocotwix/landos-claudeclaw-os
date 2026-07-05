@@ -92,6 +92,37 @@ If no, continue improving unless an approval gate blocks progress.
 - Engineering QA: server tsc clean; `deal-card-report` + `land-score-provider-data` 33/33 (incl. new source-unwrap test); web + server builds clean; my web files (DealCard/LandOS) typecheck clean. Restarted; 0 browser console errors on the Deal Card.
 - Result: PASS for making the report operator-visible/usable. Classification: resolved (2 render bugs + 1 data-label bug).
 
+### 2026-07-05 - Per-field selector capture (teach fields by voice → Deal Card facts)
+
+- Dashboard DB/store: new `landos_training_field_binding` table (session_id, field, selector, label, sample_value, confidence, strategy; UNIQUE per session+field). `ExtractedField` gained confidence + strategy.
+- Build/server checked: server tsc clean; `vite build` clean; "Learned fields" panel + the binding hint copy ("this is the road frontage") confirmed present in the production bundle.
+- Browser route checked: live capture flows over `/ws/landos/training` (`field_binding` message + auto-capture when operator speech matches a field phrase → `field_binding_captured` back to the client). Synthesis attaches `body.fieldSelectors`; execution extracts + (live) writes them back — verified end to end in tests through the store + fake CDP page, and the execute HTTP path in the smoke test.
+- Operator-visible: LIVE view now shows a "Learned fields" panel (field → selector/label + confidence colour) that fills as Tyler names fields; the draft-review shows a "Learned fields (n)" section; execution results already list extracted fields + how many were written to the Deal Card.
+- LandPortal fields supported (aliases): owner, APN, acreage, road frontage, landlocked, wetlands, FEMA/flood, buildability, slope, valuation, sidebar counts.
+- Selector strategy + confidence: provided/click selector or data-testid or stable id → high; real observed label anchor → medium; generic label fallback → low; framework/generated ids rejected (`isStableId`). Extraction is selector-first with a label-match fallback so a changed selector still resolves.
+- Safety re-verified: paid step still stops before any extraction/writeback (status blocked, approvalRequired, 0 fields written, 0 facts); dry-run extracts but writes nothing to the Deal Card; capture + extraction scripts are read-only (no clicks/typing, never touch cookies/storage).
+- Tests: `field-binding` 13/13 (phrase→field incl. no-false-positive, selector priority/confidence, fallback, script builders), `field-binding-capture` 9/9 (probe/label-search/label-only capture, re-bind, synthesis attaches selectors, selector + label-fallback extraction, live writeback confidence, dry-run no-write, paid-block). Full suite 2579 passing; same 3 pre-existing unrelated failing files.
+- Live limit: DOM-based binding + live extraction need the operator's authenticated Chrome (BROWSER_INTEL_LIVE); without it, capture still stores a label-only binding usable via runtime label matching. Recorded in KNOWN_LIMITATIONS.
+- Classification: integration complete for capture + extraction + writeback + safety; a real live LandPortal session is the remaining manual acceptance.
+- Next exact task: run a real live LandPortal Map Search from the operator browser, bind the 11 fields by voice, then dry-run + live-run and confirm facts land on the Deal Card.
+
+### 2026-07-05 - Trained playbooks executable by the Browser Agent (Dry run / Run live)
+
+- Dashboard DB/store: new `landos_training_execution` table (status, mode, screenshots, extracted fields, blocked actions, errors, QA notes, deal_card_id, agent_run_id). Verified via store round-trip tests.
+- Build/server checked: server tsc clean; `vite build` clean; "Run live" action string present in the production bundle (`dist/web/assets/index-*.js`).
+- Browser route checked: `POST /api/landos/training/playbooks/:id/execute` (dry_run/live) + `GET .../executions`. Exercised through the real Hono app (`buildDashboardApp`) in `browser-training.smoke.test.ts`.
+- Result: PASS (endpoint + safety + storage). The Browser Training page now renders Dry run / Run live buttons on each APPROVED playbook (drafts show "Approve to make executable") and an inline execution-result panel (status, extracted fields + fields-written-to-Deal-Card, screenshot count, blocked actions with Approval-Required banner, QA notes).
+- Safety verified (unit + HTTP):
+  - Approved-only: executing a DRAFT returns 400 "only approved playbooks can be executed"; no browser action, no result row.
+  - Paid-action stop: a "Buy Report" click / `/checkout` URL step stops immediately, status=blocked, approvalRequired=true, a `landos_approval` row is created, no fields written. Blocks even in dry-run.
+  - Dry-run non-mutating: navigation + screenshots + field reads only; 0 clicks, 0 typing, no Deal Card writeback.
+  - Scope audit: a step navigating off the playbook's declared host stops with an "off-scope" error (rogue step URLs do NOT self-authorize).
+- Deal Card writeback: LIVE mode + linked Deal Card writes captured facts via `writeBrowserFact` (origin landportal, status extracted, extractionMethod "trained playbook: <slug> v<n>"); dry-run writes nothing. Verified with `listBrowserFacts`.
+- Live browser limit: headless CC env has `BROWSER_INTEL_LIVE=0`, so a live run here returns honest `not_configured` (nothing fabricated). True live LandPortal replay must be driven from Tyler's authenticated Chrome — recorded in KNOWN_LIMITATIONS.
+- Tests: `trained-playbook-runner` 9/9, `browser-training.smoke` 3/3, `browser-training` 20/20. Full suite: 2557 passing; the only 3 failing files (skill-registry, exfiltration-guard, property-card) are pre-existing and unrelated (don't import training code).
+- Classification: UI wiring + persistence + integration — complete for dry-run + safety; live LandPortal replay pending operator Chrome.
+- Next exact task: capture per-field selectors during training so extraction populates automatically, then run a real live LandPortal Map Search from the operator browser.
+
 ## QA Entry Template
 
 ```markdown

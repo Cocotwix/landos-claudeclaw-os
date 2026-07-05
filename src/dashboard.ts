@@ -4081,6 +4081,49 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return;
   }
 
+  // ── WebSocket: /ws/landos/training → Gemini Live bridge ───────────
+  // The Browser Training Department's realtime voice/vision loop. The browser
+  // streams mic audio + screen frames + browser events; the bridge proxies to
+  // Gemini Live and streams audio + transcripts back. Token-gated like every
+  // other route. Fails safe to recording-only if the model is unavailable.
+  void import('ws').then((wsModule: any) => {
+    const WSServer = wsModule.default?.WebSocketServer ?? wsModule.WebSocketServer;
+    if (!WSServer) return;
+    const twss = new WSServer({ noServer: true });
+    (server as unknown as import('http').Server).on('upgrade', (
+      req: import('http').IncomingMessage,
+      socket: import('stream').Duplex,
+      head: Buffer,
+    ) => {
+      const url = new URL(req.url || '/', `http://${req.headers.host}`);
+      if (url.pathname !== '/ws/landos/training') return;
+      const token = url.searchParams.get('token');
+      if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      const sessionId = Number(url.searchParams.get('session'));
+      if (!Number.isFinite(sessionId) || sessionId <= 0) {
+        socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      twss.handleUpgrade(req, socket, head, async (clientWs: any) => {
+        try {
+          const { attachTrainingLiveSession } = await import('./landos/browser-training-live.js');
+          await attachTrainingLiveSession(sessionId, clientWs);
+        } catch (err) {
+          logger.warn({ err }, 'training-live: attach failed');
+          try { clientWs.close(1011, 'training bridge error'); } catch { /* ok */ }
+        }
+      });
+    });
+    logger.info('Browser Training WebSocket active at /ws/landos/training');
+  }).catch((err: unknown) => {
+    logger.warn({ err }, 'Could not set up Browser Training WS');
+  });
+
   // ── WebSocket proxy: /ws/warroom → localhost:WARROOM_PORT ──────────
   // Allows the War Room to work through a single Cloudflare tunnel on
   // the dashboard port. Without this, remote/mobile users can't reach

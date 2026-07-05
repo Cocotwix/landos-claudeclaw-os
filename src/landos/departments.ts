@@ -67,6 +67,16 @@ export const DEPARTMENTS: readonly Department[] = [
     ],
   },
   {
+    id: 'browser_training',
+    label: 'Browser Training',
+    status: 'active',
+    description:
+      'Teaches browser agents by live demonstration. Tyler shares a tab/window/desktop and talks through a workflow; LandOS watches, listens, holds a two-way voice conversation, records the browser events, extracts business rules, and generates a reusable Browser Playbook the Browser Agent department can execute. Training is always started manually and never auto-starts. Never teaches paid report flows; any billing/checkout/paid action stops with Approval Required. Reads LandPortal credentials only from .env; never stores secrets or property work product.',
+    agents: [
+      { agentId: 'browser-training', name: 'Tutor', role: 'Live browser-workflow training and playbook authoring', status: 'active' },
+    ],
+  },
+  {
     id: 'finance_risk',
     label: 'Finance & Risk',
     status: 'planned',

@@ -1166,6 +1166,128 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_platform_intel ON landos_platform_intel(platform);
 
+    -- ── Browser Training Department ──────────────────────────────────────
+    -- Live "teach it like an employee" sessions. Tyler shares a screen and
+    -- talks; LandOS records the conversation + browser events, then synthesizes
+    -- a reusable Browser Playbook. No secrets, no property work product, no
+    -- paid actions are ever stored. Lives in store/landos.db (gitignored).
+    CREATE TABLE IF NOT EXISTS landos_training_session (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      title         TEXT NOT NULL DEFAULT '',
+      website       TEXT NOT NULL DEFAULT '',
+      surface       TEXT NOT NULL DEFAULT 'tab'
+                    CHECK (surface IN ('tab','window','desktop')),
+      status        TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','paused','ended','aborted')),
+      provider      TEXT NOT NULL DEFAULT 'gemini',
+      model         TEXT NOT NULL DEFAULT '',
+      deal_card_id  INTEGER,
+      approval_required INTEGER NOT NULL DEFAULT 0,
+      started_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      ended_at      INTEGER,
+      duration_ms   INTEGER NOT NULL DEFAULT 0,
+      audio_in_tokens   INTEGER NOT NULL DEFAULT 0,
+      audio_out_tokens  INTEGER NOT NULL DEFAULT 0,
+      video_tokens      INTEGER NOT NULL DEFAULT 0,
+      text_tokens       INTEGER NOT NULL DEFAULT 0,
+      est_cost_usd  REAL NOT NULL DEFAULT 0,
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_training_session_status ON landos_training_session(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_training_event (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id    INTEGER NOT NULL,
+      seq           INTEGER NOT NULL DEFAULT 0,
+      kind          TEXT NOT NULL DEFAULT 'note'
+                    CHECK (kind IN ('operator_speech','ai_speech','nav','click','input','screenshot','system','guard_block')),
+      role          TEXT NOT NULL DEFAULT '',
+      text          TEXT NOT NULL DEFAULT '',
+      url           TEXT NOT NULL DEFAULT '',
+      selector      TEXT NOT NULL DEFAULT '',
+      meta_json     TEXT NOT NULL DEFAULT '{}',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_training_event_session ON landos_training_event(session_id, seq);
+
+    -- Per-field selector bindings captured during a session: when Tyler names a
+    -- field ("this is road frontage") the trainer binds it to a stable selector +
+    -- nearby label so replay can extract the value. Latest binding per (session,
+    -- field) wins. No secrets, no property values are required here (value is a
+    -- transient sample from the demo page, kept for operator confirmation only).
+    CREATE TABLE IF NOT EXISTS landos_training_field_binding (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id    INTEGER NOT NULL,
+      field         TEXT NOT NULL,
+      selector      TEXT NOT NULL DEFAULT '',
+      label         TEXT NOT NULL DEFAULT '',
+      sample_value  TEXT NOT NULL DEFAULT '',
+      confidence    TEXT NOT NULL DEFAULT 'low',
+      strategy      TEXT NOT NULL DEFAULT 'label',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(session_id, field)
+    );
+    CREATE INDEX IF NOT EXISTS idx_training_field_binding_session ON landos_training_field_binding(session_id);
+
+    CREATE TABLE IF NOT EXISTS landos_training_playbook (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id    INTEGER,
+      slug          TEXT NOT NULL DEFAULT '',
+      name          TEXT NOT NULL DEFAULT '',
+      website       TEXT NOT NULL DEFAULT '',
+      version       INTEGER NOT NULL DEFAULT 1,
+      status        TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','approved','rejected','superseded')),
+      body_json     TEXT NOT NULL DEFAULT '{}',
+      source_ref    TEXT NOT NULL DEFAULT '',
+      decided_by    TEXT NOT NULL DEFAULT '',
+      decided_at    INTEGER,
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_training_playbook_slug ON landos_training_playbook(slug, version DESC);
+    CREATE INDEX IF NOT EXISTS idx_training_playbook_status ON landos_training_playbook(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_training_knowledge (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id    INTEGER,
+      category      TEXT NOT NULL DEFAULT 'business_rule'
+                    CHECK (category IN ('business_rule','provider_quirk','operator_preference','website_change','observation','never_do')),
+      title         TEXT NOT NULL DEFAULT '',
+      body          TEXT NOT NULL DEFAULT '',
+      website       TEXT NOT NULL DEFAULT '',
+      status        TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK (status IN ('proposed','saved','discarded')),
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_training_knowledge_status ON landos_training_knowledge(status, created_at DESC);
+
+    -- Execution results: each time the Browser Agent runs an APPROVED trained
+    -- playbook (dry-run or live). Captures status, screenshots, extracted fields,
+    -- blocked actions, errors, and QA notes. Ties back to the browser-agent run
+    -- and (optionally) the Deal Card whose facts were written.
+    CREATE TABLE IF NOT EXISTS landos_training_execution (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      playbook_id     INTEGER NOT NULL,
+      playbook_slug   TEXT NOT NULL DEFAULT '',
+      agent_run_id    TEXT NOT NULL DEFAULT '',
+      deal_card_id    INTEGER,
+      mode            TEXT NOT NULL DEFAULT 'dry_run'
+                      CHECK (mode IN ('dry_run','live')),
+      status          TEXT NOT NULL DEFAULT 'succeeded'
+                      CHECK (status IN ('succeeded','partial','blocked','failed','not_configured','awaiting_authentication')),
+      approval_required INTEGER NOT NULL DEFAULT 0,
+      fields_written  INTEGER NOT NULL DEFAULT 0,
+      extracted_fields_json TEXT NOT NULL DEFAULT '[]',
+      blocked_actions_json  TEXT NOT NULL DEFAULT '[]',
+      errors_json     TEXT NOT NULL DEFAULT '[]',
+      screenshots_json TEXT NOT NULL DEFAULT '[]',
+      qa_notes        TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_training_execution_playbook ON landos_training_execution(playbook_id, created_at DESC);
+
     -- ── Market Matrix (Market Intelligence department) ───────────────────
     -- The master market-intelligence database: FACTUAL market metrics per
     -- geography (county FIPS / state / ZIP) + acreage band + market side +
