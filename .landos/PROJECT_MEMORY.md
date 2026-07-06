@@ -11,6 +11,9 @@ This file stores durable lessons, solved problems, and gotchas.
 - Do not show developer trace as the main operator UI.
 - Do not rely on one source as truth.
 - Keep coding sprints focused and preserve handoff.
+- Smart Intake must never read a field LABEL as a VALUE. "Parcel ID / Owner ID /
+  Tax ID / GIS ID / Record ID" must never resolve to a state (ID → Idaho), and a
+  phone number must never resolve to an APN. Parse the label, keep the value.
 
 ## Gotchas
 
@@ -43,3 +46,13 @@ This file stores durable lessons, solved problems, and gotchas.
   deployments.
 - Every implementation sprint must end with engineering QA, Operator QA,
   Business QA, and durable memory updates. Tests alone are not done.
+- Shared parsers (`duke-preflight`, `source-adapters`) feed the whole intake
+  pipeline via `classifySmartIntake` → `resolveProperty`. Fixes there ripple
+  everywhere, so re-run the FULL suite: a state/county regex tweak can regress
+  `duke-preflight`/`property-card` tests. Keep the deterministic parse as a floor
+  and validator (it is the guardrail if an AI reasoning layer is added later).
+- Intake normalization primitives live in `src/landos/intake-normalize.ts`
+  (`maskFieldLabels`, `normalizeApn`, `extractApnCandidates`); the front-door
+  intelligence (confidence engine + deal-intelligence categorization) lives in
+  `src/landos/smart-intake.ts` (`buildSmartIntake`). Reuse these, do not
+  re-implement parsing in a new place.

@@ -190,6 +190,18 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
           }
         } catch { record('census_geocode', true, false, 'error', 'Census derivation failed; continued.'); }
       }
+      // ── Alternate-APN retry: a county may index the parcel under a different
+      // APN format than the operator pasted (e.g. a parenthetical alternate
+      // "(094 02008 000)"). Try ONE alternate when the primary did not verify.
+      // Bounded to a single extra attempt so provider calls never run away.
+      if (!property.parcelVerified && fields.apnAlternates?.length) {
+        const altApn = fields.apnAlternates[0];
+        try {
+          const va = await deps.verify({ ...fields, apn: altApn }, timeoutMs);
+          const ca = mergeAndReport(property, 'realie_landportal', va.verificationSource ?? 'Realie/LandPortal', patchFromDukeVerification(va), now(), va.parcelVerified ? 0.95 : 0.5);
+          record('realie_landportal', true, ca, `alt_apn_${va.status}`, `Alternate APN (${altApn}) retry: ${va.summary}`);
+        } catch { record('realie_landportal', true, false, 'error', 'Alternate APN retry failed; continued.'); }
+      }
     } catch { record('realie_landportal', true, false, 'error', 'Parcel verification unavailable; continued with other lanes.'); }
   }
 

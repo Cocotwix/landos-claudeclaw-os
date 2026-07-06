@@ -416,3 +416,56 @@ latest commit hash.
 - Preserved existing LandOS governance, architecture, product principles, and
   build rules.
 - No commit made.
+
+### 2026-07-06 - Smart Intake acceptance sprint
+
+- Business objective: Smart Intake is the front door; every downstream
+  department (Browser Agent, Property Intelligence, Discovery Report, Deal Card,
+  Property Board, Market Pulse/Intelligence, Strategy, Offer, Acquisition)
+  depends on it producing the correct property identity and structured deal
+  info. Fixed the root cause instead of building around it.
+- Root causes fixed (parsing was reading field LABELS as VALUES):
+  - "Parcel ID" was parsed as State = ID (Idaho), dropping Tennessee, and city
+    became "Parcel". New `maskFieldLabels()` (`src/landos/intake-normalize.ts`)
+    blanks label phrases (Parcel/Owner/Tax/GIS/Record/Property ID …) before
+    state/city extraction, in `duke-preflight.extractState` and
+    `source-adapters.extractAreaSignals`. Numeric values stay intact.
+  - Bare 2-letter state CODES now require UPPERCASE in the source (stops the
+    words "in"/"or"/"me" → Indiana/Oregon/Maine); spelled-out names stay
+    case-insensitive.
+  - County: Title-Case tokens, horizontal-whitespace-only connectors (never
+    grows across a newline: "Lithonia GA\nDeKalb County" → "DeKalb"), excludes
+    "County Road/Rd/Line/Route/Highway", plus a labeled "County: X" form for CRM
+    exports; redundant city==county echo suppressed.
+  - US phone (3-3-4) is never parsed as an APN (seller texts / transcripts).
+  - Owner strips a leading linking verb ("Owner is Betty" → "Betty").
+- APN normalization: `normalizeApn` + `extractApnCandidates` generate county
+  formats (dash/dot/space/concat), capture a parenthetical ALTERNATE APN, and
+  drop contained fragments. Threaded as `apnVariants`/`apnAlternates` on
+  `ParsedIntakeFields`; a bounded single alternate-APN retry was added to the
+  `property-resolution-engine` verify lane (proven: recovers a parcel a county
+  indexes under the alternate format — primary `094-020.08` fails, alt
+  `094 02008 000` verifies, confidence 0.95).
+- New intelligence layer: `src/landos/smart-intake.ts` `buildSmartIntake(text)`
+  composes classify + APN normalization + `identityConfidence`
+  (Verified/Likely/Possible/Insufficient + percent + reasons; caps at Likely
+  pre-resolution) + `categorizeDealIntelligence` (13 buckets, per-item evidence
+  status: Official Source / Seller Stated / Estimated / Needs Verification /
+  Unknown — never mixes verified facts with seller claims). Exposed additively
+  on `POST /api/landos/intake/classify` as `smartIntake`; the resolve/acquire
+  pipeline is unchanged in shape and auto-continues into Property Intelligence
+  when confidence clears the threshold.
+- QA: new `smart-intake.test.ts` 18/18 pass; typecheck clean (0 errors); full
+  suite green except 13 PRE-EXISTING failures in unrelated subsystems
+  (exfiltration-guard, skill-registry, acquire-ui SRC read, property-card
+  DB-ordering — none import intake modules). Fixed the one regression I
+  introduced (duke-preflight county over-grab). Operator QA: the acceptance
+  input now yields state=TN, county=Scott, normalized APNs + alternate, Likely
+  83%, ready → Property Intelligence. Business QA: raw parcel paste, seller text,
+  CRM export, and call transcript all organize/label/route without manual
+  cleanup.
+- Live provider/browser verification stays gated (no paid calls made).
+- Files (in-repo): new `intake-normalize.ts`, `smart-intake.ts`,
+  `smart-intake.test.ts`; modified `duke-preflight.ts`, `source-adapters.ts`,
+  `intake-router.ts`, `property-resolution-engine.ts`, `routes.ts`.
+- Not committed, not pushed.

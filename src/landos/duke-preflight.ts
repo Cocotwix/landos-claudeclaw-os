@@ -1,5 +1,6 @@
 import { logger } from '../logger.js';
 import { resolveParcelIdentity, type LpResolveArgs, type LpResolveResult } from './parcel-capability.js';
+import { maskFieldLabels } from './intake-normalize.js';
 
 export type DukePreflightOutcome =
   | { type: 'skip' }
@@ -47,10 +48,21 @@ export function resolveStateToken(token?: string): string | undefined {
 
 function extractState(text: string): string | undefined {
   // Prefer the LAST valid state token (closest to the trailing "city, STATE").
-  // Accept both 2-letter codes and spelled-out names.
+  // Accept both 2-letter codes and spelled-out names. Field-label phrases
+  // ("Parcel ID", "Owner ID", "Tax ID") are masked first so a label's "ID"
+  // suffix is never read as Idaho — the root-cause of the Scott County, TN miss.
+  const masked = maskFieldLabels(text);
   const re = new RegExp(`\\b([A-Z]{2}|${STATE_NAME_ALT})\\b`, 'gi');
   let last: string | undefined;
-  for (const m of text.matchAll(re)) { const abbr = resolveStateToken(m[1]); if (abbr) last = abbr; }
+  for (const m of masked.matchAll(re)) {
+    const tok = m[1];
+    // A bare 2-letter state CODE must be uppercase in the source ("TN", "GA");
+    // this stops ordinary words like "in"/"or"/"me"/"oh" from being read as
+    // Indiana/Oregon/Maine/Ohio in prose. Spelled-out names stay case-insensitive.
+    if (/^[A-Za-z]{2}$/.test(tok) && tok !== tok.toUpperCase()) continue;
+    const abbr = resolveStateToken(tok);
+    if (abbr) last = abbr;
+  }
   return last;
 }
 
@@ -77,17 +89,34 @@ function extractLabeledFips(text: string): string | undefined {
 // Owner name after an explicit "Owner:" / "owner -" label. Stops at a comma,
 // a double space, a newline, or the next labeled field (APN/county/state/FIPS).
 function extractOwner(text: string): string | undefined {
-  const m = text.match(/\bowner[:\s-]+([A-Za-z][A-Za-z.'\- ]*?)(?=\s{2,}|,|\n|\bapn\b|\bcounty\b|\bstate\b|\bfips\b|$)/i);
-  const owner = m?.[1]?.replace(/\s+/g, ' ').trim();
+  const m = text.match(/\bowner(?:\s+name)?[:\s-]+([A-Za-z][A-Za-z.'\- ]*?)(?=\s{2,}|,|\n|\bapn\b|\bcounty\b|\bstate\b|\bfips\b|$)/i);
+  // Strip a leading linking verb the label regex can absorb ("Owner is Betty" ->
+  // "Betty", "Owner was John" -> "John").
+  const owner = m?.[1]?.replace(/^(?:is|was|name is|are)\s+/i, '').replace(/\s+/g, ' ').trim();
   return owner && owner.length >= 2 ? owner : undefined;
 }
 
 // County name preceding the word "County" (e.g. "Clay County" -> "Clay"). Kept
-// so owner search can be county-gated even when no FIPS is supplied.
+// so owner search can be county-gated even when no FIPS is supplied. Requires
+// Title-Case name token(s) (1–3 words) so prose like "the property is on Gilstrap
+// Road in White County" yields "White", not the whole clause, and excludes
+// "County Road/Rd/Line/Route/Highway" (a street, not a county).
 function extractCounty(text: string): string | undefined {
-  const m = text.match(/\b([A-Za-z][A-Za-z.'\- ]*?)\s+County\b/i);
-  const county = m?.[1]?.replace(/\s+/g, ' ').trim();
-  return county && county.length >= 2 ? county : undefined;
+  // Form 1: "<Name> County" (e.g. "Scott County" -> "Scott"). Internal connectors
+  // are HORIZONTAL whitespace only ([^\S\n]) so the name never grows across a line
+  // break — "Lithonia GA\nDeKalb County" resolves to "DeKalb", not the whole run.
+  const m = text.match(
+    /\b([A-Z][a-zA-Z.'\-]+(?:[^\S\n]+[A-Z][a-zA-Z.'\-]+){0,2})[^\S\n]+County\b(?!\s+(?:road|rd|line|route|rte|highway|hwy)\b)/,
+  );
+  const named = m?.[1]?.replace(/\s+/g, ' ').trim();
+  if (named && named.length >= 2) return named;
+  // Form 2: labeled "County: <Name>" (CRM/record exports). Exclude a road word
+  // ("County Road ...") and a state name ("... County Georgia").
+  const labeled = text.match(/\bcounty[:\s]+([A-Z][a-zA-Z.'\-]+)\b/i)?.[1];
+  if (labeled && !/^(?:road|rd|line|route|rte|highway|hwy)$/i.test(labeled) && !resolveStateToken(labeled)) {
+    return labeled.replace(/\s+/g, ' ').trim();
+  }
+  return undefined;
 }
 
 // Words that disqualify a line from being a bare owner name.
@@ -124,6 +153,7 @@ function pickApnShape(raw: string | null | undefined): string | undefined {
   const v = (raw ?? '').trim();
   if (!v) return undefined;
   if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(v)) return undefined; // MM-DD-YYYY
+  if (/^(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$/.test(v)) return undefined; // US phone
   if (v.replace(/[^0-9]/g, '').length < 5) return undefined;
   const hasParcelSep = /[-./]/.test(v) || /\d\s+\d/.test(v);
   if (!hasParcelSep) return undefined;
@@ -231,8 +261,9 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   const apnPat = text.match(/\b(\d{2,6}-\d{2,6}-\d{2,6}(?:-\d+)?)\b/);
   if (apnPat) {
     const apn = apnPat[1];
-    // Reject patterns that look like dates (MM-DD-YYYY)
-    if (!/^\d{1,2}-\d{1,2}-\d{4}$/.test(apn)) {
+    // Reject patterns that look like dates (MM-DD-YYYY) or US phone numbers
+    // (3-3-4) — a seller-text phone must never be read as a parcel number.
+    if (!/^\d{1,2}-\d{1,2}-\d{4}$/.test(apn) && !/^\d{3}-\d{3}-\d{4}$/.test(apn)) {
       const state = extractState(text);
       const fips = extractLabeledFips(text);
       return { apn, ...(owner ? { owner } : {}), ...(county ? { county } : {}), ...(state ? { state } : {}), ...(fips ? { fips } : {}) };

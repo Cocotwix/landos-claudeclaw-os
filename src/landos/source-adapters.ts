@@ -24,6 +24,8 @@
 //     vendored, or cloned this sprint. Useful projects are reported as
 //     candidates only and require Tyler approval + a security review first.
 
+import { maskFieldLabels } from './intake-normalize.js';
+
 // ─────────────────────────────────────────────────────────────────────────
 // Enums / labels
 // ─────────────────────────────────────────────────────────────────────────
@@ -621,26 +623,51 @@ function resolveState(token?: string): string | undefined {
 }
 
 /** Extract city/county/state area signals from free text. Never uses
- *  coordinates. Conservative: only what is explicitly present. */
+ *  coordinates. Conservative: only what is explicitly present. Field-label
+ *  phrases ("Parcel ID", "Owner ID", …) are masked first so a label suffix is
+ *  never read as a state/city (e.g. "Parcel ID" must not yield city=Parcel,
+ *  state=ID). The numeric value is untouched — only the label words are blanked. */
 export function extractAreaSignals(text: string): { city?: string; county?: string; state?: string } {
-  const t = (text ?? '').trim();
+  const t = maskFieldLabels((text ?? '').trim());
+  // A bare 2-letter state CODE must be uppercase in the source ("TN", "GA") so
+  // ordinary words ("in"/"or"/"me") in prose are never read as states; spelled-
+  // out names stay case-insensitive.
+  const isValidStateToken = (tok?: string): boolean => {
+    if (!tok) return false;
+    if (/^[A-Za-z]{2}$/.test(tok) && tok !== tok.toUpperCase()) return false;
+    return !!resolveState(tok);
+  };
   // State: 2-letter code OR spelled-out name; last valid wins (closest to "city, STATE").
   const stateRe = new RegExp(`\\b([A-Z]{2}|${STATE_NAME_ALT})\\b`, 'gi');
   let state: string | undefined;
-  for (const m of t.matchAll(stateRe)) { const abbr = resolveState(m[1]); if (abbr) state = abbr; }
-  const countyMatch = t.match(/\b([A-Za-z][A-Za-z.'\- ]*?)\s+County\b/i);
-  const county = countyMatch?.[1]?.replace(/\s+/g, ' ').trim();
+  for (const m of t.matchAll(stateRe)) { if (isValidStateToken(m[1])) state = resolveState(m[1]); }
+  // County name: Title-Case token(s) before "County", excluding "County Road/Rd/
+  // Line/Route/Highway" (a street) so prose does not swallow a whole clause.
+  const countyMatch = t.match(
+    /\b([A-Z][a-zA-Z.'\-]+(?:[^\S\n]+[A-Z][a-zA-Z.'\-]+){0,2})[^\S\n]+County\b(?!\s+(?:road|rd|line|route|rte|highway|hwy)\b)/,
+  );
+  let county = countyMatch?.[1]?.replace(/\s+/g, ' ').trim();
+  if (!county) {
+    // Labeled "County: <Name>" (CRM/record exports); exclude road words + state names.
+    const labeled = t.match(/\bcounty[:\s]+([A-Z][a-zA-Z.'\-]+)\b/i)?.[1];
+    if (labeled && !/^(?:road|rd|line|route|rte|highway|hwy)$/i.test(labeled) && !resolveState(labeled)) {
+      county = labeled.replace(/\s+/g, ' ').trim();
+    }
+  }
   // City directly before a state (code or name), e.g. "Cottageville, SC",
   // "Winters, Texas". Take the token(s) closest to the state; ignore a "... County".
   let city: string | undefined;
   const cityRe = new RegExp(`\\b([A-Z][a-zA-Z.'\\-]+(?:\\s+[A-Z][a-zA-Z.'\\-]+)?)\\s*,?\\s+([A-Z]{2}|${STATE_NAME_ALT})\\b`, 'gi');
   for (const m of t.matchAll(cityRe)) {
-    if (!resolveState(m[2])) continue;
+    if (!isValidStateToken(m[2])) continue;
     const candidate = m[1].replace(/\s+/g, ' ').trim();
     if (/\bCounty\b/i.test(candidate)) continue;
     if (STATE_NAME_TO_ABBR[candidate.toLowerCase()]) continue; // the "city" is itself a state name
     city = candidate; // last valid match wins (closest to the state)
   }
+  // "County: Cherokee, GA" sets both county and city to Cherokee — the value is
+  // the county, so drop the redundant city echo.
+  if (city && county && city.toLowerCase() === county.toLowerCase()) city = undefined;
   return {
     ...(city ? { city } : {}),
     ...(county ? { county } : {}),

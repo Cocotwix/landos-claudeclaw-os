@@ -100,6 +100,7 @@ import { fetchRedfinLandComps } from './redfin-land-comps.js';
 import { extractPropertyArgs } from './duke-preflight.js';
 import { suggestAddresses } from './address-suggest.js';
 import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
+import { buildSmartIntake } from './smart-intake.js';
 import { planResolver, type IntakeFields } from './resolver-planner.js';
 import { buildDiscoveryCallReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
@@ -2602,7 +2603,14 @@ export function registerLandosRoutes(app: Hono): void {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const text = str(body.text);
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
-    return c.json({ classification: classifySmartIntake(text), registeredIntents: listIntakeIntents() });
+    // smartIntake adds the front-door intelligence layer: APN normalization,
+    // the identity confidence engine, and deal-intelligence categorization with
+    // evidence status. classification stays for backward compatibility.
+    return c.json({
+      classification: classifySmartIntake(text),
+      smartIntake: buildSmartIntake(text),
+      registeredIntents: listIntakeIntents(),
+    });
   });
 
   // ── Property Resolution Engine (read-only: resolve identity, write nothing) ─

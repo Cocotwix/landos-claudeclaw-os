@@ -15,6 +15,7 @@
 
 import { extractPropertyArgs, looksLikePropertyInput } from './duke-preflight.js';
 import { extractAreaSignals } from './source-adapters.js';
+import { extractApnCandidates } from './intake-normalize.js';
 import type { LpResolveArgs } from './landportal-client.js';
 import type { ParcelIdentityClass } from './intake-types.js';
 
@@ -44,6 +45,12 @@ export interface ParsedIntakeFields {
   owner?: string;
   propertyId?: string;
   lpUrl?: string;
+  /** Common county formats for the APN, tried before declaring a lookup failure
+   *  (e.g. "094-020.08" → "09402008", "094 020 08", …). */
+  apnVariants?: string[];
+  /** Additional distinct APN representations found in the input (e.g. a
+   *  parenthetical alternate parcel number "(094 02008 000)"). */
+  apnAlternates?: string[];
 }
 
 /** A registered intent. Future departments add one of these — that is the entire
@@ -90,6 +97,14 @@ export interface SmartIntakeResult {
 function fieldsFromArgs(args: LpResolveArgs | null, rawText: string): ParsedIntakeFields {
   const area = extractAreaSignals(rawText);
   const a = (args ?? {}) as Record<string, string | undefined>;
+  // Normalize every APN in the raw input into common county formats and capture
+  // any alternate parcel number (e.g. a parenthetical "(094 02008 000)"). The
+  // primary APN stays whatever the underlying parser resolved; the variants and
+  // alternates give the resolver more shots before it can declare a failure.
+  const apnCands = extractApnCandidates(rawText);
+  const apn = a.apn ?? apnCands.primary;
+  const variants = apn ? apnCands.allVariants : [];
+  const alternates = apn ? apnCands.alternates.filter((alt) => alt !== apn) : [];
   return {
     address: a.address,
     city: a.city ?? area.city,
@@ -97,10 +112,12 @@ function fieldsFromArgs(args: LpResolveArgs | null, rawText: string): ParsedInta
     zip: a.zip,
     county: a.county ?? area.county,
     fips: a.fips,
-    apn: a.apn,
+    apn,
     owner: a.owner,
     propertyId: a.propertyid,
     lpUrl: a.lp_url,
+    ...(variants.length ? { apnVariants: variants } : {}),
+    ...(alternates.length ? { apnAlternates: alternates } : {}),
   };
 }
 
