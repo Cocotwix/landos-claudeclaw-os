@@ -212,6 +212,155 @@ function entityParam(raw: string | undefined): string | undefined {
   return (LANDOS_ENTITIES as readonly string[]).includes(raw) ? raw : undefined;
 }
 
+const fmtMoney = (n: unknown): string => (typeof n === 'number' && Number.isFinite(n) ? `$${Math.round(n).toLocaleString()}` : 'Unavailable');
+const fmtText = (v: unknown, fallback = 'Unavailable'): string => (typeof v === 'string' && v.trim() ? v.trim() : fallback);
+
+function propertyIntelligenceMarkdown(input: {
+  deal: unknown;
+  report: ReturnType<typeof getDealCardReport>;
+  executiveSummary: ReturnType<typeof buildExecutiveSummary>;
+  discoveryReport?: ReturnType<typeof buildDiscoveryCallReport>;
+  briefing?: ReturnType<typeof buildDiscoveryBriefing>;
+}): string {
+  const { deal, report, executiveSummary, discoveryReport, briefing } = input;
+  const dealTitle = fmtText((deal as { title?: string }).title, `Deal Card #${(report as { dealCardId?: number }).dealCardId ?? ''}`);
+  const dcr = discoveryReport;
+  const inspection = report.landportalInspection;
+  const factRows = report.ddFactChecklist ?? [];
+  const fact = (key: string) => factRows.find((r) => r.key === key)?.value ?? null;
+  const score = report.landScore;
+  const offer = dcr?.roughOfferRange;
+  const strategyRows = dcr?.strategyEvaluation ?? [];
+  const comps = dcr?.comparableIntelligence?.selectedComparables?.length
+    ? dcr.comparableIntelligence.selectedComparables
+    : inspection?.comparables ?? [];
+  const market = dcr?.marketIntelligence;
+  const marketPulse = market?.marketPulse ?? executiveSummary.marketPulse.interpretation ?? report.marketSummary;
+  const lines: string[] = [];
+  lines.push(`# Property Intelligence Report`);
+  lines.push('');
+  lines.push(`Generated: ${new Date().toLocaleString()}`);
+  lines.push(`Property: ${dealTitle}`);
+  lines.push(`Status: ${report.reportStatus} | ${report.parcelVerificationStatus}`);
+  lines.push('');
+  lines.push(`## Executive Summary`);
+  lines.push(dcr?.headline ?? executiveSummary.headline ?? report.ddSummary);
+  lines.push(dcr?.disclaimer ?? 'Property intelligence assembled from existing LandOS due diligence, browser inspection, market, score, and strategy workflows.');
+  lines.push('');
+  lines.push(`## Parcel Overview`);
+  lines.push(`- Owner: ${fact('owner') ?? fmtText(inspection?.parcelFacts?.['Owner Name'] ?? inspection?.parcelFacts?.Owner)}`);
+  lines.push(`- APN / Parcel ID: ${fact('apn') ?? fmtText(inspection?.parcelFacts?.['Parcel ID'] ?? inspection?.parcelFacts?.APN)}`);
+  lines.push(`- Acreage: ${fact('acres') ?? fmtText(inspection?.parcelFacts?.Acres ?? inspection?.parcelFacts?.['Calc Acres'])}`);
+  lines.push(`- County / State: ${fact('county') ?? fmtText(inspection?.parcelFacts?.County)} / ${fact('state') ?? fmtText(inspection?.parcelFacts?.State)}`);
+  lines.push(`- Address: ${fact('situsAddress') ?? fmtText(inspection?.parcelFacts?.['Parcel Address'] ?? inspection?.parcelFacts?.Address)}`);
+  lines.push('');
+  lines.push(`## Property Information`);
+  for (const row of factRows) lines.push(`- ${row.label}: ${row.value ?? 'Unavailable'} (${row.status}${row.source ? `, ${row.source}` : ''})`);
+  if (inspection && Object.keys(inspection.parcelFacts).length > 0) {
+    lines.push('');
+    lines.push(`### All Visible LandPortal Fields`);
+    for (const [k, v] of Object.entries(inspection.parcelFacts)) lines.push(`- ${k}: ${v}`);
+  }
+  lines.push('');
+  lines.push(`## LandPortal Due Diligence`);
+  lines.push(inspection?.parcelUrl ? `Parcel source: ${inspection.parcelUrl}` : 'Parcel source: Unavailable');
+  lines.push(`- Road frontage: ${fmtText(inspection?.parcelFacts?.['Road Frontage'])}`);
+  lines.push(`- Landlocked: ${fmtText(inspection?.parcelFacts?.['Land Locked'])}`);
+  lines.push(`- Buildability: ${fmtText(inspection?.factSheet?.buildability?.pct ?? inspection?.parcelFacts?.['Buildability total (%)'])}`);
+  lines.push(`- Assessment / valuation: ${fmtText(inspection?.parcelFacts?.['Assessment'] ?? inspection?.parcelFacts?.['Total Market Value'] ?? inspection?.parcelFacts?.['Market Value'])}`);
+  lines.push(`- Sale history: ${fmtText(inspection?.parcelFacts?.['Last Sale'] ?? inspection?.parcelFacts?.['Sale Date'])}`);
+  lines.push(`- Mortgage information: ${fmtText(inspection?.parcelFacts?.Mortgage ?? inspection?.parcelFacts?.['Mortgage Amount'])}`);
+  lines.push('');
+  lines.push(`## Slope`);
+  lines.push(fmtText(inspection?.parcelFacts?.['Slope Avg'] ?? report.govDd?.slope?.note, 'Unavailable from current visible data.'));
+  lines.push('');
+  lines.push(`## Wetlands`);
+  lines.push(fmtText(inspection?.factSheet?.environment?.wetlandsPct ?? report.govDd?.wetlands?.note, 'Unavailable from current visible data.'));
+  lines.push('');
+  lines.push(`## Flood`);
+  lines.push(fmtText(inspection?.factSheet?.environment?.femaFloodZone ?? report.govDd?.flood?.note, 'Unavailable from current visible data.'));
+  lines.push('');
+  lines.push(`## Google Visual Context`);
+  for (const asset of report.visualContext?.assets ?? []) lines.push(`- ${String(asset.service).replace(/_/g, ' ')}: ${asset.status}${asset.note ? ` - ${asset.note}` : ''}`);
+  lines.push('');
+  lines.push(`## Comparable Sales`);
+  if (comps.length === 0) lines.push('No comparable rows were extracted in the current run.');
+  for (const c of comps.slice(0, 20) as Array<Record<string, unknown>>) {
+    lines.push(`- ${fmtText(c.status, 'unknown')}${c.address ? ` | ${c.address}` : ''}${c.apn ? ` | APN ${c.apn}` : ''}${c.acres ? ` | ${c.acres} ac` : ''}${c.price ? ` | ${fmtMoney(c.price)}` : ''}${c.pricePerAcre ? ` | ${fmtMoney(c.pricePerAcre)}/ac` : ''}${c.distanceMiles ? ` | ${c.distanceMiles} mi` : ''}`);
+  }
+  lines.push('');
+  lines.push(`## Market Pulse`);
+  lines.push(marketPulse);
+  if (market) {
+    if (market.opportunities.length) lines.push(`Opportunities: ${market.opportunities.join('; ')}`);
+    if (market.risks.length) lines.push(`Risks: ${market.risks.join('; ')}`);
+  }
+  lines.push('');
+  lines.push(`## Land Score`);
+  lines.push(score ? `${score.score}/${score.maxScore} - ${score.verdict} (${score.confidence}). ${score.note}` : 'Land Score unavailable because parcel identity or required facts are incomplete.');
+  for (const f of score?.factors ?? []) lines.push(`- ${f.label}: ${f.points}/${f.maxPoints} - ${f.basis}${f.dataGap ? ' (data gap)' : ''}`);
+  lines.push('');
+  lines.push(`## Strategy`);
+  for (const s of strategyRows) lines.push(`- ${s.strategy}: ${s.potential ?? s.verdict}. ${s.reason} Pricing: ${s.pricingLogic} Risk: ${s.mainRisk}`);
+  lines.push(`Primary strategy: ${report.mostViableStrategy || 'Unavailable'}`);
+  lines.push('');
+  lines.push(`## Offer Guidance`);
+  if (offer?.acquisition?.low != null && offer.acquisition.high != null) lines.push(`40-60% guidance: ${fmtMoney(offer.acquisition.low)} to ${fmtMoney(offer.acquisition.high)}. ${offer.note}`);
+  else lines.push('Valuation cannot yet be determined from sufficient evidence.');
+  lines.push('');
+  lines.push(`## Red Flags`);
+  for (const item of [...(report.riskFlags ?? []), ...(market?.risks ?? [])].slice(0, 12)) lines.push(`- ${item}`);
+  if (!(report.riskFlags ?? []).length && !(market?.risks ?? []).length) lines.push('- None captured.');
+  lines.push('');
+  lines.push(`## Green Flags`);
+  for (const item of [...(inspection?.visualObservations?.map((o) => `${o.label}: ${o.detail}`) ?? []), ...(market?.opportunities ?? [])].slice(0, 12)) lines.push(`- ${item}`);
+  if (!(inspection?.visualObservations?.length) && !(market?.opportunities ?? []).length) lines.push('- None captured.');
+  lines.push('');
+  lines.push(`## Discovery Call Preparation`);
+  for (const q of [...(briefing?.questionsToAsk ?? []), ...(inspection?.discoveryQuestions ?? [])].slice(0, 12)) lines.push(`- ${q}`);
+  lines.push('');
+  lines.push(`## Due Diligence Opinion`);
+  lines.push(report.parcelVerified ? 'Parcel identity is source-verified. Use this as a pre-discovery due diligence report; confirm title, access, zoning, utilities, and environmental constraints before a firm offer.' : 'Parcel identity is not verified. Treat all market and strategy output as local-area context until APN/owner/county evidence verifies the parcel.');
+  lines.push('');
+  lines.push(`## Screenshots`);
+  for (const a of inspection?.assets ?? []) lines.push(`- ${a.label}: ${a.kind}${a.note ? ` - ${a.note}` : ''}`);
+  return lines.join('\n');
+}
+
+async function buildPropertyIntelligencePdf(markdown: string, imagePaths: string[]): Promise<Buffer> {
+  const { default: PDFDocument } = await import('pdfkit');
+  const doc = new PDFDocument({ margin: 42, size: 'LETTER' });
+  const chunks: Buffer[] = [];
+  doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+  const done = new Promise<Buffer>((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
+  doc.fontSize(18).text('Property Intelligence Report', { underline: true });
+  doc.moveDown();
+  for (const raw of markdown.split('\n').slice(2)) {
+    const line = raw.trimEnd();
+    if (line.startsWith('# ')) continue;
+    if (line.startsWith('## ')) {
+      doc.moveDown(0.8).fontSize(14).text(line.slice(3), { underline: true }).moveDown(0.2).fontSize(10);
+    } else if (line.startsWith('### ')) {
+      doc.moveDown(0.5).fontSize(12).text(line.slice(4)).fontSize(10);
+    } else {
+      doc.fontSize(9).text(line || ' ', { width: 520 });
+    }
+  }
+  if (imagePaths.length) {
+    doc.addPage().fontSize(14).text('Screenshots', { underline: true }).moveDown();
+    for (const imagePath of imagePaths.slice(0, 12)) {
+      try {
+        if (!fs.existsSync(imagePath)) continue;
+        if (doc.y > 560) doc.addPage();
+        doc.image(imagePath, { fit: [520, 280], align: 'center' });
+        doc.moveDown();
+      } catch { /* skip unreadable image */ }
+    }
+  }
+  doc.end();
+  return done;
+}
+
 /** At-a-glance "workspace readiness" summary for each property card so the
  *  operator can see, on the board, which properties already have real intelligence
  *  (inspection, visuals, comps, seller questions) without opening each one.
@@ -1513,10 +1662,93 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({ report, executiveSummary, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
   });
 
+  app.get('/api/landos/deal-cards/:id/report/download', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const report = getDealCardReport(id);
+    if (!report.exists) return c.json({ error: 'run Property Intelligence before downloading a report' }, 400);
+    const cardId = subjectCardId(deal);
+    const sellerSummary = summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []);
+    const readiness = computeDealCardReadiness(report, {
+      dealUpdatedAt: (deal as { updated_at?: number }).updated_at,
+      sellerFacts: sellerSummary,
+      hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
+    });
+    const briefing = buildDiscoveryBriefing(report, readiness, sellerSummary);
+    const browserMarketIntel = await browserIntelFor(deal as unknown as Record<string, unknown>);
+    const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
+    const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
+    const executiveSummary = buildExecutiveSummary(report, growthSummary);
+    const discoveryReport = buildDiscoveryCallReport(report, executiveSummary, buildDiscoveryIntake(deal));
+    const marketMatrix = marketMatrixFor(deal);
+    discoveryReport.marketMatrix = marketMatrix;
+    const markdown = propertyIntelligenceMarkdown({ deal, report, executiveSummary, discoveryReport, briefing });
+    const inspection = cardId ? loadPropertyInspection(cardId) : null;
+    const imagePaths = (inspection?.assets ?? []).map((a) => a.storedPath).filter((p) => {
+      const resolved = path.resolve(p);
+      const root = path.resolve(process.cwd(), 'store', 'visuals');
+      return resolved.startsWith(root + path.sep);
+    });
+    const format = (c.req.query('format') ?? 'pdf').toLowerCase();
+    const baseName = `property-intelligence-${id}`;
+    if (format === 'md' || format === 'markdown') {
+      return new Response(markdown, {
+        headers: {
+          'content-type': 'text/markdown; charset=utf-8',
+          'content-disposition': `attachment; filename="${baseName}.md"`,
+          'cache-control': 'private, max-age=60',
+        },
+      });
+    }
+    const pdf = await buildPropertyIntelligencePdf(markdown, imagePaths);
+    return new Response(new Uint8Array(pdf), {
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': `attachment; filename="${baseName}.pdf"`,
+        'cache-control': 'private, max-age=60',
+      },
+    });
+  });
+
   app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const dealBeforeRun = getDealCard(id);
+    if (!dealBeforeRun) return c.json({ error: 'deal card not found' }, 404);
+    const cardIdBeforeRun = subjectCardId(dealBeforeRun);
+    if (cardIdBeforeRun) {
+      const prop = (dealBeforeRun.propertyCards?.[0] ?? {}) as {
+        active_input_address?: string | null;
+        apn?: string | null;
+        county?: string | null;
+        state?: string | null;
+        city?: string | null;
+        owner?: string | null;
+      };
+      await ensureBrowserSession();
+      const inspectionResult = await runPropertyInspection({
+        cardId: cardIdBeforeRun,
+        searchKey: {
+          address: str(prop.active_input_address ?? undefined),
+          apn: str(prop.apn ?? undefined),
+          county: str(prop.county ?? undefined),
+          state: str(prop.state ?? undefined),
+          city: str(prop.city ?? undefined),
+          owner: str(prop.owner ?? undefined),
+        },
+        mode: 'deep_record',
+        existingEvidence: [],
+        timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+      }, {
+        landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
+        countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
+        googleVisualConfigured: googleVisualConfiguredResolved(),
+      });
+      persistPropertyInspection(cardIdBeforeRun, inspectionResult.inspection);
+    }
     // Wire the REAL bounded non-credit LandPortal exact resolver. This is the
     // same safe path the Duke verification route uses — not a comp tool/credit.
     const result = await runDealCardReport(id, {

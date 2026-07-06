@@ -491,7 +491,16 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     // the comps map. Proves the map was reached (mapReached) and never touches a
     // paid Comp/Slope report control. Read-only; closes the tab it opened.
     async captureLandPortalVisuals(url: string, opts: { timeoutMs: number }) {
-      const empty = { fields: {} as Record<string, string>, parcelShotPath: null as string | null, compsMapShotPath: null as string | null, compRows: [] as string[], mapReached: false, capturedAtIso: now() };
+      const empty = {
+        fields: {} as Record<string, string>,
+        parcelShotPath: null as string | null,
+        compsMapShotPath: null as string | null,
+        overlayShots: [] as Array<{ overlay: string; path: string; purpose: string }>,
+        terrainShotPath: null as string | null,
+        compRows: [] as string[],
+        mapReached: false,
+        capturedAtIso: now(),
+      };
       await ensureBrowserSession(deps);
       if (!state.browser) return empty;
       const page = await state.browser.newPage();
@@ -525,6 +534,50 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         await page.screenshot({ path: parcelFile });
         // Read the full parcel fact sheet on the parcel view (before the map click).
         const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+        const overlayShots: Array<{ overlay: string; path: string; purpose: string }> = [];
+        const clickVisible = async (labels: RegExp[]): Promise<boolean> => page.evaluate<boolean>(((patterns: string[]) => {
+          const rx = patterns.map((p) => new RegExp(p, 'i'));
+          const visible = (el: any): boolean => {
+            if (!el || !el.getBoundingClientRect) return false;
+            const r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) return false;
+            const st = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
+            return !(st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.1));
+          };
+          const els = Array.from(document.querySelectorAll('button,a,label,span,div,[role=button],[role=menuitem]')) as any[];
+          const el = els.find((e) => {
+            if (!visible(e)) return false;
+            const text = (e.textContent || e.getAttribute?.('aria-label') || e.getAttribute?.('title') || '').replace(/\s+/g, ' ').trim();
+            return text.length > 0 && text.length < 80 && rx.some((r) => r.test(text));
+          });
+          if (el) { el.scrollIntoView?.({ block: 'center', inline: 'center' }); el.click(); return true; }
+          return false;
+        }) as unknown as () => boolean, labels.map((r) => r.source));
+        try { await clickVisible([/base\s*maps?/i, /overlays?/i, /basemaps?\s*&?\s*overlays?/i]); await sleep(700); } catch { /* best-effort */ }
+        const captureOverlay = async (label: string, purpose: string, labels: RegExp[]): Promise<void> => {
+          try {
+            const on = await clickVisible(labels);
+            if (!on) return;
+            await sleep(1800);
+            const file = path.join(dir, `${purpose}-${Date.now()}.png`);
+            await page.screenshot({ path: file });
+            overlayShots.push({ overlay: label, path: file, purpose });
+            await clickVisible(labels).catch(() => false);
+            await sleep(600);
+          } catch { /* overlay unavailable; leave it absent */ }
+        };
+        await captureOverlay('Contour Lines', 'landportal_overlay_contour_lines', [/contour/i, /topo/i]);
+        await captureOverlay('Wetlands', 'landportal_overlay_wetlands', [/wetland/i, /nwi/i]);
+        await captureOverlay('FEMA Floodplain', 'landportal_overlay_fema_floodplain', [/fema/i, /flood/i]);
+        let terrainShotPath: string | null = null;
+        try {
+          const terrainOn = await clickVisible([/^3d$/i, /3d view/i, /terrain/i]);
+          if (terrainOn) {
+            await sleep(2200);
+            terrainShotPath = path.join(dir, `landportal-terrain-${Date.now()}.png`);
+            await page.screenshot({ path: terrainShotPath });
+          }
+        } catch { terrainShotPath = null; }
         // Expand "View all" so every comp row is in the DOM, then read them.
         await page.evaluate(() => { const els = Array.from(document.querySelectorAll('button,a,span,div')) as any[]; const va = els.find((e) => /^view all/i.test((e.textContent || '').replace(/\s+/g, ' ').trim()) && (e.children || []).length === 0); if (va) va.click(); });
         await sleep(1500);
@@ -534,7 +587,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         await sleep(6000);
         let compsMapShotPath: string | null = null;
         if (mapReached) { const compsFile = path.join(dir, `landportal-compsmap-${Date.now()}.png`); await page.screenshot({ path: compsFile }); compsMapShotPath = compsFile; }
-        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, compRows: compRows ?? [], mapReached, capturedAtIso: now() };
+        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, terrainShotPath, compRows: compRows ?? [], mapReached, capturedAtIso: now() };
       } catch {
         return empty;
       } finally {

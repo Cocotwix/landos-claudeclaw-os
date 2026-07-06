@@ -515,6 +515,7 @@ async function runLandPortalAgentic(
     let panelFields: Record<string, string> = obs.fields;
     let lpVisuals: {
       fields: Record<string, string>; parcelShotPath: string | null; compsMapShotPath: string | null;
+      overlayShots?: Array<{ overlay: string; path: string; purpose: string }>; terrainShotPath?: string | null;
       compRows: string[]; mapReached: boolean; capturedAtIso: string;
     } | null = null;
     let shot: Awaited<ReturnType<BrowserDriver['screenshot']>> | null = null;
@@ -571,6 +572,13 @@ async function runLandPortalAgentic(
       if (lpVisuals.parcelShotPath) {
         inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel View', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal parcel view (deep-link full page).' });
       }
+      if (lpVisuals.terrainShotPath) {
+        inspectionAssets.push({ key: 'parcel_3d', label: 'LandPortal 3D / terrain view', kind: 'parcel_3d', purpose: LANDPORTAL_3D_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.terrainShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 3D or terrain view screenshot when available.' });
+      }
+      for (const ov of lpVisuals.overlayShots ?? []) {
+        const key = `overlay_${normalizeOverlayName(ov.overlay)}`;
+        inspectionAssets.push({ key, label: ov.overlay, kind: 'overlay', purpose: ov.purpose, sourcePath: ov.path, timestamp: lpVisuals.capturedAtIso, overlay: ov.overlay, note: `${ov.overlay} overlay screenshot from LandPortal.` });
+      }
       comparablesUrl = obs.url || null;
       comparables = lpVisuals.compRows
         .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE))
@@ -585,12 +593,29 @@ async function runLandPortalAgentic(
       comparablesUrl = comparablesResult.comparablesUrl;
       comparables = comparablesResult.comparables;
     }
+    const overlayResult = lpVisuals?.overlayShots?.length
+      ? {
+          overlays: lpVisuals.overlayShots.map((ov) => ({
+            overlay: ov.overlay,
+            status: 'captured' as const,
+            note: `${ov.overlay} overlay toggled and captured from LandPortal. Visual signal only, not legal verification.`,
+            confidence: 'low' as const,
+            screenshotKey: `overlay_${normalizeOverlayName(ov.overlay)}`,
+          })),
+          assets: [] as Array<{ key: string; label: string; kind: 'overlay'; purpose: string; sourcePath: string; timestamp: string; overlay: string; note?: string }>,
+        }
+      : await inspectOverlays(driver, obsv, timeoutMs).catch(() => ({ overlays: [] as LandPortalOverlayObservation[], assets: [] as Array<{ key: string; label: string; kind: 'overlay'; purpose: string; sourcePath: string; timestamp: string; overlay: string; note?: string }> }));
+    for (const asset of overlayResult.assets) {
+      if (!inspectionAssets.some((a) => a.key === asset.key)) inspectionAssets.push(asset);
+    }
+    const terrainAsset = inspectionAssets.some((a) => a.kind === 'parcel_3d') ? null : await captureParcel3dView(driver, obsv, timeoutMs).catch(() => null);
+    if (terrainAsset) inspectionAssets.push(terrainAsset);
     ev.inspection = {
       parcelUrl: obs.url || null,
       comparablesUrl,
       parcelFacts: cleanedFields,
       assets: inspectionAssets,
-      overlays: [],
+      overlays: overlayResult.overlays,
       visualObservations: deriveVisualObservations(cleanedFields, key),
       comparables,
     };

@@ -23,6 +23,30 @@ If no, continue improving unless an approval gate blocks progress.
 |---|---|---|---|---|
 | 2026-07-04 | Dashboard-backed Property Card acceptance for the current operator acceptance property | Failing in real UI | Verified card existed in storage, but Tyler saw duplicate cards, stale Duke/LandPortal credit UI, and missing inspection/discovery sections in Property Board | Finish dashboard-visible Property Card workspace wiring, suppress weak duplicate, render persisted inspection/comps/market/discovery output, then rebuild/restart/verify real dashboard |
 
+### 2026-07-06 - LIVE Property Intelligence Operator QA
+
+- Dashboard path used: real local dashboard on `:3141`, authenticated Browser Intelligence Chrome session, Deal Card action `Re-run Property Intelligence`. No direct DB-only shortcut and no paid LandPortal/comp/report action.
+- First live run: the current unverified Lehigh Acres lead correctly remained data-limited. LandOS produced Google visuals and a readable report, but did not fabricate parcel identity, APN, owner, acreage, Land Score, or comps. This is a PASS for honesty but not the full acceptance case.
+- Full acceptance run: reran the workflow from the Deal Card on an existing verified property card with LandPortal data and comps. Result: PASS with gaps.
+- Visual QA evidence saved locally under `store/operator-qa-property-intel/`: `deal-5-after-run.png`, `property-board-after-run.png`, `deal-5-property-intelligence-report.pdf`, `deal-5-pdf-page-1.png`, `deal-5-pdf-last-page.png`, and `deal-5-qa-summary.json`.
+- Deal Card visually verified: Property Intelligence Report section renders; `Re-run Property Intelligence` and `Download Report` are visible; Google satellite and Street View are visible; Market Pulse, Public Records Research, parcel overview, At-a-Glance facts, Land Score, strategy/discovery report sections, and LandPortal visual assets are present.
+- Property Board visually verified: the verified property card shows `Inspection`, `7 visuals`, and `15 comps`, making the board scannable for operator triage.
+- LandPortal screenshot QA: parcel page screenshot shows authenticated LandPortal, owner/APN/acres/frontage/landlocked fields, highlighted parcel, and safe sidebar controls. Wetlands/FEMA captures show environmental fields and 0 coverage. 3D terrain/comps-map capture shows the parcel outline and four visible sidebar comps. No paid comp/report purchase was triggered.
+- Download QA: PDF downloaded successfully; file is a real PDF, 8 pages, 5 embedded images. Rendered page 1 contains the readable Property Intelligence Report and property facts; rendered last page contains the LandPortal comps-map screenshot.
+- Engineering QA during live pass: `npm run build:server` clean; focused suites passed: `property-inspection`, `landportal-agentic`, and `deal-card-report` with `--testTimeout 20000`.
+- Remaining operator gap: report is useful for pre-discovery/pre-offer triage, but still shows "complete with gaps" because official source evidence, title/access/utilities, and sold-comp support are not fully confirmed. This is correct for the current data, not a UI failure.
+
+### 2026-07-06 - Property Intelligence Run wiring (Browser Agent completion pass)
+
+- Scope: continued the existing Browser Agent / Property Inspection / Deal Card report workflow. No parallel feature or replacement report system added.
+- Operator-facing changes: Deal Card now labels the one action as **Run Property Intelligence** / **Re-run Property Intelligence**, the section is **Property Intelligence Report**, and a **Download Report** action is available after a report exists. Acquire now says **Run Property Intelligence**.
+- Browser route checked: focused non-watch tests passed exactly as requested: `npx vitest run src/landos/property-inspection.test.ts` (2/2) and `npx vitest run src/landos/landportal-agentic.test.ts` (2/2). Additional checks: `browser-session` 17/17, `browser-intelligence` 15/15, `deal-card-report` 25/25 with `--testTimeout 20000`.
+- Build/server checked: `npm run build:server` clean; `npm run build:web` clean. The first broader report run hit Vitest's default 5s timeout on two slow report tests, but both passed isolated and the full report suite passed with a 20s timeout.
+- Operator-visible sections expected from one Property Intelligence run: LandPortal parcel facts, overlay/terrain/comps screenshots where the live page exposes controls, Google visual context, comparable rows, Market Pulse, Land Score, strategy evaluation, 40-60% guidance when valuation exists, and the downloadable PDF/markdown report generated from the same current report object.
+- Result: Engineering/operator-surface PASS for wiring and dashboard affordances. Manual live-property Operator QA still required: open dashboard, start the authenticated Browser Intelligence session, run a real property, and visually confirm LandPortal overlay captures, comps map extraction, Google visuals, Market Pulse, Strategy, Land Score, and the downloaded PDF contents.
+- First remaining blocker: true LandPortal browser work requires Tyler's live authenticated Chrome session; this CC environment cannot log into LandPortal or visually validate a real property page.
+- What not to repeat: do not declare full acceptance from tests alone; the final bar remains a real operator-run property and visual inspection of the report/download.
+
 ### 2026-07-04 - Land Score integrated into the Due Diligence / Property Report
 
 - Dashboard DB/store: `store/landos.db` (real). Verified deal cards #1 (128.55 ac, thin LandPortal read) and #5 (1.03 ac, full LandPortal read).
@@ -133,6 +157,37 @@ If no, continue improving unless an approval gate blocks progress.
 - Next failure (expected, not a bug): the actual voice/screen loop (getDisplayMedia + mic + Gemini Live WebSocket) can only be exercised from a real browser with mic + screen share — headless API/CLI can't drive it. That is the remaining manual acceptance.
 - QA residue in the LIVE landos.db: one ended test session + one `qa_runtime_wiring_test` DRAFT playbook (drafts cannot execute; harmless). Usage now shows 1 lifetime session / 1 playbook. Tyler may delete if he wants a clean counter (no delete endpoint yet; would need a direct DB op).
 - Classification: stale build/server (resolved by rebuild + restart). Files changed this step: none (source already correct); only `dist` rebuilt + service restarted.
+
+### 2026-07-06 - Live session made obviously-working (silent-session acceptance failure)
+
+- Symptom (operator acceptance): Tyler clicked Start Training, shared screen, talked, clicked through LandPortal — LandOS never talked back, never showed it was listening, no transcript, no confirmation. Silent run = fail.
+- ROOT CAUSE (found via `scripts/_live_probe.mjs` + `_live_ws_probe.mjs`): the configured Live model id `gemini-2.5-flash-preview-native-audio-dialog` (and `gemini-2.0-flash-live-001`, `gemini-live-2.5-flash-preview`) are "not found for API version v1beta / not supported for bidiGenerateContent" on THIS project's Google key. The socket opened then immediately closed — so nothing was ever spoken. Only `gemini-2.5-flash-native-audio-preview-09-2025` stays open and streams audio+transcript on this key. Fixed `GEMINI_LIVE_MODEL` to that id. Secondary: the bridge never greeted (native-audio models stay silent until prompted) and the UI surfaced none of the subsystem state.
+- Fixes: (1) correct Live model; (2) backend triggers a spoken greeting ~500ms after connect ("I can see your screen now. Please walk me through the workflow."); (3) backend surfaces the EXACT failure reason (errText) on connect-fail / model-error / close; (4) full operator-visible LiveView — the 15 required states: screen-share, mic, WebSocket, Live-AI (with reason), recording, live audio METER (WebAudio analyser), live transcript (Gemini + local Web-Speech fallback), AI response text + "speaking…" indicator, live SCREEN PREVIEW (video element), captured steps, learned fields, Pause/Stop/End buttons, and LOUD red/amber banners ("Microphone not connected.", "Live AI not connected: <reason>", screen-active-but-no-audio). Review screen now shows transcript + captured steps + screenshots/frames + learned fields + draft playbook + extracted knowledge.
+- VERIFIED LIVE on localhost:3141 (real Gemini):
+  - In-process bridge probe (`_live_bridge_probe.mjs`): greeting transcript "I can see your screen now. Please walk me through the workflow." + 65 ai_audio chunks + 8 transcript msgs forwarded.
+  - Through the real dashboard WebSocket (`/ws/landos/training`): statuses connecting→live→greeting_sent, then 72 ai_audio chunks + transcript + usage delivered to the client. i.e. the operator would HEAR LandOS greet within ~2s.
+  - Model probe: only `gemini-2.5-flash-native-audio-preview-09-2025` returns audio; others close with "not found for API version".
+  - New UI strings confirmed in the production bundle ("What LandOS sees", "Live AI not connected", "Microphone not connected", "Audio input").
+- Tests: new `browser-training-live` 4/4 (errText, connect-fail reason, no-key reason, greeting-fires-with-audio). Training suite 58/58. Full suite 2583 passing; same 3 pre-existing unrelated failures.
+- Honest remaining gap: I cannot operate a real mic/screen headlessly, so the two-way loop where LandOS responds to TYLER'S speech (not just the greeting) needs Tyler at the keyboard; the greeting + audio-out + transcript pipeline is proven. Also the Google key appears to allow limited concurrent Live sessions — back-to-back probe runs occasionally returned 0 audio (transient throttle), single sessions work.
+- Classification: provider misconfig (wrong model id) + missing greeting + missing operator-visible UI — all fixed and live-verified. Service rebuilt + restarted (PID 235916).
+
+### 2026-07-06 - Live session made USEFUL: latency, steps, screenshots, transcript, narrated playbook
+
+- Second real acceptance (Tyler ran LandPortal): AI connected + spoke, but ~20s latency, 0 captured steps, 0 learned fields, 380 frames/0 screenshots, playbook "No browser steps captured", transcript fragmented into one-word turns.
+- Root truth: a `getDisplayMedia` screen-share of Tyler's OWN tab gives pixels, not DOM — there is NO CDP/browser-event access to that tab, so steps/fields/screenshots-via-CDP were always going to be 0. Fixed by owning that honestly + capturing visually.
+- Fixes shipped:
+  1. LATENCY — frames were streamed at a constant 1/sec (380 in ~6min), flooding the model. Now the client sends a frame ONLY on material change (8×8 grayscale signature diff) or a 6s heartbeat, JPEG quality 0.55. Cuts frame volume ~5-10×. Latency estimate (operator-utterance-end → first AI audio) is shown live.
+  2. SCREENSHOTS — captured CLIENT-side from the same shared-frame canvas: a start-of-session shot, on voice cue ("take screenshot"/"this is important"), and on material page change (rate-limited). Sent over WS, saved to `store/training-shots/<session>` (gitignored, 0600), recorded as screenshot events. Live "Screenshots saved" count. VERIFIED live: `screenshot_saved count=1`.
+  3. BROWSER EVENTS — a `browser_events {connected:false, reason}` message + a loud "Browser events not connected" banner explaining the shared tab has no DOM. Never a silent 0.
+  4. TRANSCRIPT — backend `makeTranscriptCoalescer` merges Gemini's word-shards into whole utterances (flush on turnComplete / speaker-change / 1.4s pause); records ONE speech event per utterance; client shows a live partial + finalized turns. VERIFIED live: the greeting arrived as ONE sentence, not shards.
+  5. FIELD LEARNING — voice-named fields bind label-only (shared tab has no DOM) with a visible "learned by name; selector needs confirmation" note; no longer probes the wrong LandOS Chrome.
+  6. PLAYBOOK — never empty now: if no DOM events but transcript/screenshots exist, synthesis builds a VISUAL/NARRATED workflow (narrated action steps from utterances + screenshot anchors), sets `captureMode='visual_narrated'` + `needsSelectorConfirmation=true` + a plain-English `learningSummary` ("built from N spoken instructions + M screenshots… needs one CDP pass to confirm selectors"). Review screen shows this banner.
+  7. STATUS — added Screenshots-saved, Browser-events, Steps/Fields counts, Frames-sent, and Latency estimate to the live status strip.
+- VERIFIED LIVE on localhost:3141 (real Gemini) via `scripts/_live_ws_probe.mjs`: statuses connecting→live→greeting_sent; 87 ai_audio chunks; transcript FINALS = 1 full sentence (coalesced); browser_events connected=false + reason; screenshot_saved count=1. New UI strings confirmed in the production bundle.
+- Tests: `browser-training-live` 6/6 (adds transcript coalescing incl. speaker-switch flush), `browser-training` 21/21 (adds visual/narrated synthesis: nonzero steps, captureMode, needsSelectorConfirmation, shard-dropping). Full suite 2585 passing; same 3 pre-existing unrelated failing files.
+- Remaining (can't be headless-verified): true end-to-end LATENCY under a real screen-share, and DOM-accurate steps/selectors (needs a CDP training mode against the LandOS-driven Chrome, not a screen-share). QA residue: probe test sessions + `store/training-shots` images in the live store (gitignored).
+- Classification: architecture (no DOM on shared tab) owned honestly + quality fixes (frames/screenshots/transcript/synthesis) — live-verified. Rebuilt + restarted.
 
 ## QA Entry Template
 

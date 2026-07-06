@@ -205,6 +205,8 @@ export interface BrowserDriver {
     fields: Record<string, string>;
     parcelShotPath: string | null;
     compsMapShotPath: string | null;
+    overlayShots?: Array<{ overlay: string; path: string; purpose: string }>;
+    terrainShotPath?: string | null;
     compRows: string[];
     mapReached: boolean;
     capturedAtIso: string;

@@ -90,6 +90,113 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-06 - LIVE Property Intelligence dashboard acceptance
+
+- Rebuilt and restarted the local dashboard (`node dist/index.js`) so QA used current server/UI code, not stale `dist`.
+- Started/reused the existing Browser Intelligence Chrome session via the dashboard browser routes. LandPortal auth check returned authenticated; no credentials were printed or committed.
+- Found and fixed a live coordination gap before acceptance: the Deal Card button was labeled Property Intelligence but only regenerated the report. `POST /api/landos/deal-cards/:id/report/run` now first runs the existing Property Inspection workflow (`runPropertyInspection` with LandPortal + County browser services), persists that package, then regenerates the existing Deal Card report. No parallel report system.
+- Live runs:
+  - Unverified fresh lead: correctly stayed data-limited. Google visuals/report generated, but no fabricated parcel identity, APN, owner, comps, Land Score, or offer guidance.
+  - Verified property card: PASS for Operator QA. The dashboard action produced LandPortal parcel page, wetlands, FEMA/flood, 3D terrain, comps-map screenshots; extracted visible comps; refreshed Google visuals; included Market Pulse, Strategy, Land Score; updated Property Board counts; and generated a downloadable PDF with screenshots.
+- Visual artifacts saved locally in `store/operator-qa-property-intel/`:
+  - `deal-5-after-run.png`
+  - `property-board-after-run.png`
+  - `deal-5-property-intelligence-report.pdf`
+  - `deal-5-pdf-page-1.png`
+  - `deal-5-pdf-last-page.png`
+  - `deal-5-qa-summary.json`
+- PDF QA: valid `%PDF-1.3`, 8 pages, 5 embedded images. Rendered page 1 shows the readable Property Intelligence Report and parcel facts; rendered last page shows a LandPortal comps-map screenshot.
+- Engineering QA after the route coordination fix:
+  - `npm run build:server` clean.
+  - `npx vitest run src/landos/property-inspection.test.ts src/landos/landportal-agentic.test.ts src/landos/deal-card-report.test.ts --testTimeout 20000` passed 29/29.
+- Business QA result: usable for pre-discovery due diligence. Still not offer-final because official source evidence, sold comps, title/access/utilities, and seller-confirmed constraints remain required before final pricing.
+- No commit or push.
+
+### 2026-07-06 - Property Intelligence Run completion pass
+
+- Continued the existing Browser Agent / Property Inspection / Deal Card report workflow. No parallel system, no replacement report engine, no paid report calls.
+- LandPortal/browser changes:
+  - `BrowserDriver.captureLandPortalVisuals` now returns overlay shots and terrain/3D shot metadata in addition to parcel/comps map shots.
+  - Live browser capture tries visible Base Maps/Overlays controls, captures Contour/Topo, Wetlands/NWI, FEMA/Flood, and 3D/Terrain when available, and returns only evidence actually captured.
+  - `landportal-browser.ts` persists overlay/terrain assets and overlay observations into the existing Property Inspection package, then the existing Deal Card report surfaces them.
+- Report/UI changes:
+  - Added `/api/landos/deal-cards/:id/report/download` with PDF by default and markdown via `?format=md`. It uses the current persisted Deal Card report, Discovery Report, Market Pulse, Strategy, Land Score, and saved screenshots; no new report store.
+  - Deal Card action renamed to Run/Re-run Property Intelligence, section renamed Property Intelligence Report, and Download Report appears when a report exists. Acquire button also says Run Property Intelligence.
+- Verification:
+  - Stopped lingering Vitest watch processes per Tyler's request.
+  - `npx vitest run src/landos/property-inspection.test.ts` 2/2.
+  - `npx vitest run src/landos/landportal-agentic.test.ts` 2/2.
+  - `npx vitest run src/landos/browser-session.test.ts src/landos/browser-intelligence.test.ts src/landos/deal-card-report.test.ts --testTimeout 20000` effectively covered those suites; report suite 25/25, browser-session 17/17, browser-intelligence 15/15 in the prior split run.
+  - `npm run build:server` clean; `npm run build:web` clean.
+- Honest acceptance state: engineering/build QA passed, but full Operator QA still requires Tyler's live authenticated Chrome/LandPortal session and a real property run to visually confirm overlay screenshots, comps map extraction, Market Pulse, Strategy, Land Score, Google visuals, and the downloaded PDF.
+- Docs updated: OPERATOR_QA, BUSINESS_QA, KNOWN_LIMITATIONS, HANDOVER. Not committed, not pushed.
+
+### 2026-07-06 - Make Browser Training session produce a useful playbook
+
+- 2nd acceptance: AI spoke, but ~20s latency, 0 steps, 0 fields, 380 frames/0 shots,
+  empty playbook, word-shard transcript.
+- Root truth: `getDisplayMedia` screen-share of Tyler's own tab = pixels, no DOM. No
+  CDP → DOM-based steps/fields/shots were structurally always 0. Owned it + captured
+  visually instead.
+- Backend (`browser-training.ts`, `browser-training-live.ts`):
+  - `makeTranscriptCoalescer` merges Gemini word-fragments into utterances (flush on
+    turnComplete / speaker-switch / 1.4s pause); one speech event per utterance;
+    client gets `transcript_partial` (live) + `transcript` final.
+  - `recordScreenshot(sessionId, {dataBase64,label,reason})` saves to
+    `store/training-shots/<id>` (0600, gitignored) + records a screenshot event.
+  - `browser_events {connected:false, reason}` sent up-front (no silent 0).
+  - Field binding from speech is label-only now (page:null) — stops probing the wrong
+    LandOS Chrome; sends a "needs selector confirmation" note.
+  - Narrated synthesis: no DOM events + transcript/shots → `captureMode:'visual_narrated'`,
+    `needsSelectorConfirmation:true`, narrated steps (`narratedStepsFromSpeech`) + shot
+    anchors + a `learningSummary`. Never emits an empty playbook.
+- Frontend (`BrowserTraining.tsx`):
+  - Frame throttling: send a frame only on material change (8×8 grayscale signature
+    diff) or 6s heartbeat, q0.55 — was constant 1fps (the latency cause).
+  - Client screenshots: start / voice-cue ("take screenshot"/"important") / page-change.
+  - Status strip adds Screenshots-saved, Browser-events, Steps/Fields, Frames, Latency
+    (operator-utterance→AI-audio). Coalesced transcript + live partial. Field note shown.
+  - Review shows the visual/narrated `learningSummary` banner.
+- Verified LIVE (`scripts/_live_ws_probe.mjs`): connecting→live→greeting_sent; 87 audio
+  chunks; transcript FINALS=1 full sentence (coalesced, not shards); browser_events
+  connected=false+reason; screenshot_saved count=1. New UI strings in the bundle.
+- Tests: `browser-training-live` 6/6 (coalescing), `browser-training` 21/21 (narrated
+  synthesis). Full suite 2585 passing; same 3 pre-existing unrelated failures. Rebuilt +
+  restarted. Not committed.
+- Next: CDP training mode (drive the instrumented Chrome, not a screen-share) for
+  DOM-accurate steps/selectors + auto-extract. Real-latency tuning after Tyler's run.
+
+### 2026-07-06 - Fix Browser Training live session (silent-session acceptance failure)
+
+- Problem: Tyler ran a live session — LandOS never talked back, never showed it was
+  listening. Silent run = fail.
+- Root cause (diagnosed with `scripts/_live_probe.mjs`): the Live model id
+  `gemini-2.5-flash-preview-native-audio-dialog` is NOT available on this Google key
+  ("not found for API version v1beta / not supported for bidiGenerateContent"); the
+  socket opened then closed immediately, so nothing was ever spoken. Only
+  `gemini-2.5-flash-native-audio-preview-09-2025` works on this key. Also: the bridge
+  never greeted, and the UI surfaced no subsystem state.
+- Backend (`browser-training.ts`, `browser-training-live.ts`): switched
+  `GEMINI_LIVE_MODEL` to the working id; added a spoken greeting ~500ms after connect;
+  added `errText()` so connect-fail / model-error / close send the EXACT reason; widened
+  `onclose` to carry the close reason.
+- Frontend (`web/src/pages/BrowserTraining.tsx`): full operator-visible LiveView — the 15
+  states incl. live audio METER (WebAudio analyser), live SCREEN PREVIEW (video element),
+  Live-AI status + exact reason, local Web-Speech transcript fallback, AI "speaking…"
+  indicator, and LOUD red/amber banners ("Microphone not connected.", "Live AI not
+  connected: <reason>"). Fixed stale-closure bugs (paused via ref). Review screen now
+  shows transcript + captured steps + screenshots/frames + learned fields + playbook +
+  knowledge. Added greeting/reason unit tests (`browser-training-live.test.ts`, 4/4).
+- Verified LIVE (localhost:3141, real Gemini): in-process bridge greeting "I can see your
+  screen now. Please walk me through the workflow." + 65 audio chunks; through the real
+  dashboard WebSocket: connecting→live→greeting_sent + 72 ai_audio chunks + transcript +
+  usage delivered. Operator would hear LandOS within ~2s. Rebuilt + restarted (PID 235916).
+- Tests: training 58/58; full suite 2583 passing; same 3 pre-existing unrelated failures.
+- Remaining (KNOWN_LIMITATIONS): the mic-driven half (LandOS responding to Tyler's speech)
+  needs a real browser to accept; the key rate-limits concurrent Live sessions. Not committed.
+- Diagnostic scripts left in `scripts/` (ignored scratch): `_live_probe.mjs`,
+  `_live_ws_probe.mjs`, `_live_bridge_probe.mjs`.
+
 ### 2026-07-05 - Runtime wiring fix: Browser Training usage 404 (stale build)
 
 - Symptom: `/browser-training` loaded then showed `GET /api/landos/training/usage failed: 404`.

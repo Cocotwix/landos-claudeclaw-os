@@ -101,7 +101,7 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
             disabled={running || !text.trim()}
             class="px-4 py-2 rounded-md text-[13px] font-semibold border border-[var(--color-accent)] bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-40"
           >
-            {running ? 'Running Property Analysis…' : 'Run Property Analysis'}
+            {running ? 'Running Property Intelligence...' : 'Run Property Intelligence'}
           </button>
           <span class="text-[10px] text-[var(--color-text-faint)]">
             Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. Raw input always submits exactly as typed. Address matching and parcel identity are handled downstream by Property Resolution. A Deal Card opens on a credible match; unknown fields ride along as Confirm Before Offer. No practical match returns the smallest next identifier.

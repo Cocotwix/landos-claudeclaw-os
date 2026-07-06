@@ -2475,8 +2475,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     setReportError(null);
     setReportWarnings([]);
     try {
-      const res = await apiPost<{ report: ReportView; warnings: string[]; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
+      const res = await apiPost<{ report: ReportView; warnings: string[]; executiveSummary?: ExecSummaryView; discoveryReport?: DiscoveryReportView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
       setReport(res.report);
+      setExecSummary(res.executiveSummary ?? null);
+      setDiscoveryReport(res.discoveryReport ?? null);
       setReadiness(res.readiness ?? null);
       setBriefing(res.briefing ?? null);
       setPreCall(res.preCallIntelligence ?? null);
@@ -2993,7 +2995,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           <PublicRecordsResearchSection dealId={deal.id} />
 
           {/* 1b. DD + Market + Strategy operational report */}
-          <Section title="DD + Market + Strategy Report">
+          <Section title="Property Intelligence Report">
             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
               <div class="flex items-center gap-2 flex-wrap">
                 <ReportStatusBadge status={report?.reportStatus} />
@@ -3012,8 +3014,16 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   disabled={reportRunning}
                   class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
                 >
-                  {reportRunning ? 'Running…' : report?.exists ? 'Re-run DD + Market + Strategy Report' : 'Run DD + Market + Strategy Report'}
+                  {reportRunning ? 'Running Property Intelligence...' : report?.exists ? 'Re-run Property Intelligence' : 'Run Property Intelligence'}
                 </button>
+                {report?.exists && (
+                  <a
+                    href={`/api/landos/deal-cards/${deal.id}/report/download?format=pdf&token=${encodeURIComponent(dashboardToken)}`}
+                    class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                  >
+                    Download Report
+                  </a>
+                )}
               </div>
             </div>
 
@@ -3028,7 +3038,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
             {!report?.exists && (
               <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3">
-                No report run yet. Click <span class="text-[var(--color-accent)]">Run DD + Market + Strategy Report</span> to run the safe non-credit parcel lookup, structure Market Research source targets, apply Strategy logic, and update the three worksheets. It never spends a comp credit and never fabricates parcel facts, comps, demand, pricing, or offers.
+                No report run yet. Click <span class="text-[var(--color-accent)]">Run Property Intelligence</span> to run the safe browser/property due diligence workflow, capture visuals, include Market Pulse and Strategy, and update the Deal Card. It never spends a comp credit and never fabricates parcel facts, comps, demand, pricing, or offers.
               </div>
             )}
 
