@@ -256,6 +256,57 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
     expect(ev.facts.find((f) => f.key === 'apn')!.value).toBe('094 02008 000');
   });
 
+  it('after submit-after-select recovery is ATTEMPTED, the failure note never claims the search was not submitted', async () => {
+    // A stubborn site: the APN option is selected, submitSearch IS executed, but the
+    // parcel still does not open. The workflow must attempt recovery and, on failure,
+    // report the POST-recovery state — never "option selected but search not submitted".
+    const calls = { submitted: 0 };
+    let optionSelected = false;
+    let lastTyped = '';
+    const APN = '094-020.08';
+    const searchObs = () => ({
+      url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
+      navItems: ['Map Search'], buttons: ['Search'], searchControls: [{ selector: '#term', placeholder: 'APN or Parcel ID' }],
+      links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+      interactive: {
+        checkboxes: lastTyped === APN ? 1 : 0, radios: 0, selectableOptions: lastTyped === APN ? 1 : 0,
+        submit: { present: true, disabled: false, label: 'Search' }, validationMessages: [],
+        hasModal: false, hasSelection: optionSelected, filterActive: false,
+      },
+    });
+    const driver = {
+      id: 'lp', configured: () => true,
+      async open() { optionSelected = false; return { url: 'https://landportal.com/', fields: {}, snippets: [] }; },
+      async search(q: string) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+      async readFields() { return { url: '', fields: {}, snippets: [] }; },
+      async screenshot(purpose: string) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+      async observe() { return searchObs(); },
+      async selectMethod() { /* apn */ },
+      async setScope(scope: string[]) { return scope; },
+      async typeSearch(_s: string, v: string) { lastTyped = v; optionSelected = false; },
+      async readCandidates() { return lastTyped === APN ? [{ index: 0, text: 'Scott County, TN | APN: 094-020.08', kind: 'row' }] : []; },
+      async clickCandidate() { optionSelected = true; },
+      // submitSearch runs but the parcel never opens (stubborn site).
+      async submitSearch() { calls.submitted += 1; },
+      async clickByText() { /* nav */ },
+    } as unknown as BrowserDriver;
+
+    const ev = await makeLandPortalBrowser({ driver }).runWorkflow(
+      { searchKey: { apn: '094-020.08', county: 'Scott', state: 'TN' } },
+      { timeoutMs: 2000 },
+    );
+    expect(ev.status).toBe('partial');
+    // submitSearch WAS executed as part of recovery.
+    expect(calls.submitted).toBeGreaterThan(0);
+    // The forbidden message must NOT survive a recovery attempt.
+    expect(ev.note).not.toMatch(/not submitted/i);
+    expect(ev.note).not.toMatch(/was not submitted/i);
+    // The note transparently reports that recovery was attempted post-select.
+    expect(ev.note).toMatch(/Recovery was attempted/i);
+    // No parcel reached → no facts / no ParcelIdentity (nothing downstream).
+    expect(ev.facts).toHaveLength(0);
+  });
+
   // Minimal recording fake: exposes the method chosen + candidates it returns.
   function recordingFake(candidates: string[], panel: Record<string, string>) {
     const calls = { selectMethod: [] as string[], scopes: [] as string[][], typed: [] as string[] };

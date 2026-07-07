@@ -481,6 +481,9 @@ async function runLandPortalAgentic(
     let usedMethod = '';
     let verifiedReached = false;
     let searchSel = box.selector;
+    // Records every failure-diagnosis recovery attempt so the final note reflects the
+    // POST-recovery state (never re-reporting "option selected but search not submitted").
+    const recoveryTrace: string[] = [];
     for (let ai = 0; ai < attempts.length; ai++) {
       const a = attempts[ai];
       if (hooks.isCancelled?.()) break;
@@ -533,6 +536,7 @@ async function runLandPortalAgentic(
           const recovered = await attemptRecovery({ driver, diagnosis: diag, key, pickCandidate: (c, k) => pickBestCandidate(c as ResultCandidate[], k), opts: t() });
           if (recovered) obs = recovered;
           v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+          recoveryTrace.push(`${diag.nextAction}→${v.pageType}`);
           trace.push(`recover:${diag.nextAction}→${v.pageType}`);
         }
       }
@@ -559,12 +563,18 @@ async function runLandPortalAgentic(
 
     if (!picked || !verifiedReached) {
       ev.status = 'partial';
-      // Final intermediate-state diagnosis for operator transparency: only after
-      // inspecting the page (not just "0 results") do we conclude "not found".
-      const finalDiag = diagnoseFailure(obs);
-      const diagNote = finalDiag.hasPendingAction
-        ? ` Intermediate state still shows a pending action (${finalDiag.signals.join(', ')}): ${finalDiag.diagnosis}`
-        : ` Intermediate-state inspection found no further actionable step (${finalDiag.signals.join(', ') || 'no interactive signals'}).`;
+      // Operator transparency: only after inspecting the page (not just "0 results")
+      // do we conclude "not found". Once a recovery was ATTEMPTED (e.g. submit-after-
+      // select), report the POST-recovery outcome — never re-claim the step was skipped.
+      let diagNote: string;
+      if (recoveryTrace.length) {
+        diagNote = ` Recovery was attempted (${recoveryTrace.join('; ')}) — the page was re-observed and re-verified after submitting, but no parcel detail page opened and verified.`;
+      } else {
+        const finalDiag = diagnoseFailure(obs);
+        diagNote = finalDiag.hasPendingAction
+          ? ` Intermediate state shows a pending action (${finalDiag.signals.join(', ')}): ${finalDiag.diagnosis}`
+          : ` Intermediate-state inspection found no further actionable step (${finalDiag.signals.join(', ') || 'no interactive signals'}).`;
+      }
       ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${key.address || key.apn} (no weak-match, no false facts).${diagNote} Trace: ${trace.join(' | ')}`;
       rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, taskBoundary, used: true, navPatterns: trace.join(' | '), knownLimitations: ['no verified parcel consistent with the provided address'] });
       return ev;

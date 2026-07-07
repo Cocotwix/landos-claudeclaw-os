@@ -876,24 +876,57 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     },
     // Submit the current search AFTER a typeahead option was selected. LandPortal's
     // APN/Parcel-ID flow needs the matching parcel option ticked, THEN Search clicked
-    // (selecting the option alone does not open the parcel). Clicks a visible
-    // Search/Go/submit control near the search bar; falls back to pressing Enter.
+    // (selecting the option alone does not open the parcel). Two independent submit
+    // paths so an icon-only Search button OR an Enter-only SPA both work:
+    //   1) click a Search/Go/submit control (matched by text, aria-label, class, or
+    //      being the submit button inside the search form), and
+    //   2) RE-FOCUS the search input (selecting the checkbox option stole focus) and
+    //      press Enter — a trusted keypress plus a dispatched Enter event for SPAs.
     async submitSearch(opts) {
       const page = await getWorkingPage();
       const CLICK_SUBMIT = (): boolean => {
         const rx = /^(search|go|find|submit|view\s*(parcel|property)?|open|apply)$/i;
-        const els = Array.from(document.querySelectorAll('button,[role=button],input[type=submit],a')) as any[];
-        const b = els.find((e) => {
-          const r = e.getBoundingClientRect ? e.getBoundingClientRect() : { width: 0, height: 0, top: 9999 };
-          if (r.width < 1 || r.height < 1 || r.top > 320) return false; // near the top search bar
-          const t = ((e.value || e.textContent || e.getAttribute?.('aria-label') || '') as string).replace(/\s+/g, ' ').trim();
-          return t.length > 0 && t.length < 20 && rx.test(t);
+        const visible = (e: any): boolean => { const r = e && e.getBoundingClientRect ? e.getBoundingClientRect() : null; return !!(r && r.width > 0 && r.height > 0); };
+        const els = Array.from(document.querySelectorAll('button[type=submit],input[type=submit],button,[role=button],a[role=button],a')) as any[];
+        let b = els.find((e) => {
+          if (!visible(e)) return false;
+          const r = e.getBoundingClientRect(); if (r.top > 360) return false; // near the top search bar
+          const t = ((e.value || e.textContent || e.getAttribute?.('aria-label') || e.getAttribute?.('title') || '') as string).replace(/\s+/g, ' ').trim();
+          const meta = ((e.className && e.className.toString ? e.className.toString() : '') + ' ' + (e.getAttribute?.('aria-label') || '') + ' ' + (e.id || '')).toLowerCase();
+          return (t.length > 0 && t.length < 24 && rx.test(t)) || /(^|[^a-z])(search|submit)([^a-z]|$)/.test(meta);
         });
-        if (b) { b.scrollIntoView?.({ block: 'center' }); b.click(); return true; }
+        // Fallback: the submit button INSIDE the search form (icon-only buttons have no text).
+        if (!b) {
+          const input = document.querySelector('input[type=text],input[type=search],input:not([type])') as any;
+          const form = input && input.closest ? input.closest('form') : null;
+          if (form) b = form.querySelector('button[type=submit],input[type=submit],button');
+        }
+        if (b && visible(b)) { b.scrollIntoView?.({ block: 'center' }); b.click(); return true; }
         return false;
       };
       const clicked = await page.evaluate<boolean>(CLICK_SUBMIT as unknown as () => boolean);
-      if (!clicked && page.keyboard) { try { await page.keyboard.press('Enter'); } catch { /* best-effort */ } }
+      // Always ALSO submit via the search input + Enter. Selecting the autocomplete
+      // checkbox moved focus onto the option, so re-focus the input first; then fire
+      // a synthetic Enter (SPA handlers) and, when available, a trusted keypress.
+      const FOCUS_INPUT = ((): string | null => {
+        const i = document.querySelector('input[type=text],input[type=search],input:not([type])') as any;
+        if (!i) return null;
+        i.focus();
+        for (const type of ['keydown', 'keypress', 'keyup']) {
+          i.dispatchEvent(new (window as any).KeyboardEvent(type, { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+        }
+        const form = i.closest ? i.closest('form') : null;
+        if (form && form.requestSubmit) { try { form.requestSubmit(); } catch { /* ignore */ } }
+        return i.id ? '#' + i.id : (i.name ? '[name="' + i.name + '"]' : 'input');
+      }) as unknown as () => string | null;
+      const focusedSel = await page.evaluate<string | null>(FOCUS_INPUT);
+      if (page.keyboard) {
+        try {
+          if (focusedSel) { await page.evaluate(((s: string) => { const el = document.querySelector(s) as any; if (el && el.focus) el.focus(); }) as unknown as () => void, focusedSel); }
+          await page.keyboard.press('Enter');
+        } catch { /* best-effort */ }
+      }
+      void clicked;
       await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 3500))); // parcel/results settle
     },
     async selectMethod(method) {
