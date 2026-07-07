@@ -815,9 +815,12 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const byText = new Set<string>(); const res: any[] = [];
         out.forEach((o) => { if (byText.has(o.text)) return; byText.add(o.text); res.push(o.el); });
         const el = res[target]; if (!el) return false;
-        const clickable = (el.matches && el.matches('a,button,[role=button],[onclick]'))
+        // Prefer a checkbox/radio inside the option (LandPortal's APN autocomplete
+        // renders each matching parcel as a selectable checkbox row that must be
+        // ticked before submitting), then an anchor/button, else the element itself.
+        const clickable = (el.matches && el.matches('a,button,[role=button],[onclick],input[type=checkbox],input[type=radio]'))
           ? el
-          : (el.querySelector && el.querySelector('a[href],button,[role=button],[onclick]')) || el;
+          : (el.querySelector && el.querySelector('input[type=checkbox],input[type=radio],a[href],button,[role=button],[onclick]')) || el;
         if (clickable.scrollIntoView) clickable.scrollIntoView();
         clickable.click();
         return true;
@@ -845,6 +848,28 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await page.evaluate(SET, selector, value);
       if (page.type && page.keyboard) { try { await page.evaluate(((s: string) => { const i = document.querySelector(s) as any; if (i) i.focus(); }) as unknown as () => void, selector); await page.keyboard.press('Space'); await page.keyboard.press('Backspace'); } catch { /* best-effort nudge */ } }
       await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 3200))); // let the typeahead resolve
+    },
+    // Submit the current search AFTER a typeahead option was selected. LandPortal's
+    // APN/Parcel-ID flow needs the matching parcel option ticked, THEN Search clicked
+    // (selecting the option alone does not open the parcel). Clicks a visible
+    // Search/Go/submit control near the search bar; falls back to pressing Enter.
+    async submitSearch(opts) {
+      const page = await getWorkingPage();
+      const CLICK_SUBMIT = (): boolean => {
+        const rx = /^(search|go|find|submit|view\s*(parcel|property)?|open|apply)$/i;
+        const els = Array.from(document.querySelectorAll('button,[role=button],input[type=submit],a')) as any[];
+        const b = els.find((e) => {
+          const r = e.getBoundingClientRect ? e.getBoundingClientRect() : { width: 0, height: 0, top: 9999 };
+          if (r.width < 1 || r.height < 1 || r.top > 320) return false; // near the top search bar
+          const t = ((e.value || e.textContent || e.getAttribute?.('aria-label') || '') as string).replace(/\s+/g, ' ').trim();
+          return t.length > 0 && t.length < 20 && rx.test(t);
+        });
+        if (b) { b.scrollIntoView?.({ block: 'center' }); b.click(); return true; }
+        return false;
+      };
+      const clicked = await page.evaluate<boolean>(CLICK_SUBMIT as unknown as () => boolean);
+      if (!clicked && page.keyboard) { try { await page.keyboard.press('Enter'); } catch { /* best-effort */ } }
+      await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 3500))); // parcel/results settle
     },
     async selectMethod(method) {
       const page = await getWorkingPage();

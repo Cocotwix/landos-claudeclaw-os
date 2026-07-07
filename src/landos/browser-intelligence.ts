@@ -242,6 +242,11 @@ export interface BrowserDriver {
   clickCandidate?(index: number, opts: { timeoutMs: number }): Promise<void>;
   /** Type a value into a search box WITHOUT submitting (drives a typeahead). */
   typeSearch?(selector: string, value: string, opts: { timeoutMs: number }): Promise<void>;
+  /** Submit the current search AFTER a typeahead option was selected — some sites
+   *  (e.g. LandPortal's APN / Parcel-ID autocomplete) require selecting the matching
+   *  parcel option first, THEN clicking Search / pressing Enter to open the parcel.
+   *  Read-only navigation. */
+  submitSearch?(opts: { timeoutMs: number }): Promise<void>;
   /** Switch a search-method selector (Address/APN/Owner/Lat) to `method` by
    *  opening the toggle near the search bar and clicking the option. Read-only. */
   selectMethod?(method: string, opts: { timeoutMs: number }): Promise<void>;

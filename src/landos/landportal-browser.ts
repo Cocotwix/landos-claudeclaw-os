@@ -489,6 +489,9 @@ async function runLandPortalAgentic(
         const rebox = obs.searchControls.find((c) => /search|address|parcel|apn|enter/i.test([c.label, c.placeholder, c.id, c.name].filter(Boolean).join(' '))) ?? obs.searchControls.find((c) => (c.type ?? 'text') === 'text');
         if (rebox) searchSel = rebox.selector;
       }
+      // MANUAL PARITY (LandPortal APN/Parcel-ID): pick the search MODE first, THEN
+      // scope State→County, THEN type the identifier — the same order a human uses.
+      await driver.selectMethod!(a.method, t());
       // Scope the search to the jurisdiction (State, then County) so a parcel
       // resolves uniquely (the click opens the parcel panel, not a results list).
       if (driver.setScope && (key.state || key.county)) {
@@ -497,7 +500,6 @@ async function runLandPortalAgentic(
         if (set.length) trace.push(`scope:${set.join('/')}`);
         obs = await obsv();
       }
-      await driver.selectMethod!(a.method, t());
       await driver.typeSearch!(searchSel, a.value, t());
       obs = await obsv();
       const candidates = (await driver.readCandidates!(t())) as ResultCandidate[];
@@ -508,9 +510,21 @@ async function runLandPortalAgentic(
         best = { index: candidates[0].index, score: firstScore.score, matched: [...firstScore.matched, 'first_plausible_address_candidate'], confidence: 'medium' };
       }
       if (!best) { trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, no confident match`); continue; }
+      // Select the matching option. For APN/Parcel-ID this ticks LandPortal's
+      // autocomplete checkbox row (it does NOT navigate on its own).
       await driver.clickCandidate!(best.index, t());
       obs = await obsv();
       let v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+      // APN autocomplete pattern: the checkbox selection only SELECTS the parcel —
+      // submit (Search / Enter) to actually open it. Address/owner typeahead rows
+      // navigate on click, so only submit when the click did not already land us on
+      // a parcel/results page.
+      if (!v.reached && v.pageType !== 'results_list' && a.method === 'apn' && driver.submitSearch) {
+        await driver.submitSearch(t());
+        obs = await obsv();
+        v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+        trace.push(`apn:selected-option→submit→${v.pageType}`);
+      }
       let openedViaResults = '';
       if (v.pageType === 'results_list' && driver.readCandidates && driver.clickCandidate) {
         const resultCandidates = (await driver.readCandidates(t())) as ResultCandidate[];

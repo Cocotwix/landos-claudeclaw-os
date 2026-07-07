@@ -131,6 +131,118 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
     expect(ev.inspection?.parcelUrl).toBe('https://landportal.com/?property=scott-tn');
   });
 
+  it('ACCEPTANCE (APN autocomplete checkbox): decimal FIRST, select the option, then SUBMIT to open the parcel', async () => {
+    // Real LandPortal APN behavior: typing the decimal APN ("094-020.08") surfaces a
+    // matching parcel as a SELECTABLE CHECKBOX row. Selecting it only TICKS the box —
+    // the parcel opens only after Search is submitted. A driver that treats the click
+    // as a navigating result never opens the parcel. This asserts the fixed flow:
+    // APN mode → State → County → type decimal → select option → submit → confirm.
+    const calls = { selectMethod: [] as string[], scopes: [] as string[][], typed: [] as string[], selectedOption: false, submitted: false };
+    let phase: 'search' | 'record' = 'search';
+    let optionSelected = false;
+    let lastTyped = '';
+    const APN = '094-020.08';
+    const searchObs = () => ({
+      url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
+      navItems: ['Map Search'], buttons: ['Search'], searchControls: [{ selector: '#main_search_input', placeholder: 'APN or Parcel ID' }],
+      links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+    });
+    const recordObs = () => ({
+      url: 'https://landportal.com/?property=scott-tn', title: 'Land Portal', headings: ['Property Overview'],
+      navItems: ['Map Search'], buttons: [], searchControls: [], links: [], hasMap: false, hasTable: false,
+      fields: { 'Owner Name': 'HENSON FAMILY TRUST', 'Parcel ID': APN, 'Parcel Address': 'HENSON LN', 'County': 'Scott', 'State': 'TN', 'Acres': '12.5' },
+      loginLike: false,
+    });
+    const driver = {
+      id: 'lp', configured: () => true,
+      async open() { phase = 'search'; optionSelected = false; return { url: 'https://landportal.com/', fields: {}, snippets: [] }; },
+      async search(q: string) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+      async readFields() { return { url: '', fields: phase === 'record' ? recordObs().fields : {}, snippets: [] }; },
+      async screenshot(purpose: string) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+      async observe() { return phase === 'record' ? recordObs() : searchObs(); },
+      async selectMethod(m: string) { calls.selectMethod.push(m); },
+      async setScope(scope: string[]) { calls.scopes.push(scope); return scope; },
+      async typeSearch(_s: string, v: string) { calls.typed.push(v); lastTyped = v; optionSelected = false; },
+      // Typing the decimal APN surfaces one checkbox autocomplete option.
+      async readCandidates() { return lastTyped === APN ? [{ index: 0, text: 'Henson Lane, Helenwood, Scott County, TN | APN: 094-020.08', kind: 'row' }] : []; },
+      // Selecting the option only TICKS the checkbox — it does NOT navigate.
+      async clickCandidate() { calls.selectedOption = true; optionSelected = true; /* stays on search */ },
+      // The parcel opens ONLY when submit is clicked AFTER an option was selected.
+      async submitSearch() { calls.submitted = true; if (optionSelected) phase = 'record'; },
+      async clickByText() { /* nav */ },
+    } as unknown as BrowserDriver;
+
+    const lp = makeLandPortalBrowser({ driver });
+    const ev = await lp.runWorkflow(
+      { searchKey: { apn: '094-020.08', apnAlternates: ['094 02008 000', '09402008', '09402008000'], address: 'Henson Lane', county: 'Scott', state: 'TN' } },
+      { timeoutMs: 2000 },
+    );
+
+    expect(ev.status).toBe('retrieved');
+    // 1) APN/Parcel-ID mode selected first (never global/address).
+    expect(calls.selectMethod[0]).toBe('apn');
+    expect(calls.selectMethod.includes('address')).toBe(false);
+    // 2-3) Scoped State (Tennessee) then County (Scott).
+    expect(calls.scopes[0]).toEqual(['Tennessee', 'Scott']);
+    // 4) Decimal format typed FIRST; it succeeded so no fallback variant was needed.
+    expect(calls.typed[0]).toBe('094-020.08');
+    expect(calls.typed).toEqual(['094-020.08']);
+    // 5-7) Selected the autocomplete checkbox option, THEN submitted to open the parcel.
+    expect(calls.selectedOption).toBe(true);
+    expect(calls.submitted).toBe(true);
+    // 8) ParcelIdentity confirmed from the parcel detail page; resolved APN matches.
+    expect(ev.facts.find((f) => f.key === 'apn')!.value).toBe('094-020.08');
+    expect(ev.facts.some((f) => f.key === 'apnConflict')).toBe(false);
+    expect(ev.inspection?.parcelUrl).toBe('https://landportal.com/?property=scott-tn');
+  });
+
+  it('APN autocomplete: falls back to alternate formats when the decimal finds no option', async () => {
+    // If the decimal format surfaces NO autocomplete option, the flow must fall back
+    // to the next APN variant (still select-then-submit), never give up after one try.
+    const calls = { typed: [] as string[], submitted: 0 };
+    let phase: 'search' | 'record' = 'search';
+    let optionSelected = false;
+    let lastTyped = '';
+    const ACCEPTED = '094 02008 000';
+    const searchObs = () => ({
+      url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
+      navItems: ['Map Search'], buttons: ['Search'], searchControls: [{ selector: '#s', placeholder: 'APN or Parcel ID' }],
+      links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+    });
+    const recordObs = () => ({
+      url: 'https://landportal.com/?property=scott-tn', title: 'Land Portal', headings: ['Property Overview'],
+      navItems: ['Map Search'], buttons: [], searchControls: [], links: [], hasMap: false, hasTable: false,
+      fields: { 'Owner Name': 'HENSON FAMILY TRUST', 'Parcel ID': ACCEPTED, 'Parcel Address': 'HENSON LN', 'County': 'Scott', 'State': 'TN', 'Acres': '12.5' },
+      loginLike: false,
+    });
+    const driver = {
+      id: 'lp', configured: () => true,
+      async open() { phase = 'search'; optionSelected = false; return { url: 'https://landportal.com/', fields: {}, snippets: [] }; },
+      async search(q: string) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+      async readFields() { return { url: '', fields: phase === 'record' ? recordObs().fields : {}, snippets: [] }; },
+      async screenshot(purpose: string) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+      async observe() { return phase === 'record' ? recordObs() : searchObs(); },
+      async selectMethod() { /* apn */ },
+      async setScope(scope: string[]) { return scope; },
+      async typeSearch(_s: string, v: string) { calls.typed.push(v); lastTyped = v; optionSelected = false; },
+      async readCandidates() { return lastTyped === ACCEPTED ? [{ index: 0, text: 'Henson Lane, Scott County, TN | APN: 094 02008 000', kind: 'row' }] : []; },
+      async clickCandidate() { optionSelected = true; },
+      async submitSearch() { calls.submitted += 1; if (optionSelected) phase = 'record'; },
+      async clickByText() { /* nav */ },
+    } as unknown as BrowserDriver;
+
+    const ev = await makeLandPortalBrowser({ driver }).runWorkflow(
+      { searchKey: { apn: '094-020.08', apnAlternates: ['094 02008 000', '09402008', '09402008000'], address: 'Henson Lane', county: 'Scott', state: 'TN' } },
+      { timeoutMs: 2000 },
+    );
+    expect(ev.status).toBe('retrieved');
+    // Decimal was tried FIRST, then the accepted spaced variant.
+    expect(calls.typed[0]).toBe('094-020.08');
+    expect(calls.typed).toContain('094 02008 000');
+    expect(calls.typed.indexOf('094-020.08')).toBeLessThan(calls.typed.indexOf('094 02008 000'));
+    expect(ev.facts.find((f) => f.key === 'apn')!.value).toBe('094 02008 000');
+  });
+
   // Minimal recording fake: exposes the method chosen + candidates it returns.
   function recordingFake(candidates: string[], panel: Record<string, string>) {
     const calls = { selectMethod: [] as string[], scopes: [] as string[][], typed: [] as string[] };
