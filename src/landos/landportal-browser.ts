@@ -515,7 +515,41 @@ async function runLandPortalAgentic(
         const firstScore = scoreResultCandidate(candidates[0], key);
         best = { index: candidates[0].index, score: firstScore.score, matched: [...firstScore.matched, 'first_plausible_address_candidate'], confidence: 'medium' };
       }
-      if (!best) { trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, no confident match`); continue; }
+      // APN AUTOCOMPLETE FALLBACK: we searched by the EXACT APN, so LandPortal's
+      // autocomplete lists the matching parcel as a selectable checkbox option — but
+      // the option text often shows the ADDRESS (not the APN), so pickBestCandidate
+      // finds no HIGH-confidence text match and, without this, the loop `continue`s
+      // BEFORE clickCandidate → the option is never selected and submit-after-select
+      // recovery never runs (this was the live Scott County bug). Select the
+      // best-scoring option that has ANY relation to the intake (score > 0, never
+      // pure noise); the record-page verify + address consistency + APN cross-check
+      // still reject a wrong parcel (no false facts).
+      if (!best && a.method === 'apn' && candidates.length > 0) {
+        const ranked = candidates.map((c) => ({ c, s: scoreResultCandidate(c, key) })).sort((x, y) => y.s.score - x.s.score);
+        const top = ranked[0];
+        if (top && top.s.score > 0) {
+          best = { index: top.c.index, score: top.s.score, matched: [...top.s.matched, 'apn_autocomplete_option'], confidence: 'medium' };
+        }
+      }
+      if (!best) {
+        // No option relates to the intake. Before giving up on this attempt, INSPECT
+        // the intermediate state — the page may still be waiting on a required action
+        // (a modal, a pending selection). Diagnose + attempt recovery so the outcome
+        // is always POST-recovery, never a stale "not submitted" claim.
+        const diag0 = diagnoseFailure(obs);
+        if (diag0.hasPendingAction) {
+          trace.push(`diagnose(no-pick):[${diag0.signals.join(',')}]→${diag0.nextAction}`);
+          if (diag0.missingStep) { try { recordNavigationRequirement(platform, diag0.missingStep, obs); } catch { /* non-fatal */ } }
+          const beforeUrl = obs.url;
+          const rec0 = await attemptRecovery({ driver, diagnosis: diag0, key, pickCandidate: (c, k) => pickBestCandidate(c as ResultCandidate[], k), opts: t() });
+          if (rec0) obs = rec0;
+          const v0 = verifyTargetReached(obs, { expectIdentifier: key.apn });
+          recoveryTrace.push(`${diag0.nextAction} url ${beforeUrl}→${obs.url} ${v0.pageType}`);
+          trace.push(`recover(no-pick):${diag0.nextAction}→${v0.pageType}`);
+          if (v0.reached && (matchesKnownAddress(obs) || !streetTokens.length)) { picked = { index: -1, score: 0, matched: ['recovered_pending_action'] }; usedMethod = a.method; verifiedReached = true; break; }
+        }
+        trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, no confident match`); continue;
+      }
       // Select the matching option. For APN/Parcel-ID this ticks LandPortal's
       // autocomplete checkbox row (it does NOT navigate on its own).
       await driver.clickCandidate!(best.index, t());
@@ -533,11 +567,14 @@ async function runLandPortalAgentic(
         if (diag.hasPendingAction) {
           trace.push(`diagnose:[${diag.signals.join(',')}]→${diag.nextAction}`);
           if (diag.missingStep) { try { recordNavigationRequirement(platform, diag.missingStep, obs); } catch { /* non-fatal */ } }
+          const beforeUrl = obs.url;
           const recovered = await attemptRecovery({ driver, diagnosis: diag, key, pickCandidate: (c, k) => pickBestCandidate(c as ResultCandidate[], k), opts: t() });
           if (recovered) obs = recovered;
           v = verifyTargetReached(obs, { expectIdentifier: key.apn });
-          recoveryTrace.push(`${diag.nextAction}→${v.pageType}`);
-          trace.push(`recover:${diag.nextAction}→${v.pageType}`);
+          // Instrumentation: record the URL change so a live trace shows the page
+          // actually navigated after submit-after-select recovery.
+          recoveryTrace.push(`${diag.nextAction} url ${beforeUrl}→${obs.url} ${v.pageType}`);
+          trace.push(`recover:${diag.nextAction} urlChanged=${beforeUrl !== obs.url}→${v.pageType}`);
         }
       }
       let openedViaResults = '';
@@ -563,18 +600,14 @@ async function runLandPortalAgentic(
 
     if (!picked || !verifiedReached) {
       ev.status = 'partial';
-      // Operator transparency: only after inspecting the page (not just "0 results")
-      // do we conclude "not found". Once a recovery was ATTEMPTED (e.g. submit-after-
-      // select), report the POST-recovery outcome — never re-claim the step was skipped.
-      let diagNote: string;
-      if (recoveryTrace.length) {
-        diagNote = ` Recovery was attempted (${recoveryTrace.join('; ')}) — the page was re-observed and re-verified after submitting, but no parcel detail page opened and verified.`;
-      } else {
-        const finalDiag = diagnoseFailure(obs);
-        diagNote = finalDiag.hasPendingAction
-          ? ` Intermediate state shows a pending action (${finalDiag.signals.join(', ')}): ${finalDiag.diagnosis}`
-          : ` Intermediate-state inspection found no further actionable step (${finalDiag.signals.join(', ') || 'no interactive signals'}).`;
-      }
+      // Operator transparency: the failure NOTE reports what the AGENT DID, never a
+      // raw pre-recovery diagnosis. Once recovery was ATTEMPTED (select-then-submit),
+      // report the POST-recovery outcome; otherwise say plainly that no result option
+      // could be confidently selected. The misleading "an option is selected but the
+      // search was not submitted" can no longer appear after recovery runs.
+      const diagNote = recoveryTrace.length
+        ? ` Recovery was attempted (${recoveryTrace.join('; ')}) — the page was re-observed and re-verified after submitting, but no parcel detail page opened and verified.`
+        : ` No result option could be confidently selected to open a parcel detail page; provide/confirm the exact parcel identifier.`;
       ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${key.address || key.apn} (no weak-match, no false facts).${diagNote} Trace: ${trace.join(' | ')}`;
       rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, taskBoundary, used: true, navPatterns: trace.join(' | '), knownLimitations: ['no verified parcel consistent with the provided address'] });
       return ev;

@@ -256,6 +256,62 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
     expect(ev.facts.find((f) => f.key === 'apn')!.value).toBe('094 02008 000');
   });
 
+  it('APN option shows the ADDRESS (no HIGH match): fallback selects it, recovery submits, parcel opens (live Scott County bug)', async () => {
+    // The live bug: LandPortal APN search returns ~40 candidates where the matching
+    // parcel option shows the ADDRESS (not the APN), so pickBestCandidate finds no
+    // HIGH-confidence match and the loop `continue`d BEFORE clickCandidate — the
+    // option was never selected and submit-after-select recovery never ran. The APN
+    // autocomplete fallback must select the best-scoring option so recovery runs.
+    const calls = { selectedOption: false, submitted: 0 };
+    let optionSelected = false;
+    let lastTyped = '';
+    const APN = '094-020.08';
+    // 40 noisy rows (state-only match) + the matching option showing the ADDRESS.
+    const noise = Array.from({ length: 40 }, (_, i) => ({ index: i + 1, text: `Result parcel ${i} — Oneida, TN`, kind: 'row' }));
+    const matchRow = { index: 0, text: 'Henson Lane, Helenwood, Scott County, TN', kind: 'row' }; // no APN in text
+    const searchObs = () => ({
+      url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
+      navItems: ['Map Search'], buttons: ['Search'], searchControls: [{ selector: '#term', placeholder: 'APN or Parcel ID' }],
+      links: [], hasMap: true, hasTable: true, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+      interactive: {
+        checkboxes: lastTyped === APN ? 1 : 0, radios: 0, selectableOptions: 0,
+        submit: { present: true, disabled: false, label: 'Search' }, validationMessages: [],
+        hasModal: false, hasSelection: optionSelected, filterActive: true,
+      },
+    });
+    const recordObs = () => ({
+      url: 'https://landportal.com/?property=scott-tn', title: 'Land Portal', headings: ['Property Overview'],
+      navItems: ['Map Search'], buttons: [], searchControls: [], links: [], hasMap: false, hasTable: false,
+      fields: { 'Owner Name': 'HENSON FAMILY TRUST', 'Parcel ID': APN, 'Parcel Address': 'HENSON LN', 'County': 'Scott', 'State': 'TN', 'Acres': '12.5' },
+      loginLike: false,
+    });
+    const driver = {
+      id: 'lp', configured: () => true,
+      async open() { optionSelected = false; return { url: 'https://landportal.com/', fields: {}, snippets: [] }; },
+      async search(q: string) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+      async readFields() { return { url: '', fields: {}, snippets: [] }; },
+      async screenshot(purpose: string) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+      async observe() { return optionSelected && calls.submitted > 0 ? recordObs() : searchObs(); },
+      async selectMethod() { /* apn */ },
+      async setScope(scope: string[]) { return scope; },
+      async typeSearch(_s: string, v: string) { lastTyped = v; optionSelected = false; },
+      async readCandidates() { return lastTyped === APN ? [matchRow, ...noise] : []; },
+      async clickCandidate(i: number) { if (i === 0) { calls.selectedOption = true; optionSelected = true; } },
+      async submitSearch() { calls.submitted += 1; },
+      async clickByText() { /* nav */ },
+    } as unknown as BrowserDriver;
+
+    const ev = await makeLandPortalBrowser({ driver }).runWorkflow(
+      { searchKey: { apn: '094-020.08', address: 'Henson Lane', county: 'Scott', state: 'TN', city: 'Helenwood' } },
+      { timeoutMs: 2000 },
+    );
+    expect(ev.status).toBe('retrieved');
+    expect(calls.selectedOption).toBe(true);   // the address-only option WAS selected
+    expect(calls.submitted).toBeGreaterThan(0); // submit-after-select recovery ran
+    expect(ev.facts.find((f) => f.key === 'apn')!.value).toBe('094-020.08');
+    expect(ev.note).not.toMatch(/not submitted/i);
+  });
+
   it('after submit-after-select recovery is ATTEMPTED, the failure note never claims the search was not submitted', async () => {
     // A stubborn site: the APN option is selected, submitSearch IS executed, but the
     // parcel still does not open. The workflow must attempt recovery and, on failure,
