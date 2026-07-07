@@ -45,6 +45,34 @@ export interface PageObservation {
    *  click opens a method menu (Address / APN / Owner / Lat-Long). `current` is the
    *  visible method it currently shows. Generic across modern SPAs. */
   methodToggle?: { current: string };
+  /** INTERMEDIATE-STATE signals used by failure diagnosis: after a search appears
+   *  to fail, these describe what the page is actually asking for (a pending
+   *  selection, a checkbox/radio to tick, a disabled submit, a validation message,
+   *  a modal, a results table). Optional — populated by the live observer; absent
+   *  on simple/fake observations. Generic across every interactive site. */
+  interactive?: InteractiveState;
+}
+
+/** Pending intermediate-state signals a failed page reveals (generic; no site
+ *  specifics). All counts are of VISIBLE elements only. */
+export interface InteractiveState {
+  /** Unchecked/checked checkboxes present (a "select this parcel" tick, etc.). */
+  checkboxes: number;
+  /** Radio buttons present (choose-one option). */
+  radios: number;
+  /** Selectable option rows present (autocomplete/typeahead/listbox suggestions). */
+  selectableOptions: number;
+  /** The primary submit/search control, if one is visible. */
+  submit?: { present: boolean; disabled: boolean; label?: string };
+  /** Visible validation / error / "required" messages. */
+  validationMessages: string[];
+  /** A modal/dialog is open (intercepts clicks). */
+  hasModal: boolean;
+  /** An option/checkbox/radio/row currently appears SELECTED (a pending selection
+   *  that has been satisfied — ready to submit). */
+  hasSelection: boolean;
+  /** A filter/refine state appears applied. */
+  filterActive: boolean;
 }
 
 // ── UNDERSTAND — classify the platform from generic signals ───────────────────

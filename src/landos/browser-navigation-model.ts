@@ -392,6 +392,40 @@ export function listNavigationModels(): SiteNavigationModel[] {
   return rows.map((r) => getNavigationModel(r.platform)).filter((m): m is SiteNavigationModel => !!m);
 }
 
+/**
+ * Record a LEARNED navigation requirement (a missing step failure diagnosis found,
+ * e.g. "select-before-search" or "submit-after-select") onto the site's navigation
+ * playbook so the site is navigated correctly next time. Appends to
+ * navigationDependencies (deduped), bumps that section's revision + the model
+ * version. Builds a fresh model from `obs` when the site was never learned. Pure
+ * except for the persistence adapter. Returns the saved model (null if it could
+ * neither find nor build one).
+ */
+export function recordNavigationRequirement(
+  platform: string,
+  requirement: string,
+  obs?: PageObservation,
+  deps: { get?: (p: string) => SiteNavigationModel | null; save?: (m: SiteNavigationModel) => SiteNavigationModel; build?: (p: string, o: PageObservation) => SiteNavigationModel } = {},
+): SiteNavigationModel | null {
+  const get = deps.get ?? getNavigationModel;
+  const save = deps.save ?? saveNavigationModel;
+  const build = deps.build ?? buildNavigationModel;
+  const req = (requirement || '').trim();
+  if (!req) return get(platform);
+
+  const existing = get(platform);
+  const base = existing ?? (obs ? build(platform, obs) : null);
+  if (!base) return null;
+  if (base.navigationDependencies.includes(req)) return existing ?? save(base); // already known
+  const next: SiteNavigationModel = {
+    ...base,
+    navigationDependencies: [...base.navigationDependencies, req],
+    sectionRevisions: { ...base.sectionRevisions, navigationDependencies: (base.sectionRevisions?.navigationDependencies ?? 1) + 1 },
+    version: (existing ? existing.version : base.version) + 1,
+  };
+  return save(next);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // LEARN — the orchestration Browser Intelligence runs on every inspection.
 // ─────────────────────────────────────────────────────────────────────────

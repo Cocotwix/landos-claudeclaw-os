@@ -36,6 +36,8 @@ import {
 import { getPlatformIntel, rememberPlatform, platformKey } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
 import { retrieveWithLearning } from './browser-learning.js';
+import { diagnoseFailure, attemptRecovery } from './browser-failure-diagnosis.js';
+import { recordNavigationRequirement } from './browser-navigation-model.js';
 
 // NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
 export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
@@ -409,6 +411,7 @@ async function runLandPortalAgentic(
   const t = () => ({ timeoutMs });
   const obsv = () => driver.observe!(t()) as Promise<PageObservation>;
   const trace: string[] = [];
+  const platform = platformKey(LANDPORTAL_BROWSER_BASE);
 
   try {
     await driver.open(LANDPORTAL_BROWSER_BASE, t());
@@ -515,15 +518,23 @@ async function runLandPortalAgentic(
       await driver.clickCandidate!(best.index, t());
       obs = await obsv();
       let v = verifyTargetReached(obs, { expectIdentifier: key.apn });
-      // APN autocomplete pattern: the checkbox selection only SELECTS the parcel —
-      // submit (Search / Enter) to actually open it. Address/owner typeahead rows
-      // navigate on click, so only submit when the click did not already land us on
-      // a parcel/results page.
-      if (!v.reached && v.pageType !== 'results_list' && a.method === 'apn' && driver.submitSearch) {
-        await driver.submitSearch(t());
-        obs = await obsv();
-        v = verifyTargetReached(obs, { expectIdentifier: key.apn });
-        trace.push(`apn:selected-option→submit→${v.pageType}`);
+      // FAILURE DIAGNOSIS: if selecting the option did not reach a parcel/results
+      // page, INSPECT THE INTERMEDIATE STATE before concluding "not found". The site
+      // may be waiting on a required next action — submit-after-select (LandPortal's
+      // APN autocomplete), a pending selection, a modal to dismiss, or a results row
+      // to open. Diagnose it, record the missing step on the navigation playbook,
+      // retry the corrected action, and re-verify. Generic across every interactive
+      // site; never fabricates a reached state (identity is re-checked below).
+      if (!v.reached && v.pageType !== 'results_list') {
+        const diag = diagnoseFailure(obs);
+        if (diag.hasPendingAction) {
+          trace.push(`diagnose:[${diag.signals.join(',')}]→${diag.nextAction}`);
+          if (diag.missingStep) { try { recordNavigationRequirement(platform, diag.missingStep, obs); } catch { /* non-fatal */ } }
+          const recovered = await attemptRecovery({ driver, diagnosis: diag, key, pickCandidate: (c, k) => pickBestCandidate(c as ResultCandidate[], k), opts: t() });
+          if (recovered) obs = recovered;
+          v = verifyTargetReached(obs, { expectIdentifier: key.apn });
+          trace.push(`recover:${diag.nextAction}→${v.pageType}`);
+        }
       }
       let openedViaResults = '';
       if (v.pageType === 'results_list' && driver.readCandidates && driver.clickCandidate) {
@@ -548,7 +559,13 @@ async function runLandPortalAgentic(
 
     if (!picked || !verifiedReached) {
       ev.status = 'partial';
-      ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${key.address || key.apn} (no weak-match, no false facts). Trace: ${trace.join(' | ')}`;
+      // Final intermediate-state diagnosis for operator transparency: only after
+      // inspecting the page (not just "0 results") do we conclude "not found".
+      const finalDiag = diagnoseFailure(obs);
+      const diagNote = finalDiag.hasPendingAction
+        ? ` Intermediate state still shows a pending action (${finalDiag.signals.join(', ')}): ${finalDiag.diagnosis}`
+        : ` Intermediate-state inspection found no further actionable step (${finalDiag.signals.join(', ') || 'no interactive signals'}).`;
+      ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${key.address || key.apn} (no weak-match, no false facts).${diagNote} Trace: ${trace.join(' | ')}`;
       rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, taskBoundary, used: true, navPatterns: trace.join(' | '), knownLimitations: ['no verified parcel consistent with the provided address'] });
       return ev;
     }

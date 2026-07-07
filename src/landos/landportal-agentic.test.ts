@@ -146,6 +146,14 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
       url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
       navItems: ['Map Search'], buttons: ['Search'], searchControls: [{ selector: '#main_search_input', placeholder: 'APN or Parcel ID' }],
       links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+      // Intermediate state the failure-diagnosis layer reads: typing the APN
+      // surfaces a selectable checkbox option; once ticked, hasSelection flips and a
+      // Search button is present → diagnosis = submit-after-select.
+      interactive: {
+        checkboxes: lastTyped === APN ? 1 : 0, radios: 0, selectableOptions: lastTyped === APN ? 1 : 0,
+        submit: { present: true, disabled: false, label: 'Search' }, validationMessages: [],
+        hasModal: false, hasSelection: optionSelected, filterActive: false,
+      },
     });
     const recordObs = () => ({
       url: 'https://landportal.com/?property=scott-tn', title: 'Land Portal', headings: ['Property Overview'],
@@ -208,6 +216,11 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
       url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
       navItems: ['Map Search'], buttons: ['Search'], searchControls: [{ selector: '#s', placeholder: 'APN or Parcel ID' }],
       links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+      interactive: {
+        checkboxes: lastTyped === ACCEPTED ? 1 : 0, radios: 0, selectableOptions: lastTyped === ACCEPTED ? 1 : 0,
+        submit: { present: true, disabled: false, label: 'Search' }, validationMessages: [],
+        hasModal: false, hasSelection: optionSelected, filterActive: false,
+      },
     });
     const recordObs = () => ({
       url: 'https://landportal.com/?property=scott-tn', title: 'Land Portal', headings: ['Property Overview'],

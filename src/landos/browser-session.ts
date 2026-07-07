@@ -752,7 +752,32 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           const nearInput = Array.from(document.querySelectorAll('input')).filter(vis).some((inp: any) => { const ir = inp.getBoundingClientRect(); return Math.abs(ir.top - r.top) < 60 && ir.left > r.left - 20; });
           if (nearInput) { methodToggle = { current: tx }; break; }
         }
-        return { url: location.href, title: document.title || '', headings, navItems, buttons, searchControls, links: links.slice(0, 300), hasMap, hasTable, fields, loginLike, methodToggle };
+        // INTERMEDIATE-STATE signals for failure diagnosis (generic; visible only).
+        const inView = (el: any): boolean => { const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 }; return r.width > 0 && r.height > 0; };
+        const checkboxEls = Array.from(document.querySelectorAll('input[type=checkbox]')).filter(inView) as any[];
+        const radioEls = Array.from(document.querySelectorAll('input[type=radio]')).filter(inView) as any[];
+        const OPTION_SEL = '[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="result-item" i],[class*="dropdown-menu" i] li';
+        const optionEls = Array.from(document.querySelectorAll(OPTION_SEL)).filter(inView) as any[];
+        const submitEl = (Array.from(document.querySelectorAll('button[type=submit],input[type=submit],button,[role=button]')).filter(inView) as any[])
+          .find((b: any) => /^(search|go|find|submit|apply|view\s*(parcel|property)?|open)$/i.test((b.value || b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()));
+        const submitDisabled = !!submitEl && (submitEl.disabled === true || submitEl.getAttribute('aria-disabled') === 'true' || /disabled/i.test(submitEl.className || ''));
+        const VALID_SEL = '[role=alert],[class*="error" i],[class*="invalid" i],[class*="validation" i],[class*="required" i],[aria-invalid=true]';
+        const validationMessages = Array.from(document.querySelectorAll(VALID_SEL)).filter(inView).map((e: any) => txt(e, 120)).filter((s: string) => s && s.length > 1).slice(0, 6);
+        const hasModal = Array.from(document.querySelectorAll('[role=dialog],[aria-modal=true],[class*="modal" i],[class*="dialog" i]')).some(inView);
+        const selectedOption = optionEls.some((o: any) => o.getAttribute('aria-selected') === 'true' || /(\bselected\b|\bactive\b|\bis-selected\b)/i.test(o.className || ''));
+        const hasSelection = checkboxEls.some((c: any) => c.checked) || radioEls.some((r: any) => r.checked) || selectedOption;
+        const filterActive = Array.from(document.querySelectorAll('[class*="filter" i][class*="active" i],[class*="chip" i],[class*="applied" i],[aria-pressed=true]')).some(inView);
+        const interactive = {
+          checkboxes: checkboxEls.length,
+          radios: radioEls.length,
+          selectableOptions: optionEls.length,
+          submit: submitEl ? { present: true, disabled: submitDisabled, label: (submitEl.value || txt(submitEl, 20)) || undefined } : { present: false, disabled: false },
+          validationMessages,
+          hasModal,
+          hasSelection,
+          filterActive,
+        };
+        return { url: location.href, title: document.title || '', headings, navItems, buttons, searchControls, links: links.slice(0, 300), hasMap, hasTable, fields, loginLike, methodToggle, interactive };
       };
       return page.evaluate<unknown>(OBSERVE);
     },
