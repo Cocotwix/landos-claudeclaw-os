@@ -23,6 +23,7 @@ import { computeOfferLanes, GLOBAL_MIN_NET_PROFIT_USD, type OfferLane } from './
 import { buildComparableIntelligence, type ComparableIntelligence } from './comparable-intelligence.js';
 import { buildMarketIntelligence, type MarketIntelligence } from './market-intelligence.js';
 import type { MarketMatrixReportSection } from './market-matrix-read.js';
+import type { ConfirmedParcel } from './parcel-identity.js';
 
 const money = (n: number | null | undefined): string => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
 
@@ -83,7 +84,7 @@ export interface SmartInputInterpretation {
   note: string;
 }
 
-function buildSmartInput(intake: DiscoveryIntake, report: DealCardReportView): SmartInputInterpretation {
+function buildSmartInput(intake: DiscoveryIntake, report: DealCardReportView, verified = report.parcelVerified): SmartInputInterpretation {
   const fields: Array<{ label: string; value: string }> = [];
   const push = (label: string, v?: string | number | null) => {
     const val = v == null ? '' : String(v).trim();
@@ -112,8 +113,8 @@ function buildSmartInput(intake: DiscoveryIntake, report: DealCardReportView): S
     resolvedFields: fields,
     resolutionPath: intake.resolverPathReason || 'Resolved from the strongest available identifier.',
     parcelStatus: report.parcelVerificationStatus,
-    parcelVerified: report.parcelVerified,
-    note: report.parcelVerified
+    parcelVerified: verified,
+    note: verified
       ? 'Parcel identity confirmed by a named source — facts below are parcel-specific.'
       : 'Parcel identity NOT confirmed — everything below is Local Area Context (weaker). Confirm the exact parcel before any offer.',
   };
@@ -366,12 +367,12 @@ export interface RoughOfferRange {
   note: string;
 }
 
-export function buildRoughOfferRange(report: DealCardReportView, es: ExecutiveSummary, comps?: ComparableIntelligence): RoughOfferRange {
+export function buildRoughOfferRange(report: DealCardReportView, es: ExecutiveSummary, comps?: ComparableIntelligence, verified = report.parcelVerified): RoughOfferRange {
   const r = es.preliminaryAcquisitionRange;
   const band = priceBand(report, es, comps);
   const ppa = { low: band?.low ?? null, mid: band?.mid ?? null, high: band?.high ?? null };
   const asking = band?.basis === 'asking';
-  const basis: RoughOfferRange['basis'] = report.parcelVerified ? 'parcel' : (ppa.mid != null ? 'area' : 'insufficient');
+  const basis: RoughOfferRange['basis'] = verified ? 'parcel' : (ppa.mid != null ? 'area' : 'insufficient');
   const whatCouldChange = [
     ...r.increaseValueIf.map((x) => `↑ ${x}`),
     ...r.decreaseValueIf.map((x) => `↓ ${x}`),
@@ -404,7 +405,7 @@ export function buildRoughOfferRange(report: DealCardReportView, es: ExecutiveSu
       perAcreAcquisition: { low: Math.round(0.4 * ppa.mid), high: Math.round(0.6 * ppa.mid) },
       confidence: 'low',
       whatCouldChange,
-      note: `${report.parcelVerified ? 'Verified parcel' : 'Area land'} ${priceWord}. Acquire at ~${money(0.4 * ppa.mid)}–${money(0.6 * ppa.mid)}/acre (40–60%)${r.acres == null ? ' — provide acreage to compute a total value and offer' : ''}.${report.parcelVerified ? ' Asking-market fallback only — confirm with sold comps before any final offer.' : ' Local area context — not parcel verified.'}`,
+      note: `${verified ? 'Verified parcel' : 'Area land'} ${priceWord}. Acquire at ~${money(0.4 * ppa.mid)}–${money(0.6 * ppa.mid)}/acre (40–60%)${r.acres == null ? ' — provide acreage to compute a total value and offer' : ''}.${verified ? ' Asking-market fallback only — confirm with sold comps before any final offer.' : ' Local area context — not parcel verified.'}`,
     };
   }
 
@@ -442,23 +443,31 @@ export interface DiscoveryCallReport {
  *  Intelligence, Comps/Land Price, Market Pulse) are rendered directly from the
  *  report + Executive Summary the caller already holds; this builder owns the
  *  three that need synthesis: Smart Input, the five strategies, and the range. */
+/**
+ * Assemble the Discovery Call report. `parcelConfirmed` is the AUTHORITATIVE
+ * verified/area-context switch (from the ConfirmedParcel gate); it defaults to the
+ * report's own parcelVerified flag for back-compat. Prefer the capability entry
+ * points below so the parcel-verified report is only reachable with a token.
+ */
 export function buildDiscoveryCallReport(
   report: DealCardReportView,
   es: ExecutiveSummary,
   intake: DiscoveryIntake,
+  parcelConfirmed?: boolean,
 ): DiscoveryCallReport {
-  const smartInput = buildSmartInput(intake, report);
+  const verified = parcelConfirmed ?? report.parcelVerified;
+  const smartInput = buildSmartInput(intake, report, verified);
   const comparableIntelligence = buildComparableIntelligence(report);
   const marketIntelligence = buildMarketIntelligence(report, comparableIntelligence);
   const strategyEvaluation = buildStrategyEvaluation(report, es, comparableIntelligence);
-  const roughOfferRange = buildRoughOfferRange(report, es, comparableIntelligence);
-  const contextLabel = report.parcelVerified ? 'Parcel Verified' : 'Local Area Context, Not Parcel Verified';
+  const roughOfferRange = buildRoughOfferRange(report, es, comparableIntelligence, verified);
+  const contextLabel = verified ? 'Parcel Verified' : 'Local Area Context, Not Parcel Verified';
   const viableCount = strategyEvaluation.filter((s) => s.verdict === 'viable').length;
   return {
     available: true,
-    parcelVerified: report.parcelVerified,
+    parcelVerified: verified,
     contextLabel,
-    headline: report.parcelVerified
+    headline: verified
       ? (es.preliminaryAcquisitionRange.available
           ? `${es.headline}`
           : roughOfferRange.pricePerAcre.mid != null
@@ -471,8 +480,33 @@ export function buildDiscoveryCallReport(
     marketIntelligence,
     strategyEvaluation,
     roughOfferRange,
-    confidence: report.parcelVerified ? es.confidence : 'low',
+    confidence: verified ? es.confidence : 'low',
     disclaimer: 'Pre-discovery-call intelligence only. Not final underwriting, not legal due diligence, not a final offer. ' +
-      (report.parcelVerified ? '' : 'Parcel identity is NOT verified — treat all figures as weaker local-area context.'),
+      (verified ? '' : 'Parcel identity is NOT verified — treat all figures as weaker local-area context.'),
   };
+}
+
+// ── Department entry points (ConfirmedParcel capability gate) ────────────────
+// The PARCEL-VERIFIED discovery report is a downstream department output, so it is
+// produced only from a ConfirmedParcel. A Candidate parcel gets the area-context
+// report (clearly labeled Not Parcel Verified) so an unresolved lead is still
+// usable for a discovery call.
+
+/** Gated: the parcel-verified Discovery report. Requires a ConfirmedParcel. */
+export function buildConfirmedParcelDiscoveryReport(
+  _parcel: ConfirmedParcel,
+  report: DealCardReportView,
+  es: ExecutiveSummary,
+  intake: DiscoveryIntake,
+): DiscoveryCallReport {
+  return buildDiscoveryCallReport(report, es, intake, true);
+}
+
+/** Candidate-safe: the Discovery report forced to Local Area Context. */
+export function buildAreaDiscoveryReport(
+  report: DealCardReportView,
+  es: ExecutiveSummary,
+  intake: DiscoveryIntake,
+): DiscoveryCallReport {
+  return buildDiscoveryCallReport(report, es, intake, false);
 }

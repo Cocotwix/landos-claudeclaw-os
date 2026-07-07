@@ -13,6 +13,8 @@
 //  - Never fabricates facts; missing facts are LABELED missing, not invented.
 //  - No legal/zoning certainty — those always land in requiredVerification.
 
+import type { ConfirmedParcel } from './parcel-identity.js';
+
 export type UnderwritingStatus = 'approved' | 'needs_deeper_dd' | 'blocked_unverified';
 
 export interface UnderwritingStrategyLane {
@@ -84,6 +86,29 @@ function classifyConstraint(c: string): { risk: boolean; dealKiller: boolean; ve
  *  needs_deeper_dd (never a fabricated offer). Otherwise approves from the
  *  applicable strategy lanes and produces the full decision record + event.
  */
+/** Underwriting input with the parcel-verified flag removed — it comes from the
+ *  ConfirmedParcel capability, never a caller-supplied boolean. */
+export type ConfirmedUnderwritingInput = Omit<UnderwritingInput, 'parcelVerified'>;
+
+// ── Department entry points (ConfirmedParcel capability gate) ────────────────
+// Underwriting is the ONLY agent that approves an offer, so it runs ONLY from a
+// ConfirmedParcel. The gate replaces the "no score/value/offer on an unverified
+// parcel" runtime check with a type the compiler enforces.
+
+/**
+ * Gated offer approval. Requires a ConfirmedParcel — confirmed parcel identity is
+ * the precondition for any scoring/valuation/offer. There is no other way to run
+ * underwriting on a verified parcel.
+ */
+export function underwriteConfirmedParcel(_parcel: ConfirmedParcel, input: ConfirmedUnderwritingInput): UnderwritingDecision {
+  return runUnderwriting({ ...input, parcelVerified: true });
+}
+
+/** Candidate-safe: underwriting is blocked until the parcel is confirmed. */
+export function blockedUnderwriting(input: ConfirmedUnderwritingInput): UnderwritingDecision {
+  return runUnderwriting({ ...input, parcelVerified: false });
+}
+
 export function runUnderwriting(input: UnderwritingInput): UnderwritingDecision {
   const apn = (input.apn && input.apn.trim()) || null;
   const missingFacts: string[] = [];

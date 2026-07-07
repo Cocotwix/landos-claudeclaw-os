@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildDiscoveryCallReport,
+  buildConfirmedParcelDiscoveryReport,
+  buildAreaDiscoveryReport,
   buildStrategyEvaluation,
   buildRoughOfferRange,
   type DiscoveryIntake,
 } from './discovery-call-report.js';
+import { confirmParcel } from './parcel-identity.js';
 import type { DealCardReportView } from './deal-card-report.js';
 import type { ExecutiveSummary } from './deal-card-executive-summary.js';
 
@@ -183,5 +186,32 @@ describe('discovery-call-report — full assembly', () => {
     expect(dcr.smartInput.resolvedFields.find((f) => f.label === 'County')?.value).toBe('Runnels County');
     expect(dcr.strategyEvaluation).toHaveLength(5);
     expect(dcr.disclaimer.toLowerCase()).toContain('pre-discovery');
+  });
+});
+
+describe('Discovery department gate (ConfirmedParcel)', () => {
+  const confirmed = confirmParcel({
+    dealCardId: 1, subjectCardId: 2, state: 'confirmed', basis: 'named source',
+    confidence: 0.95, evidenceRefs: [], confirmedAt: 1, confirmedBy: 'acquire', updatedAt: 1,
+  })!;
+
+  it('buildConfirmedParcelDiscoveryReport labels Parcel Verified via the token (authoritative)', () => {
+    // Even if the report field lagged, the token drives the verified mode.
+    const dcr = buildConfirmedParcelDiscoveryReport(confirmed, report({ parcelVerified: false }), exec({ median: 3500, soldCount: 4 }), intake);
+    expect(dcr.parcelVerified).toBe(true);
+    expect(dcr.contextLabel).toBe('Parcel Verified');
+    expect(dcr.disclaimer).not.toMatch(/NOT verified/i);
+  });
+
+  it('buildAreaDiscoveryReport forces Local Area Context (candidate)', () => {
+    const dcr = buildAreaDiscoveryReport(report({ parcelVerified: true }), exec({ median: 3500, soldCount: 4 }), intake);
+    expect(dcr.parcelVerified).toBe(false);
+    expect(dcr.contextLabel).toBe('Local Area Context, Not Parcel Verified');
+  });
+
+  it('COMPILE GATE: the parcel-verified discovery report needs a ConfirmedParcel', () => {
+    // @ts-expect-error a raw object is not a ConfirmedParcel — the brand blocks it.
+    buildConfirmedParcelDiscoveryReport({ dealCardId: 1 }, report({}), exec({ median: 3500, soldCount: 4 }), intake);
+    expect(true).toBe(true);
   });
 });

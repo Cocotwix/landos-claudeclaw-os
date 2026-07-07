@@ -1,6 +1,7 @@
 // Tests: Duke first-pass analysis (flags + strategy readiness, no fake offers).
 import { describe, it, expect } from 'vitest';
-import { buildDukeAnalysis } from './duke-analysis.js';
+import { buildDukeAnalysis, analyzeConfirmedParcelStrategy, blockedStrategyAnalysis } from './duke-analysis.js';
+import { confirmParcel } from './parcel-identity.js';
 import type { DukePropertyData } from './duke-property-data.js';
 
 function pd(over: Partial<DukePropertyData['landFacts']> = {}, valOver: Partial<DukePropertyData['valuation']> = {}): DukePropertyData {
@@ -18,6 +19,33 @@ function pd(over: Partial<DukePropertyData['landFacts']> = {}, valOver: Partial<
     note: 'test',
   };
 }
+
+describe('Strategy department gate (ConfirmedParcel)', () => {
+  const confirmed = confirmParcel({
+    dealCardId: 1, subjectCardId: 2, state: 'confirmed', basis: 'named source',
+    confidence: 0.95, evidenceRefs: [], confirmedAt: 1, confirmedBy: 'acquire', updatedAt: 1,
+  })!;
+
+  it('analyzeConfirmedParcelStrategy unlocks full analysis with a token + data', () => {
+    const a = analyzeConfirmedParcelStrategy(confirmed, { propertyData: pd() });
+    expect(a.parcelVerified).toBe(true);
+    expect(a.strategyStatus).toBe('ready_for_preliminary_review');
+    expect(a.strategyCandidates.length).toBeGreaterThan(0);
+  });
+
+  it('blockedStrategyAnalysis (candidate) blocks strategy/underwriting', () => {
+    const a = blockedStrategyAnalysis(['need county']);
+    expect(a.strategyStatus).toBe('blocked_unverified_parcel');
+    expect(a.strategyCandidates.length).toBe(0);
+    expect(a.dataGaps).toContain('need county');
+  });
+
+  it('COMPILE GATE: strategy analysis cannot be unlocked without a ConfirmedParcel', () => {
+    // @ts-expect-error a raw object is not a ConfirmedParcel — the brand blocks it.
+    analyzeConfirmedParcelStrategy({ dealCardId: 1 }, { propertyData: pd() });
+    expect(true).toBe(true);
+  });
+});
 
 describe('buildDukeAnalysis', () => {
   it('blocks strategy when the parcel is unverified', () => {

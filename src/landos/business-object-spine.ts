@@ -31,6 +31,7 @@ import { getDealCard, type DealCardDetail } from './deal-card.js';
 import { getDealCardDd, type DealCardDdView } from './deal-card-dd.js';
 import { loadSellerStatedFacts } from './seller-stated-facts.js';
 import { classifySource, type SourceType } from './source-evidence.js';
+import { readParcelIdentity, confirmParcel, type ParcelState, type ConfirmedParcel } from './parcel-identity.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared labels
@@ -211,6 +212,11 @@ export interface BusinessObjectBundle {
   sourceEvidence: SourceEvidenceRecord[];
   verificationTasks: VerificationTask[];
   header: DealCardHeader;
+  /** The capability token when the subject parcel is confirmed (authoritative:
+   *  stored verdict, else the verified-property card fallback), else null. The
+   *  packet is the authority on confirmation, so it is where downstream
+   *  departments obtain their ConfirmedParcel. */
+  confirmedParcel: ConfirmedParcel | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -675,27 +681,37 @@ function pickSubject(cards: LinkedCard[]): LinkedCard | undefined {
   return cards.find((c) => c.role === 'subject') ?? cards[0];
 }
 
-/** Build the normalized PropertyIntelInput from persisted Deal Card data. */
+/**
+ * The AUTHORITATIVE parcel-identity verdict for the spine. The stored
+ * ParcelIdentity state (written once by Property Resolution) is the single source
+ * of truth: `confirmed` => identity verified. When no verdict has been stored yet
+ * (a Deal Card created outside the acquire pipeline, or one predating the
+ * parcel_identity table), fall back to the subject card's own `verified_property`
+ * flag — the strong signal the acquire route itself sets on confirmation. There is
+ * NO second identity derivation: the old ddStrongIdentity "DD source_verified +
+ * link" path is gone (it was the "any source link" trap this redesign removes).
+ */
+export function resolveParcelIdentityVerified(
+  subject: LinkedCard | undefined,
+  stored: { state: ParcelState } | null,
+): boolean {
+  if (stored) return stored.state === 'confirmed';
+  return subject?.verification_status === 'verified_property';
+}
+
+/** Build the normalized PropertyIntelInput from persisted Deal Card data. The
+ *  authoritative `parcelIdentityVerified` is supplied by the caller (stored
+ *  verdict, else the legacy card-flag fallback); field-level `Verified` flags
+ *  still require the subject card's own verified_property record. */
 function buildIntelInput(
   dealId: number,
   subject: LinkedCard | undefined,
   dd: DealCardDdView,
   evidence: SourceEvidenceRecord[],
+  parcelIdentityVerified: boolean,
   now?: number,
 ): PropertyIntelInput {
   const cardVerified = subject?.verification_status === 'verified_property';
-  // DD 'source_verified' counts as verified subject parcel identity ONLY when it
-  // is backed by STRONG identity evidence: an APN plus an official/LandPortal
-  // source link. A bare or marketplace source link never verifies parcel
-  // identity (that is exactly the "any source link" trap).
-  const ddStrongIdentity =
-    dd.parcelIdentityStatus === 'source_verified' &&
-    isPresent(dd.apn) &&
-    dd.sourceLinks.some((l) => {
-      const st = classifySource({ url: l.url, label: l.label });
-      return st === 'official' || st === 'landportal';
-    });
-  const parcelIdentityVerified = cardVerified || ddStrongIdentity;
   const vsrc = isPresent(subject?.verification_source);
 
   // Owner comes only from the (subject) property card. Verified only when the
@@ -882,11 +898,17 @@ export function assembleBusinessObjects(dealCardId: number, now?: number): Busin
   const cardIds = cards.map((c) => c.id).filter((n): n is number => typeof n === 'number');
   const evidence = [...readCardEvidence(cardIds), ...ddEvidence(dd, dealCardId)];
 
-  const intelInput = buildIntelInput(dealCardId, subject, dd, evidence, now);
+  // The stored ParcelIdentity verdict is AUTHORITATIVE (single source of truth);
+  // it falls back to the card's verified_property flag only when nothing has been
+  // stored yet. No legacy identity derivation runs anymore.
+  const storedIdentity = readParcelIdentity(dealCardId);
+  const parcelIdentityVerified = resolveParcelIdentityVerified(subject, storedIdentity);
+  const intelInput = buildIntelInput(dealCardId, subject, dd, evidence, parcelIdentityVerified, now);
   const propertyIntelligence = computePropertyIntelligence(intelInput);
   const leadIntake = buildLeadIntake(deal, subject, dealCardId);
   const opportunity = buildOpportunity(deal, propertyIntelligence);
   const header = buildDealCardHeader(opportunity, propertyIntelligence);
+  const confirmedParcel = mintConfirmedParcel(dealCardId, subject, storedIdentity, parcelIdentityVerified);
 
   return {
     dealId: dealCardId,
@@ -896,7 +918,41 @@ export function assembleBusinessObjects(dealCardId: number, now?: number): Busin
     sourceEvidence: evidence,
     verificationTasks: propertyIntelligence.verificationTasks,
     header,
+    confirmedParcel,
   };
+}
+
+/**
+ * Mint the ConfirmedParcel capability token from the AUTHORITATIVE verdict. The
+ * stored `confirmed` verdict yields the token directly; when there is no stored
+ * verdict but the subject card is a verified_property (named-source verification,
+ * rule 1), the packet mints a token from that — so pre-migration verified cards
+ * still hand downstream departments a ConfirmedParcel. Returns null for a
+ * Candidate/unresolved parcel. The brand stays module-private (constructed only
+ * via confirmParcel), so no caller can forge a token.
+ */
+function mintConfirmedParcel(
+  dealCardId: number,
+  subject: LinkedCard | undefined,
+  stored: ReturnType<typeof readParcelIdentity>,
+  parcelIdentityVerified: boolean,
+): ConfirmedParcel | null {
+  const fromStored = confirmParcel(stored);
+  if (fromStored) return fromStored;
+  if (!parcelIdentityVerified) return null;
+  // Card-verified fallback (no stored row yet): a verified_property card is a
+  // named-source confirmation; represent it as a confirmed record.
+  return confirmParcel({
+    dealCardId,
+    subjectCardId: subject?.id ?? null,
+    state: 'confirmed',
+    basis: `Verified property card (${subject?.verification_source ?? 'named source'}).`,
+    confidence: 0.95,
+    evidenceRefs: [],
+    confirmedAt: null,
+    confirmedBy: 'card',
+    updatedAt: null,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────

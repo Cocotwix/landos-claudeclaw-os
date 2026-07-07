@@ -365,6 +365,20 @@ describe('assembleBusinessObjects — decision-grade PASS', () => {
     expect(bundle.header.decisionConfidence).toBe('high');
     expect(bundle.header.blockingVerificationTasks.length).toBe(0);
     expect(pkt.parcelCompletenessScore).toBeGreaterThanOrEqual(80);
+    // The packet mints the ConfirmedParcel token for downstream departments.
+    expect(bundle.confirmedParcel).not.toBeNull();
+    expect(bundle.confirmedParcel!.dealCardId).toBe(deal.id);
+  });
+});
+
+describe('assembleBusinessObjects — ConfirmedParcel token production', () => {
+  it('a Candidate (unverified) parcel yields no token', () => {
+    const cardRow = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '2510 State Highway 153, Winters, TX', state: 'TX',
+    }).card;
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Winters TX' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: cardRow.id, role: 'subject' });
+    expect(assembleBusinessObjects(deal.id, NOW)!.confirmedParcel).toBeNull();
   });
 });
 

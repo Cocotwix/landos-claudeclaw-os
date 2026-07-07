@@ -4,6 +4,8 @@ import { createDealCard } from './deal-card.js';
 import { listComps } from './comps.js';
 import {
   retrieveComps,
+  retrieveConfirmedParcelComps,
+  retrieveAreaComps,
   selectCompProviders,
   filterComps,
   isWithinRecencyWindow,
@@ -14,6 +16,7 @@ import {
   type CompProvider,
   type RetrievedComp,
 } from './comp-retrieval.js';
+import { confirmParcel } from './parcel-identity.js';
 
 const LOOKUP = '2026-06-19T00:00:00.000Z';
 
@@ -118,6 +121,38 @@ describe('retrieveComps orchestration', () => {
       { registry: [slow, makeStubCompProvider('zillow', 'Zillow')], overallCapMs: 10, now: () => (t += 100) },
     );
     expect(res.partial).toBe(true);
+  });
+});
+
+describe('Comps department gate (ConfirmedParcel)', () => {
+  const liveRedfin: CompProvider = {
+    id: 'redfin', label: 'Redfin', supportsAddress: true, supportsApnOnly: false,
+    async retrieve() {
+      return { providerId: 'redfin', status: 'connected', note: 'ok', comps: [
+        { price: 60_000, saleDateIso: '2026-02-01T00:00:00Z', acres: 9, pricePerAcre: null, sourceUrl: 'https://redfin.com/a', sourceLabel: 'redfin' },
+      ] };
+    },
+  };
+  const confirmed = confirmParcel({
+    dealCardId: 1, subjectCardId: 2, state: 'confirmed', basis: 'named source',
+    confidence: 0.95, evidenceRefs: [], confirmedAt: 1, confirmedBy: 'acquire', updatedAt: 1,
+  })!;
+
+  it('retrieveConfirmedParcelComps returns parcel-attributed comps when given a token', async () => {
+    const res = await retrieveConfirmedParcelComps(confirmed, { address: '1 A St', acres: 10, lookupDateIso: LOOKUP }, { registry: [liveRedfin, makeStubCompProvider('zillow', 'Zillow')] });
+    expect(res.hasComps).toBe(true);
+    expect(res.comps).toHaveLength(1);
+  });
+
+  it('retrieveAreaComps (candidate mode) still returns area comps without a token', async () => {
+    const res = await retrieveAreaComps({ address: '1 A St', acres: 10, lookupDateIso: LOOKUP }, { registry: [liveRedfin, makeStubCompProvider('zillow', 'Zillow')] });
+    expect(res.hasComps).toBe(true);
+  });
+
+  it('COMPILE GATE: parcel-attributed comps cannot be retrieved without a ConfirmedParcel', async () => {
+    // @ts-expect-error a raw object is not a ConfirmedParcel — the brand blocks it.
+    await retrieveConfirmedParcelComps({ dealCardId: 1 }, { address: '1 A St', acres: 10, lookupDateIso: LOOKUP }, { registry: [makeStubCompProvider('zillow', 'Zillow')] });
+    expect(true).toBe(true);
   });
 });
 

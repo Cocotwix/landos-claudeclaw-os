@@ -18,6 +18,7 @@
 
 import { addComp, type AddCompInput } from './comps.js';
 import type { CompSourceLabel, LandosEntity } from './db.js';
+import type { ConfirmedParcel } from './parcel-identity.js';
 
 // ── Config (named values, not magic numbers) ───────────────────────────────
 
@@ -366,6 +367,41 @@ export async function retrieveComps(
     landportalCompsUsedToday: usedToday,
     landportalCapReached: usedToday >= LANDPORTAL_DAILY_COMP_CAP && !landportalSelected,
   };
+}
+
+// ── Department entry points (ConfirmedParcel capability gate) ────────────────
+// Comp retrieval has two honest scopes. PARCEL-ATTRIBUTED comps (tied to the
+// subject parcel, feeding valuation/strategy/offer) are a downstream department
+// output, so they must be generated from a ConfirmedParcel — it is impossible to
+// retrieve parcel-attributed comps without passing the gate. AREA comps
+// (countywide / near-ZIP $/acre context) stay available to Candidate parcels,
+// clearly weaker and never attributed to a specific parcel.
+
+type RetrieveCompsOpts = Parameters<typeof retrieveComps>[1];
+
+/**
+ * The gated, parcel-attributed comp retrieval. Requires a ConfirmedParcel; the
+ * confirmed identity is what authorizes attributing comps to the subject parcel.
+ * No other path reaches this scope — the capability type is the gate.
+ */
+export async function retrieveConfirmedParcelComps(
+  _parcel: ConfirmedParcel,
+  query: CompQuery,
+  opts: RetrieveCompsOpts = {},
+): Promise<CompRetrievalResult> {
+  return retrieveComps(query, opts);
+}
+
+/**
+ * Candidate-safe AREA comps (countywide / near-ZIP context). Never attributed to
+ * a specific parcel. Available before confirmation so an unresolved lead is still
+ * usable for market context.
+ */
+export async function retrieveAreaComps(
+  query: CompQuery,
+  opts: RetrieveCompsOpts = {},
+): Promise<CompRetrievalResult> {
+  return retrieveComps(query, opts);
 }
 
 /** Persist retrieved comps onto a Deal Card (reuses comps.ts storage). Only

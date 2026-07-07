@@ -56,7 +56,7 @@ import { buildRegistryFromConfig } from './model-router-service.js';
 import { resolveLiveRouting, resolveOllamaHost, setLiveRouting, setOllamaHost } from './router-runtime-config.js';
 import { GRUNT_HELPERS } from './grunt-helpers.js';
 import { computeDealLane, type DealLaneSnapshot } from './deal-lane.js';
-import { runUnderwriting, type UnderwritingStrategyLane } from './underwriting-agent.js';
+import { underwriteConfirmedParcel, blockedUnderwriting, type UnderwritingStrategyLane } from './underwriting-agent.js';
 import { DashboardSettingsOverrideStore, resolveOverride, setOverride, resetOverride, type OverrideScope } from './model-override.js';
 import { PROVIDER_PRESENCE } from '../config.js';
 import { getDashboardSetting, setDashboardSetting } from '../db.js';
@@ -102,7 +102,7 @@ import { suggestAddresses } from './address-suggest.js';
 import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
 import { buildSmartIntake } from './smart-intake.js';
 import { planResolver, type IntakeFields } from './resolver-planner.js';
-import { buildDiscoveryCallReport, type DiscoveryIntake } from './discovery-call-report.js';
+import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
 import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
@@ -116,7 +116,7 @@ import type { BrowserFact, BrowserSearchMode } from './browser-intelligence.js';
 import { deriveCounty } from './providers/county-geocode.js';
 import { buildDealCardUpdatePlan } from './deal-card-memory.js';
 import { buildMarketPulseV1 } from './market-pulse.js';
-import { fetchMarketPulseRead, type PulseComp } from './market-pulse-read.js';
+import { fetchConfirmedParcelMarketPulse, fetchAreaMarketContext, type PulseComp } from './market-pulse-read.js';
 import { buildPublicRecordsResearchPlan, researchPlanNextActions } from './public-records-research.js';
 import { buildDukeAnalysis } from './duke-analysis.js';
 import { buildAcePrep } from './ace-prep.js';
@@ -163,6 +163,8 @@ import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type Respon
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
+import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity } from './parcel-identity.js';
+import { buildResolutionSnapshot, writeResolutionSnapshot, readResolutionSnapshot } from './resolution-snapshot.js';
 import { getDealCardDd, upsertDealCardDd, type DealCardDdPatch, type DealCardSourceLink } from './deal-card-dd.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketPatch } from './deal-card-market.js';
@@ -1231,16 +1233,39 @@ export function registerLandosRoutes(app: Hono): void {
       pricePerAcre: r.price_per_acre, price: r.price, acres: r.acres,
       zip: (String(r.address_desc || '').match(/\b(\d{5})\b/) ?? [])[1] ?? null,
     }));
-    const marketPulse = await fetchMarketPulseRead({
+    // The parcel-attributed ("Parcel Verified") pulse is gated on the AUTHORITATIVE
+    // ConfirmedParcel capability, not the legacy card flag. A Candidate parcel still
+    // gets honest, clearly-labeled AREA context (usable unresolved leads), never
+    // parcel-attributed market data.
+    const areaInput = {
       city: str(subj?.city) || undefined,
       county: str(subj?.county) || dd.county || undefined,
       state: str(subj?.state) || dd.state || undefined,
       zip: (addr.match(/\b(\d{5})\b/) ?? [])[1],
       fips: str(subj?.fips) || undefined,
-      parcelVerified: deal.hasVerifiedProperty === true,
       comps,
-    });
-    return c.json({ marketPulse });
+    };
+    const confirmed = confirmParcelForDeal(id);
+    const marketPulse = confirmed
+      ? await fetchConfirmedParcelMarketPulse(confirmed, areaInput)
+      : await fetchAreaMarketContext(areaInput);
+    return c.json({ marketPulse, parcelConfirmed: !!confirmed });
+  });
+
+  // Resolution view data — the Property Resolution trace for a NOT-yet-confirmed
+  // parcel. Returns the persisted ParcelIdentity state + the resolution snapshot
+  // (what LandOS understood, sources searched, candidates + accept/reject, what's
+  // missing, smallest next identifier). The UI shows this INSTEAD of a
+  // half-populated Deal Card until the parcel is confirmed.
+  app.get('/api/landos/deal-cards/:id/resolution', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const identity = readParcelIdentity(id);
+    const snapshot = readResolutionSnapshot(id);
+    const confirmed = (identity?.state === 'confirmed') || (assembleBusinessObjects(id)?.confirmedParcel != null);
+    return c.json({ parcelIdentity: identity, snapshot, confirmed });
   });
 
   // Public-records research plan — the prioritized official county sources to
@@ -1298,9 +1323,12 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(id) as (Record<string, unknown> | undefined);
     if (!deal) return c.json({ error: 'not found' }, 404);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const decision = runUnderwriting({
+    // Underwriting (the offer approver) runs ONLY from the AUTHORITATIVE
+    // ConfirmedParcel the Property Intelligence packet mints — never the legacy
+    // hasVerifiedProperty card flag.
+    const confirmedParcel = assembleBusinessObjects(id)?.confirmedParcel ?? null;
+    const uwInput = {
       apn: String(id),
-      parcelVerified: deal.hasVerifiedProperty === true,
       expectedValueUsd: typeof body.expectedValueUsd === 'number' ? body.expectedValueUsd : null,
       strategyLanes: Array.isArray(body.strategyLanes) ? (body.strategyLanes as UnderwritingStrategyLane[]) : [],
       discoveryCallSummary: str(body.discoveryCallSummary) ?? null,
@@ -1309,7 +1337,10 @@ export function registerLandosRoutes(app: Hono): void {
       knownConstraints: Array.isArray(body.knownConstraints) ? (body.knownConstraints as string[]) : [],
       compsAttached: body.compsAttached === true,
       marketFactsAttached: body.marketFactsAttached === true,
-    });
+    };
+    const decision = confirmedParcel
+      ? underwriteConfirmedParcel(confirmedParcel, uwInput)
+      : blockedUnderwriting(uwInput);
     return c.json({ decision });
   });
 
@@ -1657,7 +1688,10 @@ export function registerLandosRoutes(app: Hono): void {
     const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
     const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
     const executiveSummary = buildExecutiveSummary(report, growthSummary);
-    const discoveryReport = buildDiscoveryCallReport(report, executiveSummary, buildDiscoveryIntake(deal));
+    const confirmedForDiscovery = confirmParcelForDeal(id);
+    const discoveryReport = confirmedForDiscovery
+      ? buildConfirmedParcelDiscoveryReport(confirmedForDiscovery, report, executiveSummary, buildDiscoveryIntake(deal))
+      : buildAreaDiscoveryReport(report, executiveSummary, buildDiscoveryIntake(deal));
     const marketMatrix = marketMatrixFor(deal);
     discoveryReport.marketMatrix = marketMatrix;
     return c.json({ report, executiveSummary, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, leadType, leadTypeLabel: LEAD_TYPE_LABEL[leadType], govDd: report.govDd, browserMarketIntel });
@@ -1682,7 +1716,10 @@ export function registerLandosRoutes(app: Hono): void {
     const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
     const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
     const executiveSummary = buildExecutiveSummary(report, growthSummary);
-    const discoveryReport = buildDiscoveryCallReport(report, executiveSummary, buildDiscoveryIntake(deal));
+    const confirmedForDiscovery = confirmParcelForDeal(id);
+    const discoveryReport = confirmedForDiscovery
+      ? buildConfirmedParcelDiscoveryReport(confirmedForDiscovery, report, executiveSummary, buildDiscoveryIntake(deal))
+      : buildAreaDiscoveryReport(report, executiveSummary, buildDiscoveryIntake(deal));
     const marketMatrix = marketMatrixFor(deal);
     discoveryReport.marketMatrix = marketMatrix;
     const markdown = propertyIntelligenceMarkdown({ deal, report, executiveSummary, discoveryReport, briefing });
@@ -1781,7 +1818,12 @@ export function registerLandosRoutes(app: Hono): void {
     const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
     const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
     const executiveSummary = buildExecutiveSummary(result.report, growthSummary);
-    const discoveryReport = deal ? buildDiscoveryCallReport(result.report, executiveSummary, buildDiscoveryIntake(deal)) : undefined;
+    const confirmedForDiscovery = deal ? confirmParcelForDeal(deal.id) : null;
+    const discoveryReport = deal
+      ? (confirmedForDiscovery
+          ? buildConfirmedParcelDiscoveryReport(confirmedForDiscovery, result.report, executiveSummary, buildDiscoveryIntake(deal))
+          : buildAreaDiscoveryReport(result.report, executiveSummary, buildDiscoveryIntake(deal)))
+      : undefined;
     const marketMatrix = deal ? marketMatrixFor(deal) : undefined;
     if (discoveryReport && marketMatrix) discoveryReport.marketMatrix = marketMatrix;
     return c.json({ ...result, executiveSummary, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, govDd: result.report.govDd, browserMarketIntel });
@@ -2468,6 +2510,10 @@ export function registerLandosRoutes(app: Hono): void {
           summary: 'Acquire — research lead (unresolved). Public-records research plan attached; not verified.',
         });
         const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: researchAddr });
+        // Persist the parcel-identity verdict (Phase 1: written, not yet read).
+        try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ }
+        // Capture the resolution trace so the Deal Card opens the Resolution view.
+        try { writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(text.trim(), cls.parsedFields, resolution)); } catch { /* snapshot never blocks the card */ }
         const plan = buildPublicRecordsResearchPlan({ county: f.county, state: f.state, city: f.city, apn: f.apn, owner: f.owner, address: f.address });
         for (const action of researchPlanNextActions(plan)) {
           try { addCardNextAction({ cardId: card.id, action, createdBy: 'acquire-research' }); } catch { /* one action failing never blocks the card */ }
@@ -2519,6 +2565,9 @@ export function registerLandosRoutes(app: Hono): void {
       summary: propertyVerified ? 'Acquire — verified parcel' : 'Acquire — matched (Confirm Before Offer)',
     });
     const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: subjectAddress });
+    // Persist the parcel-identity verdict (Phase 1: written, not yet read). This
+    // is the single stored state that will replace the two divergent verdicts.
+    try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ }
 
     // ── MANDATORY IDENTITY GATE ─────────────────────────────────────────────
     // Property Resolution is the gatekeeper. A property can be `matched` (credible)
@@ -2538,6 +2587,9 @@ export function registerLandosRoutes(app: Hono): void {
         ? `Parcel not yet confirmed. ${resolution.identityBasis} Downstream Property Intelligence is on hold until the Browser Agent reads the parcel on LandPortal or a named source verifies it.`
         : `Parcel not yet confirmed and the Browser Agent could not run (${browserStart.status}${browserStart.error ? `: ${browserStart.error}` : ''}). Start/login Browser Intelligence, then rerun — downstream Property Intelligence is on hold until the parcel is confirmed.`;
       try { addCardNextAction({ cardId: card.id, action: gateNote, createdBy: 'acquire-identity-gate' }); } catch { /* best-effort operator note */ }
+      // Capture the resolution trace so the Deal Card opens the Resolution view
+      // (candidate parcel) instead of a half-populated Deal Card.
+      try { writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(text.trim(), cls.parsedFields, resolution)); } catch { /* snapshot never blocks the card */ }
       logger.info({ event: 'acquire_run', ok: true, matched: true, identityEstablished: false, gated: true, confidence: resolution.confidence, dealCardId, pipeline: 'property_resolution' }, 'acquire_run_identity_gate');
       return c.json({
         ok: true, matched: true, identityEstablished: false, parcelVerified: false, dealCardId,
@@ -2587,16 +2639,16 @@ export function registerLandosRoutes(app: Hono): void {
         : `Browser escalation could not run (${browserStart.status}${browserStart.error ? `: ${browserStart.error}` : ''}). Start/login Browser Intelligence, then rerun.`;
       try { addCardNextAction({ cardId: card.id, action: note, createdBy: 'acquire-browser-escalation' }); } catch { /* best-effort operator note */ }
     }
-    // Run the full production DD report. reverify:true forces a FRESH full
-    // property-data lookup (using the card's now-verified APN + county) rather
-    // than reusing the resolution's identity-only card — otherwise acreage / land
-    // use / zoning land facts (and the acquisition range + strategy scoring that
-    // depend on acreage) would show as gaps on a verified parcel. Same provider
-    // (non-credit); the card carries the strong identifier so it re-verifies.
+    // Run the full production DD report. Property Resolution ALREADY verified the
+    // parcel moments ago (Realie/LandPortal) with full land facts; hand that result
+    // to the report as prefetchedVerification so it does NOT re-verify — one
+    // provider lookup, one source of truth. When the parcel was confirmed by the
+    // browser lane instead (no verify result), the report reuses the persisted
+    // verified card (no provider call either).
     const result = await runDealCardReport(dealCardId, {
       resolve: resolveParcelIdentityResult,
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
-      reverify: !browserVerified,
+      prefetchedVerification: resolution.verifiedData,
       googleVisualConfigured: googleVisualConfiguredResolved(),
       captureZillowComps: fetchZillowLandComps,
       captureRedfinComps: fetchRedfinLandComps,

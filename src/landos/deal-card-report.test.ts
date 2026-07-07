@@ -14,6 +14,7 @@ import { getDealCardDd, upsertDealCardDd } from './deal-card-dd.js';
 import { getDealCardStrategy } from './deal-card-strategy.js';
 import { getDealCardMarket } from './deal-card-market.js';
 import { getDealCardReport, runDealCardReport, buildIdentityText, buildPersistedResolver } from './deal-card-report.js';
+import { runDukeVerification } from './duke-verification-bridge.js';
 import { getDealCard } from './deal-card.js';
 import { upsertCardFromDukeRun, getPropertyCardRow } from './property-card.js';
 import { linkPropertyToDeal } from './deal-card.js';
@@ -300,6 +301,21 @@ describe('Deal Card report — verified parcel path', () => {
     expect(reloaded.reportStatus).toBe(r.reportStatus);
     expect(reloaded.landScore).not.toBeNull();
     expect(reloaded.landScore!.score).toBe(r.landScore!.score);
+  });
+
+  it('reuses prefetchedVerification and never re-verifies (no double provider lookup)', async () => {
+    const id = newDeal();
+    seedIdentity(id);
+    // The verification the acquire flow already obtained for this parcel.
+    const prefetched = await runDukeVerification('APN 12-345-678 Clay County NC', { resolve: verifiedResolve, timeoutMs: 1000 });
+    expect(prefetched.parcelVerified).toBe(true);
+    // A resolver that THROWS if called — proves the report does not re-verify.
+    const throwingResolve = async (): Promise<LpResolveResult> => { throw new Error('resolve must not be called when prefetchedVerification is supplied'); };
+    const res = await runDealCardReport(id, { resolve: throwingResolve, timeoutMs: 1000, prefetchedVerification: prefetched });
+    expect(res).not.toBeNull();
+    expect(res!.report.parcelVerified).toBe(true); // used the prefetched result, not the throwing resolve
+    // Land facts flowed through from the prefetched verification (no gap).
+    expect(res!.report.landScore).not.toBeNull();
   });
 
   it('applies Strategy logic without fabricating an offer (readiness needs_confirmation, never ready_for_offer)', async () => {

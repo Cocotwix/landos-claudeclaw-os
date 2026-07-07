@@ -9,6 +9,7 @@
 
 import type { DukePropertyData } from './duke-property-data.js';
 import { GLOBAL_MIN_NET_PROFIT_USD } from './offer-engine.js';
+import type { ConfirmedParcel } from './parcel-identity.js';
 
 export type StrategyStatus =
   | 'ready_for_preliminary_review'
@@ -77,8 +78,35 @@ export function buildDukeAnalysis(input: {
     };
   }
 
-  const f = input.propertyData.landFacts;
-  const v = input.propertyData.valuation;
+  return buildVerifiedAnalysis(input.propertyData, baseGaps);
+}
+
+// ── Department entry points (ConfirmedParcel capability gate) ────────────────
+// Strategy / underwriting is property-specific intelligence, so it is produced
+// ONLY from a ConfirmedParcel. The gated entry unlocks the full analysis; a
+// Candidate parcel gets the honest blocked analysis (no offer/valuation/strategy).
+
+/**
+ * Gated strategy analysis. Requires a ConfirmedParcel — confirmed parcel identity
+ * is what authorizes property-specific strategy and underwriting. There is no
+ * other way to reach the unblocked analysis.
+ */
+export function analyzeConfirmedParcelStrategy(
+  _parcel: ConfirmedParcel,
+  input: { propertyData?: DukePropertyData; dataGaps?: string[] },
+): DukeAnalysis {
+  return buildDukeAnalysis({ parcelVerified: true, propertyData: input.propertyData, dataGaps: input.dataGaps });
+}
+
+/** Candidate-safe: strategy is blocked until the parcel is confirmed. */
+export function blockedStrategyAnalysis(dataGaps?: string[]): DukeAnalysis {
+  return buildDukeAnalysis({ parcelVerified: false, dataGaps });
+}
+
+/** The full verified analysis (only reached with confirmed identity + data). */
+function buildVerifiedAnalysis(propertyData: DukePropertyData, baseGaps: string[]): DukeAnalysis {
+  const f = propertyData.landFacts;
+  const v = propertyData.valuation;
   const green: string[] = [];
   const red: string[] = [];
   const anomaly: string[] = [];
@@ -144,7 +172,7 @@ export function buildDukeAnalysis(input: {
     greenFlags: green,
     redFlags: red,
     anomalyFlags: anomaly,
-    dataGaps: [...new Set([...baseGaps, ...input.propertyData.dataGaps])],
+    dataGaps: [...new Set([...baseGaps, ...propertyData.dataGaps])],
     strategyCandidates: candidates,
     offerReadiness: {
       status: offerStatus,

@@ -1392,6 +1392,43 @@ function createLandosSchema(db: Database.Database): void {
       created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_browser_agent_run ON landos_browser_agent_run(playbook_id, created_at DESC);
+
+    -- ── Parcel Identity (the acquisition-pipeline spine) ─────────────────
+    -- ONE persisted verdict per Deal Card for "has the subject parcel actually
+    -- been confirmed?". Computed ONCE by the Property Resolution engine and stored
+    -- here; downstream departments read this state and never re-derive it. State
+    -- machine: unresolved -> candidate -> confirmed. Only 'confirmed' unlocks
+    -- Property Intelligence / Market Pulse / comps / Strategy / Discovery. Never
+    -- confirmed from operator-echoed input, coordinates, proximity, or nearest
+    -- parcel — the engine's established-identity rule is the only path. No secrets,
+    -- no property work product (identity + provenance refs only).
+    CREATE TABLE IF NOT EXISTS landos_parcel_identity (
+      deal_card_id      INTEGER PRIMARY KEY REFERENCES landos_deal_card(id),
+      subject_card_id   INTEGER,
+      state             TEXT NOT NULL DEFAULT 'unresolved'
+                        CHECK (state IN ('unresolved','candidate','confirmed')),
+      basis             TEXT NOT NULL DEFAULT '',
+      confidence        REAL NOT NULL DEFAULT 0,
+      evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+      confirmed_at      INTEGER,
+      confirmed_by      TEXT NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_parcel_identity_state ON landos_parcel_identity(state);
+
+    -- Resolution snapshot: the Property Resolution trace captured when a Deal Card
+    -- is created for a NOT-yet-confirmed parcel (candidate/unresolved). Drives the
+    -- dedicated Resolution view (what LandOS understood, sources searched,
+    -- candidates + accept/reject reasons, what's missing, smallest next
+    -- identifier). One row per Deal Card; overwritten on re-resolve. No secrets,
+    -- no property work product beyond the operator's own intake + provenance.
+    CREATE TABLE IF NOT EXISTS landos_resolution_snapshot (
+      deal_card_id  INTEGER PRIMARY KEY REFERENCES landos_deal_card(id),
+      snapshot_json TEXT NOT NULL DEFAULT '{}',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
   `);
 }
 

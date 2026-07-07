@@ -185,7 +185,10 @@ describe('property resolution engine', () => {
     expect(r.identityBasis).toMatch(/verified/i);
   });
 
-  it('identity gate: a geocoded full street address (Photon + point) is established', async () => {
+  it('identity gate: a geocoded full street address (Photon + point) is a CANDIDATE, not confirmed', async () => {
+    // A geocoder proves WHERE the address is, not WHICH parcel. It resolves to a
+    // credible match (Candidate) but must NOT confirm the parcel — downstream is
+    // on hold until a parcel-level source identifies the exact parcel.
     const deps: ResolutionDeps = {
       verify: async () => needsCounty(),
       deriveCounty: async () => gilstrapCensus,
@@ -193,9 +196,10 @@ describe('property resolution engine', () => {
       now: NOW,
     };
     const r = await resolveProperty({ rawText: '388 Gilstrap Rd, Cleveland, GA 30528' }, deps);
-    expect(r.status).toBe('matched');
+    expect(r.status).toBe('matched'); // still a credible match (Candidate)
     expect(r.property.parcelVerified).toBe(false);
-    expect(r.identityEstablished).toBe(true); // full street address, corroborated, with a point
+    expect(r.identityEstablished).toBe(false); // geocoded location is NOT parcel identity
+    expect(r.identityBasis).toMatch(/geocoder proves where|not yet confirmed|not which parcel/i);
   });
 
   it('identity gate: Scott County road-name + echoed APN is NOT established (downstream on hold)', async () => {
@@ -218,15 +222,49 @@ describe('property resolution engine', () => {
     expect(r.identityBasis).toMatch(/not yet confirmed|no external source/i);
   });
 
-  it('identity gate: two independent corroborating identity lanes establish identity', () => {
+  it('identity gate: two independent PARCEL-LEVEL sources on the same parcel establish identity', () => {
+    const p = emptyNormalizedProperty();
+    p.apn = 'R-77'; p.county = 'White'; p.state = 'GA';
+    // Two DIFFERENT parcel-level lanes agree on the SAME identity value (APN).
+    p.evidence.push({ lane: 'homeharvest', field: 'apn', value: 'R-77', source: 'HomeHarvest', confidence: 0.6, timestamp: NOW() });
+    p.evidence.push({ lane: 'county_gis', field: 'apn', value: 'R-77', source: 'White County GIS', confidence: 0.8, timestamp: NOW() });
+    const g = parcelIdentityEstablished(p, []);
+    expect(g.established).toBe(true);
+    expect(g.basis).toMatch(/parcel-level sources resolving to the same parcel/i);
+  });
+
+  it('identity gate: a geocoder + a single parcel-level source is NOT confirmed (one hypothesis)', () => {
     const p = emptyNormalizedProperty();
     p.address = '10 Pine Rd'; p.county = 'White'; p.state = 'GA';
-    // Two DIFFERENT lanes each contribute an identity-bearing field (address).
+    // Photon (geocoder — location only) + ONE parcel-level source. Not >=2 parcel-level.
     p.evidence.push({ lane: 'address_suggest', field: 'address', value: '10 Pine Rd', source: 'Photon', confidence: 0.8, timestamp: NOW() });
     p.evidence.push({ lane: 'homeharvest', field: 'address', value: '10 Pine Rd', source: 'HomeHarvest', confidence: 0.6, timestamp: NOW() });
     const g = parcelIdentityEstablished(p, []);
+    expect(g.established).toBe(false);
+    expect(g.basis).toMatch(/single source is a strong hypothesis|not yet confirmed/i);
+  });
+
+  it('identity gate: two GEOCODERS agreeing on an address do NOT confirm the parcel', () => {
+    const p = emptyNormalizedProperty();
+    p.address = '10 Pine Rd'; p.county = 'White'; p.state = 'GA';
+    p.evidence.push({ lane: 'address_suggest', field: 'address', value: '10 Pine Rd', source: 'Photon', confidence: 0.8, timestamp: NOW() });
+    p.evidence.push({ lane: 'census_geocode', field: 'address', value: '10 Pine Rd', source: 'US Census', confidence: 0.7, timestamp: NOW() });
+    const g = parcelIdentityEstablished(p, []);
+    expect(g.established).toBe(false);
+  });
+
+  it('identity gate: Browser Agent reaching the County Records parcel page confirms identity', () => {
+    const p = emptyNormalizedProperty();
+    p.apn = '094-020.08'; p.county = 'Scott'; p.state = 'TN';
+    const browserEvidence = [{
+      service: 'county_records', mode: 'workflow', status: 'retrieved',
+      patch: { apn: '094-020.08', county: 'Scott', state: 'TN' },
+      sourceUrls: ['https://scott.tn.gov/gis/parcel/abc123'],
+      sourcesUsed: [], facts: [], fields: {}, screenshots: [], note: '', blocked: [],
+    }] as any;
+    const g = parcelIdentityEstablished(p, browserEvidence);
     expect(g.established).toBe(true);
-    expect(g.basis).toMatch(/independent/i);
+    expect(g.basis).toMatch(/County Records/i);
   });
 
   it('identity gate: a browser-confirmed LandPortal parcel (APN + jurisdiction + URL) is established', () => {

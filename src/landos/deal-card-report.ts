@@ -50,7 +50,8 @@ import { getDealCardDd, upsertDealCardDd, type DealCardDdView, type DealCardSour
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketView, type DealCardMarketPatch } from './deal-card-market.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyView, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { runDukeVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
-import { buildDukeAnalysis } from './duke-analysis.js';
+import { confirmParcelForDeal, confirmParcel, writeParcelIdentity, type ConfirmedParcel } from './parcel-identity.js';
+import { analyzeConfirmedParcelStrategy, blockedStrategyAnalysis } from './duke-analysis.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD } from './offer-engine.js';
 import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './source-adapters.js';
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
@@ -122,7 +123,7 @@ const paidCompsEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.LANDO
  * else honest provider_error / no_comps. Every comp keeps its provider. Sparse
  * rural/infill markets get a price-per-acre band + explanation instead of silence.
  */
-async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
+async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | null): Promise<MarketCompsView> {
   const chain: string[] = [];
   const finalize = async (v: MarketCompsView): Promise<MarketCompsView> => {
     // ── Supplemental Zillow lane (active listings + supplemental sold). Active is
@@ -221,7 +222,7 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
     if (rc.status === 'collected' && rc.valuation.length > 0) {
       const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? undefined });
       const valuationView = rc.valuation.map(toView);
-      const apify = await apifyComps(q, chain);
+      const apify = await apifyComps(q, chain, confirmed);
       if (apify.status === 'collected') { apify.valuation = valuationView; return await finalize(apify); }
       return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: [], valuation: valuationView, providers: [{ providerId: 'realie', status: 'connected', kept: 0 }], source: 'Realie premium comparables (valuation-only)', timestamp: new Date().toISOString(), note: rc.note });
     }
@@ -230,19 +231,21 @@ async function liveMarketComps(q: CompQueryLite): Promise<MarketCompsView> {
   }
 
   // ── 2) Apify Redfin fallback ───────────────────────────────────────────────
-  return await finalize(await apifyComps(q, chain));
+  return await finalize(await apifyComps(q, chain, confirmed));
 }
 
-async function apifyComps(q: CompQueryLite, chain: string[]): Promise<MarketCompsView> {
+async function apifyComps(q: CompQueryLite, chain: string[], confirmed?: ConfirmedParcel | null): Promise<MarketCompsView> {
   const { registerLiveProviders } = await import('./providers/register-live-providers.js');
-  const { retrieveComps } = await import('./comp-retrieval.js');
+  const { retrieveConfirmedParcelComps, retrieveAreaComps } = await import('./comp-retrieval.js');
   const reg = await registerLiveProviders({ onSpend: () => {} });
   if (!reg.compsLive) { chain.push('apify:not_configured'); return { ...emptyMarketComps(), status: 'not_configured', note: `Apify not wired: ${reg.reason}` }; }
   if (!q.state || !(q.address || q.city || q.zip)) { chain.push('apify:no_area'); return { ...emptyMarketComps(), status: 'no_area', note: 'No address/city/ZIP + state to search comps.' }; }
-  const res = await retrieveComps(
-    { address: q.address, city: q.city, county: q.county, state: q.state, zip: q.zip, acres: q.acres, centroid: typeof q.lat === 'number' && typeof q.lng === 'number' ? { lat: q.lat, lng: q.lng } : null, centroidTier: 'A' },
-    { registry: reg.registry },
-  );
+  // Parcel-attributed comps require the ConfirmedParcel capability; a Candidate
+  // parcel gets AREA comps only (never parcel-attributed).
+  const compQuery = { address: q.address, city: q.city, county: q.county, state: q.state, zip: q.zip, acres: q.acres, centroid: typeof q.lat === 'number' && typeof q.lng === 'number' ? { lat: q.lat, lng: q.lng } : null, centroidTier: 'A' as const };
+  const res = confirmed
+    ? await retrieveConfirmedParcelComps(confirmed, compQuery, { registry: reg.registry })
+    : await retrieveAreaComps(compQuery, { registry: reg.registry });
   const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc, propertyTypeCode: c.propertyTypeCode ?? null, descriptionText: c.descriptionText ?? null, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null, propertyTypeText: c.propertyTypeText ?? null }));
   const doms = res.needsVerification.map((nn) => nn.daysOnMarket).filter((d): d is number => typeof d === 'number');
   const anyConnected = res.providers.some((p) => p.status === 'connected' || p.status === 'no_comps');
@@ -662,6 +665,11 @@ export interface DealCardReportDeps {
    *  already linked. Default false → reuse persisted verified data (no provider
    *  call / no Realie credit). Set true only on explicit operator re-verify. */
   reverify?: boolean;
+  /** A verification result the caller already obtained for THIS parcel (e.g. the
+   *  acquire flow's Property Resolution verified it moments ago). When present it
+   *  is used as-is — the report does NOT re-verify — eliminating the duplicate
+   *  provider lookup. Full land facts flow through, so nothing shows as a gap. */
+  prefetchedVerification?: DukeVerificationResult;
   /** Injected gov-DD fetches for tests (keep the suite offline). Default = live. */
   femaFetch?: GovFetch;
   nwiFetch?: GovFetch;
@@ -1040,12 +1048,15 @@ interface StrategyLeg {
  * 'ready_for_offer'. Manual deep notes are preserved (only empty fields are
  * filled); lists are unioned.
  */
-function buildStrategyLeg(verification: DukeVerificationResult, strategy: DealCardStrategyView): StrategyLeg {
-  const analysis = buildDukeAnalysis({
-    parcelVerified: verification.parcelVerified,
-    propertyData: verification.parcelVerified ? verification.propertyData : undefined,
-    dataGaps: verification.dataGaps,
-  });
+function buildStrategyLeg(verification: DukeVerificationResult, strategy: DealCardStrategyView, confirmed?: ConfirmedParcel | null): StrategyLeg {
+  // Strategy/underwriting is produced ONLY through the ConfirmedParcel capability.
+  // A Candidate parcel (no token) gets the honest blocked analysis.
+  const analysis = confirmed
+    ? analyzeConfirmedParcelStrategy(confirmed, {
+        propertyData: verification.parcelVerified ? verification.propertyData : undefined,
+        dataGaps: verification.dataGaps,
+      })
+    : blockedStrategyAnalysis(verification.dataGaps);
 
   const candidateIds = analysis.strategyCandidates.map((c) => c.strategy);
   const candidateLabels = candidateIds.map(strategyLabel);
@@ -1344,6 +1355,10 @@ export async function runDealCardReport(
   const dd = getDealCardDd(dealCardId);
   const market = getDealCardMarket(dealCardId);
   const strategy = getDealCardStrategy(dealCardId);
+  // The AUTHORITATIVE confirmation gate for every department the report drives
+  // (comps, strategy). Read the stored verdict now; it is upgraded/persisted after
+  // verification when a named source confirms the parcel during this run.
+  let confirmedParcel = confirmParcelForDeal(dealCardId);
 
   // 1. Safe parcel identification. REUSE persisted verified data when a linked
   //    Property Card is already verified (no provider call, no Realie credit),
@@ -1358,21 +1373,45 @@ export async function runDealCardReport(
 
   const identityText = buildIdentityText(deal, dd);
   let verification: DukeVerificationResult;
-  try {
-    verification = await runDukeVerification(identityText, { resolve: effectiveResolve, timeoutMs: deps.timeoutMs });
-  } catch {
-    // Unexpected engine error — honest failed report, no worksheet mutation.
-    const failed: DealCardReportView = {
-      ...emptyReport(dealCardId),
-      exists: true,
-      reportStatus: 'failed',
-      parcelVerificationStatus: 'Failed — safe lookup error',
-      ddSummary: 'The report could not run: the safe parcel lookup errored. No worksheet was changed and no comp credit was used.',
-      generatedAt: Math.floor(Date.now() / 1000),
-      updatedBy: actor,
-    };
-    persistReport(dealCardId, failed, actor, s(deal.entity));
-    return { report: getDealCardReport(dealCardId), warnings: ['Safe parcel lookup errored; report saved as failed.'] };
+  if (deps.prefetchedVerification) {
+    // REUSE the verification the caller already fetched for this parcel — no
+    // second provider lookup (this removes the acquire→report double-verify).
+    verification = deps.prefetchedVerification;
+  } else {
+    try {
+      verification = await runDukeVerification(identityText, { resolve: effectiveResolve, timeoutMs: deps.timeoutMs });
+    } catch {
+      // Unexpected engine error — honest failed report, no worksheet mutation.
+      const failed: DealCardReportView = {
+        ...emptyReport(dealCardId),
+        exists: true,
+        reportStatus: 'failed',
+        parcelVerificationStatus: 'Failed — safe lookup error',
+        ddSummary: 'The report could not run: the safe parcel lookup errored. No worksheet was changed and no comp credit was used.',
+        generatedAt: Math.floor(Date.now() / 1000),
+        updatedBy: actor,
+      };
+      persistReport(dealCardId, failed, actor, s(deal.entity));
+      return { report: getDealCardReport(dealCardId), warnings: ['Safe parcel lookup errored; report saved as failed.'] };
+    }
+  }
+
+  // A named source verifying the parcel during this run IS confirmation (rule 1).
+  // Persist the authoritative verdict so downstream departments (strategy, comps)
+  // receive a ConfirmedParcel — including verified cards created outside acquire
+  // that have no stored verdict yet. Idempotent; confirmed_at is preserved.
+  if (verification.parcelVerified && !confirmedParcel) {
+    try {
+      const subjId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
+      const rec = writeParcelIdentity(dealCardId, {
+        subjectCardId: subjId ?? null,
+        state: 'confirmed',
+        basis: `Parcel verified by ${verification.verificationSource ?? 'a named source'} during the report run.`,
+        confidence: 0.95,
+        confirmedBy: 'report',
+      }, 'report');
+      confirmedParcel = confirmParcel(rec);
+    } catch { /* verdict persistence never blocks the report */ }
   }
 
   // Propagate VERIFIED IDENTITY to the subject property card so its
@@ -1420,7 +1459,7 @@ export async function runDealCardReport(
   // 2. Department legs (kept separate).
   const ddLeg = buildDdLeg(verification, dd);
   const marketLeg = buildMarketLeg(deal, verification, market, areaContext ?? undefined);
-  const strategyLeg = buildStrategyLeg(verification, strategy);
+  const strategyLeg = buildStrategyLeg(verification, strategy, confirmedParcel);
 
   // 3. Update the three worksheets (non-destructive: lists unioned, manual
   //    deep notes preserved). Attach the LandPortal source link to DD so the
@@ -1677,7 +1716,9 @@ export async function runDealCardReport(
   }
   if (compQuery) {
     try {
-      marketComps = await (deps.retrieveCompsImpl ?? liveMarketComps)(compQuery);
+      marketComps = deps.retrieveCompsImpl
+        ? await deps.retrieveCompsImpl(compQuery)
+        : await liveMarketComps(compQuery, confirmedParcel);
     } catch (e: unknown) {
       marketComps = { ...emptyMarketComps(), status: 'error', note: `Comp retrieval error: ${(e as Error)?.message ?? String(e)}.` };
     }

@@ -17,6 +17,7 @@
 
 import { buildLocalAreaContext } from './source-adapters.js';
 import { fetchCensusDemographics, type CensusDeps } from './census-demographics.js';
+import type { ConfirmedParcel } from './parcel-identity.js';
 
 export type GrowthDirection = 'growing' | 'stable' | 'declining' | 'unknown';
 
@@ -258,4 +259,47 @@ export async function fetchMarketPulseRead(input: {
     city: input.city, county: input.county, state: input.state, zip: input.zip,
     parcelVerified: input.parcelVerified, growth, comps: input.comps, nowIso: input.nowIso,
   });
+}
+
+// ── Department entry points (ConfirmedParcel capability gate) ────────────────
+// Market Pulse has two honest modes. The PARCEL-VERIFIED pulse is a downstream
+// department output, so it must be produced from a ConfirmedParcel — it is
+// impossible to obtain the "Parcel Verified" labeling without passing the gate.
+// The AREA-CONTEXT mode stays available to Candidate parcels (clearly labeled
+// "Local Area Context, Not Parcel Verified"), preserving usable context for
+// unresolved/rural leads without ever attributing it to an unconfirmed parcel.
+
+export interface MarketPulseAreaInput {
+  city?: string;
+  county?: string;
+  state?: string;
+  zip?: string;
+  fips?: string;
+  comps?: PulseComp[];
+  nowIso?: string;
+}
+
+/**
+ * The gated, parcel-attributed Market Pulse. Requires a ConfirmedParcel; the
+ * confirmed identity is what makes this a "Parcel Verified" read. There is no
+ * other way to reach this labeling — the capability type is the gate.
+ */
+export async function fetchConfirmedParcelMarketPulse(
+  _parcel: ConfirmedParcel,
+  input: MarketPulseAreaInput,
+  deps: { census?: CensusDeps } = {},
+): Promise<MarketPulseRead> {
+  return fetchMarketPulseRead({ ...input, parcelVerified: true }, deps);
+}
+
+/**
+ * Candidate-safe AREA context. Always labeled Not Parcel Verified; never
+ * attributes market data to a specific parcel. Available before confirmation so
+ * an unresolved lead is still usable.
+ */
+export async function fetchAreaMarketContext(
+  input: MarketPulseAreaInput,
+  deps: { census?: CensusDeps } = {},
+): Promise<MarketPulseRead> {
+  return fetchMarketPulseRead({ ...input, parcelVerified: false }, deps);
 }

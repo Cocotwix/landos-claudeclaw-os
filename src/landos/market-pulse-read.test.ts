@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildMarketPulseRead, buildGrowthRead, fetchMarketPulseRead, type GrowthRead } from './market-pulse-read.js';
+import { buildMarketPulseRead, buildGrowthRead, fetchMarketPulseRead, fetchConfirmedParcelMarketPulse, fetchAreaMarketContext, type GrowthRead } from './market-pulse-read.js';
+import { confirmParcel } from './parcel-identity.js';
 
 const NOW = '2026-07-02T00:00:00.000Z';
 const measuredGrowth: GrowthRead = {
@@ -89,5 +90,36 @@ describe('fetchMarketPulseRead (live wrapper, injected census)', () => {
     );
     expect(mp.growth.status).toBe('not_configured');
     expect(mp.growth.source).toContain('census.gov');
+  });
+});
+
+describe('Market Pulse department gate (ConfirmedParcel)', () => {
+  const confirmed = confirmParcel({
+    dealCardId: 1, subjectCardId: 2, state: 'confirmed', basis: 'named source',
+    confidence: 0.95, evidenceRefs: ['Realie/LandPortal'], confirmedAt: 1, confirmedBy: 'acquire', updatedAt: 1,
+  })!;
+
+  it('fetchConfirmedParcelMarketPulse yields a Parcel Verified read (identity confirmed)', async () => {
+    const mp = await fetchConfirmedParcelMarketPulse(confirmed, { county: 'Runnels', state: 'TX', comps: [{ pricePerAcre: 4000 }], nowIso: NOW });
+    expect(mp.parcelVerified).toBe(true);
+    expect(mp.label).toBe('Parcel Verified');
+    expect(mp.disclaimer).toBe(''); // no unverified disclaimer on a confirmed parcel
+    expect(mp.countyPricePerAcre.medianPpa).toBe(4000);
+  });
+
+  it('fetchAreaMarketContext (candidate mode) is always Not Parcel Verified', async () => {
+    const mp = await fetchAreaMarketContext({ county: 'Runnels', state: 'TX', comps: [{ pricePerAcre: 4000 }], nowIso: NOW });
+    expect(mp.parcelVerified).toBe(false);
+    expect(mp.label).toBe('Local Area Context, Not Parcel Verified');
+    expect(mp.disclaimer).toContain('does not verify the parcel');
+    // Area context is still usable for a candidate (county $/acre present, unattributed).
+    expect(mp.countyPricePerAcre.medianPpa).toBe(4000);
+  });
+
+  it('COMPILE GATE: the parcel-verified pulse cannot be produced without a ConfirmedParcel', async () => {
+    // @ts-expect-error a raw object is not a ConfirmedParcel — the brand blocks it,
+    // so the "Parcel Verified" pulse is unreachable without passing the gate.
+    await fetchConfirmedParcelMarketPulse({ dealCardId: 1 }, { county: 'Runnels', state: 'TX' });
+    expect(true).toBe(true);
   });
 });

@@ -3,6 +3,15 @@ import { PageState } from '@/components/PageState';
 import { ModelControl } from '@/components/ModelControl';
 import { apiGet, apiPost, apiPatch, apiPut, dashboardToken } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+import { ResolutionView, type ResolutionSnapshotView, type ParcelIdentityView } from '@/components/ResolutionView';
+
+// The Resolution view payload — shown instead of a half-populated Deal Card until
+// the parcel is confirmed.
+interface ResolutionData {
+  parcelIdentity: ParcelIdentityView | null;
+  snapshot: ResolutionSnapshotView | null;
+  confirmed: boolean;
+}
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
 
@@ -2357,6 +2366,7 @@ function PublicRecordsResearchSection({ dealId }: { dealId: number }) {
 export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; entity?: EntityFilter }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [spine, setSpine] = useState<BusinessSpineView | null>(null);
+  const [resolution, setResolution] = useState<ResolutionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -2545,14 +2555,22 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
       const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       setSpine(res.businessSpine ?? null);
-      await loadDd(id);
-      await loadStrategy(id);
-      await loadMarket(id);
-      await loadReport(id);
+      // Resolution gate: a NOT-yet-confirmed parcel shows the Resolution view; we
+      // skip the downstream department loads entirely so nothing property-specific
+      // renders before the parcel is confirmed.
+      const rres = await apiGet<ResolutionData>(`/api/landos/deal-cards/${id}/resolution`);
+      setResolution(rres);
+      if (rres.confirmed || !rres.snapshot) {
+        await loadDd(id);
+        await loadStrategy(id);
+        await loadMarket(id);
+        await loadReport(id);
+      }
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
       setSpine(null);
+      setResolution(null);
       setDd(null);
       setStrategy(null);
       setMarket(null);
@@ -2870,6 +2888,9 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   const prop = deal?.propertyCards?.[0];
   const owner = deal?.people?.find((p) => p.role === 'owner');
   const seller = deal?.people?.find((p) => p.role === 'seller');
+  // Show the dedicated Resolution view (not a half-populated Deal Card) whenever
+  // the parcel is NOT confirmed and we captured a resolution snapshot for it.
+  const showResolution = !!resolution && !resolution.confirmed && !!resolution.snapshot;
 
   return (
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
@@ -2963,7 +2984,34 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
       {mode === 'view' && error && <PageState error={error} />}
       {mode === 'view' && loading && !deal && <PageState loading />}
 
-      {mode === 'view' && deal && (
+      {/* Resolution view — parcel not yet confirmed. Shown INSTEAD of the Deal Card
+          so no property-specific intelligence renders before confirmation. */}
+      {mode === 'view' && deal && showResolution && (
+        <>
+          <div class="sticky top-0 z-10 rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-4">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[14px] font-semibold">
+                {prop?.active_input_address || deal.title || 'Untitled Deal'}
+              </span>
+              <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                {entityBadge(deal.entity)}
+              </span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-status-warn,var(--color-border))] text-[var(--color-text-muted)]">
+                Resolution pending
+              </span>
+            </div>
+          </div>
+          <ResolutionView
+            snapshot={resolution!.snapshot!}
+            identity={resolution!.parcelIdentity}
+            entity={entity}
+            onConfirmed={() => void load(deal.id)}
+          />
+        </>
+      )}
+
+      {mode === 'view' && deal && !showResolution && (
         <>
           {/* 1. Sticky / header area */}
           <div class="sticky top-0 z-10 rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-4">

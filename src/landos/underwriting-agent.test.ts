@@ -1,10 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { runUnderwriting } from './underwriting-agent.js';
+import { runUnderwriting, underwriteConfirmedParcel, blockedUnderwriting } from './underwriting-agent.js';
+import { confirmParcel } from './parcel-identity.js';
 
 const LANES = [
   { id: 'flip_standard', label: 'Flip standard', offerLowUsd: 100000, offerHighUsd: 150000, applicable: true },
   { id: 'subdivide', label: 'Subdivide', offerLowUsd: 130000, offerHighUsd: 160000, applicable: true },
 ];
+
+describe('Underwriting department gate (ConfirmedParcel)', () => {
+  const confirmed = confirmParcel({
+    dealCardId: 1, subjectCardId: 2, state: 'confirmed', basis: 'named source',
+    confidence: 0.95, evidenceRefs: [], confirmedAt: 1, confirmedBy: 'acquire', updatedAt: 1,
+  })!;
+
+  it('underwriteConfirmedParcel approves with a token + complete post-discovery input', () => {
+    const d = underwriteConfirmedParcel(confirmed, { apn: 'APN-1', discoveryCallSummary: 'seller motivated', expectedValueUsd: 200000, strategyLanes: LANES, compsAttached: true, marketFactsAttached: true });
+    expect(d.status).toBe('approved');
+    expect(d.approvedOfferHighUsd).toBe(160000);
+  });
+
+  it('blockedUnderwriting (candidate) never approves an offer', () => {
+    const d = blockedUnderwriting({ apn: 'APN-1', discoveryCallSummary: 'x', expectedValueUsd: 200000, strategyLanes: LANES });
+    expect(d.status).toBe('blocked_unverified');
+    expect(d.approvedOfferHighUsd).toBeNull();
+  });
+
+  it('COMPILE GATE: an offer cannot be approved without a ConfirmedParcel', () => {
+    // @ts-expect-error a raw object is not a ConfirmedParcel — the brand blocks it.
+    underwriteConfirmedParcel({ dealCardId: 1 }, { apn: 'APN-1', discoveryCallSummary: 'x', expectedValueUsd: 200000, strategyLanes: LANES });
+    expect(true).toBe(true);
+  });
+});
 
 describe('Underwriting Agent (post-discovery scaffold)', () => {
   it('blocks an unverified parcel — no score/value/offer', () => {

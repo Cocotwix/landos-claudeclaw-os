@@ -17,7 +17,7 @@
 
 import {
   emptyNormalizedProperty, mergeNormalized, missingFields, deriveConfidence,
-  patchFromDukeVerification, patchFromCensus, corroboratingIdentityLanes,
+  patchFromDukeVerification, patchFromCensus, corroboratingParcelLevelLanes,
   type NormalizedProperty, type RetrievalLane,
 } from './normalized-property.js';
 import type { ParsedIntakeFields } from './intake-router.js';
@@ -69,6 +69,11 @@ export interface PropertyResolution {
   identityBasis: string;
   /** Read-only: the engine resolves identity; it never writes a card itself. */
   executionMode: 'property_resolution';
+  /** The full named-source verification result when a `verify` lane confirmed the
+   *  parcel — captured so the caller can REUSE it (land facts, valuation,
+   *  coordinates) instead of re-verifying the same parcel with a second provider
+   *  call. Undefined when no named-source verification succeeded. */
+  verifiedData?: DukeVerificationResult;
 }
 
 export interface ResolutionInput {
@@ -149,6 +154,9 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   const lanes: ResolutionLaneRecord[] = [];
   const browserEvidence: BrowserEvidence[] = [];
   let missingFieldAnalysis: MissingFieldAnalysis | undefined;
+  // Capture the full verification result whenever a named source confirms the
+  // parcel, so the caller can reuse its land facts instead of re-verifying.
+  let verifiedData: DukeVerificationResult | undefined;
   const record = (lane: RetrievalLane, ran: boolean, contributed: boolean, status: string, note: string) =>
     lanes.push({ lane, ran, contributed, status, note });
 
@@ -178,6 +186,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   if (deps.verify && !property.parcelVerified) {
     try {
       const v = await deps.verify(fields, timeoutMs);
+      if (v.parcelVerified) verifiedData = v;
       const contributed = mergeAndReport(property, 'realie_landportal', v.verificationSource ?? 'Realie/LandPortal', patchFromDukeVerification(v), now(), v.parcelVerified ? 0.95 : 0.5);
       record('realie_landportal', true, contributed, v.status, v.summary);
       // ── Lane 2: derive county and RETRY when an exact lookup needs county/FIPS ──
@@ -192,6 +201,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
             fields = retryFields;
             if (!property.parcelVerified) {
               const v2 = await deps.verify(retryFields, timeoutMs);
+              if (v2.parcelVerified) verifiedData = v2;
               const c2 = mergeAndReport(property, 'realie_landportal', v2.verificationSource ?? 'Realie/LandPortal', patchFromDukeVerification(v2), now(), v2.parcelVerified ? 0.95 : 0.5);
               record('realie_landportal', true, c2, `retry_${v2.status}`, `County-constrained retry: ${v2.summary}`);
             }
@@ -208,6 +218,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
         const altApn = fields.apnAlternates[0];
         try {
           const va = await deps.verify({ ...fields, apn: altApn }, timeoutMs);
+          if (va.parcelVerified) verifiedData = va;
           const ca = mergeAndReport(property, 'realie_landportal', va.verificationSource ?? 'Realie/LandPortal', patchFromDukeVerification(va), now(), va.parcelVerified ? 0.95 : 0.5);
           record('realie_landportal', true, ca, `alt_apn_${va.status}`, `Alternate APN (${altApn}) retry: ${va.summary}`);
         } catch { record('realie_landportal', true, false, 'error', 'Alternate APN retry failed; continued.'); }
@@ -332,6 +343,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       identityEstablished: identity.established,
       identityBasis: identity.basis,
       executionMode: 'property_resolution',
+      verifiedData,
     };
   }
 
@@ -348,61 +360,76 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     identityEstablished: identity.established,
     identityBasis: identity.basis,
     executionMode: 'property_resolution',
+    verifiedData,
   };
 }
 
+/** Browser services that reach an actual PARCEL PAGE (not a search/directory).
+ *  Both current services are parcel-level: LandPortal parcel page and official
+ *  County Records (GIS/assessor/tax/recorder). A marketplace browser service
+ *  (Zillow/Redfin/Realtor property page) would append here once wired. */
+const PARCEL_LEVEL_BROWSER_SERVICES: readonly BrowserService['id'][] = ['landportal', 'county_records'];
+function browserServiceLabel(id: BrowserService['id']): string {
+  return id === 'landportal' ? 'LandPortal' : 'County Records';
+}
+
 /**
- * THE MANDATORY IDENTITY GATE. Decide whether the intended parcel has actually
- * been CONFIRMED (not merely echoed from operator input). Only when this returns
- * `established: true` may downstream departments run. Deterministic + explainable.
+ * THE MANDATORY IDENTITY GATE. Decide whether the intended PARCEL has actually
+ * been CONFIRMED — meaning we know WHICH exact parcel, not merely WHERE an address
+ * is. Only when this returns `established: true` may downstream departments run.
+ * Deterministic + explainable.
  *
- * Established when ANY of:
- *   1. A named source verified the parcel (`parcelVerified`).
- *   2. The Browser Agent read the parcel on LandPortal and returned an APN + a
- *      jurisdiction (county/state/FIPS) + a real source URL — i.e. it reached the
- *      actual parcel panel, not just a search page.
- *   3. ≥2 INDEPENDENT retrieval lanes corroborate identity-bearing fields (the
- *      operator's own seeded input is NOT an evidence lane, so pure echo scores 0).
+ * Guiding principle: a geocoder proves LOCATION; a parcel-level source proves
+ * IDENTITY. A geocoded street address is therefore a Candidate, never Confirmed.
+ *
+ * CONFIRMED when ANY of:
+ *   1. A named parcel source verified the parcel (`parcelVerified`) — Realie/
+ *      LandPortal resolve, official county assessor/tax/recorder.
+ *   2. The Browser Agent reached the exact PARCEL PAGE on a parcel-level service
+ *      (LandPortal or official County Records) and returned an APN + a
+ *      jurisdiction (county/state/FIPS) + a real source URL — the parcel panel,
+ *      not a search page. (Marketplace property pages qualify once wired.)
+ *   3. ≥2 INDEPENDENT PARCEL-LEVEL sources resolve to the SAME parcel (agree on an
+ *      identity-bearing value). Geocoders/search/directories never count here.
+ *
+ * Everything weaker (geocoded address, coordinates, county + road name, seller/
+ * CRM data, an unverified APN, a single parcel-level source, browser search
+ * without a parcel page) is a CANDIDATE — a strong hypothesis, not confirmed
+ * identity.
  */
 export function parcelIdentityEstablished(
   property: NormalizedProperty,
   browserEvidence: BrowserEvidence[] = [],
 ): { established: boolean; basis: string } {
   if (property.parcelVerified) {
-    return { established: true, basis: `Parcel identity verified by ${property.verificationSource ?? 'a named source'}.` };
+    return { established: true, basis: `Parcel identity verified by ${property.verificationSource ?? 'a named parcel source'}.` };
   }
-  const lp = browserEvidence.find((ev) => ev.service === 'landportal' && ev.status === 'retrieved');
-  if (lp) {
-    const apn = (lp.patch?.apn as string | undefined) ?? property.apn;
-    const juris = (lp.patch?.county as string | undefined) ?? property.county
-      ?? (lp.patch?.state as string | undefined) ?? property.state
-      ?? (lp.patch?.fips as string | undefined) ?? property.fips;
-    const url = (lp.sourceUrls ?? []).find((u) => /^https?:\/\//i.test(u));
+  const parcelPage = browserEvidence.find(
+    (ev) => PARCEL_LEVEL_BROWSER_SERVICES.includes(ev.service) && ev.status === 'retrieved',
+  );
+  if (parcelPage) {
+    const apn = (parcelPage.patch?.apn as string | undefined) ?? property.apn;
+    const juris = (parcelPage.patch?.county as string | undefined) ?? property.county
+      ?? (parcelPage.patch?.state as string | undefined) ?? property.state
+      ?? (parcelPage.patch?.fips as string | undefined) ?? property.fips;
+    const url = (parcelPage.sourceUrls ?? []).find((u) => /^https?:\/\//i.test(u));
     if (apn && juris && url) {
-      return { established: true, basis: 'Browser Agent located and read the parcel on LandPortal (APN + jurisdiction confirmed from the parcel panel).' };
+      return { established: true, basis: `Browser Agent reached the exact parcel page on ${browserServiceLabel(parcelPage.service)} (APN + jurisdiction confirmed from the parcel panel).` };
     }
   }
-  const lanes = corroboratingIdentityLanes(property);
+  const lanes = corroboratingParcelLevelLanes(property);
   if (lanes.length >= 2) {
-    return { established: true, basis: `Identity corroborated by ${lanes.length} independent sources (${lanes.join(', ')}).` };
+    return { established: true, basis: `Parcel identity corroborated by ${lanes.length} independent parcel-level sources resolving to the same parcel (${lanes.join(', ')}).` };
   }
-  // A FULL street address (house-numbered) that an external geocoder actually
-  // corroborated and resolved to a point, inside a known county/state, is a
-  // resolved location — enough for pre-call intelligence. This is the difference
-  // between a geocoded street address ("388 Gilstrap Rd", Photon-confirmed with a
-  // point) and the failure mode this sprint targets: a bare road name + an echoed
-  // APN that NO external source ever confirmed (the geocoder returns nothing for a
-  // house-number-less road, so no lane corroborates and there is no point).
-  const hasFullStreetAddress = !!property.address && /^\s*\d/.test(property.address);
-  const hasLocality = !!property.county && !!property.state;
-  if (lanes.length >= 1 && hasFullStreetAddress && property.coordinates && hasLocality) {
-    return { established: true, basis: `A full street address corroborated by ${lanes[0]} and resolved to a point in ${property.county}, ${property.state} locates the parcel for pre-call intelligence.` };
-  }
+  // A geocoded street address / coordinates / a single parcel-level source is a
+  // resolved LOCATION or a strong hypothesis — a Candidate, never a Confirmed
+  // parcel. Downstream stays on hold until a parcel-level source confirms which
+  // exact parcel this is.
   return {
     established: false,
     basis: lanes.length >= 1
-      ? `The intended parcel is not yet confirmed — only ${lanes[0]} plus the operator input support it, without a geocoded street address. Confirm the parcel on LandPortal (Browser Agent, needs an authenticated session) or verify via a named source before downstream intelligence runs.`
-      : 'No external source has confirmed this parcel yet — only the operator-supplied identifiers. Confirm the parcel on LandPortal (Browser Agent) or verify via a named source before downstream intelligence runs.',
+      ? `Not yet confirmed — one parcel-level source (${lanes[0]}) points here, but a single source is a strong hypothesis, not confirmed identity. Confirm the exact parcel on a second parcel-level source (LandPortal/county GIS/assessor/tax/recorder or a marketplace property page), have the Browser Agent open the parcel page, or verify via a named source before downstream intelligence runs.`
+      : 'Parcel not yet confirmed — only a geocoded location and/or operator-supplied identifiers support it. A geocoder proves where an address is, not which parcel it is. Confirm the exact parcel on a parcel-level source (LandPortal/county/assessor/tax/recorder or a marketplace property page) or via a named source before downstream intelligence runs.',
   };
 }
 

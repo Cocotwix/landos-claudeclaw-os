@@ -45,6 +45,32 @@ export type RetrievalLane = (typeof RETRIEVAL_LANES)[number];
 export const IDENTITY_FIELDS = ['address', 'apn', 'owner', 'propertyId', 'lpUrl'] as const;
 export type IdentityField = (typeof IDENTITY_FIELDS)[number];
 
+/**
+ * PARCEL-LEVEL lanes: sources that prove WHICH PARCEL a property is, not merely
+ * where an address sits. A geocoder proves location; a parcel-level source proves
+ * identity. Only these lanes can CONFIRM a parcel (named parcel source, LandPortal
+ * parcel page, official county GIS/assessor/tax/recorder, marketplace property
+ * pages, Land ID). Geocoders/search (census_geocode, address_suggest,
+ * browser_search) and directories (netr) are NOT parcel-level — they support a
+ * Candidate but never a Confirmed. landos_cache is excluded here: a verified cache
+ * entry already carries parcelVerified (handled upstream), and an unverified one
+ * must not confirm itself by being replayed.
+ */
+export const PARCEL_LEVEL_LANES = [
+  'realie_landportal',
+  'landportal_readonly',
+  'county_gis',
+  'county_records',
+  'listing_provider',
+  'homeharvest',
+  'land_id_readonly',
+] as const;
+export type ParcelLevelLane = (typeof PARCEL_LEVEL_LANES)[number];
+
+export function isParcelLevelLane(lane: RetrievalLane): lane is ParcelLevelLane {
+  return (PARCEL_LEVEL_LANES as readonly string[]).includes(lane);
+}
+
 /** Fields a downstream department generally wants present before it can run a
  *  responsible pre-call workup. Absent ones become `missing` (Confirm Before
  *  Offer), never fabricated. */
@@ -134,13 +160,40 @@ export function missingFields(p: NormalizedProperty): PracticalField[] {
 }
 
 /** Distinct lanes that contributed at least one identity-bearing field. Used to
- *  judge corroboration (multiple independent lanes agreeing → higher confidence). */
+ *  judge corroboration for CONFIDENCE (multiple lanes agreeing → higher
+ *  confidence). This is NOT the confirmation gate — geocoders count toward
+ *  credibility but never toward parcel confirmation. */
 export function corroboratingIdentityLanes(p: NormalizedProperty): RetrievalLane[] {
   const lanes = new Set<RetrievalLane>();
   for (const e of p.evidence) {
     if ((IDENTITY_FIELDS as readonly string[]).includes(e.field)) lanes.add(e.lane);
   }
   return [...lanes];
+}
+
+/**
+ * The parcel CONFIRMATION signal: the largest set of distinct PARCEL-LEVEL lanes
+ * that independently resolved to the SAME parcel — i.e. agree on the same value of
+ * an identity-bearing field (APN / propertyId / address / owner / lpUrl). Two or
+ * more means multiple trusted parcel-level sources point at one exact parcel, so
+ * identity is established. Geocoders and search lanes are excluded entirely: a
+ * shared geocoded address is a shared LOCATION, not a confirmed parcel. Values are
+ * compared case-insensitively after trimming; empty values never corroborate.
+ */
+export function corroboratingParcelLevelLanes(p: NormalizedProperty): ParcelLevelLane[] {
+  const byKey = new Map<string, Set<ParcelLevelLane>>();
+  for (const e of p.evidence) {
+    if (!(IDENTITY_FIELDS as readonly string[]).includes(e.field)) continue;
+    if (!isParcelLevelLane(e.lane)) continue;
+    const val = e.value.trim().toLowerCase();
+    if (!val) continue;
+    const key = `${e.field}:${val}`;
+    if (!byKey.has(key)) byKey.set(key, new Set());
+    byKey.get(key)!.add(e.lane);
+  }
+  let best = new Set<ParcelLevelLane>();
+  for (const lanes of byKey.values()) if (lanes.size > best.size) best = lanes;
+  return [...best];
 }
 
 /**
