@@ -33,8 +33,9 @@ import {
   rankSearchMethods,
   type PageObservation, type SearchMethod, type ResultCandidate,
 } from './website-intelligence.js';
-import { getPlatformIntel, rememberPlatform } from './platform-library.js';
+import { getPlatformIntel, rememberPlatform, platformKey } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
+import { retrieveWithLearning, type SitePlaybook } from './browser-learning.js';
 
 // NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
 export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
@@ -843,6 +844,51 @@ async function runLandPortalLegacy(input: BrowserWorkflowInput, driver: BrowserD
   } catch (err) { ev.status = 'error'; ev.note = `LandPortal run failed before any paid action: ${(err as Error)?.message ?? 'unknown'}. No credit consumed.`; return ev; }
 }
 
+/**
+ * LandPortal retrieval WITH the inspect-and-learn fallback (the layer above the
+ * evidence-driven strategy). Runs the agentic workflow; on a clean retrieval it
+ * does NOTHING else (no deep inspection). If retrieval fails / hits an unexpected
+ * path, it inspects the site, synthesizes + saves a reusable navigation playbook,
+ * and retries with it. Future visits reuse the stored playbook; a stale playbook is
+ * relearned (version bumped). See browser-learning.ts for the generic orchestration.
+ */
+async function runLandPortalWithLearning(
+  input: BrowserWorkflowInput,
+  driver: BrowserDriver,
+  now: () => string,
+  timeoutMs: number,
+  hooks: Partial<BrowserRunHooks> = {},
+): Promise<BrowserEvidence> {
+  const key = input.searchKey;
+  const ranked = rankSearchMethods({ apn: key.apn, address: key.address, owner: key.owner });
+  const identifierKind = ranked[0]?.method ?? 'general';
+  const platform = platformKey(LANDPORTAL_BROWSER_BASE);
+
+  const result = await retrieveWithLearning<BrowserEvidence>({
+    platform,
+    taskType: 'parcel_lookup',
+    identifierKind,
+    attempt: async (_opts: { playbook: SitePlaybook | null }) => {
+      const ev = await runLandPortalWorkflow(input, driver, now, timeoutMs, hooks);
+      // On failure, re-observe the current page so the site can be inspected.
+      let observation: PageObservation | null = null;
+      if (ev.status !== 'retrieved' && ev.status !== 'parked' && driver.observe) {
+        try { observation = (await driver.observe({ timeoutMs })) as PageObservation; } catch { /* best-effort */ }
+      }
+      return { retrieved: ev.status === 'retrieved', evidence: ev, observation };
+    },
+  });
+
+  // Surface the learning outcome on the evidence note (operator-visible provenance).
+  const ev = result.evidence;
+  if (result.inspected) {
+    ev.note = `${ev.note} [inspect-and-learn: ${result.relearned ? 'relearned' : 'learned'} ${platform} playbook v${result.playbook?.version ?? '?'}]`;
+  } else if (result.reusedPlaybook) {
+    ev.note = `${ev.note} [reused ${platform} playbook v${result.playbook?.version ?? '?'} — no inspection]`;
+  }
+  return ev;
+}
+
 export function makeLandPortalBrowser(deps: LandPortalBrowserDeps = {}): BrowserService {
   const driver = deps.driver ?? makeParkedDriver('landportal');
   const now = deps.now ?? (() => new Date().toISOString());
@@ -851,7 +897,7 @@ export function makeLandPortalBrowser(deps: LandPortalBrowserDeps = {}): Browser
     label: 'LandPortal Browser (read-only property intelligence)',
     modes: ['workflow', 'ask'],
     configured() { return driver.configured(); },
-    runWorkflow(input, opts) { return runLandPortalWorkflow(input, driver, now, opts.timeoutMs, opts); },
+    runWorkflow(input, opts) { return runLandPortalWithLearning(input, driver, now, opts.timeoutMs, opts); },
     async ask(question, ctx, opts) {
       // Ask mode: LandPortal shows the full property on one page, so any property
       // question is answered by running the property workflow and reading the

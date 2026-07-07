@@ -1429,6 +1429,27 @@ function createLandosSchema(db: Database.Database): void {
       created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
+
+    -- Site Playbook: a REUSABLE, VERSIONED navigation workflow learned when Browser
+    -- Intelligence had to inspect a site (evidence-driven retrieval failed / hit an
+    -- unexpected path). Captures the learned interactive STRUCTURE (search modes,
+    -- dropdowns, required fields, filters, tabs, expandable sections, pagination,
+    -- modals, result tables, parcel-detail nav, multi-step deps) + the WORKFLOW
+    -- (ordered navigation steps) — never hardcoded values. One row per
+    -- (platform, task_type); version bumps when a stale playbook is relearned after
+    -- the site changes. No secrets, no per-property data.
+    CREATE TABLE IF NOT EXISTS landos_site_playbook (
+      platform      TEXT NOT NULL,
+      task_type     TEXT NOT NULL DEFAULT 'parcel_lookup',
+      version       INTEGER NOT NULL DEFAULT 1,
+      structure_json TEXT NOT NULL DEFAULT '{}',
+      workflow_json  TEXT NOT NULL DEFAULT '[]',
+      notes_json     TEXT NOT NULL DEFAULT '[]',
+      times_reused   INTEGER NOT NULL DEFAULT 0,
+      learned_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      PRIMARY KEY (platform, task_type)
+    );
   `);
 }
 
