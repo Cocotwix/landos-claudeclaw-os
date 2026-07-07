@@ -22,6 +22,9 @@
 
 import { getLandosDb, landosAudit } from './db.js';
 import { understandPlatform, type PageObservation, type SearchMethod, type NavStep } from './website-intelligence.js';
+// browser-navigation-model imports inspectSite from THIS module; the cycle is safe
+// because both sides use each other only inside function bodies (ESM live bindings).
+import { learnNavigation, getNavigationModel as getNavigationModelDefault, type SiteNavigationModel } from './browser-navigation-model.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Learned site structure (what inspection understands)
@@ -253,15 +256,21 @@ export interface RetrieveWithLearningDeps<E> {
   taskType: string;
   /** The identifier kind that leads the search (from rankSearchMethods). */
   identifierKind: SearchMethod;
-  /** Run one retrieval attempt. `playbook` is the stored/learned workflow to
-   *  follow (null = evidence-driven default). MUST NOT itself deep-inspect. */
-  attempt: (opts: { playbook: SitePlaybook | null }) => Promise<LearningAttempt<E>>;
+  /** Run one retrieval attempt. `playbook` is the stored/learned task workflow to
+   *  follow (null = evidence-driven default). `navigation` is the shared, learned
+   *  site navigation model (null = never navigated before). MUST NOT deep-inspect. */
+  attempt: (opts: { playbook: SitePlaybook | null; navigation: SiteNavigationModel | null }) => Promise<LearningAttempt<E>>;
   /** Injected for tests; default = the real getSitePlaybook. */
   getPlaybook?: (platform: string, taskType: string) => SitePlaybook | null;
   savePlaybook?: (pb: SitePlaybook) => SitePlaybook;
   markReused?: (platform: string, taskType: string) => void;
   inspect?: (obs: PageObservation) => SiteStructure;
   synthesize?: (platform: string, taskType: string, structure: SiteStructure, kind: SearchMethod) => SitePlaybook;
+  /** Learn/relearn the shared, task-agnostic site navigation model from an
+   *  observation. Default = the real learnNavigation. Set to null to disable. */
+  learnNav?: ((platform: string, obs: PageObservation) => { model: SiteNavigationModel; created: boolean; changedSections: string[]; versionBumped: boolean; trace: string }) | null;
+  /** Read the stored navigation model (for the first attempt). Default = the real one. */
+  getNavigation?: (platform: string) => SiteNavigationModel | null;
 }
 
 export interface LearningResult<E> {
@@ -274,6 +283,13 @@ export interface LearningResult<E> {
   /** Did a stored playbook fail and get relearned (site changed)? */
   relearned: boolean;
   playbook: SitePlaybook | null;
+  /** The shared site navigation model in effect after this run (learned/updated
+   *  whenever the site was inspected). Null when the site was never observed. */
+  navigation: SiteNavigationModel | null;
+  /** Was the site navigation model learned or relearned on this run? */
+  navigationLearned: boolean;
+  /** Navigation-model sections relearned because the site changed. */
+  navigationChangedSections: string[];
   trace: string[];
 }
 
@@ -289,37 +305,67 @@ export async function retrieveWithLearning<E>(deps: RetrieveWithLearningDeps<E>)
   const markReused = deps.markReused ?? markPlaybookReused;
   const inspect = deps.inspect ?? inspectSite;
   const synthesize = deps.synthesize ?? synthesizePlaybook;
+  const learnNav = deps.learnNav === undefined ? learnNavigation : deps.learnNav;
+  const getNav = deps.getNavigation ?? getNavigationModelDefault;
   const trace: string[] = [];
+
+  // The shared, task-agnostic site navigation model (accumulated by every prior
+  // department/task on this site). Available to the first attempt so a previously
+  // navigated site needs LESS exploration this time.
+  let navigation: SiteNavigationModel | null = null;
+  try { navigation = getNav(deps.platform); } catch { navigation = null; }
+  let navigationLearned = false;
+  let navigationChangedSections: string[] = [];
+  if (navigation) trace.push(`navigation model available: ${deps.platform} v${navigation.version}`);
 
   const stored = getPb(deps.platform, deps.taskType);
   trace.push(stored ? `reusing stored playbook v${stored.version}` : 'no stored playbook — evidence-driven default');
 
+  // Learn/relearn the navigation model from ANY observation — navigation
+  // knowledge is not page data, so it accrues even when a lookup misses its target.
+  const learnFromObs = (obs: PageObservation | null | undefined) => {
+    if (!obs || !learnNav) return;
+    try {
+      const r = learnNav(deps.platform, obs);
+      navigation = r.model;
+      if (r.versionBumped) { navigationLearned = true; navigationChangedSections = r.changedSections; }
+      trace.push(r.trace);
+    } catch { /* navigation learning is best-effort; never fails a retrieval */ }
+  };
+
+  const done = (partial: Omit<LearningResult<E>, 'navigation' | 'navigationLearned' | 'navigationChangedSections'>): LearningResult<E> =>
+    ({ ...partial, navigation, navigationLearned, navigationChangedSections });
+
   // 1) First attempt — reuse the stored playbook (or default). NO inspection.
-  const first = await deps.attempt({ playbook: stored });
+  const first = await deps.attempt({ playbook: stored, navigation });
   if (first.retrieved) {
     trace.push('retrieved on first attempt — no inspection');
     if (stored) { try { markReused(deps.platform, deps.taskType); } catch { /* non-fatal */ } }
-    return { evidence: first.evidence, retrieved: true, inspected: false, reusedPlaybook: !!stored, relearned: false, playbook: stored, trace };
+    // A clean success can still confirm/extend navigation knowledge if the attempt
+    // handed back an observation (e.g. the reached detail page) — never inspects.
+    learnFromObs(first.observation);
+    return done({ evidence: first.evidence, retrieved: true, inspected: false, reusedPlaybook: !!stored, relearned: false, playbook: stored, trace });
   }
 
-  // 2) Failure / unexpected path → INSPECT, LEARN, RETRY, SAVE.
+  // 2) Failure / unexpected path → INSPECT, LEARN (navigation + task), RETRY, SAVE.
   trace.push(stored ? 'stored playbook failed — the site may have changed; inspecting' : 'retrieval failed — inspecting the site');
   const obs = first.observation ?? null;
   if (!obs) {
     trace.push('nothing observable to inspect — no false facts, no playbook');
-    return { evidence: first.evidence, retrieved: false, inspected: false, reusedPlaybook: !!stored, relearned: false, playbook: stored, trace };
+    return done({ evidence: first.evidence, retrieved: false, inspected: false, reusedPlaybook: !!stored, relearned: false, playbook: stored, trace });
   }
   const structure = inspect(obs);
   trace.push(`inspected: modes=[${structure.searchModes.join('/')}] required=[${structure.requiredFields.join('/')}] methodDropdown=${structure.hasMethodDropdown} multiStep=${structure.multiStep}`);
+  learnFromObs(obs); // the inspection also grows the shared navigation model
   const learned = synthesize(deps.platform, deps.taskType, structure, deps.identifierKind);
 
-  const second = await deps.attempt({ playbook: learned });
+  const second = await deps.attempt({ playbook: learned, navigation });
   if (second.retrieved) {
     const saved = savePb(learned); // bumps version when a stored playbook existed
     trace.push(`retried with the learned workflow — retrieved; saved playbook v${saved.version}${stored ? ' (relearned)' : ''}`);
-    return { evidence: second.evidence, retrieved: true, inspected: true, reusedPlaybook: false, relearned: !!stored, playbook: saved, trace };
+    return done({ evidence: second.evidence, retrieved: true, inspected: true, reusedPlaybook: false, relearned: !!stored, playbook: saved, trace });
   }
 
   trace.push('learned workflow still did not retrieve — recorded, no false facts, playbook not saved');
-  return { evidence: second.evidence, retrieved: false, inspected: true, reusedPlaybook: false, relearned: false, playbook: stored, trace };
+  return done({ evidence: second.evidence, retrieved: false, inspected: true, reusedPlaybook: false, relearned: false, playbook: stored, trace });
 }

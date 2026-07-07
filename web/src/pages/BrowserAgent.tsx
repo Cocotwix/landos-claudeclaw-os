@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { Bot, Play, ShieldCheck, ScrollText, MapPin } from 'lucide-preact';
+import { Bot, Play, ShieldCheck, ScrollText, MapPin, Compass } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
@@ -25,6 +25,17 @@ interface AgentSummary {
   totals: { runs: number; lastRunAt: number | null };
   recentRuns: AgentRun[];
 }
+interface NavCapability { how: string | null; via: string[] }
+interface NavModel {
+  platform: string; version: number; classification: string;
+  searchFunctions: string[]; searchModes: string[]; supportedIdentifiers: string[];
+  requiredSelectors: string[]; mandatoryFields: string[]; fieldOrder: string[];
+  resultAccess: NavCapability; detailAccess: NavCapability; tabs: string[]; filters: string[];
+  layers: string[]; mapTools: string[]; documentAccess: NavCapability; exportAccess: NavCapability;
+  navigationDependencies: string[]; successSignals: string[]; failureSignals: string[];
+  authRequired: boolean; timesReused: number; updatedAt: number;
+}
+interface NavModelsResponse { navigationModels: NavModel[]; taskPlaybooks: Array<{ platform: string; taskType: string; version: number; timesReused: number; updatedAt: number }> }
 interface DataQuality { total: number; accepted: number; flagged: number; unknown: number; rejected: number; samples: { flagged: Array<{ label?: string; reasons: string[] }>; rejected: Array<{ label?: string; reasons: string[] }>; unknown: Array<{ label?: string; reasons: string[] }> } }
 interface Diagnostics { rowsByLevel: { state: number; county: number; zip: number }; duplicatesDropped: number; headersVerified: boolean; countiesExpanded: number; retries: number; stageMs?: Record<string, number>; notes: string[] }
 interface RunResult { run: AgentRun; allowedScope: string[]; note: string; diagnostics: Diagnostics | null; dataQuality: DataQuality | null; ingest: { accepted: number; rejected: number } | null; coverage: { snapshotCount: number; countyWithDataCount: number; flaggedSnapshotCount?: number } }
@@ -57,12 +68,17 @@ export function BrowserAgent() {
   const [busy, setBusy] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<RunResult | null>(null);
   const [state, setState] = useState('GA');
+  const [navModels, setNavModels] = useState<NavModel[]>([]);
 
   async function load() {
     try { setLoading(true); setError(null); setSummary(await apiGet<AgentSummary>('/api/landos/browser-agent/status')); }
     catch (e: any) { setError(e?.message || String(e)); } finally { setLoading(false); }
   }
-  useEffect(() => { void load(); }, []);
+  async function loadNav() {
+    try { const r = await apiGet<NavModelsResponse>('/api/landos/browser/navigation-models'); setNavModels(r.navigationModels || []); }
+    catch { /* non-fatal; navigation panel is informational */ }
+  }
+  useEffect(() => { void load(); void loadNav(); }, []);
 
   async function runPlaybook(id: string, mode: 'operational' | 'live') {
     setBusy(`${id}:${mode}`);
@@ -189,6 +205,50 @@ export function BrowserAgent() {
             </div>
           )}
 
+          {/* Learned site navigation models — reusable across every department */}
+          <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+            <div class="flex items-center gap-2 mb-1"><Compass size={14} class="text-[var(--color-text-muted)]" /><span class="text-[12px] font-semibold text-[var(--color-text)]">Learned site navigation</span></div>
+            <p class="text-[11px] text-[var(--color-text-muted)] mb-2 max-w-3xl">How each website is navigated (not its data). Learned once, reused by every department. Grows and relearns automatically as sites change.</p>
+            {navModels.length === 0 && <p class="text-[12px] text-[var(--color-text-muted)]">No sites learned yet. Navigation models are captured automatically when Browser Intelligence inspects a site.</p>}
+            <div class="space-y-2">
+              {navModels.map((m) => (
+                <details class="rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] p-2.5">
+                  <summary class="cursor-pointer flex items-center gap-2 text-[12px] text-[var(--color-text)]">
+                    <span class="font-medium">{m.platform}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]">v{m.version}</span>
+                    <span class="text-[10px] text-[var(--color-text-muted)]">{m.classification}</span>
+                    {m.authRequired && <span class="text-[10px] text-amber-400/90">auth</span>}
+                    <span class="ml-auto text-[10px] text-[var(--color-text-muted)] tabular-nums">reused {m.timesReused}× · {fmtWhen(m.updatedAt)}</span>
+                  </summary>
+                  <div class="mt-2 grid md:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                    <NavRow k="Search modes" v={m.searchModes.join(', ')} />
+                    <NavRow k="Identifiers" v={m.supportedIdentifiers.join(', ')} />
+                    <NavRow k="Required selectors" v={m.requiredSelectors.join(' → ')} />
+                    <NavRow k="Field order" v={m.fieldOrder.join(' → ')} />
+                    <NavRow k="Open result" v={m.resultAccess.how} />
+                    <NavRow k="Reach detail" v={m.detailAccess.how} />
+                    <NavRow k="Tabs" v={m.tabs.join(', ')} />
+                    <NavRow k="Filters" v={m.filters.join(', ')} />
+                    <NavRow k="Layers / overlays" v={m.layers.join(', ')} />
+                    <NavRow k="Map tools" v={m.mapTools.join(', ')} />
+                    <NavRow k="Documents" v={m.documentAccess.via.join(', ') || m.documentAccess.how} />
+                    <NavRow k="Exports" v={m.exportAccess.via.join(', ') || m.exportAccess.how} />
+                  </div>
+                  {m.navigationDependencies.length > 0 && (
+                    <div class="mt-2 text-[11px] text-[var(--color-text-muted)]">
+                      <div class="text-[10px] uppercase tracking-wide mb-0.5">Dependencies</div>
+                      {m.navigationDependencies.map((d) => <div>• {d}</div>)}
+                    </div>
+                  )}
+                  <div class="mt-2 grid md:grid-cols-2 gap-x-4 text-[11px]">
+                    <div><div class="text-[10px] uppercase tracking-wide text-emerald-400/80 mb-0.5">Success signals</div>{m.successSignals.map((s) => <div class="text-[var(--color-text-muted)]">✓ {s}</div>)}</div>
+                    <div><div class="text-[10px] uppercase tracking-wide text-red-400/80 mb-0.5">Failure signals</div>{m.failureSignals.map((s) => <div class="text-[var(--color-text-muted)]">✕ {s}</div>)}</div>
+                  </div>
+                </details>
+              ))}
+            </div>
+          </div>
+
           {/* Recent runs */}
           <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
             <div class="flex items-center gap-2 mb-2"><ScrollText size={14} class="text-[var(--color-text-muted)]" /><span class="text-[12px] font-semibold text-[var(--color-text)]">Run log</span></div>
@@ -226,6 +286,14 @@ function Cell({ k, v }: { k: string; v: string }) {
     <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 py-1.5">
       <div class="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">{k}</div>
       <div class="text-[12px] text-[var(--color-text)] font-medium">{v}</div>
+    </div>
+  );
+}
+function NavRow({ k, v }: { k: string; v: string | null }) {
+  return (
+    <div class="flex gap-1.5">
+      <span class="text-[var(--color-text-muted)] shrink-0">{k}:</span>
+      <span class="text-[var(--color-text)]">{v || '—'}</span>
     </div>
   );
 }

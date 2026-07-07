@@ -35,7 +35,7 @@ import {
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform, platformKey } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
-import { retrieveWithLearning, type SitePlaybook } from './browser-learning.js';
+import { retrieveWithLearning } from './browser-learning.js';
 
 // NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
 export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
@@ -868,7 +868,7 @@ async function runLandPortalWithLearning(
     platform,
     taskType: 'parcel_lookup',
     identifierKind,
-    attempt: async (_opts: { playbook: SitePlaybook | null }) => {
+    attempt: async (_opts) => {
       const ev = await runLandPortalWorkflow(input, driver, now, timeoutMs, hooks);
       // On failure, re-observe the current page so the site can be inspected.
       let observation: PageObservation | null = null;
@@ -885,6 +885,13 @@ async function runLandPortalWithLearning(
     ev.note = `${ev.note} [inspect-and-learn: ${result.relearned ? 'relearned' : 'learned'} ${platform} playbook v${result.playbook?.version ?? '?'}]`;
   } else if (result.reusedPlaybook) {
     ev.note = `${ev.note} [reused ${platform} playbook v${result.playbook?.version ?? '?'} — no inspection]`;
+  }
+  // Shared navigation-model provenance — reused by every future department on this site.
+  if (result.navigationLearned) {
+    const secs = result.navigationChangedSections.length ? ` (${result.navigationChangedSections.join(', ')})` : '';
+    ev.note = `${ev.note} [navigation model ${platform} v${result.navigation?.version ?? '?'} learned${secs}]`;
+  } else if (result.navigation) {
+    ev.note = `${ev.note} [navigation model ${platform} v${result.navigation.version} reused]`;
   }
   return ev;
 }

@@ -106,6 +106,8 @@ import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAre
 import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
 import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
+import { listNavigationModels } from './browser-navigation-model.js';
+import { listSitePlaybooks } from './browser-learning.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
 import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession, withWorkingPage } from './browser-session.js';
@@ -2721,6 +2723,40 @@ export function registerLandosRoutes(app: Hono): void {
   // unreachable / auth_needed. NEVER returns cookies, tokens, or credentials.
   app.get('/api/landos/browser/session', async (c) => {
     return c.json({ session: await browserSessionHealth() });
+  });
+
+  // Browser Intelligence's LEARNED SITE NAVIGATION MODELS — the reusable, task-
+  // agnostic "how is this website navigated" knowledge that every department
+  // shares. Read-only; describes movement, never page data. Operator-visible on
+  // the Browser Agent dashboard so learning is auditable.
+  app.get('/api/landos/browser/navigation-models', (c) => {
+    const models = listNavigationModels().map((m) => ({
+      platform: m.platform,
+      version: m.version,
+      classification: m.classification,
+      searchFunctions: m.searchFunctions,
+      searchModes: m.searchModes,
+      supportedIdentifiers: m.supportedIdentifiers,
+      requiredSelectors: m.requiredSelectors,
+      mandatoryFields: m.mandatoryFields,
+      fieldOrder: m.fieldOrder,
+      resultAccess: m.resultAccess,
+      detailAccess: m.detailAccess,
+      tabs: m.tabs,
+      filters: m.filters,
+      layers: m.layers,
+      mapTools: m.mapTools,
+      documentAccess: m.documentAccess,
+      exportAccess: m.exportAccess,
+      navigationDependencies: m.navigationDependencies,
+      successSignals: m.successSignals,
+      failureSignals: m.failureSignals,
+      authRequired: m.authRequired,
+      timesReused: m.timesReused,
+      updatedAt: m.updatedAt,
+    }));
+    const playbooks = listSitePlaybooks().map((p) => ({ platform: p.platform, taskType: p.taskType, version: p.version, timesReused: p.timesReused, updatedAt: p.updatedAt }));
+    return c.json({ navigationModels: models, taskPlaybooks: playbooks });
   });
 
   // Property Inspection capability: runs independently of Acquisition but uses

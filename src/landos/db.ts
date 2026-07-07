@@ -1450,6 +1450,19 @@ function createLandosSchema(db: Database.Database): void {
       updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       PRIMARY KEY (platform, task_type)
     );
+
+    -- Reusable SITE NAVIGATION MODEL — keyed by platform ONLY (task-agnostic), so
+    -- every current/future department that touches a site shares one navigation
+    -- model. Stores HOW a site is navigated, never its DATA. Versioned; relearned
+    -- section-by-section when a site changes. See browser-navigation-model.ts.
+    CREATE TABLE IF NOT EXISTS landos_site_navigation (
+      platform      TEXT PRIMARY KEY,
+      version       INTEGER NOT NULL DEFAULT 1,
+      model_json    TEXT NOT NULL DEFAULT '{}',
+      times_reused  INTEGER NOT NULL DEFAULT 0,
+      learned_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
   `);
 }
 
