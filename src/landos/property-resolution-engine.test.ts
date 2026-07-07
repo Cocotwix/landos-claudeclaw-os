@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
+import { resolveProperty, parcelIdentityEstablished, type ResolutionDeps } from './property-resolution-engine.js';
+import { emptyNormalizedProperty } from './normalized-property.js';
 import type { DukeVerificationResult } from './duke-verification-bridge.js';
 import type { ParsedIntakeFields } from './intake-router.js';
 import type { SuggestResult } from './address-suggest.js';
@@ -174,6 +175,72 @@ describe('property resolution engine', () => {
     expect(r.missingFieldAnalysis!.missing).not.toContain('apn');
     expect(r.lanesAttempted.some((l) => l.lane === 'landportal_readonly' && l.contributed)).toBe(true);
     expect(r.lanesAttempted.some((l) => l.lane === 'county_records' && l.status === 'parked')).toBe(true);
+  });
+
+  // ── The mandatory identity gate ─────────────────────────────────────────
+  it('identity gate: a named-source verified parcel is established (downstream may run)', async () => {
+    const deps: ResolutionDeps = { verify: async (f) => verified(f), now: NOW };
+    const r = await resolveProperty({ fields: { address: '388 Gilstrap Rd', city: 'Cleveland', state: 'GA', county: 'White' } }, deps);
+    expect(r.identityEstablished).toBe(true);
+    expect(r.identityBasis).toMatch(/verified/i);
+  });
+
+  it('identity gate: a geocoded full street address (Photon + point) is established', async () => {
+    const deps: ResolutionDeps = {
+      verify: async () => needsCounty(),
+      deriveCounty: async () => gilstrapCensus,
+      suggest: async () => gilstrapSuggest,
+      now: NOW,
+    };
+    const r = await resolveProperty({ rawText: '388 Gilstrap Rd, Cleveland, GA 30528' }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.property.parcelVerified).toBe(false);
+    expect(r.identityEstablished).toBe(true); // full street address, corroborated, with a point
+  });
+
+  it('identity gate: Scott County road-name + echoed APN is NOT established (downstream on hold)', async () => {
+    // The sprint failure mode: county + a bare road name + an APN the operator
+    // pasted, which no external source confirmed. The geocoder returns nothing for a
+    // house-number-less road, the browser is parked (no auth), so nothing corroborates
+    // the parcel. It may look "matched" by echoed fields, but identity is NOT
+    // established — downstream Property Intelligence must not run.
+    const deps: ResolutionDeps = {
+      verify: async () => needsCounty(),           // Realie/LandPortal cannot verify
+      deriveCounty: async () => null,               // no geocode for a road name (no house number)
+      suggest: async () => ({ query: 'Henson Lane', suggestions: [], source: 'none', cached: false }),
+      now: NOW,
+    };
+    const r = await resolveProperty(
+      { fields: { address: 'Henson Lane', county: 'Scott', state: 'TN', apn: '094-020.08', apnAlternates: ['094 02008 000'] } },
+      deps,
+    );
+    expect(r.identityEstablished).toBe(false);
+    expect(r.identityBasis).toMatch(/not yet confirmed|no external source/i);
+  });
+
+  it('identity gate: two independent corroborating identity lanes establish identity', () => {
+    const p = emptyNormalizedProperty();
+    p.address = '10 Pine Rd'; p.county = 'White'; p.state = 'GA';
+    // Two DIFFERENT lanes each contribute an identity-bearing field (address).
+    p.evidence.push({ lane: 'address_suggest', field: 'address', value: '10 Pine Rd', source: 'Photon', confidence: 0.8, timestamp: NOW() });
+    p.evidence.push({ lane: 'homeharvest', field: 'address', value: '10 Pine Rd', source: 'HomeHarvest', confidence: 0.6, timestamp: NOW() });
+    const g = parcelIdentityEstablished(p, []);
+    expect(g.established).toBe(true);
+    expect(g.basis).toMatch(/independent/i);
+  });
+
+  it('identity gate: a browser-confirmed LandPortal parcel (APN + jurisdiction + URL) is established', () => {
+    const p = emptyNormalizedProperty();
+    p.apn = '094-020.08'; p.county = 'Scott'; p.state = 'TN';
+    const browserEvidence = [{
+      service: 'landportal', mode: 'workflow', status: 'retrieved',
+      patch: { apn: '094-020.08', county: 'Scott', state: 'TN' },
+      sourceUrls: ['https://landportal.com/?property=abc123'],
+      sourcesUsed: [], facts: [], fields: {}, screenshots: [], note: '', blocked: [],
+    }] as any;
+    const g = parcelIdentityEstablished(p, browserEvidence);
+    expect(g.established).toBe(true);
+    expect(g.basis).toMatch(/Browser Agent/i);
   });
 
   it('records parked browser lanes without contributing', async () => {

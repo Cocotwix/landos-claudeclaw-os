@@ -44,6 +44,15 @@ Resolved 2026-07-04: "Compiled server must be restarted to compute Land Score on
 - Business limit: the report is discovery/pre-offer useful, not offer-final. Current output can still be `complete_with_gaps` when official county source evidence, sold comps, title/access/utilities, or seller-confirmed constraints are missing.
 - Download validation: PDF generation is visually accepted for the live run. The generated file was 8 pages with 5 embedded images; rendered page 1 contained the readable report and rendered page 8 contained a LandPortal comps-map screenshot.
 
+### 2026-07-06 - Property Resolution identity gate: live Scott County confirmation pending
+
+- What is resolved: the acquisition workflow now runs in the correct order. Property Resolution is a mandatory gate (`parcelIdentityEstablished`) — downstream Property Intelligence/comps/Market Pulse only run once the parcel is confirmed (named source / Browser Agent LandPortal read / ≥2 corroborating lanes / geocoded street address). The Browser Agent now also retries the alternate APN format. Verified live: Scott County + messy inputs correctly held as unverified research/`resolution_pending` cards; no downstream on echoed input.
+- Why still unfinished (the live half): headlessly I could not complete an authenticated LandPortal parcel confirmation for the Scott County APN — the free geocoders returned nothing for the house-number-less road ("Henson Lane"), and the LandPortal APN search returned candidates but no confident match without the operator's logged-in map session. So the CONTINUOUS positive path (Browser Agent reaches the intended parcel → identity establishes → pipeline auto-continues into comps/Market Pulse/Strategy/Discovery) is proven by unit tests + the guarded (unchanged) downstream code, but not by a live Scott County run.
+- Owner / department: Browser Agent / Property Resolution.
+- Revisit when: Tyler runs the Scott County lead from the dashboard with his authenticated LandPortal Chrome session.
+- Blocks current business use: No — the gate correctly prevents untrustworthy downstream work; the remaining item is confirming the happy path on the specific live parcel.
+- What not to repeat: do not claim full acceptance of the positive path from a headless run; the live authenticated parcel confirmation is the operator's step.
+
 ## Template
 
 ```markdown

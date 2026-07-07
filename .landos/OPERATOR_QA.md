@@ -189,6 +189,24 @@ If no, continue improving unless an approval gate blocks progress.
 - Remaining (can't be headless-verified): true end-to-end LATENCY under a real screen-share, and DOM-accurate steps/selectors (needs a CDP training mode against the LandOS-driven Chrome, not a screen-share). QA residue: probe test sessions + `store/training-shots` images in the live store (gitignored).
 - Classification: architecture (no DOM on shared tab) owned honestly + quality fixes (frames/screenshots/transcript/synthesis) — live-verified. Rebuilt + restarted.
 
+### 2026-07-06 - Property Resolution identity gate (correct workflow ordering)
+
+- Dashboard DB/store: real `store/landos.db` on `:3141` (rebuilt server + web, restarted PID from fresh `dist`). Live acquire pipeline exercised via `POST /api/landos/acquire/run` with the dashboard token.
+- Business problem fixed: downstream Property Intelligence was starting before the parcel was confidently identified — a lead reaching confidence 0.7 purely from the operator's own echoed APN + county + road name auto-ran full Property Intelligence/comps/Market Pulse. Now Property Resolution is a MANDATORY GATE.
+- Change: new `parcelIdentityEstablished()` predicate — identity is established ONLY when (1) a named source verified the parcel, (2) the Browser Agent read the parcel on LandPortal (APN + jurisdiction + source URL), or (3) ≥2 independent lanes corroborate identity, or (4) a full house-numbered street address was geocoded to a point in a known county/state. The acquire route now runs Property Inspection + Deal Card report ONLY when `identityEstablished`; otherwise it creates the lead card + public-records research plan and returns `status: resolution_pending` with downstream on hold. Browser Agent also now retries the ALTERNATE APN format before falling back to owner.
+- LIVE acceptance (Scott County TN example: "County: Scott County, Tennessee / Location: Henson Lane, near Oneida, near Helenwood / Parcel ID: 094-020.08 / Alternate Parcel ID: 094 02008 000"):
+  - Resolved to a RESEARCH card (confidence 0.4, parcelVerified false). Downstream Property Intelligence did NOT run. Deal Card #9 created as an unverified lead.
+  - Browser Agent searched LandPortal by APN `094-020.08` (12 candidates, no confident match) THEN by alternate `094 02008 000` (3 candidates) — the alternate-APN retry fired live. No weak-match, no fabricated facts.
+  - County Records lane retrieved 4 official sources (assessor, tax, recorder, GIS) + 3 public-record facts with provenance.
+- Self-validation battery (messy inputs, live):
+  - County only ("Scott County, Tennessee") → research_card, conf 0.2, no downstream. Card #10.
+  - APN only ("APN 094-020.08") → research_card, conf 0.2, no downstream. Card #11.
+  - Partial address ("Henson Lane, Oneida, TN") → matched conf 0.7 BUT `identityEstablished:false` → NEW gate → `status: resolution_pending`, downstream held. Card #12, geography TN/Scott, kanban `needs_parcel_verification`.
+- Visual QA: `store/operator-qa-resolution/property-board-gate.png`. Property Board shows the gated Scott County / road-name / APN-only / county-only leads in the **Needs Parcel Verification** column, all marked **unverified** with correct geography (Scott, TN) and NO parcel-verified comps; pre-existing verified cards (Gilstrap, Lehigh Acres, Jackson Gap) retain full Inspection/comps/seller-Qs in **Researching**.
+- Engineering QA: `tsc` clean (server); web build clean; `property-resolution-engine` 14/14 (5 new gate tests incl. Scott-County-not-established, geocoded-address-established, browser-confirmed-established, 2-lane-corroboration), plus landportal-agentic/browser-intelligence/comparable-intelligence/market-pulse/acquisitions 60/60 and deal-card-report/intake/smart-intake/property-inspection/comp 86/86. No regressions.
+- First remaining blocker: I cannot complete a live authenticated LandPortal parcel confirmation for the Scott County APN headlessly (geocoders returned nothing for the house-number-less road; LandPortal APN search found candidates but no confident match without the operator's logged-in map session). The continuous "Browser Agent reaches the Scott County parcel → auto-runs the full pipeline" acceptance is Tyler's live step. What is proven headlessly: correct ORDERING/GATING, the alternate-APN search, correct geography, and downstream withheld until confirmation.
+- What not to repeat: do not let a lead reach downstream on echoed operator input alone; a populated Deal Card must mean the parcel was actually confirmed.
+
 ## QA Entry Template
 
 ```markdown

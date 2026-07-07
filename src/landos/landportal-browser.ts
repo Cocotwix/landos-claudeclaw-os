@@ -425,6 +425,14 @@ async function runLandPortalAgentic(
     const fullAddress = addressSearchValue(key);
     if (fullAddress) attempts.push({ method: 'address', value: fullAddress });
     if (key.apn) attempts.push({ method: 'apn', value: key.apn });
+    // Keep investigating: a county may index the parcel under a DIFFERENT APN format
+    // than the operator pasted (e.g. dashed "094-020.08" vs spaced "094 02008 000").
+    // Try each alternate before falling back to owner, deduped against the primary.
+    for (const alt of key.apnAlternates ?? []) {
+      if (alt && alt !== key.apn && !attempts.some((a) => a.method === 'apn' && a.value === alt)) {
+        attempts.push({ method: 'apn', value: alt });
+      }
+    }
     if (key.owner) attempts.push({ method: 'owner', value: key.owner });
 
     // Distinctive street word(s) from the known address, used to confirm the

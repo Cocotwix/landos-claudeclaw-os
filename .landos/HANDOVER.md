@@ -90,6 +90,19 @@ latest commit hash.
 
 ## Session Log
 
+### 2026-07-06 - Property Resolution + Acquisition Workflow ordering (identity gate)
+
+- Root cause of the failing acquisition workflow: downstream Property Intelligence began before the parcel was confidently identified. `deriveConfidence` gave a non-verified property up to 0.7 from the operator's OWN echoed input (address 0.3 + county/state 0.2 + APN 0.2), and the acquire route ran full Property Intelligence/comps/Market Pulse on any `matched` (conf ≥0.7) property — so a bare road name + pasted APN auto-generated a report for an unconfirmed parcel.
+- Architectural fix — Property Resolution is now the MANDATORY GATE:
+  - New `parcelIdentityEstablished(property, browserEvidence)` in `property-resolution-engine.ts`. Established ONLY when: (1) `parcelVerified` (named source), (2) Browser Agent read the parcel on LandPortal (APN + jurisdiction + real source URL), (3) ≥2 INDEPENDENT corroborating identity lanes (seeded operator input is not an evidence lane), or (4) a full house-numbered street address corroborated by a geocoder and resolved to a point in a known county/state. Exposed as `identityEstablished` + `identityBasis` on `PropertyResolution`.
+  - `acquire/run` route now gates: if `!identityEstablished`, it creates the lead card + public-records research plan + a clear "parcel not yet confirmed" next action and returns `status: resolution_pending` (or the existing `research_card` path when not even matched). Property Inspection + Deal Card report run ONLY when identity is established, so the pipeline stays continuous for confirmed parcels with no second button.
+  - Browser Agent improvement: `BrowserSearchKey.apnAlternates` threaded from `ParsedIntakeFields`; `runLandPortalAgentic` now tries each alternate APN format before owner (keeps investigating instead of one search). Verified live: it searched `094-020.08` then `094 02008 000`.
+- Comparable sales + Market Pulse: already unified/mature (LandPortal browser comps merge with Zillow/Redfin/HomeHarvest/Realie into `landos_comp` with per-comp `sourceLabel`; sold drives the PPA band, actives kept separate and never mislabeled; comp/market query uses the verified `vid` county/state). The gate ensures they now consume a CONFIRMED parcel's geography. No rebuild needed — verified by tests, not reimplemented.
+- Live verification (`:3141`, real acquire pipeline): Scott County example → research card, no downstream, alternate-APN search fired, 4 official county sources retrieved. Messy battery: county-only/APN-only → research_card; partial road-name address → NEW gate `resolution_pending` (matched 0.7 but not established). Visual QA screenshot `store/operator-qa-resolution/property-board-gate.png` shows gated leads in "Needs Parcel Verification" (unverified, correct Scott/TN geography, no parcel comps) while verified cards keep full intelligence.
+- Engineering QA: server tsc clean; web build clean; resolution 14/14 (5 new), 60/60 browser/comp/market/acquisitions sweep, 86/86 deal-card/intake/inspection sweep. No new regressions.
+- Files changed: `src/landos/property-resolution-engine.ts` (+ test), `src/landos/routes.ts`, `src/landos/browser-intelligence.ts`, `src/landos/landportal-browser.ts`.
+- Remaining (KNOWN_LIMITATIONS): live authenticated LandPortal confirmation of the Scott County parcel (the continuous positive path) is Tyler's operator step; headless geocoders/LandPortal couldn't confirm that specific parcel. Not committed, not pushed.
+
 ### 2026-07-06 - LIVE Property Intelligence dashboard acceptance
 
 - Rebuilt and restarted the local dashboard (`node dist/index.js`) so QA used current server/UI code, not stale `dist`.

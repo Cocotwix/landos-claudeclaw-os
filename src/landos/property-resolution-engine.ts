@@ -17,7 +17,7 @@
 
 import {
   emptyNormalizedProperty, mergeNormalized, missingFields, deriveConfidence,
-  patchFromDukeVerification, patchFromCensus,
+  patchFromDukeVerification, patchFromCensus, corroboratingIdentityLanes,
   type NormalizedProperty, type RetrievalLane,
 } from './normalized-property.js';
 import type { ParsedIntakeFields } from './intake-router.js';
@@ -57,6 +57,16 @@ export interface PropertyResolution {
   browserEvidence: BrowserEvidence[];
   /** Structured missing-field analysis after LandPortal (drives county gap-fill). */
   missingFieldAnalysis?: MissingFieldAnalysis;
+  /** TRUE only when the intended parcel has actually been CONFIRMED — by a named
+   *  source (parcelVerified), by the Browser Agent reading it on LandPortal, or by
+   *  ≥2 independent corroborating sources. This is the MANDATORY GATE: downstream
+   *  departments (Property Intelligence, comps, Market Pulse, Strategy, Discovery)
+   *  must NOT run until this is true. A property can be `matched` (credible) without
+   *  being identity-established (e.g. only the operator's own pasted identifiers back
+   *  it and no source has confirmed the parcel yet). */
+  identityEstablished: boolean;
+  /** Human-readable reason the identity is (or is not) established. */
+  identityBasis: string;
   /** Read-only: the engine resolves identity; it never writes a card itself. */
   executionMode: 'property_resolution';
 }
@@ -250,7 +260,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   // missing-field analysis then decides what County Records must fill, so nothing
   // is collected twice. Parked + honest until an authenticated session is enabled;
   // the structured patch (not the screenshot) is the real contribution.
-  const searchKey: BrowserSearchKey = { address: fields.address, apn: fields.apn, owner: fields.owner, city: fields.city, county: fields.county, state: fields.state, zip: fields.zip };
+  const searchKey: BrowserSearchKey = { address: fields.address, apn: fields.apn, apnAlternates: fields.apnAlternates, owner: fields.owner, city: fields.city, county: fields.county, state: fields.state, zip: fields.zip };
   if (deps.landPortalBrowser) {
     try {
       const lp = await deps.landPortalBrowser.runWorkflow({ searchKey }, { timeoutMs });
@@ -304,6 +314,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   property.confidence = deriveConfidence(property);
   const hasSubject = !!property.address && !!property.state;
   const matched = property.parcelVerified || (property.confidence >= matchConfidence && hasSubject);
+  const identity = parcelIdentityEstablished(property, browserEvidence);
 
   if (matched) {
     return {
@@ -318,6 +329,8 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       lanesAttempted: lanes,
       browserEvidence,
       missingFieldAnalysis,
+      identityEstablished: identity.established,
+      identityBasis: identity.basis,
       executionMode: 'property_resolution',
     };
   }
@@ -332,7 +345,64 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     lanesAttempted: lanes,
     browserEvidence,
     missingFieldAnalysis,
+    identityEstablished: identity.established,
+    identityBasis: identity.basis,
     executionMode: 'property_resolution',
+  };
+}
+
+/**
+ * THE MANDATORY IDENTITY GATE. Decide whether the intended parcel has actually
+ * been CONFIRMED (not merely echoed from operator input). Only when this returns
+ * `established: true` may downstream departments run. Deterministic + explainable.
+ *
+ * Established when ANY of:
+ *   1. A named source verified the parcel (`parcelVerified`).
+ *   2. The Browser Agent read the parcel on LandPortal and returned an APN + a
+ *      jurisdiction (county/state/FIPS) + a real source URL — i.e. it reached the
+ *      actual parcel panel, not just a search page.
+ *   3. ≥2 INDEPENDENT retrieval lanes corroborate identity-bearing fields (the
+ *      operator's own seeded input is NOT an evidence lane, so pure echo scores 0).
+ */
+export function parcelIdentityEstablished(
+  property: NormalizedProperty,
+  browserEvidence: BrowserEvidence[] = [],
+): { established: boolean; basis: string } {
+  if (property.parcelVerified) {
+    return { established: true, basis: `Parcel identity verified by ${property.verificationSource ?? 'a named source'}.` };
+  }
+  const lp = browserEvidence.find((ev) => ev.service === 'landportal' && ev.status === 'retrieved');
+  if (lp) {
+    const apn = (lp.patch?.apn as string | undefined) ?? property.apn;
+    const juris = (lp.patch?.county as string | undefined) ?? property.county
+      ?? (lp.patch?.state as string | undefined) ?? property.state
+      ?? (lp.patch?.fips as string | undefined) ?? property.fips;
+    const url = (lp.sourceUrls ?? []).find((u) => /^https?:\/\//i.test(u));
+    if (apn && juris && url) {
+      return { established: true, basis: 'Browser Agent located and read the parcel on LandPortal (APN + jurisdiction confirmed from the parcel panel).' };
+    }
+  }
+  const lanes = corroboratingIdentityLanes(property);
+  if (lanes.length >= 2) {
+    return { established: true, basis: `Identity corroborated by ${lanes.length} independent sources (${lanes.join(', ')}).` };
+  }
+  // A FULL street address (house-numbered) that an external geocoder actually
+  // corroborated and resolved to a point, inside a known county/state, is a
+  // resolved location — enough for pre-call intelligence. This is the difference
+  // between a geocoded street address ("388 Gilstrap Rd", Photon-confirmed with a
+  // point) and the failure mode this sprint targets: a bare road name + an echoed
+  // APN that NO external source ever confirmed (the geocoder returns nothing for a
+  // house-number-less road, so no lane corroborates and there is no point).
+  const hasFullStreetAddress = !!property.address && /^\s*\d/.test(property.address);
+  const hasLocality = !!property.county && !!property.state;
+  if (lanes.length >= 1 && hasFullStreetAddress && property.coordinates && hasLocality) {
+    return { established: true, basis: `A full street address corroborated by ${lanes[0]} and resolved to a point in ${property.county}, ${property.state} locates the parcel for pre-call intelligence.` };
+  }
+  return {
+    established: false,
+    basis: lanes.length >= 1
+      ? `The intended parcel is not yet confirmed — only ${lanes[0]} plus the operator input support it, without a geocoded street address. Confirm the parcel on LandPortal (Browser Agent, needs an authenticated session) or verify via a named source before downstream intelligence runs.`
+      : 'No external source has confirmed this parcel yet — only the operator-supplied identifiers. Confirm the parcel on LandPortal (Browser Agent) or verify via a named source before downstream intelligence runs.',
   };
 }
 

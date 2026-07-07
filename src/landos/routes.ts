@@ -2519,6 +2519,40 @@ export function registerLandosRoutes(app: Hono): void {
       summary: propertyVerified ? 'Acquire — verified parcel' : 'Acquire — matched (Confirm Before Offer)',
     });
     const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: subjectAddress });
+
+    // ── MANDATORY IDENTITY GATE ─────────────────────────────────────────────
+    // Property Resolution is the gatekeeper. A property can be `matched` (credible)
+    // without the PARCEL being confirmed — e.g. only the operator's pasted APN /
+    // county / road name back it and no source has actually read the parcel. In
+    // that case DO NOT populate the Deal Card with downstream intelligence. Create
+    // the lead card + a public-records research plan, tell the operator exactly what
+    // must confirm the parcel, and hold Property Intelligence / comps / Market Pulse
+    // / Strategy / Discovery until the parcel is established. Every downstream
+    // department must consume a CONFIRMED parcel identity.
+    if (!resolution.identityEstablished) {
+      const plan = buildPublicRecordsResearchPlan({ county: p.county, state: p.state, city: p.city, apn: p.apn, owner: p.owner, address: p.address });
+      for (const action of researchPlanNextActions(plan)) {
+        try { addCardNextAction({ cardId: card.id, action, createdBy: 'acquire-research' }); } catch { /* one action failing never blocks the card */ }
+      }
+      const gateNote = browserStart.status === 'live'
+        ? `Parcel not yet confirmed. ${resolution.identityBasis} Downstream Property Intelligence is on hold until the Browser Agent reads the parcel on LandPortal or a named source verifies it.`
+        : `Parcel not yet confirmed and the Browser Agent could not run (${browserStart.status}${browserStart.error ? `: ${browserStart.error}` : ''}). Start/login Browser Intelligence, then rerun — downstream Property Intelligence is on hold until the parcel is confirmed.`;
+      try { addCardNextAction({ cardId: card.id, action: gateNote, createdBy: 'acquire-identity-gate' }); } catch { /* best-effort operator note */ }
+      logger.info({ event: 'acquire_run', ok: true, matched: true, identityEstablished: false, gated: true, confidence: resolution.confidence, dealCardId, pipeline: 'property_resolution' }, 'acquire_run_identity_gate');
+      return c.json({
+        ok: true, matched: true, identityEstablished: false, parcelVerified: false, dealCardId,
+        status: 'resolution_pending', confidence: resolution.confidence,
+        matchedReason: resolution.matchedReason,
+        identityBasis: resolution.identityBasis,
+        message: `Property matched but the parcel is not yet confirmed. ${resolution.identityBasis} Downstream Property Intelligence, comparables, and Market Pulse are on hold until Property Resolution confirms the parcel.`,
+        confirmBeforeOffer: resolution.missing,
+        sources: p.sources,
+        pipeline: 'property_resolution',
+        browserSessionStatus: browserStart.status,
+        browserEscalated: (resolution.browserEvidence ?? []).some((b) => b.status !== 'parked'),
+      }, 201);
+    }
+
     // ── Auto-surface Browser Intelligence ───────────────────────────────────
     // Property Resolution already continued into Browser Intelligence when Realie
     // could not verify (LandPortal-first, then County Records — see resolveProperty
@@ -2535,7 +2569,7 @@ export function registerLandosRoutes(app: Hono): void {
       }
       const inspectionResult = await runPropertyInspection({
         cardId: card.id,
-        searchKey: { address: subjectAddress, apn: p.apn, owner: p.owner, city: p.city, county: p.county, state: p.state, zip: tf.zip },
+        searchKey: { address: subjectAddress, apn: p.apn, apnAlternates: tf.apnAlternates, owner: p.owner, city: p.city, county: p.county, state: p.state, zip: tf.zip },
         existingEvidence: resolution.browserEvidence ?? [],
         timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       }, {

@@ -108,6 +108,10 @@ const INTENT_PATTERNS: Array<{ rx: RegExp; intent: BrowserIntent }> = [
 export interface BrowserSearchKey {
   address?: string;
   apn?: string;
+  /** Alternate APN formats the same county may index the parcel under (e.g. a
+   *  dashed vs. spaced form). The agent tries these when the primary APN yields no
+   *  confident match, rather than giving up after one search. */
+  apnAlternates?: string[];
   owner?: string;
   city?: string;
   county?: string;
