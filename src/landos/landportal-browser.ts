@@ -30,6 +30,7 @@ import { extractRecordFacts } from './semantic-extract.js';
 import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
   pickBestCandidate, scoreResultCandidate, pageServesTask, findWorkSurfaceNav, classifySurface, deriveTaskBoundary, isForbiddenTarget,
+  rankSearchMethods,
   type PageObservation, type SearchMethod, type ResultCandidate,
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform } from './platform-library.js';
@@ -374,10 +375,26 @@ async function inspectComparables(
 /**
  * AGENTIC LandPortal retrieval — Observe → Reason → Act → Verify → Learn, looping
  * until it reaches a verified parcel or hits a true hard stop. It navigates to the
- * search surface, then ADAPTS the search method (tries the strongest identifier,
- * falls back to address/owner when a method yields no confident match), drives the
+ * search surface, then picks the search method BY INTAKE TYPE, drives the
  * typeahead, selects ONLY a high-confidence parcel, verifies the detail panel, and
  * streams real facts to the Deal Card. No fabrication; no forbidden/paid actions.
+ *
+ * SEARCH PLAYBOOK (LandPortal global search is ONLY for a normal street address):
+ *
+ *   APN / Parcel ID / Tax ID / parcel number present → APN/Parcel-ID search is the
+ *   PRIMARY path (never global search): open the search-method dropdown, select
+ *   APN / Parcel ID search, select State first then County, enter the APN, try
+ *   EVERY APN variant, open the resulting parcel page, and confirm parcel identity.
+ *   (APN and Parcel ID are the same thing for this workflow.)
+ *
+ *   Owner present (no APN) → Owner search: open the dropdown, select Owner search,
+ *   select State first then County, enter the owner name, open a candidate parcel
+ *   ONLY when it matches the intake evidence.
+ *
+ *   Plain street address (no APN/owner) → global/address search.
+ *
+ * Downstream Property Intelligence runs only AFTER the parcel is confirmed (the
+ * verified parcel-panel read is what establishes ParcelIdentity upstream).
  */
 async function runLandPortalAgentic(
   input: BrowserWorkflowInput,
@@ -417,23 +434,32 @@ async function runLandPortalAgentic(
       ?? obs.searchControls.find((c) => (c.type ?? 'text') === 'text');
     if (!box) { ev.status = 'partial'; ev.note = 'On the search surface but no search input found.'; return ev; }
 
-    // REASON: ordered method attempts. ADDRESS is the most reliable parcel
-    // identifier (an APN can be wrong or shared across counties), so when an
-    // address is present we lead with it and use APN as a cross-check; otherwise
-    // APN, then owner.
+    // REASON: EVIDENCE-DRIVEN method order (generic Website Intelligence — no fixed
+    // chronological order). rankSearchMethods inspects the identifiers present and
+    // ranks the lookup paths by strength; the site then maps each ranked method to
+    // its own workflow + value formatting. For LandPortal, the APN/Parcel-ID search
+    // mode handles a parcel identifier (never global/address search), trying EVERY
+    // variant (a county may index the parcel under a different format, e.g. dashed
+    // "094-020.08" vs spaced "094 02008 000"); each attempt is scoped State→County.
+    // A present address still cross-checks the resolved parcel (consistency) even
+    // when it did not lead the search.
+    const ranked = rankSearchMethods({ apn: key.apn, address: key.address, owner: key.owner });
     const attempts: Array<{ method: string; value: string }> = [];
-    const fullAddress = addressSearchValue(key);
-    if (fullAddress) attempts.push({ method: 'address', value: fullAddress });
-    if (key.apn) attempts.push({ method: 'apn', value: key.apn });
-    // Keep investigating: a county may index the parcel under a DIFFERENT APN format
-    // than the operator pasted (e.g. dashed "094-020.08" vs spaced "094 02008 000").
-    // Try each alternate before falling back to owner, deduped against the primary.
-    for (const alt of key.apnAlternates ?? []) {
-      if (alt && alt !== key.apn && !attempts.some((a) => a.method === 'apn' && a.value === alt)) {
-        attempts.push({ method: 'apn', value: alt });
+    for (const r of ranked) {
+      if (r.method === 'apn' && key.apn) {
+        attempts.push({ method: 'apn', value: key.apn });
+        for (const alt of key.apnAlternates ?? []) {
+          if (alt && alt !== key.apn && !attempts.some((a) => a.method === 'apn' && a.value === alt)) {
+            attempts.push({ method: 'apn', value: alt });
+          }
+        }
+      } else if (r.method === 'address') {
+        const fullAddress = addressSearchValue(key);
+        if (fullAddress && !attempts.some((a) => a.method === 'address')) attempts.push({ method: 'address', value: fullAddress });
+      } else if (r.method === 'owner' && key.owner) {
+        attempts.push({ method: 'owner', value: key.owner });
       }
     }
-    if (key.owner) attempts.push({ method: 'owner', value: key.owner });
 
     // Distinctive street word(s) from the known address, used to confirm the
     // selected parcel is actually the subject property (guards against an APN that
@@ -557,13 +583,16 @@ async function runLandPortalAgentic(
     const facts: BrowserFact[] = extractRecordFacts(panelFields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' })
       .map((f) => ({ ...f, extractionMethod: `${usedMethod} search → typeahead select → verified parcel panel (full-panel read)` }));
 
-    // IDENTIFIER MISMATCH: if the operator supplied an APN but the address-resolved
-    // parcel's APN differs, flag it clearly (needs_verification) — never silently
-    // accept a conflicting identifier, and never overwrite with a wrong APN.
+    // IDENTIFIER MISMATCH: if the operator supplied an APN but the resolved parcel's
+    // APN matches NONE of the provided APN/variants, flag it clearly
+    // (needs_verification) — never silently accept a conflicting identifier, and
+    // never overwrite with a wrong APN. Fires regardless of which method resolved
+    // the parcel (APN search that fuzzy-matched, or an address cross-check).
     const compactId = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const providedApnIds = [key.apn, ...(key.apnAlternates ?? [])].filter(Boolean).map((a) => compactId(a as string));
     const resolvedApn = facts.find((f) => f.key === 'apn')?.value;
-    if (usedMethod === 'address' && key.apn && resolvedApn && compactId(key.apn) !== compactId(resolvedApn)) {
-      facts.push({ key: 'apnConflict', label: 'APN identifier mismatch', value: `Provided APN "${key.apn}" does not match the address-resolved LandPortal parcel APN "${resolvedApn}". Address-resolved parcel used as source of truth; verify the APN.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (address vs provided APN)' });
+    if (key.apn && resolvedApn && providedApnIds.length > 0 && !providedApnIds.includes(compactId(resolvedApn))) {
+      facts.push({ key: 'apnConflict', label: 'APN identifier mismatch', value: `Provided APN "${key.apn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". Resolved parcel used as source of truth; verify the APN.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (provided APN vs resolved parcel APN)' });
       trace.push(`APN-CONFLICT: provided ${key.apn} ≠ resolved ${resolvedApn}`);
     }
     for (const f of facts) { try { hooks.onFact?.(f as BrowserFact); } catch { /* non-fatal */ } }

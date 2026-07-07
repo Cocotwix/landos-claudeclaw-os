@@ -3,6 +3,7 @@ import {
   understandPlatform, planNavigationStrategy, verifyTargetReached, findGuidanceLinks,
   scoreResultCandidate, pickBestCandidate, classifySurface, pageServesTask,
   findWorkSurfaceNav, deriveTaskBoundary, isForbiddenTarget,
+  rankSearchMethods, isFullStreetAddress,
   type PageObservation, type ResultCandidate,
 } from './website-intelligence.js';
 import { rememberPlatform, getPlatformIntel, platformKey, listPlatformIntel } from './platform-library.js';
@@ -37,6 +38,46 @@ describe('Website Intelligence — UNDERSTAND (classify + detect search methods)
   it('finds guidance links for research', () => {
     const g = findGuidanceLinks(obs({ links: [{ text: 'Help Center', href: 'https://x/help' }, { text: 'Pricing', href: 'https://x/p' }] }));
     expect(g.map((l) => l.text)).toContain('Help Center');
+  });
+});
+
+describe('Website Intelligence — evidence-driven search strategy (rankSearchMethods)', () => {
+  const first = (k: Parameters<typeof rankSearchMethods>[0]) => rankSearchMethods(k)[0]?.method;
+
+  it('APN present → APN/Parcel-ID search starts (strongest key), even with an address too', () => {
+    expect(first({ apn: '094-020.08' })).toBe('apn');
+    expect(first({ apn: '094-020.08', address: '2510 State Highway 153', owner: 'Jane Doe' })).toBe('apn');
+  });
+
+  it('full street address, no APN → address search starts', () => {
+    expect(first({ address: '388 Gilstrap Rd, Cleveland GA' })).toBe('address');
+    expect(rankSearchMethods({ address: '388 Gilstrap Rd' })[0].role).toBe('primary');
+  });
+
+  it('owner only, no stronger identifier → owner search starts', () => {
+    expect(first({ owner: 'Henson Family Trust' })).toBe('owner');
+  });
+
+  it('mixed input → strongest identifier starts, weaker ones are fallback/cross-check', () => {
+    const r = rankSearchMethods({ apn: '094 02008 000', address: '2510 State Highway 153', owner: 'Jane Doe' });
+    expect(r.map((m) => m.method)).toEqual(['apn', 'address', 'owner']);
+    expect(r[0].role).toBe('primary');
+    expect(r.slice(1).every((m) => m.role === 'fallback')).toBe(true);
+  });
+
+  it('owner beats a BARE road name (no house number is a weak address)', () => {
+    // Henson Lane has no house number → owner is the stronger start.
+    const r = rankSearchMethods({ owner: 'Henson Family Trust', address: 'Henson Lane' });
+    expect(r.map((m) => m.method)).toEqual(['owner', 'address']);
+    expect(isFullStreetAddress('Henson Lane')).toBe(false);
+    expect(isFullStreetAddress('2510 State Highway 153')).toBe(true);
+  });
+
+  it('is EVIDENCE-DRIVEN, not a fixed order — the starting method changes with the intake', () => {
+    expect(first({ apn: 'A1', address: '1 Main St', owner: 'X' })).toBe('apn');
+    expect(first({ address: '1 Main St', owner: 'X' })).toBe('address');
+    expect(first({ owner: 'X' })).toBe('owner');
+    expect(rankSearchMethods({})).toEqual([]); // nothing to search — no fabricated method
   });
 });
 

@@ -324,6 +324,61 @@ export function pickBestCandidate(candidates: ResultCandidate[], key: { apn?: st
   return best;
 }
 
+/** One ranked search method with why it was chosen (primary vs fallback/cross-check). */
+export interface RankedSearchMethod {
+  method: SearchMethod;
+  role: 'primary' | 'fallback';
+  reason: string;
+}
+
+/** The identifiers a site can search by (from the intake). */
+export interface SearchIdentifiers {
+  apn?: string;
+  address?: string;
+  owner?: string;
+}
+
+/** A full street address carries a house number; a bare road name does not (an
+ *  address geocoder returns a road segment, not a parcel, for a house-number-less
+ *  road). Pure. */
+export function isFullStreetAddress(address?: string): boolean {
+  return !!address && /^\s*\d/.test(address.trim());
+}
+
+/**
+ * EVIDENCE-DRIVEN search strategy — generic across EVERY Browser Intelligence site.
+ * There is NO universal chronological order. Given the identifiers present in the
+ * intake, rank the lookup paths by strength for the task and return them ordered:
+ * the strongest STARTING identifier is `primary`, the rest are `fallback` (also
+ * usable as cross-check evidence). The site maps each method to its own workflow
+ * (e.g. LandPortal APN/Parcel-ID search mode) and value formatting.
+ *
+ * Strength order: APN / Parcel ID (an exact parcel key) > full street address
+ * (house-numbered) > owner name > a bare road name (weakest — no house number).
+ * Only methods with a usable identifier are included, so the FIRST element is
+ * always the best available start, never a fixed method.
+ */
+export function rankSearchMethods(key: SearchIdentifiers): RankedSearchMethod[] {
+  const hasApn = !!(key.apn && key.apn.trim());
+  const fullStreet = isFullStreetAddress(key.address);
+  const bareAddress = !!(key.address && key.address.trim()) && !fullStreet;
+  const hasOwner = !!(key.owner && key.owner.trim());
+
+  const ordered: SearchMethod[] = [];
+  if (hasApn) ordered.push('apn');            // exact parcel key — strongest
+  if (fullStreet) ordered.push('address');    // house-numbered address
+  if (hasOwner) ordered.push('owner');        // owner name
+  if (bareAddress) ordered.push('address');   // bare road — weakest fallback
+
+  const reasonFor = (m: SearchMethod): string =>
+    m === 'apn' ? 'APN / Parcel ID is an exact parcel key.'
+      : m === 'owner' ? 'Owner name (no stronger parcel identifier present).'
+        : fullStreet ? 'Full street address (house-numbered).'
+          : 'Road name only (weak — no house number).';
+
+  return ordered.map((method, i) => ({ method, role: i === 0 ? 'primary' : 'fallback', reason: reasonFor(method) }));
+}
+
 // ── VERIFY — confirm the requested page was actually reached ──────────────────
 
 export type PageType = 'record_detail' | 'results_list' | 'search_form' | 'dashboard' | 'login' | 'error' | 'unknown';
