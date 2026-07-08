@@ -667,7 +667,7 @@ async function runLandPortalAgentic(
     const providedApnIds = [key.apn, ...(key.apnAlternates ?? [])].filter(Boolean).map((a) => compactId(a as string));
     const resolvedApn = facts.find((f) => f.key === 'apn')?.value;
     if (key.apn && resolvedApn && providedApnIds.length > 0 && !providedApnIds.includes(compactId(resolvedApn))) {
-      facts.push({ key: 'apnConflict', label: 'APN identifier mismatch', value: `Provided APN "${key.apn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". Resolved parcel used as source of truth; verify the APN.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (provided APN vs resolved parcel APN)' });
+      facts.push({ key: 'apnConflict', label: 'APN identifier mismatch — wrong parcel', value: `Requested APN "${key.apn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". These are DIFFERENT parcels. The resolved parcel is NOT accepted as the subject — the parcel stays unconfirmed and no downstream intelligence runs until the correct parcel is identified.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN)' });
       trace.push(`APN-CONFLICT: provided ${key.apn} ≠ resolved ${resolvedApn}`);
     }
     for (const f of facts) { try { hooks.onFact?.(f as BrowserFact); } catch { /* non-fatal */ } }

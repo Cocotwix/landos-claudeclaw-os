@@ -11,6 +11,7 @@ import {
   computeDecisionGrade,
   computeParcelCompleteness,
   computeMissingCriticalInfo,
+  computeCriticalFacts,
   generateVerificationTasks,
   computePropertyIntelligence,
   subjectCoreParcelEvidence,
@@ -114,6 +115,29 @@ describe('decision-grade core (pure)', () => {
     expect(computeDecisionGrade(input).decisionGrade).toBe(false);
     expect(computeMissingCriticalInfo(input)).toContain('Verified parcel identity');
     expect(computeMissingCriticalInfo(input)).toContain('Source evidence for core parcel facts');
+  });
+
+  it('criticalFacts: a KNOWN-but-unverified owner reads needs_evidence, NOT missing (item 2)', () => {
+    // LandOS already has the owner on record (e.g. from a LandPortal read) but it
+    // is not officially confirmed. The blocker view must NOT say the owner is
+    // missing — it must say it needs official evidence.
+    const input = intelInput({
+      subjectCardId: SUBJECT,
+      owner: makeSlot('owner', 'BUSH LISA'),
+      apn: makeSlot('apn', 'R300 018 000 0085 0000'),
+    });
+    const facts = computeCriticalFacts(input);
+    const owner = facts.find((f) => f.key === 'owner');
+    expect(owner?.state).toBe('needs_evidence');
+    expect(owner?.value).toBe('BUSH LISA');
+    expect(owner?.detail).toMatch(/not yet officially confirmed/i);
+    const acreage = facts.find((f) => f.key === 'acreage');
+    expect(acreage?.state).toBe('absent'); // genuinely not known
+  });
+
+  it('criticalFacts: a fully verified packet marks every fact confirmed', () => {
+    const facts = computeCriticalFacts(decisionGradeInput());
+    expect(facts.every((f) => f.state === 'confirmed')).toBe(true);
   });
 
   it('completeness is 0 for an empty packet and 100 for a fully verified one', () => {

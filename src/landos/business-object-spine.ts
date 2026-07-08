@@ -66,6 +66,26 @@ export interface FactSlot {
   evidenceRefs: string[];
 }
 
+/** Accurate state of a critical fact for the "What's blocking this deal?" view.
+ *  - confirmed:      source-verified OR backed by subject-scoped core evidence.
+ *  - needs_evidence: the value is ON RECORD but lacks official confirmation
+ *                    (LandOS HAS it — do NOT call it missing; call it unconfirmed).
+ *  - absent:         genuinely not found anywhere. */
+export type CriticalFactState = 'confirmed' | 'needs_evidence' | 'absent';
+
+/** One critical fact with its true state — the honest blocker representation. */
+export interface CriticalFactStatus {
+  /** Stable key: 'parcelIdentity' | 'owner' | 'apn' | 'acreage' | 'coreEvidence'. */
+  key: string;
+  /** Operator-facing label, e.g. "Owner". */
+  label: string;
+  state: CriticalFactState;
+  /** The on-record value when known (never fabricated). */
+  value?: string;
+  /** Precise operator-facing explanation of the state. */
+  detail: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // 5. SourceEvidence
 // ─────────────────────────────────────────────────────────────────────────
@@ -133,6 +153,10 @@ export interface PropertyIntelligencePacket {
   taxAssessor: FactSlot;
   sourceEvidence: SourceEvidenceRecord[];
   missingCriticalInfo: string[];
+  /** The accurate blocker view: every critical fact with its true state
+   *  (confirmed / on-record-but-unconfirmed / absent). Drives the UI so a known
+   *  fact never renders as missing. */
+  criticalFacts: CriticalFactStatus[];
   verificationTasks: VerificationTask[];
   decisionGrade: boolean;
   decisionGradeReason: string;
@@ -199,6 +223,8 @@ export interface DealCardHeader {
   decisionGrade: boolean;
   decisionGradeReason: string;
   missingCriticalInfo: string[];
+  /** Accurate per-fact blocker states (confirmed / needs_evidence / absent). */
+  criticalFacts: CriticalFactStatus[];
   blockingVerificationTasks: VerificationTask[];
   nextBestAction: string;
   nextActionOwner: string;
@@ -316,6 +342,55 @@ export function computeMissingCriticalInfo(input: PropertyIntelInput): string[] 
   if (!coreFactSupported(input.acreage, ACRE_RE, subjectCore)) missing.push('Acreage');
   if (subjectCore.length === 0) missing.push('Source evidence for core parcel facts');
   return missing;
+}
+
+/**
+ * The HONEST blocker view. For each critical fact returns its true state:
+ * confirmed (verified / evidence-backed), needs_evidence (on record but not
+ * officially confirmed — LandOS HAS it, so it is NOT "missing"), or absent (not
+ * found anywhere). This is what the "What's blocking this deal?" section renders,
+ * so a known owner/APN/acreage never reads as missing when LandOS already holds
+ * it; it reads as needing official confirmation. `missingCriticalInfo` remains the
+ * strict decision-grade gate; this is the accurate operator-facing narration.
+ */
+export function computeCriticalFacts(input: PropertyIntelInput): CriticalFactStatus[] {
+  const subjectCore = subjectCoreParcelEvidence(input);
+  const slotValue = (slot: FactSlot): string | undefined =>
+    slot.known && slot.value != null && String(slot.value).trim() !== '' ? String(slot.value) : undefined;
+
+  const factRow = (
+    key: string, label: string, slot: FactSlot, re: RegExp,
+  ): CriticalFactStatus => {
+    const value = slotValue(slot);
+    if (coreFactSupported(slot, re, subjectCore)) {
+      return { key, label, state: 'confirmed', value, detail: `${label} confirmed from source evidence.` };
+    }
+    if (slot.known) {
+      return {
+        key, label, state: 'needs_evidence', value,
+        detail: `${label} on record${value ? ` (${value})` : ''} but not yet officially confirmed. Needs official evidence (assessor / recorder / LandPortal parcel panel).`,
+      };
+    }
+    return { key, label, state: 'absent', detail: `${label} not found. Locate it from official records.` };
+  };
+
+  const facts: CriticalFactStatus[] = [];
+  facts.push(
+    input.parcelIdentityVerified
+      ? { key: 'parcelIdentity', label: 'Verified parcel identity', state: 'confirmed', detail: 'Parcel identity confirmed by a parcel-level source.' }
+      : (input.apn.known || input.location.known
+        ? { key: 'parcelIdentity', label: 'Verified parcel identity', state: 'needs_evidence', detail: 'A candidate parcel is on record but identity is not confirmed. Confirm the exact parcel on a parcel-level source before downstream intelligence runs.' }
+        : { key: 'parcelIdentity', label: 'Verified parcel identity', state: 'absent', detail: 'No parcel identity yet. Provide an APN + county or a resolvable address.' }),
+  );
+  facts.push(factRow('owner', 'Owner', input.owner, OWNER_RE));
+  facts.push(factRow('apn', 'APN / parcel number', input.apn, APN_RE));
+  facts.push(factRow('acreage', 'Acreage', input.acreage, ACRE_RE));
+  facts.push(
+    subjectCore.length > 0
+      ? { key: 'coreEvidence', label: 'Source evidence for core parcel facts', state: 'confirmed', detail: `${subjectCore.length} offer-usable source evidence record(s) attached to this parcel.` }
+      : { key: 'coreEvidence', label: 'Source evidence for core parcel facts', state: 'absent', detail: 'No offer-usable core parcel evidence attached to this parcel yet.' },
+  );
+  return facts;
 }
 
 /**
@@ -491,6 +566,7 @@ export function computePropertyIntelligence(input: PropertyIntelInput): Property
     taxAssessor: input.taxAssessor,
     sourceEvidence: input.sourceEvidence,
     missingCriticalInfo,
+    criticalFacts: computeCriticalFacts(input),
     verificationTasks,
     decisionGrade,
     decisionGradeReason: reason,
@@ -877,6 +953,7 @@ export function buildDealCardHeader(opportunity: OpportunityRecord, packet: Prop
     decisionGrade: packet.decisionGrade,
     decisionGradeReason: packet.decisionGradeReason,
     missingCriticalInfo: packet.missingCriticalInfo,
+    criticalFacts: packet.criticalFacts,
     blockingVerificationTasks: packet.verificationTasks.filter((t) => t.blocking),
     nextBestAction: opportunity.nextBestAction,
     nextActionOwner: opportunity.nextActionOwner,

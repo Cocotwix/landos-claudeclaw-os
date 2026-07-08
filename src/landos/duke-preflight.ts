@@ -171,8 +171,12 @@ function extractApnShaped(text: string): string | undefined {
   // a label followed by a street ("Address: 731 Filter Plant Rd") stops at the
   // street name and is then rejected by pickApnShape (too few digits / no sep).
   const labeled = text.match(/\b(?:address|parcel(?:\s*(?:id|no|number|#))?)[:\s]+([0-9][0-9 .\/\-]*)/i)?.[1];
+  // Accept mixed parcel separators (dash / dot / slash / space) so a bare
+  // map-block-parcel APN like "094-020.08" is captured WHOLE, not truncated to
+  // its decimal tail "020.08". Separators are [ \t] only (never \s) so the token
+  // never merges across a newline with the next line's house number.
   const bare =
-    text.match(/\b\d{2,6}(?:[ \t]+\d{1,6}){1,4}(?:\.\d{1,4})?\b/)?.[0] ??
+    text.match(/\b\d{2,6}(?:[ \t]*[.\/\-][ \t]*\d{1,6}|[ \t]+\d{1,6}){1,4}\b/)?.[0] ??
     text.match(/\b\d{2,6}\.\d{1,4}\b/)?.[0];
   for (const cand of [labeled, bare]) {
     const apn = pickApnShape(cand);
@@ -246,7 +250,13 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // merged into a corrupt APN ("16 038 07 001 2123") because \s matches newlines —
   // which then failed Realie lookup and produced a false "not verified" that
   // contradicted the parcel's genuinely-verified facts. Stop the APN at the line end.
-  const apnKw = text.match(/\bapn[:\s]+([0-9][0-9A-Za-z./\-]*(?:[^\S\n]+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
+  // The value MAY open with an alphanumeric district/map prefix (e.g. the Beaufort
+  // SC form "APN R300 018 000 0085 0000", or "0R1 234 567"). The optional prefix
+  // token must contain BOTH a letter and a digit (so a word like "is"/"report"
+  // never matches) — this preserves the prefix instead of starting at the first
+  // bare digit run and dropping it (a truncated APN corrupts identity and can
+  // raise a FALSE conflict when a source returns the full prefixed APN).
+  const apnKw = text.match(/\bapn[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?[0-9][0-9A-Za-z./\-]*(?:[^\S\n]+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
     ?.replace(/[^\S\n]+/g, ' ').trim();
   if (apnKw) {
     const state = extractState(text);

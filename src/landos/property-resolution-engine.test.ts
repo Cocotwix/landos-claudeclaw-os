@@ -70,6 +70,38 @@ describe('property resolution engine', () => {
     expect(r.lanesAttempted.some((l) => l.lane === 'census_geocode' && l.contributed)).toBe(true);
   });
 
+  it('HARD APN CONFLICT: requested ...0085 but resolver returns a DIFFERENT parcel ...0084 — no confirm, no downstream (Beaufort regression)', async () => {
+    const wrongParcel: DukeVerificationResult = {
+      status: 'parcel_verified', parcelVerified: true, verificationSource: 'Realie.ai (non-credit)',
+      identity: { situsAddress: '30 CLIFFORD AND MINNIE RD', city: 'Saint Helena Island', state: 'SC', county: 'Beaufort', apn: 'R300 018 000 0084 0000', owner: 'BUSH LISA', acres: 5 },
+      coordinates: { lat: 32.37, lng: -80.56 },
+      sourceAttempts: [], dataGaps: [], marketPulseEligible: true, strategyUnderwritingBlocked: false,
+      summary: 'Parcel verified.', executionMode: 'duke_verification_read_only',
+    };
+    const deps: ResolutionDeps = { verify: async () => wrongParcel, now: NOW };
+    const r = await resolveProperty({ fields: { address: '473 SEASIDE RD', city: 'Saint Helena Island', state: 'SC', zip: '29920', apn: 'R300 018 000 0085 0000' } }, deps);
+    expect(r.status).toBe('needs_clarification');
+    expect(r.identityEstablished).toBe(false);
+    expect(r.identityConflict).toBeDefined();
+    expect(r.identityConflict?.requestedApn).toBe('R300 018 000 0085 0000');
+    expect(r.identityConflict?.resolvedApn).toBe('R300 018 000 0084 0000');
+    expect(r.matchedReason).toMatch(/does not match/i);
+  });
+
+  it('APN format difference is NOT a conflict (same parcel, different punctuation)', async () => {
+    const sameParcel: DukeVerificationResult = {
+      status: 'parcel_verified', parcelVerified: true, verificationSource: 'Realie.ai (non-credit)',
+      identity: { situsAddress: '473 SEASIDE RD', city: 'Saint Helena Island', state: 'SC', county: 'Beaufort', apn: 'R300-018-000-0085-0000', owner: 'SUBJECT OWNER', acres: 5 },
+      sourceAttempts: [], dataGaps: [], marketPulseEligible: true, strategyUnderwritingBlocked: false,
+      summary: 'Parcel verified.', executionMode: 'duke_verification_read_only',
+    };
+    const deps: ResolutionDeps = { verify: async () => sameParcel, now: NOW };
+    const r = await resolveProperty({ fields: { address: '473 SEASIDE RD', state: 'SC', apn: 'R300 018 000 0085 0000' } }, deps);
+    expect(r.status).toBe('matched');
+    expect(r.identityConflict).toBeUndefined();
+    expect(r.identityEstablished).toBe(true);
+  });
+
   it('388 Gilstrap: Matched on credible corroboration even when Realie never verifies', async () => {
     const deps: ResolutionDeps = {
       verify: async () => needsCounty(),

@@ -140,13 +140,25 @@ export function extractApnCandidates(text: string): ApnCandidates {
 
   // Promote the LABELED APN ("Parcel ID:", "APN:") to primary — highest
   // confidence it is truly a parcel number rather than an incidental figure.
+  // The value MAY carry a leading alphanumeric district/map prefix (e.g. the
+  // Beaufort SC format "R300 018 000 0085 0000", or "0R1 234 567"): the bare
+  // \b\d{2,6} span scanner starts at the first digit run and drops that prefix,
+  // which corrupts the parcel identity and can raise a FALSE conflict when a
+  // parcel-level source returns the full prefixed APN. Capture the optional
+  // prefix here so the labeled APN is preserved whole.
   const labeled = t.match(
-    /\b(?:apn|parcel(?:\s*(?:id|no|no\.|number|#))?)[:\s]+([0-9][0-9 \t.\/\-]*)/i,
-  )?.[1];
-  const labeledDigits = labeled ? normalizeApn(labeled)?.digits : undefined;
-  if (labeledDigits) {
-    const i = normalized.findIndex((n) => n.digits === labeledDigits);
-    if (i > 0) normalized.unshift(...normalized.splice(i, 1));
+    /\b(?:apn|parcel(?:\s*(?:id|no|no\.|number|#))?)[:\s]+((?:[A-Za-z]{1,4}\d{0,6}[ \t.\/\-]+)?[0-9][0-9 \t.\/\-]*)/i,
+  )?.[1]?.trim();
+  const labeledNorm = labeled ? normalizeApn(labeled) : null;
+  if (labeledNorm) {
+    // Drop the prefix-stripped fragment the span scanner produced (its digits are
+    // a trailing subset of the full labeled APN), then make the full labeled APN
+    // the primary — it is the explicitly-labeled parcel number.
+    const frag = normalized.findIndex((n) => n.digits !== labeledNorm.digits && labeledNorm.digits.endsWith(n.digits));
+    if (frag >= 0) normalized.splice(frag, 1);
+    const exact = normalized.findIndex((n) => n.digits === labeledNorm.digits);
+    if (exact > 0) normalized.unshift(...normalized.splice(exact, 1));
+    else if (exact < 0) normalized.unshift(labeledNorm);
   }
 
   const primary = normalized[0]?.canonical;

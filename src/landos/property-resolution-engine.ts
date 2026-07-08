@@ -33,6 +33,57 @@ import { analyzeMissingFields, type MissingFieldAnalysis } from './missing-field
 
 export type ResolutionStatus = 'matched' | 'needs_clarification';
 
+/** A hard APN identifier conflict — the requested parcel and the resolved parcel
+ *  are not the same parcel. */
+export interface ApnConflict {
+  /** APN the operator asked for (display form). */
+  requestedApn: string;
+  /** APN the resolving lane actually returned (a DIFFERENT parcel). */
+  resolvedApn: string;
+  /** Which lane/source resolved the mismatching parcel. */
+  source: string;
+  /** Resolved owner/address context when known — helps the operator see the
+   *  wrong parcel it landed on (never treated as the subject). */
+  resolvedContext?: string;
+}
+
+/** Compact an APN/parcel id for identity comparison: lowercase, alphanumerics
+ *  only. "R300 018 000 0085 0000" and "R300-018-000-0085-0000" compare equal. */
+function compactParcelId(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * PURE: detect a hard APN conflict. Returns a conflict ONLY when the operator
+ * supplied at least one usable APN variant AND at least one parcel-level lane
+ * resolved an APN, AND NONE of the resolved APNs match ANY requested variant. If
+ * any resolved APN matches a requested variant, identity is corroborated (no
+ * conflict) — a different FORMAT of the same parcel is not a conflict. No
+ * requested APN, or no resolved APN, means we cannot judge a conflict (null).
+ */
+export function detectApnConflict(
+  requested: { apn?: string; apnAlternates?: string[] },
+  resolved: Array<{ apn?: string; source: string; context?: string }>,
+): ApnConflict | null {
+  const reqRaw = [requested.apn, ...(requested.apnAlternates ?? [])]
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+  const reqVariants = reqRaw.map(compactParcelId).filter((x) => x.length >= 4);
+  if (reqVariants.length === 0) return null;
+  const resolvedApns = resolved
+    .map((r) => ({ compact: r.apn ? compactParcelId(r.apn) : '', apn: r.apn, source: r.source, context: r.context }))
+    .filter((r) => r.compact.length >= 4);
+  if (resolvedApns.length === 0) return null;
+  // Any resolved APN matching a requested variant confirms the same parcel.
+  if (resolvedApns.some((r) => reqVariants.includes(r.compact))) return null;
+  const first = resolvedApns[0];
+  return {
+    requestedApn: reqRaw[0],
+    resolvedApn: first.apn as string,
+    source: first.source,
+    resolvedContext: first.context,
+  };
+}
+
 export interface ResolutionLaneRecord {
   lane: RetrievalLane;
   ran: boolean;
@@ -67,6 +118,13 @@ export interface PropertyResolution {
   identityEstablished: boolean;
   /** Human-readable reason the identity is (or is not) established. */
   identityBasis: string;
+  /** HARD IDENTIFIER CONFLICT. Set ONLY when the operator supplied an APN and a
+   *  parcel-level lane resolved a DIFFERENT parcel (its APN matches none of the
+   *  requested variants). When present the resolution is forced to
+   *  needs_clarification and identityEstablished is false — nothing downstream
+   *  runs. This is the wrong-parcel hard-stop (e.g. requested ...0085, resolved
+   *  ...0084). Undefined when there is no conflict. */
+  identityConflict?: ApnConflict;
   /** Read-only: the engine resolves identity; it never writes a card itself. */
   executionMode: 'property_resolution';
   /** The full named-source verification result when a `verify` lane confirmed the
@@ -324,6 +382,54 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   property.missing = missingFields(property);
   property.confidence = deriveConfidence(property);
   const hasSubject = !!property.address && !!property.state;
+
+  // ── HARD APN CONFLICT (wrong-parcel hard-stop) ──────────────────────────
+  // If the operator supplied an APN but a parcel-level lane resolved a DIFFERENT
+  // parcel (Beaufort: requested ...0085, resolved ...0084 owner BUSH LISA), that
+  // is not a match — it is the resolver landing on the wrong parcel. Do NOT
+  // confirm, do NOT run downstream. Collect every resolved parcel-level APN and
+  // compare against the requested variants.
+  const resolvedApnCandidates: Array<{ apn?: string; source: string; context?: string }> = [];
+  if (verifiedData?.identity?.apn) {
+    const id = verifiedData.identity;
+    const ctx = [id.owner, id.situsAddress].filter(Boolean).join(' — ') || undefined;
+    resolvedApnCandidates.push({ apn: id.apn, source: verifiedData.verificationSource ?? 'a named parcel source', context: ctx });
+  }
+  for (const ev of browserEvidence) {
+    if (ev.status !== 'retrieved' && ev.status !== 'partial') continue;
+    const a = ev.patch?.apn as string | undefined;
+    if (!a) continue;
+    const owner = ev.patch?.owner as string | undefined;
+    const addr = ev.patch?.address as string | undefined;
+    const ctx = [owner, addr].filter(Boolean).join(' — ') || undefined;
+    resolvedApnCandidates.push({ apn: a, source: browserServiceLabel(ev.service), context: ctx });
+  }
+  const identityConflict = detectApnConflict(
+    { apn: fields.apn, apnAlternates: fields.apnAlternates },
+    resolvedApnCandidates,
+  ) ?? undefined;
+
+  if (identityConflict) {
+    const ctx = identityConflict.resolvedContext ? ` (${identityConflict.resolvedContext})` : '';
+    const conflictMsg = `The resolved parcel does not match the requested parcel. You entered APN ${identityConflict.requestedApn}, but ${identityConflict.source} resolved a DIFFERENT parcel — APN ${identityConflict.resolvedApn}${ctx}. This is a hard identifier conflict: the parcel is NOT confirmed. No Property Intelligence, Land Score, valuation, offer range, strategy, or seller brief will run. Re-check the APN, or provide a corrected parcel identifier (APN + county) to resolve which parcel is the subject.`;
+    return {
+      status: 'needs_clarification',
+      property,
+      confidence: property.confidence,
+      matchedReason: conflictMsg,
+      guidance: conflictMsg,
+      missing: property.missing,
+      lanesAttempted: lanes,
+      browserEvidence,
+      missingFieldAnalysis,
+      identityEstablished: false,
+      identityBasis: conflictMsg,
+      identityConflict,
+      executionMode: 'property_resolution',
+      verifiedData,
+    };
+  }
+
   const matched = property.parcelVerified || (property.confidence >= matchConfidence && hasSubject);
   const identity = parcelIdentityEstablished(property, browserEvidence);
 

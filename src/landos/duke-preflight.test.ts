@@ -134,6 +134,32 @@ describe('extractPropertyArgs', () => {
     expect(extractPropertyArgs('APN: 051 012.05, Coffee County, TN')?.apn).toBe('051 012.05');
   });
 
+  // Beaufort SC / other counties use an alphanumeric district/map prefix on the
+  // APN (e.g. "R300 018 000 0085 0000"). The prefix must be PRESERVED — dropping
+  // it corrupts identity and can raise a FALSE conflict when a parcel-level source
+  // returns the full prefixed APN.
+  it('preserves an alphanumeric district prefix on a labeled APN (Beaufort R300)', () => {
+    const r = extractPropertyArgs('473 SEASIDE RD, SAINT HELENA ISLAND, SC 29920\nAPN R300 018 000 0085 0000');
+    expect(r?.apn).toBe('R300 018 000 0085 0000');
+  });
+  it('does not treat a plain word after APN as a prefix', () => {
+    // "is"/"report" have no digit — the prefix token requires a letter AND a digit.
+    expect(extractPropertyArgs('apn is 12 345 678')?.apn).toBe('12 345 678');
+    expect(extractPropertyArgs('APN report needed for this lead')?.apn).toBeUndefined();
+  });
+
+  // A bare (unlabeled) map-block.parcel APN like "094-020.08" must be captured
+  // WHOLE, not truncated to its decimal tail "020.08" (Scott County TN).
+  it('captures a bare dash+decimal APN whole (Scott County 094-020.08)', () => {
+    expect(extractPropertyArgs('094-020.08 Scott County TN')?.apn).toBe('094-020.08');
+    expect(extractPropertyArgs('094-020.08')?.apn).toBe('094-020.08');
+  });
+  it('a bare dash+decimal APN does not eat a street house number', () => {
+    // No parcel-shaped token here — a street address must not yield a false APN.
+    expect(extractPropertyArgs('2123 Panola Road, Lithonia GA')?.apn).toBeUndefined();
+    expect(extractPropertyArgs('0 Stewart Rd, Dunlap, TN 37327')?.apn).toBeUndefined();
+  });
+
   it('extracts LP URL', () => {
     const r = extractPropertyArgs(
       'Check https://landportal.com/property?propertyid=12345&fips=37005 for me',
