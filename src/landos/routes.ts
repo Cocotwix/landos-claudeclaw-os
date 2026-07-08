@@ -163,7 +163,7 @@ import {
 } from './landos-structure.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
-import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard } from './deal-card.js';
+import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard } from './deal-card.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
 import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity } from './parcel-identity.js';
 import { buildResolutionSnapshot, writeResolutionSnapshot, readResolutionSnapshot } from './resolution-snapshot.js';
@@ -1199,6 +1199,17 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({ dealCards: withSummary });
   });
 
+  // Trash / Deleted Deal Cards view. Registered BEFORE '/deal-cards/:id' so the
+  // literal 'trash' segment is not captured as an id. Soft-deleted cards only.
+  app.get('/api/landos/deal-cards/trash', (c) => {
+    const entity = entityParam(c.req.query('entity'));
+    const dealCards = listTrashedDealCards({ entity }).map((d) => ({
+      ...(d as unknown as Record<string, unknown>),
+      reportSummary: getDealCardReportSummary((d as { id: number }).id),
+    }));
+    return c.json({ dealCards });
+  });
+
   app.get('/api/landos/deal-cards/:id', (c) => {
     const id = Number(c.req.param('id'));
     const deal = getDealCard(id);
@@ -1391,6 +1402,44 @@ export function registerLandosRoutes(app: Hono): void {
     });
     if (!updated) return c.json({ error: 'not found' }, 404);
     return c.json({ dealCard: getDealCard(id) });
+  });
+
+  // Soft delete → move a Deal Card to Trash. It disappears from normal boards/lists
+  // but is fully restorable from the Trash view. Reversible; nothing is purged.
+  app.delete('/api/landos/deal-cards/:id', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const row = softDeleteDealCard(id);
+    if (!row) return c.json({ error: 'not found' }, 404);
+    landosAudit('dashboard', 'deal_card_trashed', `deal ${id}`, { refTable: 'landos_deal_card', refId: id });
+    return c.json({ ok: true, dealCardId: id, deletedAt: row.deleted_at });
+  });
+
+  // Restore a Deal Card from Trash (clears the soft delete).
+  app.post('/api/landos/deal-cards/:id/restore', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const row = restoreDealCard(id);
+    if (!row) return c.json({ error: 'not found' }, 404);
+    landosAudit('dashboard', 'deal_card_restored', `deal ${id}`, { refTable: 'landos_deal_card', refId: id });
+    return c.json({ ok: true, dealCard: getDealCard(id) });
+  });
+
+  // PERMANENT delete — irreversible. Only allowed from Trash (the card must already
+  // be soft-deleted); the operator confirms a second time in the UI. Removes the
+  // deal card and all deal-scoped rows. Never auto-invoked.
+  app.delete('/api/landos/deal-cards/:id/permanent', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const existing = getDealCard(id);
+    if (!existing) return c.json({ error: 'not found' }, 404);
+    if ((existing as { deleted_at?: number | null }).deleted_at == null) {
+      return c.json({ error: 'move the card to Trash before deleting it permanently' }, 409);
+    }
+    const removed = hardDeleteDealCard(id);
+    if (!removed) return c.json({ error: 'not found' }, 404);
+    landosAudit('dashboard', 'deal_card_permanently_deleted', `deal ${id} (irreversible)`, { refTable: 'landos_deal_card', refId: id });
+    return c.json({ ok: true, dealCardId: id, permanentlyDeleted: true });
   });
 
   // ── Deal Card DD/Research worksheet (manual/local; labeled confidence) ──

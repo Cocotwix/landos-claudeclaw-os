@@ -1029,6 +1029,10 @@ function createLandosSchema(db: Database.Database): void {
   };
   addColumn('landos_deal_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
   addColumn('landos_property_card', 'lead_type', `lead_type TEXT NOT NULL DEFAULT 'actual'`);
+  // Deal Card Trash (soft delete): a non-null deleted_at moves a card to Trash —
+  // it disappears from normal boards/lists but is restorable. Hard delete removes
+  // the row (and deal-scoped rows) only from Trash. No auto-purge.
+  addColumn('landos_deal_card', 'deleted_at', `deleted_at INTEGER`);
   // Verified-parcel coordinates persisted as ENRICHMENT OUTPUT (supporting
   // context for Realie/Zillow comps, imagery, and map context). They are NEVER
   // used for card identity or merge — identity stays exact-source only. Persisted

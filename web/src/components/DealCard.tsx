@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { PageState } from '@/components/PageState';
 import { ModelControl } from '@/components/ModelControl';
-import { apiGet, apiPost, apiPatch, apiPut, dashboardToken } from '@/lib/api';
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, dashboardToken } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 import { ResolutionView, type ResolutionSnapshotView, type ParcelIdentityView } from '@/components/ResolutionView';
 
@@ -1859,6 +1859,7 @@ interface DealCardListItem {
   asking_price: number | null;
   updated_at: number;
   lead_type?: string;
+  deleted_at?: number | null;
   reportSummary?: { exists: boolean; reportStatus: string; parcelVerified: boolean; ddPercentComplete: number; generatedAt: number | null };
 }
 
@@ -2801,10 +2802,75 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     }
   }
 
+  // ── Trash (soft delete) ──────────────────────────────────────────────────
+  const [listView, setListView] = useState<'active' | 'trash'>('active');
+  const [trash, setTrash] = useState<DealCardListItem[] | null>(null);
+  const [trashBusy, setTrashBusy] = useState<number | null>(null);
+  // The card id "armed" for permanent deletion — shows the second, irreversible
+  // confirmation inline before the hard delete actually runs.
+  const [confirmPurgeId, setConfirmPurgeId] = useState<number | null>(null);
+
+  async function refreshTrash() {
+    try {
+      const res = await apiGet<{ dealCards: DealCardListItem[] }>('/api/landos/deal-cards/trash');
+      setTrash(Array.isArray(res.dealCards) ? res.dealCards : []);
+    } catch {
+      setTrash([]);
+    }
+  }
+
+  // Delete Deal Card → move to Trash (soft). Confirmed once; fully reversible.
+  async function trashCard(id: number) {
+    if (!window.confirm('Move this Deal Card to Trash? It will be hidden from your boards but can be restored from Trash.')) return;
+    setTrashBusy(id);
+    try {
+      await apiDelete(`/api/landos/deal-cards/${id}`);
+      if (deal?.id === id) backToList();
+      await refreshList();
+      await refreshTrash();
+    } catch (err: any) {
+      setListError(err?.message || String(err));
+    } finally {
+      setTrashBusy(null);
+    }
+  }
+
+  async function restoreCard(id: number) {
+    setTrashBusy(id);
+    try {
+      await apiPost(`/api/landos/deal-cards/${id}/restore`, {});
+      await refreshTrash();
+      await refreshList();
+    } catch (err: any) {
+      setListError(err?.message || String(err));
+    } finally {
+      setTrashBusy(null);
+    }
+  }
+
+  // Permanent delete — ONLY reached after the inline second confirmation below.
+  async function purgeCard(id: number) {
+    setTrashBusy(id);
+    try {
+      await apiDelete(`/api/landos/deal-cards/${id}/permanent`);
+      setConfirmPurgeId(null);
+      await refreshTrash();
+    } catch (err: any) {
+      setListError(err?.message || String(err));
+    } finally {
+      setTrashBusy(null);
+    }
+  }
+
   useEffect(() => {
     if (dealCardId) void load(dealCardId);
     else void refreshList();
   }, [dealCardId]);
+
+  // Load Trash lazily when the operator switches to the Trash view.
+  useEffect(() => {
+    if (listView === 'trash') { setConfirmPurgeId(null); void refreshTrash(); }
+  }, [listView]);
 
   function setField<K extends keyof DealForm>(key: K, value: DealForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -2914,6 +2980,25 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
             >
               New Deal Card
             </button>
+            {/* Active / Trash toggle — only on the list surface (no card open). */}
+            {!dealCardId && !deal && (
+              <div class="inline-flex rounded-md border border-[var(--color-border)] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setListView('active')}
+                  class={`px-3 py-1.5 text-[12px] font-medium ${listView === 'active' ? 'bg-[var(--color-elevated)] text-[var(--color-text)]' : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)]'}`}
+                >
+                  Active
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setListView('trash')}
+                  class={`px-3 py-1.5 text-[12px] font-medium border-l border-[var(--color-border)] ${listView === 'trash' ? 'bg-[var(--color-elevated)] text-[var(--color-text)]' : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)]'}`}
+                >
+                  Trash{trash && trash.length > 0 ? ` (${trash.length})` : ''}
+                </button>
+              </div>
+            )}
             {deal && (
               <button
                 type="button"
@@ -2921,6 +3006,16 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
               >
                 Edit
+              </button>
+            )}
+            {deal && !dealCardId && (
+              <button
+                type="button"
+                onClick={() => void trashCard(deal.id)}
+                disabled={trashBusy === deal.id}
+                class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-status-failed)] text-[var(--color-status-failed)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+              >
+                {trashBusy === deal.id ? 'Deleting…' : 'Delete'}
               </button>
             )}
           </>
@@ -2942,7 +3037,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
       {/* Saved Deal Cards list — the primary open flow. Shown in view mode when no
           specific card is open and we are not embedded against a single id. */}
-      {mode === 'view' && !dealCardId && !deal && (
+      {mode === 'view' && !dealCardId && !deal && listView === 'active' && (
         <Section title="Saved Deal Cards">
           {listError && <div class="text-[11px] text-[var(--color-status-failed)]">{listError}</div>}
           {cards === null && !listError && <div class="text-[12px] text-[var(--color-text-muted)]">Loading…</div>}
@@ -2975,6 +3070,83 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                     <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">#{c.id} · {formatRelativeTime(c.updated_at)}</span>
                   </div>
                 </button>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* Trash / Deleted Deal Cards view. Soft-deleted cards are restorable, or can
+          be permanently deleted after a second, irreversible confirmation. */}
+      {mode === 'view' && !dealCardId && !deal && listView === 'trash' && (
+        <Section title="Trash — Deleted Deal Cards">
+          <div class="text-[11px] text-[var(--color-text-muted)] mb-2">
+            Deleted Deal Cards are kept here until you restore them or permanently delete them. Nothing is auto-removed.
+          </div>
+          {trash === null && <div class="text-[12px] text-[var(--color-text-muted)]">Loading…</div>}
+          {trash !== null && trash.length === 0 && (
+            <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-4">
+              Trash is empty. Deleting a Deal Card moves it here.
+            </div>
+          )}
+          {trash !== null && trash.length > 0 && (
+            <div class="space-y-1.5">
+              {trash.map((c) => (
+                <div key={c.id} class="rounded-md border border-[var(--color-border)] px-3 py-2">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[12px] font-medium truncate">{c.title || `Deal #${c.id}`}</span>
+                    <LeadTypeBadge leadType={c.lead_type} />
+                    <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                      {entityBadge(c.entity)}
+                    </span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                      {c.status}
+                    </span>
+                    <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">
+                      #{c.id} · deleted {c.deleted_at ? formatRelativeTime(c.deleted_at) : ''}
+                    </span>
+                  </div>
+                  <div class="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void restoreCard(c.id)}
+                      disabled={trashBusy === c.id}
+                      class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+                    >
+                      {trashBusy === c.id && confirmPurgeId !== c.id ? 'Restoring…' : 'Restore'}
+                    </button>
+                    {confirmPurgeId !== c.id ? (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmPurgeId(c.id)}
+                        disabled={trashBusy === c.id}
+                        class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-status-failed)] text-[var(--color-status-failed)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+                      >
+                        Delete Permanently
+                      </button>
+                    ) : (
+                      <span class="inline-flex items-center gap-2 rounded-md border border-[var(--color-status-failed)] bg-[var(--color-elevated)] px-2 py-1">
+                        <span class="text-[11px] text-[var(--color-status-failed)] font-medium">Permanently delete? This cannot be undone.</span>
+                        <button
+                          type="button"
+                          onClick={() => void purgeCard(c.id)}
+                          disabled={trashBusy === c.id}
+                          class="px-2 py-0.5 rounded text-[11px] font-semibold bg-[var(--color-status-failed)] text-white hover:opacity-90 disabled:opacity-40"
+                        >
+                          {trashBusy === c.id ? 'Deleting…' : 'Delete forever'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmPurgeId(null)}
+                          disabled={trashBusy === c.id}
+                          class="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-card)] disabled:opacity-40"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                </div>
               ))}
             </div>
           )}

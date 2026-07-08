@@ -163,6 +163,8 @@ export interface DealCardRow {
   combined_acreage_verified: number;
   created_at: number;
   updated_at: number;
+  /** Soft-delete timestamp (epoch seconds). Non-null = in Trash. */
+  deleted_at: number | null;
 }
 
 export function getDealCardRow(id: number): DealCardRow | undefined {
@@ -232,16 +234,80 @@ export function updateDealCard(
   return getDealCardRow(id);
 }
 
-export function listDealCards(opts: { entity?: string; status?: DealCardStatus; limit?: number } = {}): DealCardRow[] {
+export function listDealCards(opts: { entity?: string; status?: DealCardStatus; limit?: number; trashed?: boolean } = {}): DealCardRow[] {
   const db = getLandosDb();
   const limit = Math.min(opts.limit ?? 200, 500);
-  const where: string[] = [];
+  // Normal boards/lists show ONLY non-deleted cards; `trashed: true` returns ONLY
+  // the Trash (soft-deleted) cards, most-recently-deleted first.
+  const where: string[] = [opts.trashed ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
   const args: unknown[] = [];
   if (opts.entity) { where.push('entity = ?'); args.push(opts.entity); }
   if (opts.status) { where.push('status = ?'); args.push(opts.status); }
-  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
-  return db.prepare(`SELECT * FROM landos_deal_card ${clause}ORDER BY updated_at DESC, id DESC LIMIT ?`)
+  const clause = `WHERE ${where.join(' AND ')} `;
+  const order = opts.trashed ? 'deleted_at DESC, id DESC' : 'updated_at DESC, id DESC';
+  return db.prepare(`SELECT * FROM landos_deal_card ${clause}ORDER BY ${order} LIMIT ?`)
     .all(...args, limit) as DealCardRow[];
+}
+
+/** Trash (soft-deleted) Deal Cards — restorable, hidden from normal lists. */
+export function listTrashedDealCards(opts: { entity?: string; limit?: number } = {}): DealCardRow[] {
+  return listDealCards({ ...opts, trashed: true });
+}
+
+/**
+ * SOFT DELETE — move a Deal Card to Trash (sets deleted_at). It disappears from
+ * normal boards/lists but is fully restorable. Idempotent; returns the row.
+ */
+export function softDeleteDealCard(id: number): DealCardRow | undefined {
+  const existing = getDealCardRow(id);
+  if (!existing) return undefined;
+  if (existing.deleted_at == null) {
+    const now = Math.floor(Date.now() / 1000);
+    getLandosDb().prepare('UPDATE landos_deal_card SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, id);
+    landosAudit('tyler', 'deal_card_trashed', `deal ${id}`, { entity: existing.entity, refTable: 'landos_deal_card', refId: id });
+  }
+  return getDealCardRow(id);
+}
+
+/** RESTORE a Deal Card from Trash (clears deleted_at). Idempotent. */
+export function restoreDealCard(id: number): DealCardRow | undefined {
+  const existing = getDealCardRow(id);
+  if (!existing) return undefined;
+  if (existing.deleted_at != null) {
+    const now = Math.floor(Date.now() / 1000);
+    getLandosDb().prepare('UPDATE landos_deal_card SET deleted_at = NULL, updated_at = ? WHERE id = ?').run(now, id);
+    landosAudit('tyler', 'deal_card_restored', `deal ${id}`, { entity: existing.entity, refTable: 'landos_deal_card', refId: id });
+  }
+  return getDealCardRow(id);
+}
+
+/**
+ * PERMANENT (HARD) DELETE — irreversible. Only meaningful from Trash: the card
+ * MUST already be soft-deleted (guards against skipping the Trash step). Removes
+ * the deal card row plus every deal-scoped row (any landos_* table with a
+ * deal_card_id column), in one transaction. Foreign keys aren't enforced, so this
+ * also prevents orphan rows. Property Cards themselves are only UNLINKED (they may
+ * be shared / independently owned), never deleted. Returns true when removed.
+ */
+export function hardDeleteDealCard(id: number): boolean {
+  const db = getLandosDb();
+  const existing = getDealCardRow(id);
+  if (!existing) return false;
+  if (existing.deleted_at == null) return false; // must be in Trash first (soft delete → then hard delete)
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'landos_%'").all() as Array<{ name: string }>;
+  const purge = db.transaction(() => {
+    for (const { name } of tables) {
+      if (name === 'landos_deal_card') continue;
+      const cols = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
+      if (cols.some((col) => col.name === 'deal_card_id')) {
+        db.prepare(`DELETE FROM ${name} WHERE deal_card_id = ?`).run(id);
+      }
+    }
+    db.prepare('DELETE FROM landos_deal_card WHERE id = ?').run(id);
+  });
+  purge();
+  landosAudit('tyler', 'deal_card_permanently_deleted', `deal ${id} (irreversible)`, { entity: existing.entity, refTable: 'landos_deal_card', refId: id });
+  return true;
 }
 
 /**
