@@ -2109,9 +2109,10 @@ function DdList({ title, items, empty }: { title: string; items: string[]; empty
 interface SpineFactSlot { field: string; value: string | number | null; known: boolean; label: string; verified: boolean; evidenceRefs: string[] }
 interface SpineSourceEvidence { sourceId: string; classification: string; sourceName: string; sourceUrlOrRef: string; reliability: string; usableForOfferLogic: boolean; cardId?: number; note: string }
 interface SpineVerificationTask { taskId: string; criticality: string; question: string; reason: string; recommendedSource: string; ownerDepartment: string; blocking: boolean }
+interface SpineCriticalFact { key: string; label: string; state: 'confirmed' | 'needs_evidence' | 'absent'; value?: string; detail: string }
 interface SpineHeader {
   stage: string; parcelCompleteness: number; decisionConfidence: string; decisionGrade: boolean;
-  decisionGradeReason: string; missingCriticalInfo: string[]; blockingVerificationTasks: SpineVerificationTask[];
+  decisionGradeReason: string; missingCriticalInfo: string[]; criticalFacts?: SpineCriticalFact[]; blockingVerificationTasks: SpineVerificationTask[];
   nextBestAction: string; nextActionOwner: string;
 }
 interface SpinePacket {
@@ -2201,10 +2202,30 @@ function BusinessSpineSection({ spine, dealId }: { spine: BusinessSpineView | nu
           </div>
         </div>
 
-        {/* What's still missing */}
+        {/* Critical facts — accurate state per fact. A KNOWN-but-unconfirmed fact
+            is NOT "missing": it reads "on record, needs official confirmation".
+            Only genuinely-absent facts read as missing. Falls back to the flat
+            list if an older backend has no criticalFacts. */}
         <div class="space-y-1">
-          <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">What's still missing</div>
-          {h.missingCriticalInfo.length === 0
+          <div class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Critical facts</div>
+          {h.criticalFacts && h.criticalFacts.length > 0 ? (
+            <ul class="space-y-0.5">
+              {h.criticalFacts.map((f) => {
+                const tone = f.state === 'confirmed'
+                  ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+                  : f.state === 'needs_evidence'
+                    ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+                    : 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
+                const chip = f.state === 'confirmed' ? 'Confirmed' : f.state === 'needs_evidence' ? 'On record · needs evidence' : 'Not found';
+                return (
+                  <li key={f.key} class="text-[12px] flex items-baseline gap-2">
+                    <span class={`text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 ${tone}`}>{chip}</span>
+                    <span class="text-[var(--color-text)]">{f.label}{f.value ? <span class="text-[var(--color-text-muted)]"> — {f.value}</span> : null}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : h.missingCriticalInfo.length === 0
             ? <div class="text-[12px] text-[var(--color-status-done)]">Nothing critical missing.</div>
             : <ul class="list-disc pl-4 space-y-0.5 text-[12px] text-[var(--color-status-failed)]">{h.missingCriticalInfo.map((m, i) => <li key={i}>{m}</li>)}</ul>}
         </div>
@@ -2364,12 +2385,78 @@ function PublicRecordsResearchSection({ dealId }: { dealId: number }) {
   );
 }
 
+// ── Deal Card tabs ──────────────────────────────────────────────────────────
+// The Deal Card is a compact operator dashboard: identity + critical facts + the
+// next action stay pinned at the top; the (formerly endless) report/worksheet
+// content is split into tabs so the deal is legible in seconds and long reports
+// no longer force an endless scroll. Every existing section is preserved — only
+// reorganized behind a tab. No data or backend behavior changes.
+type DealTab = 'summary' | 'dd' | 'market' | 'strategy' | 'visuals' | 'browser' | 'documents' | 'reports';
+const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
+  { id: 'summary', label: 'Summary' },
+  { id: 'dd', label: 'Due Diligence' },
+  { id: 'market', label: 'Market' },
+  { id: 'strategy', label: 'Strategy' },
+  { id: 'visuals', label: 'Visuals' },
+  { id: 'browser', label: 'Browser Intelligence' },
+  { id: 'documents', label: 'Documents' },
+  { id: 'reports', label: 'Reports' },
+];
+
+function DealTabBar({ active, onSelect }: { active: DealTab; onSelect: (t: DealTab) => void }) {
+  return (
+    <div class="flex flex-wrap gap-0.5 -mb-px overflow-x-auto">
+      {DEAL_TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => onSelect(t.id)}
+          class={`px-3 py-1.5 text-[12px] font-medium whitespace-nowrap rounded-t-md border-b-2 ${
+            active === t.id
+              ? 'border-[var(--color-accent)] text-[var(--color-text)]'
+              : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Compact, always-visible critical-facts chips for the pinned header — the same
+ *  states the Business Spine renders in full below (confirmed / needs_evidence /
+ *  absent). Kept short so the deal reads at a glance. */
+function CriticalFactChips({ facts }: { facts?: SpineCriticalFact[] }) {
+  if (!facts || facts.length === 0) return null;
+  return (
+    <div class="flex flex-wrap gap-1">
+      {facts.map((f) => {
+        const tone = f.state === 'confirmed'
+          ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+          : f.state === 'needs_evidence'
+            ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+            : 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
+        const mark = f.state === 'confirmed' ? '✓' : f.state === 'needs_evidence' ? '◐' : '○';
+        return (
+          <span key={f.key} class={`text-[10px] px-1.5 py-0.5 rounded-full border ${tone}`} title={f.detail}>
+            {mark} {f.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; entity?: EntityFilter }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [spine, setSpine] = useState<BusinessSpineView | null>(null);
   const [resolution, setResolution] = useState<ResolutionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Active Deal Card tab. Resets to Summary whenever a different card opens so the
+  // operator always lands on the 30-second read.
+  const [activeTab, setActiveTab] = useState<DealTab>('summary');
 
   // Saved-cards list state. The list is the primary open flow: fetched on mount
   // (unless we were handed a specific dealCardId) and refreshed after any write.
@@ -2543,6 +2630,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     try {
       setLoading(true);
       setError(null);
+      setActiveTab('summary');
       setDdEditing(false);
       setDdWarnings([]);
       setStrategyEditing(false);
@@ -3185,36 +3273,66 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
       {mode === 'view' && deal && !showResolution && (
         <>
-          {/* 1. Sticky / header area */}
-          <div class="sticky top-0 z-10 rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-4">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-[14px] font-semibold">
-                {prop?.active_input_address || deal.title || 'Untitled Deal'}
-              </span>
-              <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
-              <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
-                {entityBadge(deal.entity)}
-              </span>
-              <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
-                Stage: {deal.status}
-              </span>
+          {/* PINNED HEADER — always visible: identity, the critical-facts chips,
+              the single critical next action, and the tab bar. The deal is legible
+              in seconds and the next action never scrolls away. */}
+          <div class="sticky top-0 z-10 -mx-6 px-6 pt-1 bg-[var(--color-bg)] border-b border-[var(--color-border)] space-y-2">
+            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-3 space-y-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-[14px] font-semibold">
+                  {prop?.active_input_address || deal.title || 'Untitled Deal'}
+                </span>
+                <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                  {entityBadge(deal.entity)}
+                </span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                  Stage: {deal.status}
+                </span>
+              </div>
+              {/* Critical facts at a glance (full detail lives in Summary → Business Intelligence). */}
+              <CriticalFactChips facts={spine?.header?.criticalFacts} />
+              {/* The single critical next action — always in view. */}
+              {spine?.header?.nextBestAction && (
+                <div class="text-[12px]">
+                  <span class="text-[var(--color-accent)] font-semibold">Next action:</span>{' '}
+                  <span class="text-[var(--color-text)]">{spine.header.nextBestAction}</span>
+                  {spine.header.nextActionOwner && (
+                    <span class="text-[var(--color-text-faint)]"> — owner: {ownerDeptLabel(spine.header.nextActionOwner)}</span>
+                  )}
+                </div>
+              )}
             </div>
+            <DealTabBar active={activeTab} onSelect={setActiveTab} />
           </div>
 
-          {/* 1a. BUSINESS INTELLIGENCE — canonical Business Object Spine result:
-              what LandOS found, what's missing, evidence, decision-grade, what's
-              blocking, and the next action. The first business content on the card. */}
+          {/* ══ SUMMARY TAB ══ Business Intelligence + the report's decision-first
+              read (identity, land facts, land score, economics, confirm-before-offer)
+              + area Market Pulse. The 30-second understanding of the deal. */}
+          {activeTab === 'summary' && (
+          <>
+          {/* BUSINESS INTELLIGENCE — canonical Business Object Spine: what LandOS
+              found, what's missing, evidence, decision-grade, blockers, next action. */}
           <BusinessSpineSection spine={spine} dealId={deal.id} />
 
-          {/* 1a-ii. MARKET PULSE — is the area growing/stable/declining, county /
-              ZIP $/acre, growth signals. Area-level: works even when unverified. */}
+          {/* MARKET PULSE — is the area growing/stable/declining, county / ZIP
+              $/acre, growth signals. Area-level: works even when unverified. */}
           <MarketPulseReadSection dealId={deal.id} />
+          </>
+          )}
 
-          {/* 1a-iii. PUBLIC RECORDS RESEARCH — the official county sources to
-              check + the next verification action. Sources to check, not facts. */}
+          {/* ══ DUE DILIGENCE TAB ══ */}
+          {activeTab === 'dd' && (
+          <>
+          {/* PUBLIC RECORDS RESEARCH — the official county sources to check + the
+              next verification action. Sources to check, not facts. */}
           <PublicRecordsResearchSection dealId={deal.id} />
+          </>
+          )}
 
-          {/* 1b. DD + Market + Strategy operational report */}
+          {/* Property Intelligence run controls + status — Summary & Reports tabs.
+              Preserves the Run / Re-run / Download Property Intelligence actions. */}
+          {(activeTab === 'summary' || activeTab === 'reports') && (
           <Section title="Property Intelligence Report">
             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
               <div class="flex items-center gap-2 flex-wrap">
@@ -3262,11 +3380,28 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </div>
             )}
 
-            {report?.exists && (
+            {report?.exists && activeTab === 'reports' && (
+              <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
+                Operational report. Departments stay separate (DD property-level, Market market-level, Strategy decision-level). No parcel fact is Verified without a named source; no comps, demand, pricing, EVs, or offers are fabricated.
+                {report.generatedAt ? <> Last run {formatRelativeTime(report.generatedAt)}{report.updatedBy ? ` by ${report.updatedBy}` : ''}.</> : null}
+              </div>
+            )}
+          </Section>
+          )}
+
+          {/* Visuals tab before any report/capture — honest placeholder, not a blank tab. */}
+          {activeTab === 'visuals' && !(report?.exists && prop?.id) && (
+            <Section title="Visuals">
+              <Placeholder text="Run Property Intelligence (Summary tab), then Capture visuals, to see satellite / Street View / Google Maps + Earth here." />
+            </Section>
+          )}
+
+          {/* Report-derived sections, routed to their tabs (unchanged data/props). */}
+          {report?.exists && (
               <div class="space-y-3">
-                {/* 1. VISUAL CONTEXT — top of the card (large satellite + parcel
-                    marker/boundary + Street View + Maps/Earth + source/date). */}
-                {prop?.id && (
+                {/* VISUALS TAB — large satellite + parcel marker/boundary + Street
+                    View + Maps/Earth + source/date, and the Capture visuals action. */}
+                {activeTab === 'visuals' && prop?.id && (
                   <div>
                     <div class="flex items-center justify-end mb-1">
                       <button
@@ -3283,43 +3418,50 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   </div>
                 )}
 
-                {/* 1. PROPERTY LOCATION + PARCEL DETAILS — single home for
-                    address / APN / county / state / acreage / verification. */}
+                {/* SUMMARY TAB — parcel details, land facts, land score, executive
+                    summary (40–60% range, economics), and confirm-before-offer. */}
+                {activeTab === 'summary' && (
+                <>
+                {/* PROPERTY LOCATION + PARCEL DETAILS — address / APN / county / state
+                    / acreage / verification. */}
                 <PropertyHeaderSection report={report} entity={entity} stageLabel={readiness?.workflowStageLabel} seller={seller?.name ?? undefined} marketMatrix={discoveryReport?.marketMatrix} />
-
-                {/* 2. AT-A-GLANCE LAND FACTS — single home for flood/wetlands/slope/type. */}
+                {/* AT-A-GLANCE LAND FACTS — flood/wetlands/slope/type. */}
                 <AtAGlanceStrip report={report} propertyType={propertyType} />
-
-                {/* 6. LAND SCORE — deterministic 100-pt rubric, computed inline from
-                    the verified parcel data (no separate re-resolve / button). */}
+                {/* LAND SCORE — deterministic 100-pt rubric from verified parcel data. */}
                 <LandScoreSection ls={report.landScore} parcelVerified={report.parcelVerified} />
-
-                {/* ACQUISITION SPECIALIST v1 — the cohesive Discovery Call
-                    Intelligence Report: Smart Input, Parcel Intelligence, Comps,
-                    Market Pulse, the five strategy evaluations, and the offer range. */}
-                <DiscoveryCallReportSection dcr={discoveryReport} report={report} es={execSummary} />
-
-                {/* 3-5, 7, 8. EXECUTIVE SUMMARY — 40–60% preliminary range, deal
-                    economics, best first-glance strategy, top risks/blockers. */}
+                {/* EXECUTIVE SUMMARY — 40–60% preliminary range, deal economics,
+                    best first-glance strategy, top risks/blockers. */}
                 <ExecutiveSummarySection es={execSummary} />
-
-                {/* 6. MARKET PULSE — real signals: period, sources, active status,
-                    growth trend, named local signals, help/hurt, what it means. */}
-                <MarketPulseSection mp={execSummary?.marketPulse as unknown as MarketPulseView} mc={report.marketComps} />
-
-                {/* 9. CONFIRM BEFORE OFFER — the single home for must-confirm items. */}
+                {/* CONFIRM BEFORE OFFER — the single home for must-confirm items. */}
                 <ConfirmBeforeOfferSection es={execSummary} report={report} />
+                </>
+                )}
 
-                {/* Browser Intelligence status — LandPortal-first, then County. */}
-                <BrowserIntelligenceSection dealId={deal?.id} />
+                {/* STRATEGY TAB — the cohesive Discovery Call Intelligence Report:
+                    Smart Input, Parcel Intelligence, Comps, Market Pulse, the five
+                    strategy evaluations, and the offer range. */}
+                {activeTab === 'strategy' && (
+                <DiscoveryCallReportSection dcr={discoveryReport} report={report} es={execSummary} />
+                )}
 
-                {/* Raw comparable sales + active listings + provider chain — collapsed. */}
+                {/* MARKET TAB — real market pulse signals + raw comps / actives. */}
+                {activeTab === 'market' && (
+                <>
+                <MarketPulseSection mp={execSummary?.marketPulse as unknown as MarketPulseView} mc={report.marketComps} />
                 <Collapsible title="Comparable sales & active listings (raw)">
                   <MarketCompsSection mc={report.marketComps} />
                 </Collapsible>
+                </>
+                )}
 
-                {/* 13 + 14. DETAILED DUE DILIGENCE — collapsed by default. */}
-                <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)]">
+                {/* BROWSER INTELLIGENCE TAB — LandPortal-first, then County. */}
+                {activeTab === 'browser' && (
+                <BrowserIntelligenceSection dealId={deal?.id} />
+                )}
+
+                {/* DUE DILIGENCE TAB — full detailed DD from the report. */}
+                {activeTab === 'dd' && (
+                <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)]" open>
                   <summary class="cursor-pointer px-4 py-3 text-[13px] font-semibold text-[var(--color-text)]">Detailed Due Diligence &amp; Research</summary>
                   <div class="px-4 pb-4 space-y-3">
                 {/* DD Command Center — pre-call readiness. */}
@@ -3407,31 +3549,20 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 </div>
                   </div>
                 </details>
-
-                <div class="text-[10px] text-[var(--color-text-faint)]">
-                  Operational report. Departments stay separate (DD property-level, Market market-level, Strategy decision-level). No parcel fact is Verified without a named source; no comps, demand, pricing, EVs, or offers are fabricated.
-                  {report.generatedAt ? <> Last run {formatRelativeTime(report.generatedAt)}{report.updatedBy ? ` by ${report.updatedBy}` : ''}.</> : null}
-                </div>
+                )}
               </div>
-            )}
-          </Section>
+          )}
 
-          {/* ── ADVANCED / LEGACY (collapsed by default) ──────────────────────
-              Everything below is demoted out of the default DD operator brief:
-              seller/acquisitions, legacy worksheets, contacts, communications,
-              documents, activity, quick actions, and call prep. The standalone
-              "Imagery" panel was removed (it duplicated Visual Context above and
-              produced the "visual not captured yet" contradiction when visuals
-              already existed). Seller-call questions live here / in Acquisitions,
-              never in the default brief. */}
-          <details class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]">
-            <summary class="cursor-pointer px-4 py-3 text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Worksheets, seller / acquisitions, contacts, documents &amp; advanced</summary>
-            <div class="px-4 pb-4 space-y-4">
+          {/* ── WORKSHEETS + MANUAL SECTIONS — routed to the matching tabs.
+              Seller/acquisitions/contacts/comms/documents → Documents; the manual
+              DD / Land Data → Due Diligence; Deal Economics / Market Research →
+              Market; Exit Strategy / Strategy / Pre-Call Brief → Strategy; the
+              manual Land Score compute → Reports. Same data, same handlers. */}
+          {/* Seller / Acquisitions — seller profile + next action + call prep → Documents. */}
+          {activeTab === 'documents' && deal?.id && <AcquisitionsPanel dealId={deal.id} />}
 
-          {/* Seller / Acquisitions — seller profile + next action + call prep. */}
-          {deal?.id && <AcquisitionsPanel dealId={deal.id} />}
-
-          {/* 2b. Land Score — 100-pt rubric from VERIFIED LandPortal attributes only */}
+          {/* 2b. Manual Land Score — 100-pt rubric from VERIFIED LandPortal attributes → Reports. */}
+          {activeTab === 'reports' && (
           <Section title="Land Score">
             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
               <span class="text-[10px] text-[var(--color-text-faint)]">Computed on demand from a bounded non-credit LandPortal resolve. Never scored from unverified data.</span>
@@ -3465,8 +3596,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </div>
             )}
           </Section>
+          )}
 
-          {/* 3. Deal Economics */}
+          {/* 3. Deal Economics → Market */}
+          {activeTab === 'market' && (
           <Section title="Deal Economics">
             <Field label="Estimated value (low)" />
             <Field label="Estimated value (mid)" />
@@ -3479,8 +3612,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               Target-clear baseline: minimum ${MIN_NET_BASELINE_USD.toLocaleString()} net. Economics stay blocked until parcel is verified.
             </div>
           </Section>
+          )}
 
-          {/* 4. Land Data / DD Facts */}
+          {/* 4. Land Data / DD Facts → Due Diligence */}
+          {activeTab === 'dd' && (
           <Section title="Land Data / DD Facts">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
               <Field label="Acreage" value={prop?.acres ?? deal.combined_acreage ?? undefined} />
@@ -3499,8 +3634,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               {prop?.open_risks ? <span class="text-[12px] text-[var(--color-text)]">{prop.open_risks}</span> : <Placeholder text="No data gaps recorded yet" />}
             </div>
           </Section>
+          )}
 
-          {/* 4b. Due Diligence / Research worksheet — manual/local, labeled */}
+          {/* 4b. Due Diligence / Research worksheet — manual/local, labeled → Due Diligence */}
+          {activeTab === 'dd' && (
           <Section title="Due Diligence / Research">
             {!ddEditing && (
               <>
@@ -3566,8 +3703,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               />
             )}
           </Section>
+          )}
 
-          {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) */}
+          {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) → Documents */}
+          {activeTab === 'documents' && (
           <Section title="Contacts">
             {(!deal.people || deal.people.length === 0) ? (
               <Placeholder text="No contacts captured yet" />
@@ -3598,8 +3737,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               Multiple names/roles per property are supported (e.g. inherited leads with several heirs). Contact data is local; no external CRM read/write.
             </div>
           </Section>
+          )}
 
-          {/* 6. Communication Summary — no external CRM mutation; GHL not connected */}
+          {/* 6. Communication Summary — no external CRM mutation; GHL not connected → Documents */}
+          {activeTab === 'documents' && (
           <Section title="Communication Summary">
             <Field label="Last contact" />
             <Field label="Sentiment" />
@@ -3613,8 +3754,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               CRM / GHL link: not connected. No external CRM read or write in this view.
             </div>
           </Section>
+          )}
 
-          {/* 7. Exit Strategy Analysis */}
+          {/* 7. Exit Strategy Analysis → Strategy */}
+          {activeTab === 'strategy' && (
           <Section title="Exit Strategy Analysis">
             <Field label="Recommended strategy" value={deal.combined_strategy || undefined} />
             <div class="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
@@ -3625,8 +3768,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
             <div class="mt-2"><div class="text-[11px] text-[var(--color-text-muted)] mb-1">Blockers</div><Placeholder text="None recorded yet" /></div>
             <div class="mt-2"><div class="text-[11px] text-[var(--color-text-muted)] mb-1">Next confirmations</div><Placeholder /></div>
           </Section>
+          )}
 
-          {/* 7b. Strategy worksheet — manual/local, honest offer-readiness, distinct exits */}
+          {/* 7b. Strategy worksheet — manual/local, honest offer-readiness, distinct exits → Strategy */}
+          {activeTab === 'strategy' && (
           <Section title="Strategy">
             {!strategyEditing && (
               <>
@@ -3685,8 +3830,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               />
             )}
           </Section>
+          )}
 
-          {/* 7c. Market Research worksheet — manual/local, market-level only, honest demand */}
+          {/* 7c. Market Research worksheet — manual/local, market-level only, honest demand → Market */}
+          {activeTab === 'market' && (
           <Section title="Market Research">
             {!marketEditing && (
               <>
@@ -3757,8 +3904,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               />
             )}
           </Section>
+          )}
 
-          {/* 8. Documents / Activity / Quick Actions */}
+          {/* 8. Documents / Activity / Quick Actions → Documents */}
+          {activeTab === 'documents' && (
           <Section title="Documents / Activity / Quick Actions">
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Documents</div>
             <Placeholder text="No documents attached yet" />
@@ -3779,8 +3928,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               ))}
             </div>
           </Section>
+          )}
 
-          {/* 9. Pre-Call Brief */}
+          {/* 9. Pre-Call Brief → Strategy */}
+          {activeTab === 'strategy' && (
           <Section title="Pre-Call Brief">
             <Field label="What the seller wants" />
             <Field label="Current max / walk-away" />
@@ -3791,8 +3942,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
             <Field label="Questions to ask next" />
             <Field label="What not to mention yet" />
           </Section>
-            </div>
-          </details>
+          )}
         </>
       )}
     </div>
