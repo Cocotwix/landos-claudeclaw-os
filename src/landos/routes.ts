@@ -402,6 +402,27 @@ export function withPropertyWorkspaceSummary<T extends { id: number }>(cards: T[
   });
 }
 
+/** Board-summary enrichment: attach the two fields the redesigned Property Board
+ *  needs that are NOT on the property-card row — the linked Deal Card id (so a
+ *  card click always opens the canonical Deal Card, never a second intelligence
+ *  surface) and the latest open next-action (concise pipeline signal). Both are
+ *  read-only batch lookups; neither mutates a card or creates a Deal Card. Cards
+ *  with no linked Deal Card yet resolve to null and are handled at click time by
+ *  the ensure endpoint. */
+export function withBoardSummary<T extends { id: number }>(cards: T[]): Array<T & {
+  deal_card_id: number | null;
+  next_action: string | null;
+}> {
+  const db = getLandosDb();
+  const dealIdStmt = db.prepare('SELECT deal_card_id FROM landos_deal_card_property WHERE card_id = ? ORDER BY id ASC LIMIT 1');
+  const nextActionStmt = db.prepare("SELECT action FROM landos_card_next_action WHERE card_id = ? AND status = 'open' ORDER BY created_at DESC, id DESC LIMIT 1");
+  return cards.map((card) => {
+    const dealRow = dealIdStmt.get(card.id) as { deal_card_id: number } | undefined;
+    const naRow = nextActionStmt.get(card.id) as { action: string } | undefined;
+    return { ...card, deal_card_id: dealRow?.deal_card_id ?? null, next_action: naRow?.action ?? null };
+  });
+}
+
 function suppressWeakerDuplicatePropertyCards<T extends { id: number; address_key?: string | null; verification_status?: string | null }>(cards: T[]): T[] {
   const verifiedAddressKeys = new Set(cards
     .filter((card) => card.verification_status === 'verified_property' && (card.address_key ?? '').trim())
@@ -997,14 +1018,28 @@ export function registerLandosRoutes(app: Hono): void {
     });
   });
 
-  // Kanban board: cards grouped by status column (property-centered).
+  // Kanban board: cards grouped by status column (property-centered). Each card
+  // is a CONCISE pipeline summary of a Deal Card — never a second property
+  // intelligence surface. deal_card_id lets a click open the canonical Deal Card.
   app.get('/api/landos/board', (c) => {
     const entity = entityParam(c.req.query('entity'));
-    const cards = withPropertyWorkspaceSummary(suppressWeakerDuplicatePropertyCards(listPropertyCards({ entity, limit: 500 })));
+    const cards = withBoardSummary(withPropertyWorkspaceSummary(suppressWeakerDuplicatePropertyCards(listPropertyCards({ entity, limit: 500 }))));
     const columns: Record<string, unknown[]> = {};
     for (const s of KANBAN_STATUSES) columns[s] = [];
     for (const card of cards) columns[(card as { kanban_status: string }).kanban_status]?.push(card);
     return c.json({ columns, statuses: KANBAN_STATUSES });
+  });
+
+  // Resolve-or-create the canonical Deal Card for a property card. The Property
+  // Board calls this on click so it ALWAYS lands on the single Deal Card
+  // workspace. Creating/linking a Deal Card never changes the property's
+  // identity, verification status, or facts (see ensureDealCardForProperty).
+  app.get('/api/landos/property-cards/:id/deal-card', (c) => {
+    const id = Number(c.req.param('id'));
+    const card = getPropertyCard(id);
+    if (!card) return c.json({ error: 'not found' }, 404);
+    const dealCardId = ensureDealCardForProperty({ cardId: id, entity: card.entity as LandosEntity, title: card.active_input_address });
+    return c.json({ dealCardId });
   });
 
   app.get('/api/landos/property-cards/:id', (c) => {
@@ -1837,6 +1872,15 @@ export function registerLandosRoutes(app: Hono): void {
         googleVisualConfigured: googleVisualConfiguredResolved(),
       });
       persistPropertyInspection(cardIdBeforeRun, inspectionResult.inspection);
+      // Browser Intelligence Vision: look at the screenshots we just captured
+      // (LandPortal parcel/overlays/comps + Google satellite/Street View) and write
+      // land-investor visual observations onto the card. Best-effort, never blocks
+      // the report; degrades honestly when the vision model has no quota.
+      try {
+        const { runBrowserVisionForCard } = await import('./browser-vision.js');
+        const vres = await runBrowserVisionForCard(cardIdBeforeRun);
+        logger.info({ event: 'browser_vision', cardId: cardIdBeforeRun, ok: vres.ok, merged: vres.merged, analyzed: vres.analysis.analyzed.length, skipped: vres.analysis.skipped.length }, 'browser_vision_run');
+      } catch (err) { logger.warn({ err, cardId: cardIdBeforeRun }, 'browser_vision_failed'); }
     }
     // Wire the REAL bounded non-credit LandPortal exact resolver. This is the
     // same safe path the Duke verification route uses — not a comp tool/credit.
@@ -1853,6 +1897,7 @@ export function registerLandosRoutes(app: Hono): void {
       // the report). Each source has its own throwaway profile + debug port.
       captureZillowComps: fetchZillowLandComps,
       captureRedfinComps: fetchRedfinLandComps,
+      compResearchDriver: makeLiveBrowserDriver('comp_research'),
     });
     if (!result) return c.json({ error: 'deal card not found' }, 404);
     const deal = getDealCard(id);
@@ -1866,8 +1911,8 @@ export function registerLandosRoutes(app: Hono): void {
     const briefing = buildDiscoveryBriefing(result.report, readiness, sellerSummary);
     const { preCallIntelligence, propertyType } = synthPreCall(result.report as unknown as Record<string, unknown>, (deal ?? {}) as unknown as Record<string, unknown>, cardId);
     const browserMarketIntel = await browserIntelFor((deal ?? {}) as unknown as Record<string, unknown>);
-    const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
-    const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
+    const { synthesizeGrowthDrivers } = await import('./browser-market-intelligence.js');
+    const growthSummary = await synthesizeGrowthDrivers(browserMarketIntel as never);
     const executiveSummary = buildExecutiveSummary(result.report, growthSummary);
     const confirmedForDiscovery = deal ? confirmParcelForDeal(deal.id) : null;
     const discoveryReport = deal
@@ -2397,6 +2442,7 @@ export function registerLandosRoutes(app: Hono): void {
         googleVisualConfigured: googleVisualConfiguredResolved(),
         captureZillowComps: fetchZillowLandComps,
         captureRedfinComps: fetchRedfinLandComps,
+        compResearchDriver: makeLiveBrowserDriver('comp_research'),
       })) as { warnings?: string[] } | null;
       if (rep && Array.isArray(rep.warnings)) reportWarnings = rep.warnings;
     } catch {
@@ -2553,18 +2599,28 @@ export function registerLandosRoutes(app: Hono): void {
         const researchAddr = f.address
           ? [f.address, [[f.city, f.state].filter(Boolean).join(', '), f.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
           : text.trim();
+        // Wrong-parcel hard-stop: if a parcel-level source resolved a DIFFERENT
+        // parcel than the requested APN, the card must SHOUT it (Property Board +
+        // Resolution view), not read as a vanilla "unresolved" lead.
+        const conflict = resolution.identityConflict;
         const { card } = upsertCardFromDukeRun({
           entity, agentId: 'acquire',
           activeInputAddress: researchAddr,
           city: f.city, state: f.state, county: f.county, apn: f.apn, fips: f.fips, owner: f.owner,
           verified: false,
-          summary: 'Acquire — research lead (unresolved). Public-records research plan attached; not verified.',
+          summary: conflict
+            ? `⛔ WRONG PARCEL — hard stop. Requested APN ${conflict.requestedApn} but ${conflict.source} resolved a DIFFERENT parcel (APN ${conflict.resolvedApn}). Parcel NOT confirmed; no downstream intelligence ran.`
+            : 'Acquire — research lead (unresolved). Public-records research plan attached; not verified.',
         });
         const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: researchAddr });
         // Persist the parcel-identity verdict (Phase 1: written, not yet read).
         try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ }
         // Capture the resolution trace so the Deal Card opens the Resolution view.
         try { writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(text.trim(), cls.parsedFields, resolution)); } catch { /* snapshot never blocks the card */ }
+        // On a wrong-parcel conflict the FIRST next action is the hard-stop itself.
+        if (conflict) {
+          try { addCardNextAction({ cardId: card.id, action: `⛔ Wrong parcel: you entered APN ${conflict.requestedApn} but ${conflict.source} resolved APN ${conflict.resolvedApn}${conflict.resolvedContext ? ` (${conflict.resolvedContext})` : ''}. Re-check the APN or provide a corrected parcel identifier before any intelligence runs.`, createdBy: 'acquire-apn-conflict' }); } catch { /* best-effort */ }
+        }
         const plan = buildPublicRecordsResearchPlan({ county: f.county, state: f.state, city: f.city, apn: f.apn, owner: f.owner, address: f.address });
         for (const action of researchPlanNextActions(plan)) {
           try { addCardNextAction({ cardId: card.id, action, createdBy: 'acquire-research' }); } catch { /* one action failing never blocks the card */ }
@@ -2572,7 +2628,8 @@ export function registerLandosRoutes(app: Hono): void {
         logger.info({ event: 'acquire_run', ok: true, matched: false, researchCard: true, confidence: resolution.confidence, dealCardId, pipeline: 'property_resolution' }, 'acquire_run_research_card');
         return c.json({
           ok: true, matched: false, researchCardCreated: true, parcelVerified: false, dealCardId,
-          status: 'research_card', confidence: resolution.confidence,
+          status: conflict ? 'apn_conflict' : 'research_card', confidence: resolution.confidence,
+          identityConflict: conflict,
           message: resolution.guidance ?? 'Unresolved by providers — opened a research Deal Card with a public-records research plan and the next verification action.',
           guidance: resolution.guidance,
           lanesAttempted: resolution.lanesAttempted,
@@ -2682,6 +2739,16 @@ export function registerLandosRoutes(app: Hono): void {
       });
       persistPropertyInspection(card.id, inspectionResult.inspection);
       if (streamed.size) logger.info({ event: 'acquire_browser_intel', dealCardId, facts: streamed.size }, 'acquire_browser_intel_persisted');
+      // Browser Intelligence Vision: LOOK at the screenshots just captured
+      // (LandPortal parcel/3D/overlays/comps + Google satellite) and write
+      // land-investor visual observations onto the card, so the complete package
+      // is assembled by acquire itself — the operator never has to trigger a
+      // separate report to get the visual read. Best-effort; never blocks acquire.
+      try {
+        const { runBrowserVisionForCard } = await import('./browser-vision.js');
+        const vres = await runBrowserVisionForCard(card.id);
+        logger.info({ event: 'browser_vision', cardId: card.id, ok: vres.ok, merged: vres.merged, analyzed: vres.analysis.analyzed.length, skipped: vres.analysis.skipped.length }, 'acquire_browser_vision_run');
+      } catch (err) { logger.warn({ err, cardId: card.id }, 'acquire_browser_vision_failed'); }
     } catch { /* non-fatal surfacing */ }
     if (hasCriticalParcelGaps(p)) {
       const browserStatuses = (resolution.browserEvidence ?? []).map((b) => `${b.service}:${b.status}`).join(', ') || 'none';
@@ -2703,6 +2770,7 @@ export function registerLandosRoutes(app: Hono): void {
       googleVisualConfigured: googleVisualConfiguredResolved(),
       captureZillowComps: fetchZillowLandComps,
       captureRedfinComps: fetchRedfinLandComps,
+      compResearchDriver: makeLiveBrowserDriver('comp_research'),
     });
     const reportVerified = result?.report.parcelVerified === true;
     logger.info({ event: 'acquire_run', ok: true, matched: true, parcelVerified: reportVerified, confidence: resolution.confidence, dealCardId, pipeline: 'property_resolution' }, 'acquire_run');

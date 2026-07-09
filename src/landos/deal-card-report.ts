@@ -63,6 +63,8 @@ import { addComp, listComps } from './comps.js';
 import { attachCardActivity } from './property-card.js';
 import type { ZillowFetchInput, ZillowCompsResult } from './zillow-land-comps.js';
 import type { RedfinFetchInput, RedfinCompsResult } from './redfin-land-comps.js';
+import { researchBrowserComps, type CompResearchResult } from './browser-comp-research.js';
+import type { BrowserDriver } from './browser-intelligence.js';
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
 import { googleVisualConfigured, resolveGoogleVisualEnv } from './providers/google-visual.js';
 import { buildDdChecklist, mergeGovDdRows, summarizeDdCompleteness, type DdChecklistRow, type DdCompleteness } from './dd-checklist.js';
@@ -91,7 +93,7 @@ export interface MarketCompView {
 export interface MarketCompsView {
   status: 'collected' | 'no_comps' | 'not_configured' | 'no_area' | 'error' | 'not_run';
   /** Which provider produced the comps actually shown ('realie' | 'apify' | 'none'). */
-  primaryProvider: 'realie' | 'apify' | 'none';
+  primaryProvider: 'realie' | 'apify' | 'browser_research' | 'none';
   /** Failover chain tried, e.g. ['realie:collected'] or ['realie:no_comps','apify:error']. */
   providerChain: string[];
   soldCount: number;
@@ -110,12 +112,22 @@ export interface MarketCompsView {
   source: string;
   timestamp: string | null;
   note: string;
+  /** Read-only Zillow/Redfin browser research fallback: the exact search path,
+   *  per-source attempt outcomes, acreage/geography expansion, and honest
+   *  strength. Present when the browser researcher ran (primary providers thin). */
+  research?: CompResearchResult | null;
 }
 function emptyMarketComps(): MarketCompsView {
-  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.' };
+  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.', research: null };
 }
 const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
-const paidCompsEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.LANDOS_ALLOW_PAID_COMPS ?? '');
+// Provider gating rule: general read-only comp enrichment is ALLOWED. Realie
+// (Really.ai API), Apify Redfin/Zillow browser extraction, and HomeHarvest are
+// NOT gated here — each self-gates on its own configuration (API key / actor
+// token) and reports not_configured honestly when unwired. The ONLY comp-related
+// gated actions are the paid LandPortal comp report and paid LandPortal slope
+// report, which are separate tools (see comps.ts / mcp-comp-guard) and are never
+// invoked from this chain.
 
 /**
  * Market comps with PROVIDER FAILOVER: 1) Realie premium comparables (primary —
@@ -123,12 +135,15 @@ const paidCompsEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.LANDO
  * else honest provider_error / no_comps. Every comp keeps its provider. Sparse
  * rural/infill markets get a price-per-acre band + explanation instead of silence.
  */
-async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | null): Promise<MarketCompsView> {
+async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | null, opts: { researchDriver?: BrowserDriver } = {}): Promise<MarketCompsView> {
   const chain: string[] = [];
+  const RESEARCH_TARGET = 5;
   const finalize = async (v: MarketCompsView): Promise<MarketCompsView> => {
     // ── Supplemental Zillow lane (active listings + supplemental sold). Active is
-    //    NEVER labeled sold; Zillow sold kept separate from Realie's PPA band. ──
-    if (paidCompsEnabled() && typeof q.lat === 'number' && typeof q.lng === 'number') {
+    //    NEVER labeled sold; Zillow sold kept separate from Realie's PPA band.
+    //    Read-only browser extraction — allowed; self-gates on APIFY_TOKEN /
+    //    LANDOS_ZILLOW_ACTOR and reports not_authorized/not_configured honestly. ──
+    if (typeof q.lat === 'number' && typeof q.lng === 'number') {
       const { fetchZillowComps } = await import('./zillow-comps.js');
       const { withEnvFileSecrets } = await import('../env.js');
       const zc = await fetchZillowComps({ lat: q.lat, lng: q.lng, zip: q.zip }, { env: withEnvFileSecrets(['APIFY_TOKEN', 'LANDOS_ZILLOW_ACTOR']) });
@@ -176,6 +191,45 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
         v.providers.push({ providerId: 'homeharvest', status: 'error', kept: 0 });
       }
     }
+
+    // ── Zillow + Redfin read-only BROWSER research fallback ─────────────────
+    //    When the configured API/actor providers came up thin (or errored), do
+    //    what an acquisitions assistant does: research Zillow + Redfin for vacant
+    //    land in the subject area — sold first, subject acreage band first, then
+    //    honestly expand acreage + geography. Never fabricates; never logs in;
+    //    never triggers the paid LandPortal comp report. Records the full search
+    //    path + per-source outcome so an actor failure never looks like a total
+    //    comp failure.
+    const primaryCount = v.sold.length + v.active.length + v.supplementalSold.length;
+    if (primaryCount < RESEARCH_TARGET && (q.address || q.city || q.zip || q.county)) {
+      try {
+        const research = await researchBrowserComps(
+          { address: q.address, lat: q.lat, lng: q.lng, city: q.city, state: q.state, zip: q.zip, county: q.county, acres: q.acres ?? null },
+          { driver: opts.researchDriver, targetCount: RESEARCH_TARGET },
+        );
+        v.research = research;
+        chain.push(`browser_research:${research.strength}`);
+        // Merge researched comps by status; keep provider label for provenance.
+        const toView = (c: { price: number | null; dateIso: string | null; acres: number | null; pricePerAcre: number | null; url: string | null; source: string; location: string | null }): MarketCompView => ({ price: c.price ?? 0, saleDateIso: c.dateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.url ?? '', sourceLabel: c.source, addressDesc: c.location ?? undefined });
+        const soldR = research.comps.filter((c) => c.status === 'sold');
+        const activeR = research.comps.filter((c) => c.status !== 'sold');
+        if (soldR.length) v.sold = [...v.sold, ...soldR.map(toView)];
+        if (activeR.length) v.active = [...v.active, ...activeR.map(toView)];
+        // Per-source provider rows (aggregate outcome), for the provider table.
+        for (const src of ['zillow', 'redfin'] as const) {
+          const a = research.attempts.filter((x) => x.source === src);
+          if (a.length === 0) continue;
+          const kept = a.reduce((n, x) => n + x.compCount, 0);
+          const best = a.find((x) => x.outcome === 'collected' || x.outcome === 'partial')?.outcome ?? a[0].outcome;
+          v.providers.push({ providerId: `${src}_browser`, status: kept > 0 ? 'connected' : best, kept });
+        }
+        if (v.status !== 'collected' && research.comps.length > 0) { v.status = 'collected'; if (v.primaryProvider === 'none') v.primaryProvider = 'browser_research'; }
+      } catch (e) {
+        chain.push('browser_research:error');
+        v.providers.push({ providerId: 'browser_research', status: 'error', kept: 0 });
+      }
+    }
+
     v.providerChain = chain;
     v.activeCount = v.active.length;
     // ── Provider-agnostic comp classification at the valuation seam ──────────
@@ -203,12 +257,10 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
     return v;
   };
 
-  // ── 1) Realie premium comparables (primary) ────────────────────────────────
-  if (!paidCompsEnabled()) {
-    chain.push('paid_comps:disabled');
-    return await finalize({ ...emptyMarketComps(), status: 'not_configured', note: 'Paid comp providers disabled. Free/open-source land comps attempted where available; no credit-consuming comp actor was called.' });
-  }
-
+  // ── 1) Realie (Really.ai) premium comparables (primary) ─────────────────────
+  //    Allowed general enrichment: runs whenever the parcel has coordinates and a
+  //    REALIE_API_KEY is configured; fetchRealieComps returns not_configured
+  //    honestly when the key is absent. Not gated by any paid-report switch.
   if (typeof q.lat === 'number' && typeof q.lng === 'number') {
     const { fetchRealieComps } = await import('./realie-comps.js');
     const { withEnvFileSecrets } = await import('../env.js');
@@ -687,6 +739,10 @@ export interface DealCardReportDeps {
   /** Injected Redfin public land-comp capture (its OWN disposable browser profile,
    *  never the LandPortal or Zillow profile). Same best-effort contract. */
   captureRedfinComps?: (input: RedfinFetchInput) => Promise<RedfinCompsResult>;
+  /** Live read-only browser driver for the Zillow/Redfin comp research fallback.
+   *  When present + configured, the comp chain researches Zillow + Redfin as an
+   *  acquisitions assistant would. Absent/unconfigured degrades honestly. */
+  compResearchDriver?: BrowserDriver;
 }
 
 /** Minimal comp query the report builds from the verified parcel. */
@@ -1718,7 +1774,7 @@ export async function runDealCardReport(
     try {
       marketComps = deps.retrieveCompsImpl
         ? await deps.retrieveCompsImpl(compQuery)
-        : await liveMarketComps(compQuery, confirmedParcel);
+        : await liveMarketComps(compQuery, confirmedParcel, { researchDriver: deps.compResearchDriver });
     } catch (e: unknown) {
       marketComps = { ...emptyMarketComps(), status: 'error', note: `Comp retrieval error: ${(e as Error)?.message ?? String(e)}.` };
     }

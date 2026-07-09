@@ -277,6 +277,24 @@ interface MarketCompsView {
   source: string;
   timestamp: string | null;
   note: string;
+  research?: CompResearchView | null;
+}
+
+// Zillow/Redfin read-only browser comp research: the exact search path + honest
+// per-source outcomes, so an actor failure never reads as a total comp failure.
+interface CompResearchAttemptView {
+  source: string; geoLevel: string; acreageScope: string; url: string | null;
+  outcome: string; visibleResultCount: number | null; screenshotPath: string | null; compCount: number; note: string;
+}
+interface CompResearchView {
+  attempts: CompResearchAttemptView[];
+  searchPath: string[];
+  acreageBand: string | null;
+  acreageExpanded: boolean;
+  geographyExpanded: boolean;
+  filtersUsed: string[];
+  strength: 'strong' | 'thin' | 'unavailable';
+  summary: string;
 }
 
 interface DdChecklistRowView {
@@ -1181,6 +1199,56 @@ function MarketCompsSection({ mc }: { mc?: MarketCompsView | null }) {
           <div class="text-[12px] font-semibold text-[var(--color-text-muted)]">Supplemental Sold Listings <span class="text-[11px] text-[var(--color-text-faint)]">(home-centric · excluded from the land band)</span></div>
           <CompRows rows={mc.supplementalSold} kind="sold" />
         </div>
+      )}
+
+      {/* Zillow + Redfin browser research — search path + honest per-source status */}
+      <CompResearchPanel research={mc.research} />
+    </div>
+  );
+}
+
+// Renders the read-only Zillow/Redfin browser comp research: which sources were
+// attempted, which succeeded/failed and why, how many comps each produced, the
+// filters used, whether acreage/geography were expanded, overall strength, and
+// the exact search path — so a thin result reads as an honest search, not silence.
+function CompResearchPanel({ research }: { research?: CompResearchView | null }) {
+  if (!research) return null;
+  const strengthTone = research.strength === 'strong'
+    ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : research.strength === 'thin' ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+    : 'text-[var(--color-text-faint)] border-[var(--color-border)]';
+  const bySource = (src: string) => research.attempts.filter((a) => a.source === src);
+  const srcLine = (src: string) => {
+    const a = bySource(src);
+    if (a.length === 0) return `${src}: not attempted`;
+    const comps = a.reduce((n, x) => n + x.compCount, 0);
+    const outcome = a.find((x) => x.outcome === 'collected' || x.outcome === 'partial')?.outcome ?? a[0].outcome;
+    const shot = a.find((x) => x.screenshotPath)?.screenshotPath;
+    return `${src}: ${comps} comp(s) · ${outcome}${shot ? ' · screenshot captured' : ''}`;
+  };
+  return (
+    <div class="rounded-md border border-[var(--color-border)] p-2.5 space-y-1.5">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Zillow &amp; Redfin browser research</span>
+        <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${strengthTone}`}>comps: {research.strength}</span>
+        {research.acreageExpanded && <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">acreage expanded</span>}
+        {research.geographyExpanded && <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">geography expanded</span>}
+      </div>
+      <div class="text-[12px] text-[var(--color-text-muted)]">{research.summary}</div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[11px] text-[var(--color-text-muted)]">
+        <div>Zillow — {srcLine('zillow')}</div>
+        <div>Redfin — {srcLine('redfin')}</div>
+      </div>
+      <div class="text-[10px] text-[var(--color-text-faint)]">
+        Filters: {research.filtersUsed.join(' · ')}{research.acreageBand ? ` · band ${research.acreageBand}` : ''}
+      </div>
+      {research.searchPath.length > 0 && (
+        <details class="text-[10px] text-[var(--color-text-faint)]">
+          <summary class="cursor-pointer">Search path ({research.searchPath.length} steps)</summary>
+          <div class="mt-1 space-y-0.5">
+            {research.searchPath.map((s, i) => <div key={i}>• {s}</div>)}
+          </div>
+        </details>
       )}
     </div>
   );
