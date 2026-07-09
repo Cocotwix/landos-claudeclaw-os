@@ -19,9 +19,11 @@ const PAGE = fs.readFileSync(
 );
 
 describe('LandOS page intake entry point', () => {
-  it('adds an Intake Planner view tab and renders the panel for it', () => {
+  it('keeps the Intake Planner view reachable by deep link (now owned by Acquisitions), not as a spine tab', () => {
     expect(PAGE).toMatch(/import \{ IntakePlanner \} from '@\/components\/IntakePlanner'/);
-    expect(PAGE).toMatch(/label="Intake Planner"/);
+    // Intake moved into the Acquisitions department workspace (New Lead); its
+    // spine view stays reachable via ?view=intake for backward compatibility.
+    expect(PAGE).not.toMatch(/<Tab label="Intake Planner"/);
     expect(PAGE).toMatch(/view === 'intake' && <IntakePlanner \/>/);
   });
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { useLocation } from 'wouter-preact';
-import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check } from 'lucide-preact';
+import { useLocation, Link } from 'wouter-preact';
+import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check, ArrowRight } from 'lucide-preact';
+import { DEPARTMENTS } from '@/lib/departments';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -167,18 +168,27 @@ export function MissionControl() {
       {loading && <PageState loading />}
 
       {!loading && !error && (
-        <div class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
-          <div class="flex gap-3 p-4 h-full min-w-max">
-            <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={orderedAgents} />
-            {orderedAgents.map((a) => (
-              <AgentColumn
-                key={a.id}
-                agent={a}
-                tasks={byAgent[a.id] ?? []}
-                onChange={tasks.refresh}
-                onColumnDrop={handleColumnDrop}
-              />
-            ))}
+        <div class="flex-1 min-h-0 flex flex-col">
+          <ExecutiveOverview
+            totalActive={totalActive}
+            unassigned={inbox.length}
+          />
+          <div class="px-4 pt-3 pb-1 text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">
+            Task delegation
+          </div>
+          <div class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
+            <div class="flex gap-3 px-4 pb-4 h-full min-w-max">
+              <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={orderedAgents} />
+              {orderedAgents.map((a) => (
+                <AgentColumn
+                  key={a.id}
+                  agent={a}
+                  tasks={byAgent[a.id] ?? []}
+                  onChange={tasks.refresh}
+                  onColumnDrop={handleColumnDrop}
+                />
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -197,6 +207,135 @@ export function MissionControl() {
       </Drawer>
     </div>
   );
+}
+
+// ── Executive overview ──────────────────────────────────────────────
+//
+// Mission Control is the executive dashboard, not a task launcher. This band
+// answers "walking in this morning, what do I need to know first?": pending
+// approvals, pipeline snapshot, active work, and department health. It reads
+// the LandOS overview and degrades cleanly if that endpoint is unavailable —
+// the task board below always renders regardless.
+
+interface LandosOverview {
+  counts: Record<string, number>;
+  pendingApprovals: number;
+  modelCostUsd: number;
+  costRecordsUsd: number;
+}
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function ExecutiveOverview({ totalActive, unassigned }: { totalActive: number; unassigned: number }) {
+  const overview = useFetch<LandosOverview>('/api/landos/overview?entity=all', 30_000);
+  const counts = overview.data?.counts ?? {};
+  const leads = counts.lead ?? 0;
+  const deals = counts.deal ?? 0;
+  const approvals = overview.data?.pendingApprovals ?? 0;
+  const spend = (overview.data?.modelCostUsd ?? 0) + (overview.data?.costRecordsUsd ?? 0);
+  const wsName = workspaceName.value;
+
+  const health = useMemo(() => {
+    const operational = DEPARTMENTS.filter((d) => d.status === 'operational').length;
+    const partial = DEPARTMENTS.filter((d) => d.status === 'partial').length;
+    const shell = DEPARTMENTS.filter((d) => d.status === 'shell').length;
+    return { operational, partial, shell };
+  }, []);
+
+  return (
+    <div class="px-4 pt-4 pb-2 border-b border-[var(--color-border)]">
+      <div class="text-[13px] text-[var(--color-text)] mb-3">
+        {greeting()}{wsName && wsName !== 'ClaudeClaw' ? `, ${wsName}` : ''}. Here's what needs attention.
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <ExecStat
+          label="Pending approvals"
+          value={approvals}
+          hint={approvals > 0 ? 'Gated actions waiting' : 'Nothing blocked'}
+          href="/landos?view=overview"
+          emphasise={approvals > 0}
+        />
+        <ExecStat
+          label="Pipeline"
+          value={leads + deals}
+          hint={`${leads} lead${leads === 1 ? '' : 's'} · ${deals} deal${deals === 1 ? '' : 's'}`}
+          href="/dept/acquisitions"
+        />
+        <ExecStat
+          label="Active work"
+          value={totalActive}
+          hint={`${unassigned} unassigned task${unassigned === 1 ? '' : 's'}`}
+        />
+        <ExecStat
+          label="Model spend"
+          value={`$${spend.toFixed(2)}`}
+          hint="Across the business"
+          href="/dept/finance"
+        />
+      </div>
+
+      {/* Department health — how much of the company is online. */}
+      <div class="flex items-center gap-2 mt-3 flex-wrap">
+        <span class="text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)]">Departments</span>
+        <span class="text-[11px] text-[var(--color-text-muted)]">
+          {health.operational} operational · {health.partial} live surfaces · {health.shell} shell
+        </span>
+        <div class="flex items-center gap-1 flex-wrap ml-1">
+          {DEPARTMENTS.map((d) => (
+            <Link
+              key={d.slug}
+              href={`/dept/${d.slug}`}
+              class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+              title={d.purpose}
+            >
+              <span
+                class="w-1.5 h-1.5 rounded-full"
+                style={{
+                  backgroundColor:
+                    d.status === 'operational' ? 'var(--color-status-done)'
+                    : d.status === 'partial' ? 'var(--color-accent)'
+                    : 'var(--color-text-faint)',
+                }}
+              />
+              {d.label}
+            </Link>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExecStat({
+  label, value, hint, href, emphasise,
+}: {
+  label: string; value: string | number; hint: string; href?: string; emphasise?: boolean;
+}) {
+  const body = (
+    <>
+      <div class="flex items-center gap-1.5">
+        <span class="text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</span>
+        {href && <ArrowRight size={11} class="ml-auto text-[var(--color-text-faint)]" />}
+      </div>
+      <div
+        class="text-2xl font-semibold tabular-nums mt-0.5"
+        style={emphasise ? { color: 'var(--color-status-failed)' } : undefined}
+      >
+        {value}
+      </div>
+      <div class="text-[11px] text-[var(--color-text-muted)] mt-0.5">{hint}</div>
+    </>
+  );
+  const cls = 'rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3';
+  return href
+    ? <Link href={href} class={`${cls} block hover:border-[var(--color-border-strong)] hover:bg-[var(--color-elevated)] transition-colors`}>{body}</Link>
+    : <div class={cls}>{body}</div>;
 }
 
 // ── Columns ─────────────────────────────────────────────────────────

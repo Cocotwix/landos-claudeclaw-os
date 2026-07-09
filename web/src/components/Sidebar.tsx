@@ -13,7 +13,7 @@ import {
   modKeyLabel,
 } from '@/lib/personalization';
 
-const SECTIONS: RouteSection[] = ['workspace', 'intelligence', 'collaborate', 'configure'];
+const SECTIONS: RouteSection[] = ['company', 'departments', 'system'];
 
 export function Sidebar() {
   const [pathname] = useLocation();

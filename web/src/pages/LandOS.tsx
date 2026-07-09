@@ -124,7 +124,8 @@ export function LandOS() {
   return (
     <div class="flex flex-col h-full">
       <PageHeader
-        title="LandOS"
+        title="LandOS Spine"
+        breadcrumb="System"
         actions={
           <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">
             {view === 'overview' && data ? `${data.pendingApprovals} pending approval${data.pendingApprovals === 1 ? '' : 's'}` : ''}
@@ -132,16 +133,17 @@ export function LandOS() {
         }
         tabs={
           <>
+            {/* System-spine views only. The Acquisitions surfaces that used to live
+                here (Acquire / Intake Planner / Deal Card) now live in the
+                Acquisitions department workspace; their views stay reachable via
+                deep links (?view= / ?deal=) for backward compatibility. */}
+            <Tab label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
             <Tab label="Command" active={view === 'command'} onClick={() => setView('command')} />
             <Tab label="Org / Agents" active={view === 'org'} onClick={() => setView('org')} />
             <Tab label="Model Router" active={view === 'router'} onClick={() => setView('router')} />
             <Tab label="Knowledge" active={view === 'knowledge'} onClick={() => setView('knowledge')} />
-            <Tab label="Acquire" active={view === 'acquire'} onClick={() => setView('acquire')} />
-            <Tab label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
-            <Tab label="Intake Planner" active={view === 'intake'} onClick={() => setView('intake')} />
-            <Tab label="Deal Card" active={view === 'dealcard'} onClick={() => { setSelectedDealCardId(undefined); setView('dealcard'); }} />
             <Tab label="Cost Control" active={view === 'costcontrol'} onClick={() => setView('costcontrol')} />
-            {/* Entity context — cross-tab: switches Acquire tagging, Overview counts, Cost Control scope. */}
+            {/* Entity context — cross-tab: switches Overview counts + Cost Control scope. */}
             <span class="mx-1 h-4 w-px bg-[var(--color-border)]" />
             <Tab label="All entities" active={entity === 'all'} onClick={() => setEntity('all')} />
             <Tab label="Land Ally" active={entity === 'LAND_ALLY'} onClick={() => setEntity('LAND_ALLY')} />

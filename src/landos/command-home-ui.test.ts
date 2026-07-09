@@ -22,15 +22,18 @@ describe('LandOS Command home page wiring', () => {
     expect(PAGE).toMatch(/view === 'command' && <CommandHome/);
   });
 
-  it('keeps the existing Overview and Intake Planner tabs intact', () => {
+  it('keeps the Overview spine tab; Intake view stays reachable but is no longer a spine tab', () => {
     expect(PAGE).toMatch(/label="Overview"/);
-    expect(PAGE).toMatch(/label="Intake Planner"/);
+    // Intake Planner + Deal Card now live in the Acquisitions department
+    // workspace; their spine views stay reachable by deep link (?view=) for
+    // backward compatibility, but the old feature tabs were demoted.
+    expect(PAGE).not.toMatch(/<Tab label="Intake Planner"/);
     expect(PAGE).toMatch(/view === 'intake' && <IntakePlanner \/>/);
   });
 
-  it('adds a Deal Card tab/panel', () => {
+  it('keeps the Deal Card view reachable by deep link, not as a spine tab', () => {
     expect(PAGE).toMatch(/import \{ DealCard \} from '@\/components\/DealCard'/);
-    expect(PAGE).toMatch(/label="Deal Card"/);
+    expect(PAGE).not.toMatch(/<Tab label="Deal Card"/);
     expect(PAGE).toMatch(/view === 'dealcard' && <DealCard/);
   });
 });

@@ -2391,16 +2391,21 @@ function PublicRecordsResearchSection({ dealId }: { dealId: number }) {
 // content is split into tabs so the deal is legible in seconds and long reports
 // no longer force an endless scroll. Every existing section is preserved — only
 // reorganized behind a tab. No data or backend behavior changes.
-type DealTab = 'summary' | 'dd' | 'market' | 'strategy' | 'visuals' | 'browser' | 'documents' | 'reports';
+// Operator-language tabs (LandOS Vision & Architecture: Overview, Property,
+// Market, Strategy, Seller, Documents, Activity). Overview is the main working
+// surface — the Property Intelligence Report read. The remaining tabs hold the
+// deeper, editable detail (property DD + visuals + browser intelligence live
+// under Property; report generation + files under Documents; the report/audit
+// timeline under Activity).
+type DealTab = 'overview' | 'property' | 'market' | 'strategy' | 'seller' | 'documents' | 'activity';
 const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
-  { id: 'summary', label: 'Summary' },
-  { id: 'dd', label: 'Due Diligence' },
+  { id: 'overview', label: 'Overview' },
+  { id: 'property', label: 'Property' },
   { id: 'market', label: 'Market' },
   { id: 'strategy', label: 'Strategy' },
-  { id: 'visuals', label: 'Visuals' },
-  { id: 'browser', label: 'Browser Intelligence' },
+  { id: 'seller', label: 'Seller' },
   { id: 'documents', label: 'Documents' },
-  { id: 'reports', label: 'Reports' },
+  { id: 'activity', label: 'Activity' },
 ];
 
 function DealTabBar({ active, onSelect }: { active: DealTab; onSelect: (t: DealTab) => void }) {
@@ -2448,6 +2453,385 @@ function CriticalFactChips({ facts }: { facts?: SpineCriticalFact[] }) {
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PROPERTY INTELLIGENCE REPORT — the Deal Card Overview.
+//
+// The Overview is the primary Acquisitions workspace: ONE complete, professional
+// read of a single land opportunity. It SYNTHESIZES intelligence that already
+// exists (report, executive summary, discovery, comps, visuals, seller) into a
+// report hierarchy — hero, executive summary, key facts, what-the-facts-mean,
+// risks/unknowns, market, strategy, seller — instead of scattering department
+// outputs across tabs. It reuses existing data only. It never fabricates and it
+// never makes the buy/no-buy decision — it explains context and leaves the
+// decision to the operator. Deeper, editable detail lives in the tabs below.
+// ══════════════════════════════════════════════════════════════════════════
+
+type GovDd = {
+  flood?: { status: string; zone: string | null };
+  wetlands?: { status: string; type: string | null };
+  slope?: { status: string; slopeDeg: number | null };
+};
+function govOf(report: ReportView | null): GovDd | undefined {
+  return (report as { govDd?: GovDd } | null)?.govDd;
+}
+// Pull a fact + its source from the DD checklist (source-labeled by design).
+function factOf(report: ReportView | null, ...keys: string[]): { value: string | null; source: string | null } {
+  const rows = report?.ddFactChecklist ?? [];
+  for (const k of keys) {
+    const row = rows.find((r) => r.key === k);
+    if (row && row.value) return { value: row.value, source: row.source ?? null };
+  }
+  return { value: null, source: null };
+}
+function floodText(g?: GovDd): string {
+  if (g?.flood?.status !== 'verified') return 'Unknown';
+  return g.flood.zone && !/^x$/i.test(g.flood.zone) ? `Zone ${g.flood.zone}` : 'Zone X (minimal)';
+}
+function wetlandsText(g?: GovDd): string {
+  if (g?.wetlands?.status !== 'verified') return 'Unknown';
+  return g.wetlands.type ? 'Present' : 'None mapped';
+}
+function slopeText(g?: GovDd): string {
+  if (g?.slope?.status !== 'verified' || g.slope.slopeDeg == null) return 'Unknown';
+  return `~${g.slope.slopeDeg}°`;
+}
+// Best-effort city from the situs address ("123 Rd, Helenwood, TN 37755" -> "Helenwood").
+function cityFromSitus(situs: string | null): string | null {
+  if (!situs) return null;
+  const parts = situs.split(',').map((p) => p.trim()).filter(Boolean);
+  return parts.length >= 3 ? parts[parts.length - 2] : null;
+}
+
+// Enriched identity grid for the pinned header: seller, address, city, county,
+// state, acreage, APN / parcel ID, stage, deal status. Business language only.
+function DealIdentityGrid({ report, deal, prop, seller }: {
+  report: ReportView | null; deal: DealCardDetail; prop?: PropertyCardLite; seller?: PersonLite;
+}) {
+  const situs = factOf(report, 'situsAddress', 'address').value ?? prop?.active_input_address ?? null;
+  const apn = factOf(report, 'apn', 'parcelId').value ?? prop?.apn ?? null;
+  const county = factOf(report, 'county').value ?? prop?.county ?? null;
+  const state = factOf(report, 'state').value ?? prop?.state ?? null;
+  const city = cityFromSitus(situs);
+  const acres = factOf(report, 'acres').value ?? (prop?.acres != null ? `${prop.acres} ac` : null) ?? (deal.combined_acreage != null ? `${deal.combined_acreage} ac` : null);
+  return (
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
+      <HeaderField label="Seller / Lead" value={seller?.name ?? undefined} />
+      <HeaderField label="Address" value={situs} />
+      <HeaderField label="City" value={city} />
+      <HeaderField label="County" value={county} />
+      <HeaderField label="State" value={state} />
+      <HeaderField label="Acreage" value={acres} />
+      <HeaderField label="APN / Parcel ID" value={apn} />
+      <HeaderField label="Deal status" value={deal.status} />
+    </div>
+  );
+}
+
+// Hero visual — the best available satellite near the top, plus quick links out
+// to Maps / Street View / Earth / LandPortal. Clean placeholder, never a broken
+// layout, when no imagery has been captured.
+function HeroVisual({ report, prop, discoveryReport, token }: {
+  report: ReportView | null; prop?: PropertyCardLite; discoveryReport: DiscoveryReportView | null; token: string;
+}) {
+  const ctx = report?.visualContext;
+  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+  const captured = (ctx?.assets ?? []).filter((a) => a.status === 'captured' && a.imageUrl);
+  const sat = captured.find(isSatellite) ?? captured.find(isStreetView) ?? captured[0];
+  const lpUrl = prop?.lp_url ?? discoveryReport?.landportalInspection?.parcelUrl ?? null;
+  const links: Array<{ label: string; href: string }> = [];
+  if (ctx?.links?.maps) links.push({ label: 'Google Maps', href: ctx.links.maps });
+  if (ctx?.links?.streetView) links.push({ label: 'Street View', href: ctx.links.streetView });
+  if (ctx?.links?.earth) links.push({ label: 'Google Earth', href: ctx.links.earth });
+  if (lpUrl) links.push({ label: 'LandPortal', href: lpUrl });
+  return (
+    <div class="rounded-xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-card)]">
+      {sat && sat.imageUrl ? (
+        <img src={withToken(sat.imageUrl)} alt="Property visual" class="w-full h-52 sm:h-64 object-cover" loading="lazy" />
+      ) : (
+        <div class="w-full h-36 flex items-center justify-center px-4 text-center bg-[var(--color-elevated)] text-[12px] text-[var(--color-text-faint)]">
+          No property image captured yet. Run Property Intelligence, then Capture visuals (Property tab) to add satellite and Street View.
+        </div>
+      )}
+      {links.length > 0 && (
+        <div class="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 text-[12px] border-t border-[var(--color-border)]">
+          {links.map((l) => (
+            <a key={l.label} href={l.href} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">{l.label}</a>
+          ))}
+          <span class="text-[10px] text-[var(--color-text-faint)] ml-auto self-center">Supporting context only — never parcel identity.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Executive property summary — synthesized narrative, normal operator language.
+// Uses the backend executive summary when present; honest prompt otherwise.
+function OverviewSummary({ es, report }: { es: ExecSummaryView | null; report: ReportView | null }) {
+  if (es) {
+    const tone = es.confidence === 'high' ? 'text-[var(--color-status-done)]' : es.confidence === 'low' ? 'text-[var(--color-text-faint)]' : 'text-[var(--color-accent)]';
+    return (
+      <div class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-1.5">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">Executive Summary</span>
+          <span class={`ml-auto text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-border)] ${tone}`}>confidence: {es.confidence}</span>
+        </div>
+        <div class="text-[14px] font-semibold text-[var(--color-text)]">{es.headline}</div>
+        {es.whatItIs && <div class="text-[12.5px] text-[var(--color-text-muted)]">{es.whatItIs}</div>}
+        {es.whyInteresting && <div class="text-[12.5px] text-[var(--color-text-muted)]">{es.whyInteresting}</div>}
+      </div>
+    );
+  }
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 text-[12.5px] text-[var(--color-text-muted)]">
+      {report?.exists
+        ? 'Property Intelligence has run, but no executive summary is available for this parcel yet.'
+        : 'No property summary yet. Run Property Intelligence to build a full report from parcel facts, comps, visuals, and market data. Nothing is fabricated; unknowns stay unknown.'}
+    </div>
+  );
+}
+
+// Key facts — the professional at-a-glance property snapshot, source-labeled.
+function KeyFactsGrid({ report }: { report: ReportView | null }) {
+  const g = govOf(report);
+  const facts: Array<{ label: string; keyOrValue: { value: string | null; source: string | null } }> = [
+    { label: 'Owner of record', keyOrValue: factOf(report, 'owner') },
+    { label: 'APN / Parcel ID', keyOrValue: factOf(report, 'apn', 'parcelId') },
+    { label: 'Acreage', keyOrValue: factOf(report, 'acres') },
+    { label: 'County', keyOrValue: factOf(report, 'county') },
+    { label: 'State', keyOrValue: factOf(report, 'state') },
+    { label: 'Land use', keyOrValue: factOf(report, 'landUse') },
+    { label: 'Zoning', keyOrValue: factOf(report, 'zoning') },
+    { label: 'Road frontage', keyOrValue: factOf(report, 'roadFrontageFt') },
+    { label: 'Access', keyOrValue: factOf(report, 'landLocked') },
+    { label: 'Buildability', keyOrValue: factOf(report, 'buildabilityPct') },
+    { label: 'Flood', keyOrValue: { value: floodText(g), source: g?.flood?.status === 'verified' ? 'FEMA' : null } },
+    { label: 'Wetlands', keyOrValue: { value: wetlandsText(g), source: g?.wetlands?.status === 'verified' ? 'USFWS' : null } },
+    { label: 'Slope', keyOrValue: { value: slopeText(g), source: g?.slope?.status === 'verified' ? 'USGS' : null } },
+  ];
+  return (
+    <Section title="Key facts">
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-2.5">
+        {facts.map((f) => {
+          const v = f.keyOrValue.value;
+          return (
+            <div key={f.label} class="min-w-0">
+              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{f.label}</div>
+              <div class={`text-[12.5px] ${v && v !== 'Unknown' ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)] italic'}`}>{v || 'Unknown'}</div>
+              {f.keyOrValue.source && <div class="text-[9.5px] text-[var(--color-text-faint)]">{f.keyOrValue.source}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+// What the facts mean together — the synthesis the brief asks for. Deterministic,
+// derived only from present facts. It connects facts into combined context and
+// explicitly does NOT make a buy/no-buy call.
+function WhatThisMeans({ report, es }: { report: ReportView | null; es: ExecSummaryView | null }) {
+  const g = govOf(report);
+  const notes: Array<{ tone: 'concern' | 'positive' | 'verify'; text: string }> = [];
+  const floodPresent = g?.flood?.status === 'verified' && !!g.flood.zone && !/^x$|zone x|minimal|not in/i.test(g.flood.zone);
+  const wetPresent = g?.wetlands?.status === 'verified' && !!g.wetlands.type;
+  const steep = g?.slope?.status === 'verified' && g.slope.slopeDeg != null && g.slope.slopeDeg >= 15;
+  const landlocked = /yes|true|landlocked/i.test(factOf(report, 'landLocked').value ?? '');
+  const roadFrontage = factOf(report, 'roadFrontageFt').value;
+  const zoningKnown = !!factOf(report, 'zoning').value;
+  const utilitiesKnown = (report?.ddFactChecklist ?? []).some((r) => r.key.startsWith('utility_') && r.status === 'verified');
+
+  const constraints = [floodPresent && 'flood exposure', wetPresent && 'mapped wetlands', steep && 'steep slope', landlocked && 'limited/landlocked access'].filter(Boolean) as string[];
+  if (constraints.length >= 2) {
+    notes.push({ tone: 'concern', text: `${constraints.join(', ')} together point to a combined development constraint. Treat these as one issue and verify buildable area before finalizing an offer.` });
+  }
+  if (roadFrontage && !floodPresent && !wetPresent && !landlocked) {
+    notes.push({ tone: 'positive', text: `Confirmed road frontage with no mapped flood or wetlands is acquisition-positive context for access and buildability.` });
+  }
+  if (!zoningKnown && !utilitiesKnown) {
+    notes.push({ tone: 'verify', text: `Zoning and utility availability are both unconfirmed — verification needed before offer finalization.` });
+  }
+  const mp = es?.marketPulse;
+  if (mp && mp.pricePerAcre?.median != null && !floodPresent && !wetPresent && roadFrontage) {
+    notes.push({ tone: 'positive', text: `Supportive comparable pricing alongside clean parcel facts is acquisition-positive context — confirm comps and costs before an offer.` });
+  }
+  if (notes.length === 0) return null;
+  const dot = (t: string) => t === 'concern' ? 'var(--color-status-failed)' : t === 'positive' ? 'var(--color-status-done)' : 'var(--color-accent)';
+  return (
+    <Section title="What the facts mean together">
+      <div class="space-y-1.5">
+        {notes.map((n, i) => (
+          <div key={i} class="flex items-start gap-2 text-[12.5px] text-[var(--color-text-muted)]">
+            <span class="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: dot(n.tone) }} />
+            <span>{n.text}</span>
+          </div>
+        ))}
+        <div class="text-[10px] text-[var(--color-text-faint)] pt-0.5">Context only — LandOS does not decide. The buy/no-buy call is yours.</div>
+      </div>
+    </Section>
+  );
+}
+
+// Key risks / unknowns — two honest columns, deduplicated from report + summary.
+function KeyRisksUnknowns({ report, es }: { report: ReportView | null; es: ExecSummaryView | null }) {
+  const dedupe = (xs: string[]) => Array.from(new Set(xs.map((x) => x.trim()).filter(Boolean)));
+  const risks = dedupe([...(report?.riskFlags ?? []), ...(es?.topRisks ?? [])]).slice(0, 8);
+  const unknowns = dedupe([...(report?.dataGaps ?? []), ...(es?.verifyBeforeOffer ?? [])]).slice(0, 8);
+  if (risks.length === 0 && unknowns.length === 0) return null;
+  return (
+    <Section title="Key risks & unknowns">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div class="text-[11px] font-semibold text-[var(--color-status-failed)] mb-1">Risks</div>
+          {risks.length ? risks.map((r, i) => <div key={i} class="text-[12px] text-[var(--color-text-muted)]">• {r}</div>) : <Placeholder text="None flagged" />}
+        </div>
+        <div>
+          <div class="text-[11px] font-semibold text-[var(--color-accent)] mb-1">Unknowns — verify before offer</div>
+          {unknowns.length ? unknowns.map((r, i) => <div key={i} class="text-[12px] text-[var(--color-text-muted)]">• {r}</div>) : <Placeholder text="No open gaps recorded" />}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+// Market snapshot — compact market read near the top; full detail lives on Market.
+function MarketSnapshot({ es, mc }: { es: ExecSummaryView | null; mc?: MarketCompsView | null }) {
+  const mp = es?.marketPulse;
+  const m = mc?.metrics;
+  const cells: Array<{ label: string; value: string }> = [
+    { label: 'Sold comps', value: mp ? String(mp.realieSoldCount ?? mc?.soldCount ?? 0) : String(mc?.soldCount ?? 0) },
+    { label: 'Active listings', value: mp ? String(mp.zillowActiveCount ?? mc?.activeCount ?? 0) : String(mc?.activeCount ?? 0) },
+    { label: 'Median $/ac', value: usd(mp?.pricePerAcre?.median ?? m?.soldMedianPpa ?? null) },
+    { label: 'DOM (median)', value: m?.domMedian != null ? String(m.domMedian) : 'Unknown' },
+  ];
+  const hasAny = (mc && (mc.soldCount > 0 || mc.activeCount > 0)) || (mp && mp.pricePerAcre?.median != null);
+  return (
+    <Section title="Market snapshot">
+      {hasAny ? (
+        <>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
+            {cells.map((c) => <HeaderField key={c.label} label={c.label} value={c.value} />)}
+          </div>
+          {mp?.interpretation && <div class="text-[12px] text-[var(--color-text-muted)] mt-2">{mp.interpretation}</div>}
+          <div class="text-[10px] text-[var(--color-text-faint)] mt-1">Source: {mc?.primaryProvider || 'comps providers'}{mp ? ` · pulse confidence ${mp.confidence}` : ''}. Full comps on the Market tab.</div>
+        </>
+      ) : (
+        <Placeholder text="No market comps retrieved yet. Run Property Intelligence to pull area comps and market pulse." />
+      )}
+    </Section>
+  );
+}
+
+// Strategy snapshot — property-specific exit evaluation (Acquisitions), compact.
+// Neighbor sale is NOT an acquisition strategy and is excluded.
+function StrategySnapshot({ dcr, es }: { dcr: DiscoveryReportView | null; es: ExecSummaryView | null }) {
+  const excl = /neighbor/i;
+  const fromDcr = (dcr?.strategyEvaluation ?? [])
+    .filter((s) => !excl.test(s.strategy))
+    .map((s) => ({ strategy: s.strategy, suitability: s.verdict, reason: s.reason, blocker: s.mainRisk }));
+  const fromEs = (es?.strategyRanking ?? [])
+    .filter((s) => !excl.test(s.strategy))
+    .map((s) => ({ strategy: s.strategy, suitability: s.viability, reason: s.reason, blocker: s.mustVerify || s.risk }));
+  const rows = (fromDcr.length ? fromDcr : fromEs).slice(0, 5);
+  if (rows.length === 0) return null;
+  const strongest = es?.strongestStrategy?.strategy;
+  return (
+    <Section title="Strategy snapshot">
+      <div class="space-y-1.5">
+        {rows.map((r, i) => (
+          <div key={i} class="rounded-md border border-[var(--color-border)] p-2">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-[12.5px] font-medium text-[var(--color-text)]">{r.strategy}</span>
+              <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${verdictTone(r.suitability)}`}>{r.suitability}</span>
+              {strongest && strongest === r.strategy && <span class="text-[10px] text-[var(--color-status-done)]">strongest</span>}
+            </div>
+            {r.reason && <div class="text-[11.5px] text-[var(--color-text-muted)] mt-0.5">{r.reason}</div>}
+            {r.blocker && <div class="text-[11px] text-[var(--color-text-faint)] mt-0.5">Watch: {r.blocker}</div>}
+          </div>
+        ))}
+      </div>
+      <div class="text-[10px] text-[var(--color-text-faint)] mt-1.5">Property-specific exit evaluation. Full strategy detail on the Strategy tab.</div>
+    </Section>
+  );
+}
+
+// Seller / discovery snapshot — helps talk to the seller. Full detail on Seller.
+function SellerSnapshot({ deal, seller, es }: { deal: DealCardDetail; seller?: PersonLite; es: ExecSummaryView | null }) {
+  const notes = (deal.seller_notes || '').trim();
+  const questions = es?.sellerQuestions ?? [];
+  const hasAny = !!seller?.name || deal.asking_price != null || notes || questions.length > 0;
+  return (
+    <Section title="Seller & discovery">
+      {hasAny ? (
+        <div class="space-y-2">
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5">
+            <HeaderField label="Seller / Lead" value={seller?.name ?? undefined} />
+            <HeaderField label="Phone" value={seller?.phone ?? undefined} />
+            <HeaderField label="Asking (seller-stated)" value={deal.asking_price != null ? usd(deal.asking_price) : undefined} />
+          </div>
+          {notes && <div class="text-[12px] text-[var(--color-text-muted)] whitespace-pre-wrap">{notes}</div>}
+          {questions.length > 0 && (
+            <div>
+              <div class="text-[11px] font-semibold text-[var(--color-text-faint)] mb-0.5">Questions for the seller</div>
+              {questions.slice(0, 5).map((q, i) => <div key={i} class="text-[12px] text-[var(--color-text-muted)]">• {q}</div>)}
+            </div>
+          )}
+          <div class="text-[10px] text-[var(--color-text-faint)]">Asking price is negotiation context only, never an offer basis. Full seller workspace on the Seller tab.</div>
+        </div>
+      ) : (
+        <Placeholder text="No seller or discovery info captured yet. Add it on the Seller tab." />
+      )}
+    </Section>
+  );
+}
+
+// The full Overview composition — the Property Intelligence Report read.
+function OverviewTab({
+  report, es, dcr, spine, deal, prop, seller, token, runReport, reportRunning,
+}: {
+  report: ReportView | null; es: ExecSummaryView | null; dcr: DiscoveryReportView | null;
+  spine: BusinessSpineView | null; deal: DealCardDetail; prop?: PropertyCardLite; seller?: PersonLite;
+  token: string; runReport: () => void; reportRunning: boolean;
+}) {
+  return (
+    <div class="space-y-4">
+      <HeroVisual report={report} prop={prop} discoveryReport={dcr} token={token} />
+      <OverviewSummary es={es} report={report} />
+
+      {/* Primary CTA when no report has run — the one action that builds the report. */}
+      {!report?.exists && (
+        <button
+          type="button"
+          onClick={runReport}
+          disabled={reportRunning}
+          class="w-full px-3 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
+        >
+          {reportRunning ? 'Running Property Intelligence…' : 'Run Property Intelligence'}
+        </button>
+      )}
+
+      <KeyFactsGrid report={report} />
+      <WhatThisMeans report={report} es={es} />
+      <KeyRisksUnknowns report={report} es={es} />
+      <MarketSnapshot es={es} mc={report?.marketComps} />
+      <StrategySnapshot dcr={dcr} es={es} />
+      <SellerSnapshot deal={deal} seller={seller} es={es} />
+
+      {/* Source-labeled property facts — the full DD checklist with named sources. */}
+      <Collapsible title="Source-labeled property facts">
+        <DdFactChecklist rows={report?.ddFactChecklist} completeness={report?.ddCompleteness} />
+      </Collapsible>
+
+      {/* Full business intelligence — the canonical spine (what's found / missing /
+          evidence / blockers). Kept available without cluttering the report read. */}
+      {spine && (
+        <Collapsible title="Full business intelligence">
+          <BusinessSpineSection spine={spine} dealId={deal.id} />
+        </Collapsible>
+      )}
+    </div>
+  );
+}
+
 export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; entity?: EntityFilter }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [spine, setSpine] = useState<BusinessSpineView | null>(null);
@@ -2456,7 +2840,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
   const [error, setError] = useState<string | null>(null);
   // Active Deal Card tab. Resets to Summary whenever a different card opens so the
   // operator always lands on the 30-second read.
-  const [activeTab, setActiveTab] = useState<DealTab>('summary');
+  const [activeTab, setActiveTab] = useState<DealTab>('overview');
 
   // Saved-cards list state. The list is the primary open flow: fetched on mount
   // (unless we were handed a specific dealCardId) and refreshed after any write.
@@ -2630,7 +3014,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
     try {
       setLoading(true);
       setError(null);
-      setActiveTab('summary');
+      setActiveTab('overview');
       setDdEditing(false);
       setDdWarnings([]);
       setStrategyEditing(false);
@@ -3056,7 +3440,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
             onClick={backToList}
             class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
           >
-            ← Deal Cards
+            ← Deal Library
           </button>
         )}
         {mode === 'view' && (
@@ -3123,10 +3507,12 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
         />
       )}
 
-      {/* Saved Deal Cards list — the primary open flow. Shown in view mode when no
-          specific card is open and we are not embedded against a single id. */}
+      {/* Deal Library — the saved-deal list + primary open flow. Shown in view mode
+          when no specific card is open and we are not embedded against a single id.
+          Clicking a row opens that property's actual Deal Card (Property Intelligence
+          Report) in place. This list is NOT itself a Deal Card. */}
       {mode === 'view' && !dealCardId && !deal && listView === 'active' && (
-        <Section title="Saved Deal Cards">
+        <Section title="Deal Library">
           {listError && <div class="text-[11px] text-[var(--color-status-failed)]">{listError}</div>}
           {cards === null && !listError && <div class="text-[12px] text-[var(--color-text-muted)]">Loading…</div>}
           {cards !== null && cards.length === 0 && (
@@ -3279,7 +3665,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           <div class="sticky top-0 z-10 -mx-6 px-6 pt-1 bg-[var(--color-bg)] border-b border-[var(--color-border)] space-y-2">
             <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-3 space-y-2">
               <div class="flex flex-wrap items-center gap-2">
-                <span class="text-[14px] font-semibold">
+                <span class="text-[15px] font-semibold">
                   {prop?.active_input_address || deal.title || 'Untitled Deal'}
                 </span>
                 <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
@@ -3290,7 +3676,10 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   Stage: {deal.status}
                 </span>
               </div>
-              {/* Critical facts at a glance (full detail lives in Summary → Business Intelligence). */}
+              {/* Full property identity — seller, address, city, county, state, acreage,
+                  APN / parcel ID, deal status — the report header line. */}
+              <DealIdentityGrid report={report} deal={deal} prop={prop} seller={seller} />
+              {/* Critical facts at a glance (full detail in Overview → Source-labeled facts). */}
               <CriticalFactChips facts={spine?.header?.criticalFacts} />
               {/* The single critical next action — always in view. */}
               {spine?.header?.nextBestAction && (
@@ -3306,33 +3695,41 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
             <DealTabBar active={activeTab} onSelect={setActiveTab} />
           </div>
 
-          {/* ══ SUMMARY TAB ══ Business Intelligence + the report's decision-first
-              read (identity, land facts, land score, economics, confirm-before-offer)
-              + area Market Pulse. The 30-second understanding of the deal. */}
-          {activeTab === 'summary' && (
-          <>
-          {/* BUSINESS INTELLIGENCE — canonical Business Object Spine: what LandOS
-              found, what's missing, evidence, decision-grade, blockers, next action. */}
-          <BusinessSpineSection spine={spine} dealId={deal.id} />
-
-          {/* MARKET PULSE — is the area growing/stable/declining, county / ZIP
-              $/acre, growth signals. Area-level: works even when unverified. */}
-          <MarketPulseReadSection dealId={deal.id} />
-          </>
+          {/* ══ OVERVIEW TAB ══ The Property Intelligence Report read: hero,
+              executive summary, key facts, what-the-facts-mean, risks/unknowns,
+              market + strategy + seller snapshots, source-labeled facts. The one
+              complete understanding of the opportunity. */}
+          {activeTab === 'overview' && (
+            <OverviewTab
+              report={report}
+              es={execSummary}
+              dcr={discoveryReport}
+              spine={spine}
+              deal={deal}
+              prop={prop}
+              seller={seller}
+              token={dashboardToken}
+              runReport={() => void runReport()}
+              reportRunning={reportRunning}
+            />
           )}
 
-          {/* ══ DUE DILIGENCE TAB ══ */}
-          {activeTab === 'dd' && (
-          <>
-          {/* PUBLIC RECORDS RESEARCH — the official county sources to check + the
-              next verification action. Sources to check, not facts. */}
-          <PublicRecordsResearchSection dealId={deal.id} />
-          </>
+          {/* ══ MARKET TAB ══ Area Market Pulse first (works even when unverified),
+              then the report's market pulse + raw comps below. */}
+          {activeTab === 'market' && (
+            <MarketPulseReadSection dealId={deal.id} />
           )}
 
-          {/* Property Intelligence run controls + status — Summary & Reports tabs.
+          {/* ══ PROPERTY TAB ══ Public records research + the full property
+              intelligence detail (parcel, land facts, land score, visuals,
+              browser intelligence, DD checklist). */}
+          {activeTab === 'property' && (
+            <PublicRecordsResearchSection dealId={deal.id} />
+          )}
+
+          {/* Property Intelligence run controls + status — Documents tab.
               Preserves the Run / Re-run / Download Property Intelligence actions. */}
-          {(activeTab === 'summary' || activeTab === 'reports') && (
+          {activeTab === 'documents' && (
           <Section title="Property Intelligence Report">
             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
               <div class="flex items-center gap-2 flex-wrap">
@@ -3380,7 +3777,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </div>
             )}
 
-            {report?.exists && activeTab === 'reports' && (
+            {report?.exists && (
               <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
                 Operational report. Departments stay separate (DD property-level, Market market-level, Strategy decision-level). No parcel fact is Verified without a named source; no comps, demand, pricing, EVs, or offers are fabricated.
                 {report.generatedAt ? <> Last run {formatRelativeTime(report.generatedAt)}{report.updatedBy ? ` by ${report.updatedBy}` : ''}.</> : null}
@@ -3389,19 +3786,19 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           </Section>
           )}
 
-          {/* Visuals tab before any report/capture — honest placeholder, not a blank tab. */}
-          {activeTab === 'visuals' && !(report?.exists && prop?.id) && (
+          {/* Visuals before any report/capture — honest placeholder, not a blank tab. */}
+          {activeTab === 'property' && !(report?.exists && prop?.id) && (
             <Section title="Visuals">
-              <Placeholder text="Run Property Intelligence (Summary tab), then Capture visuals, to see satellite / Street View / Google Maps + Earth here." />
+              <Placeholder text="Run Property Intelligence (Overview tab), then Capture visuals, to see satellite / Street View / Google Maps + Earth here." />
             </Section>
           )}
 
           {/* Report-derived sections, routed to their tabs (unchanged data/props). */}
           {report?.exists && (
               <div class="space-y-3">
-                {/* VISUALS TAB — large satellite + parcel marker/boundary + Street
-                    View + Maps/Earth + source/date, and the Capture visuals action. */}
-                {activeTab === 'visuals' && prop?.id && (
+                {/* PROPERTY TAB — VISUALS: large satellite + parcel marker/boundary +
+                    Street View + Maps/Earth + source/date, and the Capture action. */}
+                {activeTab === 'property' && prop?.id && (
                   <div>
                     <div class="flex items-center justify-end mb-1">
                       <button
@@ -3418,9 +3815,8 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                   </div>
                 )}
 
-                {/* SUMMARY TAB — parcel details, land facts, land score, executive
-                    summary (40–60% range, economics), and confirm-before-offer. */}
-                {activeTab === 'summary' && (
+                {/* PROPERTY TAB — parcel details, at-a-glance land facts, land score. */}
+                {activeTab === 'property' && (
                 <>
                 {/* PROPERTY LOCATION + PARCEL DETAILS — address / APN / county / state
                     / acreage / verification. */}
@@ -3429,19 +3825,22 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 <AtAGlanceStrip report={report} propertyType={propertyType} />
                 {/* LAND SCORE — deterministic 100-pt rubric from verified parcel data. */}
                 <LandScoreSection ls={report.landScore} parcelVerified={report.parcelVerified} />
+                </>
+                )}
+
+                {/* STRATEGY TAB — executive summary (40–60% range, economics, best
+                    strategy, risks), confirm-before-offer, then the cohesive
+                    Discovery Call Intelligence Report (five strategy evaluations,
+                    offer range). Decision-oriented content lives together here. */}
+                {activeTab === 'strategy' && (
+                <>
                 {/* EXECUTIVE SUMMARY — 40–60% preliminary range, deal economics,
                     best first-glance strategy, top risks/blockers. */}
                 <ExecutiveSummarySection es={execSummary} />
                 {/* CONFIRM BEFORE OFFER — the single home for must-confirm items. */}
                 <ConfirmBeforeOfferSection es={execSummary} report={report} />
-                </>
-                )}
-
-                {/* STRATEGY TAB — the cohesive Discovery Call Intelligence Report:
-                    Smart Input, Parcel Intelligence, Comps, Market Pulse, the five
-                    strategy evaluations, and the offer range. */}
-                {activeTab === 'strategy' && (
                 <DiscoveryCallReportSection dcr={discoveryReport} report={report} es={execSummary} />
+                </>
                 )}
 
                 {/* MARKET TAB — real market pulse signals + raw comps / actives. */}
@@ -3454,14 +3853,14 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 </>
                 )}
 
-                {/* BROWSER INTELLIGENCE TAB — LandPortal-first, then County. */}
-                {activeTab === 'browser' && (
+                {/* PROPERTY TAB — Browser Intelligence (LandPortal-first, then County). */}
+                {activeTab === 'property' && (
                 <BrowserIntelligenceSection dealId={deal?.id} />
                 )}
 
-                {/* DUE DILIGENCE TAB — full detailed DD from the report. */}
-                {activeTab === 'dd' && (
-                <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)]" open>
+                {/* PROPERTY TAB — full detailed DD from the report (collapsed). */}
+                {activeTab === 'property' && (
+                <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)]">
                   <summary class="cursor-pointer px-4 py-3 text-[13px] font-semibold text-[var(--color-text)]">Detailed Due Diligence &amp; Research</summary>
                   <div class="px-4 pb-4 space-y-3">
                 {/* DD Command Center — pre-call readiness. */}
@@ -3553,16 +3952,17 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </div>
           )}
 
-          {/* ── WORKSHEETS + MANUAL SECTIONS — routed to the matching tabs.
-              Seller/acquisitions/contacts/comms/documents → Documents; the manual
-              DD / Land Data → Due Diligence; Deal Economics / Market Research →
-              Market; Exit Strategy / Strategy / Pre-Call Brief → Strategy; the
-              manual Land Score compute → Reports. Same data, same handlers. */}
-          {/* Seller / Acquisitions — seller profile + next action + call prep → Documents. */}
-          {activeTab === 'documents' && deal?.id && <AcquisitionsPanel dealId={deal.id} />}
+          {/* ── WORKSHEETS + MANUAL SECTIONS — routed to the operator tabs.
+              Seller / acquisitions / contacts / comms → Seller; the manual DD /
+              Land Data + manual Land Score → Property; Deal Economics / Market
+              Research → Market; Exit Strategy / Strategy / Pre-Call Brief →
+              Strategy; documents/activity/quick actions → Documents. Same data,
+              same handlers. */}
+          {/* Seller / Acquisitions — seller profile + next action + call prep → Seller. */}
+          {activeTab === 'seller' && deal?.id && <AcquisitionsPanel dealId={deal.id} />}
 
-          {/* 2b. Manual Land Score — 100-pt rubric from VERIFIED LandPortal attributes → Reports. */}
-          {activeTab === 'reports' && (
+          {/* Manual Land Score — 100-pt rubric from VERIFIED LandPortal attributes → Property. */}
+          {activeTab === 'property' && (
           <Section title="Land Score">
             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
               <span class="text-[10px] text-[var(--color-text-faint)]">Computed on demand from a bounded non-credit LandPortal resolve. Never scored from unverified data.</span>
@@ -3614,30 +4014,11 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           </Section>
           )}
 
-          {/* 4. Land Data / DD Facts → Due Diligence */}
-          {activeTab === 'dd' && (
-          <Section title="Land Data / DD Facts">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
-              <Field label="Acreage" value={prop?.acres ?? deal.combined_acreage ?? undefined} />
-              <Field label="Zoning" value={prop?.zoning ?? undefined} />
-              <Field label="Access" />
-              <Field label="Utilities" />
-              <Field label="Flood" />
-              <Field label="Slope / topography" />
-              <Field label="Wetlands / environmental" />
-              <Field label="Taxes / liens" />
-              <Field label="Soil / perc" />
-              <Field label="Subdivision potential" />
-            </div>
-            <div class="mt-2">
-              <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Data gaps</div>
-              {prop?.open_risks ? <span class="text-[12px] text-[var(--color-text)]">{prop.open_risks}</span> : <Placeholder text="No data gaps recorded yet" />}
-            </div>
-          </Section>
-          )}
-
-          {/* 4b. Due Diligence / Research worksheet — manual/local, labeled → Due Diligence */}
-          {activeTab === 'dd' && (
+          {/* Due Diligence / Research worksheet — manual/local, labeled → Property.
+              (The old all-empty "Land Data / DD Facts" scaffold was removed: Key
+              facts + the source-labeled DD checklist on Overview cover it, and this
+              worksheet holds the editable manual DD.) */}
+          {activeTab === 'property' && (
           <Section title="Due Diligence / Research">
             {!ddEditing && (
               <>
@@ -3705,8 +4086,8 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           </Section>
           )}
 
-          {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) → Documents */}
-          {activeTab === 'documents' && (
+          {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) → Seller */}
+          {activeTab === 'seller' && (
           <Section title="Contacts">
             {(!deal.people || deal.people.length === 0) ? (
               <Placeholder text="No contacts captured yet" />
@@ -3739,8 +4120,8 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           </Section>
           )}
 
-          {/* 6. Communication Summary — no external CRM mutation; GHL not connected → Documents */}
-          {activeTab === 'documents' && (
+          {/* 6. Communication Summary — no external CRM mutation; GHL not connected → Seller */}
+          {activeTab === 'seller' && (
           <Section title="Communication Summary">
             <Field label="Last contact" />
             <Field label="Sentiment" />
@@ -3906,13 +4287,11 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
           </Section>
           )}
 
-          {/* 8. Documents / Activity / Quick Actions → Documents */}
+          {/* 8. Documents & quick actions → Documents (report controls above) */}
           {activeTab === 'documents' && (
-          <Section title="Documents / Activity / Quick Actions">
+          <Section title="Documents & Quick Actions">
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Documents</div>
             <Placeholder text="No documents attached yet" />
-            <div class="text-[11px] text-[var(--color-text-muted)] mt-3 mb-1">Activity log</div>
-            <Placeholder text="No activity recorded yet" />
             <div class="text-[11px] text-[var(--color-text-muted)] mt-3 mb-2">Quick actions (approval-gated)</div>
             <div class="flex flex-wrap gap-2">
               {['Make Offer', 'Schedule Follow-Up', 'Run Full Report', 'Change Stage', 'Push to CRM', 'Generate PDF'].map((a) => (
@@ -3927,6 +4306,27 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 </button>
               ))}
             </div>
+          </Section>
+          )}
+
+          {/* ══ ACTIVITY TAB ══ Report generation history + credit usage + timeline. */}
+          {activeTab === 'activity' && (
+          <Section title="Activity">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-x-4 gap-y-1 mb-2">
+              <Field label="Report status" value={reportStatusText(report?.reportStatus)} />
+              <Field label="Last run" value={report?.generatedAt ? formatRelativeTime(report.generatedAt) : undefined} />
+              <Field label="Updated by" value={report?.updatedBy || undefined} />
+            </div>
+            {report?.exists && (
+              <div class="rounded-md border border-[var(--color-border)] p-2 mb-2">
+                <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Credit usage</div>
+                <div class="text-[12px] text-[var(--color-text)]">
+                  LandPortal non-credit tools: {report.creditUsage.landportalNonCreditUsed ? 'used' : 'not used'}. Comp-credit tools: not used.
+                </div>
+              </div>
+            )}
+            <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Activity log</div>
+            <Placeholder text="No activity recorded yet" />
           </Section>
           )}
 
