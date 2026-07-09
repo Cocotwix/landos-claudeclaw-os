@@ -1,115 +1,122 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { apiGet, apiPost } from '@/lib/api';
 
-// Browser Intelligence operator control. Start / connect the persistent Google
-// Chrome session, open LandPortal for a one-time manual login, and refresh
-// status — without remembering PowerShell commands. Read-only; never shows
-// cookies/tokens (the backend never returns them).
+// Browser Intelligence + LandPortal readiness. FULLY AUTOMATIC: on mount it
+// starts the dedicated LandOS Chrome session (if needed) and signs into
+// LandPortal using the configured env credentials — the operator never starts
+// the browser or logs in by hand. Shows the granular phase and, on failure, the
+// exact technical reason (or the exact missing credential env var names). Never
+// shows or asks for credentials/cookies (the backend never returns them).
 
-interface SessionHealth {
-  healthy: boolean;
-  status: 'live' | 'disabled' | 'unreachable' | 'auth_needed';
-  cdpUrl: string;
-  connectedAtIso: string | null;
-  lastCheckIso: string | null;
-  screenshotDir: string;
+type Phase =
+  | 'not_running' | 'disabled' | 'browser_live' | 'logging_in'
+  | 'authenticated' | 'auth_failed' | 'no_credentials' | 'session_unavailable';
+
+interface Readiness {
+  phase: Phase;
+  sessionStatus: string;
+  ready: boolean;
   landportalAuthenticated: boolean | null;
-  landportalAuthCheckedIso: string | null;
+  credentialsConfigured?: boolean;
+  missingEnv: string[];
+  reason?: string | null;
   note: string;
 }
-interface StartResult { status: string; launched: boolean; reused: boolean; chromePath: string | null; profileDir: string; error: string | null; health: SessionHealth }
 
-const STATUS_LABEL: Record<SessionHealth['status'], string> = {
-  live: 'Connected', disabled: 'Disabled', unreachable: 'Not running', auth_needed: 'Login needed',
+const PHASE_LABEL: Record<Phase, string> = {
+  not_running: 'Not running',
+  disabled: 'Disabled',
+  browser_live: 'Browser live',
+  logging_in: 'LandPortal: logging in…',
+  authenticated: 'Ready',
+  auth_failed: 'Login failed',
+  no_credentials: 'Credentials missing',
+  session_unavailable: 'Browser unavailable',
 };
-function tone(s: SessionHealth['status']): string {
-  if (s === 'live') return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
-  if (s === 'auth_needed') return 'text-[var(--color-accent)] border-[var(--color-accent)]';
-  if (s === 'unreachable') return 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
+function tone(p: Phase): string {
+  if (p === 'authenticated') return 'text-[var(--color-status-done)] border-[var(--color-status-done)]';
+  if (p === 'logging_in' || p === 'browser_live') return 'text-[var(--color-accent)] border-[var(--color-accent)]';
+  if (p === 'auth_failed' || p === 'no_credentials' || p === 'session_unavailable') return 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]';
   return 'text-[var(--color-text-faint)] border-[var(--color-border)]';
-}
-function timeShort(iso: string | null): string {
-  if (!iso) return '—';
-  try { return new Date(iso).toLocaleTimeString(); } catch { return '—'; }
 }
 
 export function BrowserIntelControl() {
-  const [health, setHealth] = useState<SessionHealth | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [r, setR] = useState<Readiness | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const autoRan = useRef(false);
 
-  async function refresh() {
-    setBusy('refresh'); setError(null);
-    try { const r = await apiGet<{ session: SessionHealth }>('/api/landos/browser/session'); setHealth(r.session); }
+  async function refresh(): Promise<Readiness | null> {
+    try { const res = await apiGet<{ readiness: Readiness }>('/api/landos/browser/readiness'); setR(res.readiness); return res.readiness; }
+    catch (e: any) { setError(e?.message || String(e)); return null; }
+  }
+  async function ensure() {
+    setBusy(true); setError(null);
+    setR((prev) => prev ? { ...prev, phase: 'logging_in', note: 'Starting browser and signing into LandPortal…' } : prev);
+    try { const res = await apiPost<{ readiness: Readiness }>('/api/landos/browser/ensure-auth', {}); setR(res.readiness); }
     catch (e: any) { setError(e?.message || String(e)); }
-    finally { setBusy(null); }
-  }
-  async function start() {
-    setBusy('start'); setError(null); setMsg(null);
-    try {
-      const r = await apiPost<{ start: StartResult }>('/api/landos/browser/start', {});
-      setHealth(r.start.health);
-      if (r.start.error) setError(r.start.error);
-      else setMsg(r.start.reused ? 'Reused the running Chrome session.' : r.start.launched ? `Launched Chrome (${r.start.chromePath}).` : 'Connected.');
-    } catch (e: any) { setError(e?.message || String(e)); }
-    finally { setBusy(null); }
-  }
-  async function openLandPortal() {
-    setBusy('open'); setError(null); setMsg(null);
-    try {
-      const r = await apiPost<{ landportal: { authenticated: boolean; note: string; health: SessionHealth } }>('/api/landos/browser/open-landportal', {});
-      setHealth(r.landportal.health);
-      setMsg(r.landportal.note);
-    } catch (e: any) { setError(e?.message || String(e)); }
-    finally { setBusy(null); }
+    finally { setBusy(false); }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  // On mount: read readiness, then AUTO start+login if not already authenticated
+  // and credentials are configured (and live browser isn't disabled).
+  useEffect(() => {
+    (async () => {
+      const cur = await refresh();
+      if (autoRan.current) return;
+      if (cur && cur.phase !== 'authenticated' && cur.phase !== 'disabled' && cur.credentialsConfigured !== false) {
+        autoRan.current = true;
+        void ensure();
+      }
+    })();
+  }, []);
 
-  const status = health?.status ?? 'disabled';
-  const connected = status === 'live' || status === 'auth_needed';
+  const phase: Phase = busy ? 'logging_in' : (r?.phase ?? 'not_running');
+  const missing = r?.missingEnv ?? [];
 
   return (
     <details class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]">
       <summary class="cursor-pointer px-4 py-2.5 flex items-center gap-2 flex-wrap">
         <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Browser Intelligence</span>
-        <span class={`text-[10px] px-2 py-0.5 rounded-full border ${tone(status)}`}>{STATUS_LABEL[status]}</span>
-        {health?.landportalAuthenticated === true && <span class="text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-status-done)] text-[var(--color-status-done)]">LandPortal: signed in</span>}
-        {health?.landportalAuthenticated === false && <span class="text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-accent)] text-[var(--color-accent)]">LandPortal: login needed</span>}
+        <span class={`text-[10px] px-2 py-0.5 rounded-full border ${tone(phase)}`}>{PHASE_LABEL[phase]}</span>
+        {r?.landportalAuthenticated === true && <span class="text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-status-done)] text-[var(--color-status-done)]">LandPortal: signed in</span>}
       </summary>
       <div class="px-4 pb-4 space-y-3">
-        <div class="text-[11px] text-[var(--color-text-muted)]">{health?.note ?? 'Checking session…'}</div>
+        <div class="text-[11px] text-[var(--color-text-muted)]">{r?.note ?? 'Checking session…'}</div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1">
-          <Field label="Browser Intelligence" value={STATUS_LABEL[status]} />
-          <Field label="Chrome session" value={status === 'live' || status === 'auth_needed' ? `connected (${health?.cdpUrl})` : status === 'unreachable' ? 'not running' : 'disabled'} />
-          <Field label="LandPortal login" value={health?.landportalAuthenticated == null ? 'not checked' : health.landportalAuthenticated ? 'signed in' : 'login needed'} />
-          <Field label="Last health check" value={timeShort(health?.lastCheckIso ?? null)} />
+        {/* Exact technical reason on failure — never "log in manually". */}
+        {phase === 'auth_failed' && r?.reason && (
+          <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">Login failed: {r.reason}</div>
+        )}
+        {phase === 'session_unavailable' && r?.reason && (
+          <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">Browser unavailable: {r.reason}</div>
+        )}
+        {phase === 'no_credentials' && (
+          <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">
+            LandPortal credentials are not configured. Set {missing.length ? missing.join(' and ') : 'LANDPORTAL_EMAIL and LANDPORTAL_PASSWORD'} in .env (values never shown).
+          </div>
+        )}
+
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
+          <Field label="Browser session" value={r?.sessionStatus === 'live' || r?.sessionStatus === 'auth_needed' ? 'connected' : r?.sessionStatus === 'unreachable' ? 'not running' : r?.sessionStatus ?? '—'} />
+          <Field label="LandPortal" value={r?.landportalAuthenticated == null ? (phase === 'logging_in' ? 'logging in…' : 'not checked') : r?.landportalAuthenticated ? 'signed in' : 'not signed in'} />
+          <Field label="Credentials" value={r?.credentialsConfigured === false ? 'missing' : 'configured'} />
         </div>
-        {health?.screenshotDir && <div class="text-[10px] text-[var(--color-text-faint)] break-all">Screenshots: {health.screenshotDir}</div>}
 
         <div class="flex items-center gap-2 flex-wrap">
-          <button type="button" onClick={() => void start()} disabled={!!busy}
+          <button type="button" onClick={() => void ensure()} disabled={busy}
             class="px-3 py-1.5 rounded-md text-[12px] font-semibold border border-[var(--color-accent)] bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-40">
-            {busy === 'start' ? 'Starting…' : connected ? 'Reconnect' : 'Start Browser Intelligence'}
+            {busy ? 'Working…' : phase === 'authenticated' ? 'Reconnect' : 'Start & sign in'}
           </button>
-          <button type="button" onClick={() => void refresh()} disabled={!!busy}
+          <button type="button" onClick={() => void refresh()} disabled={busy}
             class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
-            {busy === 'refresh' ? 'Refreshing…' : 'Refresh status'}
+            Refresh status
           </button>
-          {connected && (
-            <button type="button" onClick={() => void openLandPortal()} disabled={!!busy}
-              class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">
-              {busy === 'open' ? 'Opening…' : 'Open LandPortal'}
-            </button>
-          )}
         </div>
 
-        {msg && <div class="text-[11px] text-[var(--color-text-muted)]">{msg}</div>}
         {error && <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">{error}</div>}
         <div class="text-[10px] text-[var(--color-text-faint)]">
-          Uses Google Chrome with the dedicated LandOS profile (not Edge), reused across every lead — one login, no relogin per property. Read-only: no billing, paid reports, credits, settings, or writes. Credentials/cookies are never stored or shown.
+          LandOS starts the dedicated LandOS Chrome (not Edge, not your normal tabs) and signs into LandPortal automatically from the configured environment — one session reused across every lead. Read-only: no billing, paid reports, credits, or writes. Credentials and cookies are never stored or shown.
         </div>
       </div>
     </details>

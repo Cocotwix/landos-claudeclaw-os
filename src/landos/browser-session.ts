@@ -80,6 +80,10 @@ export const CHROME_CANDIDATE_PATHS = [
 
 const ENV_KEYS = ['BROWSER_INTEL_LIVE', 'BROWSER_INTEL_CDP_URL', 'BROWSER_INTEL_SHOT_DIR', 'BROWSER_INTEL_CHROME_PATH', 'BROWSER_INTEL_PROFILE_DIR'];
 
+/** LandPortal browser-login credential env var names (values NEVER printed/logged/
+ *  returned). Read from the shell env or the .env FILE via readEnvFile. */
+export const LANDPORTAL_CRED_ENV = { email: 'LANDPORTAL_EMAIL', password: 'LANDPORTAL_PASSWORD' } as const;
+
 /** Read live-session config. The shell environment wins; otherwise the same keys
  *  are read from the .env FILE (these are non-secret config flags, never secrets).
  *  `env` is injectable so tests never read the real environment. */
@@ -380,6 +384,203 @@ export async function openLandPortalInSession(deps: SessionDeps = {}): Promise<O
     note: authenticated ? 'LandPortal session is authenticated and ready.' : 'Log into LandPortal in the opened Chrome tab, then click Refresh Status.',
     health: await browserSessionHealth(deps),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// AUTOMATIC readiness: start the session AND log into LandPortal from env
+// credentials — so the operator never starts the browser or logs in by hand.
+// Credentials are read from env/.env, passed to the browser ONLY to type into
+// the login form, and NEVER printed, logged, returned, or screenshotted.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type LandPortalPhase =
+  | 'session_unavailable'  // browser could not be started/connected
+  | 'browser_live'         // connected but LandPortal auth unknown/not yet done
+  | 'logging_in'           // a login attempt was made this call
+  | 'authenticated'        // LandPortal is signed in and ready
+  | 'auth_failed'          // login attempted but did not authenticate (see reason)
+  | 'no_credentials';      // env credentials are missing (see missingEnv)
+
+export interface LandPortalReadiness {
+  phase: LandPortalPhase;
+  ready: boolean;
+  sessionStatus: BrowserSessionStatus;
+  authenticated: boolean;
+  /** Exact technical cause when phase is auth_failed / session_unavailable. */
+  reason: string | null;
+  /** Credential env var NAMES that are missing (never values). */
+  missingEnv: string[];
+  /** Whether a login was attempted this call (for the "logging in" UI state). */
+  attempted: boolean;
+  note: string;
+}
+
+export interface LandPortalCreds { email: string; password: string }
+
+/** Read LandPortal login creds from the shell env or the .env FILE. Returns the
+ *  present creds and the NAMES of any missing vars — never the values. */
+export function readLandPortalCreds(env?: Record<string, string | undefined>): { creds: LandPortalCreds | null; missing: string[] } {
+  const proc = env ?? process.env;
+  let fileVals: Record<string, string> = {};
+  if (!env) { try { fileVals = readEnvFile([LANDPORTAL_CRED_ENV.email, LANDPORTAL_CRED_ENV.password]); } catch { fileVals = {}; } }
+  const get = (k: string) => (proc[k] ?? fileVals[k] ?? '').trim();
+  const email = get(LANDPORTAL_CRED_ENV.email);
+  const password = get(LANDPORTAL_CRED_ENV.password);
+  const missing: string[] = [];
+  if (!email) missing.push(LANDPORTAL_CRED_ENV.email);
+  if (!password) missing.push(LANDPORTAL_CRED_ENV.password);
+  return { creds: missing.length ? null : { email, password }, missing };
+}
+
+export interface EnsureReadyDeps extends SessionDeps {
+  spawn?: SpawnLike;
+  maxPolls?: number;
+  pollMs?: number;
+  /** Injectable credential reader (tests). */
+  readCreds?: () => { creds: LandPortalCreds | null; missing: string[] };
+  /** Injectable landportal URL (tests). */
+  landportalUrl?: string;
+  /** Post-login settle delay before re-checking auth (default 4500ms; tests small). */
+  settleMs?: number;
+}
+
+/**
+ * Ensure a live browser session exists — reuse it if connected, otherwise LAUNCH
+ * the dedicated LandOS Chrome (never Tyler's normal Chrome) and connect. The
+ * operator never clicks Start. Returns the resulting status + whether we launched.
+ */
+export async function ensureBrowserSessionReady(deps: EnsureReadyDeps = {}): Promise<{ status: BrowserSessionStatus; started: boolean; error: string | null }> {
+  const status = await ensureBrowserSession(deps);
+  if (status === 'live' || status === 'auth_needed') return { status, started: false, error: null };
+  const start = await startBrowserSession(deps);
+  return { status: start.status, started: start.launched, error: start.error };
+}
+
+// Dismiss cookie/consent/close popups that commonly block a login form. Returns
+// how many were dismissed. Runs in the browser; never reads credentials.
+const LP_DISMISS_POPUPS = (): number => {
+  let n = 0;
+  const rx = /^(accept|accept all|i agree|agree|got it|ok|allow all|close|dismiss|continue)$/i;
+  const els = Array.from(document.querySelectorAll('button,[role=button],a')) as any[];
+  for (const el of els) {
+    const t = ((el.textContent || el.getAttribute?.('aria-label') || '') as string).replace(/\s+/g, ' ').trim();
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+    if (r.width > 0 && r.height > 0 && rx.test(t)) { try { el.click(); n++; } catch { /* ignore */ } }
+    if (n >= 3) break;
+  }
+  return n;
+};
+
+// Fill the LandPortal login form and submit. Values arrive as args (typed into
+// the page only) and are NEVER returned. Returns a DIAGNOSTIC CODE, not creds.
+const LP_LOGIN = (email: string, password: string): string => {
+  const setVal = (el: any, v: string) => {
+    el.focus();
+    const proto = Object.getPrototypeOf(el);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, v); else el.value = v;
+    el.dispatchEvent(new (window as any).Event('input', { bubbles: true }));
+    el.dispatchEvent(new (window as any).Event('change', { bubbles: true }));
+  };
+  const visible = (el: any): boolean => { const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 }; return r.width > 1 && r.height > 1; };
+  const emailEl = (Array.from(document.querySelectorAll('input[type=email],input[name*="email" i],input[id*="email" i],input[autocomplete="username"],input[name*="user" i],input[placeholder*="email" i]')) as any[]).find(visible)
+    || (Array.from(document.querySelectorAll('input[type=text]')) as any[]).find(visible);
+  if (!emailEl) return 'no_email_field';
+  const passEl = (Array.from(document.querySelectorAll('input[type=password]')) as any[]).find(visible);
+  if (!passEl) return 'no_password_field';
+  setVal(emailEl, email);
+  setVal(passEl, password);
+  const form = passEl.closest ? passEl.closest('form') : null;
+  const btn = (Array.from(document.querySelectorAll('button[type=submit],input[type=submit],button,[role=button]')) as any[])
+    .find((b) => visible(b) && /^(log ?in|sign ?in|continue|submit)$/i.test(((b.value || b.textContent || '') as string).replace(/\s+/g, ' ').trim()));
+  if (btn) { btn.click(); return 'submitted'; }
+  if (form && form.requestSubmit) { form.requestSubmit(); return 'submitted'; }
+  if (passEl.form && passEl.form.submit) { passEl.form.submit(); return 'submitted'; }
+  return 'no_submit';
+};
+
+// Detect a captcha / 2FA challenge that auto-login cannot clear.
+const LP_CHALLENGE = (): string | null => {
+  const t = ((document.body && document.body.innerText) || '').slice(0, 3000).toLowerCase();
+  if (/are you a human|verify you are|captcha|recaptcha|hcaptcha|press and hold/.test(t)) return 'captcha';
+  if (/two-factor|2fa|verification code|one-time code|authenticator/.test(t)) return '2fa';
+  return null;
+};
+
+/**
+ * Ensure LandPortal is authenticated in the persistent session — AUTOMATICALLY.
+ * Starts the browser if needed, reuses the SINGLE working tab (no duplicate
+ * LandPortal tabs), dismisses blocking popups, and — if not already signed in —
+ * logs in using the env credentials. Diagnoses recoverable failures. Returns a
+ * granular readiness with an exact technical reason on failure. NEVER logs,
+ * returns, or screenshots credentials.
+ */
+export async function ensureLandPortalAuthenticated(deps: EnsureReadyDeps = {}): Promise<LandPortalReadiness> {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const url = deps.landportalUrl ?? LANDPORTAL_SESSION_URL;
+  const base = (phase: LandPortalPhase, over: Partial<LandPortalReadiness>): LandPortalReadiness => ({
+    phase, ready: false, sessionStatus: state.status, authenticated: false, reason: null, missingEnv: [], attempted: false, note: '', ...over,
+  });
+
+  const ready = await ensureBrowserSessionReady(deps);
+  if (ready.status !== 'live' && ready.status !== 'auth_needed') {
+    return base('session_unavailable', { sessionStatus: ready.status, reason: ready.error ?? 'Chrome/CDP session could not be started.', note: 'Browser session unavailable — see reason.' });
+  }
+
+  const page = await getWorkingPage();
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+  } catch (err) {
+    return base('auth_failed', { sessionStatus: ready.status, reason: `LandPortal page failed to load: ${(err as Error)?.message ?? 'navigation error'}.`, note: 'LandPortal did not load.' });
+  }
+  try { await page.evaluate<number>(LP_DISMISS_POPUPS as unknown as () => number); } catch { /* best-effort */ }
+
+  let read = await readPage(page);
+  if (!read.loginLike) {
+    state.auth = { authenticated: true, atIso: now() };
+    state.status = 'live';
+    return base('authenticated', { ready: true, sessionStatus: 'live', authenticated: true, note: 'LandPortal already authenticated — ready.' });
+  }
+
+  // Not signed in → attempt automatic login from env credentials.
+  const { creds, missing } = (deps.readCreds ?? (() => readLandPortalCreds()))();
+  if (!creds) {
+    state.status = 'auth_needed';
+    return base('no_credentials', { sessionStatus: 'auth_needed', missingEnv: missing, reason: `Missing LandPortal credentials: set ${missing.join(' and ')} in .env.`, note: 'Automatic login cannot run — credential env vars are missing.' });
+  }
+
+  const challengeBefore = await page.evaluate<string | null>(LP_CHALLENGE as unknown as () => string | null).catch(() => null);
+  if (challengeBefore) {
+    state.status = 'auth_needed';
+    return base('auth_failed', { attempted: false, sessionStatus: 'auth_needed', reason: challengeBefore === 'captcha' ? 'LandPortal presented a captcha — automatic login cannot clear it.' : 'LandPortal requires 2FA/verification — automatic login cannot clear it.', note: 'Login blocked by a human-verification challenge.' });
+  }
+
+  let code = 'no_email_field';
+  try { code = await page.evaluate<string>(LP_LOGIN as unknown as () => string, creds.email, creds.password); }
+  catch (err) { return base('auth_failed', { attempted: true, sessionStatus: state.status, reason: `Login form interaction failed: ${(err as Error)?.message ?? 'evaluate error'}.`, note: 'Could not drive the login form.' }); }
+
+  if (code !== 'submitted') {
+    const reason = code === 'no_email_field' ? 'LandPortal login form not found (email/username field missing) — the login UI may have changed.'
+      : code === 'no_password_field' ? 'LandPortal password field not found — the login UI may have changed.'
+      : 'LandPortal login submit control not found — the login UI may have changed.';
+    state.status = 'auth_needed';
+    return base('auth_failed', { attempted: true, sessionStatus: 'auth_needed', reason, note: 'Automatic login could not be submitted.' });
+  }
+
+  // Wait for the post-login navigation/render, then re-check auth.
+  await new Promise((r) => setTimeout(r, deps.settleMs ?? 4500));
+  const challengeAfter = await page.evaluate<string | null>(LP_CHALLENGE as unknown as () => string | null).catch(() => null);
+  read = await readPage(page);
+  if (!read.loginLike && !challengeAfter) {
+    state.auth = { authenticated: true, atIso: now() };
+    state.status = 'live';
+    return base('authenticated', { ready: true, attempted: true, sessionStatus: 'live', authenticated: true, note: 'LandPortal signed in automatically from env credentials — ready.' });
+  }
+  state.status = 'auth_needed';
+  const reason = challengeAfter
+    ? (challengeAfter === 'captcha' ? 'LandPortal presented a captcha after submit — automatic login cannot clear it.' : 'LandPortal requires 2FA/verification after submit — automatic login cannot clear it.')
+    : 'Submitted env credentials but LandPortal still shows a login page — credentials may be wrong or the account is locked.';
+  return base('auth_failed', { attempted: true, sessionStatus: 'auth_needed', reason, note: 'Automatic login did not authenticate — see reason.' });
 }
 
 // ─────────────────────────────────────────────────────────────────────────

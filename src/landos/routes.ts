@@ -114,7 +114,7 @@ import { listNavigationModels } from './browser-navigation-model.js';
 import { listSitePlaybooks } from './browser-learning.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
-import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession, withWorkingPage } from './browser-session.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds } from './browser-session.js';
 import { getCountySources } from './county-source-map.js';
 import { writeBrowserFact, listBrowserFacts, requestCancel, isCancelled, clearCancel, markStoppedByOperator } from './browser-fact-store.js';
 import { assessSellerAuthority } from './seller-authority.js';
@@ -2597,6 +2597,13 @@ export function registerLandosRoutes(app: Hono): void {
     // LandPortal-first browser lane can actually run when structured lookup leaves
     // owner/APN/acreage/parcel identity incomplete.
     const browserStart = await startBrowserSession();
+    // AUTOMATIC LandPortal login from env credentials — the operator never signs
+    // in by hand. Best-effort: updates the shared session auth state; the exact
+    // technical reason is surfaced (never a "Tyler must log in") and never a
+    // credential value. If it can't authenticate, LandPortal-backed lanes degrade
+    // honestly downstream, exactly as before.
+    const lpReadiness = await ensureLandPortalAuthenticated().catch((e) => ({ phase: 'auth_failed' as const, ready: false, sessionStatus: browserStart.status, authenticated: false, reason: (e as Error)?.message ?? 'auto-auth error', missingEnv: [] as string[], attempted: true, note: 'auto-auth threw' }));
+    logger.info({ event: 'landportal_auto_auth', phase: lpReadiness.phase, authenticated: lpReadiness.authenticated, hasReason: !!lpReadiness.reason, missingEnv: lpReadiness.missingEnv }, 'landportal_auto_auth');
     const resolution = await resolveProperty(
       { rawText: text.trim(), fields: cls.parsedFields },
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
@@ -2857,6 +2864,33 @@ export function registerLandosRoutes(app: Hono): void {
   // unreachable / auth_needed. NEVER returns cookies, tokens, or credentials.
   app.get('/api/landos/browser/session', async (c) => {
     return c.json({ session: await browserSessionHealth() });
+  });
+
+  // READ-ONLY Browser Intelligence + LandPortal readiness for the New Lead panel.
+  // Reports the granular phase, whether env credentials are configured, and the
+  // NAMES of any missing credential vars (never values). Does not start/log in.
+  app.get('/api/landos/browser/readiness', async (c) => {
+    const session = await browserSessionHealth();
+    const { creds, missing } = readLandPortalCreds();
+    const credentialsConfigured = !!creds;
+    const phase =
+      session.status === 'live' && session.landportalAuthenticated === true ? 'authenticated'
+      : session.status === 'live' || session.status === 'auth_needed' ? 'browser_live'
+      : session.status === 'disabled' ? 'disabled'
+      : 'not_running';
+    const note = phase === 'authenticated' ? 'LandPortal authenticated — ready.'
+      : phase === 'browser_live' ? (credentialsConfigured ? 'Browser live — LandPortal will sign in automatically on run.' : `Browser live — LandPortal login needs credentials: set ${missing.join(' and ')} in .env.`)
+      : phase === 'disabled' ? 'Live browser disabled — set BROWSER_INTEL_LIVE=1.'
+      : (credentialsConfigured ? 'Browser Intelligence not running — it starts automatically on run.' : `Not running; also missing credentials: set ${missing.join(' and ')} in .env.`);
+    return c.json({ readiness: { phase, sessionStatus: session.status, ready: phase === 'authenticated', landportalAuthenticated: session.landportalAuthenticated, credentialsConfigured, missingEnv: missing, note }, session });
+  });
+
+  // Start Browser Intelligence AND log into LandPortal from env credentials —
+  // fully automatic. Returns the granular readiness with an exact technical
+  // reason on failure. Never returns/logs credentials.
+  app.post('/api/landos/browser/ensure-auth', async (c) => {
+    const readiness = await ensureLandPortalAuthenticated();
+    return c.json({ readiness, session: await browserSessionHealth() });
   });
 
   // Browser Intelligence's LEARNED SITE NAVIGATION MODELS — the reusable, task-
