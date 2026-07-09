@@ -15,6 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
 import { resolveChromePath, readSessionConfig } from './browser-session.js';
+import { parseZillowStructured, parseListingStatus, type CompStatus } from './comp-extraction.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -26,6 +27,7 @@ export interface ZillowLandComp {
   price: number;
   acres: number | null;
   pricePerAcre: number | null;
+  status: CompStatus;
   url: string | null;
   source: 'Zillow';
 }
@@ -44,7 +46,9 @@ export interface ZillowFetchInput {
   subjectAcres?: number | null;
 }
 
-export interface RawZillowListing { address: string | null; price: number | null; acres: number | null; url: string | null }
+export interface RawZillowListing { address: string | null; price: number | null; acres: number | null; url: string | null; status?: string | null }
+/** DOM read: card rows PLUS the raw __NEXT_DATA__ JSON for structured parsing. */
+export interface RawZillowRead { listings: RawZillowListing[]; nextData: string | null }
 
 // ── Pure helpers (unit-tested; no browser) ──────────────────────────────────
 
@@ -72,7 +76,8 @@ export function normalizeZillowListings(raw: RawZillowListing[], subjectAcres: n
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, url: r.url ?? null, source: 'Zillow' });
+    const status = r.status ? parseListingStatus(r.status) : 'active'; // public land search defaults to for-sale
+    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status: status === 'unknown' ? 'active' : status, url: r.url ?? null, source: 'Zillow' });
   }
   return out.slice(0, 8);
 }
@@ -125,7 +130,7 @@ async function defaultConnect(browserURL: string): Promise<ZillowBrowserLike | n
 
 // In-page (runs INSIDE disposable Chrome). Broad selectors + text parsing because
 // Zillow's data-test attributes are obfuscated/variable.
-const EXTRACT_ZILLOW = (): RawZillowListing[] => {
+const EXTRACT_ZILLOW = (): RawZillowRead => {
   const out: RawZillowListing[] = [];
   const seen = new Set<string>();
   const cards = Array.from((document as any).querySelectorAll('[class*="property-card" i],[class*="ListItem" i],[data-test="property-card"],[class*="HomeCard" i],article'));
@@ -133,14 +138,20 @@ const EXTRACT_ZILLOW = (): RawZillowListing[] => {
     const txt = ((c.textContent as string) || '').replace(/\s+/g, ' ').trim();
     const pm = txt.match(/\$(\d{1,3}(?:,\d{3})+)/);
     const price = pm ? Number(pm[1].replace(/,/g, '')) : null;
-    const am = txt.match(/(\d\.\d{1,2})\s*acres?\s*lot/i) || txt.match(/(\d\.\d{1,2})\s*acres?\b/i);
-    const acres = am ? parseFloat(am[1]) : null;
+    // Whole OR fractional acres, then "X acre lot", then sqft lot.
+    const am = txt.match(/(\d{1,3}(?:\.\d{1,2})?)\s*acres?\s*lot/i) || txt.match(/(\d{1,3}(?:\.\d{1,2})?)\s*acres?\b/i) || txt.match(/(\d{1,3}(?:\.\d{1,2})?)\s*ac\b/i);
+    let acres = am ? parseFloat(am[1]) : null;
+    if (acres == null) { const sm = txt.match(/([\d,]{3,})\s*sq\.?\s*ft\.?\s*lot/i); if (sm) { const sf = Number(sm[1].replace(/,/g, '')); if (sf > 0) acres = Math.round((sf / 43560) * 100) / 100; } }
     const addrM = txt.match(/(\d+\s+[\w .]+?,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/);
     const address = addrM ? addrM[1].replace(/\s+/g, ' ').trim() : null;
     const link = ((c.querySelector('a[href*="/homedetails/"]') || {}) as any).href || null;
-    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, address, url: link }); }
+    const sm2 = txt.match(/\b(sold|pending|under contract|for sale|coming soon)\b/i);
+    const status = sm2 ? sm2[1] : null;
+    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, address, url: link, status }); }
   }
-  return out;
+  const nd = (document as any).querySelector('#__NEXT_DATA__');
+  const nextData = nd && nd.textContent ? String(nd.textContent) : null;
+  return { listings: out, nextData };
 };
 
 const IS_BLOCKED = (): boolean => /press and hold|are you a human|captcha|verify you are|unusual traffic|pardon our interruption/i.test(((document as any).body?.innerText || '').slice(0, 4000));
@@ -186,13 +197,19 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
     await sleep(settleMs);
     for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
     const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
-    const raw = await page.evaluate<RawZillowListing[]>(EXTRACT_ZILLOW as unknown as () => RawZillowListing[]);
-    if (blocked && (!raw || raw.length === 0)) return { status: 'blocked', comps: [], note: 'Zillow served an anti-bot check (no public listings returned).', routeTried: url };
-    const comps = normalizeZillowListings(raw ?? [], input.subjectAcres ?? null);
+    const read = await page.evaluate<RawZillowRead>(EXTRACT_ZILLOW as unknown as () => RawZillowRead);
+    const raw = read?.listings ?? [];
+    if (blocked && raw.length === 0 && !read?.nextData) return { status: 'blocked', comps: [], note: 'Zillow served an anti-bot check (no public listings returned).', routeTried: url };
+    // Prefer the embedded structured search results (reliable); fall back to DOM.
+    const structured = read?.nextData ? parseZillowStructured(read.nextData, input.subjectAcres ?? null) : [];
+    const comps = structured.length
+      ? structured.map((s) => ({ address: s.address ?? '', price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' ? ('active' as CompStatus) : s.status, url: s.url, source: 'Zillow' as const })).filter((c) => c.address)
+      : normalizeZillowListings(raw, input.subjectAcres ?? null);
+    const via = structured.length ? 'structured __NEXT_DATA__' : 'visible cards';
     return {
       status: comps.length ? 'retrieved' : 'none',
       comps,
-      note: comps.length ? `Zillow public land search returned ${comps.length} in-band comp(s).` : 'Zillow reachable but no in-band land comps found this run.',
+      note: comps.length ? `Zillow public land search returned ${comps.length} in-band comp(s) via ${via}.` : 'Zillow reachable but no in-band land comps found this run.',
       routeTried: url,
     };
   } catch (e) {

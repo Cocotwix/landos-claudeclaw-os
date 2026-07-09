@@ -37,7 +37,7 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
           async evaluate(fn: unknown) {
             const src = String(fn);
             if (src.includes('press and hold') || src.includes('captcha')) return blocked as never;
-            if (src.includes('property-card')) return listings as never;
+            if (src.includes('property-card')) return { listings, nextData: null } as never;
             return undefined as never;
           },
         };

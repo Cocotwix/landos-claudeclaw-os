@@ -17,6 +17,7 @@ import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
 import { resolveChromePath, readSessionConfig } from './browser-session.js';
+import { parseListingStatus, type CompStatus } from './comp-extraction.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -28,7 +29,7 @@ export interface RedfinLandComp {
   price: number;
   acres: number | null;
   pricePerAcre: number | null;
-  status: string;
+  status: CompStatus;
   url: string | null;
   source: 'Redfin';
 }
@@ -38,6 +39,8 @@ export interface RedfinCompsResult {
   comps: RedfinLandComp[];
   note: string;
   routeTried: string;
+  /** The Redfin filter state used (property-type=land, sold vs active). */
+  filtersUsed: string;
 }
 
 export interface RedfinFetchInput {
@@ -45,9 +48,11 @@ export interface RedfinFetchInput {
   state?: string;
   county?: string;
   subjectAcres?: number | null;
+  /** Which listing set to pull. 'sold' adds Redfin's sold filter. Default active. */
+  mode?: 'sold' | 'active';
 }
 
-export interface RawRedfinListing { address: string | null; price: number | null; acres: number | null; sqftLot: number | null; residential: boolean; url: string | null }
+export interface RawRedfinListing { address: string | null; price: number | null; acres: number | null; sqftLot: number | null; residential: boolean; url: string | null; status?: string | null }
 
 // ── Pure helpers (unit-tested; no browser) ──────────────────────────────────
 
@@ -62,9 +67,11 @@ export function parseRedfinCityPath(responseText: string): string | null {
   return m ? m[0] : null;
 }
 
-/** Public Redfin Lots/Land filter URL for a resolved city path. */
-export function redfinLandFilterUrl(cityPath: string): string {
-  return `https://www.redfin.com${cityPath}/filter/property-type=land`;
+/** Public Redfin Lots/Land filter URL for a resolved city path. When sold=true,
+ *  adds Redfin's public "include=sold" filter to pull recent SOLD land results. */
+export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean } = {}): string {
+  const filter = opts.sold ? 'property-type=land,include=sold' : 'property-type=land';
+  return `https://www.redfin.com${cityPath}/filter/${filter}`;
 }
 
 /** Normalize + filter raw listings to same-acreage-band, sane-priced LAND comps,
@@ -86,7 +93,8 @@ export function normalizeRedfinListings(raw: RawRedfinListing[], subjectAcres: n
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status: 'listed', url: r.url ?? null, source: 'Redfin' });
+    const status = r.status ? parseListingStatus(r.status) : 'unknown';
+    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status, url: r.url ?? null, source: 'Redfin' });
   }
   return out.slice(0, 8);
 }
@@ -161,11 +169,13 @@ const EXTRACT_REDFIN = (): RawRedfinListing[] => {
     const priceText = (priceEl && priceEl.textContent) || txt;
     const pm = String(priceText).match(/\$(\d{1,3}(?:,\d{3})+)/) || txt.match(/\$(\d{1,3}(?:,\d{3})+)/);
     const price = pm ? Number(pm[1].replace(/,/g, '')) : null;
-    // Fractional acres (single leading digit avoids grabbing the ZIP), then sqft lot.
-    const am = txt.match(/(\d\.\d{1,3})\s*acres?\b/i);
+    // Whole OR fractional acres ("acre lot"/"acres"/"ac"), then sqft lot.
+    const am = txt.match(/(\d{1,3}(?:\.\d{1,3})?)\s*acres?\s*lot/i) || txt.match(/(\d{1,3}(?:\.\d{1,3})?)\s*acres?\b/i) || txt.match(/(\d{1,3}(?:\.\d{1,3})?)\s*ac\b/i);
     const acres = am ? parseFloat(am[1]) : null;
     const sm = txt.match(/([\d,]{4,})\s*sq\.?\s*ft\.?\s*lot/i);
     const sqftLot = sm ? Number(sm[1].replace(/,/g, '')) : null;
+    const stM = txt.match(/\b(sold(?:\s+on\s+[\w .,/]+)?|pending|under contract|contingent|for sale|coming soon)\b/i);
+    const statusText = stM ? stM[1] : null;
     // Address: prefer a dedicated address element, else a street-address regex.
     const addrEl: any = c.querySelector('[class*="Address" i],address');
     const addrText = (addrEl && (addrEl.textContent || '').replace(/\s+/g, ' ').trim()) || '';
@@ -175,7 +185,7 @@ const EXTRACT_REDFIN = (): RawRedfinListing[] => {
     // still render "— beds / — baths" placeholders, which must NOT flag as a home).
     const residential = /\b[1-9]\d*\s*(?:beds?|bd)\b/i.test(txt) || /\b[1-9]\d*\s*(?:baths?|ba)\b/i.test(txt);
     const link = ((c.querySelector('a[href*="/FL/"],a[href*="/home/"],a[href]') || {}) as any).href || null;
-    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, sqftLot, address, residential, url: link }); }
+    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, sqftLot, address, residential, url: link, status: statusText }); }
   }
   return out;
 };
@@ -191,13 +201,15 @@ const IS_BLOCKED = (): boolean => /press and hold|are you a human|captcha|verify
 export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: RedfinFetchDeps = {}): Promise<RedfinCompsResult> {
   const city = (input.city ?? '').trim();
   const state = (input.state ?? '').trim();
+  const sold = input.mode === 'sold';
+  const filtersUsed = sold ? 'property-type=land, include=sold' : 'property-type=land (active)';
   if (!deps.force && !deps.connect) {
-    try { if (!readSessionConfig().enabled) return { status: 'disabled', comps: [], note: 'Live browser mode off — Redfin not attempted.', routeTried: '' }; } catch { /* fall through */ }
+    try { if (!readSessionConfig().enabled) return { status: 'disabled', comps: [], note: 'Live browser mode off — Redfin not attempted.', routeTried: '', filtersUsed }; } catch { /* fall through */ }
   }
-  if (!city || !state) return { status: 'disabled', comps: [], note: 'No city/state locality for a Redfin land search.', routeTried: '' };
+  if (!city || !state) return { status: 'disabled', comps: [], note: 'No city/state locality for a Redfin land search.', routeTried: '', filtersUsed };
 
   const chrome = (deps.resolveChrome ?? (() => resolveChromePath()))();
-  if (!chrome.path) return { status: 'disabled', comps: [], note: 'Google Chrome not found for a disposable Redfin session.', routeTried: '' };
+  if (!chrome.path) return { status: 'disabled', comps: [], note: 'Google Chrome not found for a disposable Redfin session.', routeTried: '', filtersUsed };
 
   const spawnImpl = deps.spawn ?? defaultSpawn;
   const connect = deps.connect ?? defaultConnect;
@@ -214,7 +226,7 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* ignore */ }
     child = spawnImpl(chrome.path, [`--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', '--disable-blink-features=AutomationControlled', 'about:blank']);
     for (let i = 0; i < 12 && !browser; i++) { browser = await connect(`http://127.0.0.1:${port}`); if (!browser) await sleep(600); }
-    if (!browser) return { status: 'error', comps: [], note: 'Disposable Chrome for Redfin did not start.', routeTried };
+    if (!browser) return { status: 'error', comps: [], note: 'Disposable Chrome for Redfin did not start.', routeTried, filtersUsed };
 
     const page = await browser.newPage();
     try { await page.setViewport?.({ width: 1400, height: 950 }); } catch { /* best-effort */ }
@@ -229,26 +241,29 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
     await sleep(2500);
     const hrefs = await page.evaluate<string>(READ_SUGGESTION_HREFS as unknown as () => string);
     const cityPath = parseRedfinCityPath(hrefs);
-    if (!cityPath) return { status: 'none', comps: [], note: 'Redfin search did not surface a city page for this locality (dropdown empty or blocked).', routeTried: REDFIN_HOME };
+    if (!cityPath) return { status: 'none', comps: [], note: 'Redfin search did not surface a city page for this locality (dropdown empty or blocked).', routeTried: REDFIN_HOME, filtersUsed };
 
-    // Step 2: public Lots/Land filter page.
-    const landUrl = redfinLandFilterUrl(cityPath);
+    // Step 2: public Lots/Land filter page (sold vs active per input.mode).
+    const landUrl = redfinLandFilterUrl(cityPath, { sold });
     routeTried = landUrl;
     await page.goto(landUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     await sleep(settleMs);
     for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
     const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
     const rawList = await page.evaluate<RawRedfinListing[]>(EXTRACT_REDFIN as unknown as () => RawRedfinListing[]);
-    if (blocked && (!rawList || rawList.length === 0)) return { status: 'blocked', comps: [], note: 'Redfin served an anti-bot check (no public listings returned).', routeTried: landUrl };
-    const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null);
+    if (blocked && (!rawList || rawList.length === 0)) return { status: 'blocked', comps: [], note: 'Redfin served an anti-bot check (no public listings returned).', routeTried: landUrl, filtersUsed };
+    // Default status by the filter set when the card text was ambiguous.
+    const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null)
+      .map((cmp) => ({ ...cmp, status: cmp.status === 'unknown' ? ((sold ? 'sold' : 'active') as CompStatus) : cmp.status }));
     return {
       status: comps.length ? 'retrieved' : 'none',
       comps,
-      note: comps.length ? `Redfin public land search returned ${comps.length} in-band land comp(s).` : 'Redfin reachable but no in-band land comps found (sparse / out-of-band / residential-only).',
+      note: comps.length ? `Redfin public land search returned ${comps.length} in-band ${sold ? 'sold' : 'active'} land comp(s).` : 'Redfin reachable but no in-band land comps found (sparse / out-of-band / residential-only).',
       routeTried: landUrl,
+      filtersUsed,
     };
   } catch (e) {
-    return { status: 'error', comps: [], note: `Redfin capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried };
+    return { status: 'error', comps: [], note: `Redfin capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried, filtersUsed };
   } finally {
     try { if (browser) await browser.close(); } catch { /* ignore */ }
     try { child?.kill?.(); } catch { /* ignore */ }
