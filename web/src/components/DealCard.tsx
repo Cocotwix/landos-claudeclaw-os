@@ -1579,6 +1579,140 @@ function VisualContextSection({ ctx, token }: { ctx?: VisualContextView; token: 
   );
 }
 
+// ── Visual Intelligence — operator-grade multi-source visual workflow ────────
+// Renders the source status panel (Google Earth, Google Earth 3D, Street View,
+// LandPortal, LandPortal 3D, County GIS + static-map fallback: captured /
+// unavailable / blocked with the exact reason), the captured-visual gallery with
+// source labels, the selected hero, and the visual observations. Reuses the same
+// record the backend persists; static map is fallback only, never fabricated.
+interface ViSubject { address?: string | null; lat?: number | null; lng?: number | null }
+interface ViAsset {
+  source: string; label: string; state: 'captured' | 'unavailable' | 'blocked';
+  imageRoute?: string; url?: string; storedPath?: string; timestamp: string;
+  subject: ViSubject; blocker?: string; fallback?: boolean;
+}
+interface ViObservation { category: string; observation: string; signal: 'positive' | 'concern' | 'neutral'; confidence: string; sourceImage: string }
+interface ViRecord {
+  cardId: number; generatedAt: string; subject: ViSubject;
+  sources: ViAsset[]; gallery: ViAsset[]; hero: ViAsset | null; heroReason: string;
+  observations: ViObservation[]; observationSummary: string; note: string;
+}
+
+function viStateBadge(state: ViAsset['state']): { text: string; cls: string } {
+  if (state === 'captured') return { text: 'captured', cls: 'text-emerald-600 border-emerald-500/40' };
+  if (state === 'unavailable') return { text: 'unavailable', cls: 'text-amber-600 border-amber-500/40' };
+  return { text: 'blocked', cls: 'text-rose-600 border-rose-500/40' };
+}
+
+function VisualIntelligencePanel({ cardId, token, compact }: { cardId: number; token: string; compact?: boolean }) {
+  const [rec, setRec] = useState<ViRecord | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+
+  async function load() {
+    try { const r = await apiGet<{ record: ViRecord | null }>(`/api/landos/property-cards/${cardId}/visual-intelligence`); setRec(r.record); }
+    catch (e: any) { setMsg(e?.message || String(e)); }
+  }
+  async function run() {
+    setBusy(true); setMsg(null);
+    try { const r = await apiPost<{ record: ViRecord }>(`/api/landos/property-cards/${cardId}/visual-intelligence`, {}); setRec(r.record); }
+    catch (e: any) { setMsg(e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  useEffect(() => { void load(); }, [cardId]);
+
+  const hero = rec?.hero ?? null;
+
+  // Compact (Overview): hero image + one-line status roll-up + run button.
+  if (compact) {
+    const capturedCount = rec?.gallery?.length ?? 0;
+    return (
+      <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Visual Intelligence</span>
+          <button type="button" onClick={() => void run()} disabled={busy} class="px-2 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">{busy ? 'Running…' : rec ? 'Re-run' : 'Run'}</button>
+        </div>
+        {hero?.imageRoute ? (
+          <figure class="m-0">
+            <img src={withToken(hero.imageRoute)} alt={hero.label} class="w-full h-44 sm:h-52 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+            <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">Hero · {hero.label} · visual signal only</figcaption>
+          </figure>
+        ) : (
+          <div class="text-[11px] text-[var(--color-text-muted)] rounded-lg border border-dashed border-[var(--color-border)] p-3">
+            {rec ? 'No hero image captured yet — open Property → Visuals for per-source blockers.' : 'Not run yet. Click Run to attempt all visual sources.'}
+          </div>
+        )}
+        {rec && <div class="text-[10px] text-[var(--color-text-faint)]">{capturedCount} source(s) captured · {rec.observations.length} observation(s)</div>}
+        {msg && <div class="text-[11px] text-rose-600">{msg}</div>}
+      </div>
+    );
+  }
+
+  // Full (Property → Visuals): status panel + gallery + observations.
+  return (
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-3">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Visual Intelligence</span>
+        <button type="button" onClick={() => void run()} disabled={busy} class="px-2 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">{busy ? 'Running all sources…' : rec ? 'Re-run capture' : 'Run visual capture'}</button>
+      </div>
+
+      {!rec && <div class="text-[11px] text-[var(--color-text-muted)]">Not run yet. Click "Run visual capture" to attempt Google Earth, Google Earth 3D, Street View, LandPortal, LandPortal 3D, and County GIS. Static map is used only as a last-resort fallback.</div>}
+
+      {/* Source status panel */}
+      {rec && (
+        <div class="space-y-1">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Source status</div>
+          {rec.sources.map((s) => {
+            const b = viStateBadge(s.state);
+            return (
+              <div class="flex items-start justify-between gap-2 border-b border-[var(--color-border)]/60 py-1">
+                <div class="min-w-0">
+                  <div class="text-[12px] text-[var(--color-text)]">{s.label}{s.fallback ? ' · fallback' : ''}{hero && hero.source === s.source ? ' · hero' : ''}</div>
+                  {s.state !== 'captured' && s.blocker && <div class="text-[10px] text-[var(--color-text-faint)]">{s.blocker}</div>}
+                </div>
+                <span class={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${b.cls}`}>{b.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Gallery */}
+      {rec && rec.gallery.length > 0 && (
+        <div class="space-y-1">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Captured visuals ({rec.gallery.length})</div>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {rec.gallery.filter((a) => a.imageRoute).map((a) => (
+              <figure class="m-0">
+                <img src={withToken(a.imageRoute as string)} alt={a.label} class="w-full h-28 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+                <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5 truncate">{a.label}{hero && hero.source === a.source ? ' · hero' : ''}</figcaption>
+              </figure>
+            ))}
+          </div>
+          <div class="text-[10px] text-[var(--color-text-faint)]">{rec.heroReason} Supporting context / visual signals only — never parcel identity.</div>
+        </div>
+      )}
+
+      {/* Observations */}
+      {rec && rec.observations.length > 0 && (
+        <div class="space-y-1">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Visual observations</div>
+          {rec.observations.map((o) => (
+            <div class="text-[12px] text-[var(--color-text-muted)]">
+              <span class="text-[var(--color-text)]">{o.category.replace(/_/g, ' ')}:</span> {o.observation}
+              <span class="text-[10px] text-[var(--color-text-faint)]"> [{o.signal} · {o.confidence} · {o.sourceImage}]</span>
+            </div>
+          ))}
+          {rec.observationSummary && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{rec.observationSummary}</div>}
+        </div>
+      )}
+
+      {msg && <div class="text-[11px] text-rose-600">{msg}</div>}
+    </div>
+  );
+}
+
 // Small labeled value for the header / at-a-glance strips.
 function HeaderField({ label, value }: { label: string; value?: string | null }) {
   return (
@@ -2863,6 +2997,7 @@ function OverviewTab({
   return (
     <div class="space-y-4">
       <HeroVisual report={report} prop={prop} discoveryReport={dcr} token={token} />
+      {prop?.id ? <VisualIntelligencePanel cardId={prop.id} token={token} compact /> : null}
       <OverviewSummary es={es} report={report} />
 
       {/* Primary CTA when no report has run — the one action that builds the report. */}
@@ -3880,6 +4015,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                     </div>
                     <VisualContextSection ctx={report.visualContext} token={dashboardToken} />
                     {visualCaptureMsg && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{visualCaptureMsg}</div>}
+                    <div class="mt-3"><VisualIntelligencePanel cardId={prop.id} token={dashboardToken} /></div>
                   </div>
                 )}
 

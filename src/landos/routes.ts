@@ -86,6 +86,9 @@ import {
   updateLeadJob,
   loadCardVisualCapture,
   loadPropertyInspection,
+  saveVisualIntelligence,
+  loadVisualIntelligence,
+  getPropertyCardRow,
 } from './property-card.js';
 import { captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { resolveGoogleVisualEnv, VISUAL_SERVICES } from './providers/google-visual.js';
@@ -3259,6 +3262,51 @@ export function registerLandosRoutes(app: Hono): void {
     if (!googleVisualConfiguredResolved()) return c.json({ error: 'Google visual not configured (no GOOGLE_MAPS_API_KEY).' }, 400);
     const result = await captureAndPersistCardVisuals(id, { env: resolveGoogleVisualEnv() });
     return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // Visual Intelligence — operator-grade multi-source visual workflow. Attempts
+  // every source (Google Earth overhead/3D, Street View, LandPortal, LandPortal
+  // 3D, County GIS), labels each by source, records an EXACT blocker when a
+  // source can't be captured, picks the best hero (static map fallback ONLY),
+  // and runs the vision analyzer over the captured imagery. Reuses existing
+  // captures/inspection screenshots — makes no paid call, fabricates nothing.
+  app.get('/api/landos/property-cards/:id/visual-intelligence', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const record = loadVisualIntelligence(id);
+    return c.json({ cardId: id, record });
+  });
+
+  app.post('/api/landos/property-cards/:id/visual-intelligence', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const card = getPropertyCardRow(id) as Record<string, unknown> | undefined;
+    if (!card) return c.json({ error: 'property card not found' }, 404);
+    const inspection = loadPropertyInspection(id);
+    const { runVisualIntelligenceForCard } = await import('./visual-intelligence.js');
+    const { analyzeScreenshots } = await import('./browser-vision.js');
+    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const record = await runVisualIntelligenceForCard(
+      {
+        cardId: id,
+        address: (card.active_input_address as string) ?? null,
+        lat: numOrNull(card.lat),
+        lng: numOrNull(card.lng),
+        landPortalUrl: inspection?.parcelUrl ?? (card.lp_url as string) ?? null,
+        county: (card.county as string) ?? null,
+        state: (card.state as string) ?? null,
+      },
+      {
+        loadGoogleVisuals: loadCardVisualCapture,
+        loadInspectionAssets: (cardId) =>
+          (loadPropertyInspection(cardId)?.assets ?? []).map((a) => ({ key: a.key, label: a.label, kind: a.kind, storedPath: a.storedPath, timestamp: a.timestamp })),
+        fileSize: (p) => fs.statSync(p).size,
+        analyze: analyzeScreenshots,
+        persist: saveVisualIntelligence,
+      },
+    );
+    landosAudit('acquisitions', 'visual_intelligence_run', `card ${id}: hero=${record.hero?.source ?? 'none'}, captured=${record.gallery.length}`, { refTable: 'landos_card_activity' });
+    return c.json({ cardId: id, record });
   });
 
   // County Scorecard (Market Research business intelligence; NOT a Deal Card

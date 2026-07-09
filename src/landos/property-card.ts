@@ -547,6 +547,32 @@ export function loadCardVisualCapture(cardId: number): Record<string, CardVisual
   }
 }
 
+// ── Visual Intelligence persistence ─────────────────────────────────────────
+// The operator-grade multi-source visual workflow (visual-intelligence.ts) stores
+// its full record (per-source status + gallery + hero + observations + blockers)
+// as a card activity. Stored as generic JSON here to avoid an import cycle with
+// visual-intelligence (which imports browser-vision → property-card).
+
+/** Persist the latest Visual Intelligence record for a card (newest wins). */
+export function saveVisualIntelligence(cardId: number, record: unknown): void {
+  attachCardActivity({
+    cardId,
+    agentId: 'tyler/visual-intel',
+    kind: 'visual_intelligence',
+    summary: 'Visual Intelligence run — visual signals only, never parcel verification.',
+    ref: JSON.stringify(record ?? {}),
+  });
+}
+
+/** Load the most recent Visual Intelligence record (null when none). */
+export function loadVisualIntelligence(cardId: number): unknown | null {
+  const row = getLandosDb()
+    .prepare("SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind = 'visual_intelligence' ORDER BY created_at DESC, id DESC LIMIT 1")
+    .get(cardId) as { ref?: string } | undefined;
+  if (!row?.ref) return null;
+  try { return JSON.parse(row.ref); } catch { return null; }
+}
+
 export interface LandPortalInspectionAsset {
   key: string;
   label: string;
