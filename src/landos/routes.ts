@@ -3297,10 +3297,34 @@ export function registerLandosRoutes(app: Hono): void {
     const card = getPropertyCardRow(id) as Record<string, unknown> | undefined;
     if (!card) return c.json({ error: 'property card not found' }, 404);
     const inspection = loadPropertyInspection(id);
-    const { runVisualIntelligenceForCard } = await import('./visual-intelligence.js');
+    const vi = await import('./visual-intelligence.js');
     const { analyzeScreenshots } = await import('./browser-vision.js');
     const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-    const record = await runVisualIntelligenceForCard(
+
+    const readers = {
+      loadGoogleVisuals: loadCardVisualCapture,
+      loadInspectionAssets: (cardId: number) =>
+        (loadPropertyInspection(cardId)?.assets ?? []).map((a) => ({ key: a.key, label: a.label, kind: a.kind, storedPath: a.storedPath, timestamp: a.timestamp })),
+      fileSize: (p: string) => fs.statSync(p).size,
+    };
+
+    // Detect a live authenticated Chrome/CDP session; when present, capture live
+    // (Google Earth, Street View, LandPortal parcel + 3D) with persistence
+    // fallback. When absent, the persistence-derived defaults report the exact
+    // per-source blocker (never fabricated).
+    let liveCapturers: ReturnType<typeof vi.defaultCapturers> | undefined;
+    let sessionStatus = 'unreachable';
+    try {
+      const session = await import('./browser-session.js');
+      sessionStatus = await session.ensureBrowserSession();
+      if (sessionStatus === 'live' || sessionStatus === 'auth_needed') {
+        const live = await import('./visual-intelligence-live.js');
+        const liveDeps = await live.defaultLiveVisualDeps();
+        liveCapturers = live.makeLiveVisualCapturers(liveDeps, vi.defaultCapturers(readers));
+      }
+    } catch { /* live detection failed → defaults report blockers honestly */ }
+
+    const record = await vi.runVisualIntelligenceForCard(
       {
         cardId: id,
         address: (card.active_input_address as string) ?? null,
@@ -3310,17 +3334,31 @@ export function registerLandosRoutes(app: Hono): void {
         county: (card.county as string) ?? null,
         state: (card.state as string) ?? null,
       },
-      {
-        loadGoogleVisuals: loadCardVisualCapture,
-        loadInspectionAssets: (cardId) =>
-          (loadPropertyInspection(cardId)?.assets ?? []).map((a) => ({ key: a.key, label: a.label, kind: a.kind, storedPath: a.storedPath, timestamp: a.timestamp })),
-        fileSize: (p) => fs.statSync(p).size,
-        analyze: analyzeScreenshots,
-        persist: saveVisualIntelligence,
-      },
+      { ...readers, analyze: analyzeScreenshots, persist: saveVisualIntelligence, liveCapturers },
     );
-    landosAudit('acquisitions', 'visual_intelligence_run', `card ${id}: hero=${record.hero?.source ?? 'none'}, captured=${record.gallery.length}`, { refTable: 'landos_card_activity' });
-    return c.json({ cardId: id, record });
+    landosAudit('acquisitions', 'visual_intelligence_run', `card ${id}: hero=${record.hero?.source ?? 'none'}, captured=${record.gallery.length}, session=${sessionStatus}`, { refTable: 'landos_card_activity' });
+    return c.json({ cardId: id, sessionStatus, record });
+  });
+
+  // Serve a LIVE-captured Visual Intelligence image (Google Earth / Street View /
+  // LandPortal live). Reads the stored path from the persisted VI record and only
+  // serves files inside the gitignored store/visuals — never an arbitrary path.
+  app.get('/api/landos/visual-intelligence/image', (c) => {
+    const cardId = Number(c.req.query('cardId'));
+    const source = c.req.query('source') ?? '';
+    if (!Number.isInteger(cardId)) return c.json({ error: 'invalid cardId' }, 400);
+    const rec = loadVisualIntelligence(cardId) as { sources?: Array<{ source: string; storedPath?: string }> } | null;
+    const asset = rec?.sources?.find((s) => s.source === source && s.storedPath);
+    if (!asset?.storedPath) return c.json({ error: 'no captured image' }, 404);
+    const resolved = path.resolve(asset.storedPath);
+    const root = path.resolve(process.cwd(), 'store', 'visuals');
+    if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const buf = fs.readFileSync(resolved);
+      return new Response(new Uint8Array(buf), { headers: { 'content-type': 'image/png', 'cache-control': 'private, max-age=300' } });
+    } catch {
+      return c.json({ error: 'image not found' }, 404);
+    }
   });
 
   // County Scorecard (Market Research business intelligence; NOT a Deal Card
