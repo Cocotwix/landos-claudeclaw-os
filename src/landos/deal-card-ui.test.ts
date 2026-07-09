@@ -150,18 +150,20 @@ describe('Deal Card — retained sections + quick-action shell', () => {
   const RETAINED = [
     'Visual Context', 'At a Glance', 'Market Pulse', 'Confirm Before Offer', 'Land Score',
     'Deal Economics', 'Contacts', 'Communication Summary', 'Exit Strategy Analysis',
-    'Documents & Quick Actions', 'Pre-Call Brief',
+    'Reports & Files', 'Pre-Call Brief',
   ];
   it('retains every still-useful section', () => {
     for (const s of RETAINED) expect(SRC.includes(s), `missing section ${s}`).toBe(true);
   });
 
-  it('renders the quick-action shell with all six actions, disabled/approval-gated', () => {
-    for (const a of ['Make Offer', 'Schedule Follow-Up', 'Run Full Report', 'Change Stage', 'Push to CRM', 'Generate PDF']) {
-      expect(SRC.includes(a), `missing quick action ${a}`).toBe(true);
-    }
-    expect(SRC).toMatch(/disabled/);
-    expect(SRC).toMatch(/Approval-gated/);
+  it('Documents tab shows real report actions, not disabled CRM clutter', () => {
+    // Completion standard: real, working report downloads instead of the old
+    // all-disabled "Make Offer / Push to CRM / …" placeholder buttons.
+    expect(SRC).toMatch(/report\/download\?format=pdf/);
+    expect(SRC).toMatch(/report\/download\?format=md/);
+    // The developer-clutter disabled quick-action cluster must be gone.
+    expect(SRC).not.toMatch(/'Push to CRM'/);
+    expect(SRC).not.toMatch(/'Make Offer', 'Schedule Follow-Up'/);
   });
 
   it('uses the $10k minimum-net baseline in deal economics', () => {

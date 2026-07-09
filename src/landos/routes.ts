@@ -89,6 +89,7 @@ import {
   saveVisualIntelligence,
   loadVisualIntelligence,
   getPropertyCardRow,
+  getCardActivity,
 } from './property-card.js';
 import { captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { resolveGoogleVisualEnv, VISUAL_SERVICES } from './providers/google-visual.js';
@@ -1169,6 +1170,19 @@ export function registerLandosRoutes(app: Hono): void {
       ref: str(body.ref),
     });
     return c.json({ id: evId }, 201);
+  });
+
+  // Deal Card activity timeline — the real recorded events for this card (report
+  // runs, visual intelligence/capture, comp research, inspections, notes, stage
+  // moves), newest first. Resolves the property card behind the deal. Never faked.
+  app.get('/api/landos/deal-cards/:id/activity', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    const events = cardId ? getCardActivity(cardId) : [];
+    return c.json({ dealId: id, cardId: cardId ?? null, events });
   });
 
   app.post('/api/landos/property-cards/:id/next-action', async (c) => {

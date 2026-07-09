@@ -1713,6 +1713,51 @@ function VisualIntelligencePanel({ cardId, token, compact }: { cardId: number; t
   );
 }
 
+// ── Activity timeline — real recorded Deal Card events ──────────────────────
+// Renders the actual landos_card_activity events (report runs, visual
+// intelligence/capture, comp research, inspections, notes, stage moves), newest
+// first, with human labels + relative time. Never a fabricated timeline.
+interface ActivityEventView { id: number; kind: string; summary: string; agentId: string; createdAt: number }
+const ACTIVITY_KIND_LABEL: Record<string, string> = {
+  property_inspection: 'Property Intelligence', landportal_inspection: 'LandPortal inspection',
+  visual_intelligence: 'Visual Intelligence', visual_capture: 'Visual capture', vision_analysis: 'Vision analysis',
+  market_pulse: 'Market Pulse', comparables_map: 'Comp research', market: 'Market update',
+  duke_deal_writeback: 'Report writeback', note: 'Note', operator_override: 'Operator edit',
+  operator_speech: 'Operator note', guard_block: 'Guard block', next_action: 'Next action',
+  redfin_comp_status: 'Redfin comps', zillow_comp_status: 'Zillow comps',
+  duke_verified_run: 'Property Intelligence (verified)', duke_unverified_run: 'Property Intelligence (unresolved)',
+};
+function activityKindLabel(kind: string): string {
+  return ACTIVITY_KIND_LABEL[kind] ?? kind.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+}
+function ActivityTimeline({ dealId }: { dealId: number }) {
+  const [events, setEvents] = useState<ActivityEventView[] | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ events: ActivityEventView[] }>(`/api/landos/deal-cards/${dealId}/activity`)
+      .then((r) => { if (live) setEvents(r.events); })
+      .catch((e: any) => { if (live) setMsg(e?.message || String(e)); });
+    return () => { live = false; };
+  }, [dealId]);
+  if (msg) return <div class="text-[11px] text-[var(--color-status-failed)]">{msg}</div>;
+  if (!events) return <Placeholder text="Loading activity…" />;
+  if (events.length === 0) return <Placeholder text="No activity recorded yet. Running Property Intelligence, Visual Intelligence, or comp research will record events here." />;
+  return (
+    <ol class="space-y-1.5 m-0 p-0 list-none">
+      {events.map((e) => (
+        <li key={e.id} class="flex items-start gap-2 border-b border-[var(--color-border)]/60 pb-1.5">
+          <span class="shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">{activityKindLabel(e.kind)}</span>
+          <div class="min-w-0 flex-1">
+            <div class="text-[12px] text-[var(--color-text)] break-words">{e.summary || activityKindLabel(e.kind)}</div>
+            <div class="text-[10px] text-[var(--color-text-faint)]">{formatRelativeTime(new Date(e.createdAt * 1000).toISOString())}{e.agentId ? ` · ${e.agentId}` : ''}</div>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 // Small labeled value for the header / at-a-glance strips.
 function HeaderField({ label, value }: { label: string; value?: string | null }) {
   return (
@@ -4493,22 +4538,27 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
 
           {/* 8. Documents & quick actions → Documents (report controls above) */}
           {activeTab === 'documents' && (
-          <Section title="Documents & Quick Actions">
-            <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Documents</div>
-            <Placeholder text="No documents attached yet" />
-            <div class="text-[11px] text-[var(--color-text-muted)] mt-3 mb-2">Quick actions (approval-gated)</div>
-            <div class="flex flex-wrap gap-2">
-              {['Make Offer', 'Schedule Follow-Up', 'Run Full Report', 'Change Stage', 'Push to CRM', 'Generate PDF'].map((a) => (
-                <button
-                  key={a}
-                  type="button"
-                  disabled
-                  title="Approval-gated / not enabled in this view"
-                  class="px-2.5 py-1 rounded-md text-[11px] border border-[var(--color-border)] text-[var(--color-text-faint)] opacity-60 cursor-not-allowed"
-                >
-                  {a}
-                </button>
-              ))}
+          <Section title="Reports & Files">
+            <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Generated reports</div>
+            {report?.exists ? (
+              <div class="rounded-md border border-[var(--color-border)] p-2 space-y-1.5">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-[12px] text-[var(--color-text)]">Property Intelligence Report</span>
+                  {report.generatedAt && <span class="text-[10px] text-[var(--color-text-faint)]">last run {formatRelativeTime(report.generatedAt)}{report.updatedBy ? ` · ${report.updatedBy}` : ''}</span>}
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <a href={`/api/landos/deal-cards/${deal.id}/report/download?format=pdf&token=${encodeURIComponent(dashboardToken)}`} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">Download PDF</a>
+                  <a href={`/api/landos/deal-cards/${deal.id}/report/download?format=md&token=${encodeURIComponent(dashboardToken)}`} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">Download Markdown</a>
+                </div>
+              </div>
+            ) : (
+              <Placeholder text="No report generated yet — run Property Intelligence (Overview or the report section above) to generate a downloadable report." />
+            )}
+
+            <div class="text-[11px] text-[var(--color-text-muted)] mt-3 mb-1">Deal documents</div>
+            <div class="rounded-md border border-dashed border-[var(--color-border)] p-2 text-[11px] text-[var(--color-text-muted)] space-y-0.5">
+              <div>Manual document upload is not yet wired in this view. Attach contracts / surveys / title in your file store for now.</div>
+              <div class="text-[10px] text-[var(--color-text-faint)]">Typically needed before transaction: purchase agreement, survey, title commitment, seller disclosures.</div>
             </div>
           </Section>
           )}
@@ -4530,7 +4580,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
               </div>
             )}
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Activity log</div>
-            <Placeholder text="No activity recorded yet" />
+            <ActivityTimeline dealId={deal.id} />
           </Section>
           )}
 

@@ -511,6 +511,24 @@ export function attachCardActivity(input: { cardId: number; agentId: string; kin
   ).run(input.cardId, input.agentId, input.kind, input.summary, input.ref ?? '').lastInsertRowid as number;
 }
 
+export interface CardActivityEvent {
+  id: number;
+  kind: string;
+  summary: string;
+  agentId: string;
+  createdAt: number;
+}
+
+/** The Deal Card activity timeline — real recorded events (report runs, visual
+ *  intelligence/capture, comp research, inspections, stage moves, notes), newest
+ *  first. Powers the Activity tab; never fabricated. */
+export function getCardActivity(cardId: number, limit = 60): CardActivityEvent[] {
+  const rows = getLandosDb()
+    .prepare('SELECT id, kind, summary, agent_id, created_at FROM landos_card_activity WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT ?')
+    .all(cardId, limit) as Array<{ id: number; kind: string; summary: string; agent_id: string; created_at: number }>;
+  return rows.map((r) => ({ id: r.id, kind: r.kind, summary: r.summary, agentId: r.agent_id, createdAt: r.created_at }));
+}
+
 // ── Visual capture persistence (Google Visual Property Context) ──────────────
 // Captured image metadata is stored as a card activity (kind='visual_capture').
 // Supporting context only — never parcel verification. Stored paths live under
