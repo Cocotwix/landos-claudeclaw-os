@@ -278,6 +278,7 @@ interface MarketCompsView {
   timestamp: string | null;
   note: string;
   research?: CompResearchView | null;
+  landportalComps?: { status: string; count: number; note: string; rows: MarketCompRowView[] };
 }
 
 // Zillow/Redfin read-only browser comp research: the exact search path + honest
@@ -1201,8 +1202,35 @@ function MarketCompsSection({ mc }: { mc?: MarketCompsView | null }) {
         </div>
       )}
 
+      {/* LandPortal visible comps — free "similar sales" rows only (never the paid
+          comp report). Own source-status + exact reason when unavailable. */}
+      <LandPortalCompsPanel lpc={mc.landportalComps} />
+
       {/* Zillow + Redfin browser research — search path + honest per-source status */}
       <CompResearchPanel research={mc.research} />
+    </div>
+  );
+}
+
+// LandPortal visible comps + source status. Shows parsed free rows (source =
+// LandPortal, with status/price/acreage/$/ac/date/URL) or the exact reason none
+// are shown. The paid LandPortal comp report is never triggered.
+function LandPortalCompsPanel({ lpc }: { lpc?: { status: string; count: number; note: string; rows: MarketCompRowView[] } | null }) {
+  if (!lpc || lpc.status === 'not_run') return null;
+  const tone = lpc.status === 'retrieved'
+    ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]'
+    : lpc.status === 'none'
+      ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+      : 'text-[var(--color-text-faint)] border-[var(--color-border)]';
+  return (
+    <div class="rounded-md border border-[var(--color-border)] p-2.5 space-y-1.5">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">LandPortal visible comps</span>
+        <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${tone}`}>{lpc.status} · {lpc.count}</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">free rows only · no paid report</span>
+      </div>
+      <div class="text-[11px] text-[var(--color-text-muted)]">{lpc.note}</div>
+      {lpc.rows && lpc.rows.length > 0 && <CompRows rows={lpc.rows} kind="sold" />}
     </div>
   );
 }

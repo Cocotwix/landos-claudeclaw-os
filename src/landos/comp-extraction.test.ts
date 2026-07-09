@@ -92,12 +92,20 @@ describe('parseZillowStructured (__NEXT_DATA__)', () => {
 
 describe('parseLandPortalCompRows (free visible similar sales)', () => {
   it('structures visible sold comp rows without any paid action', () => {
-    const rows = ['$45,000 Acres: 5.12', '$12,000 Acres: 3.0', '$900,000 Acres: 200'];
+    const rows = ['$45,000 Acres: 5.12', '$12,000 Acres: 3.0'];
     const comps = parseLandPortalCompRows(rows, 5);
-    expect(comps.length).toBe(2); // 200-acre / $900k row filtered by band + price
+    expect(comps.length).toBe(2);
     expect(comps[0].source).toBe('LandPortal');
     expect(comps[0].status).toBe('sold');
     expect(comps[0].pricePerAcre).toBe(Math.round(45000 / 5.12));
+  });
+
+  it('keeps curated rural comps that a small-lot band would wrongly drop', () => {
+    // Subject is small (0.98 ac) but LandPortal shows large curated similar sales.
+    const rows = ['$189,500 Acres: 7.67', '$200,000 Acres: 8.82'];
+    const comps = parseLandPortalCompRows(rows, 0.98);
+    expect(comps.length).toBe(2); // NOT dropped by the Zillow/Redfin small-lot band
+    expect(comps.map((c) => c.pricePerAcre)).toEqual([Math.round(189500 / 7.67), Math.round(200000 / 8.82)]);
   });
   it('handles empty/garbage safely', () => {
     expect(parseLandPortalCompRows(null, 5)).toEqual([]);

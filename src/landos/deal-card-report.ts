@@ -64,6 +64,7 @@ import { attachCardActivity } from './property-card.js';
 import type { ZillowFetchInput, ZillowCompsResult } from './zillow-land-comps.js';
 import type { RedfinFetchInput, RedfinCompsResult } from './redfin-land-comps.js';
 import { researchBrowserComps, type CompResearchResult } from './browser-comp-research.js';
+import { parseLandPortalCompRows } from './comp-extraction.js';
 import type { BrowserDriver } from './browser-intelligence.js';
 import { capturePropertyVisuals, type CaptureInput, type CaptureResult } from './google-visual-capture.js';
 import { googleVisualConfigured, resolveGoogleVisualEnv } from './providers/google-visual.js';
@@ -116,9 +117,19 @@ export interface MarketCompsView {
    *  per-source attempt outcomes, acreage/geography expansion, and honest
    *  strength. Present when the browser researcher ran (primary providers thin). */
   research?: CompResearchResult | null;
+  /** Free/visible LandPortal "similar sales" comps parsed from the authenticated
+   *  parcel page (never the PAID comp report). Own source-status + rows so the
+   *  Market panel shows LandPortal comps + an exact reason when unavailable. */
+  landportalComps?: LandPortalCompsView;
+}
+export interface LandPortalCompsView {
+  status: 'retrieved' | 'none' | 'no_url' | 'unavailable' | 'not_run';
+  count: number;
+  note: string;
+  rows: MarketCompView[];
 }
 function emptyMarketComps(): MarketCompsView {
-  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.', research: null };
+  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.', research: null, landportalComps: { status: 'not_run', count: 0, note: 'LandPortal visible comps not attempted yet.', rows: [] } };
 }
 const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
 // Provider gating rule: general read-only comp enrichment is ALLOWED. Realie
@@ -1778,6 +1789,34 @@ export async function runDealCardReport(
     } catch (e: unknown) {
       marketComps = { ...emptyMarketComps(), status: 'error', note: `Comp retrieval error: ${(e as Error)?.message ?? String(e)}.` };
     }
+  }
+
+  // LandPortal VISIBLE comps → Market panel. Structure the free "similar sales"
+  // rows already read from the authenticated parcel page (never the PAID comp
+  // report) via the shared parseLandPortalCompRows logic, and surface them with a
+  // source-status + exact reason. No lp_comp_report_* call is ever made here.
+  {
+    const lpUrl = landportalInspection?.parcelUrl ?? rawInspection?.parcelUrl ?? null;
+    const subjectAcres = landportalInspection?.factSheet?.acres ?? compQuery?.acres ?? null;
+    const rowTexts = (rawInspection?.comparables ?? []).map((c) => c.rawText).filter((t): t is string => !!t);
+    let lpc: LandPortalCompsView;
+    if (!lpUrl) {
+      lpc = { status: 'no_url', count: 0, note: 'No LandPortal URL on this card — cannot read visible comps.', rows: [] };
+    } else if (!landportalAttempted) {
+      lpc = { status: 'not_run', count: 0, note: 'LandPortal parcel page was not read this run.', rows: [] };
+    } else if (landportalUnavailable) {
+      lpc = { status: 'unavailable', count: 0, note: 'LandPortal was unavailable (auth/session missing or the page failed) — no visible comps read.', rows: [] };
+    } else {
+      const parsed = parseLandPortalCompRows(rowTexts, subjectAcres);
+      const rows: MarketCompView[] = parsed.map((p) => ({
+        price: p.price, saleDateIso: p.date ?? '', acres: p.acres, pricePerAcre: p.pricePerAcre,
+        sourceUrl: p.url ?? lpUrl, sourceLabel: 'LandPortal', addressDesc: p.address ?? undefined,
+      }));
+      lpc = rows.length
+        ? { status: 'retrieved', count: rows.length, note: `${rows.length} visible LandPortal comp(s) — free "similar sales" rows only; the paid comp report was not run.`, rows }
+        : { status: 'none', count: 0, note: 'No visible comps on the LandPortal parcel page (free rows only; the paid comp report was not run).', rows: [] };
+    }
+    marketComps = { ...marketComps, landportalComps: lpc };
   }
 
   // Census demographics (supporting market context). Verified parcel uses its

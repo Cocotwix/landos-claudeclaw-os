@@ -85,15 +85,26 @@ function acreBand(subjectAcres: number | null | undefined): { lo: number; hi: nu
 }
 
 /** Sane-priced land band + dedupe + price-per-acre. Shared normalizer so every
- *  source produces identical, comparable rows. Never fabricates. */
-export function normalizeComps(rows: ExtractedComp[], subjectAcres: number | null, opts: { maxOut?: number } = {}): ExtractedComp[] {
+ *  source produces identical, comparable rows. Never fabricates.
+ *
+ *  Scraped sources (Zillow/Redfin) default to a tight small-lot sanity band to
+ *  drop garbage. Curated sources (LandPortal "similar sales") pass applyBand:false
+ *  + a wide price range so real rural comps ($189k / 8ac) are NOT dropped. */
+export function normalizeComps(
+  rows: ExtractedComp[],
+  subjectAcres: number | null,
+  opts: { maxOut?: number; priceMin?: number; priceMax?: number; applyBand?: boolean } = {},
+): ExtractedComp[] {
   const band = acreBand(subjectAcres);
+  const priceMin = opts.priceMin ?? 3000;
+  const priceMax = opts.priceMax ?? 150000;
+  const applyBand = opts.applyBand ?? true;
   const seen = new Set<string>();
   const out: ExtractedComp[] = [];
   for (const r of rows) {
-    if (!(typeof r.price === 'number') || !Number.isFinite(r.price) || r.price < 3000 || r.price > 150000) continue;
+    if (!(typeof r.price === 'number') || !Number.isFinite(r.price) || r.price < priceMin || r.price > priceMax) continue;
     const acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
-    if (acres != null && (acres < band.lo || acres > band.hi)) continue;
+    if (applyBand && acres != null && (acres < band.lo || acres > band.hi)) continue;
     const key = (r.address || `${r.source}:${r.price}:${acres ?? '?'}`).toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -208,5 +219,7 @@ export function parseLandPortalCompRows(rows: Array<string> | null | undefined, 
       source: 'LandPortal',
     });
   }
-  return normalizeComps(out, subjectAcres);
+  // LandPortal already curated these as "similar sales" — keep them (no tight
+  // small-lot band, wide price range) instead of re-filtering real rural comps.
+  return normalizeComps(out, subjectAcres, { applyBand: false, priceMin: 1000, priceMax: 5_000_000, maxOut: 12 });
 }
