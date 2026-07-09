@@ -84,6 +84,90 @@ export function detectApnConflict(
   };
 }
 
+/** Compact a jurisdiction name for comparison: lowercase letters only, with a
+ *  trailing "county" word dropped ("Washington County" ⇢ "washington"). */
+function normCounty(s?: string): string {
+  return (s ?? '').toLowerCase().replace(/\bcounty\b/g, '').replace(/[^a-z]/g, '');
+}
+const STATE_ABBR: Record<string, string> = {
+  alabama: 'al', alaska: 'ak', arizona: 'az', arkansas: 'ar', california: 'ca', colorado: 'co', connecticut: 'ct',
+  delaware: 'de', florida: 'fl', georgia: 'ga', hawaii: 'hi', idaho: 'id', illinois: 'il', indiana: 'in', iowa: 'ia',
+  kansas: 'ks', kentucky: 'ky', louisiana: 'la', maine: 'me', maryland: 'md', massachusetts: 'ma', michigan: 'mi',
+  minnesota: 'mn', mississippi: 'ms', missouri: 'mo', montana: 'mt', nebraska: 'ne', nevada: 'nv', newhampshire: 'nh',
+  newjersey: 'nj', newmexico: 'nm', newyork: 'ny', northcarolina: 'nc', northdakota: 'nd', ohio: 'oh', oklahoma: 'ok',
+  oregon: 'or', pennsylvania: 'pa', rhodeisland: 'ri', southcarolina: 'sc', southdakota: 'sd', tennessee: 'tn',
+  texas: 'tx', utah: 'ut', vermont: 'vt', virginia: 'va', washington: 'wa', westvirginia: 'wv', wisconsin: 'wi', wyoming: 'wy',
+};
+function normState(s?: string): string {
+  const t = (s ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (!t) return '';
+  return t.length === 2 ? t : (STATE_ABBR[t] ?? t);
+}
+
+/**
+ * PURE: detect a CROSS-COUNTY APN COLLISION — the same parcel number resolving in
+ * a DIFFERENT county than the operator requested. APNs are only unique within a
+ * county, so "094-020.08" can exist in Scott AND Washington County TN; an unscoped
+ * search can land on the wrong one. detectApnConflict passes it (the APN string
+ * matches), so this second guard compares JURISDICTION. Fires ONLY when the
+ * operator supplied a county AND a requested APN, and a parcel-level lane resolved
+ * that SAME APN in a materially different county — a wrong-parcel hard-stop.
+ * Conservative: no requested county, no requested APN, no resolved county, or a
+ * matching county all return null (cannot / need not judge a conflict).
+ */
+export function detectJurisdictionConflict(
+  requested: { county?: string; state?: string; apn?: string; apnAlternates?: string[] },
+  resolved: Array<{ apn?: string; county?: string; state?: string; source: string; context?: string }>,
+): ApnConflict | null {
+  const reqCounty = normCounty(requested.county);
+  if (!reqCounty) return null;
+  const reqApnVariants = [requested.apn, ...(requested.apnAlternates ?? [])]
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    .map(compactParcelId)
+    .filter((x) => x.length >= 4);
+  if (reqApnVariants.length === 0) return null;
+  for (const r of resolved) {
+    const rc = normCounty(r.county);
+    if (!rc || rc === reqCounty) continue;
+    const rApn = r.apn ? compactParcelId(r.apn) : '';
+    if (!rApn || !reqApnVariants.includes(rApn)) continue; // must be the SAME parcel number
+    const reqState = normState(requested.state);
+    const rs = normState(r.state);
+    // State agreement is not required, but include it in the display when known.
+    const reqJ = [requested.county && `${requested.county.replace(/\s*county$/i, '')} County`, requested.state].filter(Boolean).join(', ');
+    const resJ = [r.county && `${r.county.replace(/\s*county$/i, '')} County`, r.state || (rs && reqState && rs !== reqState ? r.state : undefined)].filter(Boolean).join(', ');
+    return {
+      requestedApn: `${requested.apn ?? r.apn} in ${reqJ || 'the requested county'}`,
+      resolvedApn: `${r.apn} in ${resJ || 'a different county'}`,
+      source: r.source,
+      resolvedContext: r.context,
+    };
+  }
+  return null;
+}
+
+/** Recover a street/locality hint from raw intake when structured parsing dropped
+ *  them (a house-number-less road resolves to county+state only). Pure; only fills
+ *  what `fields` is missing, so a normal parsed address is never overridden. */
+export function deriveLocalityHints(rawText: string | undefined, fields: ParsedIntakeFields): { address?: string; city?: string } {
+  if (!rawText) return {};
+  const firstLine = rawText.split(/\r?\n/)[0] ?? '';
+  const segs = firstLine.split(',').map((s) => s.trim()).filter(Boolean);
+  const countyC = normCounty(fields.county);
+  const stateC = normState(fields.state);
+  const ROAD = /\b(rd|road|st|street|ave|avenue|dr|drive|ln|lane|ct|court|hwy|highway|blvd|trl|trail|pkwy|cir|pl|place|way)\b/i;
+  const leftover = segs.filter((s) => {
+    if (/parcel|\bapn\b|\bid\b|\bacre/i.test(s)) return false;
+    const sc = normCounty(s);
+    if (countyC && sc === countyC) return false;            // the county segment
+    if (stateC && normState(s) === stateC) return false;    // the state segment
+    return true;
+  });
+  const roadLike = leftover.find((s) => ROAD.test(s));
+  const locality = leftover.find((s) => s !== roadLike && !ROAD.test(s));
+  return { address: fields.address ?? roadLike, city: fields.city ?? locality };
+}
+
 export interface ResolutionLaneRecord {
   lane: RetrievalLane;
   ran: boolean;
@@ -329,7 +413,14 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   // missing-field analysis then decides what County Records must fill, so nothing
   // is collected twice. Parked + honest until an authenticated session is enabled;
   // the structured patch (not the screenshot) is the real contribution.
-  const searchKey: BrowserSearchKey = { address: fields.address, apn: fields.apn, apnAlternates: fields.apnAlternates, owner: fields.owner, city: fields.city, county: fields.county, state: fields.state, zip: fields.zip };
+  // When structured intake dropped the street/locality — a house-number-less road
+  // like "Henson Lane, Oneida/Helenwood, Scott County, TN" parses to county+state
+  // only — recover them from the raw text. Without a locality hint, an APN that
+  // collides across counties (Henson Ln in Scott vs Green Ln in Washington, both
+  // APN 094-020.08) has NO signal to disambiguate and the browser picks the first
+  // match; the recovered road/locality lets candidate scoring choose the right one.
+  const locality = deriveLocalityHints(input.rawText, fields);
+  const searchKey: BrowserSearchKey = { address: fields.address ?? locality.address, apn: fields.apn, apnAlternates: fields.apnAlternates, owner: fields.owner, city: fields.city ?? locality.city, county: fields.county, state: fields.state, zip: fields.zip };
   if (deps.landPortalBrowser) {
     try {
       const lp = await deps.landPortalBrowser.runWorkflow({ searchKey }, { timeoutMs });
@@ -389,11 +480,11 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   // is not a match — it is the resolver landing on the wrong parcel. Do NOT
   // confirm, do NOT run downstream. Collect every resolved parcel-level APN and
   // compare against the requested variants.
-  const resolvedApnCandidates: Array<{ apn?: string; source: string; context?: string }> = [];
+  const resolvedApnCandidates: Array<{ apn?: string; county?: string; state?: string; source: string; context?: string }> = [];
   if (verifiedData?.identity?.apn) {
     const id = verifiedData.identity;
     const ctx = [id.owner, id.situsAddress].filter(Boolean).join(' — ') || undefined;
-    resolvedApnCandidates.push({ apn: id.apn, source: verifiedData.verificationSource ?? 'a named parcel source', context: ctx });
+    resolvedApnCandidates.push({ apn: id.apn, county: id.county, state: id.state, source: verifiedData.verificationSource ?? 'a named parcel source', context: ctx });
   }
   for (const ev of browserEvidence) {
     if (ev.status !== 'retrieved' && ev.status !== 'partial') continue;
@@ -402,11 +493,14 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     const owner = ev.patch?.owner as string | undefined;
     const addr = ev.patch?.address as string | undefined;
     const ctx = [owner, addr].filter(Boolean).join(' — ') || undefined;
-    resolvedApnCandidates.push({ apn: a, source: browserServiceLabel(ev.service), context: ctx });
+    resolvedApnCandidates.push({ apn: a, county: ev.patch?.county as string | undefined, state: ev.patch?.state as string | undefined, source: browserServiceLabel(ev.service), context: ctx });
   }
-  const identityConflict = detectApnConflict(
-    { apn: fields.apn, apnAlternates: fields.apnAlternates },
-    resolvedApnCandidates,
+  // Two-tier wrong-parcel hard-stop: (1) a DIFFERENT APN resolved, or (2) the SAME
+  // APN resolved in a DIFFERENT county (a cross-county APN collision — APNs are
+  // only unique within a county). Either is a wrong parcel; do not confirm.
+  const identityConflict = (
+    detectApnConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates }, resolvedApnCandidates)
+    ?? detectJurisdictionConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates, county: fields.county, state: fields.state }, resolvedApnCandidates)
   ) ?? undefined;
 
   if (identityConflict) {
@@ -430,8 +524,16 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     };
   }
 
-  const matched = property.parcelVerified || (property.confidence >= matchConfidence && hasSubject);
   const identity = parcelIdentityEstablished(property, browserEvidence);
+  // A CONFIRMED parcel identity IS a match. The mandatory identity gate is
+  // deliberately strict (a named source, a parcel-level browser page returning
+  // APN + jurisdiction + a real parcel URL, or ≥2 corroborating parcel-level
+  // sources). When it establishes, we must NOT fall through to needs_clarification
+  // just because the numeric confidence sits below the match threshold — the
+  // parcel is confirmed. Without this, a parcel the Browser Agent CONFIRMED on the
+  // authenticated LandPortal parcel panel was returned as "unresolved" and its
+  // verified owner / acres / parcel URL never reached the Deal Card.
+  const matched = property.parcelVerified || identity.established || (property.confidence >= matchConfidence && hasSubject);
 
   if (matched) {
     return {
@@ -440,7 +542,9 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       confidence: property.confidence,
       matchedReason: property.parcelVerified
         ? `Parcel identity verified by ${property.verificationSource ?? 'a named source'}.`
-        : `Credible evidence from ${property.sources.length} source(s) resolves the intended property (confidence ${property.confidence.toFixed(2)}). Unknown fields become Confirm Before Offer.`,
+        : identity.established
+          ? identity.basis
+          : `Credible evidence from ${property.sources.length} source(s) resolves the intended property (confidence ${property.confidence.toFixed(2)}). Unknown fields become Confirm Before Offer.`,
       guidance: undefined,
       missing: property.missing,
       lanesAttempted: lanes,

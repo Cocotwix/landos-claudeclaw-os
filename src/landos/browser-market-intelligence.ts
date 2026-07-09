@@ -109,6 +109,76 @@ export function summarizeGrowthDrivers(intel: BrowserMarketIntelligence): Growth
   return { ...base, drivers, summary, whatThisMeans };
 }
 
+// ── LLM growth reading (reads the collected sources, not just keyword match) ──
+// The deterministic classifier above is a free floor; it misses signals a human
+// would catch ("$48k parks planning grant", "10 acres preserved for economic
+// development", "golf course rejected"). A trained employee READS the items. This
+// layer asks a model to read the ALREADY-COLLECTED cited evidence and group it
+// into land-value growth drivers — citing only those items, never inventing. Falls
+// back to the deterministic summary on any error (quota/parse), so it never blocks.
+const GROWTH_MODEL = process.env.LANDOS_GROWTH_MODEL || 'gemini-2.5-flash';
+
+export async function synthesizeGrowthDrivers(
+  intel: BrowserMarketIntelligence,
+  deps: { generate?: (prompt: string, model?: string) => Promise<string> } = {},
+): Promise<GrowthDriverSummary & { readBy: 'llm' | 'keyword' }> {
+  const deterministic = summarizeGrowthDrivers(intel);
+  if (intel.status !== 'collected' || !intel.evidence?.length) {
+    return { ...deterministic, readBy: 'keyword' };
+  }
+  let generate = deps.generate;
+  if (!generate) {
+    try {
+      const mod = await import('../gemini.js');
+      generate = (p: string, m?: string) => mod.generateContent(p, m ?? GROWTH_MODEL);
+    } catch { return { ...deterministic, readBy: 'keyword' }; }
+  }
+  const items = intel.evidence.map((e, i) => `${i + 1}. "${e.snippet}" — ${e.source} (${e.sourceType})`).join('\n');
+  const prompt = `You are a land-acquisition analyst reading public news for ${intel.area}. Below are REAL headlines already collected (with source). Read them and identify genuine LAND-VALUE growth (or risk) drivers. Only use these items — never invent. If an item is noise (a closing restaurant, crime, sports) skip it.
+
+Headlines:
+${items}
+
+Return STRICT JSON:
+{
+  "drivers": [
+    { "category": "short label e.g. Economic development, Infrastructure, Residential, Conservation/land-use, Zoning, Tourism, Employer, Risk",
+      "count": <number of headlines supporting it>,
+      "examples": ["the exact headline text, verbatim, for citation"],
+      "whyItMatters": "one sentence: why this moves land value for an investor here" }
+  ],
+  "summary": "one plain sentence naming the real drivers found for ${intel.area} (or that none are material)",
+  "whatThisMeans": "one sentence of buy-side guidance for land here"
+}`;
+  try {
+    const raw = await generate(prompt, GROWTH_MODEL);
+    const { parseJsonResponse } = await import('../gemini.js');
+    const parsed = parseJsonResponse<{ drivers?: unknown[]; summary?: string; whatThisMeans?: string }>(raw);
+    const drivers = Array.isArray(parsed?.drivers) ? parsed!.drivers!.map(normalizeLlmDriver).filter((d): d is GrowthDriverSummary['drivers'][number] => !!d) : [];
+    if (!drivers.length && !parsed?.summary) return { ...deterministic, readBy: 'keyword' };
+    return {
+      status: intel.status, area: intel.area, evidenceCount: intel.evidence.length,
+      drivers,
+      summary: (typeof parsed?.summary === 'string' && parsed.summary.trim()) ? parsed.summary.trim() : deterministic.summary,
+      whatThisMeans: (typeof parsed?.whatThisMeans === 'string' && parsed.whatThisMeans.trim()) ? parsed.whatThisMeans.trim() : deterministic.whatThisMeans,
+      readBy: 'llm',
+    };
+  } catch {
+    return { ...deterministic, readBy: 'keyword' };
+  }
+}
+
+function normalizeLlmDriver(raw: unknown): GrowthDriverSummary['drivers'][number] | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const category = typeof o.category === 'string' ? o.category.trim() : '';
+  if (!category) return null;
+  const examples = Array.isArray(o.examples) ? o.examples.filter((x): x is string => typeof x === 'string').slice(0, 3) : [];
+  const count = typeof o.count === 'number' && o.count > 0 ? Math.round(o.count) : Math.max(1, examples.length);
+  const whyItMatters = typeof o.whyItMatters === 'string' ? o.whyItMatters.trim() : '';
+  return { category, count, examples, whyItMatters };
+}
+
 /** A browser backend that actually drives a model to collect evidence. Injected
  *  when a runtime backend is available; absent => honest Needs Research. */
 export type BrowserBackend = (args: { area: string; model: BrowserModel; categories: readonly string[] }) => Promise<MarketEvidence[]>;

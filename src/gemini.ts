@@ -48,6 +48,48 @@ export async function generateContent(
   }
 }
 
+export interface VisionImage {
+  /** Base64-encoded image bytes (no data: prefix). */
+  data: string;
+  mimeType?: string;
+}
+
+/**
+ * Generate content from a prompt PLUS one or more images (multimodal). Used by
+ * Browser Intelligence Vision to analyze captured screenshots. Defaults to a
+ * vision-capable Flash model. Returns raw text (usually JSON).
+ */
+export async function generateVisionContent(
+  prompt: string,
+  images: VisionImage[],
+  model = 'gemini-2.0-flash',
+): Promise<string> {
+  requireEnabled('LLM_SPAWN_ENABLED');
+  const ai = getClient();
+  const parts: Array<Record<string, unknown>> = [{ text: prompt }];
+  for (const img of images) {
+    parts.push({ inlineData: { mimeType: img.mimeType ?? 'image/png', data: img.data } });
+  }
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts }],
+      config: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    });
+    if (!response.text) {
+      logger.warn({ model }, 'Gemini vision returned empty response');
+      return '';
+    }
+    return response.text;
+  } catch (err) {
+    logger.error({ err, model }, 'Gemini generateVisionContent failed');
+    throw err;
+  }
+}
+
 /**
  * Parse a JSON response from Gemini, with fallback on malformed output.
  * Returns null if parsing fails.

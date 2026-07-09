@@ -13,7 +13,7 @@
 import { getLandosDb } from './db.js';
 import { computeParcelState, type ParcelState } from './parcel-identity.js';
 import { smallestNextIdentifier } from './resolver-planner.js';
-import type { PropertyResolution } from './property-resolution-engine.js';
+import type { PropertyResolution, ApnConflict } from './property-resolution-engine.js';
 import type { ParsedIntakeFields } from './intake-router.js';
 
 /** One retrieval lane the resolver ran, with its outcome + human reason. */
@@ -65,6 +65,10 @@ export interface ResolutionSnapshot {
   /** The single smallest next identifier that would confirm the parcel. */
   smallestNextIdentifier: string;
   guidance?: string;
+  /** HARD wrong-parcel conflict: the operator asked for one APN but a parcel-level
+   *  source resolved a DIFFERENT parcel. When present the Resolution view shows a
+   *  loud hard-stop banner and NOTHING downstream runs. */
+  identityConflict?: ApnConflict;
   capturedAt: string;
 }
 
@@ -109,6 +113,7 @@ export function buildResolutionSnapshot(
       county: fields.county, fips: fields.fips, apn: fields.apn, owner: fields.owner, propertyId: fields.propertyId,
     }),
     guidance: resolution.guidance,
+    identityConflict: resolution.identityConflict,
     capturedAt: now,
   };
 }

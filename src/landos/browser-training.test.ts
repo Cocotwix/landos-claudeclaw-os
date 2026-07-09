@@ -147,6 +147,26 @@ describe('playbook synthesis', () => {
     expect(pb.neverDo.join(' ')).toMatch(/purchase|checkout/i);
     expect(pb.paidActionBlockers.length).toBeGreaterThan(0);
     expect(pb.screenshotsRequired).toContain('sidebar');
+    expect(pb.captureMode).toBe('dom');
+    expect(pb.needsSelectorConfirmation).toBe(false);
+  });
+
+  it('builds a VISUAL/NARRATED workflow (not empty) when there are no DOM events', () => {
+    const s = createTrainingSession({ title: 'LandPortal Map Search', website: 'https://landportal.com' });
+    // Only speech + screenshots (screen-share session, no CDP/DOM).
+    appendTrainingEvent({ sessionId: s.id, kind: 'operator_speech', role: 'operator', text: 'open the map search and search for the parcel' });
+    appendTrainingEvent({ sessionId: s.id, kind: 'operator_speech', role: 'operator', text: 'now click the parcel to open the sidebar' });
+    appendTrainingEvent({ sessionId: s.id, kind: 'operator_speech', role: 'operator', text: 'ok' }); // shard, dropped
+    appendTrainingEvent({ sessionId: s.id, kind: 'screenshot', text: 'Start of session' });
+    appendTrainingEvent({ sessionId: s.id, kind: 'screenshot', text: 'Page changed' });
+    const pb = synthesizeFromEventsDeterministic(getTrainingSession(s.id)!, listTrainingEvents(s.id));
+    expect(pb.captureMode).toBe('visual_narrated');
+    expect(pb.needsSelectorConfirmation).toBe(true);
+    expect(pb.steps.length).toBeGreaterThan(0); // never "No steps"
+    // narrated action steps + screenshot anchors, one-word shard dropped
+    expect(pb.steps.some((x) => /map search/i.test(x.action))).toBe(true);
+    expect(pb.steps.filter((x) => /Screenshot:/i.test(x.action)).length).toBe(2);
+    expect(pb.learningSummary).toMatch(/VISUAL\/NARRATED|needs one CDP pass/i);
   });
 
   it('coerces messy LLM output into the strict shape, keeping fallbacks', () => {

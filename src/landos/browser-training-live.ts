@@ -16,6 +16,7 @@ import {
   GEMINI_LIVE_FALLBACK_MODEL,
   GEMINI_LIVE_MODEL,
   recordBrowserEvent,
+  recordScreenshot,
   recordSpeech,
   recordUsage,
   trainingSystemInstruction,
@@ -23,7 +24,6 @@ import {
 } from './browser-training.js';
 import { getTrainingSession, updateTrainingSessionStatus } from './browser-training-db.js';
 import { matchFieldPhrase, type CanonicalField } from './field-binding.js';
-import { withWorkingPage, type PageLike } from './browser-session.js';
 
 /** Minimal duplex-socket shape (satisfied by `ws` and by test fakes). */
 export interface ClientSocket {
@@ -48,8 +48,18 @@ export interface LiveModelConnector {
     onopen: () => void;
     onmessage: (msg: unknown) => void;
     onerror: (err: unknown) => void;
-    onclose: () => void;
+    onclose: (info?: unknown) => void;
   }): Promise<LiveModelSession>;
+}
+
+/** Extract a short, secret-free reason string from an error/close event. */
+export function errText(err: unknown): string {
+  if (!err) return '';
+  if (typeof err === 'string') return err.slice(0, 200);
+  const e = err as Record<string, unknown>;
+  const msg = (e.message ?? e.reason ?? e.code ?? '') as string | number;
+  const s = typeof msg === 'string' ? msg : String(msg);
+  return s ? s.slice(0, 200) : '';
 }
 
 export interface BridgeDeps {
@@ -72,28 +82,22 @@ interface ClientMessage {
   bindField?: CanonicalField;
   bindPhrase?: string;
   bindSelector?: string;
+  // screenshot message fields
+  label?: string;
+  reason?: string;
 }
 
-/** Best-effort live CDP page for DOM-based field binding; null when unavailable. */
-async function bestEffortPage(): Promise<PageLike | null> {
-  try {
-    const held = await withWorkingPage(async (page) => page);
-    return held.ok && held.value ? held.value : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Capture a field binding triggered by an operator utterance (best-effort page). */
+/** Capture a field binding triggered by an operator utterance. Label-only: the
+ *  shared tab has no DOM, so we bind by name and confirm the selector later. */
 async function captureFromSpeech(sessionId: number, ws: ClientSocket, phrase: string): Promise<void> {
   try {
-    const page = await bestEffortPage();
-    const res = await captureFieldBinding(sessionId, { phrase, page });
+    const res = await captureFieldBinding(sessionId, { phrase, page: null });
     if (res) {
       sendJson(ws, {
         type: 'field_binding_captured',
         field: res.field, selector: res.entry.selector, label: res.entry.label,
         confidence: res.entry.confidence, strategy: res.entry.strategy,
+        note: 'Learned by name; selector needs confirmation (no DOM access to the shared tab).',
       });
     }
   } catch (err) {
@@ -169,8 +173,51 @@ export function defaultLiveConnector(): LiveModelConnector | null {
   };
 }
 
+/**
+ * Coalesces the tiny transcript fragments Gemini streams ("I", " can", " see")
+ * into readable utterances. It records ONE speech event per utterance (so the
+ * playbook synthesis sees full sentences, not word-shards) and runs field-phrase
+ * detection on the whole utterance. The client gets live `transcript_partial`
+ * updates plus a final `transcript` per utterance.
+ */
+export interface TranscriptCoalescer {
+  feed(role: 'operator' | 'ai', frag: string): void;
+  flush(): void;
+  dispose(): void;
+}
+
+export function makeTranscriptCoalescer(sessionId: number, ws: ClientSocket): TranscriptCoalescer {
+  let role: 'operator' | 'ai' | null = null;
+  let text = '';
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+
+  function flush(): void {
+    clearTimer();
+    const t = text.replace(/\s+/g, ' ').trim();
+    const r = role;
+    text = ''; role = null;
+    if (!t || !r) return;
+    recordSpeech(sessionId, r, t);
+    sendJson(ws, { type: 'transcript', role: r, text: t, final: true });
+    if (r === 'operator' && matchFieldPhrase(t)) void captureFromSpeech(sessionId, ws, t);
+  }
+
+  function feed(r: 'operator' | 'ai', frag: string): void {
+    if (role && role !== r) flush();
+    role = r;
+    text += frag;
+    sendJson(ws, { type: 'transcript_partial', role: r, text: text.replace(/\s+/g, ' ').trim() });
+    clearTimer();
+    // Flush after a natural pause so utterances don't wait for the next speaker.
+    timer = setTimeout(flush, 1400);
+  }
+
+  return { feed, flush, dispose: clearTimer };
+}
+
 /** Pull audio/transcript/usage out of a Gemini Live server message (defensively). */
-function handleServerMessage(sessionId: number, ws: ClientSocket, msg: unknown): void {
+function handleServerMessage(sessionId: number, ws: ClientSocket, msg: unknown, co: TranscriptCoalescer): void {
   const m = (msg && typeof msg === 'object' ? msg : {}) as Record<string, any>;
   const sc = m.serverContent as Record<string, any> | undefined;
 
@@ -185,21 +232,13 @@ function handleServerMessage(sessionId: number, ws: ClientSocket, msg: unknown):
     }
   }
 
-  // Transcriptions.
+  // Transcriptions → coalesced into utterances.
   const inTx = sc?.inputTranscription?.text;
-  if (typeof inTx === 'string' && inTx.trim()) {
-    recordSpeech(sessionId, 'operator', inTx);
-    sendJson(ws, { type: 'transcript', role: 'operator', text: inTx });
-    // Auto-capture a field binding when Tyler names a field on screen.
-    if (matchFieldPhrase(inTx)) void captureFromSpeech(sessionId, ws, inTx);
-  }
+  if (typeof inTx === 'string' && inTx.trim()) co.feed('operator', inTx);
   const outTx = sc?.outputTranscription?.text;
-  if (typeof outTx === 'string' && outTx.trim()) {
-    recordSpeech(sessionId, 'ai', outTx);
-    sendJson(ws, { type: 'transcript', role: 'ai', text: outTx });
-  }
+  if (typeof outTx === 'string' && outTx.trim()) co.feed('ai', outTx);
 
-  if (sc?.turnComplete) sendJson(ws, { type: 'turn_complete' });
+  if (sc?.turnComplete) { co.flush(); sendJson(ws, { type: 'turn_complete' }); }
 
   // Usage metadata → cost accounting.
   const um = m.usageMetadata as Record<string, any> | undefined;
@@ -238,6 +277,8 @@ export async function attachTrainingLiveSession(
   const connector = deps.connector === undefined ? defaultLiveConnector() : deps.connector;
   let model: LiveModelSession | null = null;
   let liveReady = false;
+  const co = makeTranscriptCoalescer(sessionId, ws);
+  let shotCount = 0;
 
   sendJson(ws, {
     type: 'status',
@@ -247,6 +288,33 @@ export async function attachTrainingLiveSession(
     liveAvailable: !!connector,
   });
 
+  // Screen-shared tabs expose pixels, not DOM — there is no CDP/browser-event
+  // access to Tyler's own tab. Say so explicitly so 0 DOM steps is never silent;
+  // steps are captured visually (screenshots + narration) instead.
+  sendJson(ws, {
+    type: 'browser_events',
+    connected: false,
+    reason: 'Screen-shared tab has no DOM access. Steps are captured visually from frames + your narration; selectors are confirmed on a later pass.',
+  });
+
+  // The spoken greeting the operator must hear within a few seconds of Start.
+  const GREETING_PROMPT =
+    'The training session just started and Tyler can see and hear you now. In ONE short spoken ' +
+    'sentence, tell him you can see his screen and are listening, and ask him to walk you through ' +
+    'the workflow. Then stay quiet and wait for him to speak.';
+
+  function triggerGreeting(): void {
+    if (!model) return;
+    try {
+      if (model.sendClientContent) {
+        model.sendClientContent({ turns: [{ role: 'user', parts: [{ text: GREETING_PROMPT }]}], turnComplete: true });
+        sendJson(ws, { type: 'status', state: 'greeting_sent' });
+      }
+    } catch (err) {
+      logger.warn({ err }, 'training-live: greeting failed');
+    }
+  }
+
   if (connector) {
     try {
       model = await connector.connect({
@@ -254,32 +322,35 @@ export async function attachTrainingLiveSession(
         systemInstruction: trainingSystemInstruction({ website: session.website, title: session.title }),
         onopen: () => {
           liveReady = true;
-          sendJson(ws, { type: 'status', state: 'live' });
+          sendJson(ws, { type: 'status', state: 'live', message: 'Live AI connected.' });
         },
-        onmessage: (msg) => handleServerMessage(sessionId, ws, msg),
+        onmessage: (msg) => handleServerMessage(sessionId, ws, msg, co),
         onerror: (err) => {
+          const reason = errText(err);
           logger.warn({ err }, 'training-live: model error');
-          sendJson(ws, { type: 'status', state: 'model_error', message: 'realtime model error; recording continues' });
+          sendJson(ws, { type: 'status', state: 'model_error', message: `Live AI error: ${reason}`, reason });
         },
-        onclose: () => {
+        onclose: (info?: unknown) => {
           liveReady = false;
-          sendJson(ws, { type: 'status', state: 'model_closed' });
+          const reason = errText(info);
+          sendJson(ws, { type: 'status', state: 'model_closed', message: reason ? `Live AI disconnected: ${reason}` : 'Live AI disconnected.', reason });
         },
       });
+      // Kick off the greeting so the operator immediately hears LandOS.
+      setTimeout(triggerGreeting, 500);
     } catch (err) {
+      const reason = errText(err);
       logger.warn({ err }, 'training-live: connect failed, recording-only mode');
       sendJson(ws, {
         type: 'status',
         state: 'recording_only',
-        message: 'Realtime voice unavailable; recording browser events + transcript still works.',
+        message: `Live AI not connected: ${reason}`,
+        reason,
       });
     }
   } else {
-    sendJson(ws, {
-      type: 'status',
-      state: 'recording_only',
-      message: 'No Google API key configured; recording browser events + manual notes only.',
-    });
+    const reason = 'No Google API key configured (GOOGLE_API_KEY missing).';
+    sendJson(ws, { type: 'status', state: 'recording_only', message: `Live AI not connected: ${reason}`, reason });
   }
 
   ws.on('message', (raw: unknown) => {
@@ -332,23 +403,36 @@ export async function attachTrainingLiveSession(
         }
         break;
       }
+      case 'screenshot': {
+        // A frame the client chose to keep (start / voice cue / material change).
+        if (!m.data) break;
+        try {
+          const shot = recordScreenshot(sessionId, { dataBase64: m.data, label: m.label, reason: m.reason });
+          shotCount += 1;
+          sendJson(ws, { type: 'screenshot_saved', count: shotCount, seq: shot.seq, label: m.label || m.reason || 'screenshot' });
+        } catch (err) {
+          logger.warn({ err }, 'training-live: screenshot save failed');
+          sendJson(ws, { type: 'screenshot_failed', reason: errText(err) });
+        }
+        break;
+      }
       case 'field_binding': {
-        // Explicit bind from the UI: field name (+ optional clicked selector /
-        // phrase). Read-only DOM probe; never mutates the page.
+        // Screen-shared tab has no DOM, so bind by NAME (label-only) — never probe
+        // the LandOS-controlled Chrome, which is a different page. Confirmation of
+        // the exact selector happens on a later CDP pass.
         void (async () => {
           try {
-            const page = await bestEffortPage();
             const res = await captureFieldBinding(sessionId, {
               field: m.bindField,
               phrase: m.bindPhrase,
-              clickSelector: m.bindSelector,
-              page,
+              page: null,
             });
             if (res) {
               sendJson(ws, {
                 type: 'field_binding_captured',
                 field: res.field, selector: res.entry.selector, label: res.entry.label,
                 confidence: res.entry.confidence, strategy: res.entry.strategy, sampleValue: res.sampleValue,
+                note: 'Learned by name; selector needs confirmation (no DOM access to the shared tab).',
               });
             } else {
               sendJson(ws, { type: 'field_binding_failed', reason: 'no field recognized' });
@@ -363,6 +447,7 @@ export async function attachTrainingLiveSession(
         if (m.action === 'pause') updateTrainingSessionStatus(sessionId, 'paused');
         else if (m.action === 'resume') updateTrainingSessionStatus(sessionId, 'active');
         else if (m.action === 'stop') {
+          co.flush(); co.dispose();
           try { model?.close(); } catch { /* ok */ }
           sendJson(ws, { type: 'status', state: 'ended' });
           ws.close(1000, 'stopped');
@@ -374,6 +459,7 @@ export async function attachTrainingLiveSession(
   });
 
   ws.on('close', () => {
+    co.flush(); co.dispose();
     try { model?.close(); } catch { /* ok */ }
   });
 }

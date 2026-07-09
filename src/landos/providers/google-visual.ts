@@ -160,9 +160,34 @@ export function buildStaticMapUrl(o: StaticImageOpts): string {
   const p = new URLSearchParams({ center, zoom: '18', size: o.size ?? '640x400', maptype: 'satellite', key: o.key });
   return `https://maps.googleapis.com/maps/api/staticmap?${p.toString()}`;
 }
-export function buildStreetViewUrl(o: StaticImageOpts): string {
+
+/** PURE: compass bearing in degrees (0=N, 90=E) from one lat/lng to another. Used
+ *  to AIM the Street View camera at the subject parcel instead of a default
+ *  direction (often meaningless pavement). */
+export function bearingDegrees(from: Coords, to: Coords): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const φ1 = toRad(from.lat), φ2 = toRad(to.lat);
+  const Δλ = toRad(to.lng - from.lng);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+/** Street View metadata endpoint (free, no image quota): returns the actual pano
+ *  location so the camera heading can be aimed at the parcel. */
+export function buildStreetViewMetadataUrl(o: StaticImageOpts): string {
+  const location = o.coords ? coordStr(o.coords) : (o.address ?? '');
+  const p = new URLSearchParams({ location, key: o.key });
+  return `https://maps.googleapis.com/maps/api/streetview/metadata?${p.toString()}`;
+}
+
+export function buildStreetViewUrl(o: StaticImageOpts & { heading?: number; pitch?: number; fov?: number }): string {
   const location = o.coords ? coordStr(o.coords) : (o.address ?? '');
   const p = new URLSearchParams({ location, size: o.size ?? '640x400', key: o.key });
+  if (typeof o.heading === 'number' && Number.isFinite(o.heading)) p.set('heading', String(Math.round(o.heading)));
+  if (typeof o.pitch === 'number' && Number.isFinite(o.pitch)) p.set('pitch', String(Math.round(o.pitch)));
+  if (typeof o.fov === 'number' && Number.isFinite(o.fov)) p.set('fov', String(Math.round(o.fov)));
   return `https://maps.googleapis.com/maps/api/streetview?${p.toString()}`;
 }
 

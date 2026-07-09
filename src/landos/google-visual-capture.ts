@@ -18,6 +18,8 @@ import {
   GOOGLE_MAPS_ENV_KEY,
   buildStaticMapUrl,
   buildStreetViewUrl,
+  buildStreetViewMetadataUrl,
+  bearingDegrees,
   googleVisualConfigured,
   type Coords,
   type VisualService,
@@ -75,9 +77,27 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
   const storeDir = deps.storeDir ?? path.join(process.cwd(), 'store', 'visuals');
   fs.mkdirSync(storeDir, { recursive: true });
 
+  // Aim Street View AT the parcel: look up the actual pano location (free
+  // metadata call), then set heading = bearing(pano → parcel) so the camera faces
+  // the subject instead of a default direction / meaningless pavement. Best-effort;
+  // falls back to an un-oriented Street View when metadata/coords are unavailable.
+  let svHeading: number | undefined;
+  if (input.coords) {
+    try {
+      const metaUrl = buildStreetViewMetadataUrl({ address: input.address, coords: input.coords, key });
+      const metaRes = await fetchImpl(metaUrl);
+      if (metaRes.ok) {
+        const meta = JSON.parse(Buffer.from(await metaRes.arrayBuffer()).toString('utf8')) as { status?: string; location?: { lat?: number; lng?: number } };
+        if (meta.status === 'OK' && typeof meta.location?.lat === 'number' && typeof meta.location?.lng === 'number') {
+          svHeading = bearingDegrees({ lat: meta.location.lat, lng: meta.location.lng }, input.coords);
+        }
+      }
+    } catch { /* no metadata → un-oriented Street View */ }
+  }
+
   const plan: Array<{ service: VisualService; url: string }> = [
     { service: 'maps_static', url: buildStaticMapUrl({ address: input.address, coords: input.coords ?? null, key }) },
-    { service: 'street_view_static', url: buildStreetViewUrl({ address: input.address, coords: input.coords ?? null, key }) },
+    { service: 'street_view_static', url: buildStreetViewUrl({ address: input.address, coords: input.coords ?? null, key, heading: svHeading }) },
   ];
 
   for (const { service, url } of plan) {

@@ -125,6 +125,20 @@ agents/*/agent.yaml.backup
 .claude/claudex/
 agents/*/.claude/claudex/
 
+# ── QA / build scratch artifacts — never share ───────────────────────
+# Throwaway probe/verify/recon/screenshot scripts use an underscore prefix
+# by convention. All canonical scripts have clean names, so this is safe.
+scripts/_*
+# Acquisition + QA screenshot dumps
+.acq-shots/
+# Captured Chrome user-data profiles from browser automation. These are
+# NOT reference UI — they contain Login Data, Web Data, cookies, and other
+# session state that must never reach the repo.
+_chrome/
+docs/reference-ui/**/_chrome/
+# Avatar marker for repo-backed LandOS agents (mirrors agents/*/.no-avatar)
+landos-agents/*/.no-avatar
+
 # LandOS — deal data, training material, and media files
 data/
 transcripts/

@@ -7,6 +7,8 @@
 // The realtime transport lives in browser-training-live.ts; this file is the
 // deterministic brain around it and is fully unit-testable.
 
+import fs from 'fs';
+import path from 'path';
 import { generateContent, parseJsonResponse } from '../gemini.js';
 import { landosAudit } from './db.js';
 import {
@@ -38,7 +40,11 @@ import {
 import type { PageLike } from './browser-session.js';
 
 // Native-audio Live model. Swap here only — nothing else names the provider.
-export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog';
+// Verified against this project's Google key (2026-07-06): the *-dialog and
+// *-live-001 model ids return "not found for API version v1beta / not supported
+// for bidiGenerateContent" and close immediately; this id stays open and streams
+// audio + transcript. See scripts/_live_probe.mjs.
+export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
 export const GEMINI_LIVE_FALLBACK_MODEL = 'gemini-2.0-flash-live-001';
 export const SYNTHESIS_MODEL = 'gemini-2.0-flash';
 
@@ -229,6 +235,36 @@ export function recordSpeech(sessionId: number, role: 'operator' | 'ai', text: s
   });
 }
 
+// ── Screenshots ──────────────────────────────────────────────────────
+
+const MAX_SHOT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Persist a screen frame the operator chose to keep and record it as a
+ * screenshot event (which becomes a playbook step). Images live in
+ * store/training-shots/<session> (gitignored) — never in the repo.
+ */
+export function recordScreenshot(
+  sessionId: number,
+  input: { dataBase64: string; label?: string; reason?: string },
+): { path: string; seq: number } {
+  const raw = (input.dataBase64 || '').replace(/^data:image\/\w+;base64,/, '');
+  const buf = Buffer.from(raw, 'base64');
+  if (!buf.length || buf.length > MAX_SHOT_BYTES) throw new Error('invalid or oversized screenshot');
+  const dir = path.join(process.cwd(), 'store', 'training-shots', String(sessionId));
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `shot_${Date.now()}.jpg`);
+  fs.writeFileSync(file, buf, { mode: 0o600 });
+  const label = (input.label || input.reason || 'screenshot').slice(0, 120);
+  const ev = appendTrainingEvent({
+    sessionId,
+    kind: 'screenshot',
+    text: label,
+    meta: { path: file, reason: input.reason ?? '' },
+  });
+  return { path: file, seq: ev.seq };
+}
+
 // ── Field-selector capture ───────────────────────────────────────────
 
 export interface CaptureResult {
@@ -349,6 +385,26 @@ export interface SynthesizedPlaybook {
   failureHandling: string[];
   qaChecklist: string[];
   expectedOutputs: string[];
+  /** 'dom' when real browser events were captured, else 'visual_narrated'. */
+  captureMode?: 'dom' | 'visual_narrated';
+  /** True when steps came from narration/screenshots and selectors are unconfirmed. */
+  needsSelectorConfirmation?: boolean;
+  /** Plain-English what-was-learned / what-still-needs-a-pass. */
+  learningSummary?: string;
+}
+
+/** Split a transcript utterance into candidate workflow instructions. */
+function narratedStepsFromSpeech(events: TrainingEvent[]): { action: string; note?: string }[] {
+  const out: { action: string; note?: string }[] = [];
+  const actionCue = /\b(click|open|select|search|type|enter|go to|navigate|scroll|choose|pick|zoom|filter|check|look at|read|find|drag|drop|switch|expand|collapse)\b/i;
+  for (const e of events) {
+    if (e.kind !== 'operator_speech') continue;
+    const text = (e.text || '').trim();
+    if (text.length < 8) continue; // skip one-word shards
+    // Keep utterances that describe an action; trim filler.
+    if (actionCue.test(text)) out.push({ action: text });
+  }
+  return out;
 }
 
 /** Render the recorded events as a compact transcript for the LLM. */
@@ -393,22 +449,50 @@ function slugify(name: string): string {
  * and as the shape the LLM output is validated into.
  */
 export function synthesizeFromEventsDeterministic(session: TrainingSession, events: TrainingEvent[]): SynthesizedPlaybook {
-  const steps = events
-    .filter((e) => e.kind === 'nav' || e.kind === 'click' || e.kind === 'input' || e.kind === 'screenshot')
-    .map((e) => {
-      if (e.kind === 'nav') return { action: `Navigate to ${e.url}`, url: e.url };
-      if (e.kind === 'click') return { action: `Click ${e.selector || e.text}`, selector: e.selector };
-      if (e.kind === 'input') return { action: `Enter value into ${e.selector}`, selector: e.selector };
-      return { action: `Capture screenshot: ${e.text || 'page'}`, note: e.text };
-    });
+  const domEvents = events.filter((e) => e.kind === 'nav' || e.kind === 'click' || e.kind === 'input');
+  const shots = events.filter((e) => e.kind === 'screenshot');
+  const utterances = events.filter((e) => e.kind === 'operator_speech');
+  const hasDom = domEvents.length > 0;
+
+  // DOM steps when real browser events exist; otherwise a visual/narrated
+  // workflow from screenshots + what the operator said (never empty when the
+  // session actually captured something).
+  let steps: SynthesizedPlaybook['steps'];
+  if (hasDom) {
+    steps = events
+      .filter((e) => e.kind === 'nav' || e.kind === 'click' || e.kind === 'input' || e.kind === 'screenshot')
+      .map((e) => {
+        if (e.kind === 'nav') return { action: `Navigate to ${e.url}`, url: e.url };
+        if (e.kind === 'click') return { action: `Click ${e.selector || e.text}`, selector: e.selector };
+        if (e.kind === 'input') return { action: `Enter value into ${e.selector}`, selector: e.selector };
+        return { action: `Capture screenshot: ${e.text || 'page'}`, note: e.text };
+      });
+  } else {
+    const narrated = narratedStepsFromSpeech(events);
+    const shotSteps = shots.map((e) => ({ action: `Screenshot: ${e.text || 'page'}`, note: 'visual reference' }));
+    // Interleave: narration first (the instructions), then screenshot anchors.
+    steps = [...narrated, ...shotSteps];
+  }
+
   const blocks = events.filter((e) => e.kind === 'guard_block').map((e) => e.text);
+  const fieldsNamed = events
+    .filter((e) => e.kind === 'system' && e.meta && (e.meta as any).fieldBinding)
+    .map((e) => (e.meta as any).fieldBinding.field as string);
+
+  const captureMode: 'dom' | 'visual_narrated' = hasDom ? 'dom' : 'visual_narrated';
+  const learningSummary = hasDom
+    ? `Captured ${domEvents.length} browser step(s) with selectors and ${shots.length} screenshot(s).`
+    : `Browser events were not available (screen-shared tab has no DOM), so this is a VISUAL/NARRATED workflow built from ${utterances.length} spoken instruction(s) and ${shots.length} screenshot(s)`
+      + (fieldsNamed.length ? `, plus ${fieldsNamed.length} field(s) named by voice (${fieldsNamed.join(', ')})` : '')
+      + `. Needs one CDP pass to confirm exact selectors before it can auto-extract into a Deal Card.`;
+
   return {
     workflowName: session.title || `${session.website || 'Browser'} workflow`,
     website: session.website,
     purpose: session.title || 'Reusable browser workflow captured from a live demonstration.',
     steps,
-    fieldsToExtract: [],
-    screenshotsRequired: events.filter((e) => e.kind === 'screenshot').map((e) => e.text || 'page'),
+    fieldsToExtract: [...new Set(fieldsNamed)],
+    screenshotsRequired: shots.map((e) => e.text || 'page'),
     decisionPoints: [],
     businessRules: [],
     operatorPreferences: [],
@@ -419,6 +503,9 @@ export function synthesizeFromEventsDeterministic(session: TrainingSession, even
     failureHandling: ['If a step fails, capture a screenshot and stop for review.'],
     qaChecklist: ['Confirm each extracted field is present and plausible.'],
     expectedOutputs: [],
+    captureMode,
+    needsSelectorConfirmation: !hasDom,
+    learningSummary,
   };
 }
 
@@ -456,6 +543,10 @@ export function coercePlaybook(raw: unknown, fallback: SynthesizedPlaybook): Syn
     failureHandling: strArr(r.failureHandling).length ? strArr(r.failureHandling) : fallback.failureHandling,
     qaChecklist: strArr(r.qaChecklist).length ? strArr(r.qaChecklist) : fallback.qaChecklist,
     expectedOutputs: strArr(r.expectedOutputs),
+    // Capture provenance is deterministic (from events), never from the LLM.
+    captureMode: fallback.captureMode,
+    needsSelectorConfirmation: fallback.needsSelectorConfirmation,
+    learningSummary: typeof r.learningSummary === 'string' && r.learningSummary ? r.learningSummary : fallback.learningSummary,
   };
 }
 

@@ -315,7 +315,7 @@ function compact(s: string): string { return s.toLowerCase().replace(/[^a-z0-9]/
 /** Score one candidate against the target. Strong identifiers (APN, full
  *  number+street address) carry the weight; owner/county/state are context only.
  *  Pure. */
-export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; address?: string; owner?: string; county?: string; state?: string }): CandidateScore {
+export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; address?: string; owner?: string; city?: string; county?: string; state?: string }): CandidateScore {
   const hayRaw = c.text.toLowerCase();
   const hayC = compact(c.text);
   const matched: string[] = [];
@@ -332,6 +332,9 @@ export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; ad
     else if (streetHits >= 1) { score += 0.15; matched.push('street'); }
   }
   if (key.owner) { const surname = key.owner.toLowerCase().replace(/[,.].*$/, '').split(/\s+/).pop() || ''; if (surname.length > 2 && hayRaw.includes(surname)) { score += 0.2; matched.push('owner'); } }
+  // City/locality disambiguates same-APN parcels across counties (LandPortal
+  // candidate rows show the CITY, e.g. "HELENWOOD" vs "LIMESTONE", not the county).
+  if (key.city) { const cityTokens = key.city.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3); if (cityTokens.some((w) => hayRaw.includes(w))) { score += 0.25; matched.push('city'); } }
   if (key.county && hayRaw.includes(key.county.toLowerCase())) { score += 0.1; matched.push('county'); }
   if (key.state && new RegExp(`\\b${key.state.toLowerCase()}\\b`).test(hayRaw)) { score += 0.1; matched.push('state'); }
 
@@ -343,7 +346,7 @@ export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; ad
 
 /** Pick the single best candidate — returns it ONLY at high confidence; otherwise
  *  null (caller must not click / must report a blocker). No weak-match. Pure. */
-export function pickBestCandidate(candidates: ResultCandidate[], key: { apn?: string; address?: string; owner?: string; county?: string; state?: string }): CandidateScore | null {
+export function pickBestCandidate(candidates: ResultCandidate[], key: { apn?: string; address?: string; owner?: string; city?: string; county?: string; state?: string }): CandidateScore | null {
   const scored = candidates.map((c) => scoreResultCandidate(c, key)).sort((a, b) => b.score - a.score);
   const best = scored[0];
   if (!best || best.confidence !== 'high') return null;

@@ -31,6 +31,12 @@ export interface ResolutionSnapshotView {
   missing: string[];
   smallestNextIdentifier: string;
   guidance?: string;
+  identityConflict?: {
+    requestedApn: string;
+    resolvedApn: string;
+    source: string;
+    resolvedContext?: string;
+  };
   capturedAt: string;
 }
 export interface ParcelIdentityView {
@@ -113,8 +119,25 @@ export function ResolutionView({
     }
   }
 
+  const conflict = snapshot.identityConflict;
+
   return (
     <div class="space-y-4">
+      {/* HARD wrong-parcel conflict — loud, unmissable, no downstream ran. */}
+      {conflict && (
+        <div class="rounded-lg border-2 border-[var(--color-status-failed,#c2564e)] bg-[color-mix(in_srgb,var(--color-status-failed,#c2564e)_12%,var(--color-card))] p-4">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-[13px] font-bold text-[var(--color-status-failed,#c2564e)]">⛔ WRONG PARCEL — HARD STOP</span>
+          </div>
+          <div class="text-[12px] text-[var(--color-text)] mt-1.5 leading-relaxed">
+            You asked for APN <span class="font-mono font-semibold">{conflict.requestedApn}</span>, but {conflict.source} resolved a <span class="font-semibold">different parcel</span> — APN <span class="font-mono font-semibold">{conflict.resolvedApn}</span>
+            {conflict.resolvedContext ? <span class="text-[var(--color-text-muted)]"> ({conflict.resolvedContext})</span> : null}.
+          </div>
+          <div class="text-[11px] text-[var(--color-text-muted)] mt-1.5 border-t border-[var(--color-border)] pt-2">
+            The resolved parcel was <span class="font-semibold">NOT</span> accepted as the subject. No Property Intelligence, Land Score, valuation, offer range, strategy, comps, Market Pulse, or seller brief ran. Re-check the APN, or provide a corrected parcel identifier (APN + county) below.
+          </div>
+        </div>
+      )}
       {/* Status banner */}
       <div class="rounded-lg border border-[var(--color-status-warn,var(--color-border))] bg-[var(--color-elevated)] p-4">
         <div class="flex items-center gap-2 flex-wrap">

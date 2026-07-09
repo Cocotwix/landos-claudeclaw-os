@@ -55,6 +55,17 @@ export interface LandPortalBrowserDeps {
  *  page exposes many labels; we read them all and normalize the known ones.
  *  Unknown-but-visible fields are still returned in `fields` (raw evidence). */
 const FIELD_MAP: Array<{ rx: RegExp; key: keyof PropertyPatch | 'tax' | 'fema' | 'wetlands' | 'road_frontage' | 'buildable' | 'slope' | 'utilities' | 'land_use' }> = [
+  // LandPortal parcel-panel labels are qualified ("Parcel Address County",
+  // "Parcel Address City", …), not bare ("County"). Capturing the resolved
+  // jurisdiction is what makes a cross-county APN collision (same APN, DIFFERENT
+  // county) visible to the wrong-parcel hard-stop — without it the resolved
+  // county is invisible and the wrong parcel confirms silently. These specific
+  // labels are matched BEFORE the generic address pattern (all anchored with $).
+  { rx: /^parcel\s*address\s*county$/i, key: 'county' },
+  { rx: /^parcel\s*address\s*city$/i, key: 'city' },
+  { rx: /^parcel\s*address\s*state$/i, key: 'state' },
+  { rx: /^parcel\s*address\s*zip(\s*code)?$/i, key: 'zip' },
+  { rx: /^parcel\s*address$/i, key: 'address' },
   { rx: /^(situs|property|site)?\s*address$/i, key: 'address' },
   { rx: /^apn$|parcel\s*(number|no|#)/i, key: 'apn' },
   { rx: /^parcel\s*id$/i, key: 'propertyId' },
