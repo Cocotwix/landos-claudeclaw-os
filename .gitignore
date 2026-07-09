@@ -138,6 +138,10 @@ _chrome/
 docs/reference-ui/**/_chrome/
 # Avatar marker for repo-backed LandOS agents (mirrors agents/*/.no-avatar)
 landos-agents/*/.no-avatar
+# Local-only vendor reference specs — kept on disk, not tracked yet
+docs/external/
+# Local-only install/update walkthrough transcript — personal, not for repo
+landos-agents/ClaudeClaw_Mark_Install_and_Update_Workflow_Fork_Upstream_Git_Pull.txt
 
 # LandOS — deal data, training material, and media files
 data/
