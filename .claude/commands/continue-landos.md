@@ -1,71 +1,46 @@
 ---
-description: "Resume LandOS with shared operating memory"
+description: "Optional LandOS orientation: load compact memory + live status only"
 ---
 
-# /continue-landos
+# /continue-landos (v2 — compact)
 
-Load LandOS operating memory, orient the session, identify the next recommended
-task, then wait for Tyler.
+Normal LandOS work does NOT need this command: `CLAUDE.md` already auto-imports
+`.landos/PERMANENT_MEMORY.md` and `.landos/CHECKPOINT.md` into every fresh
+session. Use this command only when Tyler explicitly wants an orientation
+summary before assigning work.
 
-## Read First
+## Load (this exact set, nothing more)
 
-1. `LANDOS_CURRENT_STATE.md`
-2. `.landos/CHAT_CONTEXT.md`
-3. `.landos/CURRENT_SPRINT.md`
-4. `.landos/PROJECT_MEMORY.md`
-5. `.landos/DECISIONS.md`
-6. `.landos/OPERATOR_QA.md`
-7. `.landos/BUSINESS_QA.md`
-8. `.landos/KNOWN_LIMITATIONS.md`
-9. `.landos/CONTINUITY_PROTOCOL.md`
-10. `.landos/HANDOVER.md`
-11. `docs/landos/LandOS_Build_Rules.md`
-12. `docs/governance/07_Product_Principles.md`
+1. `.landos/PERMANENT_MEMORY.md` (skip if already imported this session)
+2. `.landos/CHECKPOINT.md` (skip if already imported this session)
+3. `git status --short` and `git log --oneline -5`
+4. `npm run landos:status` (bounded; do not start/restart anything)
+5. `npm run landos:memory:status` (reports loaded files + estimated tokens)
 
-## Inspect
+## Never load
 
-- `git status --short`
-- `git log --oneline -5`
-- `docs/reference-ui/` for latest safe visual acceptance artifacts
-- If the current task is dashboard-backed, inspect `store/landos.db` read-only.
-  Do not print secrets or write real property identifiers into repo docs.
+- `.landos/HANDOVER.md`, `.landos/OPERATOR_QA.md`, `.landos/BUSINESS_QA.md`,
+  `.landos/KNOWN_LIMITATIONS.md`, or other Layer C history files
+- `docs/landos/` sprint reports, playbooks, or the docs directory broadly
+- transcripts, prior prompts, generated reports, or browser/MCP output
+- `store/landos.db` or any database query
+- Chrome/browser sessions
 
-## Report Before Work
+If the current task later needs a specific historical fact, use the task-specific
+retrieval command and read only returned excerpts or paths:
+`npm run landos:memory:retrieve -- <query>`.
 
-Return a concise start summary:
+## Report
 
-- Latest commit
-- Current business objective
-- Current department / employee
-- Current milestone
-- Current dashboard state
-- Current operator complaint
-- Current blocker
-- Failed Operator QA, if any
-- Latest Business QA finding, if any
-- Reference assets
-- Conversation context
-- Next exact deliverable
-- Things already attempted
-- What not to repeat
-- Recommended next task
-- Uncommitted changes
-
-Then stop and wait for Tyler.
+- Files loaded and their estimated token sizes (from `landos:memory:status`).
+- HEAD, dirty-worktree summary, runtime state (PID + URL if running).
+- Checkpoint's next recommended priority, flagged STALE if checkpoint HEAD or
+  date disagrees with live git state (live state wins).
+- Then wait for Tyler.
 
 ## Rules
 
-- `/continue-landos` is orientation-only by default. Do not start
-  implementation, tests, builds, or edits beyond the orientation/status pass.
-- Only begin execution if Tyler explicitly says one of the following:
-  - `continue execution`
-  - `run the next sprint`
-  - `start the build`
-  - `implement it`
-- Approval gates are secrets, `.env`, API keys/passwords, paid APIs, external
-  account mutation, money, destructive deletes, `git push`, and deployments.
-- Do not push or deploy.
-- Do not replace LandOS architecture, governance, product principles, commands,
-  or docs.
-- Do not write property-specific business work product into repo memory.
-- Preserve LandOS as the source of truth.
+- Orientation-only: no implementation, tests, builds, edits, restarts.
+- Ordinary wording ("continue", "current", "existing", "LandOS", "sprint")
+  must not trigger this command or any broad historical loading.
+- Approval gates and all safety rules in `.landos/PERMANENT_MEMORY.md` apply.

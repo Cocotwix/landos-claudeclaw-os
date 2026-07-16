@@ -27,6 +27,7 @@ migrations/.applied.json
 # Logs
 *.log
 /tmp/claudeclaw.*
+/.runtime/
 
 # Python
 __pycache__/
@@ -124,6 +125,29 @@ agents/*/agent.yaml.backup
 # CWDs (sub-agents start with cwd=agents/<id>).
 .claude/claudex/
 agents/*/.claude/claudex/
+
+# ── LandOS local QA scratch — property-specific probe output, never share ──
+# Root-level API/report dumps captured during card-level QA (contain real
+# property addresses and local absolute paths).
+/rep*.json
+/report*.json
+/reportrun*.json
+/vi14*.json
+# Browser-QA screenshot dumps of real deal cards.
+/docs/landos/qa-*/
+# One-off card/property-specific probe and repair scripts. Canonical LandOS
+# tooling lives in scripts/runtime/, scripts/sprint/, scripts/memory/.
+/scripts/qa-inspect-*.mjs
+/scripts/repair-card*.mjs
+/scripts/recover-tennessee-mismatch.ts
+/scripts/check-public-intelligence-persistence.ts
+/scripts/inspect-card-counts.ts
+/scripts/inspect-live-final.ts
+/scripts/verify-final-acceptance.ts
+/scripts/verify-post-review-live.ts
+/scripts/verify-public-intelligence.ts
+/scripts/verify-tennessee-resolution.ts
+/src/landos/sandbox-probe.ts
 
 # ── QA / build scratch artifacts — never share ───────────────────────
 # Throwaway probe/verify/recon/screenshot scripts use an underscore prefix

@@ -1,62 +1,48 @@
 ---
-description: "Close a LandOS session and update shared operating memory"
+description: "Close a LandOS session: refresh the compact checkpoint + QA ledgers"
 ---
 
-# /done-landos
+# /done-landos (v2 — compact)
 
-Use this when the current LandOS work session is ready to close. A session is
-not complete until engineering QA, Operator QA, Business QA, and memory updates
-are handled or a true approval gate blocks completion.
+Close the current LandOS work session. A session is not complete until
+engineering QA, Operator QA, Business QA, and memory updates are handled or a
+true approval gate blocks completion.
 
-## Required Checks
+## 1. Verify
 
-- Inspect `git status --short`.
-- Inspect recent commits with `git log --oneline -5`.
-- Summarize tests/builds run and whether they passed.
-- Summarize Operator QA.
-- Summarize Business QA.
-- If dashboard behavior was part of the sprint, summarize real dashboard/server
-  verification and the relevant `store/landos.db` state without recording
-  private property identifiers.
+- `git status --short` and `git log --oneline -5`.
+- Summarize tests/builds run and results.
+- Summarize Operator QA / Business QA if they ran.
 
-## Update Memory
+## 2. Refresh the checkpoint (replace, never append)
 
-Update these files as needed:
+Run `npm run landos:memory:checkpoint` to replace derived git, verification, and managed-runtime metadata in `.landos/CHECKPOINT.md`. Update its compact business sections only from live files and current acceptance evidence. It must contain:
 
-1. `LANDOS_CURRENT_STATE.md` - always update current objective, milestone,
-   dashboard status, blocker, and next exact deliverable.
-2. `.landos/CHAT_CONTEXT.md` - always update current conversation topic,
-   conclusions, unfinished discussions, and next conversation topic.
-3. `.landos/CURRENT_SPRINT.md` - update sprint status, attempted work, blocker,
-   and next exact task.
-4. `.landos/HANDOVER.md` - update session closeout details.
-5. `.landos/OPERATOR_QA.md` - update when operator-visible QA was run or failed.
-6. `.landos/BUSINESS_QA.md` - update when a department/employee was evaluated.
-7. `.landos/PROJECT_MEMORY.md` - update durable gotchas, root causes, and what
-   not to repeat.
-8. `.landos/DECISIONS.md` - update durable decisions.
-9. `.landos/KNOWN_LIMITATIONS.md` - update intentionally unfinished work.
+- Generated date, HEAD hash at generation, dirty-worktree warning.
+- Latest test/build status (with date), runtime status (with timestamp).
+- Recently completed work (short bullets, link to detailed reports in
+  `docs/landos/` — never paste report contents).
+- Current unfinished work, blockers, pending Tyler decisions.
+- Relevant changed areas and the next recommended priority.
 
-## Handoff Must Include
+Keep it ≤ 8 KB. Exclude: full prompts, full reports, transcripts, raw logs,
+browser/MCP output, secrets, tokenized URLs, property identifiers.
 
-- Last completed work
-- Files changed
-- Tests/builds run
-- Latest commits or "no commit made"
-- Current dashboard state
-- Failed Operator QA and active blockers
-- Latest Business QA finding
-- Reference UI artifacts added, if any
-- Conversation context updates
-- Things already attempted
-- Next exact task
-- What not to repeat
+## 3. Append history only where it belongs
+
+- `.landos/OPERATOR_QA.md`: one concise entry, only if operator QA ran.
+- `.landos/BUSINESS_QA.md`: one concise entry, only if a department was
+  evaluated.
+- `.landos/HANDOVER.md`: optional short closeout entry (history file; never
+  auto-loaded).
+
+## 4. Audit
+
+Run `npm run landos:memory:audit`. Fix any budget, duplicate, staleness, or
+excluded-content violations before ending the session.
 
 ## Rules
 
-- Do not push or deploy without Tyler approval.
-- Do not commit unless the task asks for a commit workflow or Tyler approves the
-  commit.
-- Do not write secrets, credentials, tokens, cookies, `.env` contents, or raw
-  private property data.
+- Do not push, deploy, or commit without Tyler approval.
+- Do not write secrets, tokens, `.env` contents, or private property data.
 - Do not stop early when the blocker is safely fixable.

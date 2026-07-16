@@ -1388,11 +1388,9 @@ ${q(process.execPath)} ${q(entry)} >> ${q(logFile)} 2>&1\r
     s.stop('warn', 'Could not register scheduled task automatically');
     const errMsg = err instanceof Error ? err.message : String(err);
     printWindowsHandoff('Installing the ClaudeClaw auto-start scheduled task', errMsg, 'scripts/setup.ts (setupWindows function)');
-    info('Quick manual fallback if you prefer: start with "npm start" in a terminal,');
-    info('or use PM2:');
-    console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
-    console.log(`  ${c.cyan}pm2 start dist/index.js --name claudeclaw${c.reset}`);
-    console.log(`  ${c.cyan}pm2 save && pm2 startup${c.reset}`);
+    info('Use the repository-owned Windows runtime instead:');
+    console.log(`  ${c.cyan}npm run landos:start${c.reset}`);
+    console.log(`  ${c.cyan}npm run landos:status${c.reset}`);
   }
 }
 
