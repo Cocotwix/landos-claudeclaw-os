@@ -381,8 +381,8 @@ describe('consistency audit detects the observed live failures', () => {
     executiveSummary: {
       strongestStrategy: { strategy: 'No acquisition strategy is ready' },
       strategyRanking: [
-        { strategy: 'Quick Flip', viability: 'not_viable' }, { strategy: 'Novation or Double Close', viability: 'not_viable' },
-        { strategy: 'Subdivide or Minor Split', viability: 'not_viable' }, { strategy: 'Land Home Package', viability: 'not_viable' },
+        { strategy: 'Cash Flip', viability: 'not_viable' }, { strategy: 'Novation or Double Close', viability: 'not_viable' },
+        { strategy: 'Subdivide or Minor Split', viability: 'not_viable' }, { strategy: 'Land-Home Package', viability: 'not_viable' },
         { strategy: 'Improvement Then Flip', viability: 'not_viable' },
       ],
       headline: '1.15 ac land, Fixture County — target $18,279–$27,419',
@@ -390,7 +390,7 @@ describe('consistency audit detects the observed live failures', () => {
     },
     compRegistry: { counts: { validatedSold: 55, validatedActive: 51, rawCandidates: 118, rejected: 2 }, valuationReady: true },
     strategyReadiness: {
-      strategies: ['Quick Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land Home Package', 'Improvement Then Flip'].map((s) => ({ strategy: s, status: 'blocked' })),
+      strategies: ['Cash Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land-Home Package', 'Improvement Then Flip'].map((s) => ({ strategy: s, status: 'blocked' })),
       pricingAllowed: false,
     },
     operatorRecord: {

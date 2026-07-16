@@ -1,0 +1,85 @@
+[
+  {
+    "requirementId": "LW6",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=23",
+    "steps": [
+      "Open Acquisitions - New Lead.",
+      "Type: QA FIXTURE APN CONFLICT (independent browser QA, additive test lead, not a real seller): 222 MCDANIEL AVE, PICKENS, SC 29671 APN 4180-07-78-9999",
+      "Click Run Property Intelligence (the address true APN is 4180-07-78-1710; the supplied APN does not exist).",
+      "Open the resulting Lead Workspace (deal 23)."
+    ],
+    "expected": "identityConflict recorded (requested 4180-07-78-9999 vs resolved 4180-07-78-1710); WRONG PARCEL - HARD STOP banner (data-testid lead-workspace-conflict) naming both APNs; chip BLOCKED - WRONG PARCEL; not verified; no property intelligence, valuation, offer range, actionable strategies, or seller brief. The engine unit test (property-resolution-engine.test.ts:88) expects this for requested-vs-resolved APN mismatch.",
+    "actual": "acquire/run returned matched:true parcelVerified:true confidence:1 and created deal 23. Workspace shows Verified parcel with the fabricated APN 4180-07-78-9999, the real parcel facts attached (PICKENS COUNTY OF, 47.45 ac, appraised $569,400), identityConflict null, pricingAllowed true, $1,396,881 (high confidence) valuation, Cash Flip viable. Internal contradictions render: blockers say Valuation not ready beside the $1.39M value; Resolution box says Verified parcel - No resolution attempt has been recorded for this lead. Persists across refresh and managed restart. The other conflict shape (real address + APN of a different existing parcel) also produced no conflict (see dedupe finding). The hard-stop banner is therefore unverifiable live.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal23-fabricated-apn-verified.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal23-valuation-open.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal23-conflict-desktop.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal23-conflict-api.json"
+    ],
+    "apiOrDbEvidence": "GET /api/landos/lead-workspace/23: property.identity.apn=4180-07-78-9999, resolutionState Parcel verified (SCDOT GIS mirror), resolution.identityConflict=null, strategies.pricingAllowed=true, market.valuation.primary $1,396,881; landos_parcel_identity deal 23 state=confirmed confidence=1; logs/main.log acquire_run matched:true parcelVerified:true dealCardId:23.",
+    "severity": "blocker",
+    "suspectedSubsystem": "property-resolution-engine conflict detection / county-GIS lane APN handling",
+    "disposition": "internal_fixable",
+    "patternKey": "apn-conflict-hard-stop-not-triggered"
+  },
+  {
+    "requirementId": null,
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19",
+    "steps": [
+      "Open Acquisitions - New Lead.",
+      "Type: QA FIXTURE APN CONFLICT (independent browser QA, additive test lead, not a real seller): 222 MCDANIEL AVE, PICKENS, SC 29671 APN 5105-00-44-0497",
+      "Click Run Property Intelligence (that APN belongs to 200 Sid Edens Rd = existing deal 19; the address is the Pickens County courthouse).",
+      "Observe it opens existing deal 19 as verified; compare deal 19 identity records before/after."
+    ],
+    "expected": "Hard stop for the address/APN contradiction; at minimum no mutation of existing deal 19 records without Tyler confirmation.",
+    "actual": "No new record and no conflict: the engine matched deal 19 by APN, re-ran resolution and browser vision against it (log browser_vision cardId:19 merged:5), returned matched:true parcelVerified:true confidence:1, and OVERWROTE accepted records: owner ELROD MELINDA KAY became ELROD MELINDA K (ownerRaw too, no ownerWarnings); parcel-identity basis changed from the LandPortal Map Search browser verification (confidence 0.9, with second-lane caveat recorded) to Parcel identity verified by South Carolina statewide parcel layer (SCDOT GIS mirror) - Pickens County (confidence 1.0); resolutionState provenance now cites SCDOT instead of the original LandPortal browser verification; county label Pickens County became Pickens. Accepted operator information changed without Tyler confirmation.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal19-api.json",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal19-postintake-api.json",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/conflict-fixture-intake-typed.png"
+    ],
+    "apiOrDbEvidence": "Pre-intake payload owner ELROD MELINDA KAY / county Pickens County vs post-intake ELROD MELINDA K / Pickens; landos_parcel_identity deal 19 updated_at 1784178681, confidence 0.9 to 1, basis rewritten; logs/main.log acquire_input/acquire_lanes/browser_vision/acquire_run for the QA FIXTURE APN CONFLICT input resolving to dealCardId 19.",
+    "severity": "blocker",
+    "suspectedSubsystem": "acquire dedupe/merge path (existing-deal APN match re-runs resolution and persists over accepted identity records)",
+    "disposition": "internal_fixable",
+    "patternKey": "intake-dedupe-overwrites-accepted-identity"
+  },
+  {
+    "requirementId": "LW6",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19",
+    "steps": [
+      "Open http://localhost:3141/dept/acquisitions?deal=19.",
+      "Expand Identity & resolution and read the Resolution box."
+    ],
+    "expected": "A verified lead Resolution box presents the verification provenance, or clearly separates the historical geocode-era snapshot from the current verified state.",
+    "actual": "One box renders chip Verified parcel + confidence 70% + basis Parcel not yet confirmed - only a geocoded location and/or operator-supplied identifiers support it + Credible evidence from 1 source(s) resolves the intended property (confidence 0.70) - three mutually contradictory statements in one panel (pre-existing before this run intake). Deal 23 variant: Verified parcel + No resolution attempt has been recorded for this lead.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal19-resolution-contradiction.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal19-desktop.txt"
+    ],
+    "apiOrDbEvidence": "GET /api/landos/lead-workspace/19: property.resolutionState Parcel verified (...) while property.resolution carries the stale candidate snapshot (attempted:true, confidence:0.7, basis Parcel not yet confirmed...) never superseded after verification.",
+    "severity": "major",
+    "suspectedSubsystem": "lead-workspace read model property.resolution snapshot passthrough + Resolution box rendering",
+    "disposition": "internal_fixable",
+    "patternKey": "stale-resolution-provenance-contradicts-verified-chip"
+  },
+  {
+    "requirementId": "LW4",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19",
+    "steps": [
+      "Open deal 19 and expand Market, valuation & comparables.",
+      "Count comp rows and look for any validated ACTIVE listing row or a way to see more than 8 rows."
+    ],
+    "expected": "Rendered rows show normalized $/acre (they do) and the validated active listings advertised by the counts line (51 validated active) are reachable in the UI.",
+    "actual": "topComps() concatenates sold-then-active and slices to 8, so with 55 validated sold no active row can ever render and there is no control to see more; 98 of 106 validated unique registry rows (including the active comp at $186,792/ac, 245 and 301 Railroad St) exist in the payload but are invisible everywhere in the workspace.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal19-desktop.txt",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws2-20260716T06/ws2-deal19-api.json"
+    ],
+    "apiOrDbEvidence": "Payload market.comparables counts validatedSold:55 validatedActive:51 uniqueProperties:106; rendered table shows 8 sold rows only; web/src/lib/lead-workspace-view.ts topComps() slice logic.",
+    "severity": "minor",
+    "suspectedSubsystem": "lead-workspace-view topComps row selection / comps table UX",
+    "disposition": "internal_fixable",
+    "patternKey": "comps-table-hides-validated-actives"
+  }
+]

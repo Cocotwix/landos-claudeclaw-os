@@ -182,7 +182,7 @@ function evalQuickFlip(s: StrategySignals): StrategyEvaluation {
       ? `~40–60% of market value. At ${money(s.ppaMedian)}/acre that's ~${money(0.4 * s.ppaMedian)}–${money(0.6 * s.ppaMedian)}/acre — provide acreage for a total.`
       : 'Buy at 40–60% of estimated market value once a value estimate exists.';
   return {
-    strategy: 'Quick Flip', verdict,
+    strategy: 'Cash Flip', verdict,
     potential: 'Moderate Potential', // refined in decorateStrategies
     reason: (s.hasComps || s.hasBand)
       ? `Comparable evidence supports an estimated ~${money0(s.estMidValue)} value${s.soldCount > 0 ? ` (${s.soldCount} sold, ${s.activeCount} active)` : ' (listed/asking comps — sold comps would raise confidence)'}. Room to acquire below value and resell/assign.`

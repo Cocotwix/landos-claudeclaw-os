@@ -360,6 +360,21 @@ export function upsertPropertyCard(
   const isVerifiedNow = verificationStatus === 'verified_property';
   const summaryToPersist = existing?.verification_status === 'verified_property' && !strong ? '' : (input.summary ?? '');
 
+  // ── Accepted-identity preservation (permanent rule: previously accepted
+  // operator information cannot change without Tyler's confirmation). An
+  // IMPLICIT match onto an already-verified card — the caller did not target
+  // it by cardId — must never rewrite its accepted identity records, whatever
+  // the new run resolved (QA finding W2-F2: a QA intake with this card's APN
+  // and a different address overwrote the accepted owner, county, and
+  // verification provenance). The run is recorded as activity by the caller;
+  // the accepted card returns unchanged.
+  if (existing && existing.verification_status === 'verified_property' && input.cardId === undefined) {
+    warnings.push(
+      'existing verified card matched — accepted identity records preserved; the new run\'s values were NOT applied. Target the card explicitly (cardId) with Tyler\'s confirmation to change accepted records.',
+    );
+    return { card: existing, created: false, warnings };
+  }
+
   if (existing) {
     // A verified parcel no longer "needs parcel verification": advance the kanban
     // off the pre-verification stages so the card stops reading as unverified.

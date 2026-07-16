@@ -281,3 +281,32 @@ describe('operator property record reconciliation', () => {
     expect(unverified.landScore.unavailableReason).toMatch(/not confirmed/i);
   });
 });
+
+// Regression: a screening run whose gate is OFF (e.g. wrong_parcel_conflict)
+// contributes NO facts to the operator record — rendering the wrong parcel's
+// owner/acreage as this lead's identity is fabricated association (QA finding
+// apn-conflict-hard-stop-not-triggered, residual surface).
+describe('gated-off screening run contributes nothing', () => {
+  it('treats a gate.allowed=false run exactly like no run', () => {
+    const run = makeRun([
+      taskRecord('county_records', {
+        kind: 'county_records', jurisdiction: 'Pickens County, SC',
+        facts: [
+          { field: 'APN', value: '4180-07-78-1710', sourceEvidenceId: 'e', classification: 'official_record' },
+          { field: 'Assessed acreage', value: 47.45, sourceEvidenceId: 'e', classification: 'official_record' },
+          { field: 'GIS mapped acreage', value: 45.64, sourceEvidenceId: 'e', classification: 'official_record' },
+        ],
+        accessState: 'public', summary: 'record', whyItMatters: 'w', limitation: 'l', classification: 'official_record',
+      }),
+    ]);
+    (run as unknown as Record<string, unknown>).gate = {
+      allowed: false, blocking: true, reasonCode: 'wrong_parcel_conflict',
+      explanation: 'Screened parcel does not match the operator-requested identity.',
+    };
+    const gated = buildOperatorPropertyRecord(run, baseContext);
+    const empty = buildOperatorPropertyRecord(null, baseContext);
+    expect(gated.identity.assessedAcres).toBe(empty.identity.assessedAcres);
+    expect(gated.identity.mappedAcres).toBe(empty.identity.mappedAcres);
+    expect(gated.researchCompleteness.complete).toBe(empty.researchCompleteness.complete);
+  });
+});

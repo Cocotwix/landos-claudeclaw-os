@@ -329,10 +329,25 @@ export async function selectFixtureCard(
   // base /deal-cards/:id payload, and can sit past the first handful of cards —
   // scan the full list and consult /report for these criteria so a real conflict
   // fixture (e.g. a small-parcel assessed-vs-mapped conflict) is actually found.
-  const consultReport = criteria === 'acreage_conflict' || criteria === 'apn_conflict';
+  const consultReport = criteria === 'acreage_conflict';
   for (const card of cards.slice(0, 50)) {
     const id = cardId(card);
     if (id === null) continue;
+    // A GENUINE requested-vs-resolved APN conflict is a recorded hard-stop fact
+    // (resolution snapshot identityConflict), never a fuzzy text match — words
+    // like "mismatch" in an internal provider trace must not select a fixture
+    // that has no real conflict.
+    if (criteria === 'apn_conflict') {
+      const resolution = await fetcher(`/api/landos/deal-cards/${id}/resolution`);
+      const snapshot = (resolution.json as Record<string, unknown> | null)?.snapshot as
+        | { identityConflict?: { requestedApn?: string; resolvedApn?: string } | null }
+        | null
+        | undefined;
+      if (resolution.status === 200 && snapshot?.identityConflict) {
+        return { dealId: id, detail: `genuine identity conflict (requested ${snapshot.identityConflict.requestedApn ?? '?'} vs resolved ${snapshot.identityConflict.resolvedApn ?? '?'})` };
+      }
+      continue;
+    }
     const detail = await fetcher(`/api/landos/deal-cards/${id}`);
     if (detail.status !== 200) continue;
     let haystack = detail.text;
@@ -556,8 +571,15 @@ export async function runJourney(
             break;
           }
           case 'expect_test_id': {
-            const count = await page.testIdCount(step.testId);
+            // Async renders (e.g. a workspace fetching its read model after a
+            // click) settle within a bounded poll; the expected count must
+            // still match exactly — polling never weakens the assertion.
             const expected = step.count ?? 1;
+            let count = await page.testIdCount(step.testId);
+            for (let waited = 0; count !== expected && waited < 5_000; waited += 250) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 250));
+              count = await page.testIdCount(step.testId);
+            }
             if (count === expected) record(step, index, 'pass', `data-testid="${step.testId}" count is ${count}`);
             else {
               failed = true;
@@ -580,12 +602,15 @@ export async function runJourney(
             break;
           }
           case 'click_text': {
-            const clicked = await page.clickText(step.text);
-            if (clicked) record(step, index, 'pass', `clicked "${step.text}"`);
-            else if (step.optional) record(step, index, 'skipped', `control "${step.text}" not present (optional)`);
+            // {dealId} substitutes so journeys can click the dynamically
+            // selected fixture's own row (e.g. "#{dealId}" in a list).
+            const clickTarget = substitute(step.text);
+            const clicked = await page.clickText(clickTarget);
+            if (clicked) record(step, index, 'pass', `clicked "${clickTarget}"`);
+            else if (step.optional) record(step, index, 'skipped', `control "${clickTarget}" not present (optional)`);
             else {
               failed = true;
-              record(step, index, 'fail', `control "${step.text}" missing or unclickable`);
+              record(step, index, 'fail', `control "${clickTarget}" missing or unclickable`);
             }
             break;
           }

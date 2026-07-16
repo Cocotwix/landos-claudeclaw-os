@@ -58,7 +58,7 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(es.strategyRanking.length).toBe(5);
     const names = es.strategyRanking.map((s) => s.strategy);
     // The approved primary set excludes Hold, Pass, wholesale, and assignment language.
-    expect(names).toEqual(expect.arrayContaining(['Quick Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land Home Package', 'Improvement Then Flip']));
+    expect(names).toEqual(expect.arrayContaining(['Cash Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land-Home Package', 'Improvement Then Flip']));
     expect(names.some((n) => /neighbor/i.test(n))).toBe(false);
     expect(es.strategyRanking.every((s) => s.reason && s.risk && s.mustVerify)).toBe(true);
     expect(es.strongestStrategy.strategy).toBe(es.strategyRanking[0].strategy);

@@ -373,3 +373,62 @@ describe('property resolution engine', () => {
     expect(r.lanesAttempted.some((l) => l.lane === 'landportal_readonly' && !l.contributed)).toBe(true);
   });
 });
+
+// ── Official public parcel lane joins the wrong-parcel hard stop ─────────────
+// Regression for QA findings W2-F1 (apn-conflict-hard-stop-not-triggered) and
+// W2-F2 (intake shape: requested APN and requested address belong to two
+// different parcels). The official public lane once verified silently without
+// ever entering the requested-vs-resolved APN comparison.
+describe('official public lane wrong-parcel hard stop', () => {
+  const REAL_PARCEL = {
+    address: '222 MCDANIEL AVE, PICKENS, SC', county: 'Pickens', state: 'SC',
+    apn: '4180-07-78-1710', owner: 'PICKENS COUNTY OF',
+    parcelVerified: true, verificationSource: 'South Carolina statewide parcel layer (SCDOT GIS mirror)',
+  };
+  const OTHER_PARCEL = {
+    address: '200 SID EDENS RD, PICKENS, SC', county: 'Pickens', state: 'SC',
+    apn: '5105-00-44-0497', owner: 'ELROD MELINDA KAY',
+    parcelVerified: true, verificationSource: 'South Carolina statewide parcel layer (SCDOT GIS mirror)',
+  };
+  const SOURCE = 'South Carolina statewide parcel layer (SCDOT GIS mirror) — Pickens County';
+
+  it('a nonexistent requested APN with an address-matched official parcel is a HARD STOP, never a fabricated verification', async () => {
+    const officialParcel = async () => ({ patch: { ...REAL_PARCEL }, source: SOURCE, note: 'Exact normalized street address matched.' });
+    const r = await resolveProperty(
+      { fields: { address: '222 MCDANIEL AVE', state: 'SC', zip: '29671', apn: '4180-07-78-9999' } },
+      { verify: async () => noIdentity(), officialParcel, now: NOW },
+    );
+    expect(r.status).toBe('needs_clarification');
+    expect(r.resolutionStatus).toBe('conflicted');
+    expect(r.property.parcelVerified).toBe(false);
+    expect(r.downstreamAllowed).toBe(false);
+    expect(r.identityConflict?.requestedApn).toBe('4180-07-78-9999');
+    expect(r.identityConflict?.resolvedApn).toBe('4180-07-78-1710');
+  });
+
+  it('requested APN and requested address resolving to DIFFERENT parcels is a HARD STOP naming both parcels', async () => {
+    const officialParcel = async (fields: ParsedIntakeFields) => fields.apn
+      ? ({ patch: { ...OTHER_PARCEL }, source: SOURCE, note: 'Exact APN matched.' })
+      : ({ patch: { ...REAL_PARCEL }, source: SOURCE, note: 'Exact normalized street address matched.' });
+    const r = await resolveProperty(
+      { fields: { address: '222 MCDANIEL AVE', state: 'SC', zip: '29671', apn: '5105-00-44-0497' } },
+      { verify: async () => noIdentity(), officialParcel, now: NOW },
+    );
+    expect(r.resolutionStatus).toBe('conflicted');
+    expect(r.property.parcelVerified).toBe(false);
+    expect(r.downstreamAllowed).toBe(false);
+    expect(r.identityConflict?.requestedApn).toBe('5105-00-44-0497');
+    expect(r.identityConflict?.resolvedApn).toBe('4180-07-78-1710');
+    expect(r.lanesAttempted.some((l) => l.lane === 'county_gis' && l.status === 'identity_contradiction')).toBe(true);
+  });
+
+  it('control: an exact-APN official match whose situs address agrees with the request still verifies', async () => {
+    const officialParcel = async () => ({ patch: { ...OTHER_PARCEL }, source: SOURCE, note: 'Exact APN matched.' });
+    const r = await resolveProperty(
+      { fields: { address: '200 Sid Edens Rd', state: 'SC', apn: '5105-00-44-0497' } },
+      { verify: async () => noIdentity(), officialParcel, now: NOW },
+    );
+    expect(r.identityConflict).toBeUndefined();
+    expect(r.property.parcelVerified).toBe(true);
+  });
+});

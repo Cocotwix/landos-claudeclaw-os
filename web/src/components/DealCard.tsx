@@ -3504,7 +3504,7 @@ function OverviewTab({
   );
 }
 
-export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; entity?: EntityFilter }) {
+export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardId?: number; entity?: EntityFilter; onOpenDeal?: (id: number) => void }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [spine, setSpine] = useState<BusinessSpineView | null>(null);
   const [resolution, setResolution] = useState<ResolutionData | null>(null);
@@ -4229,7 +4229,7 @@ export function DealCard({ dealCardId, entity = 'all' }: { dealCardId?: number; 
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => void load(c.id)}
+                  onClick={() => { if (onOpenDeal) onOpenDeal(c.id); else void load(c.id); }}
                   class={`w-full text-left rounded-md border px-3 py-2 hover:bg-[var(--color-elevated)] ${
                     deal?.id === c.id ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'
                   }`}

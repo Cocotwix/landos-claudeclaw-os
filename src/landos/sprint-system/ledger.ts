@@ -486,7 +486,10 @@ export function renderLedgerReport(ledger: SprintLedger): string {
     '',
     `- Sprint: \`${ledger.sprintId}\``,
     `- Created: ${ledger.createdAt}`,
-    `- Sprint status: ${ledger.sprintStatus}`,
+    // A "complete" status is itself a completion claim: link the final
+    // regression + review evidence so claims-lint holds the report to the
+    // same standard as builder narrative.
+    `- Sprint status: ${ledger.sprintStatus}${ledger.sprintStatus === 'complete' ? refs([...(ledger.finalRegression?.evidenceIds ?? []), ...(ledger.finalReview?.evidenceIds ?? [])]) : ''}`,
     `- Final combined regression: ${ledger.finalRegression ? `${ledger.finalRegression.result} at ${ledger.finalRegression.at}${refs(ledger.finalRegression.evidenceIds)}` : 'not run'}`,
     `- Independent final review: ${ledger.finalReview ? `${ledger.finalReview.result} at ${ledger.finalReview.at}${refs(ledger.finalReview.evidenceIds)}` : 'not run'}`,
     '',

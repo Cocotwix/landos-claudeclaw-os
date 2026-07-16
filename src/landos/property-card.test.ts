@@ -391,3 +391,43 @@ describe('Batch lead intake', () => {
     expect(listLeadJobs({ status: 'queued' }).length).toBe(1);
   });
 });
+
+// Regression: intake-dedupe-overwrites-accepted-identity (QA finding W2-F2).
+// An IMPLICIT strong-key match on an already-verified card must never rewrite
+// its accepted identity records; only an explicit cardId target may.
+describe('accepted-identity preservation on verified cards', () => {
+  it('implicit re-intake with the same APN preserves owner, county, provenance, and address', () => {
+    const v = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '200 Sid Edens Rd, Pickens SC',
+      apn: '5105-00-44-0497', county: 'Pickens County', state: 'SC', owner: 'ELROD MELINDA KAY',
+      verified: true, verificationSource: 'LandPortal Map Search parcel panel (browser read-only)',
+    });
+    const rerun = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '222 McDaniel Ave, Pickens SC',
+      apn: '5105-00-44-0497', county: 'Pickens', state: 'SC', owner: 'ELROD MELINDA K',
+      verified: true, verificationSource: 'South Carolina statewide parcel layer (SCDOT GIS mirror)',
+    });
+    expect(rerun.created).toBe(false);
+    expect(rerun.card.id).toBe(v.card.id);
+    expect(rerun.card.owner).toBe('ELROD MELINDA KAY');
+    expect(rerun.card.county).toBe('Pickens County');
+    expect(rerun.card.verification_source).toContain('LandPortal');
+    expect(rerun.card.active_input_address).toBe('200 Sid Edens Rd, Pickens SC');
+    expect(rerun.warnings.some((w) => /accepted identity records preserved/i.test(w))).toBe(true);
+  });
+
+  it('an explicit cardId target (operator-confirmed correction) still updates', () => {
+    const v = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '200 Sid Edens Rd, Pickens SC',
+      apn: '5105-00-44-0497', county: 'Pickens County', state: 'SC', owner: 'ELROD MELINDA KAY',
+      verified: true, verificationSource: 'LandPortal Map Search parcel panel (browser read-only)',
+    });
+    const explicit = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '200 Sid Edens Rd, Pickens SC', cardId: v.card.id,
+      apn: '5105-00-44-0497', county: 'Pickens County', state: 'SC', owner: 'ELROD MELINDA KAY TRUST',
+      verified: true, verificationSource: 'county assessor record (APN + county)',
+    });
+    expect(explicit.card.id).toBe(v.card.id);
+    expect(explicit.card.owner).toBe('ELROD MELINDA KAY TRUST');
+  });
+});

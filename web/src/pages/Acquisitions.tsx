@@ -42,7 +42,25 @@ export function Acquisitions() {
     if (s && SECTIONS.some((x) => x.id === s)) setSection(s as AcqSection);
   }, []);
 
-  function openDeal(id: number) { setDealId(id); setSection('library'); }
+  // Opening a lead ALWAYS lands on the Lead Workspace and records the deep link
+  // in the URL, so a browser refresh restores the same workspace (never a silent
+  // fallback to the legacy Deal Card, whatever the entry path).
+  function openDeal(id: number) {
+    setDealId(id);
+    setSection('library');
+    const url = new URL(window.location.href);
+    url.searchParams.set('deal', String(id));
+    url.searchParams.delete('section');
+    window.history.replaceState(null, '', url);
+  }
+
+  function closeDeal() {
+    setDealId(undefined);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('deal');
+    url.searchParams.set('section', 'library');
+    window.history.replaceState(null, '', url);
+  }
 
   return (
     <div class="flex flex-col h-full">
@@ -78,7 +96,7 @@ export function Acquisitions() {
             <div class="px-6 pt-3">
               <button
                 type="button"
-                onClick={() => setDealId(undefined)}
+                onClick={closeDeal}
                 class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
               >
                 ← Deal Library
@@ -87,7 +105,10 @@ export function Acquisitions() {
             <LeadWorkspace dealCardId={dealId} key={dealId} />
           </div>
         ) : (
-          <DealCard entity="all" key="library-list" />
+          // The library list quarantines the legacy Deal Card detail: clicking a
+          // row routes to the Lead Workspace via onOpenDeal instead of the
+          // legacy in-place card open.
+          <DealCard entity="all" key="library-list" onOpenDeal={openDeal} />
         )
       )}
 

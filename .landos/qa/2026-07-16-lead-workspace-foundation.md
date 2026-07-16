@@ -1,42 +1,55 @@
-# Durable QA record — Lead Workspace foundation (journey runs)
+# Durable QA record — Lead Workspace foundation (SPRINT COMPLETE)
 
-Journey: `lead-workspace-acquisitions-readonly` — Base URL http://localhost:3141.
-Source runs live under `.runtime/landos/qa/` (local-only, gitignored;
-screenshots stay local). This file preserves the durable conclusions for
-handoff.
+Sprint `sprint-2026-07-15-lead-workspace-foundation` completed 2026-07-16
+(both workstreams accepted; final regression pass; independent final review
+pass by the landos-final-reviewer agent). Full evidence chain:
+`.landos/sprints/sprint-2026-07-15-lead-workspace-foundation/` (ledger.json,
+report.md, qa-report-ws1-independent.md, qa-report-ws2-independent.md with
+Recheck / Recheck 2 / Recheck 3 sections). Capability `lead-workspace` frozen
+in `.landos/capabilities.json` (regression protection; Tyler usefulness
+review pending).
 
-## Run history
+## What independent QA found and the repair loop fixed
 
-| Run | Bundle | Result |
-|---|---|---|
-| `qa-2026-07-16T00-27-14-098Z` | previous production bundle | **FAIL** — `refresh_persistence`: after browser reload on `/dept/acquisitions?deal=20` the Lead Workspace no longer appeared; all 11 other steps passed |
-| `qa-2026-07-16T03-25-28-832Z` | fresh bundle built 2026-07-16T03:2x from the current tree | **PASS** — all 12 steps, including refresh persistence |
-| `qa-2026-07-16T03-26-11-721Z` | same fresh bundle (repeat for stability) | **PASS** — all 12 steps |
+WS1 (read model/endpoint) — 4 findings, all closed_retested:
+F1 canonical acreage basis vs legacy reconciliation (blocker), F2 Deal Library
+silently opening the legacy Deal Card, F3 double-encoded UTF-8, F4
+"Resolution: Not run" after a real attempt. Root-cause review recorded for the
+recurring `reconciliation-ignores-acreage-conflict` pattern (3rd occurrence).
 
-## Verified journey steps (passing runs)
+WS2 (operator UI) — 4 findings, all closed_retested after two repair rounds:
+F5 the resolution engine verified a parcel under a nonexistent requested APN
+(official-lane APNs now join the wrong-parcel comparison; a requested APN and
+requested address resolving to two different parcels is a hard stop), F6 an
+implicit intake overwrote accepted identity records on deal 19 (both storage
+boundaries now preserve accepted identity; deal 19 restored from QA-captured
+payloads, activity-logged), F7 stale snapshot contradicting the verified chip
+(historical labeling), F8 comps table hiding validated actives (per-lane caps
+plus honest showing line). Round 2 additionally fixed: report verified-status
+COLUMNS (what GET actually reads), conflicted intakes routing to their OWN
+research record instead of an implicitly-matched verified card, and gated-off
+screening runs contributing zero facts to the operator record.
 
-Safe fixture deal card 20; Acquisitions deep link `/dept/acquisitions?deal=20`;
-`lead-workspace-root` present exactly once; API
-`/api/landos/lead-workspace/20` -> 200 and reconciles; exactly five approved
-strategies rendered; legacy `deal-card-root` absent (quarantine holds);
-desktop screenshot; **reload survives (refresh persistence)**; Galaxy S24
-Ultra viewport 412x915 keeps the root and all five strategies; mobile
-screenshot. Preflight on the passing runs verified a fresh production build,
-exactly one healthy managed server, and served bundle == `dist/web`.
+## Verified live (real browser, three independent QA passes + final review)
 
-## Conclusion
+Deals 19 (verified, disputed acreage), 20 (existing unresolved), 21/22
+(brand-new unresolved/resolved fixtures), 23/24 (genuine wrong-parcel
+hard-stop fixtures): honest states everywhere, exactly the five approved
+strategies (Cash Flip; Novation or Double Close; Subdivide or Minor Split;
+Land-Home Package; Improvement Then Flip — renamed system-wide per Tyler's
+prompt), normalized $/acre in the workspace comps, API/UI reconciliation,
+legacy quarantine with compatible legacy deep links, refresh + managed-restart
+persistence, desktop + 412x915. Deal 19 proven byte-identical through a
+repeat conflict-shaped intake (the shape that previously poisoned it).
 
-The refresh-persistence failure observed at 00:27Z does not reproduce on the
-current tree's fresh production bundle (two consecutive passing real-browser
-runs). The journey is green, but the sprint gates are NOT yet satisfied:
-`ws1-workspace-contract` has no recorded phases and no formal `qa-brief` /
-`qa-result` in the ledger, so LW1–LW6 remain unverified.
+## Pending Tyler decisions
 
-Next engineering action: run the staged lifecycle for
-`sprint-2026-07-15-lead-workspace-foundation` — record WS1 phases
-(implementation → targeted_tests → integration_tests → typecheck →
-production_build → runtime_verification), issue `qa-brief`, run the
-independent `landos-browser-qa` agent, record `qa-result`, then proceed to
-`ws2-workspace-ui` per `docs/landos/Staged_Sprint_Lifecycle.md`. Keep the
-00:27Z refresh failure in mind as a possible stale-bundle-sensitive
-regression; if it recurs, treat it as a shared root-cause review candidate.
+- Usefulness review of the Lead Workspace as the primary operator surface.
+- Disposition of QA fixtures deals 21-24 (self-labeled; 23/24 are honest
+  conflicted research cards).
+- Review of the deal 19 restorations (activity kind
+  `accepted_identity_restored`, agent `landos-repair`): everything
+  operator-visible restored; original lane-level snapshot detail was not
+  recoverable (disclosed).
+- Strategy vocabulary rename (Quick Flip -> Cash Flip, Land Home Package ->
+  Land-Home Package) was applied system-wide per the sprint prompt.

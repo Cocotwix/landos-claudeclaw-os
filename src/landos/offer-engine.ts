@@ -79,7 +79,7 @@ export interface StrategyParams {
 
 export const STRATEGIES: readonly StrategyParams[] = [
   {
-    id: 'quick_flip', label: 'Quick Flip',
+    id: 'quick_flip', label: 'Cash Flip',
     offerPctLowOfEv: 40, offerPctHighOfEv: 60, confirmed: true,
     minNetProfitUsd: GLOBAL_MIN_NET_PROFIT_USD,
     notes: 'Confirmed via Duke persona Section 9 (FLIP 40-60% of EV).',

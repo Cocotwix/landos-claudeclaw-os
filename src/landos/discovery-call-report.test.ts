@@ -64,7 +64,7 @@ describe('discovery-call-report — five strategies', () => {
   it('always returns EXACTLY the five approved strategies in order', () => {
     const strategies = buildStrategyEvaluation(report({}), exec({ median: 3500, soldCount: 4 }));
     expect(strategies.map((s) => s.strategy)).toEqual([
-      'Quick Flip', 'Novation / Double Close', 'Subdivide', 'Land-Home Package', 'Improvement Then Flip',
+      'Cash Flip', 'Novation / Double Close', 'Subdivide', 'Land-Home Package', 'Improvement Then Flip',
     ]);
     for (const s of strategies) {
       expect(['viable', 'maybe', 'not viable']).toContain(s.verdict);

@@ -35,6 +35,9 @@ export interface LeadWorkspaceInput {
   activity: unknown[];
   marketPulse: unknown;
   marketMatrix: unknown;
+  /** Recorded resolution snapshot (landos_resolution_snapshot) or null when no
+   *  resolution attempt was ever recorded for this lead. */
+  resolution?: Record<string, unknown> | null;
 }
 
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -45,10 +48,45 @@ export function buildLeadWorkspace(input: LeadWorkspaceInput) {
   const readiness = (input.canonical.unifiedReadiness ?? {}) as Record<string, unknown>;
   const strategy = (input.canonical.strategyReadiness ?? {}) as Record<string, unknown>;
   const research = (input.operatorRecord.researchCompleteness ?? {}) as Record<string, unknown>;
-  const acreage = (input.operatorRecord.acreageBasis ?? input.report.reconciliation ?? {}) as Record<string, unknown>;
+  const identity = (input.operatorRecord.identity ?? {}) as Record<string, unknown>;
+  // Canonical WS1 acreage & spatial basis lives on the operator record's
+  // identity. The legacy per-report reconciliation is tolerated ONLY when no
+  // canonical basis exists (partial legacy data) — it must never outrank it.
+  const acreage = (identity.acreageBasis ?? input.report.reconciliation ?? {}) as Record<string, unknown>;
+  // Recorded resolution provenance: a lead whose resolution attempt ran and
+  // honestly stayed unresolved must never present as "Not run".
+  const snapshot = (input.resolution ?? null) as Record<string, unknown> | null;
+  const identityConflict = (snapshot?.identityConflict ?? null) as Record<string, unknown> | null;
+  const verified = input.report.parcelVerified === true;
+  const snapshotState = snapshot ? text(snapshot.state, 'unresolved') : null;
+  // A snapshot recorded BEFORE the parcel was verified is history, not the
+  // current state: it must never contradict the verified provenance on the
+  // same panel (QA finding W2-F3). It stays available, clearly labeled.
+  const historical = verified && snapshotState !== null && snapshotState !== 'confirmed' && !identityConflict;
+  const resolution = {
+    attempted: snapshot !== null,
+    state: verified && !identityConflict ? 'confirmed' : (snapshotState ?? (verified ? 'confirmed' : 'not_run')),
+    // The current verification provenance for a verified lead (never the
+    // pre-verification snapshot's language).
+    verifiedStatus: verified ? text(input.report.parcelVerificationStatus, 'verified') : null,
+    historical,
+    confidence: snapshot?.confidence ?? null,
+    basis: snapshot ? text(snapshot.basis, '') || null : null,
+    matchedReason: snapshot ? text(snapshot.matchedReason, '') || null : null,
+    missing: strings(snapshot?.missing),
+    smallestNextIdentifier: snapshot ? text(snapshot.smallestNextIdentifier, '') || null : null,
+    identityConflict,
+    capturedAt: snapshot?.capturedAt ?? null,
+  };
+  const resolutionState = verified
+    ? (input.report.parcelVerificationStatus ?? 'verified')
+    : snapshot ? text(snapshot.state, 'unresolved') : (input.report.parcelVerificationStatus ?? 'unresolved');
   const reportGaps = strings(input.report.dataGaps);
   const reportRisks = strings(input.report.riskFlags);
   const blockers = [...new Set([
+    ...(identityConflict ? [
+      `Parcel identity conflict: requested APN ${text(identityConflict.requestedApn, 'unknown')} but ${text(identityConflict.source, 'a parcel-level source')} resolved APN ${text(identityConflict.resolvedApn, 'unknown')}. This lead is blocked until the correct parcel is confirmed; no property intelligence, valuation, or strategy work may proceed.`,
+    ] : []),
     ...strings(readiness.blockers),
     ...strings(input.operatorRecord.tylerDecisions),
     ...strings(input.report.strategyBlockers),
@@ -76,7 +114,7 @@ export function buildLeadWorkspace(input: LeadWorkspaceInput) {
   return {
     contract: { type: 'lead-workspace', version: LEAD_WORKSPACE_CONTRACT_VERSION, generatedAt: new Date().toISOString() },
     lead: { id: input.deal.id, title: input.deal.title, lifecycle: input.deal.status ?? input.acquisition.stage ?? 'unknown', entity: input.deal.entity ?? null },
-    property: { identity: input.operatorRecord.identity ?? {}, resolutionState: input.report.parcelVerificationStatus ?? 'unresolved', canonicalAcreage: acreage, intelligence: { summary: input.report.ddSummary ?? null, research, gaps: reportGaps } },
+    property: { identity, resolutionState, resolution, canonicalAcreage: acreage, intelligence: { summary: input.report.ddSummary ?? null, research, gaps: reportGaps } },
     seller: { people: input.deal.people ?? [], profile: input.acquisition.profile ?? {}, communications: input.acquisition.commLog ?? [], notes: input.acquisition.discovery ?? [] },
     market: { pulse: input.marketPulse, matrix: input.marketMatrix, summary: input.report.marketSummary ?? null, valuation: input.report.valuation ?? null, comparables: input.compRegistry },
     strategies: { approvedOnly: true, entries: array(strategy.strategies), summary: strategy.summaryLine ?? null, pricingAllowed: strategy.pricingAllowed ?? false, pricingBlockers: strings(strategy.pricingBlockers) },

@@ -2647,6 +2647,7 @@ export function registerLandosRoutes(app: Hono): void {
       activity: cardId ? getCardActivity(cardId) : [],
       marketPulse: null,
       marketMatrix: marketMatrixFor(deal),
+      resolution: readResolutionSnapshot(id) as unknown as Record<string, unknown> | null,
     }));
   });
 
@@ -3991,15 +3992,34 @@ export function registerLandosRoutes(app: Hono): void {
         // parcel than the requested APN, the card must SHOUT it (Property Board +
         // Resolution view), not read as a vanilla "unresolved" lead.
         const conflict = resolution.identityConflict;
-        const { card } = upsertCardFromDukeRun({
+        const researchSummary = conflict
+          ? `⛔ WRONG PARCEL — hard stop. Requested APN ${conflict.requestedApn} but ${conflict.source} resolved a DIFFERENT parcel (APN ${conflict.resolvedApn}). Parcel NOT confirmed; no downstream intelligence ran.`
+          : 'Acquire — research lead (unresolved). Public-records research plan attached; not verified.';
+        let { card } = upsertCardFromDukeRun({
           entity, agentId: 'acquire', cardId: existingCardId,
           activeInputAddress: researchAddr,
           city: f.city, state: f.state, county: f.county, apn: f.apn, fips: f.fips, owner: f.owner,
           verified: false,
-          summary: conflict
-            ? `⛔ WRONG PARCEL — hard stop. Requested APN ${conflict.requestedApn} but ${conflict.source} resolved a DIFFERENT parcel (APN ${conflict.resolvedApn}). Parcel NOT confirmed; no downstream intelligence ran.`
-            : 'Acquire — research lead (unresolved). Public-records research plan attached; not verified.',
+          summary: researchSummary,
         });
+        // A conflicted/unresolved intake must NEVER attach to an accepted
+        // verified card it merely collided with by strong key: its snapshot,
+        // hard-stop next action, and identity verdict belong on their OWN
+        // research record, or they would overwrite the accepted lead's
+        // resolution history (QA regression: a wrong-parcel test intake made
+        // an accepted verified lead display BLOCKED - WRONG PARCEL). The
+        // second upsert drops the strong keys so it can never re-match the
+        // accepted card; the requested identifiers stay in the summary and
+        // resolution snapshot.
+        if (card.verification_status === 'verified_property' && existingCardId === undefined) {
+          ({ card } = upsertCardFromDukeRun({
+            entity, agentId: 'acquire', cardId: undefined,
+            activeInputAddress: researchAddr,
+            city: f.city, state: f.state, county: f.county, apn: undefined, fips: undefined, owner: f.owner,
+            verified: false,
+            summary: researchSummary,
+          }));
+        }
         const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: researchAddr });
         try { attachCardActivity({ cardId: card.id, agentId: 'acquire', kind: 'intake_attempt', summary: 'Property intake preserved for resolution.', ref: JSON.stringify({ rawInput: text, parsed: cls.parsedFields, resolutionStatus: resolution.resolutionStatus }) }); } catch { /* history is best-effort */ }
         // Persist the parcel-identity verdict (Phase 1: written, not yet read).

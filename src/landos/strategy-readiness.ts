@@ -14,10 +14,10 @@
 // Pure + deterministic. No I/O.
 
 export const APPROVED_STRATEGIES = [
-  'Quick Flip',
+  'Cash Flip',
   'Novation or Double Close',
   'Subdivide or Minor Split',
-  'Land Home Package',
+  'Land-Home Package',
   'Improvement Then Flip',
 ] as const;
 
@@ -160,9 +160,9 @@ export function buildStrategyReadiness(i: StrategyReadinessInputs): StrategyRead
     };
   }
 
-  // Quick Flip — needs a value basis + marketable parcel.
+  // Cash Flip — needs a value basis + marketable parcel.
   strategies.push(entry(
-    'Quick Flip',
+    'Cash Flip',
     pricingAllowed ? (wetHeavy || floodHeavy ? 'weak' : 'viable') : 'blocked',
     pricingAllowed
       ? (wetHeavy || floodHeavy ? 'A value basis exists, but heavy wetland/flood coverage narrows the resale buyer pool.' : 'A validated sold-comp basis exists — buy-low resale spread can be evaluated.')
@@ -205,14 +205,14 @@ export function buildStrategyReadiness(i: StrategyReadinessInputs): StrategyRead
     ));
   }
 
-  // Land Home Package — needs buildable area + septic/utilities.
+  // Land-Home Package — needs buildable area + septic/utilities.
   {
     const blockers = [...shared];
     if (i.septicOutlook === 'poor') blockers.push('Septic outlook poor (all mapped soils very limited)');
     if (floodHeavy) blockers.push('Majority of parcel in the Special Flood Hazard Area');
     if (!i.utilitiesKnown) blockers.push('Utility service unconfirmed');
     strategies.push(entry(
-      'Land Home Package',
+      'Land-Home Package',
       blockers.length > 0 ? 'blocked' : 'provisional',
       blockers.length > 0
         ? 'Blocked: a home site needs septic (or sewer), buildable ground outside flood constraints, and utility service.'

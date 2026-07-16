@@ -358,4 +358,43 @@ describe('fixture selection', () => {
     const empty = await selectFixtureCard('any', async () => ({ status: 200, json: [], text: '[]' }));
     expect(empty).toBeNull();
   });
+
+  // Regression: the genuine-apn-conflict journey once selected a card whose
+  // report merely CONTAINED the words "APN" and "mismatch" (an internal
+  // provider trace) and then failed against a card with no real conflict.
+  // apn_conflict must select only a recorded resolution identityConflict and
+  // report fixture-unavailable (null) otherwise.
+  it('apn_conflict requires a genuine recorded identityConflict, never a fuzzy text match', async () => {
+    const withoutConflict = async (apiPath: string) => {
+      if (apiPath === '/api/landos/deal-cards') {
+        return { status: 200, json: [{ id: 1 }], text: '[{"id":1}]' };
+      }
+      if (apiPath === '/api/landos/deal-cards/1/resolution') {
+        return { status: 200, json: { snapshot: { state: 'confirmed', identityConflict: null } }, text: '' };
+      }
+      // Detail/report text littered with trace words that used to false-match.
+      return { status: 200, json: { id: 1 }, text: '{"id":1,"trace":"apn:R1 ADDR-MISMATCH conflict"}' };
+    };
+    expect(await selectFixtureCard('apn_conflict', withoutConflict)).toBeNull();
+
+    const withConflict = async (apiPath: string) => {
+      if (apiPath === '/api/landos/deal-cards') {
+        return { status: 200, json: [{ id: 1 }, { id: 2 }], text: '[{"id":1},{"id":2}]' };
+      }
+      if (apiPath === '/api/landos/deal-cards/1/resolution') {
+        return { status: 200, json: { snapshot: { identityConflict: null } }, text: '' };
+      }
+      if (apiPath === '/api/landos/deal-cards/2/resolution') {
+        return {
+          status: 200,
+          json: { snapshot: { identityConflict: { requestedApn: '111-22-333', resolvedApn: '999-88-777', source: 'county records' } } },
+          text: '',
+        };
+      }
+      return { status: 200, json: {}, text: '{}' };
+    };
+    const selected = await selectFixtureCard('apn_conflict', withConflict);
+    expect(selected?.dealId).toBe(2);
+    expect(selected?.detail).toContain('111-22-333');
+  });
 });

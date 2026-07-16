@@ -502,7 +502,14 @@ function buildReconciledLandScore(input: {
   };
 }
 
-export function buildOperatorPropertyRecord(run: PublicIntelligenceRun | null | undefined, context: OperatorRecordContext): OperatorPropertyRecord {
+export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null | undefined, context: OperatorRecordContext): OperatorPropertyRecord {
+  // A screening run whose gate is OFF contributes NO facts: it screened a
+  // premise that no longer holds (e.g. wrong_parcel_conflict — the run's
+  // parcel does not match the operator-requested identity), and rendering its
+  // owner/acreage/value as this lead's identity would be fabricated
+  // association. The stored run remains available as history; it just never
+  // feeds the operator record.
+  const run = (rawRun as { gate?: { allowed?: boolean } } | null | undefined)?.gate?.allowed === false ? null : rawRun;
   const wetlands = findingOf<WetlandsFinding>(run, 'wetlands');
   let flood = findingOf<FemaFloodFinding>(run, 'fema_flood');
   const soils = findingOf<SoilsSepticFinding>(run, 'soils_septic');

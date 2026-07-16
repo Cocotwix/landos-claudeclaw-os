@@ -1,0 +1,80 @@
+[
+  {
+    "requirementId": "LW3",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19",
+    "steps": [
+      "Open http://localhost:3141/dept/acquisitions?deal=19 in the dashboard (authenticated).",
+      "Expand the 'Canonical acreage, research & readiness' disclosure.",
+      "Read the 'Acreage basis' block and compare with 'Identity & resolution' and the readiness/pricing blockers on the same page."
+    ],
+    "expected": "The Acreage basis block presents the canonical WS1 acreage basis: assessed 1.32 ac vs mapped 1.15 ac, disputed=true, Tyler decision required, sources 'Pickens County assessor roll' / 'Pickens County GIS geometry' (official) — consistent with the acreage-conflict blockers shown elsewhere on the page.",
+    "actual": "The Acreage basis block renders the legacy field reconciliation instead: primary '1.15 ac', primarySource 'Provider verification', primaryTier 'provider', conflict=false, status 'reconciled' — directly contradicting the same page's identity record (acreageConflict=true) and blockers ('Acreage is conflicted (assessed vs mapped)'). Root cause verified in source: buildLeadWorkspace reads input.operatorRecord.acreageBasis (does not exist at top level; canonical basis is at operatorRecord.identity.acreageBasis) and silently falls back to report.reconciliation (src/landos/lead-workspace.ts line 48). Deal 22 shows the same wrong 'Provider verification' source for an official SC statewide parcel layer basis.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal19-acreage-basis-contradiction.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal19-verified-desktop.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal19-verified-desktop.txt"
+    ],
+    "apiOrDbEvidence": "GET /api/landos/lead-workspace/19: property.canonicalAcreage.acreage = {primary:'1.15 ac', primarySource:'Provider verification', primaryTier:'provider', conflict:false, status:'reconciled'} while property.identity.acreageBasis = {entries: assessed 1.32 (Pickens County assessor roll, disputed:true), gis_geometry 1.15 (disputed:true), tylerDecisionRequired} and strategies.pricingBlockers includes 'Acreage is conflicted (assessed vs mapped)…'. Saved payload: agent-ws1-20260716T04/deal19-verified-api.json.",
+    "severity": "blocker",
+    "suspectedSubsystem": "lead-workspace read model composition (src/landos/lead-workspace.ts acreage source selection)",
+    "disposition": "internal_fixable",
+    "patternKey": "reconciliation-ignores-acreage-conflict"
+  },
+  {
+    "requirementId": "LW1",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?section=library",
+    "steps": [
+      "Open http://localhost:3141/dept/acquisitions?section=library.",
+      "Click the deal row '200 Sid Edens Rd, Pickens, SC, 29671' (#19)."
+    ],
+    "expected": "The Lead Workspace opens (same surface as /dept/acquisitions?deal=19); no silent fallback to the quarantined legacy Deal Card.",
+    "actual": "The full legacy Deal Card opens (data-testid deal-card-root, 'Deal Card model v2' badge, Overview/Property/Due Diligence/Market/Strategy/Visuals/Seller/Documents/Activity tabs, Edit/Delete buttons). The same deal shows two different surfaces depending on entry path; the legacy card states the acreage CONFLICT that the workspace's Acreage basis block denies (finding F1), so the two paths contradict each other. Cause: web/src/pages/Acquisitions.tsx line 90 renders the legacy DealCard component for the library list and its internal row-click handler opens the legacy detail card instead of routing through openDeal/LeadWorkspace.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/libtest-library-list.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/libtest-library-after-click.png"
+    ],
+    "apiOrDbEvidence": null,
+    "severity": "major",
+    "suspectedSubsystem": "Acquisitions library routing (web/src/pages/Acquisitions.tsx / legacy DealCard quarantine)",
+    "disposition": "internal_fixable",
+    "patternKey": "legacy-deal-card-silent-fallback"
+  },
+  {
+    "requirementId": null,
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19",
+    "steps": [
+      "Open any Lead Workspace (e.g. deal 19).",
+      "Read the small uppercase header line above the deal title."
+    ],
+    "expected": "Header reads 'LEAD WORKSPACE · V1.0' (clean middle dot).",
+    "actual": "Header reads 'LEAD WORKSPACE Â· V1.0' — a double-encoded UTF-8 middle dot (bytes C3 82 C2 B7) baked into web/src/components/LeadWorkspace.tsx (header line ~68); visible on every workspace at every width.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal19-verified-desktop.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal19-verified-mobile-412.png"
+    ],
+    "apiOrDbEvidence": null,
+    "severity": "minor",
+    "suspectedSubsystem": "LeadWorkspace component source encoding (web/src/components/LeadWorkspace.tsx)",
+    "disposition": "internal_fixable",
+    "patternKey": "ui-text-double-encoded-utf8"
+  },
+  {
+    "requirementId": "LW2",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=20",
+    "steps": [
+      "Open http://localhost:3141/dept/acquisitions?deal=20 (also reproduces on deal 21).",
+      "Read the header 'Resolution:' value and the Identity & resolution disclosure."
+    ],
+    "expected": "The workspace reflects the recorded resolution outcome: an attempt ran and returned state 'unresolved' with an explanatory basis (geocode-only, confidence 0.3, per landos_resolution_snapshot / landos_parcel_identity), preserving that provenance for the operator.",
+    "actual": "Header shows 'Resolution: Not run', implying no resolution attempt happened, and the recorded unresolved-state basis/provenance is not surfaced anywhere in the workspace. Honest in that it never claims verified, but it misstates what work occurred and drops recorded provenance.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal20-unresolved-desktop.png",
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/agent-ws1-20260716T04/deal21-qa-fixture-unresolvable-desktop.png"
+    ],
+    "apiOrDbEvidence": "landos_resolution_snapshot deal_card_id=20: state 'unresolved', confidence 0.3, basis 'Parcel not yet confirmed — only a geocoded location…'; landos_parcel_identity deal 20 state='unresolved'. API property.resolutionState='Not run'.",
+    "severity": "minor",
+    "suspectedSubsystem": "lead-workspace resolutionState mapping (report.parcelVerificationStatus vs resolution snapshot)",
+    "disposition": "internal_fixable",
+    "patternKey": "resolution-state-label-not-run-after-attempt"
+  }
+]

@@ -82,22 +82,31 @@
           "findingId": "F3",
           "at": "2026-07-15T16:09:42.811Z",
           "summary": "A verified Deal Card presented to the operator should be internally consistent; the orchestration self-audit should pass (no 'need repair' state shown to Tyler)."
+        },
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F1",
+          "at": "2026-07-16T04:29:35.810Z",
+          "summary": "The Acreage basis block presents the canonical WS1 acreage basis: assessed 1.32 ac vs mapped 1.15 ac, disputed=true, Tyler decision required, sources 'Pickens County assessor roll' / 'Pickens County GIS geometry' (official) — consistent with the acreage-conflict blockers shown elsewhere on the page."
         }
       ],
       "review": {
-        "coversOccurrences": 2,
-        "failurePattern": "reconciliation-ignores-acreage-conflict",
-        "sharedRootCause": "The Property-tab reconciled facts (report.reconciliation.acreage, built in routes.ts projectPublicScreening) applied a private 15% assessed-vs-mapped threshold, while the operator record, the acreage-basis record, and the deal-card audit used a 5% / 0.1 ac materiality. Card 19's 1.32-vs-1.15 gap is 12.9% — below 15%, above 5% — so exactly one subsystem reported the acreage as reconciled/unconflicted while the header, acreage-basis panel, value readiness, and the audit's acreage_conflict_preserved check all flagged a conflict. The reconciliation acreage fact was derived from ad-hoc thresholds instead of the shared canonical acreage basis.",
-        "whyAutomatedTestsMissedIt": "Existing reconciliation tests exercised large-parcel conflicts well above 15% (e.g. 17.93 vs 17.67 on ~18 ac) and never a sub-15% but material small-parcel gap, so the threshold divergence between subsystems was never asserted. No test tied report.reconciliation.acreage.conflict to operatorRecord.identity.acreageConflict for the same inputs.",
-        "whyBrowserQaMissedIt": "The prior card was accepted before the canonical acreage-basis record existed; there was no cross-tab acreage-consistency journey, and the automated acreage-conflict journey's fixture selector only scanned the first 8 deal cards on the base /deal-cards/:id route (the conflict data lives on /report), so card 19 was never exercised.",
-        "missingInvariant": "report.reconciliation.acreage.conflict MUST equal operatorRecord.identity.acreageBasis.disputed for the same card; a spatial overlay's acreage MUST NOT exceed the mapped GIS geometry it was sampled against; both are now derived from the single canonical acreage basis (5% / 0.1 ac materiality).",
-        "missingAcceptanceJourney": "A cross-tab acreage-consistency journey on a small-parcel sub-15% conflict fixture (card 19 / 200 Sid Edens Rd): header CONFLICT, acreage-basis panel, value-readiness blocked, Property-tab reconciled facts conflicted, flood overlay acreage <= mapped geometry, and audit acreage_conflict_preserved passing.",
-        "sharedRepair": "routes.ts projectPublicScreening now builds the acreage fact from the shared canonical basis via acreageFactFromBasis(buildAcreageBasis(...)) instead of the private 15% gate; the operator record pins flood overlay acreage to mapped-geometry x parcelPercentage; and public-property-intelligence-live samples overlay area against the queried geometry, not provider/assessed acres.",
-        "newRegressionTest": "src/landos/deal-card-reconciliation.test.ts 'acreageFactFromBasis — reconciled facts consume the canonical basis (WS1 F2/F3 regression)': asserts a 12.9% gap yields conflict=true/needs_confirmation with both bases preserved, agreement yields reconciled, and empty basis yields null. Plus acreage-basis.test.ts checkOverlayConsistency overlay-exceeds-geometry cases.",
-        "newBrowserAssertion": "On the acceptance-example card: Property-tab reconciled Acreage shows a CONFLICT (not a single reconciled number), the FEMA flood overlay acreage does not exceed the mapped geometry acreage, and the executive audit shows acreage_conflict_preserved passing (no 'need repair' banner for acreage).",
-        "affectedCapabilities": [],
+        "failurePattern": "reconciliation-ignores-acreage-conflict: a surface renders the legacy per-report acreage reconciliation (or its own derivation) instead of the canonical WS1 acreage basis, so a genuinely conflicted assessed-vs-mapped acreage presents as clean/reconciled while other surfaces on the same page disclose the conflict.",
+        "sharedRootCause": "Two representations of acreage coexist: the legacy report.reconciliation record and the canonical acreage basis on operatorRecord.identity.acreageBasis. Consumers that reach for the legacy field (or guess a wrong property path and silently fall back to it, as the Lead Workspace read model did with input.operatorRecord.acreageBasis ?? report.reconciliation) reintroduce the pre-WS1 split-brain. The nullish-coalescing fallback hid the wrong path because the legacy record is always present.",
+        "whyAutomatedTestsMissedIt": "The read-model unit test supplied operatorRecord without a nested identity.acreageBasis and asserted only pass-through of other fields; no test asserted WHICH acreage source wins when both the canonical basis and the legacy reconciliation exist. Route integration tests asserted contract shape, not acreage-source precedence.",
+        "whyBrowserQaMissedIt": "The scripted lead-workspace journey asserts roots, strategy count, quarantine, refresh, and viewport, but has no assertion that reconciles the rendered acreage basis against the identity record on the same page. Only the independent human-mandate QA cross-checked the acreage block against identity/blockers and caught the contradiction.",
+        "missingInvariant": "Every operator surface that shows an acreage basis must render the canonical identity.acreageBasis whenever it exists; the legacy report.reconciliation may appear only when no canonical basis exists, and a disputed basis must never render with conflict:false anywhere on the page.",
+        "missingAcceptanceJourney": "A conflicted-acreage Lead Workspace journey: open a lead whose canonical basis is disputed and assert the workspace acreage block discloses the dispute (both values, both sources, Tyler decision) and agrees with the API payload identity.acreageBasis.",
+        "sharedRepair": "src/landos/lead-workspace.ts now composes identity.acreageBasis as the only primary source with the legacy record strictly as absent-canonical fallback; the workspace API payload therefore carries the same object at property.canonicalAcreage and property.identity.acreageBasis, making divergence structurally impossible for this consumer.",
+        "newRegressionTest": "src/landos/lead-workspace.test.ts: 'renders the canonical identity acreage basis, never the legacy reconciliation, when both exist' and 'tolerates partial legacy data: legacy reconciliation appears only when no canonical basis exists'.",
+        "newBrowserAssertion": "lead-workspace-acquisitions-readonly journey gained API/UI steps executed in a real browser on every run; the independent WS1 recheck reconciles property.canonicalAcreage against property.identity.acreageBasis on a genuinely conflicted lead (deal 19 acceptance case) and on a verified lead (deal 22).",
+        "affectedCapabilities": [
+          "lead-workspace",
+          "deal-card"
+        ],
         "reopenAcceptedCapability": false,
-        "completedAt": "2026-07-15T16:18:49.628Z"
+        "completedAt": "2026-07-16T04:46:08.215Z",
+        "coversOccurrences": 3
       }
     },
     "access-unknown-road-called-private": {
@@ -182,6 +191,83 @@
           "findingId": "F13",
           "at": "2026-07-15T20:37:47.033Z",
           "summary": "Comp rows in an operator-facing report come from the deduplicated unique registry; no property appears twice."
+        }
+      ],
+      "review": null
+    },
+    "legacy-deal-card-silent-fallback": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F2",
+          "at": "2026-07-16T04:29:35.810Z",
+          "summary": "The Lead Workspace opens (same surface as /dept/acquisitions?deal=19); no silent fallback to the quarantined legacy Deal Card."
+        }
+      ],
+      "review": null
+    },
+    "ui-text-double-encoded-utf8": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F3",
+          "at": "2026-07-16T04:29:35.810Z",
+          "summary": "Header reads 'LEAD WORKSPACE · V1.0' (clean middle dot)."
+        }
+      ],
+      "review": null
+    },
+    "resolution-state-label-not-run-after-attempt": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F4",
+          "at": "2026-07-16T04:29:35.810Z",
+          "summary": "The workspace reflects the recorded resolution outcome: an attempt ran and returned state 'unresolved' with an explanatory basis (geocode-only, confidence 0.3, per landos_resolution_snapshot / landos_parcel_identity), preserving that provenance for the operator."
+        }
+      ],
+      "review": null
+    },
+    "apn-conflict-hard-stop-not-triggered": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F5",
+          "at": "2026-07-16T05:24:59.602Z",
+          "summary": "identityConflict recorded (requested 4180-07-78-9999 vs resolved 4180-07-78-1710); WRONG PARCEL - HARD STOP banner (data-testid lead-workspace-conflict) naming both APNs; chip BLOCKED - WRONG PARCEL; not verified; no property intelligence, valuation, offer range, actionable strategies, or seller brief. The engine unit test (property-resolution-engine.test.ts:88) expects this for requested-vs-resolved APN mismatch."
+        }
+      ],
+      "review": null
+    },
+    "intake-dedupe-overwrites-accepted-identity": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F6",
+          "at": "2026-07-16T05:24:59.602Z",
+          "summary": "Hard stop for the address/APN contradiction; at minimum no mutation of existing deal 19 records without Tyler confirmation."
+        }
+      ],
+      "review": null
+    },
+    "stale-resolution-provenance-contradicts-verified-chip": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F7",
+          "at": "2026-07-16T05:24:59.602Z",
+          "summary": "A verified lead Resolution box presents the verification provenance, or clearly separates the historical geocode-era snapshot from the current verified state."
+        }
+      ],
+      "review": null
+    },
+    "comps-table-hides-validated-actives": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+          "findingId": "F8",
+          "at": "2026-07-16T05:24:59.602Z",
+          "summary": "Rendered rows show normalized $/acre (they do) and the validated active listings advertised by the counts line (51 validated active) are reachable in the UI."
         }
       ],
       "review": null

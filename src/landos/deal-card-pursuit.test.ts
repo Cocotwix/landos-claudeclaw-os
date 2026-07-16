@@ -108,8 +108,8 @@ describe('buildPursuitDecision — the one Strategy question', () => {
       parcelVerified: true,
       valuation: { primary: { value: 151_095, ppa: 20_146, label: 'Sold land comps (1)', kind: 'comp_sold' }, confidence: 'low', conflict: false, conflictNote: null },
       compState: { soldCount: 1, anyRetrieved: true, strategyLine: '' },
-      strategyRanking: [{ strategy: 'Quick Flip', viability: 'not_viable', reason: 'blocked' }],
-      strongestStrategy: { strategy: 'Quick Flip', why: 'blocked' },
+      strategyRanking: [{ strategy: 'Cash Flip', viability: 'not_viable', reason: 'blocked' }],
+      strongestStrategy: { strategy: 'Cash Flip', why: 'blocked' },
       pricingAllowed: false,
       pricingBlockers: ['Only 1 validated unique sold comp — one observation is not a market; at least 3 are needed.'],
     });

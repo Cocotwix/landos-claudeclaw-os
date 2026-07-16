@@ -49,6 +49,73 @@
       },
       "acceptedAt": "2026-07-15T05:33:20.859Z",
       "sprintId": "sprint-2026-07-15-lifecycle-demo"
+    },
+    {
+      "id": "lead-workspace",
+      "name": "Acquisitions Lead Workspace (canonical composed operator view)",
+      "department": "acquisitions",
+      "acceptedVersion": "1.0",
+      "goldenJourneyIds": [
+        "lead-workspace-acquisitions-readonly",
+        "genuine-apn-conflict"
+      ],
+      "regressionFixtures": [
+        "existing verified lead with disputed acreage (acceptance example: deal 19)",
+        "existing unresolved lead with recorded resolution attempt (deal 20)",
+        "brand-new honestly-unresolved QA fixture (deal 21)",
+        "brand-new resolved QA fixture (deal 22)",
+        "genuine wrong-parcel conflict QA fixtures (deals 23, 24)"
+      ],
+      "sharedInvariants": [
+        "The workspace renders only the versioned /api/landos/lead-workspace/:id read model; WS1-WS3 conclusions are consumed, never recomputed client-side.",
+        "Canonical identity.acreageBasis outranks the legacy per-report reconciliation wherever both exist; a disputed basis never renders as reconciled.",
+        "Exactly five approved strategies: Cash Flip; Novation or Double Close; Subdivide or Minor Split; Land-Home Package; Improvement Then Flip.",
+        "A genuine requested-vs-resolved parcel conflict is a hard stop: both identifiers and the block reason are disclosed; no property intelligence, valuation, offer range, strategies, or seller brief may present as actionable.",
+        "Previously accepted operator identity records never change from an implicit intake match; explicit targeting plus operator confirmation is required.",
+        "A screening run whose gate is off contributes zero facts to the operator record.",
+        "Unknown values render as unavailable, never invented; resolution provenance is preserved and pre-verification snapshots are labeled historical.",
+        "The legacy Deal Card is quarantined from the new flow: deal-card-root never renders in the workspace path, while legacy /landos?deal= deep links stay compatible."
+      ],
+      "browserAssertions": [
+        "lead-workspace-root present exactly once on /dept/acquisitions?deal=<id>",
+        "lead-workspace-strategy count is exactly 5 on desktop and at 412x915",
+        "deal-card-root absent in the workspace flow, including after a Deal Library row click",
+        "Deal Library row click lands on the workspace and records the ?deal= deep link; refresh returns to the workspace",
+        "no double-encoded UTF-8 mojibake visible",
+        "genuine-apn-conflict journey: conflict disclosed with both identifiers and block reason; conflicted parcel never presented as verified",
+        "API/UI reconciliation between the workspace payload and visible values"
+      ],
+      "proofArtifacts": [
+        ".landos/sprints/sprint-2026-07-15-lead-workspace-foundation/ledger.json",
+        ".landos/sprints/sprint-2026-07-15-lead-workspace-foundation/qa-report-ws1-independent.md",
+        ".landos/sprints/sprint-2026-07-15-lead-workspace-foundation/qa-report-ws2-independent.md",
+        ".runtime/landos/qa/qa-2026-07-16T12-36-55-717Z/report.md"
+      ],
+      "knownLimitations": [
+        "Comps table shows top 6 sold and top 6 active validated rows with an honest showing line; the full validated registry is not paginated in the UI.",
+        "Deal 19's restored resolution snapshot lacks the original lane-level detail (unrecoverable; disclosed in its activity log).",
+        "Legacy Deal Card comp $/acre rendering (strong-comp-market) and the thin-comp-market fixture remain owned by paused sprint-2026-07-15-dealcard-v2 ws4-comps-valuation.",
+        "Tyler final usefulness review is pending; this freeze is regression protection only, not Tyler sign-off."
+      ],
+      "deliberateExternalBlockers": [],
+      "sharedDependencyPaths": [
+        "src/landos/lead-workspace.ts",
+        "src/landos/routes.ts",
+        "src/landos/property-resolution-engine.ts",
+        "src/landos/property-card.ts",
+        "src/landos/parcel-identity.ts",
+        "src/landos/operator-property-record.ts",
+        "src/landos/strategy-readiness.ts",
+        "web/src/components/LeadWorkspace.tsx",
+        "web/src/lib/lead-workspace-view.ts",
+        "web/src/pages/Acquisitions.tsx"
+      ],
+      "tylerAcceptance": {
+        "required": false,
+        "grantedAt": null
+      },
+      "acceptedAt": "2026-07-16T12:49:35.936Z",
+      "sprintId": "sprint-2026-07-15-lead-workspace-foundation"
     }
   ]
 }

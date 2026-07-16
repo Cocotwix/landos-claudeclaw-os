@@ -219,6 +219,16 @@ export function persistParcelIdentityFromResolution(
   actor = 'acquire',
 ): ParcelIdentityRecord {
   const v = parcelIdentityFromResolution(resolution);
+  // Accepted-identity preservation: a CONFIRMED stored verdict is accepted
+  // operator information. A later automated run may never replace its basis,
+  // provenance, or confidence (QA finding W2-F2: a re-intake rewrote an
+  // accepted LandPortal-browser verification with a different source at a
+  // different confidence). Only an explicit operator confirmation
+  // (opts.confirmedBy) may supersede it.
+  const existing = readParcelIdentity(dealCardId);
+  if (existing?.state === 'confirmed' && !opts.confirmedBy) {
+    return existing;
+  }
   return writeParcelIdentity(dealCardId, {
     subjectCardId: opts.subjectCardId ?? null,
     state: v.state,

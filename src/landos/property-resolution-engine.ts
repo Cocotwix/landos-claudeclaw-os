@@ -21,6 +21,7 @@ import {
   type NormalizedProperty, type RetrievalLane, type PropertyEvidence, isParcelLevelLane,
 } from './normalized-property.js';
 import type { ParsedIntakeFields } from './intake-router.js';
+import { addressVariantsCompatible } from './instruction-consistency.js';
 import { classifySmartIntake } from './intake-router.js';
 import { smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import type { DukeVerificationResult } from './duke-verification-bridge.js';
@@ -392,6 +393,12 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   // Capture the full verification result whenever a named source confirms the
   // parcel, so the caller can reuse its land facts instead of re-verifying.
   let verifiedData: DukeVerificationResult | undefined;
+  // Parcels the OFFICIAL public lane resolved — they join the wrong-parcel
+  // comparison exactly like verifiedData/browser candidates do.
+  const officialApnCandidates: Array<{ apn?: string; county?: string; state?: string; source: string; context?: string }> = [];
+  // Hard contradiction: the requested APN and the requested address resolve to
+  // two DIFFERENT official parcels. Set in Lane 3; consumed at the decision gate.
+  let addressApnContradiction: ApnConflict | undefined;
   const record = (lane: RetrievalLane, ran: boolean, contributed: boolean, status: string, note: string) =>
     lanes.push({ lane, ran, contributed, status, note });
 
@@ -466,10 +473,50 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   if (deps.officialParcel && !property.parcelVerified) {
     try {
       const official = await deps.officialParcel(fields, timeoutMs);
-      if (official.patch) {
-        const contributed = mergeAndReport(property, 'county_gis', official.source, official.patch, now(), 0.98, official.sourceUrl);
+      let officialPatch = official.patch;
+      // Every official-lane resolved parcel joins the wrong-parcel comparison.
+      // Without this, an address-matched official parcel whose APN differs from
+      // the operator's requested APN verified silently (QA finding W2-F1: a
+      // nonexistent requested APN produced a "verified" record carrying the
+      // fabricated APN with the real parcel's facts).
+      if (officialPatch?.apn) {
+        officialApnCandidates.push({
+          apn: officialPatch.apn,
+          county: officialPatch.county,
+          state: officialPatch.state,
+          source: official.source,
+          context: [officialPatch.owner, officialPatch.address].filter(Boolean).join(' — ') || undefined,
+        });
+      }
+      // Address/APN cross-check: the operator supplied BOTH identifiers, the
+      // official lane matched the APN exactly, but that parcel's situs address
+      // materially disagrees with the requested address. Resolve the address
+      // independently; if it identifies a DIFFERENT parcel, the two operator
+      // identifiers point at different properties — a wrong-parcel hard stop,
+      // never a silent verification of either (QA finding W2-F2 shape).
+      if (
+        officialPatch?.apn && fields.apn && officialPatch.address && fields.address
+        && compactParcelId(officialPatch.apn) === compactParcelId(fields.apn)
+        && !addressVariantsCompatible(fields.address, officialPatch.address)
+      ) {
+        try {
+          const byAddress = await deps.officialParcel({ ...fields, apn: undefined, apnAlternates: undefined }, timeoutMs);
+          if (byAddress.patch?.apn && compactParcelId(byAddress.patch.apn) !== compactParcelId(officialPatch.apn)) {
+            addressApnContradiction = {
+              requestedApn: fields.apn,
+              resolvedApn: byAddress.patch.apn,
+              source: byAddress.source,
+              resolvedContext: `your address "${fields.address}" is ${byAddress.patch.address ?? 'a different parcel'}, while APN ${fields.apn} is ${officialPatch.address}`,
+            };
+            record('county_gis', true, false, 'identity_contradiction', `Requested APN and requested address resolve to DIFFERENT parcels (APN ${fields.apn} = "${officialPatch.address}" vs address "${fields.address}" = APN ${byAddress.patch.apn}). Neither parcel is confirmed.`);
+            officialPatch = null;
+          }
+        } catch { /* cross-check is best-effort; the exact-APN match stands if it fails */ }
+      }
+      if (officialPatch) {
+        const contributed = mergeAndReport(property, 'county_gis', official.source, officialPatch, now(), 0.98, official.sourceUrl);
         record('county_gis', true, contributed, 'official_match', official.note);
-      } else {
+      } else if (!addressApnContradiction) {
         record('county_gis', true, false, 'no_match', official.note);
       }
     } catch {
@@ -606,8 +653,10 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   // Two-tier wrong-parcel hard-stop: (1) a DIFFERENT APN resolved, or (2) the SAME
   // APN resolved in a DIFFERENT county (a cross-county APN collision — APNs are
   // only unique within a county). Either is a wrong parcel; do not confirm.
+  resolvedApnCandidates.push(...officialApnCandidates);
   const identityConflict = (
-    detectApnConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates }, resolvedApnCandidates)
+    addressApnContradiction
+    ?? detectApnConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates }, resolvedApnCandidates)
     ?? detectJurisdictionConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates, county: fields.county, state: fields.state }, resolvedApnCandidates)
   ) ?? undefined;
   const candidates = resolutionCandidates(property, fields);

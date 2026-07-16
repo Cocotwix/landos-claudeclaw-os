@@ -155,3 +155,40 @@ describe('ConfirmedParcel capability gate', () => {
     expect(true).toBe(true);
   });
 });
+
+// Regression: intake-dedupe-overwrites-accepted-identity (QA finding W2-F2).
+// A CONFIRMED stored verdict is accepted operator information: later automated
+// runs must never replace its basis, provenance, or confidence. Only an
+// explicit operator confirmation may supersede it.
+describe('accepted-identity preservation', () => {
+  it('a later automated run never replaces a confirmed verdict', () => {
+    const dealId = newDeal();
+    writeParcelIdentity(dealId, {
+      subjectCardId: null, state: 'confirmed',
+      basis: 'Parcel confirmed by LandPortal Map Search parcel panel (browser read-only).',
+      confidence: 0.9, evidenceRefs: ['browser:landportal'],
+    }, 'acquire');
+    const kept = persistParcelIdentityFromResolution(dealId, resolution({
+      identityEstablished: true,
+      identityBasis: 'Parcel identity verified by South Carolina statewide parcel layer (SCDOT GIS mirror).',
+      confidence: 1,
+    }));
+    expect(kept.basis).toContain('LandPortal Map Search');
+    expect(kept.confidence).toBe(0.9);
+    const stored = readParcelIdentity(dealId)!;
+    expect(stored.basis).toContain('LandPortal Map Search');
+    expect(stored.confidence).toBe(0.9);
+  });
+
+  it('an explicit operator confirmation may supersede, and progress upgrades still persist', () => {
+    const dealId = newDeal();
+    // unresolved -> confirmed is progress, always allowed
+    persistParcelIdentityFromResolution(dealId, resolution({ status: 'needs_clarification', identityEstablished: false }));
+    expect(readParcelIdentity(dealId)!.state).toBe('unresolved');
+    persistParcelIdentityFromResolution(dealId, resolution({ identityEstablished: true, identityBasis: 'First confirmation.', confidence: 0.9 }));
+    expect(readParcelIdentity(dealId)!.basis).toBe('First confirmation.');
+    // confirmed -> confirmed replacement requires confirmedBy
+    persistParcelIdentityFromResolution(dealId, resolution({ identityEstablished: true, identityBasis: 'Tyler-corrected confirmation.', confidence: 1 }), { confirmedBy: 'tyler' });
+    expect(readParcelIdentity(dealId)!.basis).toBe('Tyler-corrected confirmation.');
+  });
+});

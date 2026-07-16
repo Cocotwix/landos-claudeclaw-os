@@ -44,7 +44,7 @@ describe('strategy readiness — pricing gate', () => {
     expect(r.pricingAllowed).toBe(false);
     expect(r.pricingBlockers.join(' ')).toMatch(/one validated sold observation exists, but it is insufficient/i);
     expect(r.pricingBlockers.join(' ')).toMatch(/thin-market local acreage cluster/i);
-    const quickFlip = r.strategies.find((s) => s.strategy === 'Quick Flip')!;
+    const quickFlip = r.strategies.find((s) => s.strategy === 'Cash Flip')!;
     expect(quickFlip.status).toBe('blocked');
     expect(quickFlip.status).not.toBe('not_viable');
   });
@@ -80,7 +80,7 @@ describe('strategy readiness — property-specific blockers', () => {
 
   it('land home package is blocked by poor septic + majority SFHA', () => {
     const r = buildStrategyReadiness(inputs({}));
-    const lhp = r.strategies.find((s) => s.strategy === 'Land Home Package')!;
+    const lhp = r.strategies.find((s) => s.strategy === 'Land-Home Package')!;
     expect(lhp.status).toBe('blocked');
     expect(lhp.blockers.join(' ')).toMatch(/septic outlook poor/i);
     expect(lhp.blockers.join(' ')).toMatch(/flood hazard area/i);
@@ -94,7 +94,7 @@ describe('strategy readiness — property-specific blockers', () => {
 
   it('quick flip becomes weak (not viable-promoted) under heavy wetlands even when priced', () => {
     const r = buildStrategyReadiness(inputs({ validatedSoldComps: 4, valuationReady: true, acreageConflict: false, wetlandsPct: 40 }));
-    const qf = r.strategies.find((s) => s.strategy === 'Quick Flip')!;
+    const qf = r.strategies.find((s) => s.strategy === 'Cash Flip')!;
     expect(qf.status).toBe('weak');
   });
 });
