@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildDiscoveryBriefing, renderDiscoveryBriefingMarkdown } from './discovery-briefing.js';
 import { computeDealCardReadiness } from './deal-card-readiness.js';
 import type { DealCardReportView } from './deal-card-report.js';
+import { reconcileFacts, buildValuationHierarchy, buildCompState, selectBestComps } from './deal-card-reconciliation.js';
 import { buildDdChecklist, summarizeDdCompleteness } from './dd-checklist.js';
 import { buildVisualPropertyContext } from './providers/google-visual.js';
 import { summarizeSellerFacts, type SellerStatedFact } from './seller-stated-facts.js';
@@ -20,6 +21,10 @@ function report(over: Partial<DealCardReportView> = {}): DealCardReportView {
     marketComps: { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'x' },
     demographics: { status: 'not_run', county: null, state: null, fips: null, population: null, medianHouseholdIncome: null, housingUnits: null, ownerOccupied: null, renterOccupied: null, ownerPct: null, source: null, timestamp: null, note: 'x' },
     landScore: null,
+    reconciliation: reconcileFacts({}),
+    valuation: buildValuationHierarchy({}),
+    compState: buildCompState({ status: 'not_run' }),
+    bestComps: selectBestComps(null, []),
     creditUsage: { landportalNonCreditUsed: false, compCreditUsed: false, note: '' },
     generatedAt: 1, updatedBy: 't', ...over,
   };

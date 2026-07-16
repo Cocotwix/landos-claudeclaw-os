@@ -25,7 +25,7 @@ export interface ResolutionLaneView {
   note: string;
 }
 
-/** One browser-intelligence service attempt (LandPortal / County Records). */
+/** One browser-intelligence service attempt, shown with an operator-facing label. */
 export interface ResolutionBrowserView {
   service: string;
   status: string;
@@ -44,6 +44,8 @@ export interface ResolutionParsed {
   apnAlternates?: string[];
   owner?: string;
   fips?: string;
+  /** A locality from raw intake that public sources have not yet confirmed. */
+  localityUncertain?: boolean;
 }
 
 export interface ResolutionSnapshot {
@@ -73,6 +75,30 @@ export interface ResolutionSnapshot {
 }
 
 /**
+ * Keep implementation lane names inside the resolver and evidence store. The
+ * Deal Card is an operator surface, so it describes the kind of research
+ * instead of making the operator decode provider internals.
+ */
+function operatorLaneLabel(lane: string): string {
+  const labels: Record<string, string> = {
+    address_suggest: 'Public address and location search',
+    county_records: 'Official county records',
+    realie_landportal: 'Optional parcel-provider cross-check',
+    landportal: 'Optional Land Portal cross-check',
+    marketplace: 'Marketplace confirmation',
+  };
+  return labels[lane] ?? 'Property research source';
+}
+
+function operatorBrowserLabel(service: string): string {
+  const labels: Record<string, string> = {
+    landportal: 'Optional Land Portal cross-check',
+    county_records: 'Official county records',
+  };
+  return labels[service] ?? 'Property research source';
+}
+
+/**
  * PURE: build the resolution snapshot from a Property Resolution result + the
  * parsed intake fields. Deterministic; no DB, no network.
  */
@@ -95,16 +121,17 @@ export function buildResolutionSnapshot(
       apnAlternates: fields.apnAlternates,
       owner: fields.owner ?? p.owner,
       fips: fields.fips ?? p.fips,
+      localityUncertain: fields.localityUncertain,
     },
     state: computeParcelState(resolution),
     confidence: resolution.confidence,
     basis: resolution.identityBasis,
     matchedReason: resolution.matchedReason,
     lanes: (resolution.lanesAttempted ?? []).map((l) => ({
-      lane: l.lane, status: l.status, ran: l.ran, contributed: l.contributed, note: l.note,
+      lane: operatorLaneLabel(l.lane), status: l.status, ran: l.ran, contributed: l.contributed, note: l.note,
     })),
     browser: (resolution.browserEvidence ?? []).map((b) => ({
-      service: b.service, status: b.status, note: b.note, factCount: b.facts?.length ?? 0,
+      service: operatorBrowserLabel(b.service), status: b.status, note: b.note, factCount: b.facts?.length ?? 0,
     })),
     acceptedSources: [...(p.sources ?? [])],
     missing: [...(resolution.missing ?? [])],

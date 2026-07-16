@@ -995,6 +995,19 @@ function createLandosSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_landos_lead_job_entity ON landos_lead_job(entity, status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_landos_lead_job_batch ON landos_lead_job(batch_id, created_at DESC);
 
+    -- Per-deal market scan cache (Data Center Watch + growth signals). One row
+    -- per deal card + scan kind; payload is the full MarketScanResult JSON. Lives
+    -- in store/landos.db (gitignored) — never property work product in the repo.
+    CREATE TABLE IF NOT EXISTS landos_market_scan (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id  INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      kind          TEXT NOT NULL DEFAULT 'market_scan',
+      payload       TEXT NOT NULL DEFAULT '{}',
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE (deal_card_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_market_scan ON landos_market_scan(deal_card_id, kind);
+
     CREATE TABLE IF NOT EXISTS landos_research_item (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       kind        TEXT NOT NULL
@@ -1044,6 +1057,30 @@ function createLandosSchema(db: Database.Database): void {
   // Market Matrix: per-snapshot data-quality flags (accepted-but-unusual values,
   // e.g. LandPortal STR > 100%). Migration for existing store DBs.
   addColumn('landos_market_snapshot', 'flags_json', `flags_json TEXT NOT NULL DEFAULT '[]'`);
+  // Comp coordinates for the embedded LandOS comp map. ENRICHMENT ONLY (plot +
+  // straight-line distance): providers supply them when available, otherwise a
+  // bounded cached geocode fills them. Never used for comp identity/dedup
+  // decisions beyond the existing coordinate matcher.
+  addColumn('landos_comp', 'lat', `lat REAL`);
+  addColumn('landos_comp', 'lng', `lng REAL`);
+  // Normalize provider-echoed county names to the LandOS bare-name convention
+  // ("Pickens", not "Pickens County") — the UI appends "County" itself. US
+  // county proper names never end in " County", so this is a safe idempotent
+  // migration for rows written before the lane normalization (live QA caught
+  // "Pickens County County" in the Deal Card header).
+  db.exec(`UPDATE landos_property_card
+           SET county = TRIM(SUBSTR(county, 1, LENGTH(county) - 7))
+           WHERE county LIKE '% County'`);
+  // Shared geocode cache (free Census geocoder results, including misses so a
+  // bad address is not re-queried every map load). Enrichment only — never
+  // identity. Lives in store/landos.db (gitignored).
+  db.exec(`CREATE TABLE IF NOT EXISTS landos_geocode_cache (
+    address_key TEXT PRIMARY KEY,
+    lat REAL,
+    lng REAL,
+    provider TEXT NOT NULL DEFAULT 'us_census',
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+  )`);
   // Browser Agent run: data-quality breakdown (flagged / unknown) alongside
   // accepted / rejected. Migration for existing store DBs.
   addColumn('landos_browser_agent_run', 'rows_flagged', `rows_flagged INTEGER NOT NULL DEFAULT 0`);
@@ -1432,6 +1469,32 @@ function createLandosSchema(db: Database.Database): void {
       snapshot_json TEXT NOT NULL DEFAULT '{}',
       created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
+    -- Auditable guard against prompt/instruction overrides of accepted parcel
+    -- evidence, plus a non-destructive correction link for erroneous intakes.
+    CREATE TABLE IF NOT EXISTS landos_instruction_contradiction (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id INTEGER NOT NULL,
+      instruction_received TEXT NOT NULL,
+      operator_value TEXT NOT NULL DEFAULT '',
+      accepted_identifiers_json TEXT NOT NULL DEFAULT '{}',
+      external_normalization TEXT NOT NULL DEFAULT '',
+      conflict_detected TEXT NOT NULL,
+      evidence_supported_interpretation TEXT NOT NULL,
+      action_taken TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_instruction_contradiction_card ON landos_instruction_contradiction(card_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS landos_property_correction_link (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      erroneous_card_id INTEGER NOT NULL,
+      canonical_card_id INTEGER NOT NULL,
+      relationship TEXT NOT NULL DEFAULT 'erroneous_duplicate',
+      note TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(erroneous_card_id, canonical_card_id, relationship)
     );
 
     -- Site Playbook: a REUSABLE, VERSIONED navigation workflow learned when Browser
@@ -1856,6 +1919,30 @@ export function listRows(table: LandosTable, opts: { entity?: string; limit?: nu
       .all(opts.entity, limit);
   }
   return db.prepare(`SELECT * FROM ${table} ORDER BY created_at DESC, id DESC LIMIT ?`).all(limit);
+}
+
+// ── Market scan cache (Data Center Watch + growth signals) ────────────────
+
+export function saveMarketScan(dealCardId: number, kind: string, payload: unknown): void {
+  const db = getLandosDb();
+  db.prepare(
+    `INSERT INTO landos_market_scan (deal_card_id, kind, payload, created_at)
+     VALUES (?, ?, ?, strftime('%s','now'))
+     ON CONFLICT (deal_card_id, kind) DO UPDATE SET payload = excluded.payload, created_at = strftime('%s','now')`,
+  ).run(dealCardId, kind, JSON.stringify(payload ?? {}));
+}
+
+export function loadMarketScan<T>(dealCardId: number, kind: string): { payload: T; createdAt: number } | null {
+  const db = getLandosDb();
+  const row = db
+    .prepare(`SELECT payload, created_at FROM landos_market_scan WHERE deal_card_id = ? AND kind = ?`)
+    .get(dealCardId, kind) as { payload: string; created_at: number } | undefined;
+  if (!row) return null;
+  try {
+    return { payload: JSON.parse(row.payload) as T, createdAt: row.created_at };
+  } catch {
+    return null;
+  }
 }
 
 export interface LandosOverview {

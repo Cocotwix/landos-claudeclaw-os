@@ -25,6 +25,7 @@ import { BrowserTraining } from '@/pages/BrowserTraining';
 import { Forge } from '@/pages/Forge';
 import { Department } from '@/pages/Department';
 import { Acquisitions } from '@/pages/Acquisitions';
+import { BrowserConnect } from '@/pages/BrowserConnect';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -53,6 +54,7 @@ export function App() {
       <Sidebar />
       <main class="flex-1 min-w-0 overflow-hidden pl-12 md:pl-0">
         <Switch>
+          <Route path="/connect"><BrowserConnect /></Route>
           <Route path="/mission"><MissionControl /></Route>
           {/* Acquisitions is a full department workspace, not a generic hub. */}
           <Route path="/dept/acquisitions"><Acquisitions /></Route>

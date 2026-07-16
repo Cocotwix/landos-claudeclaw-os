@@ -4,6 +4,7 @@ import { PageHeader, Tab } from '@/components/PageHeader';
 import { PropertyBoard } from '@/pages/PropertyBoard';
 import { Acquire } from '@/components/Acquire';
 import { DealCard } from '@/components/DealCard';
+import { LeadWorkspace } from '@/components/LeadWorkspace';
 
 // The Acquisitions department workspace (LandOS Vision & Architecture). One
 // cohesive department — pipeline, new lead, the deal library, and the Property
@@ -83,7 +84,7 @@ export function Acquisitions() {
                 ← Deal Library
               </button>
             </div>
-            <DealCard dealCardId={dealId} entity="all" key={dealId} />
+            <LeadWorkspace dealCardId={dealId} key={dealId} />
           </div>
         ) : (
           <DealCard entity="all" key="library-list" />
@@ -104,7 +105,7 @@ export function Acquisitions() {
                 ← Deal Library
               </button>
             </div>
-            <DealCard dealCardId={dealId} entity="all" key={`intel-${dealId}`} />
+            <LeadWorkspace dealCardId={dealId} key={`intel-${dealId}`} />
           </div>
         ) : (
           <IntelIntro onOpenLibrary={() => setSection('library')} />

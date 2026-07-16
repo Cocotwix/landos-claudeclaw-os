@@ -55,6 +55,9 @@ import {
   getAllDashboardSettings,
   getDashboardSetting,
   setDashboardSetting,
+  insertDashboardBrowserSession,
+  hasDashboardBrowserSession,
+  pruneDashboardBrowserSessions,
   insertAuditLog,
   appendAgentFileHistory,
   listAgentFileHistory,
@@ -264,6 +267,82 @@ function tokensMatch(provided: string, expected: string): boolean {
   try { return crypto.timingSafeEqual(a, b); } catch { return false; }
 }
 
+// Local pairing issues a separate session in an HttpOnly cookie rather than
+// copying the primary dashboard credential into a second browser profile. The
+// one-time pairing code stays in the URL fragment, so it is never sent to the
+// server as a request URL or Referer.
+const BROWSER_PAIRING_TTL_MS = 5 * 60 * 1000;
+const BROWSER_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const BROWSER_SESSION_COOKIE = 'claudeclaw_local_session';
+type BrowserPairing = { expiresAt: number; returnTo: string };
+const browserPairings = new Map<string, BrowserPairing>();
+
+function secretHash(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+function isLoopbackRequest(c: any): boolean {
+  try { return isLoopbackHostname(new URL(c.req.url).hostname); } catch { return false; }
+}
+
+function requestCookie(c: any, name: string): string {
+  const header = c.req.header('cookie') || '';
+  for (const item of header.split(';')) {
+    const [key, ...value] = item.trim().split('=');
+    if (key === name) return value.join('=');
+  }
+  return '';
+}
+
+function pruneBrowserPairings(now = Date.now()): void {
+  for (const [key, pairing] of browserPairings) {
+    if (pairing.expiresAt <= now) browserPairings.delete(key);
+  }
+  pruneDashboardBrowserSessions(now);
+}
+
+function hasLocalBrowserSession(c: any): boolean {
+  const token = requestCookie(c, BROWSER_SESSION_COOKIE);
+  if (!token || token.length > 256) return false;
+  pruneBrowserPairings();
+  return hasDashboardBrowserSession(secretHash(token));
+}
+
+function safeBrowserPairingReturnTo(value: unknown): string {
+  const fallback = '/dept/acquisitions?deal=14';
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2048) return fallback;
+  if (!value.startsWith('/') || value.startsWith('//')) return fallback;
+  try {
+    const parsed = new URL(value, 'http://localhost');
+    if (parsed.origin !== 'http://localhost') return fallback;
+    return parsed.pathname + parsed.search;
+  } catch {
+    return fallback;
+  }
+}
+
+function createBrowserPairing(returnTo: string): { code: string; expiresAt: number } {
+  pruneBrowserPairings();
+  const code = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = Date.now() + BROWSER_PAIRING_TTL_MS;
+  browserPairings.set(secretHash(code), { expiresAt, returnTo });
+  return { code, expiresAt };
+}
+
+function claimBrowserPairing(code: string): BrowserPairing | null {
+  if (!/^[A-Za-z0-9_-]{24,128}$/.test(code)) return null;
+  pruneBrowserPairings();
+  const key = secretHash(code);
+  const pairing = browserPairings.get(key);
+  browserPairings.delete(key);
+  return pairing && pairing.expiresAt > Date.now() ? pairing : null;
+}
+
 // Opt-in CORS origin allowlist (adopted from upstream security hardening #51).
 // Default is UNCHANGED ('*') for back-compat; set DASHBOARD_CORS_ORIGINS to a
 // comma-separated list to restrict Access-Control-Allow-Origin to those origins.
@@ -383,6 +462,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       await next();
       return;
     }
+    const isBrowserPairingClaim = path === '/api/dashboard/browser-pairings/claim' && c.req.method === 'POST';
+    if (isBrowserPairingClaim || hasLocalBrowserSession(c)) {
+      await next();
+      return;
+    }
     const token = c.req.query('token');
     if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -408,7 +492,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // diagnose. This MUST run before route handlers so the per-route checks
   // I scattered earlier (now removed) can't be the only line of defense.
   const mutationReadonlyExempt = new Set<string>([
-    // Add safe-recovery POST endpoints here if needed; none today.
+    '/api/dashboard/browser-pairings',
+    '/api/dashboard/browser-pairings/claim',
   ]);
   app.use('*', async (c, next) => {
     const method = c.req.method;
@@ -478,6 +563,52 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       }
     }
     await next();
+  });
+
+  // A master-token browser can mint a one-time local pairing link. The link
+  // carries only an expiring pairing code in its fragment, never the master
+  // dashboard token. Session cookies issued by the claim route remain local,
+  // HttpOnly, and are represented server-side by hashes only.
+  app.post('/api/dashboard/browser-pairings', async (c) => {
+    if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
+    const token = c.req.query('token') || '';
+    if (!DASHBOARD_TOKEN || !tokensMatch(token, DASHBOARD_TOKEN)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const body = await c.req.json().catch(() => ({})) as { returnTo?: unknown };
+    const returnTo = safeBrowserPairingReturnTo(body.returnTo);
+    const pairing = createBrowserPairing(returnTo);
+    const url = new URL('/connect', new URL(c.req.url).origin);
+    url.searchParams.set('returnTo', returnTo);
+    url.hash = pairing.code;
+    return c.json({
+      pairingUrl: url.toString(),
+      expiresAt: new Date(pairing.expiresAt).toISOString(),
+      returnTo,
+    }, 201);
+  });
+
+  // This is intentionally the sole unauthenticated API route. It accepts a
+  // single-use, five-minute code only on loopback and exchanges it for an
+  // independent local session cookie; it cannot disclose the master token.
+  app.post('/api/dashboard/browser-pairings/claim', async (c) => {
+    if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
+    const body = await c.req.json().catch(() => ({})) as { code?: unknown };
+    const pairing = typeof body.code === 'string' ? claimBrowserPairing(body.code) : null;
+    if (!pairing) return c.json({ error: 'Pairing code is invalid or expired.' }, 401);
+
+    const sessionToken = crypto.randomBytes(32).toString('base64url');
+    const expiresAt = Date.now() + BROWSER_SESSION_TTL_MS;
+    insertDashboardBrowserSession(secretHash(sessionToken), expiresAt);
+    c.header(
+      'Set-Cookie',
+      `${BROWSER_SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(BROWSER_SESSION_TTL_MS / 1000)}`,
+    );
+    return c.json({
+      paired: true,
+      expiresAt: new Date(expiresAt).toISOString(),
+      returnTo: pairing.returnTo,
+    }, 201);
   });
 
   // Serve dashboard HTML.
@@ -1931,6 +2062,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // proper accessor.
 
     return c.json({
+      runtime: {
+        pid: process.pid,
+        processStartTime: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        executable: process.execPath,
+        argv: process.argv,
+        cwd: process.cwd(),
+        entryPoint: process.argv[1] ? path.resolve(process.argv[1]) : null,
+        runtimeId: process.env.LANDOS_RUNTIME_ID || null,
+        repoRoot: process.env.LANDOS_RUNTIME_ROOT || PROJECT_ROOT,
+      },
       contextPct,
       turns,
       compactions,

@@ -1,27 +1,24 @@
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import { apiPost } from '@/lib/api';
 import { ModelControl } from '@/components/ModelControl';
 import { SmartIntake } from '@/components/SmartIntake';
-import { BrowserIntelControl } from '@/components/BrowserIntelControl';
 
-// Acquire — Universal Intake → Property Resolution → DD. A single click runs the
-// Property Resolution Engine server-side (every practical lane: Realie/LandPortal
-// exact resolve, free Census county derivation + retry, free Photon/Census
-// address suggest, parked browser lanes) and returns Matched or Needs
-// Clarification. On Matched it persists/updates a Property + Deal Card, runs the
-// production DD pipeline, and OPENS the Deal Card (which renders every section);
-// unknown fields are surfaced as Confirm Before Offer, never suppressed. On Needs
-// Clarification it shows practical guidance and opens nothing. Pre-call DD is
-// practical property intelligence — parcel identity is still verified only from
-// named sources, never imagery or a suggestion's coordinates.
+// Acquire — conversational New Lead. Talking to LandOS IS the intake: the
+// operator types or dictates natural language ("I have two parcels from one
+// seller", "Seller says utilities are available", "This came from PPC") and
+// LandOS extracts structured identity + deal intelligence over the FULL
+// conversation while preserving every raw operator turn verbatim. When identity
+// is strong enough, one action runs Property Resolution → Property Intelligence
+// server-side and OPENS the Deal Card. Raw input is never rewritten; parcel
+// identity is still verified only from named sources downstream.
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
 
 const PROGRESS_STAGES = [
-  'Resolving the property (every practical lane)', 'Verifying parcel identity (named sources)',
-  'Collecting property + DD facts', 'Running gov DD (FEMA / NWI / USGS)',
-  'Collecting Realie sold comps', 'Adding Zillow supplemental listings',
-  'Building Pre-Call Intelligence', 'Opening Deal Card', 'Complete',
+  'Understanding the property you entered', 'Checking public parcel records',
+  'Confirming parcel identity and conflicts', 'Screening public property intelligence',
+  'Checking market context when identity is confirmed', 'Writing findings to the Deal Card',
+  'Opening Deal Card', 'Complete',
 ];
 
 function entityLabel(e: EntityFilter): string {
@@ -36,21 +33,98 @@ interface AcquireResponse {
   confidence?: number; matchedReason?: string; confirmBeforeOffer?: string[]; sources?: string[];
 }
 
+interface ChatMessage { role: 'operator' | 'landos'; text: string }
+interface ConversationResponse {
+  conversation: {
+    reply: string;
+    understood: Array<{ label: string; value: string }>;
+    readyToRun: boolean;
+    combinedText: string;
+  };
+}
+
 export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOpenDealCard?: (id: number) => void }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
+  const [understood, setUnderstood] = useState<Array<{ label: string; value: string }>>([]);
+  const [readyToRun, setReadyToRun] = useState(false);
+  const [combinedText, setCombinedText] = useState('');
+  const [sending, setSending] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsClarification, setNeedsClarification] = useState<string | null>(null);
+  // Browser voice dictation (Web Speech). Dictation inserts into the SAME
+  // conversational intake — speaking and typing are the same lead.
+  const [listening, setListening] = useState(false);
+  const [voiceNote, setVoiceNote] = useState<string | null>(null);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
+  const dictationBaseRef = useRef('');
 
-  // ── The single normal action — Property Resolution → DD ────────────────────
-  // Runs the Property Resolution Engine; on Matched it persists/updates the Deal
-  // Card, runs the production DD report, and OPENS the Deal Card (which renders
-  // every section). Unknown fields ride along as Confirm Before Offer. On Needs
-  // Clarification it shows practical guidance and opens nothing — never an empty
-  // shell. The open is gated on res.matched (a credible match), not on legal-grade
-  // verification: pre-call DD is practical intelligence, not title work.
+  // ── Conversational turn — LandOS extracts + replies (raw text preserved) ──
+  async function sendMessage() {
+    const t = text.trim();
+    if (!t || sending) return;
+    const next: ChatMessage[] = [...messages, { role: 'operator', text: t }];
+    setMessages(next);
+    setText('');
+    setSending(true);
+    setError(null);
+    try {
+      const res = await apiPost<ConversationResponse>('/api/landos/intake/conversation', { messages: next });
+      const conv = res.conversation;
+      setMessages([...next, { role: 'landos', text: conv.reply }]);
+      setUnderstood(conv.understood);
+      setReadyToRun(conv.readyToRun);
+      setCombinedText(conv.combinedText);
+    } catch (err: any) {
+      setError(err?.message || String(err));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // ── Voice dictation — inserts the transcript into the same intake input ────
+  function toggleVoice() {
+    const w = window as unknown as { SpeechRecognition?: any; webkitSpeechRecognition?: any };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SR) {
+      setVoiceNote('Voice dictation is not supported in this browser (Chrome supports it).');
+      return;
+    }
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+    dictationBaseRef.current = text ? `${text.trim()} ` : '';
+    rec.onresult = (e: any) => {
+      let finals = '';
+      let interim = '';
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finals += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      setText(`${dictationBaseRef.current}${finals}${interim}`.trimStart());
+    };
+    rec.onerror = (e: any) => { setVoiceNote(`Voice dictation error: ${e?.error ?? 'unknown'}.`); setListening(false); };
+    rec.onend = () => setListening(false);
+    rec.start();
+    recognitionRef.current = rec;
+    setListening(true);
+    setVoiceNote(null);
+  }
+
+  // ── The single run action — Property Resolution → DD, then open the card ──
+  // Submits the FULL raw conversation (operator turns verbatim); unknown fields
+  // ride along as Confirm Before Offer. Opens on a credible match or a research
+  // card; on no practical match it shows guidance and opens nothing.
   async function runPropertyAnalysis() {
-    const rawInput = text.trim();
+    const rawInput = (combinedText || text).trim();
     if (!rawInput) return;
     setRunning(true);
     setError(null);
@@ -62,9 +136,6 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
       if (res.ok && res.matched === true && res.dealCardId) {
         if (onOpenDealCard) onOpenDealCard(res.dealCardId);
       } else if (res.dealCardId && res.researchCardCreated === true) {
-        // Opens on a verified/matched deal OR an unresolved research card (which
-        // still shows what LandOS found/missed, market pulse, and the next
-        // verification action). Show the guidance too when it's a research card.
         if (onOpenDealCard) onOpenDealCard(res.dealCardId);
         setNeedsClarification(res.message || res.guidance || 'Opened a research Deal Card — providers could not verify the parcel yet.');
       } else {
@@ -77,35 +148,87 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
     }
   }
 
+  const hasConversation = messages.length > 0;
+
   return (
     <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
       {/* Browser Intelligence operator control — start/connect the persistent
           Chrome session used for LandPortal/County browser work. */}
-      <BrowserIntelControl />
-
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-3">
         <div class="flex items-center justify-between gap-2 flex-wrap">
-          <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Acquire — Universal Intake</div>
+          <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">New Lead — talk to LandOS</div>
           <ModelControl entity={entity} scopeKind="task_type" scopeKey="routing" orientation="task_oriented" label="Intake model" size="sm" />
         </div>
+
+        {/* The conversation — every operator turn preserved verbatim, every
+            LandOS turn explaining what it understood + the next question. */}
+        {hasConversation && (
+          <div class="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {messages.map((m, i) => (
+              <div key={i} class={`flex ${m.role === 'operator' ? 'justify-end' : 'justify-start'}`}>
+                <div class={`max-w-[85%] rounded-lg px-3 py-2 text-[12.5px] whitespace-pre-wrap ${
+                  m.role === 'operator'
+                    ? 'bg-[var(--color-accent)] text-white'
+                    : 'bg-[var(--color-elevated)] text-[var(--color-text)] border border-[var(--color-border)]'
+                }`}>{m.text}</div>
+              </div>
+            ))}
+            {sending && <div class="text-[11px] text-[var(--color-text-faint)]">LandOS is reading…</div>}
+          </div>
+        )}
+
+        {/* What LandOS understood so far — structured extraction chips. */}
+        {understood.length > 0 && (
+          <div class="flex flex-wrap gap-1.5">
+            {understood.map((c, i) => (
+              <span key={i} class="text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                {c.label}: <span class="text-[var(--color-text)]">{c.value}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
         <SmartIntake
           value={text}
           onInput={setText}
-          onSubmit={() => void runPropertyAnalysis()}
-          disabled={running}
+          onSubmit={() => void sendMessage()}
+          disabled={sending || running}
+          placeholder={hasConversation
+            ? 'Keep going — add the APN, what the seller said, where the lead came from… (Enter sends)'
+            : 'Tell LandOS about the lead in plain language: "I have two parcels from one seller in Sevier County AR, APN 094-020.08, seller says county water is available, came from PPC." (Enter sends)'}
         />
+
         <div class="flex items-center gap-2 flex-wrap">
           <button
             type="button"
+            onClick={() => void sendMessage()}
+            disabled={sending || running || !text.trim()}
+            class="px-3 py-2 rounded-md text-[13px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+          >
+            {sending ? 'Sending…' : 'Send'}
+          </button>
+          <button
+            type="button"
+            onClick={toggleVoice}
+            disabled={running}
+            title="Dictate the lead by voice — inserts into the same conversation"
+            class={`px-3 py-2 rounded-md text-[13px] font-medium border disabled:opacity-40 ${listening ? 'border-red-500 text-red-500 animate-pulse' : 'border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]'}`}
+          >
+            {listening ? '● Listening… (tap to stop)' : '🎙 Dictate'}
+          </button>
+          <button
+            type="button"
             onClick={() => void runPropertyAnalysis()}
-            disabled={running || !text.trim()}
-            class="px-4 py-2 rounded-md text-[13px] font-semibold border border-[var(--color-accent)] bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-40"
+            disabled={running || (!combinedText.trim() && !text.trim())}
+            class={`px-4 py-2 rounded-md text-[13px] font-semibold border text-white disabled:opacity-40 ${readyToRun ? 'border-[var(--color-accent)] bg-[var(--color-accent)] hover:opacity-90' : 'border-[var(--color-border)] bg-[var(--color-text-faint)]'}`}
           >
             {running ? 'Running Property Intelligence...' : 'Run Property Intelligence'}
           </button>
-          <span class="text-[10px] text-[var(--color-text-faint)]">
-            Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. Raw input always submits exactly as typed. Address matching and parcel identity are handled downstream by Property Resolution. A Deal Card opens on a credible match; unknown fields ride along as Confirm Before Offer. No practical match returns the smallest next identifier.
-          </span>
+          {readyToRun && !running && <span class="text-[10px] text-[var(--color-status-done)]">Identity looks strong enough to run.</span>}
+        </div>
+        {voiceNote && <div class="text-[10px] text-[var(--color-text-muted)]">{voiceNote}</div>}
+        <div class="text-[10px] text-[var(--color-text-faint)]">
+          Tagging: <span class="text-[var(--color-text-muted)]">{entityLabel(entity)}</span>. Raw input always submits exactly as typed or spoken — LandOS organizes, it never rewrites. Address matching and parcel identity are handled downstream by Property Resolution. A Deal Card opens on a credible match; unknown fields ride along as Confirm Before Offer.
         </div>
       </div>
 
@@ -130,40 +253,6 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
       )}
 
       {error && <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">{error}</div>}
-
-      {/* Demoted developer fallback — the OLD two-step Verify/Create flow. */}
-      <details class="rounded-lg border border-dashed border-[var(--color-border)] p-2">
-        <summary class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] cursor-pointer">Developer fallback — manual Verify / Create (not the normal flow)</summary>
-        <DeveloperFallback entity={entity} onOpenDealCard={onOpenDealCard} />
-      </details>
-    </div>
-  );
-}
-
-// The previous two-button workflow, retained only as an explicit developer tool.
-function DeveloperFallback({ entity, onOpenDealCard }: { entity: EntityFilter; onOpenDealCard?: (id: number) => void }) {
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const canCreate = entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ';
-  async function verifyOnly() {
-    if (!text.trim()) return; setBusy(true); setMsg(null);
-    try { const res = await apiPost<{ verification: { parcelVerified: boolean; status: string } }>('/api/landos/intake/duke-verification', { text }); setMsg(`verify: ${res.verification.status}`); }
-    catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); }
-  }
-  async function createOnly() {
-    if (!canCreate || !text.trim()) return; setBusy(true); setMsg(null);
-    try { const res = await apiPost<{ created: boolean; dealCardId?: number }>('/api/landos/deal-cards/from-verification', { text, entity }); setMsg(res.created ? `created #${res.dealCardId}` : 'not created (unverified)'); if (res.created && res.dealCardId && onOpenDealCard) onOpenDealCard(res.dealCardId); }
-    catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); }
-  }
-  return (
-    <div class="mt-2 space-y-2">
-      <textarea value={text} onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} placeholder="address / APN (developer)" class="w-full h-12 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 py-1 text-[11px]" />
-      <div class="flex items-center gap-2">
-        <button type="button" onClick={() => void verifyOnly()} disabled={busy} class="px-2 py-1 rounded-md text-[11px] border border-[var(--color-border)] disabled:opacity-40">Verify only</button>
-        <button type="button" onClick={() => void createOnly()} disabled={busy || !canCreate} class="px-2 py-1 rounded-md text-[11px] border border-[var(--color-border)] disabled:opacity-40">Create only</button>
-        {msg && <span class="text-[10px] text-[var(--color-text-faint)]">{msg}</span>}
-      </div>
     </div>
   );
 }

@@ -13,6 +13,21 @@ describe('universal smart intake router', () => {
     expect(r.parsedFields.state).toBe('GA');
   });
 
+  it('acceptance: preserves the uncertain locality and recognizes the supplied state/ZIP', () => {
+    const raw = '171 Davidson Road venore, Tennessee 37885';
+    const r = classifySmartIntake(raw);
+    expect(r.route).toBe('property_resolution');
+    expect(r.identityClass).toBe('full_address');
+    expect(r.parsedFields.rawInput).toBe(raw);
+    expect(r.parsedFields.address).toBe('171 Davidson Road');
+    expect(r.parsedFields.city).toBe('venore');
+    expect(r.parsedFields.city).not.toMatch(/Road/i);
+    expect(r.parsedFields.state).toBe('TN');
+    expect(r.parsedFields.zip).toBe('37885');
+    expect(r.parsedFields.localityUncertain).toBe(true);
+    expect(r.hasParcelIdentity).toBe(true);
+  });
+
   it('routes an APN + county to Property Resolution', () => {
     const r = classifySmartIntake('APN 042 123, White County, GA');
     expect(r.route).toBe('property_resolution');

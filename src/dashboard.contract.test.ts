@@ -1588,3 +1588,62 @@ describe('Security headers on /', () => {
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
   });
 });
+
+
+describe('local browser pairing', () => {
+  it('pairs a fresh loopback browser without revealing or reusing the dashboard token', async () => {
+    const created = await app.request('/api/dashboard/browser-pairings?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ returnTo: '/dept/acquisitions?deal=14' }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await jsonOf(created);
+    expect(createdBody.pairingUrl).toMatch(/^http:\/\/localhost\/connect\?/);
+    expect(JSON.stringify(createdBody)).not.toContain(TOKEN);
+
+    const oneTimeCode = new URL(createdBody.pairingUrl).hash.slice(1);
+    expect(oneTimeCode.length).toBeGreaterThan(20);
+
+    const claimed = await app.request('/api/dashboard/browser-pairings/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: oneTimeCode }),
+    });
+    expect(claimed.status).toBe(201);
+    expect(claimed.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Strict; Path=\//);
+
+    const cookie = (claimed.headers.get('set-cookie') || '').split(';')[0];
+    const sessionHealth = await app.request('/api/health', { headers: { cookie } });
+    expect(sessionHealth.status).toBe(200);
+
+    const replay = await app.request('/api/dashboard/browser-pairings/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: oneTimeCode }),
+    });
+    expect(replay.status).toBe(401);
+  });
+
+  it('does not mint a pairing link from a secondary local-browser session', async () => {
+    const created = await app.request('/api/dashboard/browser-pairings?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const oneTimeCode = new URL((await jsonOf(created)).pairingUrl).hash.slice(1);
+    const claimed = await app.request('/api/dashboard/browser-pairings/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: oneTimeCode }),
+    });
+    const cookie = (claimed.headers.get('set-cookie') || '').split(';')[0];
+
+    const secondaryAttempt = await app.request('/api/dashboard/browser-pairings', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(secondaryAttempt.status).toBe(401);
+  });
+});

@@ -18,6 +18,7 @@
 // is NEVER returned to the client, the report, or any deep link.
 
 import { readEnvFile } from '../../env.js';
+import type { VisualAssociation } from '../visual-eligibility.js';
 
 const GOOGLE_MAPS_ENV_KEY = 'GOOGLE_MAPS_API_KEY';
 export { GOOGLE_MAPS_ENV_KEY };
@@ -61,6 +62,7 @@ export interface VisualAsset {
   apiService: string;
   sourceAddress: string | null;
   sourceCoords: Coords | null;
+  association?: VisualAssociation | null;
   timestamp: string;
   /** 'none' for placeholders/links; 'one_request' once an image is captured. */
   costRisk: 'none' | 'one_request';
@@ -205,7 +207,7 @@ export interface BuildVisualContextOpts {
   now?: () => string;
   /** Captured assets keyed by service (from a prior explicit capture). `url` is a
    *  dashboard-safe fetch URL; `storedPath` is the local file (never sent to the browser). */
-  captured?: Partial<Record<VisualService, { storedPath: string; timestamp?: string; url?: string }>>;
+  captured?: Partial<Record<VisualService, { storedPath: string; timestamp?: string; url?: string; association?: VisualAssociation | null }>>;
 }
 
 /** Compose a full address string for visual lookups (NOT for identity). */
@@ -251,7 +253,8 @@ export function buildVisualPropertyContext(i: VisualContextInput, opts: BuildVis
       provider: 'google',
       apiService,
       sourceAddress: addr,
-      sourceCoords: coords,
+      sourceCoords: cap?.association?.sourceCoords ?? coords,
+      association: cap?.association ?? null,
       timestamp: cap?.timestamp ?? now,
       costRisk: status === 'captured' ? 'one_request' : 'none',
       verificationStatus: VISUAL_NOT_VERIFIED_LABEL,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import { apiGet, apiPost } from '@/lib/api';
 
 // Browser Intelligence + LandPortal readiness. FULLY AUTOMATIC: on mount it
@@ -29,8 +29,8 @@ const PHASE_LABEL: Record<Phase, string> = {
   browser_live: 'Browser live',
   logging_in: 'LandPortal: logging in…',
   authenticated: 'Ready',
-  auth_failed: 'Login failed',
-  no_credentials: 'Credentials missing',
+  auth_failed: 'Optional source unavailable',
+  no_credentials: 'Optional source not connected',
   session_unavailable: 'Browser unavailable',
 };
 function tone(p: Phase): string {
@@ -44,7 +44,6 @@ export function BrowserIntelControl() {
   const [r, setR] = useState<Readiness | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const autoRan = useRef(false);
 
   async function refresh(): Promise<Readiness | null> {
     try { const res = await apiGet<{ readiness: Readiness }>('/api/landos/browser/readiness'); setR(res.readiness); return res.readiness; }
@@ -58,17 +57,9 @@ export function BrowserIntelControl() {
     finally { setBusy(false); }
   }
 
-  // On mount: read readiness, then AUTO start+login if not already authenticated
-  // and credentials are configured (and live browser isn't disabled).
+  // Status only. An optional Land Portal connection is never automatic.
   useEffect(() => {
-    (async () => {
-      const cur = await refresh();
-      if (autoRan.current) return;
-      if (cur && cur.phase !== 'authenticated' && cur.phase !== 'disabled' && cur.credentialsConfigured !== false) {
-        autoRan.current = true;
-        void ensure();
-      }
-    })();
+    void refresh();
   }, []);
 
   const phase: Phase = busy ? 'logging_in' : (r?.phase ?? 'not_running');
@@ -93,7 +84,7 @@ export function BrowserIntelControl() {
         )}
         {phase === 'no_credentials' && (
           <div class="text-[11px] text-[var(--color-status-failed)] border border-[var(--color-status-failed)] rounded-md p-2">
-            LandPortal credentials are not configured. Set {missing.length ? missing.join(' and ') : 'LANDPORTAL_EMAIL and LANDPORTAL_PASSWORD'} in .env (values never shown).
+            Land Portal is not connected. Public county and government research continues without it.
           </div>
         )}
 

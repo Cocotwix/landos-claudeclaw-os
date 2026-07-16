@@ -94,6 +94,11 @@ export interface ApnCandidates {
   primary?: string;
   /** Additional distinct APN representations found (e.g. a parenthetical alt). */
   alternates: string[];
+  /** EVERY distinct parcel (by canonical digit string) — the lead may reference
+   *  more than one parcel. Format variants of a single APN are NOT separate
+   *  entries here (those live in each NormalizedApn.variants). Length > 1 means a
+   *  genuinely multi-parcel lead that must not collapse into one parcel. */
+  parcels: string[];
   /** Union of every normalized variant across primary + alternates. */
   allVariants: string[];
   /** Full normalization record for each distinct APN found. */
@@ -163,6 +168,24 @@ export function extractApnCandidates(text: string): ApnCandidates {
 
   const primary = normalized[0]?.canonical;
   const alternates = normalized.slice(1).map((n) => n.canonical);
+  const parcels = normalized.map((n) => n.canonical);
   const allVariants = [...new Set(normalized.flatMap((n) => n.variants))];
-  return { primary, alternates, allVariants, normalized };
+  return { primary, alternates, parcels, allVariants, normalized };
+}
+
+// ── ZIP extraction (APN-safe) ────────────────────────────────────────────────
+// A ZIP candidate is a standalone 5-digit token. APN SEGMENTS ARE NOT ZIP CODES:
+// "002-07637-000" must never yield "07637". The token is rejected when a digit,
+// hyphen, or dot touches either side (i.e. it is part of a longer parcel-number
+// run), and APN-shaped runs are blanked before matching as a second guard.
+export function extractZipCandidate(text: string | null | undefined): string | undefined {
+  const t = (text ?? '').trim();
+  if (!t) return undefined;
+  // Blank APN-like runs (e.g. 002-07637-000, 094 02008 000, 072-00230-000-R)
+  // so their inner segments can never read as a ZIP.
+  const cleaned = t.replace(/\b\d{1,4}[-. ]\d{3,6}[-. ]\d{1,5}(?:[-. ][A-Za-z0-9]{1,4})?\b/g, ' ');
+  // A sentence-ending period is punctuation, not an APN separator. Reject a
+  // dot only when another digit follows it (e.g. an APN decimal segment).
+  const m = cleaned.match(/(?<![\d-])(\d{5})(?:-\d{4})?(?![\d-]|\.\d)/);
+  return m?.[1];
 }

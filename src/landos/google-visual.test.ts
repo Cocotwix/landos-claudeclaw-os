@@ -99,15 +99,26 @@ describe('google-visual capture (gated; injected fetch — no real Google call)'
     const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gvis-store-'));
     const usageFile = path.join(storeDir, 'usage.json');
     const calls: string[] = [];
-    const fetchImpl: FetchBinary = async (url) => { calls.push(url); return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }; };
+    const fetchImpl: FetchBinary = async (url) => {
+      calls.push(url);
+      if (/streetview\/metadata/.test(url)) {
+        const body = Buffer.from(JSON.stringify({ status: 'OK', location: { lat: 31.4984, lng: -83.7721 } }));
+        return { ok: true, status: 200, arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) };
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+    };
+    // Verified parcel coordinates + association basis are REQUIRED — an address
+    // string alone is refused (the De Queen wrong-imagery fix).
     const r = await capturePropertyVisuals(
-      { propertyLabel: '472 West Rd', address: '472 West Rd, Poulan, GA' },
+      { propertyLabel: '472 West Rd', address: null, coords: { lat: 31.4983, lng: -83.7721 }, cardId: 7, association: { apn: '00830-054-000', basis: 'verified_parcel_coordinates' } },
       { env: { GOOGLE_MAPS_API_KEY: 'k' }, fetchImpl, now: FIXED, storeDir, usageFile },
     );
     expect(r.captured).toBe(true);
-    expect(calls[0]).toContain('maps.googleapis.com/maps/api/staticmap');
-    expect(calls[1]).toContain('maps.googleapis.com/maps/api/streetview');
+    expect(calls[0]).toContain('maps.googleapis.com/maps/api/streetview/metadata');
+    expect(calls[1]).toContain('maps.googleapis.com/maps/api/staticmap');
+    expect(calls[2]).toContain('maps.googleapis.com/maps/api/streetview');
     expect(r.assets.maps_static?.storedPath && fs.existsSync(r.assets.maps_static.storedPath)).toBe(true);
+    expect(r.assets.maps_static?.association?.basis).toBe('verified_parcel_coordinates');
     expect(loadVisualUsage(usageFile).capturesMade).toBe(2);
   });
 
@@ -120,11 +131,12 @@ describe('google-visual capture (gated; injected fetch — no real Google call)'
     expect(r.reason).toMatch(/not configured/i);
   });
 
-  it('makes NO call with no address/coordinates (never proximity)', async () => {
+  it('makes NO call without verified parcel coordinates (never proximity, never raw text)', async () => {
     let called = false;
     const fetchImpl: FetchBinary = async () => { called = true; return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) }; };
-    const r = await capturePropertyVisuals({ propertyLabel: 'x', address: null }, { env: { GOOGLE_MAPS_API_KEY: 'k' }, fetchImpl });
+    const r = await capturePropertyVisuals({ propertyLabel: 'x', address: '1 Main St, Poulan GA' }, { env: { GOOGLE_MAPS_API_KEY: 'k' }, fetchImpl });
     expect(called).toBe(false);
     expect(r.captured).toBe(false);
+    expect(r.reason).toMatch(/verified parcel coordinates/i);
   });
 });

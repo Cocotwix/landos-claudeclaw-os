@@ -16,6 +16,7 @@
 import { classifySmartIntake, type ParsedIntakeFields, type IntakeRoute } from './intake-router.js';
 import { extractApnCandidates, type NormalizedApn, normalizeApn } from './intake-normalize.js';
 import type { ParcelIdentityClass } from './intake-types.js';
+import type { StructuredPropertyIntake } from './property-intake.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Confidence engine
@@ -81,7 +82,9 @@ export function identityConfidence(fields: ParsedIntakeFields, identityClass: Pa
     percent = Math.min(90, percent + 3);
     reasons.push(`APN normalized to ${fields.apnVariants.length} candidate formats for county lookup.`);
   }
-  if (fields.apnAlternates && fields.apnAlternates.length) {
+  if (fields.parcels && fields.parcels.length > 1) {
+    reasons.push(`Lead references ${fields.parcels.length} distinct parcels (${fields.parcels.join(', ')}) — each must be resolved on its own; the first parcel is not the whole lead.`);
+  } else if (fields.apnAlternates && fields.apnAlternates.length) {
     reasons.push(`Alternate parcel number captured: ${fields.apnAlternates.join(', ')}.`);
   }
   if (has(fields.state)) reasons.push(`State recognized as ${fields.state}.`);
@@ -193,6 +196,8 @@ export function categorizeDealIntelligence(text: string): DealIntelItem[] {
 
 export interface SmartIntake {
   rawText: string;
+  /** Structured supplied-field candidates and provenance (no provider facts). */
+  structuredIntake: StructuredPropertyIntake;
   route: IntakeRoute;
   /** Structured property identity (labels never read as values). */
   fields: ParsedIntakeFields;
@@ -221,7 +226,9 @@ export const AUTO_CONTINUE_THRESHOLD = 60;
  * and decides whether to hand straight off to Property Intelligence.
  */
 export function buildSmartIntake(rawText: string): SmartIntake {
-  const text = (rawText ?? '').trim();
+  // Preserve exact punctuation and spacing for history/corrections. Parsing uses
+  // the structured intake's cleaned searchText without mutating this value.
+  const text = rawText ?? '';
   const cls = classifySmartIntake(text);
   const apnCands = extractApnCandidates(text);
   const confidence = identityConfidence(cls.parsedFields, cls.identityClass);
@@ -236,6 +243,7 @@ export function buildSmartIntake(rawText: string): SmartIntake {
 
   return {
     rawText: text,
+    structuredIntake: cls.intake,
     route: cls.route,
     fields: cls.parsedFields,
     identityClass: cls.identityClass,

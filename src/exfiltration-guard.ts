@@ -35,8 +35,9 @@ const PATTERNS: Array<{ type: string; regex: RegExp }> = [
   // Git SHAs are exactly 40 hex chars typically preceded by "commit "
   // or similar git patterns. We match 41+ unconditionally, and for
   // exactly 40 chars we only match if NOT preceded by a git pattern.
-  // Exclude hex values in URL context (after = / # which are query params or path segments).
-  { type: 'hex_key', regex: /(?<![A-Za-z0-9=/])[0-9a-fA-F]{41,}(?![A-Za-z0-9])/g },
+  // Exclude path/hash components. Assignment values after "=" remain eligible:
+  // encryption_key=<hex> is exactly the high-risk form this guard must catch.
+  { type: 'hex_key', regex: /(?<![A-Za-z0-9\/#])[0-9a-fA-F]{41,}(?![A-Za-z0-9])/g },
 ];
 
 // Git patterns that precede a 40-char hex SHA
@@ -73,7 +74,7 @@ export function scanForSecrets(text: string, protectedValues?: string[]): Secret
   }
 
   // Check for exactly-40-char hex strings that are NOT git SHAs
-  const hex40Regex = /(?<![A-Za-z0-9=/])[0-9a-fA-F]{40}(?![A-Za-z0-9])/g;
+  const hex40Regex = /(?<![A-Za-z0-9\/#])[0-9a-fA-F]{40}(?![A-Za-z0-9])/g;
   let m40: RegExpExecArray | null;
   while ((m40 = hex40Regex.exec(text)) !== null) {
     // Skip if it's exactly 40 chars (could be a git SHA)

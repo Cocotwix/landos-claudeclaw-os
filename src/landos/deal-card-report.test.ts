@@ -185,7 +185,25 @@ it('auto-captures Google visuals once + reuses them, and persists Apify comps + 
     property_summary: { ...VERIFIED_SUMMARY, situs_address: '472 WEST RD', lat: '31.498296', lng: '-83.772086' },
   });
   let captureCalls = 0;
-  const captureVisuals = async () => { captureCalls++; return { captured: true, reason: 'ok', assets: { maps_static: { storedPath: '/x.png', timestamp: 't' }, street_view_static: { storedPath: '/y.png', timestamp: 't' } } }; };
+  let captureInput: { address: string | null; coords?: { lat: number; lng: number } | null; association?: { basis: string } } | null = null;
+  // Mirrors the real capture contract: assets carry parcel-association metadata
+  // (the eligibility model refuses association-less assets at every layer).
+  const captureVisuals = async (inp: { address: string | null; coords?: { lat: number; lng: number } | null; association?: { apn?: string | null; basis: string } }) => {
+    captureCalls++;
+    captureInput = inp;
+    const association = {
+      targetKind: 'parcel' as const, cardId: card.id, apn: '00830-054-000',
+      sourceCoords: inp.coords ?? null, basis: 'verified_parcel_coordinates' as const,
+      captureQuery: inp.coords ? `${inp.coords.lat},${inp.coords.lng}` : null,
+    };
+    return {
+      captured: true, reason: 'ok',
+      assets: {
+        maps_static: { storedPath: '/x.png', timestamp: 't', association },
+        street_view_static: { storedPath: '/y.png', timestamp: 't', association: { ...association, basis: 'parcel_nearby_street_view' as const, distanceToParcelM: 25 } },
+      },
+    };
+  };
   const retrieveCompsImpl = async () => ({
     status: 'collected' as const, primaryProvider: 'realie' as const, providerChain: ['realie:collected'], soldCount: 2, activeCount: 0,
     sold: [{ price: 50000, saleDateIso: '2025-01-01', acres: 8, pricePerAcre: 6250, sourceUrl: '', sourceLabel: 'realie' }, { price: 70000, saleDateIso: '2025-02-01', acres: 10, pricePerAcre: 7000, sourceUrl: '', sourceLabel: 'realie' }],
@@ -200,6 +218,10 @@ it('auto-captures Google visuals once + reuses them, and persists Apify comps + 
   const r1 = (await runDealCardReport(id, opts))!.report;
   expect(r1.parcelVerified).toBe(true);
   expect(captureCalls).toBe(1);
+  // The capture target is verified parcel COORDINATES — never an address string.
+  expect(captureInput!.address).toBeNull();
+  expect(captureInput!.coords).toEqual({ lat: 31.498296, lng: -83.772086 });
+  expect(captureInput!.association?.basis).toBe('verified_parcel_coordinates');
   expect(r1.visualContext.assets.some((a) => a.status === 'captured')).toBe(true);
   expect(r1.marketComps.status).toBe('collected');
   expect(r1.marketComps.soldCount).toBe(2);
@@ -474,8 +496,9 @@ describe('Deal Card report — reuse persisted verified data (no Realie credit)'
     const parcelRow = r.sourceTable.find((x) => x.kind === 'parcel_exact')!;
     expect(parcelRow.source).toMatch(/Persisted verified Property Card|reused/i);
     expect(parcelRow.compCreditUsed).toBe(false);
-    // DD facts not carried by the card are honest gaps, never fabricated.
-    expect(r.dataGaps.some((g) => /femaPct|wetlandsPct|slopeAvgDeg/.test(g))).toBe(true);
+    // DD facts not carried by the card are honest operator-facing gaps, never
+    // fabricated or exposed as internal field names.
+    expect(r.dataGaps.some((g) => /Needs FEMA flood verification|Needs wetlands screening|Needs slope/i.test(g))).toBe(true);
     // visual context present and labeled
     expect(r.visualContext.label).toBe('Visual Signal, Not Verified Fact');
   });

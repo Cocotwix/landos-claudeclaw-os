@@ -11,11 +11,12 @@
   --color-sidebar: #141416;
   --color-card: #1a1a1c;
   --color-elevated: #222226;
-  --color-border: #26262a;
-  --color-border-strong: #3a3a40;
-  --color-text: #e8e8e6;
-  --color-text-muted: #9a9a98;
-  --color-text-faint: #6a6a68;
+  --color-border: #2a2a2f;
+  --color-border-strong: #45454c;
+  /* Readability: near-white body copy; secondary text stays clearly legible. */
+  --color-text: #f2f2f0;
+  --color-text-muted: #c9c9c6;
+  --color-text-faint: #a2a2a0;
   --color-accent: #8b8af0;
   --color-accent-hover: #a4a3f5;
   --color-accent-soft: rgba(139, 138, 240, 0.12);
@@ -26,11 +27,12 @@
   --color-sidebar: #0f1525;
   --color-card: #141c30;
   --color-elevated: #1a2540;
-  --color-border: #1f2a45;
-  --color-border-strong: #2d3d5e;
-  --color-text: #e0e6f0;
-  --color-text-muted: #8a96b0;
-  --color-text-faint: #5a6680;
+  --color-border: #24314f;
+  --color-border-strong: #3a4c72;
+  /* No light blue-gray on blue-gray: body copy is near-white. */
+  --color-text: #f0f4fa;
+  --color-text-muted: #c4cee2;
+  --color-text-faint: #97a4c0;
   --color-accent: #5eb6ff;
   --color-accent-hover: #82c8ff;
   --color-accent-soft: rgba(94, 182, 255, 0.12);
@@ -41,11 +43,11 @@
   --color-sidebar: #1a0c0c;
   --color-card: #221010;
   --color-elevated: #2a1414;
-  --color-border: #3a1a1a;
-  --color-border-strong: #5a2828;
-  --color-text: #f0e8e8;
-  --color-text-muted: #b09a9a;
-  --color-text-faint: #806868;
+  --color-border: #402020;
+  --color-border-strong: #663030;
+  --color-text: #f8f2f2;
+  --color-text-muted: #d8c6c6;
+  --color-text-faint: #b29a9a;
   --color-accent: #ff5e6e;
   --color-accent-hover: #ff8090;
   --color-accent-soft: rgba(255, 94, 110, 0.12);
@@ -100,8 +102,8 @@ html, body {
   background-color: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -124,6 +126,20 @@ input, textarea, select {
   font: inherit;
   color: inherit;
   user-select: text;
+}
+
+/* ── Deal Card readability ───────────────────────────────────────────────
+   The operator reads Deal Cards for minutes at a time; body copy must be
+   comfortably legible without leaning in. The card surface scales up ~11%
+   (covers the many fixed-px utility sizes in one move) and substantive
+   copy gets extra line height. Applies to EVERY Deal Card via the shared
+   component — never per-property. */
+.dealcard-readable {
+  zoom: 1.11;
+}
+.dealcard-readable p,
+.dealcard-readable li {
+  line-height: 1.6;
 }
 
 /* ── Reusable helpers ────────────────────────────────────────────────── */
@@ -364,3 +380,24 @@ input, textarea, select {
   transform-origin: top left;
   will-change: transform, opacity;
 }
+
+/* ── Deal Card readability floor ─────────────────────────────────────
+   Shared design-system pass: the operator UI is a CRM, not a developer
+   report. Historic markup uses tiny arbitrary Tailwind sizes (9–12 px);
+   rather than touching thousands of class attributes, these rules raise
+   the minimum readable size + line-height for every bracket size below
+   the 14 px body floor. Substantive copy lands ≥12.5 px, secondary
+   notes stay subordinate but legible. */
+[class*="text-[9px]"],
+[class*="text-[9.5px]"],
+[class*="text-[10px]"]   { font-size: 11.5px !important; line-height: 1.5 !important; }
+[class*="text-[10.5px]"] { font-size: 11.5px !important; line-height: 1.5 !important; }
+[class*="text-[11px]"]   { font-size: 12px   !important; line-height: 1.55 !important; }
+[class*="text-[11.5px]"] { font-size: 12.5px !important; line-height: 1.55 !important; }
+[class*="text-[12px]"]   { font-size: 13px   !important; line-height: 1.6 !important; }
+[class*="text-[12.5px]"] { font-size: 13.5px !important; line-height: 1.6 !important; }
+[class*="text-[13px]"]   { font-size: 14px   !important; line-height: 1.6 !important; }
+[class*="text-[13.5px]"] { font-size: 14px   !important; line-height: 1.6 !important; }
+
+/* Keep pills/badges compact even after the floor. */
+[class*="rounded-full"][class*="text-["] { line-height: 1.35 !important; }

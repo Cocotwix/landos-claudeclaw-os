@@ -165,6 +165,9 @@ export interface CompRow {
   added_by: string;
   status: string;
   created_at: number;
+  /** Enrichment coordinates for the embedded comp map (nullable; provider or cached geocode). */
+  lat: number | null;
+  lng: number | null;
 }
 
 export interface AddCompInput {
@@ -185,6 +188,9 @@ export interface AddCompInput {
   notes?: string;
   addedBy?: string;
   status?: CompStatus;
+  /** Optional provider-supplied coordinates (map enrichment only). */
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export function getComp(id: number): CompRow | undefined {
@@ -211,8 +217,8 @@ export function addComp(input: AddCompInput): CompRow {
   const id = db.prepare(
     `INSERT INTO landos_comp
        (entity, deal_card_id, card_id, source_label, source_url, address_desc, apn, county, state,
-        price, price_kind, sale_or_list_date, acres, price_per_acre, notes, added_by, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        price, price_kind, sale_or_list_date, acres, price_per_acre, notes, added_by, status, lat, lng)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.entity,
     input.dealCardId,
@@ -231,6 +237,8 @@ export function addComp(input: AddCompInput): CompRow {
     input.notes ?? '',
     input.addedBy ?? 'tyler/manual',
     status,
+    typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null,
+    typeof input.lng === 'number' && Number.isFinite(input.lng) ? input.lng : null,
   ).lastInsertRowid as number;
   landosAudit(input.addedBy ?? 'tyler/manual', 'comp_added', `deal ${input.dealCardId} comp ${id} (${sourceLabel}, ${status})`, {
     entity: input.entity, refTable: 'landos_comp', refId: id,

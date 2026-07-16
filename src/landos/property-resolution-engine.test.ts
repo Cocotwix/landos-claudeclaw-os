@@ -81,7 +81,10 @@ describe('property resolution engine', () => {
     const deps: ResolutionDeps = { verify: async () => wrongParcel, now: NOW };
     const r = await resolveProperty({ fields: { address: '473 SEASIDE RD', city: 'Saint Helena Island', state: 'SC', zip: '29920', apn: 'R300 018 000 0085 0000' } }, deps);
     expect(r.status).toBe('needs_clarification');
+    expect(r.resolutionStatus).toBe('conflicted');
     expect(r.identityEstablished).toBe(false);
+    expect(r.downstreamAllowed).toBe(false);
+    expect(r.property.parcelVerified).toBe(false);
     expect(r.identityConflict).toBeDefined();
     expect(r.identityConflict?.requestedApn).toBe('R300 018 000 0085 0000');
     expect(r.identityConflict?.resolvedApn).toBe('R300 018 000 0084 0000');
@@ -100,6 +103,30 @@ describe('property resolution engine', () => {
     expect(r.status).toBe('matched');
     expect(r.identityConflict).toBeUndefined();
     expect(r.identityEstablished).toBe(true);
+    expect(r.resolutionStatus).toBe('confirmed');
+    expect(r.downstreamAllowed).toBe(true);
+  });
+
+  it('address-only source disagreement is conflicted and blocks downstream work', async () => {
+    const sourceA = verified({ address: '10 Pine Rd' });
+    sourceA.identity = { ...sourceA.identity!, apn: 'A-100' };
+    const landPortalBrowser = {
+      id: 'landportal', label: 'optional cross-check', configured: () => true,
+      runWorkflow: async () => ({
+        service: 'landportal', mode: 'workflow', status: 'retrieved',
+        patch: { apn: 'B-200', county: 'White', state: 'GA' },
+        sourceUrls: ['https://landportal.com/property/b-200'], sourcesUsed: [], facts: [],
+        fields: {}, screenshots: [], note: 'Different parcel returned.', blocked: [],
+      }),
+    } as any;
+    const r = await resolveProperty(
+      { rawText: '10 Pine Rd, Cleveland, GA 30528' },
+      { verify: async () => sourceA, landPortalBrowser, now: NOW },
+    );
+    expect(r.resolutionStatus).toBe('conflicted');
+    expect(r.identityEstablished).toBe(false);
+    expect(r.downstreamAllowed).toBe(false);
+    expect(r.agreement.conflicts.some((item) => item.field === 'apn')).toBe(true);
   });
 
   it('388 Gilstrap: Matched on credible corroboration even when Realie never verifies', async () => {
@@ -231,6 +258,8 @@ describe('property resolution engine', () => {
     expect(r.status).toBe('matched'); // still a credible match (Candidate)
     expect(r.property.parcelVerified).toBe(false);
     expect(r.identityEstablished).toBe(false); // geocoded location is NOT parcel identity
+    expect(r.resolutionStatus).toBe('provisional');
+    expect(r.downstreamAllowed).toBe(false);
     expect(r.identityBasis).toMatch(/geocoder proves where|not yet confirmed|not which parcel/i);
   });
 
@@ -265,6 +294,14 @@ describe('property resolution engine', () => {
     expect(g.basis).toMatch(/parcel-level sources resolving to the same parcel/i);
   });
 
+  it('identity gate: two parcel-level pages repeating only an address do not confirm an address-only parcel', () => {
+    const p = emptyNormalizedProperty();
+    p.address = '10 Pine Rd'; p.county = 'White'; p.state = 'GA';
+    p.evidence.push({ lane: 'homeharvest', field: 'address', value: '10 Pine Rd', source: 'Listing A', confidence: 0.6, timestamp: NOW() });
+    p.evidence.push({ lane: 'listing_provider', field: 'address', value: '10 Pine Rd', source: 'Listing B', confidence: 0.6, timestamp: NOW() });
+    expect(parcelIdentityEstablished(p, []).established).toBe(false);
+  });
+
   it('identity gate: a geocoder + a single parcel-level source is NOT confirmed (one hypothesis)', () => {
     const p = emptyNormalizedProperty();
     p.address = '10 Pine Rd'; p.county = 'White'; p.state = 'GA';
@@ -297,6 +334,16 @@ describe('property resolution engine', () => {
     const g = parcelIdentityEstablished(p, browserEvidence);
     expect(g.established).toBe(true);
     expect(g.basis).toMatch(/County Records/i);
+  });
+
+  it('identity gate: sparse parcel page cannot borrow operator APN/jurisdiction to qualify', () => {
+    const p = emptyNormalizedProperty();
+    p.apn = '094-020.08'; p.county = 'Scott'; p.state = 'TN';
+    const browserEvidence = [{
+      service: 'county_records', mode: 'workflow', status: 'retrieved', patch: { state: 'TN' },
+      sourceUrls: ['https://scott.tn.gov/gis/search'], sourcesUsed: [], facts: [], fields: {}, screenshots: [], note: '', blocked: [],
+    }] as any;
+    expect(parcelIdentityEstablished(p, browserEvidence).established).toBe(false);
   });
 
   it('identity gate: a browser-confirmed LandPortal parcel (APN + jurisdiction + URL) is established', () => {

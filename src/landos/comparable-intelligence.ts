@@ -304,8 +304,16 @@ export function buildComparableIntelligence(report: DealCardReportView): Compara
   if (subjectAcres == null) evidenceMissing.push('Subject acreage');
   if (subjectClassification.type === 'unknown') evidenceMissing.push('Confirmed subject property type');
   if (finalSelected.length < 3) evidenceMissing.push('At least three sold comparables in the same acreage band');
-  if (!comparables.some((c) => c.source === 'Zillow')) evidenceMissing.push('Zillow sold land comparable check');
-  if (!comparables.some((c) => c.source === 'Redfin')) evidenceMissing.push('Redfin sold land comparable check');
+  // Comp-source coverage reads the SINGLE reconciled comp state first (the same
+  // object Market/Activity show), then the comparables themselves — so Strategy
+  // never claims a source's comps are "missing" while Activity says it retrieved N.
+  const compSourceRetrieved = (re: RegExp): boolean => {
+    const cs = report.compState?.sources?.find((sx) => re.test(sx.source) || re.test(sx.label));
+    if (cs && (cs.status === 'retrieved' || cs.count > 0)) return true;
+    return comparables.some((c) => re.test(c.source));
+  };
+  if (!compSourceRetrieved(/zillow/i)) evidenceMissing.push('Zillow sold land comparable check');
+  if (!compSourceRetrieved(/redfin/i)) evidenceMissing.push('Redfin sold land comparable check');
   const confidence: IntelligenceConfidence = usingAskingFallback
     ? 'low'
     : finalSelected.length >= 5 && subjectClassification.confidence !== 'low'

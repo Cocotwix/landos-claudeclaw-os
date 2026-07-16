@@ -145,7 +145,9 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
       if (!hasCoords(ctx)) return useFallback(source, ctx, blockedAsset(source, 'blocked', 'coordinates missing — Google Earth needs a confirmed lat/lng for this parcel.', subjectOf(ctx), ts));
       const tmp = path.join(deps.tmpDir, `earth-${source}-${ctx.cardId}-${Date.now()}.png`);
       let ok = false;
-      try { ok = await deps.capturePage(googleEarthUrl(ctx.lat as number, ctx.lng as number, tilt), tmp, { timeoutMs: 30000, settleMs: 9000 }); }
+      // Google Earth's first WebGL load routinely exceeds 9s and screenshots the
+      // splash screen — a non-parcel frame that must never persist as evidence.
+      try { ok = await deps.capturePage(googleEarthUrl(ctx.lat as number, ctx.lng as number, tilt), tmp, { timeoutMs: 45000, settleMs: 18000 }); }
       catch { ok = false; }
       if (!ok) return useFallback(source, ctx, blockedAsset(source, 'blocked', 'page failed — Google Earth did not render a usable frame (WebGL/load). Retry with the session focused.', subjectOf(ctx), ts));
       let stored: string;
@@ -183,6 +185,15 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
       const status = await deps.ensureSession();
       if (status === 'disabled' || status === 'unreachable') return useFallback(source, ctx, blockedAsset(source, 'blocked', sessionBlocker(status), subjectOf(ctx), ts));
       if (!ctx.landPortalUrl) return useFallback(source, ctx, blockedAsset(source, 'blocked', 'LandPortal URL missing on this card — nothing to open.', subjectOf(ctx), ts));
+      // A non-LandPortal URL (e.g. a county assessor page recorded on the card)
+      // must never be captured AS LandPortal parcel evidence.
+      try {
+        if (!new URL(ctx.landPortalUrl).hostname.endsWith('landportal.com')) {
+          return useFallback(source, ctx, blockedAsset(source, 'blocked', 'card URL is not a LandPortal parcel page — a non-LandPortal page is never captured as LandPortal evidence.', subjectOf(ctx), ts));
+        }
+      } catch {
+        return useFallback(source, ctx, blockedAsset(source, 'blocked', 'card LandPortal URL is malformed.', subjectOf(ctx), ts));
+      }
       const authed = await deps.landPortalAuthed();
       if (authed === false) return useFallback(source, ctx, blockedAsset(source, 'blocked', sessionBlocker('auth_needed'), subjectOf(ctx), ts));
       const shots = await getLandPortal(ctx.landPortalUrl);
@@ -211,8 +222,12 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
   };
 
   return [
-    earthCapturer('google_earth_overhead', 0),
     earthCapturer('google_earth_3d', 60),
+    // The overhead Google Earth pass is NOT captured live: the web app replays
+    // its boot splash on each fresh page, which persists a non-parcel frame as
+    // "evidence". The official county aerial with the exact parcel boundary
+    // (parcel-overlay-visuals) covers the overhead role strictly better; the
+    // persistence-derived fallback still serves any eligible stored overhead.
     streetViewCapturer,
     landPortalCapturer('landportal'),
     landPortalCapturer('landportal_3d'),

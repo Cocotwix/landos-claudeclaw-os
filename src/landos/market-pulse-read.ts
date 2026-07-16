@@ -202,10 +202,13 @@ function buildPlainEnglish(input: { area: string; growth: GrowthRead; countyPpa:
   } else {
     parts.push(`Growth trend for ${input.area} is unknown — retrieve population from the linked official source.`);
   }
-  // Price-per-acre sentence.
-  if (input.countyPpa.status === 'measured' && input.countyPpa.medianPpa != null) {
-    parts.push(`Land is generally going for about $${input.countyPpa.medianPpa.toLocaleString()}/acre in the county (median of ${input.countyPpa.sampleSize} comp${input.countyPpa.sampleSize === 1 ? '' : 's'}).`);
-    if (input.zipPpa?.medianPpa != null) parts.push(`Near ZIP ${input.zip}: ~$${input.zipPpa.medianPpa.toLocaleString()}/acre (${input.zipPpa.sampleSize} comps).`);
+  // Price-per-acre sentence. "Land is generally going for" is a MARKET claim —
+  // it requires a real sample (≥3 sales), never one or two observations.
+  if (input.countyPpa.status === 'measured' && input.countyPpa.medianPpa != null && input.countyPpa.sampleSize >= 3) {
+    parts.push(`Land is generally going for about $${input.countyPpa.medianPpa.toLocaleString()}/acre in the county (median of ${input.countyPpa.sampleSize} comps).`);
+    if (input.zipPpa?.medianPpa != null && input.zipPpa.sampleSize >= 3) parts.push(`Near ZIP ${input.zip}: ~$${input.zipPpa.medianPpa.toLocaleString()}/acre (${input.zipPpa.sampleSize} comps).`);
+  } else if (input.countyPpa.status === 'measured' && input.countyPpa.medianPpa != null) {
+    parts.push(`Only ${input.countyPpa.sampleSize} county land sale(s) on hand — a single-figure county price is not established yet; gather more comps before anchoring.`);
   } else {
     parts.push('County price-per-acre is not established yet — gather land comps to anchor it.');
   }

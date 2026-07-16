@@ -34,6 +34,16 @@ export function acreageBandOf(acres: number | null | undefined): AcreageBand | n
   if (acres == null || !Number.isFinite(acres) || acres < 0) return null;
   return ACREAGE_BANDS.find((b) => acres >= b.min && acres < b.max) ?? ACREAGE_BANDS[ACREAGE_BANDS.length - 1];
 }
+
+/** Sparse-market expansion for small acreage subjects. A 3-4 acre rural parcel
+ * should not stop at the 2-5 acre bucket: search every vacant-land result up to
+ * 10 acres, then let the reconciliation layer rank acreage similarity and keep
+ * materially dissimilar rows as context rather than silently treating them as
+ * equivalent comps. */
+export function expandedAcreageBandOf(acres: number | null | undefined): AcreageBand | null {
+  if (acres == null || !Number.isFinite(acres) || acres <= 0 || acres > 10) return null;
+  return { id: 'no_min_to_10', label: 'no minimum to 10 ac', min: 0, max: 10 };
+}
 const AC_TO_SQFT = 43560;
 
 export interface CompResearchQuery {
@@ -66,7 +76,7 @@ export interface ResearchedComp {
 export interface SourceAttempt {
   source: CompSource;
   geoLevel: 'zip' | 'city' | 'county' | 'state';
-  acreageScope: 'band' | 'all';
+  acreageScope: 'band' | 'expanded' | 'all';
   url: string | null;
   outcome: SourceOutcome;
   visibleResultCount: number | null;
@@ -81,6 +91,7 @@ export interface CompResearchResult {
   attempts: SourceAttempt[];
   searchPath: string[];
   acreageBand: string | null;
+  expandedAcreageBand: string | null;
   acreageExpanded: boolean;
   geographyExpanded: boolean;
   filtersUsed: string[];
@@ -229,8 +240,14 @@ export async function researchBrowserComps(q: CompResearchQuery, deps: CompResea
   const timeoutMs = deps.timeoutMs ?? 30000;
   const target = deps.targetCount ?? 5;
   const band = acreageBandOf(q.acres ?? null);
+  const expandedBand = expandedAcreageBandOf(q.acres ?? null);
   const geo = geographyLadder(q);
-  const filtersUsed = ['home type = vacant land / lots', 'sold first, then active', band ? `acreage band = ${band.label}` : 'no subject acreage → all lot sizes'];
+  const filtersUsed = [
+    'home type = vacant land / lots',
+    'sold first, then active',
+    band ? `acreage band = ${band.label}` : 'no subject acreage → all lot sizes',
+    ...(expandedBand ? [`sparse-market expansion = ${expandedBand.label}`] : []),
+  ];
   const searchPath: string[] = [];
   const attempts: SourceAttempt[] = [];
   const allComps: ResearchedComp[] = [];
@@ -244,27 +261,32 @@ export async function researchBrowserComps(q: CompResearchQuery, deps: CompResea
   if (geo.length === 0) {
     return {
       attempts: [], searchPath: ['No usable location (address/coords/city/state/ZIP/county) to search.'],
-      acreageBand: band?.label ?? null, acreageExpanded: false, geographyExpanded: false, filtersUsed,
+      acreageBand: band?.label ?? null, expandedAcreageBand: expandedBand?.label ?? null, acreageExpanded: false, geographyExpanded: false, filtersUsed,
       comps: [], strength: 'unavailable',
       summary: 'No comp search run — the subject has no address, ZIP, city/state, or county to search Zillow or Redfin.',
     };
   }
 
-  // For each source: walk geography; at each geo try band then (if thin) all
-  // acreage; prefer sold then active. Stop a source once target met.
+  // For each source: walk geography; at each geo try the closest subject band,
+  // then (if thin) a no-minimum-to-10-ac search for small parcels. Larger
+  // subjects retain the all-acreage fallback. Prefer sold, then active. Stop a
+  // source once the target is met.
   for (const source of ['zillow', 'redfin'] as CompSource[]) {
     let sourceComps = 0;
     outer:
     for (let gi = 0; gi < geo.length; gi++) {
       const step = geo[gi];
       if (gi > 0) geographyExpanded = true;
-      const acreageScopes: Array<'band' | 'all'> = band ? ['band', 'all'] : ['all'];
+      const acreageScopes: Array<'band' | 'expanded' | 'all'> = band
+        ? expandedBand ? ['band', 'expanded'] : ['band', 'all']
+        : ['all'];
       for (const scope of acreageScopes) {
-        if (scope === 'all' && band) acreageExpanded = true;
+        if (scope !== 'band' && band) acreageExpanded = true;
         for (const sold of [true, false]) {
-          const bandArg = scope === 'band' ? band : null;
+          const bandArg = scope === 'band' ? band : scope === 'expanded' ? expandedBand : null;
           const url = source === 'zillow' ? buildZillowLandUrl(step, { sold, band: bandArg }) : buildRedfinLandUrl(step, { sold, band: bandArg });
-          const label = `${source} · ${step.label} · ${scope === 'band' ? (band?.label ?? 'all') : 'all acreage'} · ${sold ? 'sold' : 'active'}`;
+          const acreageLabel = scope === 'band' ? (band?.label ?? 'all') : scope === 'expanded' ? (expandedBand?.label ?? 'all acreage') : 'all acreage';
+          const label = `${source} · ${step.label} · ${acreageLabel} · ${sold ? 'sold' : 'active'}`;
           searchPath.push(label);
           const attempt = await runOneSearch(source, step, scope, url, sold ? 'sold' : 'active', { driver, driverReady, timeoutMs, captureScreenshots: deps.captureScreenshots !== false, subject });
           attempts.push(attempt);
@@ -285,7 +307,7 @@ export async function researchBrowserComps(q: CompResearchQuery, deps: CompResea
   const strength: CompResearchResult['strength'] = dedup.length >= target ? 'strong' : dedup.length > 0 ? 'thin' : 'unavailable';
   return {
     attempts, searchPath,
-    acreageBand: band?.label ?? null, acreageExpanded, geographyExpanded, filtersUsed,
+    acreageBand: band?.label ?? null, expandedAcreageBand: expandedBand?.label ?? null, acreageExpanded, geographyExpanded, filtersUsed,
     comps: dedup, strength,
     summary: buildSummary({ attempts, comps: dedup, band, geo, acreageExpanded, geographyExpanded, driverReady }),
   };
@@ -294,7 +316,7 @@ export async function researchBrowserComps(q: CompResearchQuery, deps: CompResea
 // Store comp view keeps lat/lng loosely for distance; declared here to type the
 // optional geo fields used above without widening ResearchedComp's public shape.
 async function runOneSearch(
-  source: CompSource, step: GeoStep, scope: 'band' | 'all', url: string, status: CompStatus,
+  source: CompSource, step: GeoStep, scope: 'band' | 'expanded' | 'all', url: string, status: CompStatus,
   ctx: { driver?: BrowserDriver; driverReady: boolean; timeoutMs: number; captureScreenshots: boolean; subject?: { lat?: number; lng?: number } },
 ): Promise<SourceAttempt> {
   const base: SourceAttempt = { source, geoLevel: step.level, acreageScope: scope, url, outcome: 'not_configured', visibleResultCount: null, screenshotPath: null, compCount: 0, note: '' };

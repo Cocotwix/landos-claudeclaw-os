@@ -104,6 +104,100 @@ describe('ensureLandPortalAuthenticated — automatic login', () => {
   });
 });
 
+// Fake for the 2026-07 LandPortal homepage change: the login form is HIDDEN
+// inside a modal until a visible "Log in" trigger is clicked. Routes evaluate()
+// by function-body markers; scripts a sequence of LP_LOGIN codes.
+function modalFakeController(opts: {
+  loginLikeSeq: boolean[];
+  loginCodes: string[];               // successive LP_LOGIN results
+  openLoginResult?: string;           // LP_OPEN_LOGIN result ('clicked' | 'no_trigger')
+  onLogin?: (e: string, p: string) => void;
+  onOpenLogin?: () => void;
+}) {
+  let i = 0; let li = 0;
+  const page: PageLike = {
+    async goto() {},
+    url() { return 'https://landportal.example/'; },
+    async evaluate<T>(fn: unknown, ...args: unknown[]): Promise<T> {
+      const src = String(fn);
+      if (src.includes('no_password_field')) { // LP_LOGIN
+        opts.onLogin?.(String(args[0]), String(args[1]));
+        const code = opts.loginCodes[Math.min(li, opts.loginCodes.length - 1)];
+        li += 1;
+        return code as unknown as T;
+      }
+      if (src.includes('no_trigger')) { // LP_OPEN_LOGIN
+        opts.onOpenLogin?.();
+        return (opts.openLoginResult ?? 'no_trigger') as unknown as T;
+      }
+      if (src.includes('are you a human')) return null as unknown as T; // LP_CHALLENGE
+      if (src.includes('accept all')) return 0 as unknown as T; // LP_DISMISS_POPUPS
+      const loginLike = opts.loginLikeSeq[Math.min(i, opts.loginLikeSeq.length - 1)];
+      i += 1;
+      return { url: 'https://landportal.example/', fields: {}, snippets: [], loginLike } as unknown as T;
+    },
+    async screenshot() {},
+  };
+  const browser: BrowserLike = {
+    async version() { return 'HeadlessChrome/1'; },
+    async pages() { return [page]; },
+    async newPage() { return page; },
+    isConnected() { return true; },
+    async disconnect() {},
+  };
+  const pup: PuppeteerLike = { async connect() { return browser; } };
+  return pup;
+}
+
+describe('ensureLandPortalAuthenticated — hidden modal login form (2026-07 UI)', () => {
+  it('clicks the Log in trigger, retries, and authenticates when the modal form appears', async () => {
+    let opened = 0; let logins = 0;
+    const pup = modalFakeController({
+      loginLikeSeq: [true, false],
+      loginCodes: ['no_email_field', 'submitted'], // hidden first, visible after trigger
+      openLoginResult: 'clicked',
+      onOpenLogin: () => { opened++; },
+      onLogin: () => { logins++; },
+    });
+    const r = await ensureLandPortalAuthenticated(deps(pup));
+    expect(opened).toBe(1);          // the trigger was clicked exactly once
+    expect(logins).toBe(2);          // initial attempt + post-modal retry
+    expect(r.phase).toBe('authenticated');
+    expect(r.ready).toBe(true);
+    expect(r.attempted).toBe(true);
+  });
+
+  it('reports the trigger attempt in the failure reason when the form stays unusable', async () => {
+    const pup = modalFakeController({
+      loginLikeSeq: [true],
+      loginCodes: ['no_email_field', 'no_email_field'],
+      openLoginResult: 'clicked',
+    });
+    const r = await ensureLandPortalAuthenticated(deps(pup));
+    expect(r.phase).toBe('auth_failed');
+    expect(r.reason).toMatch(/Log in trigger was clicked and the form was still not usable/i);
+  });
+
+  it('reports no-trigger when neither a visible form nor a Log in trigger exists', async () => {
+    const pup = modalFakeController({
+      loginLikeSeq: [true],
+      loginCodes: ['no_email_field'],
+      openLoginResult: 'no_trigger',
+    });
+    const r = await ensureLandPortalAuthenticated(deps(pup));
+    expect(r.phase).toBe('auth_failed');
+    expect(r.reason).toMatch(/no visible form and no Log in trigger found/i);
+  });
+
+  it('never leaks credentials through the modal retry path', async () => {
+    const pup = modalFakeController({ loginLikeSeq: [true, false], loginCodes: ['no_email_field', 'submitted'], openLoginResult: 'clicked' });
+    const r = await ensureLandPortalAuthenticated(deps(pup));
+    const serialized = JSON.stringify(r);
+    expect(serialized).not.toContain(CREDS.email);
+    expect(serialized).not.toContain(CREDS.password);
+  });
+});
+
 describe('readLandPortalCreds', () => {
   it('reports both missing var names from an empty env', () => {
     const { creds, missing } = readLandPortalCreds({});

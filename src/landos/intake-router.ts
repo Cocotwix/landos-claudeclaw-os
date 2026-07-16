@@ -16,6 +16,7 @@
 import { extractPropertyArgs, looksLikePropertyInput } from './duke-preflight.js';
 import { extractAreaSignals } from './source-adapters.js';
 import { extractApnCandidates } from './intake-normalize.js';
+import { parsePropertyIntake, type StructuredPropertyIntake } from './property-intake.js';
 import type { LpResolveArgs } from './landportal-client.js';
 import type { ParcelIdentityClass } from './intake-types.js';
 
@@ -35,6 +36,8 @@ export type IntakeLifecycle = 'operational' | 'registered';
 /** The parsed, normalized fields the intake extracts from raw input. Mirrors the
  *  resolver's IntakeFields plus area-only signals. No field is mandatory. */
 export interface ParsedIntakeFields {
+  /** Exact operator input, preserved even when a parser cannot classify a field. */
+  rawInput?: string;
   address?: string;
   city?: string;
   state?: string;
@@ -51,6 +54,15 @@ export interface ParsedIntakeFields {
   /** Additional distinct APN representations found in the input (e.g. a
    *  parenthetical alternate parcel number "(094 02008 000)"). */
   apnAlternates?: string[];
+  /** EVERY distinct parcel the lead references, in order. Length > 1 means a
+   *  genuinely multi-parcel lead: each parcel must be preserved and resolved on
+   *  its own — the first parcel is NOT the whole lead. */
+  parcels?: string[];
+  /** Locality text supplied next to an address but not yet source-confirmed. */
+  localityCandidates?: string[];
+  /** True means `city` is operator-supplied candidate text, not a correction or
+   * authoritative normalization. */
+  localityUncertain?: boolean;
 }
 
 /** A registered intent. Future departments add one of these — that is the entire
@@ -82,6 +94,8 @@ export interface SmartIntakeResult {
   route: IntakeRoute;
   lifecycle: IntakeLifecycle;
   parsedFields: ParsedIntakeFields;
+  /** Full candidate/provenance view; no provider or geocoder facts are mixed in. */
+  intake: StructuredPropertyIntake;
   identityClass: ParcelIdentityClass;
   hasParcelIdentity: boolean;
   /** Deterministic human-readable reason for the route. */
@@ -94,7 +108,7 @@ export interface SmartIntakeResult {
 // Parsing → fields + identity class
 // ─────────────────────────────────────────────────────────────────────────
 
-function fieldsFromArgs(args: LpResolveArgs | null, rawText: string): ParsedIntakeFields {
+function fieldsFromArgs(args: LpResolveArgs | null, rawText: string, intake: StructuredPropertyIntake): ParsedIntakeFields {
   const area = extractAreaSignals(rawText);
   const a = (args ?? {}) as Record<string, string | undefined>;
   // Normalize every APN in the raw input into common county formats and capture
@@ -102,22 +116,30 @@ function fieldsFromArgs(args: LpResolveArgs | null, rawText: string): ParsedInta
   // primary APN stays whatever the underlying parser resolved; the variants and
   // alternates give the resolver more shots before it can declare a failure.
   const apnCands = extractApnCandidates(rawText);
-  const apn = a.apn ?? apnCands.primary;
+  const apn = a.apn ?? intake.apn ?? apnCands.primary;
   const variants = apn ? apnCands.allVariants : [];
   const alternates = apn ? apnCands.alternates.filter((alt) => alt !== apn) : [];
+  // EVERY distinct parcel (by digit string). More than one = a multi-parcel lead
+  // that must not silently collapse into the primary. If the caller passed an
+  // explicit apn that differs, keep it at the head of the list.
+  const distinctParcels = apnCands.parcels.slice();
+  const parcels = a.apn && !distinctParcels.includes(a.apn) ? [a.apn, ...distinctParcels] : distinctParcels;
   return {
-    address: a.address,
-    city: a.city ?? area.city,
-    state: a.state ?? area.state,
-    zip: a.zip,
-    county: a.county ?? area.county,
+    rawInput: intake.rawInput,
+    address: a.address ?? intake.address,
+    city: a.city ?? intake.city ?? area.city,
+    state: a.state ?? intake.state ?? area.state,
+    zip: a.zip ?? intake.zip,
+    county: a.county ?? intake.county ?? area.county,
     fips: a.fips,
     apn,
-    owner: a.owner,
+    owner: a.owner ?? intake.owner,
     propertyId: a.propertyid,
     lpUrl: a.lp_url,
     ...(variants.length ? { apnVariants: variants } : {}),
     ...(alternates.length ? { apnAlternates: alternates } : {}),
+    ...(parcels.length > 1 ? { parcels } : {}),
+    ...(intake.city ? { localityCandidates: [intake.city], localityUncertain: true } : {}),
   };
 }
 
@@ -223,10 +245,13 @@ export interface ClassifyDeps {
  * rest route as `registered`.
  */
 export function classifySmartIntake(rawText: string, deps: ClassifyDeps = {}): SmartIntakeResult {
+  const intake = parsePropertyIntake(rawText);
+  // Existing labeled-field parsers rely on line boundaries, so retain them for
+  // classification while the candidate parser keeps its own cleaned searchText.
   const text = (rawText ?? '').trim();
   const args = extractPropertyArgs(text);
   const looksLikeProperty = looksLikePropertyInput(text);
-  const fields = fieldsFromArgs(args, text);
+  const fields = fieldsFromArgs(args, rawText ?? '', intake);
   const identityClass = classifyParcelIdentity(fields, looksLikeProperty);
   const hasParcelIdentity = PARCEL_IDENTITY_CLASSES_WITH_IDENTITY.has(identityClass) && identityClass !== 'property_ambiguous'
     ? true
@@ -246,6 +271,7 @@ export function classifySmartIntake(rawText: string, deps: ClassifyDeps = {}): S
     route: winner.route,
     lifecycle: winner.lifecycle,
     parsedFields: fields,
+    intake,
     identityClass,
     hasParcelIdentity,
     reason: reasonFor(winner, ctx),

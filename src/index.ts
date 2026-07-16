@@ -17,7 +17,7 @@ import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
-import { getVenvPython, killProcess } from './platform.js';
+import { getVenvPython } from './platform.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -101,23 +101,49 @@ function showBanner(): void {
 
 function acquireLock(): void {
   fs.mkdirSync(STORE_DIR, { recursive: true });
-  try {
-    if (fs.existsSync(PID_FILE)) {
-      const old = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
-      if (!isNaN(old) && old !== process.pid) {
-        killProcess(old);
-        try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); } catch { /* ok */ }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const fd = fs.openSync(PID_FILE, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, String(process.pid));
+      } finally {
+        fs.closeSync(fd);
+      }
+      return;
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') throw err;
+
+      let owner = 0;
+      try { owner = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10); } catch { /* retry below */ }
+      if (Number.isFinite(owner) && owner > 0 && owner !== process.pid) {
+        try {
+          process.kill(owner, 0);
+          throw new Error(
+            `Another ClaudeClaw/LandOS process owns ${PID_FILE} (PID ${owner}). `
+            + 'Refusing to kill it or start a duplicate. Use npm run landos:status or npm run landos:restart.',
+          );
+        } catch (probeErr: any) {
+          if (!['ESRCH', 'EINVAL'].includes(probeErr?.code)) throw probeErr;
+        }
+      }
+
+      // Rename is atomic: concurrent starters cannot both remove a replacement
+      // lock that another process created after this stale one was inspected.
+      const stalePath = `${PID_FILE}.stale-${process.pid}-${Date.now()}`;
+      try {
+        fs.renameSync(PID_FILE, stalePath);
+        try { fs.unlinkSync(stalePath); } catch { /* harmless stale artifact */ }
+      } catch (renameErr: any) {
+        if (!['ENOENT', 'EACCES', 'EPERM'].includes(renameErr?.code)) throw renameErr;
       }
     }
-  } catch { /* ignore */ }
-  fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 });
+  }
+  throw new Error(`Could not acquire the runtime PID lock at ${PID_FILE}.`);
 }
 
 function releaseLock(): void {
-  // Stale-lock protection (#102): only remove the pidfile if it still points at
-  // US. After this process was superseded (acquireLock kills the old PID and
-  // rewrites the file), a late shutdown handler here must NOT delete the new
-  // owner's pidfile — that would silently disable the new instance's lock.
+  // Only remove the pidfile if it still points at this process. A late shutdown
+  // must never remove a replacement process's lock.
   try {
     const owner = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
     if (owner === process.pid) fs.unlinkSync(PID_FILE);

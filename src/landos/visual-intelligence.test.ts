@@ -44,15 +44,18 @@ describe('Visual Intelligence — hero priority & static-map fallback doctrine',
     expect(r.staticMapFallbackOnly).toBe(true);
   });
 
-  it('honors the full hero priority order (GE3D > GE overhead > LandPortal > Street View > static)', async () => {
+  it('honors the parcel-specific hero priority (LandPortal > county GIS > verified GE/satellite > Street View)', async () => {
     const caps = HERO_PRIORITY.map((s) => capturedCapturer(s));
     const r = await runVisualIntelligence(ctx, caps, { now });
-    expect(r.hero?.source).toBe('google_earth_3d');
-    // Remove GE3D → GE overhead wins, and so on down the chain.
-    const r2 = await runVisualIntelligence(ctx, caps.filter((c) => c.source !== 'google_earth_3d'), { now });
-    expect(r2.hero?.source).toBe('google_earth_overhead');
-    const r3 = await runVisualIntelligence(ctx, [capturedCapturer('street_view'), capturedCapturer('static_map')], { now });
-    expect(r3.hero?.source).toBe('street_view');
+    expect(r.hero?.source).toBe('landportal'); // APN-specific LandPortal imagery first
+    // Remove LandPortal → county GIS wins, and so on down the chain.
+    const r2 = await runVisualIntelligence(ctx, caps.filter((c) => c.source !== 'landportal'), { now });
+    expect(r2.hero?.source).toBe('county_gis');
+    const r3 = await runVisualIntelligence(ctx, caps.filter((c) => c.source !== 'landportal' && c.source !== 'county_gis'), { now });
+    expect(r3.hero?.source).toBe('google_earth_3d');
+    // Verified-coordinate satellite (static) outranks Street View in the doctrine.
+    const r4 = await runVisualIntelligence(ctx, [capturedCapturer('street_view'), capturedCapturer('static_map')], { now });
+    expect(r4.hero?.source).toBe('static_map');
   });
 
   it('uses static map as hero ONLY when it is the sole captured source, and says so', async () => {
@@ -105,13 +108,33 @@ describe('Visual Intelligence — default (persistence-derived) capturers', () =
     expect(get('landportal').state).toBe('captured');
     expect(get('static_map').state).toBe('captured');
     expect(get('static_map').fallback).toBe(true);
-    // Interactive/live sources: blocked with the exact wiring blocker (no fabrication, no paid call).
-    for (const s of ['google_earth_overhead', 'google_earth_3d', 'landportal_3d', 'county_gis'] as VisualSourceKind[]) {
+    // Live-only sources needing a browser session: exact wiring blocker.
+    for (const s of ['google_earth_overhead', 'google_earth_3d', 'county_gis'] as VisualSourceKind[]) {
       expect(get(s).state).toBe('blocked');
       expect(get(s).blocker).toBe(LIVE_BROWSER_BLOCKER);
     }
+    // LandPortal 3D / comps derive from persisted inspection assets — not captured
+    // in this fixture (no parcel_3d / comparables_map asset), reported honestly.
+    expect(get('landportal_3d').state).toBe('unavailable');
+    expect(get('landportal_comps').state).toBe('blocked');
     // Hero must be LandPortal (richer than street_view/static), never the static map.
     expect(r.hero?.source).toBe('landportal');
+  });
+
+  it('derives LandPortal 3D + comps from the correct kind-specific inspection assets', async () => {
+    const withAll = { ...readers, loadInspectionAssets: () => [
+      { key: 'parcel_page', label: 'LandPortal Parcel View', kind: 'parcel_page', storedPath: '/store/visuals/lp.png', timestamp: TS },
+      { key: 'parcel_3d', label: 'LandPortal 3D', kind: 'parcel_3d', storedPath: '/store/visuals/lp3d.png', timestamp: TS },
+      { key: 'comparables_map', label: 'LandPortal Comps Map', kind: 'comparables_map', storedPath: '/store/visuals/lpcomps.png', timestamp: TS },
+    ] };
+    const r = await runVisualIntelligence(ctx, defaultCapturers(withAll), { now });
+    expect(r.sources.find((s) => s.source === 'landportal')?.state).toBe('captured');
+    expect(r.sources.find((s) => s.source === 'landportal_3d')?.state).toBe('captured');
+    expect(r.sources.find((s) => s.source === 'landportal_comps')?.state).toBe('captured');
+    // Each maps to its OWN screenshot (no cross-source image reuse).
+    expect(r.sources.find((s) => s.source === 'landportal')?.storedPath).toBe('/store/visuals/lp.png');
+    expect(r.sources.find((s) => s.source === 'landportal_3d')?.storedPath).toBe('/store/visuals/lp3d.png');
+    expect(r.sources.find((s) => s.source === 'landportal_comps')?.storedPath).toBe('/store/visuals/lpcomps.png');
   });
 
   it('marks Street View unavailable (not blocked) when Google has no street asset', async () => {
@@ -127,11 +150,12 @@ describe('Visual Intelligence — default (persistence-derived) capturers', () =
     expect(isViewable(r.sources.find((s) => s.source === 'street_view')!)).toBe(false);
   });
 
-  it('never requests a paid LandPortal slope report (live-only blocker names the free wiring path only)', async () => {
+  it('never requests a paid LandPortal slope report (LandPortal 3D reason names the free path only)', async () => {
     const r = await runVisualIntelligence(ctx, defaultCapturers(readers), { now });
     const lp3d = r.sources.find((s) => s.source === 'landportal_3d')!;
     expect(lp3d.blocker).not.toMatch(/slope report|paid|credit|purchase/i);
-    expect(lp3d.blocker).toBe(LIVE_BROWSER_BLOCKER);
+    const lpComps = r.sources.find((s) => s.source === 'landportal_comps')!;
+    expect(lpComps.blocker).toMatch(/never the paid comp report/i);
   });
 });
 

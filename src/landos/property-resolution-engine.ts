@@ -17,8 +17,8 @@
 
 import {
   emptyNormalizedProperty, mergeNormalized, missingFields, deriveConfidence,
-  patchFromDukeVerification, patchFromCensus, corroboratingParcelLevelLanes,
-  type NormalizedProperty, type RetrievalLane,
+  patchFromDukeVerification, patchFromCensus, corroboratingParcelIdentifierLanes,
+  type NormalizedProperty, type RetrievalLane, type PropertyEvidence, isParcelLevelLane,
 } from './normalized-property.js';
 import type { ParsedIntakeFields } from './intake-router.js';
 import { classifySmartIntake } from './intake-router.js';
@@ -32,6 +32,34 @@ import type { BrowserService, BrowserEvidence, BrowserSearchKey } from './browse
 import { analyzeMissingFields, type MissingFieldAnalysis } from './missing-field-analysis.js';
 
 export type ResolutionStatus = 'matched' | 'needs_clarification';
+/** Provider-neutral parcel decision. `matched` remains as a legacy workflow
+ * status; this field tells downstream code whether the parcel itself is safe. */
+export type ParcelResolutionStatus = 'confirmed' | 'provisional' | 'conflicted' | 'unresolved';
+
+export interface ParcelResolutionCandidate {
+  source: string;
+  lane: RetrievalLane | 'operator_input';
+  address?: string;
+  normalizedAddress?: string;
+  county?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  apn?: string;
+  owner?: string;
+  acres?: number;
+  propertyId?: string;
+  coordinates?: { lat: number; lng: number };
+  sourceUrl?: string;
+  confidence: number;
+  evidence: PropertyEvidence[];
+}
+
+export interface ResolutionAgreementAnalysis {
+  agreeingIdentifierLanes: RetrievalLane[];
+  conflicts: Array<{ field: string; values: Array<{ value: string; sources: string[] }> }>;
+  explanation: string;
+}
 
 /** A hard APN identifier conflict — the requested parcel and the resolved parcel
  *  are not the same parcel. */
@@ -178,6 +206,9 @@ export interface ResolutionLaneRecord {
 
 export interface PropertyResolution {
   status: ResolutionStatus;
+  resolutionStatus: ParcelResolutionStatus;
+  /** Exact operator text, including original spacing/punctuation. */
+  rawInput: string;
   property: NormalizedProperty;
   confidence: number;
   /** Why it matched (or why not). Deterministic, human-readable. */
@@ -209,6 +240,11 @@ export interface PropertyResolution {
    *  runs. This is the wrong-parcel hard-stop (e.g. requested ...0085, resolved
    *  ...0084). Undefined when there is no conflict. */
   identityConflict?: ApnConflict;
+  /** Operator candidate plus each source's independently attributable result. */
+  candidates: ParcelResolutionCandidate[];
+  agreement: ResolutionAgreementAnalysis;
+  /** Single safe switch for Property Intelligence / score / valuation / offer. */
+  downstreamAllowed: boolean;
   /** Read-only: the engine resolves identity; it never writes a card itself. */
   executionMode: 'property_resolution';
   /** The full named-source verification result when a `verify` lane confirmed the
@@ -229,6 +265,8 @@ export interface ResolutionDeps {
   /** Named-source parcel verification (Realie/LandPortal). The ONLY lane that can
    *  set parcelVerified. Built from fields so the engine can retry with county. */
   verify?: (fields: ParsedIntakeFields, timeoutMs: number) => Promise<DukeVerificationResult>;
+  /** Exact public county/state GIS lookup. A match may establish parcel identity. */
+  officialParcel?: (fields: ParsedIntakeFields, timeoutMs: number) => Promise<{ patch: PropertyPatch | null; source: string; sourceUrl?: string; note: string }> ;
   /** Free US Census county/FIPS/coords derivation for a full address. */
   deriveCounty?: (fields: ParsedIntakeFields) => Promise<DerivedCounty | null>;
   /** Smart Address Search corroboration (Photon/Census). */
@@ -275,6 +313,61 @@ function seedSubject(p: NormalizedProperty, f: ParsedIntakeFields): void {
   if (f.lpUrl) p.lpUrl = f.lpUrl;
   p.missing = missingFields(p);
   p.confidence = deriveConfidence(p);
+}
+
+function resolutionCandidates(property: NormalizedProperty, fields: ParsedIntakeFields): ParcelResolutionCandidate[] {
+  const candidates: ParcelResolutionCandidate[] = [{
+    source: 'Operator input', lane: 'operator_input', address: fields.address, county: fields.county,
+    city: fields.city, state: fields.state, zip: fields.zip, apn: fields.apn, owner: fields.owner,
+    propertyId: fields.propertyId, confidence: 0, evidence: [],
+  }];
+  const grouped = new Map<string, ParcelResolutionCandidate>();
+  for (const row of property.evidence) {
+    const key = `${row.lane}|${row.source}`;
+    let entry = grouped.get(key);
+    if (!entry) {
+      entry = { source: row.source, lane: row.lane, confidence: row.confidence, evidence: [] };
+      grouped.set(key, entry);
+    }
+    entry.evidence.push(row);
+    entry.confidence = Math.max(entry.confidence, row.confidence);
+    if (row.sourceUrl && !entry.sourceUrl) entry.sourceUrl = row.sourceUrl;
+    if (row.field === 'acres') entry.acres = Number(row.value);
+    else if (row.field === 'coordinates') {
+      const [lat, lng] = row.value.split(',').map(Number);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) entry.coordinates = { lat, lng };
+    } else if (['address', 'normalizedAddress', 'county', 'city', 'state', 'zip', 'apn', 'owner', 'propertyId'].includes(row.field)) {
+      (entry as unknown as Record<string, unknown>)[row.field] = row.value;
+    }
+  }
+  return [...candidates, ...grouped.values()];
+}
+
+function analyzeAgreement(property: NormalizedProperty): ResolutionAgreementAnalysis {
+  const agreeingIdentifierLanes = corroboratingParcelIdentifierLanes(property);
+  const conflicts: ResolutionAgreementAnalysis['conflicts'] = [];
+  for (const field of ['apn', 'propertyId']) {
+    const values = new Map<string, { value: string; sources: Set<string> }>();
+    for (const row of property.evidence) {
+      if (row.field !== field || !isParcelLevelLane(row.lane)) continue;
+      const key = field === 'apn' ? compactParcelId(row.value) : row.value.trim().toLowerCase();
+      if (!key) continue;
+      const existing = values.get(key) ?? { value: row.value, sources: new Set<string>() };
+      existing.sources.add(row.source);
+      values.set(key, existing);
+    }
+    if (values.size > 1) {
+      conflicts.push({ field, values: [...values.values()].map((item) => ({ value: item.value, sources: [...item.sources] })) });
+    }
+  }
+  const explanation = conflicts.length
+    ? `Parcel-level sources disagree on ${conflicts.map((item) => item.field).join(', ')}.`
+    : agreeingIdentifierLanes.length >= 2
+      ? `${agreeingIdentifierLanes.length} independent parcel-level lanes agree on the same parcel identifier.`
+      : agreeingIdentifierLanes.length === 1
+        ? 'One parcel-level lane supplied an identifier; independent corroboration is still needed unless an exact official parcel page or named verification qualifies.'
+        : 'No independently corroborated parcel identifier is available yet.';
+  return { agreeingIdentifierLanes, conflicts, explanation };
 }
 
 /**
@@ -369,6 +462,20 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   }
 
   // ── Lane 3: Smart Address Search corroboration (Photon/Census) ──────────
+  // Exact public state/county parcel services remain independent of optional accounts.
+  if (deps.officialParcel && !property.parcelVerified) {
+    try {
+      const official = await deps.officialParcel(fields, timeoutMs);
+      if (official.patch) {
+        const contributed = mergeAndReport(property, 'county_gis', official.source, official.patch, now(), 0.98, official.sourceUrl);
+        record('county_gis', true, contributed, 'official_match', official.note);
+      } else {
+        record('county_gis', true, false, 'no_match', official.note);
+      }
+    } catch {
+      record('county_gis', true, false, 'error', 'Official public parcel lookup failed; continued.');
+    }
+  }
   if (deps.suggest && !property.parcelVerified) {
     try {
       const q = suggestQuery(fields, input.rawText);
@@ -473,6 +580,7 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   property.missing = missingFields(property);
   property.confidence = deriveConfidence(property);
   const hasSubject = !!property.address && !!property.state;
+  const rawInput = input.rawText ?? fields.rawInput ?? '';
 
   // ── HARD APN CONFLICT (wrong-parcel hard-stop) ──────────────────────────
   // If the operator supplied an APN but a parcel-level lane resolved a DIFFERENT
@@ -502,12 +610,22 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     detectApnConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates }, resolvedApnCandidates)
     ?? detectJurisdictionConflict({ apn: fields.apn, apnAlternates: fields.apnAlternates, county: fields.county, state: fields.state }, resolvedApnCandidates)
   ) ?? undefined;
+  const candidates = resolutionCandidates(property, fields);
+  const agreement = analyzeAgreement(property);
 
   if (identityConflict) {
+    // A wrong result must never continue to advertise itself as verified merely
+    // because the conflicting provider set its verification bit before the
+    // cross-source comparison ran.
+    property.parcelVerified = false;
+    property.verificationSource = undefined;
+    property.confidence = Math.min(property.confidence, 0.49);
     const ctx = identityConflict.resolvedContext ? ` (${identityConflict.resolvedContext})` : '';
     const conflictMsg = `The resolved parcel does not match the requested parcel. You entered APN ${identityConflict.requestedApn}, but ${identityConflict.source} resolved a DIFFERENT parcel — APN ${identityConflict.resolvedApn}${ctx}. This is a hard identifier conflict: the parcel is NOT confirmed. No Property Intelligence, Land Score, valuation, offer range, strategy, or seller brief will run. Re-check the APN, or provide a corrected parcel identifier (APN + county) to resolve which parcel is the subject.`;
     return {
       status: 'needs_clarification',
+      resolutionStatus: 'conflicted',
+      rawInput,
       property,
       confidence: property.confidence,
       matchedReason: conflictMsg,
@@ -519,8 +637,25 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       identityEstablished: false,
       identityBasis: conflictMsg,
       identityConflict,
+      candidates,
+      agreement,
+      downstreamAllowed: false,
       executionMode: 'property_resolution',
       verifiedData,
+    };
+  }
+
+  if (agreement.conflicts.length) {
+    property.parcelVerified = false;
+    property.verificationSource = undefined;
+    property.confidence = Math.min(property.confidence, 0.49);
+    const conflictMsg = `${agreement.explanation} The parcel remains conflicted. Property Intelligence, Land Score, valuation, offer range, strategy, and seller brief are blocked until an official identifier resolves the disagreement.`;
+    return {
+      status: 'needs_clarification', resolutionStatus: 'conflicted', rawInput, property,
+      confidence: property.confidence, matchedReason: conflictMsg, guidance: conflictMsg,
+      missing: property.missing, lanesAttempted: lanes, browserEvidence, missingFieldAnalysis,
+      identityEstablished: false, identityBasis: conflictMsg, candidates, agreement,
+      downstreamAllowed: false, executionMode: 'property_resolution', verifiedData,
     };
   }
 
@@ -538,6 +673,8 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
   if (matched) {
     return {
       status: 'matched',
+      resolutionStatus: identity.established ? 'confirmed' : 'provisional',
+      rawInput,
       property,
       confidence: property.confidence,
       matchedReason: property.parcelVerified
@@ -552,6 +689,9 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       missingFieldAnalysis,
       identityEstablished: identity.established,
       identityBasis: identity.basis,
+      candidates,
+      agreement,
+      downstreamAllowed: identity.established,
       executionMode: 'property_resolution',
       verifiedData,
     };
@@ -559,6 +699,8 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
 
   return {
     status: 'needs_clarification',
+    resolutionStatus: hasSubject || !!property.apn ? 'provisional' : 'unresolved',
+    rawInput,
     property,
     confidence: property.confidence,
     matchedReason: 'No practical match could be established from the available lanes.',
@@ -569,6 +711,9 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
     missingFieldAnalysis,
     identityEstablished: identity.established,
     identityBasis: identity.basis,
+    candidates,
+    agreement,
+    downstreamAllowed: false,
     executionMode: 'property_resolution',
     verifiedData,
   };
@@ -618,16 +763,18 @@ export function parcelIdentityEstablished(
     (ev) => PARCEL_LEVEL_BROWSER_SERVICES.includes(ev.service) && ev.status === 'retrieved',
   );
   if (parcelPage) {
-    const apn = (parcelPage.patch?.apn as string | undefined) ?? property.apn;
-    const juris = (parcelPage.patch?.county as string | undefined) ?? property.county
-      ?? (parcelPage.patch?.state as string | undefined) ?? property.state
-      ?? (parcelPage.patch?.fips as string | undefined) ?? property.fips;
+    // Qualifying fields must come from the exact parcel page. Operator input or
+    // a geocoder cannot fill a sparse page and accidentally make it confirmation.
+    const apn = parcelPage.patch?.apn as string | undefined;
+    const juris = (parcelPage.patch?.county as string | undefined)
+      ?? (parcelPage.patch?.state as string | undefined)
+      ?? (parcelPage.patch?.fips as string | undefined);
     const url = (parcelPage.sourceUrls ?? []).find((u) => /^https?:\/\//i.test(u));
     if (apn && juris && url) {
       return { established: true, basis: `Browser Agent reached the exact parcel page on ${browserServiceLabel(parcelPage.service)} (APN + jurisdiction confirmed from the parcel panel).` };
     }
   }
-  const lanes = corroboratingParcelLevelLanes(property);
+  const lanes = corroboratingParcelIdentifierLanes(property);
   if (lanes.length >= 2) {
     return { established: true, basis: `Parcel identity corroborated by ${lanes.length} independent parcel-level sources resolving to the same parcel (${lanes.join(', ')}).` };
   }

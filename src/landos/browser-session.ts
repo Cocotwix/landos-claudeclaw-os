@@ -50,7 +50,7 @@ export interface BrowserLike {
   disconnect(): Promise<void>;
 }
 export interface PuppeteerLike {
-  connect(opts: { browserURL?: string; browserWSEndpoint?: string }): Promise<BrowserLike>;
+  connect(opts: { browserURL?: string; browserWSEndpoint?: string; protocolTimeout?: number }): Promise<BrowserLike>;
 }
 
 export type BrowserSessionStatus = 'live' | 'disabled' | 'unreachable' | 'auth_needed';
@@ -158,7 +158,9 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
   const pup = deps.puppeteer ?? (await loadPuppeteer());
   if (!pup) { state.status = 'unreachable'; state.browser = null; return 'unreachable'; }
   try {
-    const browser = await pup.connect({ browserURL: cfg.cdpUrl });
+    // protocolTimeout 60s (default 180s): a wedged target/protocol call fails
+    // fast and honest instead of freezing a whole mission for three minutes.
+    const browser = await pup.connect({ browserURL: cfg.cdpUrl, protocolTimeout: 60_000 });
     await browser.version(); // probe
     state.browser = browser;
     state.workingPage = null; // a fresh working tab is acquired lazily
@@ -471,8 +473,23 @@ const LP_DISMISS_POPUPS = (): number => {
   return n;
 };
 
+// Open a login form that hides behind a visible "Log in" / "Sign in" trigger
+// (nav link, header button, modal opener). LandPortal's marketing homepage keeps
+// the real #login-user/#login-pwd form HIDDEN inside a modal until the trigger
+// is clicked — so a visible-only field scan legitimately finds nothing until
+// this runs. Returns 'clicked' or 'no_trigger'. Read-only beyond the click.
+const LP_OPEN_LOGIN = (): string => {
+  const visible = (el: any): boolean => { const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 }; return r.width > 1 && r.height > 1; };
+  const els = Array.from(document.querySelectorAll('a,button,[role=button]')) as any[];
+  const trigger = els.find((el) => visible(el) && /^(log ?in|sign ?in)$/i.test(((el.textContent || el.getAttribute?.('aria-label') || '') as string).replace(/\s+/g, ' ').trim()));
+  if (!trigger) return 'no_trigger';
+  try { trigger.click(); return 'clicked'; } catch { return 'no_trigger'; }
+};
+
 // Fill the LandPortal login form and submit. Values arrive as args (typed into
 // the page only) and are NEVER returned. Returns a DIAGNOSTIC CODE, not creds.
+// Field identification is layered (type/name/id/placeholder/autocomplete/label
+// semantics), never a single brittle CSS class.
 const LP_LOGIN = (email: string, password: string): string => {
   const setVal = (el: any, v: string) => {
     el.focus();
@@ -483,7 +500,7 @@ const LP_LOGIN = (email: string, password: string): string => {
     el.dispatchEvent(new (window as any).Event('change', { bubbles: true }));
   };
   const visible = (el: any): boolean => { const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 }; return r.width > 1 && r.height > 1; };
-  const emailEl = (Array.from(document.querySelectorAll('input[type=email],input[name*="email" i],input[id*="email" i],input[autocomplete="username"],input[name*="user" i],input[placeholder*="email" i]')) as any[]).find(visible)
+  const emailEl = (Array.from(document.querySelectorAll('input[type=email],input[name*="email" i],input[id*="email" i],input[autocomplete="username"],input[name*="user" i],input[id*="user" i],input[id*="login" i],input[placeholder*="email" i],input[placeholder*="user" i]')) as any[]).find(visible)
     || (Array.from(document.querySelectorAll('input[type=text]')) as any[]).find(visible);
   if (!emailEl) return 'no_email_field';
   const passEl = (Array.from(document.querySelectorAll('input[type=password]')) as any[]).find(visible);
@@ -491,8 +508,19 @@ const LP_LOGIN = (email: string, password: string): string => {
   setVal(emailEl, email);
   setVal(passEl, password);
   const form = passEl.closest ? passEl.closest('form') : null;
-  const btn = (Array.from(document.querySelectorAll('button[type=submit],input[type=submit],button,[role=button]')) as any[])
-    .find((b) => visible(b) && /^(log ?in|sign ?in|continue|submit)$/i.test(((b.value || b.textContent || '') as string).replace(/\s+/g, ' ').trim()));
+  const submitText = (b: any) => (((b.value || b.textContent || '') as string).replace(/\s+/g, ' ').trim());
+  const isSubmit = (b: any) => visible(b) && b !== emailEl && b !== passEl && /^(log ?in|sign ?in|continue|submit)$/i.test(submitText(b));
+  // Prefer a control INSIDE the password field's own container (LandPortal's
+  // modal submits via <a class="btn-login">Log in</a> — an anchor, not a
+  // button — and the page ALSO has an unrelated nav "Log in" anchor, so the
+  // scoped search must run before any document-wide fallback).
+  let btn: any = null;
+  let anc: any = passEl.parentElement;
+  for (let d = 0; anc && d < 6 && !btn; d++) {
+    btn = (Array.from(anc.querySelectorAll('button,input[type=submit],[role=button],a')) as any[]).find(isSubmit);
+    anc = anc.parentElement;
+  }
+  if (!btn) btn = (Array.from(document.querySelectorAll('button[type=submit],input[type=submit],button,[role=button]')) as any[]).find(isSubmit);
   if (btn) { btn.click(); return 'submitted'; }
   if (form && form.requestSubmit) { form.requestSubmit(); return 'submitted'; }
   if (passEl.form && passEl.form.submit) { passEl.form.submit(); return 'submitted'; }
@@ -521,6 +549,20 @@ export async function ensureLandPortalAuthenticated(deps: EnsureReadyDeps = {}):
   const base = (phase: LandPortalPhase, over: Partial<LandPortalReadiness>): LandPortalReadiness => ({
     phase, ready: false, sessionStatus: state.status, authenticated: false, reason: null, missingEnv: [], attempted: false, note: '', ...over,
   });
+
+  // FAST PATH: a recently verified authenticated session is reused WITHOUT
+  // re-navigating LandPortal. The authenticated app is a heavy map SPA — a
+  // per-mission reload both wastes minutes and can stall the shared tab.
+  // Verified live 2026-07-14: per-mission goto after login caused 180s protocol
+  // stalls; the cache makes repeat missions instant. TTL keeps it honest.
+  const AUTH_FRESH_MS = 10 * 60 * 1000;
+  if (state.auth?.authenticated && state.auth.atIso && state.browser && safeConnected(state.browser)) {
+    const ageMs = Date.now() - Date.parse(state.auth.atIso);
+    if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < AUTH_FRESH_MS) {
+      state.status = 'live';
+      return base('authenticated', { ready: true, sessionStatus: 'live', authenticated: true, note: 'LandPortal session verified recently — reused without reloading the app.' });
+    }
+  }
 
   const ready = await ensureBrowserSessionReady(deps);
   if (ready.status !== 'live' && ready.status !== 'auth_needed') {
@@ -556,12 +598,32 @@ export async function ensureLandPortalAuthenticated(deps: EnsureReadyDeps = {}):
   }
 
   let code = 'no_email_field';
-  try { code = await page.evaluate<string>(LP_LOGIN as unknown as () => string, creds.email, creds.password); }
+  let triggerUsed = false;
+  try {
+    code = await page.evaluate<string>(LP_LOGIN as unknown as () => string, creds.email, creds.password);
+    // The real login form may be HIDDEN behind a "Log in" trigger (modal or a
+    // navigation to a login page). When no visible field exists, open it via
+    // the trigger, let it render, and retry once. This is the repair for the
+    // 2026-07 LandPortal homepage change (hidden #login-user modal form).
+    if (code === 'no_email_field' || code === 'no_password_field') {
+      const opened = await page.evaluate<string>(LP_OPEN_LOGIN as unknown as () => string).catch(() => 'no_trigger');
+      if (opened === 'clicked') {
+        triggerUsed = true;
+        // Give the modal/login page time to render (animation + lazy mount).
+        // Deliberately NO popup-dismiss here — the login modal's own Close
+        // button matches the dismiss patterns and would shut the form we just
+        // opened. Verified live 2026-07-14.
+        await new Promise((r) => setTimeout(r, deps.settleMs ?? 3500));
+        code = await page.evaluate<string>(LP_LOGIN as unknown as () => string, creds.email, creds.password);
+      }
+    }
+  }
   catch (err) { return base('auth_failed', { attempted: true, sessionStatus: state.status, reason: `Login form interaction failed: ${(err as Error)?.message ?? 'evaluate error'}.`, note: 'Could not drive the login form.' }); }
 
   if (code !== 'submitted') {
-    const reason = code === 'no_email_field' ? 'LandPortal login form not found (email/username field missing) — the login UI may have changed.'
-      : code === 'no_password_field' ? 'LandPortal password field not found — the login UI may have changed.'
+    const via = triggerUsed ? ' (a Log in trigger was clicked and the form was still not usable)' : ' (no visible form and no Log in trigger found)';
+    const reason = code === 'no_email_field' ? `LandPortal login form not found (email/username field missing)${via} — the login UI may have changed.`
+      : code === 'no_password_field' ? `LandPortal password field not found${via} — the login UI may have changed.`
       : 'LandPortal login submit control not found — the login UI may have changed.';
     state.status = 'auth_needed';
     return base('auth_failed', { attempted: true, sessionStatus: 'auth_needed', reason, note: 'Automatic login could not be submitted.' });

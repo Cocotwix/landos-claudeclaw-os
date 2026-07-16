@@ -51,7 +51,7 @@ describe('resolution snapshot — Scott County TN (candidate)', () => {
     expect(snap.basis).toMatch(/not yet confirmed|geocoder proves where|not which parcel/i);
     // Sources searched are recorded with accept/reject notes.
     expect(snap.lanes.length).toBeGreaterThan(0);
-    expect(snap.lanes.some((l) => l.lane === 'realie_landportal')).toBe(true);
+    expect(snap.lanes.some((l) => l.lane === 'Optional parcel-provider cross-check')).toBe(true);
     // A smallest next identifier is offered.
     expect(snap.smallestNextIdentifier).toBeTruthy();
   });

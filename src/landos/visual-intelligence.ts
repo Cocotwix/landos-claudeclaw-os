@@ -19,6 +19,7 @@
 // browser, no network, and no DB. A card driver (runVisualIntelligenceForCard)
 // binds it to persistence + the existing vision analyzer + card activity store.
 
+import { sanitizeVisualConclusion } from './evidence-language.js';
 import {
   analyzeScreenshots,
   type VisionAnalysis,
@@ -34,6 +35,7 @@ export type VisualSourceKind =
   | 'street_view'
   | 'landportal'
   | 'landportal_3d'
+  | 'landportal_comps'
   | 'county_gis'
   | 'static_map';
 
@@ -45,17 +47,24 @@ export const VISUAL_SOURCE_ORDER: VisualSourceKind[] = [
   'street_view',
   'landportal',
   'landportal_3d',
+  'landportal_comps',
   'county_gis',
   'static_map',
 ];
 
-// Hero preference: richest / most operator-useful first. Static map is dead last.
+// Hero preference — PARCEL-SPECIFIC imagery first (visual-association doctrine):
+//   1. APN-specific LandPortal parcel imagery
+//   2. Official county GIS parcel imagery
+//   3. Verified parcel-coordinate Google Earth / satellite imagery
+//   4. Verified frontage Street View
+//   5. No image (never generic city / nearby-business imagery)
 export const HERO_PRIORITY: VisualSourceKind[] = [
+  'landportal',
+  'county_gis',
   'google_earth_3d',
   'google_earth_overhead',
-  'landportal',
-  'street_view',
   'static_map',
+  'street_view',
 ];
 
 export const VISUAL_SOURCE_LABEL: Record<VisualSourceKind, string> = {
@@ -64,6 +73,7 @@ export const VISUAL_SOURCE_LABEL: Record<VisualSourceKind, string> = {
   street_view: 'Street View',
   landportal: 'LandPortal',
   landportal_3d: 'LandPortal 3D',
+  landportal_comps: 'LandPortal comps map',
   county_gis: 'County GIS',
   static_map: 'Static map (fallback)',
 };
@@ -278,27 +288,30 @@ export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceC
     },
   });
 
-  const landPortalCapturer: VisualSourceCapturer = {
-    source: 'landportal',
-    label: VISUAL_SOURCE_LABEL.landportal,
+  // LandPortal visuals are derived from the persisted inspection assets that
+  // acquire/report already capture, KIND-SPECIFICALLY so each source shows the
+  // right screenshot (parcel page vs 3D vs comps map) — never the wrong one.
+  const fromInspection = (source: VisualSourceKind, pick: (kind: string) => boolean, notYet: string): VisualSourceCapturer => ({
+    source,
+    label: VISUAL_SOURCE_LABEL[source],
     async capture(ctx): Promise<VisualAssetMeta> {
       const ts = nowIso(now);
       const subject: VisualSubject = { address: ctx.address ?? null, lat: ctx.lat ?? null, lng: ctx.lng ?? null };
-      const assets = readers.loadInspectionAssets(ctx.cardId);
-      const shot = assets.find((a) => a.storedPath && usable(a.storedPath));
+      const shot = readers.loadInspectionAssets(ctx.cardId).find((a) => pick(a.kind) && a.storedPath && usable(a.storedPath));
       if (shot) {
         return {
-          source: 'landportal', label: VISUAL_SOURCE_LABEL.landportal, state: 'captured',
+          source, label: VISUAL_SOURCE_LABEL[source], state: 'captured',
           storedPath: shot.storedPath, imageRoute: `/api/landos/inspection/image?cardId=${ctx.cardId}&key=${encodeURIComponent(shot.key)}`,
           url: ctx.landPortalUrl ?? undefined, timestamp: shot.timestamp || ts, subject,
         };
       }
-      const reason = ctx.landPortalUrl
-        ? 'LandPortal parcel screenshots not captured yet — run Browser Intelligence on the LandPortal URL (authenticated session required).'
-        : 'No LandPortal URL on this card — cannot capture a LandPortal visual.';
-      return blockedAsset('landportal', 'blocked', reason, subject, ts);
+      const reason = ctx.landPortalUrl ? notYet : 'No LandPortal URL on this card — cannot capture this LandPortal visual.';
+      return blockedAsset(source, source === 'landportal_3d' ? 'unavailable' : 'blocked', reason, subject, ts);
     },
-  };
+  });
+  const isOverlay = (k: string) => /^overlay/i.test(k);
+  const is3d = (k: string) => /parcel_3d|terrain|3d/i.test(k);
+  const isComps = (k: string) => /comparables_map|comps/i.test(k);
 
   // Interactive/live-only sources: honest blocker until a live browser backend
   // is injected. No paid LandPortal slope report is ever requested.
@@ -316,8 +329,9 @@ export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceC
     liveOnly('google_earth_overhead'),
     liveOnly('google_earth_3d'),
     fromGoogle('street_view', (s) => /street/.test(s.toLowerCase()), (svc) => `/api/landos/visual/image?cardId=CARD&service=${encodeURIComponent(svc)}`),
-    landPortalCapturer,
-    liveOnly('landportal_3d'),
+    fromInspection('landportal', (k) => !is3d(k) && !isComps(k) && !isOverlay(k), 'LandPortal parcel screenshot not captured yet — run Property Intelligence (authenticated session required).'),
+    fromInspection('landportal_3d', (k) => is3d(k), 'LandPortal 3D/terrain not captured yet — the 3D control may not exist on this parcel, or Property Intelligence has not run.'),
+    fromInspection('landportal_comps', (k) => isComps(k), 'LandPortal comps map not captured yet — run Property Intelligence (free "Show on Map"; never the paid comp report).'),
     liveOnly('county_gis'),
     fromGoogle('static_map', (s) => { const k = classifyGoogleService(s); return k === 'static_map'; }, (svc) => `/api/landos/visual/image?cardId=CARD&service=${encodeURIComponent(svc)}`),
   ];
@@ -388,6 +402,102 @@ export async function runVisualIntelligenceForCard(
   };
   deps.persist(ctx.cardId, record);
   return record;
+}
+
+// ── Read-time eligibility sanitizer (defense in depth) ──────────────────────
+// A persisted VI record may predate the parcel-association model or reference
+// Google captures that were later superseded. On every read, Google-derived
+// entries must re-prove association; excluded entries flip to 'unavailable'
+// with an operator-facing reason and the hero is recomputed. LandPortal /
+// county-GIS entries are APN-page-associated by construction.
+
+const GOOGLE_DERIVED: ReadonlySet<VisualSourceKind> = new Set([
+  'google_earth_overhead', 'google_earth_3d', 'street_view', 'static_map',
+]);
+
+export interface SanitizeStores {
+  /** Card visual store entries that PASS eligibility (association-proven). */
+  eligibleGoogle: Record<string, { storedPath: string }>;
+  /** ALL card visual store entries (to detect store-backed vs live captures). */
+  rawGoogle: Record<string, { storedPath: string }>;
+}
+
+export const IMAGE_EXCLUDED_NOTE =
+  'Image excluded because parcel association could not be confirmed.';
+
+function assetEligible(a: VisualAssetMeta, stores: SanitizeStores): boolean {
+  if (a.state !== 'captured') return true; // nothing rendered; keep the honest status
+  if (!GOOGLE_DERIVED.has(a.source)) {
+    // "LandPortal" assets are APN-page-associated ONLY when they actually came
+    // from a LandPortal parcel page. A capture whose URL is some other site
+    // (e.g. a county office homepage the workflow landed on) is not parcel
+    // evidence and must not render — let alone become the hero.
+    if ((a.source === 'landportal' || a.source === 'landportal_3d' || a.source === 'landportal_comps') && a.url) {
+      try {
+        return new URL(a.url).hostname.endsWith('landportal.com');
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+  const inRaw = a.storedPath ? Object.values(stores.rawGoogle).some((x) => x.storedPath === a.storedPath) : false;
+  if (inRaw) {
+    // Store-backed capture: must ALSO be in the eligible set (association-proven).
+    return Object.values(stores.eligibleGoogle).some((x) => x.storedPath === a.storedPath);
+  }
+  // Live capture (Google Earth / live Street View): eligible only when it was
+  // navigated by verified parcel coordinates (subject coords recorded).
+  return typeof a.subject?.lat === 'number' && Number.isFinite(a.subject.lat)
+    && typeof a.subject?.lng === 'number' && Number.isFinite(a.subject.lng);
+}
+
+/** Sanitize a persisted VI record: exclude association-less Google imagery and
+ *  recompute the hero from the surviving assets. Pure — returns a new record. */
+export function sanitizeVisualIntelligenceRecord(
+  record: VisualIntelligenceRecord,
+  stores: SanitizeStores,
+): VisualIntelligenceRecord {
+  const sources = (record.sources ?? []).map((a) => {
+    if (assetEligible(a, stores)) return a;
+    return {
+      ...a,
+      state: 'unavailable' as VisualCaptureState,
+      storedPath: undefined,
+      imageRoute: undefined,
+      url: undefined,
+      blocker: IMAGE_EXCLUDED_NOTE,
+    };
+  });
+  const captured = sources.filter(isViewable);
+  let hero: VisualAssetMeta | null = null;
+  for (const kind of HERO_PRIORITY) {
+    const found = captured.find((a) => a.source === kind);
+    if (found) { hero = found; break; }
+  }
+  const gallery = hero ? [hero, ...captured.filter((a) => a !== hero)] : [...captured];
+  const excludedCount = (record.gallery ?? []).length - gallery.length;
+  // Safe visual conclusions: persisted observations may predate the shared
+  // safe-language rules ("fronts a paved road", "serves the parcel", ...).
+  // Unsafe claims rewrite to attribution-honest text at read time, and a
+  // rewritten claim is at most a nearby-feature note - never "positive".
+  const observations = (record.observations ?? []).map((obs) => {
+    const safe = sanitizeVisualConclusion(obs.observation);
+    return { ...obs, observation: safe.text, signal: safe.rewritten && obs.signal === 'positive' ? 'neutral' as const : obs.signal };
+  });
+  return {
+    ...record,
+    sources,
+    gallery,
+    observations,
+    hero,
+    heroReason: hero
+      ? `${hero.label} is the highest-priority verified parcel image.`
+      : 'No verified parcel image available — nothing is shown rather than a misleading visual.',
+    note: excludedCount > 0
+      ? `${record.note ?? ''} ${excludedCount} image(s) excluded because parcel association could not be confirmed.`.trim()
+      : record.note,
+  };
 }
 
 /** Replace any default capturer whose source a live capturer also covers. */

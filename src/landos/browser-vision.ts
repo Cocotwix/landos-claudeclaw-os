@@ -25,6 +25,7 @@ import { getLandosDb } from './db.js';
 import {
   loadPropertyInspection,
   loadCardVisualCapture,
+  loadEligibleCardVisualCapture,
   savePropertyInspection,
   attachCardActivity,
   getPropertyCard,
@@ -69,9 +70,10 @@ export interface VisionAnalysis {
   note?: string;
 }
 
-// gemini-2.5-flash is multimodal and has working quota on this project; the older
+// gemini-2.5-flash was RETIRED on this key (404 "no longer available", 2026-07);
+// gemini-3-flash-preview is the probed multimodal replacement. The older
 // gemini-2.0-flash returns 429 (limit:0) here. Override with BROWSER_VISION_MODEL.
-const VISION_MODEL = process.env.BROWSER_VISION_MODEL || 'gemini-2.5-flash';
+const VISION_MODEL = process.env.BROWSER_VISION_MODEL || 'gemini-3-flash-preview';
 // PNG smaller than this is almost always a blank/errored capture, not a real view.
 const MIN_USEFUL_BYTES = 8 * 1024;
 
@@ -239,7 +241,9 @@ export function gatherCardImages(cardId: number): VisionSourceImage[] {
   for (const a of insp?.assets ?? []) {
     if (a.storedPath) images.push({ label: a.label, kind: a.kind, path: a.storedPath });
   }
-  const visuals = loadCardVisualCapture(cardId);
+  // ELIGIBLE Google captures only — the vision analyzer must never write
+  // observations derived from imagery of the wrong place.
+  const visuals = loadEligibleCardVisualCapture(cardId);
   for (const [service, asset] of Object.entries(visuals)) {
     if (asset?.storedPath) images.push({ label: googleServiceLabel(service), kind: `google_${service}`, path: asset.storedPath });
   }

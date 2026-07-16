@@ -30,6 +30,26 @@ vi.mock('./parcel-capability.js', async (orig) => {
   };
 });
 
+describe('LandOS routes - erroneous duplicate visibility', () => {
+  it('keeps a linked erroneous intake out of normal property and board views', async () => {
+    const canonical = (await (await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '171 Camp Davidson Road, Vonore, TN 37885',
+      apn: '062 059G A 03400 000 2026', county: 'Monroe', state: 'TN', verified: true,
+      verificationSource: 'Tennessee Comptroller public parcel layer',
+    })).json()) as any;
+    const erroneous = (await (await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '171 Davidson Road, Venore, TN 37885',
+    })).json()) as any;
+    getLandosDb().prepare(`INSERT INTO landos_property_correction_link (erroneous_card_id, canonical_card_id, relationship, note) VALUES (?, ?, 'erroneous_duplicate', 'bad automated instruction')`)
+      .run(erroneous.card.id, canonical.card.id);
+
+    const properties = (await (await get('/api/landos/property-cards')).json()) as any;
+    expect(properties.cards.map((card: any) => card.id)).toEqual([canonical.card.id]);
+    const board = (await (await get('/api/landos/board')).json()) as any;
+    expect(Object.values(board.columns).flat().map((card: any) => card.id)).toEqual([canonical.card.id]);
+  });
+});
+
 // Keep the Property Resolution Engine's free provider lanes hermetic: the engine
 // now derives county via the Census geocoder and corroborates via the address
 // suggest providers. Stub both so acquire/run + resolve routes never hit the net.
@@ -61,6 +81,9 @@ vi.mock('./browser-session.js', async (orig) => {
     browserSessionHealth: async () => health,
     startBrowserSession: async () => ({ status: 'disabled', launched: false, reused: false, chromePath: null, profileDir: '/tmp/profile', error: 'Live mode disabled', health }),
     openLandPortalInSession: async () => ({ connected: false, authenticated: false, status: 'disabled', url: null, note: 'No live Chrome session.', health }),
+    // The parallel-escalation path (acquire/run + parallel-resolve) attempts the
+    // Chrome/CDP attachment + LandPortal auto-login first — keep it inert too.
+    ensureLandPortalAuthenticated: async () => ({ phase: 'session_unavailable', ready: false, sessionStatus: 'disabled', authenticated: false, reason: 'Live mode disabled in test', missingEnv: [], attempted: false, note: 'disabled in test' }),
   };
 });
 
@@ -97,6 +120,26 @@ async function post(path: string, body?: unknown) {
     body: body ? JSON.stringify(body) : undefined,
   });
 }
+
+describe('LandOS routes - Lead Workspace', () => {
+  it('composes the versioned workspace from existing canonical records', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Lead workspace route' });
+    const id = ((await created.json()) as any).dealCard.id;
+    const res = await get(`/api/landos/lead-workspace/${id}`);
+    expect(res.status).toBe(200);
+    const workspace = (await res.json()) as any;
+    expect(workspace.contract).toMatchObject({ type: 'lead-workspace', version: '1.0' });
+    expect(workspace.lead.id).toBe(id);
+    expect(workspace.work.recommendedNextAction).toBeDefined();
+    expect(workspace.strategies.entries).toHaveLength(5);
+    expect(workspace.evidence.documents).toBeDefined();
+  });
+
+  it('rejects invalid and missing Lead Workspace ids', async () => {
+    expect((await get('/api/landos/lead-workspace/not-a-number')).status).toBe(400);
+    expect((await get('/api/landos/lead-workspace/999999')).status).toBe(404);
+  });
+});
 
 describe('LandOS routes — auth', () => {
   it('rejects /api/landos/overview without a token', async () => {
@@ -931,45 +974,32 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     }
   });
 
-  it('RESOLVED lead surfaces market pulse ($/acre from comps) + a clear next action', async () => {
+  it('optional provider output does not bypass public-first parcel confirmation', async () => {
     RESOLVER.override = verifiedGilstrapResolve();
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
     const body = (await res.json()) as any;
-    expect(body.parcelVerified).toBe(true);
+    expect(body.parcelVerified).toBe(false);
+    expect(body.status).toBe('resolution_pending');
     const id = body.dealCardId;
     const mp = ((await (await get(`/api/landos/deal-cards/${id}/market-pulse`)).json()) as any).marketPulse;
-    expect(mp.eligible).toBe(true);
-    expect(mp.parcelVerified).toBe(true);
-    // eslint-disable-next-line no-console
-    console.log('\n=== ACCEPTANCE (resolved): 388 Gilstrap Road, Cleveland GA ===\n' +
-      `Parcel verified: ${mp.parcelVerified}\nMarket Pulse: ${mp.plainEnglish}\n` +
-      `County $/acre: ${mp.countyPricePerAcre.status === 'measured' ? '$' + mp.countyPricePerAcre.medianPpa + '/ac (' + mp.countyPricePerAcre.sampleSize + ' comps)' : mp.countyPricePerAcre.note}`);
+    expect(mp.parcelVerified).toBe(false);
   }, 30000);
 
-  it('VERIFIED input creates a verified Deal Card via the production DD pipeline', async () => {
+  it('creates one resolution Deal Card without running paid or optional-provider analysis', async () => {
     RESOLVER.override = verifiedGilstrapResolve();
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
     expect(body.ok).toBe(true);
-    expect(body.parcelVerified).toBe(true);
+    expect(body.parcelVerified).toBe(false);
     expect(body.dealCardId).toBeGreaterThan(0);
     expect(body.pipeline).toBe('property_resolution'); // property-first engine
-    const rpt = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/report`)).json()) as any;
-    expect(rpt.report.marketComps).toHaveProperty('providerChain');     // Realie-first provider chain
-    expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane
-    expect(rpt.govDd).toBeDefined();
-    expect(rpt.preCallIntelligence).toBeDefined();
-    expect(rpt.discoveryReport.comparableIntelligence).toBeDefined();
-    expect(rpt.discoveryReport.marketIntelligence.capability).toBe('market_intelligence');
-    expect(rpt.discoveryReport.strategyEvaluation.map((s: any) => s.strategy)).toEqual([
-      'Quick Flip', 'Novation / Double Close', 'Subdivide', 'Land-Home Package', 'Improvement Then Flip',
-    ]);
-    expect(rpt.report).not.toHaveProperty('redfinComps');     // legacy shape absent
-    expect(rpt.report).not.toHaveProperty('strategyMatrix');
+    expect(body.status).toBe('resolution_pending');
+    const identity = ((await (await get(`/api/landos/deal-cards/${body.dealCardId}/resolution`)).json()) as any).parcelIdentity;
+    expect(identity.state).not.toBe('confirmed');
   }, 30000);
 
-  it('VERIFIED success persists APN / county / state / acres / coordinates on the Property Card', async () => {
+  it('does not promote optional-provider fixture output onto the Property Card', async () => {
     RESOLVER.override = verifiedGilstrapResolve();
     const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
     const body = (await res.json()) as any;
@@ -977,13 +1007,8 @@ describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not
     const row = getLandosDb().prepare(
       'SELECT pc.apn, pc.county, pc.state, pc.acres, pc.lat, pc.lng, pc.verification_status FROM landos_property_card pc JOIN landos_deal_card_property dp ON dp.card_id = pc.id WHERE dp.deal_card_id = ?',
     ).get(body.dealCardId) as any;
-    expect(row.verification_status).toBe('verified_property');
-    expect(row.apn).toBe('064-001');
-    expect(String(row.county)).toMatch(/WHITE/i);
-    expect(row.state).toBe('GA');
-    expect(row.acres).toBeGreaterThan(0);
-    expect(row.lat).not.toBeNull();
-    expect(row.lng).not.toBeNull();
+    expect(row.verification_status).toBe('unverified_lead');
+    expect(row.apn).not.toBe('064-001');
   }, 30000);
 });
 
@@ -1171,6 +1196,51 @@ describe('LandOS routes — Deal Card DD readiness surfacing', () => {
     expect(item.reportSummary.exists).toBe(false);
     expect(item.reportSummary.ddPercentComplete).toBe(0);
   });
+
+  it('report response carries ONE unified readiness record that agrees with every mirrored surface', async () => {
+    const { upsertCardFromDukeRun } = await import('./property-card.js');
+    const { linkPropertyToDeal } = await import('./deal-card.js');
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Unified readiness deal' });
+    const id = ((await created.json()) as any).dealCard.id;
+    const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 WEST RD', county: 'Worth', state: 'GA', apn: '00830-054-000', fips: '13321', owner: 'X', acres: 8.6, verified: true, verificationSource: 'Realie.ai', summary: 'v' });
+    linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
+
+    const rb = (await (await get(`/api/landos/deal-cards/${id}/report`)).json()) as any;
+    const u = rb.unifiedReadiness;
+    expect(u).toBeDefined();
+    // The eight named sub-states are present, each with an explanation.
+    expect(u.dimensions.map((d: any) => d.key)).toEqual([
+      'research', 'valuation_context', 'value', 'strategy_screening',
+      'strategy_scoreability', 'strategy_actionability', 'offer', 'contract',
+    ]);
+    for (const d of u.dimensions) expect(String(d.why).trim().length).toBeGreaterThan(0);
+    // No internal inconsistency, and the composition mirrors the operator record.
+    expect(u.consistencyIssues).toEqual([]);
+    if (rb.operatorRecord) {
+      expect(u.value.state).toBe(rb.operatorRecord.valueReadiness.state);
+      expect(u.offer.state).toBe(rb.operatorRecord.offerReadiness.state);
+    }
+    // The five-strategy record and the unified actionability tell one story.
+    const allBlocked = rb.strategyReadiness.strategies.every((s: any) => s.status === 'blocked');
+    if (allBlocked) {
+      expect(u.strategyActionability.state).toBe('blocked');
+      expect(u.strategyScoreability.state).toBe('not_scoreable');
+      expect(u.value.state).not.toBe('ready');
+    }
+    // The legacy per-report offer label never outranks the shared record.
+    if (rb.report.offerReadiness === 'ready_for_offer') expect(u.offer.state).toBe('ready');
+    // The audit gate carries the readiness-agreement checks.
+    const auditIds = rb.orchestration.checks.map((c: any) => c.id);
+    expect(auditIds).toContain('unified_readiness_agreement');
+    expect(auditIds).toContain('readiness_states_reconcile');
+    expect(rb.orchestration.checks.find((c: any) => c.id === 'unified_readiness_agreement').pass).toBe(true);
+    expect(rb.orchestration.checks.find((c: any) => c.id === 'readiness_states_reconcile').pass).toBe(true);
+    // The executive summary mirrors the same record.
+    if (rb.executiveSummary?.readiness) {
+      expect(rb.executiveSummary.readiness.offer.state).toBe(u.offer.state);
+      expect(rb.executiveSummary.readiness.value.state).toBe(u.value.state);
+    }
+  });
 });
 
 describe('LandOS routes — visual image serving + capture gating (no Google call)', () => {
@@ -1186,7 +1256,9 @@ describe('LandOS routes — visual image serving + capture gating (no Google cal
     fsm.mkdirSync(dir, { recursive: true });
     const file = pathm.join(dir, `test_${card.id}_maps.png`);
     fsm.writeFileSync(file, Buffer.from([137, 80, 78, 71])); // PNG magic bytes
-    saveCardVisualCapture(card.id, { maps_static: { storedPath: file, timestamp: 't' } }, { provider: 'google' });
+    // Association-proven asset (verified parcel coordinates) — the route serves
+    // ONLY eligibility-passing assets; a bare filename would be refused.
+    saveCardVisualCapture(card.id, { maps_static: { storedPath: file, timestamp: 't', association: { targetKind: 'parcel', cardId: card.id, apn: '00830-054-000', sourceCoords: { lat: 31.4983, lng: -83.7721 }, basis: 'verified_parcel_coordinates', captureQuery: '31.4983,-83.7721' } } }, { provider: 'google' });
 
     const ok = await get(`/api/landos/visual/image?cardId=${card.id}&service=maps_static`);
     expect(ok.status).toBe(200);

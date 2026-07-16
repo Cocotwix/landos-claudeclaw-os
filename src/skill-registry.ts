@@ -218,7 +218,10 @@ export function initSkillRegistry(projectRootOverride?: string): void {
   }
 
   const projectSkillsDir = path.join(projectRoot, 'skills');
-  const globalSkillsDir = path.join(os.homedir(), '.claude', 'skills');
+  // os.homedir() ignores a test/operator HOME override on Windows. Honour the
+  // conventional environment overrides first so discovery is portable.
+  const homeDir = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  const globalSkillsDir = path.join(homeDir, '.claude', 'skills');
 
   // Scan project skills first (they take priority)
   scanDirectory(projectSkillsDir);

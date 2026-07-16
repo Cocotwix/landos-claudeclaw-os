@@ -91,6 +91,40 @@ export async function generateVisionContent(
 }
 
 /**
+ * Generate content with Google Search grounding enabled (the model may search
+ * the web and cite sources). Used for bounded existence checks (e.g. LandOS
+ * Data Center Watch) — never loops. Grounded requests cannot force a JSON MIME
+ * type, so the caller parses leniently with parseJsonResponse. Returns raw text.
+ */
+export async function generateGroundedContent(
+  prompt: string,
+  // gemini-2.5-flash was retired on this key (404 "no longer available",
+  // 2026-07); gemini-3-flash-preview is the probed working replacement.
+  model = process.env.GEMINI_GROUNDED_MODEL || 'gemini-3-flash-preview',
+): Promise<string> {
+  requireEnabled('LLM_SPAWN_ENABLED');
+  const ai = getClient();
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        temperature: 0.1,
+        tools: [{ googleSearch: {} }],
+      },
+    });
+    if (!response.text) {
+      logger.warn({ model }, 'Gemini grounded returned empty response');
+      return '';
+    }
+    return response.text;
+  } catch (err) {
+    logger.error({ err, model }, 'Gemini generateGroundedContent failed');
+    throw err;
+  }
+}
+
+/**
  * Parse a JSON response from Gemini, with fallback on malformed output.
  * Returns null if parsing fails.
  */

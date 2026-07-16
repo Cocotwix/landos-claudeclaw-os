@@ -1,6 +1,5 @@
 import { useState } from 'preact/hooks';
 import { apiPost } from '@/lib/api';
-import { BrowserIntelControl } from '@/components/BrowserIntelControl';
 
 // Resolution view — shown INSTEAD of a half-populated Deal Card while the subject
 // parcel is a Candidate or Unresolved. It shows exactly what LandOS understood,
@@ -15,6 +14,7 @@ import { BrowserIntelControl } from '@/components/BrowserIntelControl';
 interface ResolutionParsed {
   address?: string; city?: string; county?: string; state?: string; zip?: string;
   apn?: string; apnAlternates?: string[]; owner?: string; fips?: string;
+  localityUncertain?: boolean;
 }
 interface ResolutionLaneView { lane: string; status: string; ran: boolean; contributed: boolean; note: string; }
 interface ResolutionBrowserView { service: string; status: string; note: string; factCount: number; }
@@ -83,19 +83,26 @@ function Card({ title, children }: { title: string; children: preact.ComponentCh
 }
 
 export function ResolutionView({
-  snapshot, identity, entity, onConfirmed,
+  snapshot, identity, entity, dealCardId, onConfirmed,
 }: {
   snapshot: ResolutionSnapshotView;
   identity: ParcelIdentityView | null;
   entity: 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
+  dealCardId?: number;
   onConfirmed: () => void;
 }) {
   const [rechecking, setRechecking] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [correction, setCorrection] = useState(snapshot.rawInput);
   const state = identity?.state ?? snapshot.state;
   const basis = identity?.basis || snapshot.basis;
   const confidence = identity?.confidence ?? snapshot.confidence;
-  const p = snapshot.parsed;
+  const p = {
+    ...snapshot.parsed,
+    city: snapshot.parsed.localityUncertain && snapshot.parsed.city
+      ? `Unconfirmed: ${snapshot.parsed.city}`
+      : snapshot.parsed.city,
+  };
 
   // Re-run Property Resolution with the original intake. If a parcel-level source
   // (Browser Agent on LandPortal, official county record, or a named source) now
@@ -104,7 +111,11 @@ export function ResolutionView({
     setRechecking(true);
     setMsg(null);
     try {
-      const body: Record<string, unknown> = { text: snapshot.rawInput, rawInput: snapshot.rawInput };
+      const proposed = window.prompt('Correct the property input if needed. This updates the same Deal Card and keeps the intake history.', correction);
+      const rawInput = (proposed ?? correction).trim() || snapshot.rawInput;
+      setCorrection(rawInput);
+      const body: Record<string, unknown> = { text: rawInput, rawInput };
+      if (dealCardId) body.dealCardId = dealCardId;
       if (entity === 'LAND_ALLY' || entity === 'TY_LAND_BIZ') body.entity = entity;
       const res = await apiPost<{ identityEstablished?: boolean; status?: string; message?: string }>('/api/landos/acquire/run', body);
       if (res.identityEstablished === true || res.status === undefined) {
@@ -176,7 +187,7 @@ export function ResolutionView({
         {snapshot.guidance && <div class="text-[11px] text-[var(--color-text-faint)]">{snapshot.guidance}</div>}
         <div class="border-t border-[var(--color-border)] pt-2 mt-1 space-y-2">
           <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Confirm the parcel</div>
-          <BrowserIntelControl />
+          {'Public county and government sources are checked first. If free account access is needed, LandOS records the exact access state and continues with independent sources.'}
           <div class="flex items-center gap-2 flex-wrap">
             <button
               type="button"
@@ -184,7 +195,7 @@ export function ResolutionView({
               disabled={rechecking}
               class="px-3 py-1.5 rounded-md text-[12px] font-semibold border border-[var(--color-accent)] bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-40"
             >
-              {rechecking ? 'Re-checking…' : 'Re-run resolution / confirm parcel'}
+              {rechecking ? 'Re-checking…' : 'Correct or re-run resolution'}
             </button>
             <span class="text-[10px] text-[var(--color-text-faint)]">
               Confirms via the Browser Agent reading the exact parcel on LandPortal, an official county assessor/tax/recorder record, or a named source. A marketplace property page (Zillow/Redfin/Realtor) also confirms.

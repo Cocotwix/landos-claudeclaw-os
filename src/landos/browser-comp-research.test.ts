@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import type { BrowserDriver, BrowserPageRead } from './browser-intelligence.js';
 import {
   acreageBandOf, geographyLadder, buildZillowLandUrl, buildRedfinLandUrl,
-  parseCompsFromRead, researchBrowserComps, ACREAGE_BANDS,
+  parseCompsFromRead, researchBrowserComps, ACREAGE_BANDS, expandedAcreageBandOf,
 } from './browser-comp-research.js';
 
 describe('acreage bands', () => {
@@ -22,6 +22,11 @@ describe('acreage bands', () => {
     expect(acreageBandOf(128.55)?.label).toBe('50+ ac');
     expect(acreageBandOf(null)).toBeNull();
     expect(acreageBandOf(undefined)).toBeNull();
+  });
+  it('expands small-acreage subjects downward and upward through 10 acres', () => {
+    expect(expandedAcreageBandOf(3.7)).toEqual({ id: 'no_min_to_10', label: 'no minimum to 10 ac', min: 0, max: 10 });
+    expect(expandedAcreageBandOf(10)?.label).toBe('no minimum to 10 ac');
+    expect(expandedAcreageBandOf(10.01)).toBeNull();
   });
 });
 
@@ -135,14 +140,29 @@ describe('researchBrowserComps orchestration', () => {
   });
 
   it('records acreage expansion when the subject band is empty but all-acreage has results', async () => {
-    // Band URLs carry a lot-size filter; all-acreage URLs do not.
+    // The subject-band URL caps at 5 acres; the sparse-market expansion searches
+    // from no minimum through 10 acres and can therefore retrieve this 8-ac row.
     const driver = fakeDriver((url) => {
-      const isBand = /lotSize|min-lot-size/.test(decodeURIComponent(url));
-      return { url, fields: {}, snippets: isBand ? [] : ['$90,000 8 acres 5 Field Rd'] };
+      const decoded = decodeURIComponent(url);
+      const isExpanded = decoded.includes(String(10 * 43560));
+      return { url, fields: {}, snippets: isExpanded ? ['$90,000 8 acres 5 Field Rd'] : [] };
     });
     const res = await researchBrowserComps({ zip: '76567', state: 'TX', acres: 3 }, { driver, targetCount: 5 });
     expect(res.acreageExpanded).toBe(true);
+    expect(res.expandedAcreageBand).toBe('no minimum to 10 ac');
+    expect(res.searchPath.some((step) => /no minimum to 10 ac/.test(step))).toBe(true);
     expect(res.comps.length).toBeGreaterThan(0);
+  });
+
+  it('searches below two acres for a roughly four-acre subject when the primary band is sparse', async () => {
+    const driver = fakeDriver((url) => {
+      const decoded = decodeURIComponent(url);
+      const isExpanded = decoded.includes(String(10 * 43560));
+      return { url, fields: {}, snippets: isExpanded ? ['$55,000 1.4 acres Lot 7 Seaside Rd'] : [] };
+    });
+    const res = await researchBrowserComps({ city: 'Saint Helena Island', state: 'SC', zip: '29920', county: 'Beaufort', acres: 3.7 }, { driver, targetCount: 5 });
+    expect(res.comps.some((comp) => comp.acres === 1.4)).toBe(true);
+    expect(res.filtersUsed).toContain('sparse-market expansion = no minimum to 10 ac');
   });
 
   it('records geography expansion when the ZIP is empty but the city has results', async () => {

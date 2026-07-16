@@ -1,12 +1,11 @@
 // Static checks on the Deal Card panel UI. Source-scan style (no jsdom here).
 //
-// The Deal Card is the primary Acquisitions workspace: a living Property
-// Intelligence Report. Its Overview is the main working surface (hero, executive
-// summary, key facts, what-the-facts-mean, risks/unknowns, market + strategy +
-// seller snapshots, source-labeled facts). Operator-language tabs — Overview,
-// Property, Market, Strategy, Seller, Documents, Activity — hold the deeper
-// editable detail. These tests keep the report from drifting back into internal
-// department/report clutter and lock the safety rails.
+// The Deal Card is one coherent executive briefing: the Overview reads like an
+// investment memo (executive summary first), Property is the canonical parcel
+// facts page, Market answers "should I want land here?", Strategy answers
+// "should I pursue this opportunity?", and Seller holds the call workspace.
+// These tests keep the card from drifting back into internal department/report
+// clutter, lock the safety rails, and keep legacy scaffolding out.
 
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
@@ -18,17 +17,15 @@ const SRC = fs.readFileSync(
 );
 
 describe('Deal Card — operator-language tabs (Property Intelligence Report)', () => {
-  it('defines the seven operator tabs, not internal department tabs', () => {
-    expect(SRC).toMatch(/type DealTab =\s*'overview' \| 'property' \| 'market' \| 'strategy' \| 'seller' \| 'documents' \| 'activity'/);
-    for (const label of ['Overview', 'Property', 'Market', 'Strategy', 'Seller', 'Documents', 'Activity']) {
+  it('defines the nine operator tabs, not internal department tabs', () => {
+    expect(SRC).toMatch(/type DealTab =\s*'overview' \| 'property' \| 'diligence' \| 'market' \| 'strategy' \| 'visuals' \| 'seller' \| 'documents' \| 'activity'/);
+    for (const label of ['Overview', 'Property', 'Due Diligence', 'Market', 'Strategy', 'Visuals', 'Seller', 'Documents', 'Activity']) {
       expect(SRC.includes(`label: '${label}'`), `missing tab ${label}`).toBe(true);
     }
-    // Old department-shaped tabs are gone from the tab bar.
     expect(SRC).not.toMatch(/label: 'Browser Intelligence'/);
-    expect(SRC).not.toMatch(/label: 'Due Diligence'/);
   });
 
-  it('lands on the Overview (the 30-second report read), not a worksheet', () => {
+  it('lands on the Overview (the memo read), not a worksheet', () => {
     expect(SRC).toMatch(/useState<DealTab>\('overview'\)/);
     expect(SRC).toMatch(/setActiveTab\('overview'\)/);
     expect(SRC).toMatch(/activeTab === 'overview'/);
@@ -36,11 +33,45 @@ describe('Deal Card — operator-language tabs (Property Intelligence Report)', 
   });
 });
 
-describe('Deal Card — Overview is a complete property report', () => {
-  it('composes the report hierarchy from existing intelligence', () => {
-    for (const c of ['HeroVisual', 'OverviewSummary', 'KeyFactsGrid', 'WhatThisMeans', 'KeyRisksUnknowns', 'MarketSnapshot', 'StrategySnapshot', 'SellerSnapshot']) {
+describe('Deal Card — Overview is an executive investment memo', () => {
+  it('composes the memo from existing intelligence', () => {
+    for (const c of ['HeroVisual', 'OverviewSummary', 'KeyFactsGrid', 'WhatThisMeans', 'KeyRisksUnknowns', 'StrategySnapshot', 'SellerSnapshot', 'NextActionsPanel', 'BestCompsPanel']) {
       expect(SRC.includes(`function ${c}`), `missing overview component ${c}`).toBe(true);
     }
+  });
+
+  it('reads executive-summary-first — the first thing before calling the seller', () => {
+    const overview = SRC.slice(SRC.indexOf('function OverviewTab'), SRC.indexOf('export function DealCard'));
+    const summaryAt = overview.indexOf('<OverviewSummary');
+    const heroAt = overview.indexOf('<HeroVisual');
+    const factsAt = overview.indexOf('<KeyFactsGrid');
+    expect(summaryAt).toBeGreaterThan(-1);
+    expect(summaryAt).toBeLessThan(heroAt);
+    expect(heroAt).toBeLessThan(factsAt);
+  });
+
+  it('shows only the best five comps on the memo (BestCompsPanel), never twenty', () => {
+    const overview = SRC.slice(SRC.indexOf('function OverviewTab'), SRC.indexOf('export function DealCard'));
+    expect(overview).toMatch(/<BestCompsPanel/);
+    expect(overview).not.toMatch(/<MarketCompsSection/);
+  });
+
+  it('answers probable worth with the ONE reconciled valuation', () => {
+    const overview = SRC.slice(SRC.indexOf('function OverviewTab'), SRC.indexOf('export function DealCard'));
+    expect(overview).toMatch(/<ValuationPanel/);
+  });
+
+  it('closes with next operator actions', () => {
+    expect(SRC).toMatch(/Next operator actions/);
+    const overview = SRC.slice(SRC.indexOf('function OverviewTab'), SRC.indexOf('export function DealCard'));
+    expect(overview).toMatch(/<NextActionsPanel/);
+  });
+
+  it('removed widget clutter from the memo (no compact visual panel, no market snapshot widget, no collapsed spine)', () => {
+    const overview = SRC.slice(SRC.indexOf('function OverviewTab'), SRC.indexOf('export function DealCard'));
+    expect(overview).not.toMatch(/<VisualIntelligencePanel/);
+    expect(overview).not.toMatch(/MarketSnapshot/);
+    expect(overview).not.toMatch(/BusinessSpineSection/);
   });
 
   it('opens with a hero visual and quick links out (Maps / Street View / Earth / LandPortal)', () => {
@@ -48,8 +79,10 @@ describe('Deal Card — Overview is a complete property report', () => {
     for (const l of ['Google Maps', 'Street View', 'Google Earth', 'LandPortal']) {
       expect(SRC.includes(l), `missing hero link ${l}`).toBe(true);
     }
-    // Clean placeholder, never a broken layout, when no imagery exists.
-    expect(SRC).toMatch(/No property image captured yet/);
+    // Honest placeholder, never a broken layout or a misleading generic image.
+    expect(SRC).toMatch(/No boundary-verified parcel image is attached here yet/);
+    // Hero priority: APN-specific LandPortal parcel imagery outranks Google.
+    expect(SRC).toMatch(/lpHero \? \{ url: lpHero\.url/);
   });
 
   it('shows an executive property summary that synthesizes, not just lists', () => {
@@ -63,7 +96,6 @@ describe('Deal Card — Overview is a complete property report', () => {
     expect(SRC).toMatch(/Key facts/);
     expect(SRC).toMatch(/function factOf/);
     expect(SRC).toMatch(/\|\| 'Unknown'/);
-    // Facts carry a source label when practical (FEMA / USFWS / USGS + provider).
     expect(SRC).toMatch(/'FEMA'/);
     expect(SRC).toMatch(/'USFWS'/);
     expect(SRC).toMatch(/'USGS'/);
@@ -79,96 +111,132 @@ describe('Deal Card — Overview is a complete property report', () => {
     expect(SRC).toMatch(/Key risks & unknowns/);
     expect(SRC).toMatch(/verify before offer/i);
   });
+});
 
-  it('shows compact market + strategy + seller snapshots near the top', () => {
-    expect(SRC).toMatch(/Market snapshot/);
-    expect(SRC).toMatch(/Strategy snapshot/);
-    expect(SRC).toMatch(/Seller & discovery/);
-    // Neighbor sale is NOT an acquisition strategy.
-    expect(SRC).toMatch(/\/neighbor\/i/);
+describe('Deal Card — Property is the canonical parcel facts page', () => {
+  it('routes parcel identity, reconciled facts, land score, visuals, browser intel, and official records to Property', () => {
+    expect(SRC).toMatch(/activeTab === 'property'/);
+    expect(SRC).toMatch(/PropertyHeaderSection/);
+    expect(SRC).toMatch(/ReconciledFactsPanel/);
+    expect(SRC).toMatch(/AtAGlanceStrip/);
+    expect(SRC).toMatch(/BrowserIntelligenceSection/);
+    expect(SRC).toMatch(/VisualContextSection/);
+    expect(SRC).toMatch(/LandPortalImageryPanel/);
+    expect(SRC).toMatch(/PublicRecordsResearchSection/);
+    expect(SRC).toMatch(/Detailed Due Diligence/);
   });
 
-  it('keeps source-labeled facts + the full business spine available (collapsed, not gone)', () => {
+  it('separates multi-parcel leads into Parcel A / Parcel B with honest per-parcel states', () => {
+    expect(SRC).toMatch(/function ParcelRosterBlock/);
+    expect(SRC).toMatch(/parcelRoster/);
+    // Per-parcel imagery is scoped to that parcel's own card id, and only when
+    // the parcel is resolved WITH verified imagery.
+    expect(SRC).toMatch(/entry\.status === 'resolved_verified_imagery' && \(\s*<VisualIntelligencePanel cardId=\{card\.id\}/);
+    expect(SRC).toMatch(/never reused across parcels/i);
+    // Unresolved parcels state it honestly with the next action — no stand-in image.
+    expect(SRC).toMatch(/Unresolved · awaiting parcel resolution/);
+    expect(SRC).toMatch(/no imagery or facts are shown for this parcel/i);
+  });
+
+  it('keeps source-labeled facts + the full business spine available on Property (collapsed, not gone)', () => {
     expect(SRC).toMatch(/Source-labeled property facts/);
     expect(SRC).toMatch(/DdFactChecklist/);
     expect(SRC).toMatch(/BusinessSpineSection/);
   });
-});
 
-describe('Deal Card — enriched report header', () => {
-  it('renders full property identity: seller, address, city, county, state, acreage, APN, deal status', () => {
-    expect(SRC).toMatch(/function DealIdentityGrid/);
-    expect(SRC).toMatch(/<DealIdentityGrid/);
-    for (const f of ['Seller / Lead', 'Address', 'City', 'County', 'State', 'Acreage', 'APN / Parcel ID', 'Deal status']) {
-      expect(SRC.includes(`label="${f}"`), `missing header field ${f}`).toBe(true);
-    }
+  it('removed the manual DD worksheet from the Property tab (canonical facts only)', () => {
+    expect(SRC).toMatch(/Manual DD worksheet removed/);
+    expect(SRC).not.toMatch(/Collapsible title="Manual DD \/ research worksheet"/);
   });
 
-  it('keeps a sticky header with the always-visible next action', () => {
-    expect(SRC).toMatch(/class="sticky/);
-    expect(SRC).toMatch(/Stage: \{deal\.status\}/);
-    expect(SRC).toMatch(/Next action:/);
+  it('drops the on-demand duplicate Land Score widget (the report Land Score is canonical)', () => {
+    expect(SRC).not.toMatch(/Compute Land Score/);
+    expect(SRC).not.toMatch(/Refresh Land Score/);
+    // The report-inline Land Score stays.
+    expect(SRC).toMatch(/LandScoreSection/);
   });
 });
 
-describe('Deal Card — deeper detail routed to the right tabs', () => {
-  it('routes property intelligence detail (parcel, land score, visuals, browser, DD) to Property', () => {
-    expect(SRC).toMatch(/activeTab === 'property'/);
-    expect(SRC).toMatch(/PropertyHeaderSection/);
-    expect(SRC).toMatch(/AtAGlanceStrip/);
-    expect(SRC).toMatch(/BrowserIntelligenceSection/);
-    expect(SRC).toMatch(/VisualContextSection/);
-    expect(SRC).toMatch(/Detailed Due Diligence/);
-  });
-
-  it('routes market pulse + comps to Market and decision content to Strategy', () => {
+describe('Deal Card — Market answers "should I want land here?"', () => {
+  it('opens with the question and auto-runs Market Pulse + the market scan (no buttons)', () => {
+    expect(SRC).toMatch(/Should I want land here\?/);
     expect(SRC).toMatch(/activeTab === 'market'[\s\S]*MarketPulseReadSection/);
-    expect(SRC).toMatch(/Comparable sales & active listings \(raw\)/);
-    expect(SRC).toMatch(/DiscoveryCallReportSection/);
+    expect(SRC).toMatch(/<MarketScanSection/);
+  });
+
+  it('has a Data Center Watch that explains why each finding matters', () => {
+    expect(SRC).toMatch(/Data Center Watch/);
+    expect(SRC).toMatch(/Why this matters:/);
+    expect(SRC).toMatch(/None found \(2025\+\)/);
+    expect(SRC).toMatch(/market-scan/);
+  });
+
+  it('filters growth signals through land relevance (irrelevant news never shown)', () => {
+    expect(SRC).toMatch(/Growth signals/);
+    expect(SRC).toMatch(/irrelevant local news is filtered out|irrelevant item/i);
+  });
+
+  it('keeps raw provider rows collapsed and removed the manual market worksheet', () => {
+    expect(SRC).toMatch(/Raw provider rows \(technical audit\)/);
+    expect(SRC).toMatch(/Manual market worksheet removed/);
+    expect(SRC).not.toMatch(/Collapsible title="Manual market research worksheet"/);
+  });
+});
+
+describe('Deal Card — Strategy answers "should I pursue this opportunity?"', () => {
+  it('leads with the pursuit decision and the attractive acquisition price', () => {
+    expect(SRC).toMatch(/function PursuitPanel/);
+    expect(SRC).toMatch(/<PursuitPanel/);
+    expect(SRC).toMatch(/Attractive acquisition price/);
+    expect(SRC).toMatch(/Pursue with caution/);
+  });
+
+  it('shows the highest & best exit with runner-ups, blockers, and remaining verification', () => {
+    expect(SRC).toMatch(/Highest & best exit/);
+    expect(SRC).toMatch(/Runner-up/);
+    expect(SRC).toMatch(/Major blockers/);
+    expect(SRC).toMatch(/Remaining verification/);
     expect(SRC).toMatch(/ConfirmBeforeOfferSection/);
   });
 
-  it('routes the seller workspace (acquisitions, contacts, comms) to Seller', () => {
-    expect(SRC).toMatch(/activeTab === 'seller' && deal\?\.id && <AcquisitionsPanel/);
-    expect(SRC).toMatch(/Contacts/);
-    expect(SRC).toMatch(/Communication Summary/);
+  it('replaced "Can I buy this property?" — identity is a gate, not a strategy', () => {
+    expect(SRC).not.toMatch(/Can I buy this property\?/);
   });
 
-  it('keeps report generation on Documents and a report/credit timeline on Activity', () => {
-    expect(SRC).toMatch(/activeTab === 'documents'/);
-    expect(SRC).toMatch(/Run Property Intelligence/);
-    expect(SRC).toMatch(/activeTab === 'activity'/);
-    expect(SRC).toMatch(/Credit usage/);
+  it('does not duplicate parcel facts, imagery, or the valuation panel on Strategy', () => {
+    const strategyBlocks = SRC.split("activeTab === 'strategy'").slice(1).join(' ');
+    expect(strategyBlocks).not.toMatch(/<KeyFactsGrid|<PropertyHeaderSection|<HeroVisual|<ValuationPanel|<VisualIntelligencePanel/);
   });
 
-  it('drops the empty legacy "Land Data / DD Facts" scaffold (covered by Key facts + DD checklist)', () => {
-    expect(SRC).not.toMatch(/Section title="Land Data \/ DD Facts"/);
+  it('the Seller tab consumes the shared gates (legacy call brief removed)', () => {
+    expect(SRC).not.toMatch(/<DiscoveryCallReportSection/);
+    expect(SRC).toMatch(/activeTab === 'seller'[\s\S]{0,400}<SellerReadinessPanel/);
+    expect(SRC).toMatch(/<CallGuardrailsPanel readiness=\{strategyReadiness\}/);
   });
 });
 
-describe('Deal Card — retained sections + quick-action shell', () => {
-  const RETAINED = [
-    'Visual Context', 'At a Glance', 'Market Pulse', 'Confirm Before Offer', 'Land Score',
-    'Deal Economics', 'Contacts', 'Communication Summary', 'Exit Strategy Analysis',
-    'Reports & Files', 'Pre-Call Brief',
-  ];
-  it('retains every still-useful section', () => {
-    for (const s of RETAINED) expect(SRC.includes(s), `missing section ${s}`).toBe(true);
+describe('Deal Card — Executive Orchestrator review', () => {
+  it('renders the coherence review and surfaces failed checks loudly', () => {
+    expect(SRC).toMatch(/function OrchestrationBanner/);
+    expect(SRC).toMatch(/<OrchestrationBanner/);
+    expect(SRC).toMatch(/re-audits automatically/i);
+  });
+});
+
+describe('Deal Card — legacy scaffolding is gone', () => {
+  it('removed the empty placeholder sections operators kept seeing', () => {
+    expect(SRC).not.toMatch(/Section title="Deal Economics"/);
+    expect(SRC).not.toMatch(/Section title="Communication Summary"/);
+    expect(SRC).not.toMatch(/Section title="Exit Strategy Analysis"/);
+    expect(SRC).not.toMatch(/Section title="Pre-Call Brief"/);
+    expect(SRC).not.toMatch(/Section title="Land Data \/ DD Facts"/);
   });
 
   it('Documents tab shows real report actions, not disabled CRM clutter', () => {
-    // Completion standard: real, working report downloads instead of the old
-    // all-disabled "Make Offer / Push to CRM / …" placeholder buttons.
     expect(SRC).toMatch(/report\/download\?format=pdf/);
     expect(SRC).toMatch(/report\/download\?format=md/);
-    // The developer-clutter disabled quick-action cluster must be gone.
     expect(SRC).not.toMatch(/'Push to CRM'/);
     expect(SRC).not.toMatch(/'Make Offer', 'Schedule Follow-Up'/);
-  });
-
-  it('uses the $10k minimum-net baseline in deal economics', () => {
-    expect(SRC).toMatch(/MIN_NET_BASELINE_USD = 10_000/);
-    expect(SRC).toMatch(/Target-clear baseline/);
   });
 
   it('caps visual sizing so satellite/Street View do not take over the screen', () => {
@@ -239,7 +307,6 @@ describe('Deal Card panel — list / open flow', () => {
   it('presents the saved-deal list as the "Deal Library", not a "Deal Card"', () => {
     expect(SRC).toMatch(/apiGet<[^>]*>\('\/api\/landos\/deal-cards'\)/);
     expect(SRC).toMatch(/async function refreshList\(\)/);
-    // The list surface is the Deal Library; a single Deal Card is one property.
     expect(SRC).toMatch(/Section title="Deal Library"/);
     expect(SRC).not.toMatch(/Section title="Saved Deal Cards"/);
     expect(SRC).toMatch(/void load\(c\.id\)/);
@@ -257,7 +324,6 @@ describe('Deal Card — non-regression: APN conflict hard stop', () => {
     expect(SRC).toMatch(/const showResolution =/);
     expect(SRC).toMatch(/!resolution\.confirmed/);
     expect(SRC).toMatch(/<ResolutionView/);
-    // The report/overview only render when NOT in resolution.
     expect(SRC).toMatch(/mode === 'view' && deal && !showResolution/);
   });
 });
@@ -281,7 +347,12 @@ describe('Deal Card panel — safety', () => {
     expect(SRC).toMatch(/Supporting context only — never parcel identity/);
   });
 
-  it('uses no coordinate/proximity/map-pin verification language', () => {
-    expect(/geocod|proximity|nearest parcel|map pin/i.test(SRC)).toBe(false);
+  it('uses no coordinate/map-pin identity language, and proximity is never called frontage', () => {
+    expect(/geocod|nearest parcel|map pin/i.test(SRC)).toBe(false);
+    expect(/ft mapped frontage/i.test(SRC)).toBe(false);
   });
 });
+  it('hard-gates rejected parcel mismatches from every downstream panel', () => {
+    expect(SRC).toContain("const rejectedMismatch = prop?.verification_status === 'rejected_mismatch'");
+    expect(SRC).toContain('No property intelligence, facts, valuation, Land Score, strategy, report, or offer is shown');
+  });

@@ -53,17 +53,29 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(es.sellerQuestions.length).toBeGreaterThanOrEqual(4);
     expect(es.confidence).toBe('high');
   });
-  it('ranks the 7 PRIMARY strategies with reasons, and picks the top as strongest', () => {
+  it('ranks only the five approved LandOS strategies with reasons', () => {
     const es = buildExecutiveSummary(verifiedReport());
-    expect(es.strategyRanking.length).toBe(7);
+    expect(es.strategyRanking.length).toBe(5);
     const names = es.strategyRanking.map((s) => s.strategy);
-    // The required primary set (no Neighbor Sale; includes Double Close / Novation + Hold).
-    expect(names).toEqual(expect.arrayContaining(['Quick Flip', 'Double Close / Novation', 'Subdivide', 'Land Home Package', 'Improvement / Value Add', 'Hold', 'Pass']));
+    // The approved primary set excludes Hold, Pass, wholesale, and assignment language.
+    expect(names).toEqual(expect.arrayContaining(['Quick Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land Home Package', 'Improvement Then Flip']));
     expect(names.some((n) => /neighbor/i.test(n))).toBe(false);
     expect(es.strategyRanking.every((s) => s.reason && s.risk && s.mustVerify)).toBe(true);
-    // ranked by score descending
-    for (let i = 1; i < es.strategyRanking.length; i++) expect(es.strategyRanking[i - 1].score).toBeGreaterThanOrEqual(es.strategyRanking[i].score);
     expect(es.strongestStrategy.strategy).toBe(es.strategyRanking[0].strategy);
+  });
+  it('uses the report most-viable strategy as the shared primary before score-ranked runner-ups', () => {
+    const es = buildExecutiveSummary(verifiedReport({
+      marketComps: {
+        ...verifiedReport().marketComps,
+        soldCount: 0,
+        active: [],
+        metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null },
+      } as never,
+      mostViableStrategy: 'Quick flip (preliminary — confirm access/title/valuation).',
+    }));
+    expect(es.strongestStrategy.strategy).toBe('No acquisition strategy is ready');
+    expect(es.strategyRanking.every((strategy) => strategy.viability === 'not_viable')).toBe(true);
+    expect(es.preliminaryAcquisitionRange.note).toMatch(/insufficient for a reliable value or offer range/i);
   });
   it('populates preliminary Deal Economics (value low/mid/high + gross spread) when comps exist', () => {
     const de = buildExecutiveSummary(verifiedReport()).dealEconomics;

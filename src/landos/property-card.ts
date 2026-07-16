@@ -38,7 +38,14 @@ import {
   NEARBY_REFERENCE_RELATIONSHIPS,
   NEARBY_REFERENCE_LABEL,
 } from './db.js';
+import { filterEligibleAssetMap, type VisualAssociation } from './visual-eligibility.js';
 import { classifySource, evaluateFact, type SourceType } from './source-evidence.js';
+import {
+  addressVariantsCompatible,
+  evaluatePropertyInstructionConsistency,
+  recordInstructionContradiction,
+  type InstructionConsistencyInput,
+} from './instruction-consistency.js';
 
 // Proximity / coordinate verification sources are never acceptable. Mirrors the
 // duke-persist hard parcel rule so the card layer cannot be tricked either.
@@ -205,6 +212,31 @@ function findExistingCard(input: UpsertPropertyCardInput): PropertyCardRow | und
         if (sameOrNoApn && sameOrNoLp) return row;
       }
     }
+    // Public/official address normalization may add one missing street token
+    // (for example Davidson -> Camp Davidson). Reuse one existing unresolved
+    // lead only when the jurisdiction agrees and near-identical coordinates
+    // corroborate the same candidate. This is not parcel verification: the
+    // incoming accepted APN/source still supplies the strong identity.
+    const candidates = db.prepare(
+      `SELECT * FROM landos_property_card
+       WHERE entity = ? AND verification_status IN ('unverified_lead','address_matched')
+         AND apn = ''
+         AND (? = '' OR state = '' OR state = ?)
+         AND (? = '' OR county = '' OR lower(county) = lower(?))
+       ORDER BY id DESC LIMIT 20`,
+    ).all(input.entity, input.state ?? '', input.state ?? '', input.county ?? '', input.county ?? '') as PropertyCardRow[];
+    const normalizedMatches = candidates.filter((candidate) => {
+      if (!addressVariantsCompatible(candidate.active_input_address, input.activeInputAddress)) return false;
+      if (input.lat == null || input.lng == null || candidate.lat == null || candidate.lng == null) return false;
+      const check = evaluatePropertyInstructionConsistency({
+        action: 'canonicalize', instruction: 'official/public address normalization',
+        incomingAddress: input.activeInputAddress, incomingCounty: input.county, incomingState: input.state,
+        incomingCoordinates: { lat: input.lat, lng: input.lng }, externalNormalizedAddress: input.activeInputAddress,
+        existing: { cardId: candidate.id, address: candidate.active_input_address, aliases: parseJsonArray(candidate.prior_inputs), apn: candidate.apn, county: candidate.county, state: candidate.state, city: candidate.city, coordinates: { lat: candidate.lat, lng: candidate.lng }, verificationSource: candidate.verification_source },
+      });
+      return check.hardConflicts.length === 0 && check.harmlessNormalizations.includes('near-identical accepted coordinates');
+    });
+    if (normalizedMatches.length === 1) return normalizedMatches[0];
     return undefined;
   }
 
@@ -224,14 +256,22 @@ function findExistingCard(input: UpsertPropertyCardInput): PropertyCardRow | und
     ).get(input.entity, key) as PropertyCardRow | undefined;
     if (weak) return weak;
 
-    // If an exact same-address verified card already exists, reuse it instead of
-    // creating a weaker duplicate. This preserves the verified identity fields;
-    // it does not verify a new parcel from address-only evidence.
-    return db.prepare(
+    // Once an operator-confirmed normalization alias is stored, a later weak
+    // prompt using that alias must resolve to the accepted card instead of
+    // silently creating a second active lead. The canonical address and strong
+    // identifiers remain untouched below.
+    const verified = db.prepare(
       `SELECT * FROM landos_property_card
-       WHERE entity = ? AND address_key = ? AND verification_status = 'verified_property'
-       ORDER BY updated_at DESC, id DESC LIMIT 1`,
-    ).get(input.entity, key) as PropertyCardRow | undefined;
+       WHERE entity = ? AND verification_status = 'verified_property'
+       ORDER BY id DESC LIMIT 100`,
+    ).all(input.entity) as PropertyCardRow[];
+    const aliasMatches = verified.filter((row) => parseJsonArray(row.prior_inputs).some((alias) => normalizeAddressKey(alias) === key));
+    if (aliasMatches.length === 1) return aliasMatches[0];
+
+    // A verified card is deliberately not an address-only match target. If the
+    // same address is submitted without a strong parcel key, keep that lead
+    // separate and unresolved until independent identity evidence arrives.
+    return undefined;
   }
   return undefined;
 }
@@ -280,7 +320,9 @@ export function upsertPropertyCard(
   // by cardId. findExistingCard already enforces this for address matching;
   // this guard guarantees the status decision below can never preserve
   // verified_property from a weak match.
-  if (existing?.verification_status === 'verified_property' && !strong && input.cardId === undefined && existing.address_key !== normalizeAddressKey(input.activeInputAddress)) {
+  const weakAcceptedAliasMatch = !!existing && existing.verification_status === 'verified_property' && !strong && input.cardId === undefined
+    && parseJsonArray(existing.prior_inputs).some((alias) => normalizeAddressKey(alias) === normalizeAddressKey(input.activeInputAddress));
+  if (existing?.verification_status === 'verified_property' && !strong && input.cardId === undefined && !weakAcceptedAliasMatch) {
     existing = undefined;
   }
 
@@ -300,18 +342,20 @@ export function upsertPropertyCard(
 
   // Only persist a verification source on a genuinely verified card.
   const effectiveSource = verificationStatus === 'verified_property' ? verificationSource : '';
-  const addressKey = normalizeAddressKey(input.activeInputAddress);
+  const addressToPersist = weakAcceptedAliasMatch && existing ? existing.active_input_address : input.activeInputAddress;
+  const addressKey = normalizeAddressKey(addressToPersist);
 
   // Build the preserved prior-inputs history.
   const prior = existing ? parseJsonArray(existing.prior_inputs) : [];
   const pushPrior = (addr?: string) => {
     const a = (addr ?? '').trim();
-    if (a && a !== input.activeInputAddress && !prior.includes(a)) prior.push(a);
+    if (a && a !== addressToPersist && !prior.includes(a)) prior.push(a);
   };
   if (existing && existing.active_input_address && existing.active_input_address !== input.activeInputAddress) {
     pushPrior(existing.active_input_address);
   }
   pushPrior(input.priorInputAddress);
+  if (weakAcceptedAliasMatch) pushPrior(input.activeInputAddress);
 
   const isVerifiedNow = verificationStatus === 'verified_property';
   const summaryToPersist = existing?.verification_status === 'verified_property' && !strong ? '' : (input.summary ?? '');
@@ -351,7 +395,7 @@ export function upsertPropertyCard(
     ).run(
       verificationStatus,
       kanban,
-      input.activeInputAddress,
+      addressToPersist,
       addressKey,
       JSON.stringify(prior),
       input.apn ?? '', input.apn ?? '',
@@ -439,6 +483,7 @@ export function setCardVerificationStatus(
   status: CardVerificationStatus,
   actor = 'tyler',
   reason = '',
+  consistency?: Partial<Omit<InstructionConsistencyInput, 'action' | 'instruction' | 'existing'>> & { instruction?: string },
 ): { card?: PropertyCardRow; error?: string } {
   if (status !== 'rejected_mismatch' && status !== 'archived') {
     return { error: 'verification_status can only be set to rejected_mismatch or archived here; verified_property requires strong identity evidence via the upsert path' };
@@ -447,6 +492,41 @@ export function setCardVerificationStatus(
   const db = getLandosDb();
   const card = getPropertyCardRow(cardId);
   if (!card) return { error: 'not found' };
+  if (status === 'rejected_mismatch' && card.verification_status === 'verified_property') {
+    const aliases = parseJsonArray(card.prior_inputs);
+    const normalizationOnlyClaim = /(?:extra|missing|added|restored)\s+(?:street[- ]name\s+)?token|harmless\s+normaliz|road\s+(?:versus|vs\.?|to)\s+rd\b/i.test(reason);
+    const incomingAddress = consistency?.incomingAddress ?? (normalizationOnlyClaim ? aliases[0] ?? card.active_input_address : undefined);
+    if (consistency || normalizationOnlyClaim) {
+      const instructionInput: InstructionConsistencyInput = {
+        action: 'reject',
+        instruction: consistency?.instruction ?? reason,
+        incomingAddress,
+        incomingApn: consistency?.incomingApn,
+        incomingCounty: consistency?.incomingCounty,
+        incomingState: consistency?.incomingState,
+        incomingCoordinates: consistency?.incomingCoordinates,
+        incomingParcelGeometryKey: consistency?.incomingParcelGeometryKey,
+        externalNormalizedAddress: consistency?.externalNormalizedAddress,
+        operatorCorrection: consistency?.operatorCorrection,
+        existing: {
+          cardId: card.id,
+          address: card.active_input_address,
+          aliases,
+          apn: card.apn,
+          county: card.county,
+          state: card.state,
+          city: card.city,
+          coordinates: card.lat != null && card.lng != null ? { lat: card.lat, lng: card.lng } : null,
+          verificationSource: card.verification_source,
+        },
+      };
+      const check = evaluatePropertyInstructionConsistency(instructionInput);
+      if (check.contradiction && !check.allowed) {
+        recordInstructionContradiction(instructionInput, check, actor);
+        return { card, error: 'instruction conflicts with stronger accepted parcel evidence; the verified property was preserved and the contradiction was recorded' };
+      }
+    }
+  }
   const now = Math.floor(Date.now() / 1000);
   // Identity evidence (apn/lp_property_id/fips/verification_source) is preserved.
   db.prepare('UPDATE landos_property_card SET verification_status = ?, updated_at = ? WHERE id = ?')
@@ -534,7 +614,13 @@ export function getCardActivity(cardId: number, limit = 60): CardActivityEvent[]
 // Supporting context only — never parcel verification. Stored paths live under
 // the gitignored store/visuals; only dashboard-safe URLs reach the browser.
 
-export interface CardVisualAsset { storedPath: string; timestamp: string }
+export interface CardVisualAsset {
+  storedPath: string;
+  timestamp: string;
+  /** Parcel-association evidence (visual-eligibility.ts). Captures made before
+   *  the eligibility model carry none and are therefore never eligible. */
+  association?: VisualAssociation | null;
+}
 
 /** Persist the latest visual capture for a property card (newest wins on read). */
 export function saveCardVisualCapture(
@@ -546,23 +632,67 @@ export function saveCardVisualCapture(
     cardId,
     agentId: 'tyler/visual',
     kind: 'visual_capture',
-    summary: `Captured ${Object.keys(assets).length} ${meta.provider} visual(s) — Visual Signal, Not Verified Fact.`,
+    summary: `Captured ${Object.keys(assets).length} ${meta.provider} verified parcel image(s).`,
     ref: JSON.stringify({ provider: meta.provider, assets }),
   });
 }
 
-/** Load the most recent persisted visual capture for a card (empty when none). */
-export function loadCardVisualCapture(cardId: number): Record<string, CardVisualAsset> {
-  const row = getLandosDb()
-    .prepare("SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind = 'visual_capture' ORDER BY created_at DESC, id DESC LIMIT 1")
-    .get(cardId) as { ref: string } | undefined;
-  if (!row) return {};
-  try {
-    const j = JSON.parse(row.ref) as { assets?: Record<string, CardVisualAsset> };
-    return j && typeof j.assets === 'object' && j.assets ? j.assets : {};
-  } catch {
-    return {};
+/** Mark every persisted visual_capture record for a card superseded (kept for
+ *  the audit trail, never again eligible to render). Used when captures are
+ *  found to depict the wrong place. */
+export function supersedeCardVisualCaptures(cardId: number, reason: string): number {
+  const db = getLandosDb();
+  const rows = db
+    .prepare("SELECT id, ref FROM landos_card_activity WHERE card_id = ? AND kind = 'visual_capture'")
+    .all(cardId) as Array<{ id: number; ref: string }>;
+  let updated = 0;
+  for (const row of rows) {
+    let j: Record<string, unknown> = {};
+    try { j = JSON.parse(row.ref) as Record<string, unknown>; } catch { j = {}; }
+    if (j.superseded === true) continue;
+    j.superseded = true;
+    j.supersededReason = reason;
+    j.supersededAt = new Date().toISOString();
+    const assets = (j.assets ?? {}) as Record<string, CardVisualAsset>;
+    for (const a of Object.values(assets)) {
+      if (a && typeof a === 'object') {
+        a.association = {
+          ...(a.association ?? { targetKind: 'unknown', basis: 'unknown' }),
+          eligibility: 'superseded',
+          ineligibilityReason: reason,
+        } as CardVisualAsset['association'];
+      }
+    }
+    db.prepare('UPDATE landos_card_activity SET ref = ? WHERE id = ?').run(JSON.stringify(j), row.id);
+    updated += 1;
   }
+  return updated;
+}
+
+/** Load the most recent NON-SUPERSEDED persisted visual capture for a card
+ *  (empty when none). Superseded records stay in the DB as audit trail but are
+ *  never served. */
+export function loadCardVisualCapture(cardId: number): Record<string, CardVisualAsset> {
+  const rows = getLandosDb()
+    .prepare("SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind = 'visual_capture' ORDER BY created_at DESC, id DESC LIMIT 10")
+    .all(cardId) as Array<{ ref: string }>;
+  for (const row of rows) {
+    try {
+      const j = JSON.parse(row.ref) as { assets?: Record<string, CardVisualAsset>; superseded?: boolean };
+      if (j?.superseded === true) continue;
+      return j && typeof j.assets === 'object' && j.assets ? j.assets : {};
+    } catch {
+      continue;
+    }
+  }
+  return {};
+}
+
+/** Load ONLY the visuals whose parcel association passes the eligibility model.
+ *  This is the loader every serving layer (report, image route, Visual
+ *  Intelligence) must use — a card-scoped filename alone never qualifies. */
+export function loadEligibleCardVisualCapture(cardId: number): Record<string, CardVisualAsset> {
+  return filterEligibleAssetMap(loadCardVisualCapture(cardId), cardId);
 }
 
 // ── Visual Intelligence persistence ─────────────────────────────────────────

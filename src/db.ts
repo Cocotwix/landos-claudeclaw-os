@@ -296,6 +296,19 @@ function createSchema(database: Database.Database): void {
       updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
 
+    -- Browser-pairing sessions are deliberately kept separate from
+    -- dashboard_settings: the table contains only SHA-256 hashes of
+    -- short-lived HttpOnly-cookie values, never the dashboard token or a
+    -- browser-readable secret. This lets a second local browser pair without
+    -- copying the primary dashboard credential into that browser profile.
+    CREATE TABLE IF NOT EXISTS dashboard_browser_sessions (
+      token_hash TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_dashboard_browser_sessions_expires
+      ON dashboard_browser_sessions(expires_at);
+
     -- Append-only version history for agent files edited from the
     -- dashboard (CLAUDE.md, agent.yaml). Replaces the single-file .backup
     -- approach so the user can browse prior versions and restore any.
@@ -2920,6 +2933,30 @@ export function setDashboardSetting(key: string, value: string): void {
   ).run(key, value);
 }
 
+
+// ?? Local browser-pairing sessions ???????????????????????????????????????
+
+/** Store only a hash of the opaque, HttpOnly local-browser session token. */
+export function insertDashboardBrowserSession(tokenHash: string, expiresAt: number): void {
+  db.prepare(
+    `INSERT INTO dashboard_browser_sessions (token_hash, expires_at)
+     VALUES (?, ?)
+     ON CONFLICT(token_hash) DO UPDATE SET expires_at = excluded.expires_at`,
+  ).run(tokenHash, expiresAt);
+}
+
+/** True only while the opaque local-browser session remains valid. */
+export function hasDashboardBrowserSession(tokenHash: string, now = Date.now()): boolean {
+  const row = db.prepare(
+    'SELECT 1 FROM dashboard_browser_sessions WHERE token_hash = ? AND expires_at > ? LIMIT 1',
+  ).get(tokenHash, now);
+  return !!row;
+}
+
+/** Keep expired session hashes out of the local store. */
+export function pruneDashboardBrowserSessions(now = Date.now()): void {
+  db.prepare('DELETE FROM dashboard_browser_sessions WHERE expires_at <= ?').run(now);
+}
 // ── Memory isolation (#96): recall mode + shared tier + migration stamp ──────
 //
 // Recall is per-agent by default ('isolated'): an agent recalls its own memories

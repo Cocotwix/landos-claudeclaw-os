@@ -65,6 +65,15 @@ function withToken(path: string): string {
   const sep = path.includes('?') ? '&' : '?';
   return `${path}${sep}token=${encodeURIComponent(dashboardToken)}`;
 }
+// A fresh local browser has no dashboard session yet. Take it to the pairing
+// screen instead of leaving the current page with a raw API 401.
+function redirectUnpairedBrowser(status: number): void {
+  if (status !== 401 || dashboardToken || window.location.pathname === '/connect') return;
+  const returnTo = window.location.pathname + window.location.search;
+  const target = new URL('/connect', window.location.origin);
+  target.searchParams.set('returnTo', returnTo);
+  window.location.replace(target.pathname + target.search);
+}
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown, message: string) {
@@ -75,6 +84,7 @@ export class ApiError extends Error {
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   const res = await fetch(withToken(path), { method: 'GET' });
   if (!res.ok) {
+    redirectUnpairedBrowser(res.status);
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body, `GET ${path} failed: ${res.status}`);
   }

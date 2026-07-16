@@ -1,8 +1,19 @@
 // Tiny formatters used across pages.
 
-export function formatRelativeTime(unixSeconds: number): string {
+// Accepts unix SECONDS (number), unix MILLISECONDS, or an ISO/parseable date
+// string. Never emits "NaN… ago" — invalid input returns "—".
+export function formatRelativeTime(input: number | string | null | undefined): string {
+  let unixSeconds: number;
+  if (typeof input === 'number') unixSeconds = input;
+  else if (typeof input === 'string' && input.trim()) {
+    const n = Number(input);
+    unixSeconds = Number.isFinite(n) ? n : Date.parse(input) / 1000;
+  } else return '—';
+  if (!Number.isFinite(unixSeconds)) return '—';
+  if (unixSeconds > 1e12) unixSeconds = unixSeconds / 1000; // milliseconds → seconds
   const now = Date.now() / 1000;
   const diff = now - unixSeconds;
+  if (!Number.isFinite(diff)) return '—';
   if (diff < 60) return Math.max(0, Math.floor(diff)) + 's ago';
   if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
   if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';

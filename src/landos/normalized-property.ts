@@ -197,6 +197,30 @@ export function corroboratingParcelLevelLanes(p: NormalizedProperty): ParcelLeve
 }
 
 /**
+ * Independent parcel-level lanes that agree on a true parcel identifier. This
+ * is intentionally stricter than corroboratingParcelLevelLanes(): two listing
+ * pages repeating the same street address do not prove that they selected the
+ * same legal parcel. APN/propertyId/parcel URL agreement does.
+ */
+export function corroboratingParcelIdentifierLanes(p: NormalizedProperty): ParcelLevelLane[] {
+  const identifierFields = new Set(['apn', 'propertyId', 'lpUrl']);
+  const byKey = new Map<string, Set<ParcelLevelLane>>();
+  for (const evidence of p.evidence) {
+    if (!identifierFields.has(evidence.field) || !isParcelLevelLane(evidence.lane)) continue;
+    const value = evidence.field === 'apn'
+      ? evidence.value.toLowerCase().replace(/[^a-z0-9]/g, '')
+      : evidence.value.trim().toLowerCase();
+    if (!value) continue;
+    const key = `${evidence.field}:${value}`;
+    if (!byKey.has(key)) byKey.set(key, new Set());
+    byKey.get(key)!.add(evidence.lane);
+  }
+  let best = new Set<ParcelLevelLane>();
+  for (const lanes of byKey.values()) if (lanes.size > best.size) best = lanes;
+  return [...best];
+}
+
+/**
  * Derive overall confidence from the merged evidence. Deterministic, explainable:
  *   - A named-source parcel verification alone is high (>= 0.9).
  *   - Otherwise confidence rises with the number of INDEPENDENT lanes that agree
@@ -270,8 +294,13 @@ export function mergeNormalized(
   const setStr = (key: keyof NormalizedProperty & string, val?: string | null) => {
     const v = s(val);
     if (!v) return;
-    // Verified identity is sticky: don't let a weaker lane overwrite it.
-    if (verifiedAlready && (IDENTITY_FIELDS as readonly string[]).includes(key) && (p as unknown as Record<string, unknown>)[key]) return;
+    // Verified identity is sticky: don't let a weaker lane overwrite it. Still
+    // retain the later sourced value as evidence so disagreement is visible to
+    // reconciliation instead of being silently discarded.
+    if (verifiedAlready && (IDENTITY_FIELDS as readonly string[]).includes(key) && (p as unknown as Record<string, unknown>)[key]) {
+      addEvidence(p, { lane, field: key, value: v, source, sourceUrl: opts.sourceUrl, confidence: conf, timestamp: ts });
+      return;
+    }
     if (!(p as unknown as Record<string, unknown>)[key]) (p as unknown as Record<string, unknown>)[key] = v;
     addEvidence(p, { lane, field: key, value: v, source, sourceUrl: opts.sourceUrl, confidence: conf, timestamp: ts });
   };
