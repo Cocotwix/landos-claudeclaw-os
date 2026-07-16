@@ -1,0 +1,47 @@
+{
+  "sprintId": "sprint-2026-07-15-lead-workspace-foundation",
+  "title": "Lead Workspace foundation (canonical composed operator view)",
+  "originalPrompt": "Build a bounded Lead Workspace foundation, not WS4 or another Deal Card migration. Preserve accepted WS1 canonical acreage/spatial basis, WS2 research completeness/evidence language, and WS3 unified readiness/approved-strategy status. Compose existing lead, property, seller, communication, property intelligence, evidence, market, comparables, valuation, strategy, acquisition, task/blocker/decision, agent work, and Activity records through one versioned read model and stable department-output contract. Use adapters; do not duplicate calculations or replace the backend/database. Provide a responsive live Acquisitions workflow for desktop and Galaxy S24 Ultra widths, using real records and honest unavailable/unknown states. Quarantine the new flow from legacy Deal Card tab aggregation without deletion. Test adapters/read model, verified and unresolved cases, partial outputs, route and responsive UI, and complete staged browser QA, managed-runtime verification, combined regression, independent review, and capability freeze. No commit/push/deploy/.env/secrets/paid API/external writes/destructive actions.",
+  "workstreams": [
+    {
+      "id": "ws1-workspace-contract",
+      "name": "Canonical Lead Workspace read model and endpoint",
+      "operatorOutcome": "A single read-only, versioned workspace payload composes existing records without recalculating WS1-WS3 conclusions.",
+      "inScope": ["read-model contract", "department-output adapter", "workspace API", "focused tests"],
+      "backendServices": ["deal-card-canonical", "operator-property-record", "acquisitions", "property-card activity", "persisted report"],
+      "frontendScreens": [],
+      "requiredDataState": "existing verified and unresolved records; partial legacy data tolerated",
+      "browserJourney": {"steps": ["Open workspace API for an existing record and verify canonical states are represented honestly."]},
+      "testRequirements": ["unit adapters", "WS1-WS3 non-duplication", "verified/unresolved and partial output cases", "route integration"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["workspace computes acreage/readiness/evidence/strategy independently", "provider payload leaks into UI contract"],
+      "requiredProofs": ["test_result", "api_evidence", "independent_browser_qa"],
+      "dependsOn": [],
+      "requirements": [
+        {"id":"LW1","text":"One versioned Lead Workspace read model composes existing records and canonical shared services."},
+        {"id":"LW2","text":"Department outputs preserve provenance, freshness, confidence, completeness, blockers, dependencies, and recommended actions."},
+        {"id":"LW3","text":"WS1 acreage, WS2 evidence/research, and WS3 readiness/five strategies are consumed, not recomputed."}
+      ]
+    },
+    {
+      "id": "ws2-workspace-ui",
+      "name": "Responsive Acquisitions Lead Workspace",
+      "operatorOutcome": "Tyler opens a lead from Acquisitions and gets one coherent progressive-disclosure workspace.",
+      "inScope": ["LeadWorkspace UI", "Acquisitions entry wiring", "mobile layout", "legacy quarantine documentation/tests"],
+      "backendServices": ["lead workspace endpoint"],
+      "frontendScreens": ["Acquisitions workspace"],
+      "requiredDataState": "real existing records; no production seed data",
+      "browserJourney": {"steps": ["Open an existing lead from pipeline", "inspect canonical summary", "open deeper evidence/activity", "refresh and return", "repeat at mobile width"]},
+      "testRequirements": ["route/UI integration", "responsive browser checks", "Acquisitions regression"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["legacy Deal Card tab aggregation feeds new UI", "false verified/completeness states", "mobile primary navigation breaks"],
+      "requiredProofs": ["test_result", "live_url", "screenshot", "browser_journey", "refresh_persistence", "restart_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-workspace-contract"],
+      "requirements": [
+        {"id":"LW4","text":"The live workspace presents identity, seller, canonical acreage, research, market/value, five strategies, evidence, activity, blockers and next action."},
+        {"id":"LW5","text":"The Acquisitions path uses the new workspace while existing legacy deep links remain compatible."},
+        {"id":"LW6","text":"Desktop and narrow mobile views are usable with honest unknown, stale, unresolved and blocked distinctions."}
+      ]
+    }
+  ]
+}

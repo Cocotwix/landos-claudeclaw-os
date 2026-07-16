@@ -1,0 +1,61 @@
+{
+  "sprintId": "sprint-2026-07-15-lifecycle-demo",
+  "workstreamId": "demo-ws1",
+  "workstreamName": "Dashboard shell operator journey under the staged lifecycle",
+  "operatorOutcome": "Tyler can open the live LandOS dashboard at http://localhost:3141 and the workspace shell, deal-cards API, and visible content agree with each other and survive a browser refresh.",
+  "requirements": [
+    {
+      "id": "demo-ws1-R1",
+      "text": "The live dashboard shell renders in a real browser at http://localhost:3141/landos."
+    },
+    {
+      "id": "demo-ws1-R2",
+      "text": "The deal-cards API responds 200 and is consistent with the visible workspace."
+    },
+    {
+      "id": "demo-ws1-R3",
+      "text": "The workspace survives a browser refresh with no visible data loss."
+    },
+    {
+      "id": "demo-ws1-R4",
+      "text": "A deliberately failing assertion produces a structured finding, a repair record, and a passing retest of the same journey."
+    }
+  ],
+  "liveUrl": "http://localhost:3141/landos",
+  "journey": {
+    "journeyId": "dashboard-shell-health",
+    "steps": [
+      "Open http://localhost:3141/landos in a real browser",
+      "Confirm the workspace shell renders with visible LandOS content",
+      "Reconcile the deal-cards API response with the visible page",
+      "Capture a screenshot",
+      "Reload the browser and confirm the workspace persists"
+    ]
+  },
+  "requiredVisibleOutcomes": [
+    "Must NOT occur: Dashboard shell fails to render in a real browser",
+    "Must NOT occur: Deal-cards API disagrees with the visible page",
+    "Must NOT occur: Workspace content disappears after refresh",
+    "Must NOT occur: Any operator record is created, modified, or deleted by QA"
+  ],
+  "acceptedFacts": [],
+  "knownFailurePatterns": [],
+  "persistence": {
+    "refresh": true,
+    "restart": false
+  },
+  "ledgerPath": "C:\\Users\\tbutt\\claudeclaw-os\\.landos\\sprints\\sprint-2026-07-15-lifecycle-demo\\ledger.json",
+  "mandate": [
+    "Actively attempt to prove the implementation wrong; never repeat the builder's conclusions.",
+    "Open the actual running localhost dashboard in a real browser.",
+    "Navigate the full affected workflow; click every relevant control and open every affected tab.",
+    "Exercise relevant forms, maps, filters, tables, links, and actions.",
+    "Compare visible frontend output with API responses and, when appropriate, database records.",
+    "Compare visible output with accepted operator facts.",
+    "Refresh the browser and verify persistence; when restart persistence is required, restart via npm run landos:restart and reopen the workflow.",
+    "Capture fresh screenshots and exact reproduction steps for every failure.",
+    "Judge business meaning and operator usability, not merely whether pages load.",
+    "Return a non-passing result whenever an internally fixable issue remains.",
+    "After repairs, run the exact same journey again."
+  ]
+}

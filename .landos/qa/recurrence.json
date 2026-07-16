@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "patterns": {
+    "frontend-missing-value": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-lifecycle-demo",
+          "findingId": "F1",
+          "at": "2026-07-15T05:20:37.995Z",
+          "summary": "CONTROLLED FIXTURE: expect sentinel \"QA-DEMO-SENTINEL-8271\" which is intentionally absent"
+        },
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F9",
+          "at": "2026-07-15T20:09:26.781Z",
+          "summary": "The executive summary surface shows the shared readiness summary line (executiveSummary.readiness.summaryLine === unifiedReadiness.summaryLine)."
+        }
+      ],
+      "review": {
+        "coversOccurrences": 2,
+        "failurePattern": "frontend-missing-value",
+        "sharedRootCause": "A value produced and shipped by the backend was wired into a frontend render path that never (or not always) executes, so the API carried the correct value while the operator never saw it. Occurrence 2 (WS3 F9): the executive-summary readiness mirror (es.readiness.summaryLine) was rendered only inside OverviewSummary, but OverviewTab's record-bearing branch — the branch every reconciled card takes — did not render OverviewSummary at all, so the readiness line existed in every API payload and on zero screens. The shared cause across occurrences: builders verify 'the payload contains X' and 'the component renders X', but never verify 'the component that renders X is itself reachable on the card states operators actually have'.",
+        "whyAutomatedTestsMissedIt": "Source-scan UI tests asserted that OverviewSummary exists and that the readiness line is rendered by it, but no test asserted the RECORD-BEARING branch of OverviewTab (the dominant real-world branch) includes OverviewSummary. Payload tests asserted executiveSummary.readiness is present in the API. Nothing connected payload presence to render-path reachability.",
+        "whyBrowserQaMissedIt": "It did not miss it — the WS3 independent browser QA caught it (F9) by comparing the API payload against every visible surface. Earlier occurrences were missed because QA journeys verified visible values matched the API, but did not enumerate API values that were VISIBLE NOWHERE.",
+        "missingInvariant": "Every operator-facing value the backend ships in the canonical report payload must have at least one reachable render site on the card states operators actually encounter (record-bearing and record-less). A value rendered only in an unreachable branch is a missing value.",
+        "missingAcceptanceJourney": "For each new payload field added for operators: open a record-bearing card in the browser and confirm the field is visible somewhere; also confirm on a record-less card where applicable. Browser QA must reconcile payload-to-screen in BOTH directions (screen values exist in API; operator-relevant API values appear on screen).",
+        "sharedRepair": "OverviewTab's record branch now renders OverviewSummary first, so the executive summary and its shared readiness line are visible on every Overview. The unified readiness strip renders on all five readiness surfaces from ONE state object, which removes per-branch wiring as a failure point for readiness values.",
+        "newRegressionTest": "readiness-surfaces-regression.test.ts (F9 block): asserts the record-bearing branch of OverviewTab contains <OverviewSummary>, that OverviewSummary renders es.readiness.summaryLine, and that the UnifiedReadinessStrip appears on at least five tab surfaces — reachability, not just existence.",
+        "newBrowserAssertion": "On a record-bearing card, the Overview shows the executive summary block including the shared readiness summary line, and the same line matches unifiedReadiness.summaryLine from the authenticated API; the strip is present on Overview, Market, Strategy, Seller, and Reports.",
+        "affectedCapabilities": [],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-07-15T20:21:08.204Z"
+      }
+    },
+    "overlay-uses-wrong-acreage-basis": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F1",
+          "at": "2026-07-15T16:09:42.811Z",
+          "summary": "Spatial overlays are sampled against the mapped GIS geometry (1.15 ac). The card's own Acreage-basis disclosure states 'Overlays sampled against: gis geometry', so the FEMA flood coverage should be reported against 1.15 ac and never exceed it."
+        },
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F4",
+          "at": "2026-07-15T16:25:41.003Z",
+          "summary": "After repair, the FEMA flood overlay must be sampled against the ~1.15 ac mapped GIS geometry: a 100% zone should read ~1.15 ac and no overlay may report more acres than the mapped parcel (1.15 ac)."
+        },
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F5",
+          "at": "2026-07-15T16:39:47.057Z",
+          "summary": "Every operator-visible flood-overlay surface must be sampled against the ~1.15 ac mapped GIS geometry; a 100% Zone-X overlay must read ~1.15 ac and no overlay may report more acres than the 1.15 ac mapped parcel anywhere on the card."
+        }
+      ],
+      "review": {
+        "coversOccurrences": 3,
+        "failurePattern": "overlay-uses-wrong-acreage-basis",
+        "sharedRootCause": "The flood overlay's operator-visible acreage is rendered from several independent surfaces — the FEMA finding's free-text flood.summary, report.reconciliation.flood, report.govDd.flood.note, the workStatus 'Flood overlay' item, and the floodCard detail — each of which embedded the acreage captured at research time, when the overlay area was sampled against a provider/assessed acreage (1.32) rather than the queried GIS geometry (1.15). The first repair only recomputed flood.zones[].approximateAcres and left every free-text surface unchanged, so the 100% Zone-X card still displayed 1.32 ac on a 1.15 ac parcel, now without even the overlay-exceeds-geometry warning (which had been silenced because floodOverlayAcres was forced to 1.15).",
+        "whyAutomatedTestsMissedIt": "checkOverlayConsistency and the zone-array normalization were unit tested, but no test asserted the FREE-TEXT flood surfaces (summary/reconciliation/govDd/workStatus) against the mapped geometry, and no test tied all flood-acreage surfaces to a single pinning helper. The partial fix passed its own tests while leaving the string surfaces wrong.",
+        "whyBrowserQaMissedIt": "The first browser QA correctly caught the persisted 1.32 in the zone table; the partial repair moved the number in one field but not the summary/reconciliation strings, which only an adversarial recheck reading the actual rendered flood card and the /report payload surfaced.",
+        "missingInvariant": "Every operator-visible flood/overlay acreage surface (summary, reconciliation.flood, govDd.flood.note, workStatus, decisionCard detail) MUST derive from the mapped GIS geometry via the single shared pinOverlayAcresToGeometry helper; no free-text surface may embed a persisted provider/assessed overlay acreage.",
+        "missingAcceptanceJourney": "Read the rendered FEMA flood card text AND report.reconciliation.flood AND govDd.flood.note on the acceptance card and assert none states an acreage exceeding the mapped geometry (a 100% zone reads ~1.15 ac everywhere).",
+        "sharedRepair": "One shared helper pinOverlayAcresToGeometry(zones, mappedAcres) in acreage-basis.ts feeds EVERY flood-acreage surface: (1) the operator record pins flood zones AND regenerates flood.summary (so floodCard detail + workStatus inherit it) on the /report path; (2) routes.ts projectPublicScreening pins zones before composing reconciliation.flood.primary and govDd.flood.note; (3) a new routes.ts pinRunOverlaysToGeometry(run) pins the flood task's zones+summary at read time for the /public-intelligence endpoint that feeds the DD Public Property Intelligence panel; and (4) public-property-intelligence-live samples overlay area against the queried geometry at the source for new runs. The recurrence lesson (a partial per-field fix) was resolved by routing ALL surfaces through the one helper across BOTH endpoints (/report and /public-intelligence).",
+        "newRegressionTest": "src/landos/acreage-basis.test.ts 'pinOverlayAcresToGeometry (WS1 F1 regression)': 100% zone pins to mapped geometry, partial zone scales by percentage, null geometry leaves zones untouched, and a pinned zone never fails checkOverlayConsistency against the geometry.",
+        "newBrowserAssertion": "On the acceptance card the FEMA flood card, report.reconciliation.flood.primary, and govDd.flood.note all state ~1.15 ac (never 1.32 ac) for a 100% Zone-X overlay, and no overlay exceeds the mapped parcel; verified across a hard refresh.",
+        "affectedCapabilities": [],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-07-15T16:44:56.206Z"
+      }
+    },
+    "reconciliation-ignores-acreage-conflict": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F2",
+          "at": "2026-07-15T16:09:42.811Z",
+          "summary": "A material unresolved acreage basis (assessed 1.32 vs mapped 1.15) should surface a reconciliation issue in the reconciliation facts, consistent with the header/acreage-basis/value-readiness which all declare a CONFLICT and a Tyler decision."
+        },
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F3",
+          "at": "2026-07-15T16:09:42.811Z",
+          "summary": "A verified Deal Card presented to the operator should be internally consistent; the orchestration self-audit should pass (no 'need repair' state shown to Tyler)."
+        }
+      ],
+      "review": {
+        "coversOccurrences": 2,
+        "failurePattern": "reconciliation-ignores-acreage-conflict",
+        "sharedRootCause": "The Property-tab reconciled facts (report.reconciliation.acreage, built in routes.ts projectPublicScreening) applied a private 15% assessed-vs-mapped threshold, while the operator record, the acreage-basis record, and the deal-card audit used a 5% / 0.1 ac materiality. Card 19's 1.32-vs-1.15 gap is 12.9% — below 15%, above 5% — so exactly one subsystem reported the acreage as reconciled/unconflicted while the header, acreage-basis panel, value readiness, and the audit's acreage_conflict_preserved check all flagged a conflict. The reconciliation acreage fact was derived from ad-hoc thresholds instead of the shared canonical acreage basis.",
+        "whyAutomatedTestsMissedIt": "Existing reconciliation tests exercised large-parcel conflicts well above 15% (e.g. 17.93 vs 17.67 on ~18 ac) and never a sub-15% but material small-parcel gap, so the threshold divergence between subsystems was never asserted. No test tied report.reconciliation.acreage.conflict to operatorRecord.identity.acreageConflict for the same inputs.",
+        "whyBrowserQaMissedIt": "The prior card was accepted before the canonical acreage-basis record existed; there was no cross-tab acreage-consistency journey, and the automated acreage-conflict journey's fixture selector only scanned the first 8 deal cards on the base /deal-cards/:id route (the conflict data lives on /report), so card 19 was never exercised.",
+        "missingInvariant": "report.reconciliation.acreage.conflict MUST equal operatorRecord.identity.acreageBasis.disputed for the same card; a spatial overlay's acreage MUST NOT exceed the mapped GIS geometry it was sampled against; both are now derived from the single canonical acreage basis (5% / 0.1 ac materiality).",
+        "missingAcceptanceJourney": "A cross-tab acreage-consistency journey on a small-parcel sub-15% conflict fixture (card 19 / 200 Sid Edens Rd): header CONFLICT, acreage-basis panel, value-readiness blocked, Property-tab reconciled facts conflicted, flood overlay acreage <= mapped geometry, and audit acreage_conflict_preserved passing.",
+        "sharedRepair": "routes.ts projectPublicScreening now builds the acreage fact from the shared canonical basis via acreageFactFromBasis(buildAcreageBasis(...)) instead of the private 15% gate; the operator record pins flood overlay acreage to mapped-geometry x parcelPercentage; and public-property-intelligence-live samples overlay area against the queried geometry, not provider/assessed acres.",
+        "newRegressionTest": "src/landos/deal-card-reconciliation.test.ts 'acreageFactFromBasis — reconciled facts consume the canonical basis (WS1 F2/F3 regression)': asserts a 12.9% gap yields conflict=true/needs_confirmation with both bases preserved, agreement yields reconciled, and empty basis yields null. Plus acreage-basis.test.ts checkOverlayConsistency overlay-exceeds-geometry cases.",
+        "newBrowserAssertion": "On the acceptance-example card: Property-tab reconciled Acreage shows a CONFLICT (not a single reconciled number), the FEMA flood overlay acreage does not exceed the mapped geometry acreage, and the executive audit shows acreage_conflict_preserved passing (no 'need repair' banner for acreage).",
+        "affectedCapabilities": [],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-07-15T16:18:49.628Z"
+      }
+    },
+    "access-unknown-road-called-private": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F6",
+          "at": "2026-07-15T17:08:34.976Z",
+          "summary": "A road whose ownership is unknown/unverified must be described as UNKNOWN ownership, not 'private', and the card must not assert that recorded private-road access rights are required unless the road is actually classified private. The public-intel road task already uses the correct wording: both roads '(non-public)', with contact/ROW/frontage/physical/legal/maintenance separated."
+        },
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F7",
+          "at": "2026-07-15T17:27:20.936Z",
+          "summary": "After the F6 repair, NO surface of the access record may call an unknown-ownership road 'private' or assert that recorded private-road access rights are required unconditionally. accessStatus.concerns must be consistent with the fixed summary/decision card (unknown ownership; recorded private-road rights only conditional on the road being confirmed private)."
+        }
+      ],
+      "review": {
+        "coversOccurrences": 2,
+        "failurePattern": "access-unknown-road-called-private",
+        "sharedRootCause": "A non-public / TIGER road-TYPE tag (road.owner matching /private/) was treated as established private OWNERSHIP. This produced two operator-visible surfaces that called an unknown-ownership road 'private' and asserted recorded private-road rights are required: (1) computeAccessStatus's decision-card summary, and (2) a free-text concern string emitted at the source (public-property-intelligence-live) and carried verbatim through accessStatus.concerns. The first repair fixed only the summary/decision-card path and left the concerns-array string, which is still served in the canonical /report operatorRecord.",
+        "whyAutomatedTestsMissedIt": "Tests asserted accessStatus.status and (after the first repair) the summary wording, but never asserted the accessStatus.concerns array text, and no test ran the shared sanitizeAccessLanguage over the persisted private-road concern string. The offending text lived in a field no test inspected.",
+        "whyBrowserQaMissedIt": "The frontend FeasibilityStrip renders only accessStatus.summary + unresolved, not concerns, so the residual is not on the rendered deal card today — only an adversarial reviewer reading the raw /report payload caught it. It is one render/export away from the operator, so it is a real defect in the canonical record.",
+        "missingInvariant": "No operator-record field (summary, concerns, workStatus, or any evidence string) may assert a road IS private or that recorded private-road rights ARE required from a road-layer/type tag; ownership is 'unknown' until proven, and the recorded-rights requirement is conditional. The shared sanitizeAccessLanguage enforces this on every persisted-run read/write.",
+        "missingAcceptanceJourney": "Assert the FULL accessStatus object (summary AND concerns) plus the served /report operatorRecord.accessStatus.concerns[] contain no unconditional 'private road' / 'recorded access rights are required' assertion for an unknown-ownership road.",
+        "sharedRepair": "Extended the shared sanitizeAccessLanguage (which runs at read AND write time on every persisted public-intelligence run) to rewrite 'is mapped as a private road' -> 'carries a non-public/private tag in the road layer, but ownership is unverified' and 'recorded access rights over it are required (and are not confirmed by GIS)' -> 'recorded access rights would be required only if it is confirmed private (unconfirmed by GIS)'. computeAccessStatus already maps every concern through this sanitizer, so all surfaces (summary + concerns) are covered. Also fixed the source guard in public-property-intelligence-live to emit the conditional unknown-ownership wording for new runs.",
+        "newRegressionTest": "evidence-language.test.ts 'never asserts an unknown-ownership road is private or that recorded rights are required (ws2-r5)' asserts the sanitizer neutralizes the legacy private-road concern; operator-property-record.test.ts asserts computeAccessStatus summary uses unknown-ownership language and de-duplicates concerns.",
+        "newBrowserAssertion": "On the acceptance card, neither the rendered Road/Access card NOR the served /report operatorRecord.accessStatus.concerns[] asserts the road is private or that recorded private-road rights are required; ownership reads unknown/unverified with a conditional rights clause.",
+        "affectedCapabilities": [],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-07-15T17:31:29.773Z"
+      }
+    },
+    "report-download-bypasses-unified-readiness": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F8",
+          "at": "2026-07-15T20:09:26.781Z",
+          "summary": "Every report consumes the same shared readiness record: all five strategies blocked / not scoreable / not actionable, pricing gate closed, value conflicted, comp counts from the validated unique registry (55 sold / 51 active)."
+        }
+      ],
+      "review": null
+    },
+    "market-pulse-favorable-valuation-language": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F10",
+          "at": "2026-07-15T20:09:26.781Z",
+          "summary": "No surface calls a bare median 'the valuation basis' while the shared record states a computable median is preliminary context only and value readiness is conflicted."
+        }
+      ],
+      "review": null
+    },
+    "operator-gap-label-empty-subject": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F11",
+          "at": "2026-07-15T20:09:26.781Z",
+          "summary": "Every remaining-verification item names the fact needing confirmation."
+        }
+      ],
+      "review": null
+    },
+    "duplicate-blocker-lines": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F12",
+          "at": "2026-07-15T20:37:47.032Z",
+          "summary": "Each blocker names a distinct fact once; the same acreage fact is not repeated in variant wording."
+        }
+      ],
+      "review": null
+    },
+    "report-comps-bypass-unique-registry": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-15-dealcard-v2",
+          "findingId": "F13",
+          "at": "2026-07-15T20:37:47.033Z",
+          "summary": "Comp rows in an operator-facing report come from the deduplicated unique registry; no property appears twice."
+        }
+      ],
+      "review": null
+    }
+  }
+}

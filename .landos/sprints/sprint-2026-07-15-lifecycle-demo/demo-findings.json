@@ -1,0 +1,21 @@
+[
+  {
+    "liveUrl": "http://localhost:3141/landos",
+    "steps": [
+      "Open the LandOS workspace",
+      "Workspace shell renders",
+      "Deal-cards API responds",
+      "Capture the workspace shell",
+      "CONTROLLED FIXTURE: expect sentinel \"QA-DEMO-SENTINEL-8271\" which is intentionally absent"
+    ],
+    "expected": "CONTROLLED FIXTURE: expect sentinel \"QA-DEMO-SENTINEL-8271\" which is intentionally absent",
+    "actual": "none of [QA-DEMO-SENTINEL-8271] visible on the live page",
+    "evidencePaths": [
+      "C:\\Users\\tbutt\\claudeclaw-os\\.runtime\\landos\\qa\\repair-loop-demo-1784092821432\\dashboard-shell-health-controlled-failure\\dashboard-shell.png"
+    ],
+    "severity": "major",
+    "suspectedSubsystem": "platform",
+    "disposition": "internally_fixable",
+    "patternKey": "frontend-missing-value"
+  }
+]

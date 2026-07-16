@@ -200,20 +200,16 @@ journalctl --user -u claudeclaw -f
 **Windows**: two supported paths. WSL2 is smoother, native works too.
 
 - **WSL2 (recommended)**: `wsl --install -d Ubuntu` in an elevated PowerShell, reboot, clone ClaudeClaw *inside* the Ubuntu filesystem (not `/mnt/c`), then follow the Linux steps above. Keep `~/.claude/` inside WSL2.
-- **Native Windows**: the setup wizard registers a per-user Scheduled Task that runs at logon (no admin rights required). Manage it with:
+- **Native Windows**: the setup wizard registers a per-user Scheduled Task that runs at logon (no admin rights required). Its `start.bat` delegates to the repository runtime. Manage the live dashboard only with:
   ```powershell
-  schtasks /Query /TN "com.claudeclaw.main"
-  schtasks /End   /TN "com.claudeclaw.main"
-  schtasks /Run   /TN "com.claudeclaw.main"
-  schtasks /Delete /TN "com.claudeclaw.main" /F
+  npm run landos:status
+  npm run landos:start
+  npm run landos:stop
+  npm run landos:restart
+  npm run landos:logs
+  npm run landos:health
   ```
   Logs are in `logs\main.log`. Same for each agent at `logs\<agent-id>.log`.
-- **PM2 fallback (native Windows)** if the scheduled task route doesn't work:
-  ```powershell
-  npm install -g pm2
-  pm2 start dist/index.js --name claudeclaw
-  pm2 save && pm2 startup
-  ```
 
 Caveats on native Windows:
 - The War Room voice feature expects a POSIX Python venv. If you need voice, use WSL2.

@@ -23,6 +23,37 @@ If no, continue improving unless an approval gate blocks progress.
 |---|---|---|---|---|
 | 2026-07-04 | Dashboard-backed Property Card acceptance for the current operator acceptance property | Failing in real UI | Verified card existed in storage, but Tyler saw duplicate cards, stale Duke/LandPortal credit UI, and missing inspection/discovery sections in Property Board | Finish dashboard-visible Property Card workspace wiring, suppress weak duplicate, render persisted inspection/comps/market/discovery output, then rebuild/restart/verify real dashboard |
 
+### 2026-07-12 - Visual-association fix: no imagery without parcel-association proof
+
+- Root cause confirmed: card-15 Google captures (activity rows 181/191/200) were generated from the raw multi-APN intake string "APN-A and APN-B, <city> <state>" with sourceCoords null — Google geocoded the city and returned downtown/nearby-business imagery into correctly-named card-scoped files. A card-scoped filename was wrongly treated as association proof.
+- Fix shipped (defense in depth, deterministic + tested): new `visual-eligibility.ts` model — every visual carries a VisualAssociation (target kind, card, APN, source coords, basis, capture query, frontage distance, eligibility) and `assessVisualAssociation` is the ONE decision. Eligible bases: verified parcel coords/centroid/geometry, APN LandPortal page, county GIS parcel page, parcel GE capture, frontage Street View ≤120 m, APN-visible screenshot. Raw intake text, multi-APN strings, city/county centroids, generic searches, nearby businesses, missing coords, cross-card inheritance, stale unresolved captures are never eligible; legacy association-less captures are never eligible.
+- Layers enforcing it: capture (coords+basis REQUIRED; multi-APN/raw-address targets refused; Street View captured only when the pano stands ≤120 m from the parcel, aimed at it), persistence (superseded records skipped), eligible-only loaders in report build, report READ-time sanitizer (persisted report JSON re-proves each asset), /visual/image + /visual-intelligence(+image) routes, browser-vision analyzer input, VI gallery/hero sanitizer, HeroVisual/VisualContext UI. Hero priority now LandPortal → county GIS → verified GE/satellite → frontage Street View → NO image.
+- Card 15 invalidated with audit trail (scripts/_invalidate_c15_visuals.mjs): 3 activity rows superseded (not deleted), report row 12 scrubbed (2 assets → excluded + note, 2 google inspection entries removed). Bad filenames verified ABSENT from the live report API, both image routes 404, absent from the DOM of all 7 tabs; 0 console errors. Overview hero = LandPortal parcel imagery (boundary visible).
+- Orchestrator audit upgraded: imagery_association now validates SUBJECT association (eligible-set membership + cross-card + LandPortal parcel-page provenance), failure message "Displayed imagery could not be verified as belonging to the subject parcel." Card 15: 7/7 after cleanup (fail path unit-proven).
+- Multi-parcel: new parcelRoster (report GET/run) + Property-tab Parcel A/B blocks — card 15 shows Parcel A resolved w/ verified imagery, Parcel B "Unresolved · awaiting parcel resolution" + exact next action; Parcel B inherits nothing.
+- APN-as-ZIP fixed: `extractZipCandidate` (APN runs blanked, digit/hyphen-adjacent tokens rejected) used in discovery intake, market matrix, market-pulse; "ZIP: 07637" gone from the live Seller brief. Operator language cleanup: "Visual Signal, Not Verified Fact" chips replaced with Verified parcel image / Parcel image unavailable / excluded states.
+- Tests: new visual-eligibility suite 25/25; updated visual-image-association, google-visual, visual-capture-persist, routes, deal-card-report, deal-card-audit, visual-intelligence, deal-card-ui suites. Full suite 2953 pass / 12 pre-existing fails (skill-registry 9, exfiltration-guard 2, property-card 1). tsc + vite clean. Restarted; QA shots in store/operator-qa-visual-assoc/.
+- Remaining: fresh verified-coordinate Google capture for card 15 not auto-spent (operator can click Capture visuals — it now uses verified coords only); Parcel B needs Property Resolution; county GIS / GE live captures still need the authenticated browser session.
+
+### 2026-07-09 - Deal Card trust sprint completion (memo Overview / canonical Property / Market scan / pursuit Strategy / orchestrator gate / conversational intake)
+
+- Dashboard DB/store: real `store/landos.db`; live server rebuilt + restarted on `:3141` (fresh `dist`, start.bat). QA card: the current De Queen acceptance deal (card 15, two-parcel lead, parcel verified).
+- Build/server checked: `vite build` + server `tsc` clean; full suite 2927 pass / 12 fail — all 12 PRE-EXISTING in `skill-registry` (9), `exfiltration-guard` (2), `property-card` weak-duplicate (1); none import this sprint's code.
+- Browser route checked: Puppeteer opened `/landos?deal=15` live and screenshotted EVERY tab (`store/operator-qa-trust-sprint/`), 0 console errors, plus the conversational New Lead page.
+- Result: PASS. Visually verified per tab:
+  - **Overview** reads as an executive memo: Executive Summary FIRST (target $83,360–$125,040), "Executive review: 7/7 consistency checks passed" line, source-conflict banner with explanations, hero, key facts (owner/APN/acreage with sources), what-the-facts-mean, risks/unknowns, ONE valuation panel, best-5-of-94 comps, strategy snapshot, seller, next operator actions. Widget clutter (compact visual panel, market snapshot widget, collapsed spine) removed.
+  - **Property** is the canonical parcel page: visual context + visual intelligence, verified parcel header, RECONCILED facts w/ conflict chips + per-fact source pills, at-a-glance (now reads the SAME reconciled primaries — fixed a live "Wetlands: Present vs None mapped" contradiction), Land Score 70/100, LandPortal imagery/observations, browser intel, official-records research, collapsed source-labeled facts + spine + manual DD worksheet. Multi-parcel Parcel A/B blocks render per property card with card-scoped imagery.
+  - **Market** opens with "Should I want land here?", Market Pulse auto-runs (no buttons), Data Center Watch + growth signals auto-run (existence check; honest "Scan unavailable" under Gemini grounding quota; never cached as unavailable), ONE valuation, comp status. Fixed live: pulse county $/ac now quotes the SAME sold-band median as the valuation ($11,623/ac × 17 — was $3,318/ac × 3 then $15,076 × 46); MIXED market verdict recolored amber (was alarm-red).
+  - **Strategy** answers ONE question: "Should I pursue this opportunity?" → Pursue with caution + attractive acquisition $83,360–$125,040 (40–60% of the one $208,400 basis), Quick Flip recommended + runner-ups w/ risks, remaining verification, confirm-before-offer. Fixed live: stale "$69,048" per-strategy pricing lines removed (single pricing story) and contradictory "Valuation not ready" blockers filtered once a primary valuation exists. "Can I buy this property?" framing replaced.
+  - **Seller** now holds the Seller Call Brief (call prep, not strategy); its Estimated Market Value quotes the ONE valuation ($208,400 · sold comps) with comp-intel demoted to labeled supporting evidence.
+  - **Orchestrator gate live-proven**: first GET flagged a REAL contradiction (DD checklist 17.67 ac vs reconciled 17.93 ac); fixed via read-time checklist harmonization; now 7/7. POST /report/run re-audits and auto-reruns once on repairable failures.
+  - **Conversational intake live-proven over HTTP**: multi-turn conversation ("two parcels… seller says utilities… came from PPC" → parcels/county/state chips, seller-stated flagged needs-verification, Likely 83%, ready-to-run, raw turns preserved verbatim). Voice dictation (Web Speech) inserts into the same intake.
+- First failure / limitation: Gemini google-search grounding is quota-limited on the free key (429) so Data Center Watch reports "unavailable" honestly and retries on next open; `gemini-2.5-flash` was retired by Google (404) — grounded + vision defaults moved to probed `gemini-3-flash-preview`. Second parcel of a multi-parcel lead is not yet persisted as its own property card (UI support exists).
+- Classification: resolved (5 live contradictions found by the new audit/QA and fixed: checklist acreage, at-a-glance wetlands, pulse $/ac, strategy pricing, strategy blockers).
+- Files changed: `deal-card-pursuit.ts` (+test), `deal-card-audit.ts` (+test), `market-scan.ts` (+test), `intake-conversation.ts` (+test), `deal-card-report.ts` (checklist harmonization), `routes.ts` (pursuit/orchestration/market-scan/conversation/pulse-harmonization), `db.ts` (landos_market_scan), `gemini.ts` (grounded), `browser-vision.ts` (model), `DealCard.tsx` (tab rebuild), `Acquire.tsx` (conversational+voice), tests updated.
+- Next exact task: Tyler review of the live card; optionally enable a paid/grounded search tier for Data Center Watch; persist parcel B as its own card on multi-parcel leads.
+- What not to repeat: never let a tab recompute its own number when a reconciled primary exists — every consumer reads the reconciliation/valuation objects.
+
 ### 2026-07-06 - LIVE Property Intelligence Operator QA
 
 - Dashboard path used: real local dashboard on `:3141`, authenticated Browser Intelligence Chrome session, Deal Card action `Re-run Property Intelligence`. No direct DB-only shortcut and no paid LandPortal/comp/report action.
@@ -235,3 +266,53 @@ If no, continue improving unless an approval gate blocks progress.
 - Next exact task:
 - What not to repeat:
 ```
+
+### 2026-07-13 - LandOS-wide Deal Card canonical reconciliation sprint (PASS, live-verified)
+
+- Shared architecture shipped (no property-specific hardcoding): unique comparable
+  registry (`comp-registry.ts` — property+transaction dedup, wrong-market/no-price
+  validation, provider coverage, rejection audit), document asset registry + county
+  deed page viewer (`document-registry.ts` + `/document-page/:file` route + full-screen
+  zoom/page-nav viewer), strategy-readiness record (`strategy-readiness.ts` — exactly
+  the 5 approved strategies, blocked/provisional/viable/weak/not-viable, shared
+  pricing gate), research-mission model (`research-mission.ts` — accepted/rejected/
+  superseded/failed/pending classification + grouped repeats), canonical assembler +
+  in-place idempotent Reconcile action (`deal-card-canonical.ts`, model v2).
+- Pricing gate CLOSED by default: pursuit shows NO attractive band, winner, or
+  runner-up until ≥3 validated unique sold comps + no valuation conflict + resolved
+  acreage. The acceptance card's one-comp "$60k–$91k attractive band" is gone; the
+  card now answers "Not priceable yet — one observation is not a market."
+- Consistency audit expanded 7 → 17 checks (one-comp pricing, registry-vs-display
+  counts, wetlands/FEMA cross-tab agreement, acreage-conflict preservation, five
+  approved strategies, pricing-gate agreement, documents viewable, Land Score
+  currency, blocked-offer agreement, unsafe-language screen). The new audit CAUGHT
+  two real live contradictions (collapsed acreage conflict, checklist quoting the
+  assessed number) which were then fixed at the projection layer — 17/17 now passes
+  on the acceptance card by fixing data, not by loosening checks.
+- Land Score rebuilt from the reconciled operator record (per-factor accepted-evidence
+  basis, conflict-capped confidence) at read time whenever a public-intelligence run
+  exists; unavailable-with-reason otherwise. Owner text: raw official value preserved
+  verbatim + clean working label + explicit malformed/trust warnings.
+- Seller tab: Call Guardrails panel (no value/offer/PPA/strategy quoting while gated);
+  Estimated Market Value line gated; discovery headline gated.
+- Migration: read-time projection applies the new model to EVERY existing card
+  automatically; the Reconcile Deal Card button (model-version chip) revalidates
+  persisted rows in place — acceptance card run 1 fixed 1 wrong-market row, run 2
+  no-op; extra existing card run fixed 8 rows; deal count unchanged (no duplicates);
+  CRM/seller data untouched.
+- Live visual QA (Puppeteer, real dashboard, all 9 tabs, 0 console errors): CRM
+  header w/ cyan parcel outline + acreage CONFLICT + owner warnings; Strategy tab 5
+  blocked strategies + "Pricing gated — no offer numbers yet"; Market tab unique-comp
+  registry (27 candidates → 11 unique, 1 sold / 10 active validated, 16 rejected w/
+  reasons, per-provider coverage); Documents tab actual 7-page county deed viewer
+  (full-screen, zoom, prev/next) + 6 findings + 5 open research tasks (survey = the
+  only Tyler item); Activity mission view (reconcile=Accepted, history grouped);
+  county $/acre tile refuses a 1-sale figure. TN safety control unchanged: resolution
+  view, downstream on hold; new-workflow test card (deal 18) gated as research card
+  with all 5 strategies blocked and idempotent reconcile.
+- Screenshots: `store/operator-qa-canonical/` (14-overview/strategy/market/
+  market-comp-registry/seller-guardrails/documents/deed-viewer-fullscreen/activity-
+  mission, 11-*, 16-tn-control*, 18-new-test-card).
+- Engineering QA: typecheck clean; suite 3098 pass / 12 pre-existing fails
+  (skill-registry, exfiltration-guard, property-card — unchanged set); vite+tsc
+  build clean; canonical runtime restart; git diff --check clean. Not committed.

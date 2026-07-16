@@ -114,23 +114,20 @@ in `.landos/BUSINESS_QA.md`.
 
 ## Session Hygiene
 
-At the start of every LandOS build session, use `/continue-landos` or read:
+Fresh sessions receive LandOS memory automatically: `CLAUDE.md` imports
+`.landos/PERMANENT_MEMORY.md` (durable rules) and `.landos/CHECKPOINT.md`
+(current state). No `/continue-landos` run or continuation preamble is
+required before normal work.
 
-1. `LANDOS_CURRENT_STATE.md`
-2. `.landos/CHAT_CONTEXT.md`
-3. `.landos/CURRENT_SPRINT.md`
-4. `.landos/PROJECT_MEMORY.md`
-5. `.landos/DECISIONS.md`
-6. `.landos/OPERATOR_QA.md`
-7. `.landos/BUSINESS_QA.md`
-8. `.landos/KNOWN_LIMITATIONS.md`
-9. `.landos/CONTINUITY_PROTOCOL.md`
-10. `docs/governance/07_Product_Principles.md`
+Everything else in `.landos/` and `docs/landos/` is on-demand history: Grep or
+Read only the specific section the current task needs. Never bulk-load QA
+ledgers, handover history, sprint reports, transcripts, or the database at
+session start. Live `git status --short` and `git log --oneline -5` override
+memory-file narrative when they disagree.
 
-Then inspect `git status --short` and recent commits.
-
-After that orientation pass, wait for Tyler unless Tyler explicitly opened an
-execution sprint using one of the phrases above.
+`/continue-landos` remains available as an optional orientation command; it
+loads only the two memory files plus small git/runtime status and reports what
+it loaded with estimated token sizes.
 
 Do not ask Tyler to re-explain what is already in memory.
 

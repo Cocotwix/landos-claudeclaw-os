@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "capabilities": [
+    {
+      "id": "landos-operator-qa-platform",
+      "name": "Staged sprint lifecycle + operator QA platform journeys",
+      "department": "platform",
+      "acceptedVersion": "0bbf16c (uncommitted worktree, 2026-07-15)",
+      "goldenJourneyIds": [
+        "dashboard-shell-health",
+        "refresh-persistence",
+        "managed-restart-persistence"
+      ],
+      "regressionFixtures": [
+        "src/landos/sprint-system/test-fixtures.ts",
+        "scripts/sprint/qa-repair-loop-demo.ts"
+      ],
+      "sharedInvariants": [
+        "served frontend bundle equals dist/web bundle",
+        "exactly one verified managed LandOS server owns port 3141",
+        "operator data survives browser refresh and managed restart",
+        "QA infrastructure issues only read-only requests against operator data"
+      ],
+      "browserAssertions": [
+        "workspace shell renders visible LandOS content in a real browser",
+        "deal-cards API reconciles with the visible page",
+        "content persists across reload and npm run landos:restart"
+      ],
+      "proofArtifacts": [
+        ".runtime/landos/qa/qa-2026-07-15T05-20-48-872Z/report.json",
+        ".runtime/landos/qa/qa-2026-07-15T05-23-44-271Z/report.json",
+        ".runtime/landos/qa/qa-2026-07-15T05-29-56-690Z/report.json",
+        ".landos/sprints/sprint-2026-07-15-lifecycle-demo/report.md"
+      ],
+      "knownLimitations": [
+        "fixture selection for property-state journeys is heuristic; journeys report fixture_unavailable when no safe match exists",
+        "mutating intake journeys require explicit --allow-mutations plus a QA fixture address and remain manual-gated"
+      ],
+      "deliberateExternalBlockers": [],
+      "sharedDependencyPaths": [
+        "src/landos/sprint-system",
+        "scripts/sprint",
+        "scripts/memory/landos-memory.mjs",
+        "scripts/runtime/landos-runtime.mjs"
+      ],
+      "tylerAcceptance": {
+        "required": false,
+        "grantedAt": null
+      },
+      "acceptedAt": "2026-07-15T05:33:20.859Z",
+      "sprintId": "sprint-2026-07-15-lifecycle-demo"
+    }
+  ]
+}

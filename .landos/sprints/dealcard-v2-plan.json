@@ -1,0 +1,386 @@
+{
+  "sprintId": "sprint-2026-07-15-dealcard-v2",
+  "title": "Deal Card v2 repair and finish (shared operator correctness)",
+  "originalPromptPath": "dealcard-v2-prompt.md",
+  "workstreams": [
+    {
+      "id": "ws1-acreage-basis",
+      "name": "Canonical acreage and spatial basis",
+      "operatorOutcome": "Every Deal Card reconciles assessed/deeded/surveyed/GIS/provider/operator-accepted/valuation/overlay acreage with source, confidence, dispute and permitted-use metadata; the UI explains assessed-vs-mapped differences; overlays use the geometry actually queried; valuation discloses its basis; a material unresolved basis raises a reconciliation issue and Tyler decision; no gated calc silently uses an unresolved acreage.",
+      "inScope": [
+        "Shared acreage-basis record model with the 8 basis kinds and 7 per-use attributes",
+        "Reconciliation of assessed vs mapped/geometry acreage into a discrepancy issue",
+        "Overlay (flood/wetlands/soils/slope/non-wetland) acreage sourced from queried geometry",
+        "Valuation acreage-basis disclosure",
+        "Consistency check: overlay area may not exceed queried geometry without documented explanation",
+        "Preserve accepted acreage; do not change without Tyler confirmation"
+      ],
+      "backendServices": [
+        "src/landos/parcel-spatial.ts",
+        "src/landos/parcel-identity-divergence.ts",
+        "src/landos/deal-card-reconciliation.ts",
+        "src/landos/deal-card-canonical.ts",
+        "src/landos/normalized-property.ts",
+        "src/landos/operator-property-record.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Overview (acreage header)",
+        "Deal Card > Property",
+        "Deal Card > Due Diligence (flood/wetlands/soils/slope overlays)"
+      ],
+      "requiredDataState": "A verified Deal Card whose assessed acreage differs from mapped/GIS geometry acreage (acceptance example: 200 Sid Edens Rd, Pickens SC, APN 5105-00-44-0497 — assessed 1.32 vs mapped 1.15).",
+      "browserJourney": {
+        "steps": [
+          "Open the verified Deal Card at http://localhost:3141",
+          "Read the acreage header on Overview and confirm it distinguishes assessed vs mapped and explains the difference",
+          "Open Due Diligence and confirm each overlay states which acreage basis it used and that overlay area does not exceed queried geometry",
+          "Confirm the valuation states the acreage basis it used",
+          "Confirm a material unresolved acreage basis surfaces a reconciliation issue and a Tyler decision item",
+          "Refresh the page and confirm all acreage statements persist"
+        ]
+      },
+      "testRequirements": [
+        "Unit tests for the acreage-basis record: each basis kind carries value/source/confidence/disputed/accepted/permittedUses/limitation",
+        "Reconciliation test: assessed!=geometry beyond tolerance yields a discrepancy issue and Tyler-decision flag",
+        "Overlay-vs-geometry consistency test fails when overlay area exceeds queried geometry without documented explanation",
+        "Regression: accepted acreage is never silently replaced"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Header shows a single acreage without explaining assessed-vs-mapped difference",
+        "An overlay reports an acreage basis it did not query, or area exceeds queried geometry with no explanation",
+        "Valuation does not disclose its acreage basis",
+        "Material acreage discrepancy with no reconciliation issue or Tyler decision",
+        "A gated calculation uses an acreage the header treats as unresolved",
+        "An accepted acreage is changed without Tyler confirmation"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": [],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws1-r1", "text": "The UI explains why assessed and mapped acreage differ." },
+        { "id": "ws1-r2", "text": "Overlay acreage uses the actual geometry queried." },
+        { "id": "ws1-r3", "text": "Valuation discloses exactly which acreage basis it uses." },
+        { "id": "ws1-r4", "text": "A material unresolved acreage basis triggers a reconciliation issue and Tyler decision when appropriate." },
+        { "id": "ws1-r5", "text": "No calculation silently uses an acreage the header treats as unresolved." },
+        { "id": "ws1-r6", "text": "Flood, wetlands, soils, slope, non-wetland area, comps, valuation, maps, reports, and strategy math identify the correct acreage basis." },
+        { "id": "ws1-r7", "text": "A consistency check fails when an overlay area exceeds its queried geometry without a documented explanation." },
+        { "id": "ws1-r8", "text": "An accepted acreage is not changed without Tyler's confirmation." }
+      ]
+    },
+    {
+      "id": "ws2-research-completeness",
+      "name": "Research completeness and evidence language",
+      "operatorOutcome": "Research lane counts and wording separate provider-attempted, provider-retrieved, partial evidence, business-question-resolved, legal-confirmation-complete, and external-confirmation-required; partial proximity is not completed access research; a county flood query is not complete FEMA research; FEMA/road/soils/utilities/red-flag copy is correctly qualified.",
+      "inScope": [
+        "Research-completeness state model separating the six evidence tiers per lane",
+        "FEMA lane: separate Zone X result, coverage basis, panel status, effective date, BFE availability; county-layer vs federal FIRM",
+        "Road/access lane: separate classification, parcel contact, ROW contact, physical access, driveway, legal access, maintenance; unknown vs private ownership",
+        "Soils/septic lane: single-component vs mixed ratings; SSURGO map-unit limitation vs site septic feasibility; map-unit slope vs measured mean slope",
+        "Utilities lane: absence of mapped line is not proof of unavailability; preliminary likelihood labels",
+        "Critical red flags: incomplete screening not shown favorable; no-all-clear language matches unresolved categories"
+      ],
+      "backendServices": [
+        "src/landos/parallel-resolution-lanes.ts",
+        "src/landos/parallel-resolution.ts",
+        "src/landos/evidence-language.ts",
+        "src/landos/deal-card-dd.ts",
+        "src/landos/dd-business-status.ts",
+        "src/landos/public-records-research.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Due Diligence",
+        "Deal Card > Overview (research status)"
+      ],
+      "requiredDataState": "A verified Deal Card with unresolved zoning, researching parcel-road contact, unresolved legal access, unreviewed deed/easement, pending FEMA panel (acceptance example: 200 Sid Edens Rd).",
+      "browserJourney": {
+        "steps": [
+          "Open the verified Deal Card and read the research-status summary",
+          "Confirm the evidenced-lane count does not count zoning, legal access, deed/easement review, or FEMA panel as complete when they are not",
+          "Open FEMA detail and confirm Zone X / coverage basis / panel status / effective date / BFE availability are separate and county-layer vs FIRM is distinguished",
+          "Open road/access detail and confirm proximity is not called frontage and unknown ownership is not called private",
+          "Open soils/septic and utilities detail and confirm qualified wording",
+          "Refresh and confirm wording and counts persist"
+        ]
+      },
+      "testRequirements": [
+        "Lane-completeness tests for each of the six evidence tiers",
+        "FEMA: BFE-screened claim requires retrieved BFE; exact-acreage+BFE label requires both supported",
+        "Access: partial proximity does not mark access research complete; unknown ownership not rendered as private",
+        "Soils: single mapped component not described as split/mixed; utilities absence not rendered as unavailable",
+        "Red flags: incomplete screening lowers critical-risk completeness"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Evidenced-lane count includes lanes that have not genuinely resolved",
+        "BFE screened stated with no BFE retrieved, or exact-acreage+BFE marked complete unsupported",
+        "Road proximity shown as frontage, or unknown ownership shown as private",
+        "Single soil component described as split/mixed, or utility absence shown as unavailable",
+        "Incomplete screening presented favorably or no-all-clear language contradicts unresolved categories"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-acreage-basis"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws2-r1", "text": "Research counts separate provider-attempted, provider-retrieved, partial, business-resolved, legal-complete, external-required." },
+        { "id": "ws2-r2", "text": "Partial proximity evidence is not counted as completed access research." },
+        { "id": "ws2-r3", "text": "A county flood query is not counted as complete FEMA research when material FEMA tasks remain." },
+        { "id": "ws2-r4", "text": "FEMA Zone X result, coverage basis, panel status, effective date, and BFE availability are separate; no unsupported BFE claim; county-layer vs FIRM distinguished; overlays use mapped geometry acreage." },
+        { "id": "ws2-r5", "text": "Road: proximity is not frontage; unknown ownership is not called private; classification/contact/ROW/physical/driveway/legal/maintenance are separated; no unsupported recorded-private-road-rights claim." },
+        { "id": "ws2-r6", "text": "Soils: single component not described as split/mixed; SSURGO limitation vs site septic feasibility distinguished; map-unit slope vs measured mean slope separated." },
+        { "id": "ws2-r7", "text": "Utilities: absent mapped line is not proof of unavailability; well/septic labeled preliminary; provider research vs remaining confirmation separated." },
+        { "id": "ws2-r8", "text": "Critical red flags: incomplete screening is not favorable; access/title/acreage/zoning uncertainty affects critical-risk completeness; no-all-clear language matches unresolved categories." }
+      ]
+    },
+    {
+      "id": "ws3-readiness",
+      "name": "Unified readiness and strategy status",
+      "operatorOutcome": "One shared readiness record drives Overview, Market, Strategy, Seller, Reports, RAG, and Executive review; strategy readiness cannot read OK while all strategies are blocked; value readiness is not high merely because a median exists; offer readiness explains why it is researching/blocked; the consistency audit fails on any status disagreement.",
+      "inScope": [
+        "Shared readiness record separating research completeness, preliminary vs defensible valuation readiness, strategy screening availability vs scoreability vs actionability, offer readiness, contract readiness",
+        "All Deal Card tabs and reports consume the same readiness result",
+        "Materiality wiring: zoning/acreage-basis/access/title/physical constraints affect confidence and readiness",
+        "Consistency audit fails when visible statuses disagree"
+      ],
+      "backendServices": [
+        "src/landos/strategy-readiness.ts",
+        "src/landos/deal-card-readiness.ts",
+        "src/landos/deal-card-canonical.ts",
+        "src/landos/deal-card-executive-summary.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Overview (readiness)",
+        "Deal Card > Strategy",
+        "Deal Card > Market",
+        "Deal Card > Seller",
+        "Deal Card > Reports"
+      ],
+      "requiredDataState": "A verified Deal Card where all five strategies are blocked and offer readiness is researching (acceptance example: 200 Sid Edens Rd).",
+      "browserJourney": {
+        "steps": [
+          "Open the verified Deal Card Overview and read Strategy/Value/Offer readiness",
+          "Confirm Strategy Readiness is not OK/actionable while all five strategies are blocked",
+          "Open the Strategy tab and confirm screening-available vs actionability-blocked is expressed coherently",
+          "Confirm Value Readiness is not high merely because a median can be computed",
+          "Confirm Offer Readiness explains why it is researching/blocked",
+          "Open Market, Seller, Reports and confirm they show the same readiness result",
+          "Refresh and confirm readiness persists"
+        ]
+      },
+      "testRequirements": [
+        "All-strategies-blocked yields non-OK strategy readiness",
+        "Median-available alone does not yield high value readiness",
+        "Materiality: unresolved zoning/acreage/access/title lowers confidence and readiness",
+        "Single readiness record is the source for every tab/report",
+        "Audit fails on a seeded status disagreement"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Strategy Readiness OK while all strategies blocked",
+        "Value Readiness high solely from a computable median",
+        "Offer Readiness with no explanation",
+        "Two tabs/reports showing different readiness for the same card",
+        "Consistency audit passes despite disagreeing statuses"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws2-research-completeness"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws3-r1", "text": "If all five strategies are blocked, Strategy Readiness cannot display OK or actionable." },
+        { "id": "ws3-r2", "text": "The UI may say strategy screening is available while actionability is blocked." },
+        { "id": "ws3-r3", "text": "Value Readiness cannot be high or fully ready merely because a median can be calculated." },
+        { "id": "ws3-r4", "text": "Zoning, acreage basis, access, title, and physical constraints affect confidence and readiness per materiality." },
+        { "id": "ws3-r5", "text": "Offer readiness clearly explains why it remains researching or blocked." },
+        { "id": "ws3-r6", "text": "All tabs and reports consume the same readiness result." },
+        { "id": "ws3-r7", "text": "The consistency audit fails when visible statuses disagree." }
+      ]
+    },
+    {
+      "id": "ws4-comps-valuation",
+      "name": "Comparable validation, provider coverage, and valuation",
+      "operatorOutcome": "Provider missions show real attempt/result and candidate/accepted/duplicate/rejected counts; every selected comp displays the full validation field set with a working or explicitly-missing provider link; weak/improved comps are penalized or excluded; materially different clusters are not blended into a high-confidence median; valuation discloses cluster, counts, median/weighted/average PPA, IQR, outliers, limitations, and confidence rationale; sold/valuation/map/registry counts reconcile.",
+      "inScope": [
+        "Per-provider mission transparency (LandPortal, Zillow, Redfin, Realie.ai, Realtor/HomeHarvest, county) with attempt/result/blocker and candidate/accepted/duplicate/rejected counts",
+        "Selected-comp validation record with the full 20-field set and provider link presence",
+        "Cluster detection and outlier handling; confidence gating on cluster coherence and subject similarity",
+        "Count reconciliation across selected set / sold count / valuation count / map count / registry count",
+        "Comp map and table share the same deduplicated records; links open safely in a new tab; raw LandPortal vs selected LandOS map differentiated",
+        "Valuation disclosure block"
+      ],
+      "backendServices": [
+        "src/landos/comp-orchestrator.ts",
+        "src/landos/comp-registry.ts",
+        "src/landos/comps.ts",
+        "src/landos/comp-valuation-band.ts",
+        "src/landos/comp-classification.ts",
+        "src/landos/comp-map.ts",
+        "src/landos/deal-card-market.ts",
+        "src/landos/deal-card-comp-recompute.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Market",
+        "Deal Card > Market > interactive comp map",
+        "Deal Card > Market > comp table and popups"
+      ],
+      "requiredDataState": "A verified Deal Card with many sold comps whose selected top-five PPA is widely dispersed (acceptance example: 200 Sid Edens Rd — ~55 comps, PPA ~$6,250 to ~$64,516/acre).",
+      "browserJourney": {
+        "steps": [
+          "Open the Deal Card Market tab",
+          "Confirm each provider mission shows attempt/result and candidate/accepted/duplicate/rejected counts (no coverage claim without a result)",
+          "Open each selected comp popup and confirm the full validation field set including provider name and link (or an explicit missing-link marker)",
+          "Confirm the Realie.ai comp link works when available and all links open in a new tab safely",
+          "Confirm materially dispersed PPA clusters are not blended into one high-confidence median; confidence is downgraded with rationale",
+          "Confirm sold count, valuation count, map count, registry count, and selected set reconcile and map/table use the same deduplicated records",
+          "Refresh and confirm the comp set and valuation persist"
+        ]
+      },
+      "testRequirements": [
+        "Provider mission record carries attempt/result/blocker and the four counts; coverage requires a real result",
+        "Selected-comp validation requires the full field set; missing provider link is flagged not omitted",
+        "Cluster detection: dispersed PPA blocks high confidence; outliers explained",
+        "Count reconciliation invariant across selected/sold/valuation/map/registry",
+        "Map and table use identical deduplicated records"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Provider coverage claimed with no real provider result",
+        "Selected comp missing a provider link with no visible marker; Realie.ai link broken when one is available",
+        "Five comps selected including weak/improved fillers when fewer are defensible",
+        "Dispersed PPA clusters blended into one high-confidence median; outliers unexplained",
+        "Displayed sold/valuation/map/registry counts disagree; map and table diverge"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws3-readiness"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws4-r1", "text": "Every provider mission shows attempt/result plus candidate/accepted/duplicate/rejected counts and failure/blocker reason; coverage is not claimed because an adapter exists." },
+        { "id": "ws4-r2", "text": "Every selected comp displays the full validation field set (address..why-it-outranked-next-best)." },
+        { "id": "ws4-r3", "text": "A missing provider URL is visibly identified rather than silently omitting view; the Realie.ai comp has a working link when available." },
+        { "id": "ws4-r4", "text": "Weak comps are not selected to fill five; fewer than five are used when fewer are defensible; improved/unknown-improvement sales are excluded or penalized." },
+        { "id": "ws4-r5", "text": "Materially different geographic/acreage/improvement/PPA clusters are detected and not blended into one high-confidence median; outliers are explained." },
+        { "id": "ws4-r6", "text": "High confidence requires a coherent validated cluster and adequate subject similarity; otherwise preliminary/moderate/low/conflicted/insufficient." },
+        { "id": "ws4-r7", "text": "Selected set, displayed sold count, valuation count, map count, and registry count reconcile; map and table use the same deduplicated records." },
+        { "id": "ws4-r8", "text": "Provider links open safely in a new tab; LandPortal raw map and final LandOS selected map remain clearly differentiated." },
+        { "id": "ws4-r9", "text": "Valuation discloses subject acreage basis, selected cluster, qualified closed-sale count, median/weighted/simple-average PPA, IQR, outliers, limitations, and confidence rationale." },
+        { "id": "ws4-r10", "text": "No high-confidence valuation when access/zoning/property-type/acreage-basis/comp coherence materially undermines confidence." }
+      ]
+    },
+    {
+      "id": "ws5-audit-copy",
+      "name": "Executive audit and operator copy",
+      "operatorOutcome": "The consistency audit fails on each of the twelve enumerated inconsistencies and never reports all-pass while a visible inconsistency exists; misleading/awkward operator copy is repaired; seller questions are generated from actual unresolved facts and read naturally.",
+      "inScope": [
+        "Extend the audit with the twelve new fail conditions",
+        "Audit reconciles frontend and backend readiness",
+        "Repair the enumerated copy defects (grammar, unsupported private-road, duplicate paragraphs, unhelpful jargon)",
+        "Seller-question generation from unresolved facts"
+      ],
+      "backendServices": [
+        "src/landos/deal-card-audit.ts",
+        "src/landos/deal-card-executive-summary.ts",
+        "src/landos/evidence-language.ts",
+        "src/landos/operator-language.ts",
+        "src/landos/deal-card-report.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Overview (executive audit)",
+        "Deal Card > Seller (seller questions)",
+        "Deal Card > Reports"
+      ],
+      "requiredDataState": "A verified Deal Card exhibiting at least one of the twelve inconsistencies and the enumerated copy defects (acceptance example: 200 Sid Edens Rd).",
+      "browserJourney": {
+        "steps": [
+          "Open the Deal Card Overview executive audit",
+          "Confirm the audit does not report all-pass while readiness/acreage-basis/comp inconsistencies are visible",
+          "Seed or confirm each of the twelve fail conditions is detectable",
+          "Read operator copy and confirm the enumerated defects are repaired (grammar, private-road, duplicate paragraphs)",
+          "Open Seller and confirm questions come from real unresolved facts and read naturally",
+          "Refresh and confirm audit results and copy persist"
+        ]
+      },
+      "testRequirements": [
+        "Twelve audit fail-condition tests, each red on a seeded inconsistency and green when resolved",
+        "Copy tests: grammar of place phrase, single-component wording, no unsupported private-road, no duplicate paragraphs",
+        "Seller-question tests: generated from unresolved facts, no Unnamed-road-as-usable-access phrasing"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Audit reports all-pass while a visible inconsistency exists",
+        "Any of the twelve conditions not detected",
+        "Enumerated copy defects still present",
+        "Seller questions reference Unnamed road as confirmed access or duplicate paragraphs remain"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws4-comps-valuation"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws5-r1", "text": "Audit fails on Strategy Readiness OK while all strategies blocked." },
+        { "id": "ws5-r2", "text": "Audit fails on value confidence inconsistent with unresolved material facts." },
+        { "id": "ws5-r3", "text": "Audit fails on missing Tyler decision for a material acreage discrepancy." },
+        { "id": "ws5-r4", "text": "Audit fails on overlay acreage inconsistent with geometry acreage." },
+        { "id": "ws5-r5", "text": "Audit fails on BFE claims unsupported by evidence." },
+        { "id": "ws5-r6", "text": "Audit fails on partial access evidence counted as completed access research." },
+        { "id": "ws5-r7", "text": "Audit fails on unknown road ownership described as private." },
+        { "id": "ws5-r8", "text": "Audit fails on provider coverage claims without actual provider results." },
+        { "id": "ws5-r9", "text": "Audit fails on a selected comp missing a provider link." },
+        { "id": "ws5-r10", "text": "Audit fails on high-confidence valuation with incoherent comp clusters." },
+        { "id": "ws5-r11", "text": "Audit fails on research-progress wording implying completed underwriting." },
+        { "id": "ws5-r12", "text": "Audit fails on any frontend/backend readiness mismatch." },
+        { "id": "ws5-r13", "text": "Enumerated misleading/awkward copy is repaired and seller questions are generated from actual unresolved facts and read naturally." }
+      ]
+    },
+    {
+      "id": "ws6-full-regression",
+      "name": "Complete Deal Card browser regression",
+      "operatorOutcome": "The full Deal Card operator experience is inspected end to end across every tab and multiple fixtures (verified, incomplete, unresolved, APN-conflict, thin-market, multi-parcel) with frontend/API/DB/accepted-facts/ledger reconciliation, fresh screenshots, refresh and managed-restart persistence, and every finding repaired and retested.",
+      "inScope": [
+        "Full click-through of Overview, Property, Due Diligence, Market, Strategy, Visuals, Seller, Documents, Activity",
+        "Interactive comp map, every selected comp popup, provider links, research status, readiness states, reports",
+        "Fixture coverage: acceptance example + two other jurisdictions + incomplete + unresolved + APN-conflict + thin-market + multi-parcel",
+        "Frontend/API/DB/accepted-facts/ledger reconciliation",
+        "Refresh and managed-restart persistence"
+      ],
+      "backendServices": [
+        "src/landos/deal-card-canonical.ts",
+        "src/landos/deal-card-audit.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > all tabs (Overview, Property, Due Diligence, Market, Strategy, Visuals, Seller, Documents, Activity)"
+      ],
+      "requiredDataState": "The full fixture set: 200 Sid Edens Rd (APN 5105-00-44-0497) plus two verified properties in other jurisdictions, one incomplete-research, one unresolved, one APN-conflict, one thin-market, one multi-parcel.",
+      "browserJourney": {
+        "steps": [
+          "For each fixture, open the Deal Card and click through all nine tabs",
+          "Open the interactive comp map and every selected comp popup and follow provider links",
+          "Reconcile frontend against API payload, DB state, accepted operator facts, and the requirement ledger",
+          "Capture fresh screenshots for each tab and fixture",
+          "Refresh each card and confirm persistence",
+          "Run a managed restart (npm run landos:restart) and confirm persistence"
+        ]
+      },
+      "testRequirements": [
+        "Combined Deal Card regression suite green",
+        "System-consistency regression green across fixtures",
+        "Persistence checks (refresh + managed restart) recorded"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "Any tab shows an internally inconsistent or unqualified fact for any fixture",
+        "Frontend disagrees with API/DB/accepted facts/ledger",
+        "A finding is not repaired and retested",
+        "State does not persist across refresh or managed restart"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "db_evidence", "browser_journey", "screenshot", "refresh_persistence", "restart_persistence", "independent_browser_qa", "final_regression"],
+      "dependsOn": ["ws5-audit-copy"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws6-r1", "text": "Every Deal Card tab (Overview, Property, Due Diligence, Market, Strategy, Visuals, Seller, Documents, Activity) is inspected and internally consistent for every fixture." },
+        { "id": "ws6-r2", "text": "Interactive comp map, every selected comp popup, provider links, research status, readiness states, and reports are inspected and reconciled." },
+        { "id": "ws6-r3", "text": "Frontend reconciles with API payload, DB state, accepted operator facts, and the requirement ledger; accepted real-property information is not altered during QA." },
+        { "id": "ws6-r4", "text": "Fixtures cover acceptance example, two other jurisdictions, incomplete-research, unresolved, APN-conflict, thin-market, and multi-parcel." },
+        { "id": "ws6-r5", "text": "Fresh screenshots are captured; refresh and managed-restart persistence hold; every finding is repaired and retested." }
+      ]
+    }
+  ]
+}

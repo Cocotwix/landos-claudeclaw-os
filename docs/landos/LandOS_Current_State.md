@@ -1,6 +1,8 @@
-# LandOS Current State
+# LandOS Current State (superseded — history only)
 
-Session start reference. Update via `/done-landos` when current state changes.
+Superseded 2026-07-14 by `.landos/CHECKPOINT.md` (auto-loaded current state)
+and `.landos/PERMANENT_MEMORY.md` (durable rules). Do not update this file and
+do not treat it as current. Retained as on-demand history.
 No property-specific private data here.
 
 ---

@@ -19,6 +19,7 @@ property-specific work product in this file.
 
 | Date | Department / Employee | Result | Business Value Finding | Next Exact Fix |
 |---|---|---|---|---|
+| 2026-07-09 | Deal Card (Acquisitions decision surface) — trust sprint completion | Usable as one coherent executive briefing | Judged as a land investor on the live De Queen card: the five-minute buy/reject read now works. Overview opens with the executive summary and target band; every tab tells the SAME story (one acreage, one valuation basis quoted identically on Overview/Market/Strategy/Seller, one comp state, five best comps instead of ninety-four); Strategy answers "should I pursue and at what price" with a real 40–60% band; Market answers "should I want land here" with auto pulse + Data Center Watch; the Executive Orchestrator audit runs on every read/run and CAUGHT five real cross-tab contradictions during QA that were then fixed. The New Lead intake is now a conversation (typed or dictated) that preserves raw seller language while extracting structure. This is the difference between a report pile and a decision instrument. | Tyler live acceptance; enable a grounded-search tier (or wait for daily quota) so Data Center Watch returns real findings; persist the second parcel of a multi-parcel lead as its own card. |
 | 2026-07-06 | Browser Agent / Property Intelligence Run | Usable for pre-discovery due diligence | Live dashboard QA proved the Browser Agent can act like an autonomous browser employee on an authenticated LandPortal session: one Deal Card action opened/reused the browser workflow, captured LandPortal parcel/comps/terrain/environment screenshots, extracted visible comps, refreshed Google visual context, included Market Pulse, Strategy, Land Score, and produced a real downloadable PDF with screenshots. It also behaved correctly on an unverified lead by refusing to fabricate parcel identity, score, comps, or offer guidance. Business value: Tyler can open a Deal Card and get a readable due-diligence package suitable for a discovery/pre-offer decision without manually assembling scattered screenshots and notes. | Move from discovery-ready to offer-ready: add sold-comp support or another approved valuation source, attach official county source evidence for core parcel facts, and tighten access/title/utilities confirmation. Keep the no-paid-action guard. |
 | 2026-07-06 | Browser Agent / Property Intelligence Run | Improved, not fully operator-accepted | The Browser Agent is now closer to the "AI employee" target without creating a second system: the existing LandPortal inspection package captures parcel facts, screenshots, overlays/terrain where available, and comps-map evidence into the same Deal Card report; the Deal Card presents a single Run Property Intelligence action; and the same readable report is downloadable as a real PDF/markdown artifact. This turns the current DD/Market/Strategy/Visual/Land Score pieces into one coordinated operator action instead of scattered controls. | Tyler must run a live authenticated LandPortal property from the dashboard and visually judge the output/download. Remaining business risk is live-site robustness: overlay labels and "Show on Map" controls can move, so real-page QA must confirm screenshots and comparable extraction before calling it production-ready. |
 | 2026-07-06 | Browser Training — session produces a useful playbook | Usable (visual/narrated) | The session now produces an actual work product instead of an empty shell. The hard truth was that a screen-share of Tyler's own tab has no DOM, so the old code's DOM-based steps/fields/screenshots were structurally always 0 and the playbook was empty — with no explanation. Now: latency is cut by only sending frames when the screen changes; screenshots are captured from the shared frames (start, on "take screenshot"/"this is important", and on page change); the transcript reads as sentences not word-shards; fields Tyler names are learned by voice; and the playbook is a VISUAL/NARRATED workflow with a plain-English summary of what was learned and that selectors still need one confirmation pass. So after a walkthrough Tyler gets a reviewable draft (narrated steps + screenshots + named fields) plus an honest "browser events not connected" status — a real starting artifact, not dead air. | Add a CDP training mode (train against the LandOS-driven Chrome, not a screen-share) so steps/selectors are DOM-accurate and fields auto-extract — the visual/narrated playbook becomes fully executable after that pass. |
@@ -68,3 +69,24 @@ property-specific work product in this file.
 - Next exact task:
 - What not to repeat:
 ```
+
+### 2026-07-13 - Deal Card platform (Acquisitions) — canonical reconciliation
+
+- Verdict: materially safer and more usable. The card can no longer quote a price,
+  offer band, market range, percentile, sell-through, or county $/acre from one
+  observation anywhere (Overview, Market, Strategy, Seller, Market Pulse); blocked
+  means blocked on every tab at once; the operator sees exactly WHY pricing is
+  gated and what evidence unlocks it.
+- The comp story is now auditable: raw candidates → validated unique comps →
+  rejected (with reasons) → duplicate merges, per provider. Provider attempts can
+  never read as comps again.
+- Deed research is now operator-visible: actual county recorder pages readable
+  in-app with findings and an explicit not-a-title-search limitation, plus a
+  generic evidence-derived research queue (prior deed, plat, trustee instruments,
+  later easements, tax record) owned by LandOS — only the survey decision routes
+  to Tyler.
+- Existing cards adopt the model automatically at read time; one click reconciles
+  persisted rows in place with zero risk of duplicates or CRM loss.
+- Remaining business gap (honest): the acceptance card still has only 1 validated
+  sold comp, so valuation stays blocked until comp expansion (sold-first, staged
+  geography) lands more closed sales; deed chain (prior deed, plat) still open.

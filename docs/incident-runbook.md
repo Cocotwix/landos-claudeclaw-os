@@ -97,4 +97,4 @@ sqlite3 store/claudeclaw.db \
 
 ## When the runbook doesn't help
 
-`pkill -9 -f 'node.*dist/index.js'` and let launchd respawn. Last-resort hammer; you'll lose in-flight turns but the system comes back clean.
+On Windows, use `npm run landos:restart`; it verifies repository ownership before stopping anything. On macOS launchd installs, use `launchctl kickstart -k gui/$(id -u)/com.claudeclaw.main`. Never use a generic Node process kill.

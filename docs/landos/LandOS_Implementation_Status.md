@@ -93,7 +93,20 @@ post-run ingest in the agent layer (`src/agent.ts` — not touched in this
 block because it carries unrelated uncommitted local changes). Until then,
 Duke's reports continue to flow to Obsidian + PDF exactly as today.
 
-## Future: LandOS Lead Workspace (planning note only — not built)
+## LandOS Lead Workspace (foundation built 2026-07-15 — QA in progress)
+
+Status update 2026-07-15: the Lead Workspace foundation is implemented and
+mid-QA under sprint `sprint-2026-07-15-lead-workspace-foundation`
+(`.landos/sprints/sprint-2026-07-15-lead-workspace-foundation/ledger.json`).
+It ships a versioned read-only read model (`src/landos/lead-workspace.ts`),
+the `/api/landos/lead-workspace/:id` endpoint, a responsive
+`web/src/components/LeadWorkspace.tsx` UI reached from Acquisitions
+(`/dept/acquisitions?deal=<id>`), and composition of WS1–WS3 canonical
+services without recomputation. The browser journey passes on the current
+bundle (see `.landos/qa/2026-07-16-lead-workspace-foundation.md`), but the
+sprint's formal ledger gates (phases, qa-brief/qa-result, independent QA)
+are still open; see `.landos/CHECKPOINT.md` for the exact continuation point.
+The original planning note follows for historical context.
 
 Later LandOS should support opening a lead/property card from the dashboard,
 viewing the Duke PDF/report and exact LandPortal property URL inside that

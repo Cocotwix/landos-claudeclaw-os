@@ -1,0 +1,463 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-15-lifecycle-demo",
+  "title": "Staged lifecycle demonstration: dashboard shell journey",
+  "createdAt": "2026-07-15T05:18:11.034Z",
+  "originalPrompt": "LIVE ACCEPTANCE DEMONSTRATION. Use the new staged sprint system to run a real demonstration workstream against an existing safe LandOS workflow without changing accepted property information. Prove: requirement ledger creation, workstream staging, managed runtime verification, independent browser QA launch, real localhost navigation, screenshot capture, structured findings, at least one intentionally safe failing assertion demonstrating the repair loop without damaging production data, successful retest, final combined regression, checkpoint integration, and an evidence-backed final status. Do not falsely manufacture a browser pass. Distinguish real browser execution from simulation.",
+  "promptSha256": "642583468db90930eadeced4a6b2946865391601fe602f24648c08862ccfb955",
+  "workstreams": [
+    {
+      "id": "demo-ws1",
+      "name": "Dashboard shell operator journey under the staged lifecycle",
+      "operatorOutcome": "Tyler can open the live LandOS dashboard at http://localhost:3141 and the workspace shell, deal-cards API, and visible content agree with each other and survive a browser refresh.",
+      "inScope": [
+        "Read-only browser verification of the live dashboard shell",
+        "API/frontend reconciliation for the deal-cards list",
+        "Refresh persistence of the operator workspace",
+        "Controlled failing assertion to exercise the repair loop"
+      ],
+      "backendServices": [
+        "src/dashboard.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "/landos"
+      ],
+      "requiredDataState": "Existing LandOS database with at least one deal card; no records are created, modified, or deleted.",
+      "browserJourney": {
+        "journeyId": "dashboard-shell-health",
+        "steps": [
+          "Open http://localhost:3141/landos in a real browser",
+          "Confirm the workspace shell renders with visible LandOS content",
+          "Reconcile the deal-cards API response with the visible page",
+          "Capture a screenshot",
+          "Reload the browser and confirm the workspace persists"
+        ]
+      },
+      "testRequirements": [
+        "vitest src/landos/sprint-system (56 tests)",
+        "full repository suite stays green",
+        "tsc --noEmit",
+        "vite + tsc production build"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Dashboard shell fails to render in a real browser",
+        "Deal-cards API disagrees with the visible page",
+        "Workspace content disappears after refresh",
+        "Any operator record is created, modified, or deleted by QA"
+      ],
+      "requiredProofs": [
+        "screenshot",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "live_url",
+        "test_result"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "demo-ws1-R1",
+          "text": "The live dashboard shell renders in a real browser at http://localhost:3141/landos.",
+          "verified": true,
+          "evidenceIds": [
+            "E5",
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "demo-ws1-R2",
+          "text": "The deal-cards API responds 200 and is consistent with the visible workspace.",
+          "verified": true,
+          "evidenceIds": [
+            "E5"
+          ]
+        },
+        {
+          "id": "demo-ws1-R3",
+          "text": "The workspace survives a browser refresh with no visible data loss.",
+          "verified": true,
+          "evidenceIds": [
+            "E8"
+          ]
+        },
+        {
+          "id": "demo-ws1-R4",
+          "text": "A deliberately failing assertion produces a structured finding, a repair record, and a passing retest of the same journey.",
+          "verified": true,
+          "evidenceIds": [
+            "E5",
+            "E9"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-15T05:23:17.357Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-15T05-20-48-872Z/report.md",
+        "evidenceIds": [
+          "E9"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-15T05:20:47.957Z",
+          "summary": "Removed the controlled failing fixture (sentinel assertion) from the journey; the canonical dashboard-shell-health journey is the corrected implementation",
+          "regressionCoverage": "operator-qa-runner.test.ts: 'a visible browser failure produces findings and a failing outcome' permanently covers this failure pattern"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-15T05:18:35.776Z",
+          "detail": "sprint system modules implemented in src/landos/sprint-system",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-15T05:18:36.769Z",
+          "detail": "vitest sprint-system 56/56 pass",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-15T05:18:37.753Z",
+          "detail": "full repository suite 3293/3293 pass",
+          "evidenceIds": [
+            "E2"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-15T05:18:38.948Z",
+          "detail": "tsc --noEmit clean",
+          "evidenceIds": [
+            "E3"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-15T05:18:40.006Z",
+          "detail": "vite+tsc production build success",
+          "evidenceIds": [
+            "E3"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-15T05:19:04.738Z",
+          "detail": "landos:status exit 0: exactly one verified healthy server PID 11508 at http://localhost:3141; health OK",
+          "evidenceIds": [
+            "E4"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-15T05:20:37.995Z",
+          "detail": "independent browser QA (.runtime/landos/qa/repair-loop-demo-1784092821432/dashboard-shell-health-controlled-failure)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-15T05:23:17.356Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-15T05-20-48-872Z/report.md)",
+          "evidenceIds": [
+            "E9"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "workstreamId": "demo-ws1",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/landos",
+      "steps": [
+        "Open the LandOS workspace",
+        "Workspace shell renders",
+        "Deal-cards API responds",
+        "Capture the workspace shell",
+        "CONTROLLED FIXTURE: expect sentinel \"QA-DEMO-SENTINEL-8271\" which is intentionally absent"
+      ],
+      "expected": "CONTROLLED FIXTURE: expect sentinel \"QA-DEMO-SENTINEL-8271\" which is intentionally absent",
+      "actual": "none of [QA-DEMO-SENTINEL-8271] visible on the live page",
+      "evidencePaths": [
+        "C:\\Users\\tbutt\\claudeclaw-os\\.runtime\\landos\\qa\\repair-loop-demo-1784092821432\\dashboard-shell-health-controlled-failure\\dashboard-shell.png"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "major",
+      "suspectedSubsystem": "platform",
+      "disposition": "internally_fixable",
+      "patternKey": "frontend-missing-value",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T05:20:37.995Z",
+      "history": [
+        {
+          "at": "2026-07-15T05:20:37.995Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T05:20:47.957Z",
+          "event": "repaired",
+          "detail": "Removed the controlled failing fixture (sentinel assertion) from the journey; the canonical dashboard-shell-health journey is the corrected implementation"
+        },
+        {
+          "at": "2026-07-15T05:22:41.218Z",
+          "event": "retest_passed",
+          "detail": "E5"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-15T05:18:23.309Z",
+      "kind": "test_result",
+      "summary": "vitest src/landos/sprint-system: 5 files, 56 tests, all passed (2026-07-15 01:15)",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-15T05:18:24.231Z",
+      "kind": "test_result",
+      "summary": "full suite: 259 files, 3293 tests, all passed (2026-07-15 01:15)",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-15T05:18:25.275Z",
+      "kind": "test_result",
+      "summary": "tsc --noEmit: clean; vite+tsc production build: success (2026-07-15 01:16)",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-15T05:18:26.360Z",
+      "kind": "api_evidence",
+      "summary": "managed restart: PID 11508 healthy, HTTP 200 in 3ms",
+      "path": ".runtime/landos/stdout.log",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-15T05:21:19.959Z",
+      "kind": "browser_journey",
+      "summary": "retest run qa-2026-07-15T05-20-48-872Z: dashboard-shell-health PASS in real browser, preflight 6/6",
+      "path": ".runtime/landos/qa/qa-2026-07-15T05-20-48-872Z/report.json",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-15T05:21:20.966Z",
+      "kind": "screenshot",
+      "summary": "live dashboard shell screenshot from retest run",
+      "path": ".runtime/landos/qa/qa-2026-07-15T05-20-48-872Z/dashboard-shell-health/dashboard-shell.png",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-15T05:21:22.016Z",
+      "kind": "live_url",
+      "summary": "exact live dashboard URL",
+      "url": "http://localhost:3141/landos",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-15T05:23:15.235Z",
+      "kind": "refresh_persistence",
+      "summary": "refresh-persistence journey PASS in real browser (run qa-2026-07-15T05-22-42-197Z): deal card content persisted across reload",
+      "path": ".runtime/landos/qa/qa-2026-07-15T05-22-42-197Z/report.json",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-15T05:23:16.279Z",
+      "kind": "independent_browser_qa",
+      "summary": "independent QA recheck: same journey rerun after repair, PASS in real browser with fresh screenshots",
+      "path": ".runtime/landos/qa/qa-2026-07-15T05-20-48-872Z/report.md",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-15T05:26:11.112Z",
+      "kind": "final_regression",
+      "summary": "platform capability suite qa-2026-07-15T05-23-44-271Z: 3/3 journeys PASS in real browser incl. managed-restart persistence",
+      "path": ".runtime/landos/qa/qa-2026-07-15T05-23-44-271Z/report.json",
+      "workstreamId": "demo-ws1"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-15T05:31:55.905Z",
+      "kind": "final_regression",
+      "summary": "final reviewer independent platform regression qa-2026-07-15T05-29-56-690Z: 3/3 PASS real_browser",
+      "path": ".runtime/landos/qa/qa-2026-07-15T05-29-56-690Z/report.json",
+      "workstreamId": "demo-ws1"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-07-15T05:32:01.921Z",
+    "detail": "combined platform operator regression rerun independently by final reviewer, 3/3 real-browser PASS",
+    "evidenceIds": [
+      "E10",
+      "E11"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-07-15T05:32:09.510Z",
+    "detail": "landos-final-reviewer: ledger valid; claims evidence-backed; F1 repair loop verified; independent live regression rerun passed; no operator data modified",
+    "evidenceIds": [
+      "E11"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-07-15T05:18:11.035Z",
+      "event": "sprint_created",
+      "detail": "Staged lifecycle demonstration: dashboard shell journey"
+    },
+    {
+      "at": "2026-07-15T05:18:12.074Z",
+      "event": "workstream_started",
+      "detail": "demo-ws1"
+    },
+    {
+      "at": "2026-07-15T05:18:35.776Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:implementation:pass"
+    },
+    {
+      "at": "2026-07-15T05:18:36.769Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-15T05:18:37.753Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-15T05:18:38.949Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:typecheck:pass"
+    },
+    {
+      "at": "2026-07-15T05:18:40.007Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:production_build:pass"
+    },
+    {
+      "at": "2026-07-15T05:19:04.738Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-15T05:20:37.995Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-15T05:20:37.995Z",
+      "event": "browser_qa_recorded",
+      "detail": "demo-ws1:fail"
+    },
+    {
+      "at": "2026-07-15T05:20:47.957Z",
+      "event": "repair_started",
+      "detail": "demo-ws1"
+    },
+    {
+      "at": "2026-07-15T05:20:47.957Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-15T05:22:41.218Z",
+      "event": "finding_retested",
+      "detail": "F1:pass"
+    },
+    {
+      "at": "2026-07-15T05:23:17.357Z",
+      "event": "phase_recorded",
+      "detail": "demo-ws1:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-15T05:23:17.357Z",
+      "event": "browser_qa_recorded",
+      "detail": "demo-ws1:pass"
+    },
+    {
+      "at": "2026-07-15T05:23:31.086Z",
+      "event": "requirement_verified",
+      "detail": "demo-ws1/demo-ws1-R1"
+    },
+    {
+      "at": "2026-07-15T05:23:32.125Z",
+      "event": "requirement_verified",
+      "detail": "demo-ws1/demo-ws1-R2"
+    },
+    {
+      "at": "2026-07-15T05:23:33.177Z",
+      "event": "requirement_verified",
+      "detail": "demo-ws1/demo-ws1-R3"
+    },
+    {
+      "at": "2026-07-15T05:23:34.474Z",
+      "event": "requirement_verified",
+      "detail": "demo-ws1/demo-ws1-R4"
+    },
+    {
+      "at": "2026-07-15T05:23:35.717Z",
+      "event": "workstream_passed",
+      "detail": "demo-ws1"
+    },
+    {
+      "at": "2026-07-15T05:32:01.922Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-15T05:32:09.510Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-15T05:32:58.427Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

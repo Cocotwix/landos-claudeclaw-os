@@ -1,0 +1,80 @@
+{
+  "sprintId": "sprint-2026-07-15-dealcard-v2",
+  "workstreamId": "ws3-readiness",
+  "workstreamName": "Unified readiness and strategy status",
+  "operatorOutcome": "One shared readiness record drives Overview, Market, Strategy, Seller, Reports, RAG, and Executive review; strategy readiness cannot read OK while all strategies are blocked; value readiness is not high merely because a median exists; offer readiness explains why it is researching/blocked; the consistency audit fails on any status disagreement.",
+  "requirements": [
+    {
+      "id": "ws3-r1",
+      "text": "If all five strategies are blocked, Strategy Readiness cannot display OK or actionable."
+    },
+    {
+      "id": "ws3-r2",
+      "text": "The UI may say strategy screening is available while actionability is blocked."
+    },
+    {
+      "id": "ws3-r3",
+      "text": "Value Readiness cannot be high or fully ready merely because a median can be calculated."
+    },
+    {
+      "id": "ws3-r4",
+      "text": "Zoning, acreage basis, access, title, and physical constraints affect confidence and readiness per materiality."
+    },
+    {
+      "id": "ws3-r5",
+      "text": "Offer readiness clearly explains why it remains researching or blocked."
+    },
+    {
+      "id": "ws3-r6",
+      "text": "All tabs and reports consume the same readiness result."
+    },
+    {
+      "id": "ws3-r7",
+      "text": "The consistency audit fails when visible statuses disagree."
+    }
+  ],
+  "liveUrl": "http://localhost:3141",
+  "journey": {
+    "steps": [
+      "Open the verified Deal Card Overview and read Strategy/Value/Offer readiness",
+      "Confirm Strategy Readiness is not OK/actionable while all five strategies are blocked",
+      "Open the Strategy tab and confirm screening-available vs actionability-blocked is expressed coherently",
+      "Confirm Value Readiness is not high merely because a median can be computed",
+      "Confirm Offer Readiness explains why it is researching/blocked",
+      "Open Market, Seller, Reports and confirm they show the same readiness result",
+      "Refresh and confirm readiness persists"
+    ]
+  },
+  "requiredVisibleOutcomes": [
+    "Must NOT occur: Strategy Readiness OK while all strategies blocked",
+    "Must NOT occur: Value Readiness high solely from a computable median",
+    "Must NOT occur: Offer Readiness with no explanation",
+    "Must NOT occur: Two tabs/reports showing different readiness for the same card",
+    "Must NOT occur: Consistency audit passes despite disagreeing statuses"
+  ],
+  "acceptedFacts": [],
+  "knownFailurePatterns": [
+    "frontend-missing-value: 1 occurrence(s) (single occurrence)",
+    "overlay-uses-wrong-acreage-basis: 3 occurrence(s) (reviewed)",
+    "reconciliation-ignores-acreage-conflict: 2 occurrence(s) (reviewed)",
+    "access-unknown-road-called-private: 2 occurrence(s) (reviewed)"
+  ],
+  "persistence": {
+    "refresh": true,
+    "restart": false
+  },
+  "ledgerPath": "C:\\Users\\tbutt\\claudeclaw-os\\.landos\\sprints\\sprint-2026-07-15-dealcard-v2\\ledger.json",
+  "mandate": [
+    "Actively attempt to prove the implementation wrong; never repeat the builder's conclusions.",
+    "Open the actual running localhost dashboard in a real browser.",
+    "Navigate the full affected workflow; click every relevant control and open every affected tab.",
+    "Exercise relevant forms, maps, filters, tables, links, and actions.",
+    "Compare visible frontend output with API responses and, when appropriate, database records.",
+    "Compare visible output with accepted operator facts.",
+    "Refresh the browser and verify persistence; when restart persistence is required, restart via npm run landos:restart and reopen the workflow.",
+    "Capture fresh screenshots and exact reproduction steps for every failure.",
+    "Judge business meaning and operator usability, not merely whether pages load.",
+    "Return a non-passing result whenever an internally fixable issue remains.",
+    "After repairs, run the exact same journey again."
+  ]
+}

@@ -1,8 +1,8 @@
-# LandOS Current Sprint
+# LandOS Current Sprint (superseded — history only)
 
-Purpose: keep the active implementation sprint understandable to a fresh
-Claude Code, Codex, or future build-agent session without Tyler restating
-context.
+Superseded 2026-07-14 by `.landos/CHECKPOINT.md`. Do not update this file and
+do not treat it as current; the content below is a stale 2026-07-04 snapshot
+retained as on-demand history.
 
 ## Current Sprint
 

@@ -1,30 +1,42 @@
 # LandOS Operating Memory
 
-This directory is LandOS-owned operating memory. It is vendor-neutral and shared
-by Codex, Claude Code, ChatGPT Project conversations, and future LandOS build
-agents.
+LandOS-owned, vendor-neutral memory shared by Claude Code, Codex, and future
+build agents. Three layers:
 
-## Files
+## Layer A — Permanent (auto-loaded)
+
+| File | Purpose | Budget |
+|---|---|---|
+| `PERMANENT_MEMORY.md` | Durable operating rules + canonical-location map. | ≤ 4 KB |
+
+## Layer B — Current checkpoint (auto-loaded)
+
+| File | Purpose | Budget |
+|---|---|---|
+| `CHECKPOINT.md` | The one current-state file: recent work, unfinished work, blockers, pending decisions, git/test/runtime status, next priority. **Replaced in place, never appended.** | ≤ 8 KB |
+
+Both are imported by `CLAUDE.md`, so every fresh session gets them without
+`/continue-landos` or a continuation preamble.
+
+## Layer C — On-demand history (never auto-loaded)
 
 | File | Purpose |
 |---|---|
-| `../LANDOS_CURRENT_STATE.md` | Canonical current build/business state. |
-| `CHAT_CONTEXT.md` | Concise conversation continuity: where Tyler and the AI left off talking. |
-| `CURRENT_SPRINT.md` | Current sprint, blocker, next exact task, already attempted work. |
-| `PROJECT_MEMORY.md` | Durable lessons, gotchas, and what not to repeat. |
-| `DECISIONS.md` | Durable decisions. |
-| `OPERATOR_QA.md` | Dashboard/operator-visible QA memory. |
-| `BUSINESS_QA.md` | Department-as-employee business value QA memory. |
-| `KNOWN_LIMITATIONS.md` | Intentionally unfinished work and whether it blocks use. |
-| `HANDOVER.md` | Session closeout details. |
-| `CONTINUITY_PROTOCOL.md` | How fresh sessions resume and close LandOS work. |
-| `OPERATING_STATE.md` | Legacy operating model details retained during transition. |
+| `HANDOVER.md` | Historical session closeouts. |
+| `OPERATOR_QA.md` | Operator QA ledger (append per QA run). |
+| `BUSINESS_QA.md` | Business QA ledger (append per evaluation). |
+| `KNOWN_LIMITATIONS.md` | Intentionally unfinished work. |
+| `PROJECT_MEMORY.md` | Durable lessons and gotchas (history). |
+| `DECISIONS.md` | Durable decisions (history). |
+| `CHAT_CONTEXT.md`, `CURRENT_SPRINT.md`, `OPERATING_STATE.md`, `CONTINUITY_PROTOCOL.md` | Legacy files retained as history. |
 
-## Fresh Session Workflow
+Search Layer C with Grep/Read for the specific fact you need. Never bulk-load it.
 
-User input should be enough as:
+## Rules
 
-`Continue LandOS.`
-
-The agent should load `LANDOS_CURRENT_STATE.md`, `CHAT_CONTEXT.md`, and the
-`.landos` memory files before continuing autonomously.
+- No transcripts, full prompts, full reports, raw logs, browser/MCP output,
+  secrets, or tokenized URLs anywhere in this directory.
+- Tooling: `npm run landos:memory:status`, `npm run landos:memory:audit`,
+  `npm run landos:memory:checkpoint`, and task-specific `npm run landos:memory:retrieve -- <query>`.
+- A fresh session needs only the actual work request. "Continue LandOS" style
+  preambles are unnecessary and must not trigger bulk history loading.

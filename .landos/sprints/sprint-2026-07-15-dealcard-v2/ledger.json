@@ -1,0 +1,2754 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-15-dealcard-v2",
+  "title": "Deal Card v2 repair and finish (shared operator correctness)",
+  "createdAt": "2026-07-15T15:40:26.188Z",
+  "originalPrompt": "Repair and finish the shared LandOS Deal Card v2 operator experience using the permanent staged sprint lifecycle that is now installed in the repository.\n\nUse the compact automatic LandOS memory and current checkpoint.\n\nDo not invoke /continue-landos.\nDo not load broad historical context.\nDo not create a property-specific fix.\nDo not declare completion from backend tests or narrative confidence.\n\nRepository:\nC:\\Users\\tbutt\\claudeclaw-os\n\nPRIMARY OPERATOR OUTCOME\n\nWhen Tyler opens a verified Deal Card, every visible fact, readiness state, valuation, strategy status, comparable, research status, and next action must be internally consistent, correctly qualified, and useful for making a land-investment decision.\n\nThe coding agent is not the final judge of completion.\n\nUse the installed staged lifecycle:\n\nrequirement ledger\n-> workstream implementation\n-> automated checks\n-> managed live-local verification\n-> independent browser QA\n-> repair loop\n-> browser retest\n-> workstream acceptance\n-> next workstream\n-> final combined Deal Card regression\n-> independent final review\n-> capability freeze\n\nCreate a real sprint ledger using the installed LandOS sprint-system tooling.\n\nPreserve the original requirements in the ledger without silently narrowing them.\n\nACCEPTANCE EXAMPLE\n\nUse this property only to reproduce and verify shared failures:\n\n200 Sid Edens Rd, Pickens, SC 29671\nAPN 5105-00-44-0497\n\nDo not hardcode its address, APN, county, acreage, comps, valuation, or displayed conclusions.\n\nEvery repair must apply through shared records, services, validation, readiness, report assembly, UI components, migrations, and browser journeys to all current and future Deal Cards.\n\nOPERATOR-CONFIRMATION RULE\n\nDo not change previously accepted operator information without Tyler's confirmation.\n\nWhen accepted information conflicts with new evidence:\n\n1. Preserve both values.\n2. Identify the sources.\n3. Record the discrepancy.\n4. Do not silently select a replacement.\n5. Do not use a disputed value for a gated calculation unless its permitted use is explicit.\n6. Put the material decision in \"Tyler decision required.\"\n\nWORKSTREAM 1 - CANONICAL ACREAGE AND SPATIAL BASIS\n\nRepair the shared acreage and spatial-basis model.\n\nThe live card currently shows:\n\n1. Assessed acreage: 1.32 acres.\n2. Mapped/provider geometry: 1.15 acres.\n3. Description based on 1.15 acres.\n4. Valuation based on 1.15 acres.\n5. FEMA area reported as 1.32 acres.\n6. Non-wetland mapped area reported from 1.15 acres.\n7. No Tyler decision required.\n\nThat state is not sufficiently reconciled.\n\nImplement one shared acreage-basis record that distinguishes:\n\n1. Assessed acreage.\n2. Deeded acreage.\n3. Surveyed acreage.\n4. GIS geometry acreage.\n5. Provider acreage.\n6. Operator-accepted acreage.\n7. Valuation acreage.\n8. Spatial-overlay acreage.\n\nFor every use, record:\n\n1. Value.\n2. Source.\n3. Confidence.\n4. Whether disputed.\n5. Whether operator accepted.\n6. Permitted uses.\n7. Limitation.\n\nRequirements:\n\n1. The UI must explain why assessed and mapped acreage differ.\n2. Overlay acreage must use the actual geometry queried.\n3. Valuation must disclose exactly which acreage basis it uses.\n4. A material unresolved acreage basis must trigger a reconciliation issue and Tyler decision when appropriate.\n5. No calculation may silently use an acreage that the header treats as unresolved.\n6. Flood, wetlands, soils, slope, non-wetland area, comps, valuation, maps, reports, and strategy math must identify the correct acreage basis.\n7. Add consistency checks that fail when an overlay area exceeds its queried geometry without a documented explanation.\n8. Do not change an accepted acreage without Tyler's confirmation.\n\nComplete independent browser QA for this workstream before proceeding.\n\nWORKSTREAM 2 - RESEARCH COMPLETENESS AND EVIDENCE LANGUAGE\n\nRepair the shared research-completeness model and visible wording.\n\nThe live card currently counts seven of eight lanes as evidenced even though:\n\n1. Zoning has not run.\n2. Parcel-road contact remains researching.\n3. Legal access remains unresolved.\n4. Deed and easement documents have not been reviewed.\n5. FEMA panel information remains pending.\n\nSeparate:\n\n1. Provider attempted.\n2. Provider retrieved data.\n3. Partial evidence.\n4. Business question resolved.\n5. Legal confirmation complete.\n6. External confirmation required.\n\nDo not count partial proximity evidence as completed access research.\n\nDo not count a county flood query as complete FEMA research when material FEMA tasks remain.\n\nRepair these specific categories:\n\nFEMA:\n1. Zone X result, coverage basis, panel status, effective date, and BFE availability must be separate.\n2. Do not state that BFE was screened when no BFE exists or was retrieved.\n3. Do not label \"exact acreage + BFE\" completed unless both are genuinely supported.\n4. Use the mapped geometry acreage for overlay percentages and acreage.\n5. Clearly distinguish county-layer screening from federal FIRM confirmation.\n\nRoad and access:\n1. Road proximity is not frontage.\n2. An unnamed or non-publicly classified road is not automatically a private road.\n3. Do not state that recorded private-road rights are required unless evidence supports that conclusion.\n4. Separate road classification, parcel contact, right-of-way contact, physical access, driveway evidence, legal access, and maintenance.\n5. Use \"unknown\" rather than \"private\" when road ownership is not established.\n\nSoils and septic:\n1. Do not describe one mapped component as a split or mixed set unless multiple meaningful ratings exist.\n2. Distinguish SSURGO map-unit limitation from site-specific septic feasibility.\n3. Do not imply part of the parcel supports septic without adequate evidence.\n4. Keep map-unit slope descriptions separate from measured parcel mean slope.\n\nUtilities:\n1. Absence of a mapped county line is not proof that service is unavailable.\n2. Clearly label well and septic statements as preliminary likelihoods.\n3. Record provider/service-area research and remaining confirmation separately.\n\nCritical red flags:\n1. Incomplete screening must not appear favorable.\n2. Access, title, acreage, and zoning uncertainty must affect critical-risk completeness.\n3. \"No all-clear\" language must match the actual unresolved material categories.\n\nComplete independent browser QA for this workstream before proceeding.\n\nWORKSTREAM 3 - UNIFIED READINESS AND STRATEGY STATUS\n\nRepair the shared readiness service.\n\nThe live card currently shows:\n\n1. Strategy Readiness: OK.\n2. Strategies scoreable.\n3. All five strategies: blocked.\n4. Value Readiness: OK.\n5. Offer Readiness: researching.\n\nThese states do not compute together.\n\nCreate one shared readiness record consumed by:\n\n1. Overview.\n2. Market.\n3. Strategy.\n4. Seller.\n5. Reports.\n6. RAG output.\n7. Executive review.\n\nSeparate:\n\n1. Research completeness.\n2. Preliminary valuation context.\n3. Defensible valuation readiness.\n4. Strategy screening availability.\n5. Strategy scoreability.\n6. Strategy actionability.\n7. Offer readiness.\n8. Contract readiness.\n\nRequirements:\n\n1. If all five strategies are blocked, Strategy Readiness cannot display OK or actionable.\n2. The UI may say strategy screening is available while actionability is blocked.\n3. Value Readiness cannot be high or fully ready merely because a median can be calculated.\n4. Zoning, acreage basis, access, title, and physical constraints must affect confidence and readiness according to their materiality.\n5. Offer readiness must clearly explain why it remains researching or blocked.\n6. All tabs and reports must consume the same readiness result.\n7. The consistency audit must fail when visible statuses disagree.\n\nComplete independent browser QA for this workstream before proceeding.\n\nWORKSTREAM 4 - COMPARABLE VALIDATION, PROVIDER COVERAGE, AND VALUATION\n\nRepair the shared comp and valuation workflow.\n\nThe live card currently shows 55 sold comps and a high-confidence valuation, but the selected top-five PPA values range from approximately $6,250 to $64,516 per acre.\n\nThe system must prove that the market evidence is coherent before presenting high confidence.\n\nFor every provider mission, show:\n\n1. LandPortal attempt and result.\n2. Zillow attempt and result.\n3. Redfin attempt and result.\n4. Realie.ai attempt and result.\n5. Realtor.com/HomeHarvest attempt and result.\n6. County recorded-sale attempt and result.\n7. Candidate count.\n8. Accepted count.\n9. Duplicate count.\n10. Rejected count.\n11. Failure or blocker reason.\n\nDo not claim provider coverage merely because an adapter exists.\n\nFor every selected primary comp, validate and display:\n\n1. Address.\n2. APN when available.\n3. Closed status.\n4. Sale price.\n5. Sale date.\n6. Acreage.\n7. Sold PPA.\n8. Straight-line distance.\n9. Vacant-land or improved-property status.\n10. Neighborhood/local-market relationship.\n11. Zoning or development-context similarity when available.\n12. Access and utility similarity when available.\n13. Flood, wetlands, terrain, and constraint similarity when available.\n14. Provider name.\n15. Direct provider link.\n16. Score components.\n17. Why selected.\n18. Material differences.\n19. Known unknowns.\n20. Why it outranked the next-best excluded candidate.\n\nRequirements:\n\n1. A missing provider URL must be visibly identified rather than silently omitting \"view.\"\n2. The Realie.ai comp must have a working provider link when available.\n3. Weak comps must not be selected merely to fill five positions.\n4. Use fewer than five when fewer are defensible.\n5. Improved or unknown-improvement sales must be excluded or materially penalized.\n6. Detect materially different geographic, acreage, improvement, or PPA clusters.\n7. Do not blend materially different clusters into one high-confidence median.\n8. Explain outliers.\n9. High confidence requires a coherent validated cluster and adequate subject similarity.\n10. Otherwise show preliminary, moderate, low, conflicted, or insufficient evidence.\n11. The selected set, displayed sold count, valuation count, map count, and registry count must reconcile.\n12. The interactive comp map and table must use the same deduplicated records.\n13. Provider links must open safely in a new tab.\n14. The LandPortal raw map and final LandOS selected map must remain clearly differentiated.\n\nValuation must disclose:\n\n1. Subject acreage basis.\n2. Selected cluster.\n3. Number of qualified closed sales.\n4. Median PPA.\n5. Weighted PPA.\n6. Simple average PPA.\n7. Interquartile range.\n8. Outliers removed or retained.\n9. Material limitations.\n10. Confidence rationale.\n\nDo not present a high-confidence valuation when access, zoning, property type, acreage basis, or comp coherence materially undermines confidence.\n\nComplete independent browser QA for this workstream before proceeding.\n\nWORKSTREAM 5 - EXECUTIVE AUDIT AND OPERATOR COPY\n\nRepair the consistency audit and operator-facing wording.\n\nThe live card currently claims 25/25 checks pass despite visible readiness and acreage-basis issues.\n\nExtend the audit to fail on:\n\n1. Strategy Readiness OK while all strategies are blocked.\n2. Value confidence inconsistent with unresolved material facts.\n3. Missing Tyler decision for a material acreage discrepancy.\n4. Overlay acreage inconsistent with geometry acreage.\n5. BFE claims unsupported by evidence.\n6. Partial access evidence counted as completed access research.\n7. Unknown road ownership described as private.\n8. Provider coverage claims without actual provider results.\n9. Selected comp missing provider link.\n10. High-confidence valuation with incoherent comp clusters.\n11. Research-progress report wording that implies completed underwriting.\n12. Any frontend and backend readiness mismatch.\n\nRepair awkward or misleading copy, including:\n\n1. \"1.15-acre parcel on Pickens, Pickens County.\"\n2. \"0 of 1 component ratings are very limited.\"\n3. Statements asserting a private road without proof.\n4. Seller questions referring to \"Unnamed road\" as though it were a confirmed usable access route.\n5. Repeated duplicate access and septic paragraphs.\n6. Technical language that does not help Tyler determine what matters next.\n\nGenerate seller questions from actual unresolved facts, but keep them natural and useful.\n\nComplete independent browser QA for this workstream before proceeding.\n\nWORKSTREAM 6 - COMPLETE DEAL CARD BROWSER REGRESSION\n\nAfter the first five workstreams pass independently, run the full Deal Card operator regression.\n\nThe independent browser QA agent must inspect, click through, and reconcile:\n\n1. Overview.\n2. Property.\n3. Due Diligence.\n4. Market.\n5. Strategy.\n6. Visuals.\n7. Seller.\n8. Documents.\n9. Activity.\n10. Interactive comp map.\n11. Every selected comp popup.\n12. Provider links.\n13. Research status.\n14. Readiness states.\n15. Reports.\n16. Refresh persistence.\n17. Managed restart persistence.\n\nUse:\n\n1. 200 Sid Edens Rd, Pickens, SC 29671, APN 5105-00-44-0497.\n2. At least two unrelated verified properties in different jurisdictions.\n3. One verified property with incomplete research.\n4. One unresolved property.\n5. One genuine APN-conflict fixture.\n6. One thin-market fixture.\n7. One multi-parcel fixture.\n\nDo not alter accepted real-property information during QA.\n\nThe QA agent must compare:\n\n1. Frontend.\n2. API payload.\n3. Database state.\n4. Accepted operator facts.\n5. Requirement ledger.\n\nCapture fresh screenshots.\n\nEvery finding must return to the builder and receive a browser retest.\n\nFINAL CAPABILITY FREEZE\n\nWhen every workstream and the final independent regression pass:\n\n1. Freeze Deal Card v2 as an accepted capability.\n2. Register its golden journeys.\n3. Register its invariants.\n4. Register its regression suites.\n5. Register known limitations and true external blockers.\n6. Require future shared-dependency changes to rerun the protected Deal Card regression.\n7. Do not allow unrelated department work to casually reopen or redesign Deal Card v2.\n\nDo not mark Tyler acceptance complete merely because automated QA passes. Mark it ready for Tyler's final usefulness review.\n\nTESTING\n\nRun:\n\n1. Targeted tests for every repaired invariant.\n2. Sprint-system ledger validation.\n3. Relevant integration tests.\n4. Full test suite.\n5. Typecheck.\n6. Production build.\n7. git diff --check.\n8. The installed operator-QA command.\n9. Independent final review.\n\nDo not proceed to the next workstream until the current workstream passes its live browser-QA gate.\n\nLIVE-LOCAL REQUIREMENT\n\nUse only:\n\nnpm run landos:status\nnpm run landos:start\nnpm run landos:stop\nnpm run landos:restart\nnpm run landos:logs\nnpm run landos:health\n\nNever run a foreground production server.\nNever kill generic Node processes.\n\nAt completion confirm:\n\n1. Exactly one managed process.\n2. HTTP and health response.\n3. Current production bundle.\n4. Persistence after restart.\n5. Server PID.\n6. Exact live URLs identified by full address and APN.\n\nSAFETY\n\nDo not commit.\nDo not push.\nDo not deploy.\nDo not edit .env.\nDo not reset.\nDo not restore.\nDo not stash.\nDo not delete real properties or operator data.\nDo not use paid APIs.\nDo not purchase LandPortal reports.\nDo not expose credentials or dashboard tokens.\nPreserve unrelated dirty work.\n\nFINAL REPORT\n\nGenerate the final report from the sprint ledger and linked evidence.\n\nReport:\n\n1. Workstreams created.\n2. Shared root causes.\n3. Repairs made.\n4. Browser-QA findings and repair cycles for each workstream.\n5. Acreage-basis behavior.\n6. Research-completeness behavior.\n7. Readiness behavior.\n8. Comp-provider coverage.\n9. Selected-comp validation.\n10. Valuation confidence and clustering.\n11. Consistency-audit behavior.\n12. Operator-copy improvements.\n13. Full Deal Card regression results.\n14. Accepted-capability freeze result.\n15. Tests.\n16. Typecheck.\n17. Build.\n18. git diff check.\n19. Independent-review result.\n20. Remaining true external blockers.\n21. Pending Tyler decisions.\n22. Proof paths.\n23. Server PID.\n24. Exact live URLs.\n25. Confirmation that no prohibited action occurred.\n\nDo not claim completion unless every internally fixable requirement has linked automated proof and independent live-browser proof.\n",
+  "promptSha256": "f55881adbfb9a931efa3efa869d0e508c6c2287878f0644eac7eb6fe36d00508",
+  "workstreams": [
+    {
+      "id": "ws1-acreage-basis",
+      "name": "Canonical acreage and spatial basis",
+      "operatorOutcome": "Every Deal Card reconciles assessed/deeded/surveyed/GIS/provider/operator-accepted/valuation/overlay acreage with source, confidence, dispute and permitted-use metadata; the UI explains assessed-vs-mapped differences; overlays use the geometry actually queried; valuation discloses its basis; a material unresolved basis raises a reconciliation issue and Tyler decision; no gated calc silently uses an unresolved acreage.",
+      "inScope": [
+        "Shared acreage-basis record model with the 8 basis kinds and 7 per-use attributes",
+        "Reconciliation of assessed vs mapped/geometry acreage into a discrepancy issue",
+        "Overlay (flood/wetlands/soils/slope/non-wetland) acreage sourced from queried geometry",
+        "Valuation acreage-basis disclosure",
+        "Consistency check: overlay area may not exceed queried geometry without documented explanation",
+        "Preserve accepted acreage; do not change without Tyler confirmation"
+      ],
+      "backendServices": [
+        "src/landos/parcel-spatial.ts",
+        "src/landos/parcel-identity-divergence.ts",
+        "src/landos/deal-card-reconciliation.ts",
+        "src/landos/deal-card-canonical.ts",
+        "src/landos/normalized-property.ts",
+        "src/landos/operator-property-record.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Overview (acreage header)",
+        "Deal Card > Property",
+        "Deal Card > Due Diligence (flood/wetlands/soils/slope overlays)"
+      ],
+      "requiredDataState": "A verified Deal Card whose assessed acreage differs from mapped/GIS geometry acreage (acceptance example: 200 Sid Edens Rd, Pickens SC, APN 5105-00-44-0497 — assessed 1.32 vs mapped 1.15).",
+      "browserJourney": {
+        "steps": [
+          "Open the verified Deal Card at http://localhost:3141",
+          "Read the acreage header on Overview and confirm it distinguishes assessed vs mapped and explains the difference",
+          "Open Due Diligence and confirm each overlay states which acreage basis it used and that overlay area does not exceed queried geometry",
+          "Confirm the valuation states the acreage basis it used",
+          "Confirm a material unresolved acreage basis surfaces a reconciliation issue and a Tyler decision item",
+          "Refresh the page and confirm all acreage statements persist"
+        ]
+      },
+      "testRequirements": [
+        "Unit tests for the acreage-basis record: each basis kind carries value/source/confidence/disputed/accepted/permittedUses/limitation",
+        "Reconciliation test: assessed!=geometry beyond tolerance yields a discrepancy issue and Tyler-decision flag",
+        "Overlay-vs-geometry consistency test fails when overlay area exceeds queried geometry without documented explanation",
+        "Regression: accepted acreage is never silently replaced"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Header shows a single acreage without explaining assessed-vs-mapped difference",
+        "An overlay reports an acreage basis it did not query, or area exceeds queried geometry with no explanation",
+        "Valuation does not disclose its acreage basis",
+        "Material acreage discrepancy with no reconciliation issue or Tyler decision",
+        "A gated calculation uses an acreage the header treats as unresolved",
+        "An accepted acreage is changed without Tyler confirmation"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "refresh_persistence",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "requirements": [
+        {
+          "id": "ws1-r1",
+          "text": "The UI explains why assessed and mapped acreage differ.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws1-r2",
+          "text": "Overlay acreage uses the actual geometry queried.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws1-r3",
+          "text": "Valuation discloses exactly which acreage basis it uses.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws1-r4",
+          "text": "A material unresolved acreage basis triggers a reconciliation issue and Tyler decision when appropriate.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-r5",
+          "text": "No calculation silently uses an acreage the header treats as unresolved.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws1-r6",
+          "text": "Flood, wetlands, soils, slope, non-wetland area, comps, valuation, maps, reports, and strategy math identify the correct acreage basis.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws1-r7",
+          "text": "A consistency check fails when an overlay area exceeds its queried geometry without a documented explanation.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws1-r8",
+          "text": "An accepted acreage is not changed without Tyler's confirmation.",
+          "verified": true,
+          "evidenceIds": [
+            "E13",
+            "E7"
+          ]
+        }
+      ],
+      "status": "browser_qa_passed",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-15T16:50:45.167Z",
+        "reportPath": ".runtime/landos/qa/ws1-recheck3/01-overview.png",
+        "evidenceIds": [
+          "E13",
+          "E14"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-15T16:19:13.485Z",
+          "summary": "Flood overlay acreage pinned to mapped GIS geometry x parcelPercentage in operator record; source (public-property-intelligence-live NFHL path) now samples overlay area against queried geometry not provider/assessed acres.",
+          "regressionCoverage": "acreage-basis.test.ts checkOverlayConsistency overlay-exceeds-geometry cases (5) + new browser assertion: flood overlay acres <= mapped geometry"
+        },
+        {
+          "findingId": "F2",
+          "repairedAt": "2026-07-15T16:19:14.540Z",
+          "summary": "report.reconciliation.acreage now derived from canonical buildAcreageBasis via acreageFactFromBasis (shared 5%/0.1ac materiality) instead of a private 15% gate; conflict now surfaces for the 12.9% gap.",
+          "regressionCoverage": "deal-card-reconciliation.test.ts acreageFactFromBasis WS1 F2/F3 regression (3 cases)"
+        },
+        {
+          "findingId": "F3",
+          "repairedAt": "2026-07-15T16:19:15.534Z",
+          "summary": "Same canonical-basis wiring resolves the audit acreage_conflict_preserved mismatch and the orchestration 'need repair' banner: reconciliation.conflict now equals operatorRecord acreageBasis.disputed.",
+          "regressionCoverage": "system-consistency-regression.test.ts + deal-card-audit.test.ts (acreage_conflict_preserved) + acreageFactFromBasis regression"
+        },
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-15T16:32:56.525Z",
+          "summary": "All flood-acreage surfaces now flow from one shared pinOverlayAcresToGeometry helper: operator record regenerates flood.summary from pinned zones (fixes floodCard detail + workStatus); routes projectPublicScreening pins zones before composing reconciliation.flood + govDd.flood.note; source samples overlay against queried geometry. 100% Zone-X now reads mapped 1.15 ac everywhere.",
+          "regressionCoverage": "acreage-basis.test.ts pinOverlayAcresToGeometry (4) + checkOverlayConsistency (5)"
+        },
+        {
+          "findingId": "F4",
+          "repairedAt": "2026-07-15T16:32:57.559Z",
+          "summary": "Same shared-helper repair as F1: free-text flood surfaces (summary/reconciliation/govDd/workStatus) pinned to mapped geometry; rebuilt bundle so QA tests current source (fixes the stale production_build_fresh flag).",
+          "regressionCoverage": "acreage-basis.test.ts pinOverlayAcresToGeometry regression"
+        },
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-15T16:44:58.418Z",
+          "summary": "Final surface pinned: new pinRunOverlaysToGeometry(run) normalizes the flood task's zones+summary at read time for the /public-intelligence endpoint (DD Public Property Intelligence panel). All flood surfaces across /report AND /public-intelligence now read mapped 1.15 ac.",
+          "regressionCoverage": "acreage-basis.test.ts pinOverlayAcresToGeometry + routes.test.ts public-intelligence pipeline"
+        },
+        {
+          "findingId": "F4",
+          "repairedAt": "2026-07-15T16:44:59.545Z",
+          "summary": "Same read-time run pinning covers the DD panel free-text summary surface.",
+          "regressionCoverage": "acreage-basis.test.ts pinOverlayAcresToGeometry"
+        },
+        {
+          "findingId": "F5",
+          "repairedAt": "2026-07-15T16:45:00.661Z",
+          "summary": "The /public-intelligence-fed DD flood panel (zones table + summary) now pinned to mapped geometry via pinRunOverlaysToGeometry.",
+          "regressionCoverage": "acreage-basis.test.ts pinOverlayAcresToGeometry regression"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-15T15:56:24.291Z",
+          "detail": "Shared acreage-basis module (8 basis kinds + per-use metadata, overlay-vs-geometry consistency, accepted-overwrite guard, Tyler-decision surfacing) wired into operator property record identity; frontend AcreageBasisPanel + Tyler-decision callout in RisksUnknownsPanel.",
+          "evidenceIds": [
+            "E3"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-15T15:56:25.299Z",
+          "detail": "acreage-basis.test.ts 23/23 (materiality, dispute+Tyler decision, overlay basis pinned to GIS geometry, disputed value barred from gated use, accepted governs, overlay-exceeds-geometry, accepted-overwrite blocker).",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-15T15:56:26.349Z",
+          "detail": "system-consistency-regression + deal-card-audit + reconciliation + strategy-readiness + operator-record: 138/138.",
+          "evidenceIds": [
+            "E2"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-15T15:56:27.458Z",
+          "detail": "tsc --noEmit exit 0 across server + web.",
+          "evidenceIds": [
+            "E4"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-15T15:56:28.777Z",
+          "detail": "npm run build: vite 1838 modules transformed + tsc, exit 0.",
+          "evidenceIds": [
+            "E4"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-15T15:56:29.775Z",
+          "detail": "landos:restart -> PID 163448, landos:health HTTP 200 OK on fresh dist/web bundle.",
+          "evidenceIds": [
+            "E4"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-15T16:09:42.811Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-15T15-59-10-242Z/report.md)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "fail",
+          "at": "2026-07-15T16:25:41.002Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws1-recheck/01-overview.png)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "fail",
+          "at": "2026-07-15T16:39:47.056Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws1-recheck2/05-dd-flood-1.32.png)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-15T16:50:45.167Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws1-recheck3/01-overview.png)",
+          "evidenceIds": [
+            "E13",
+            "E14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-research-completeness",
+      "name": "Research completeness and evidence language",
+      "operatorOutcome": "Research lane counts and wording separate provider-attempted, provider-retrieved, partial evidence, business-question-resolved, legal-confirmation-complete, and external-confirmation-required; partial proximity is not completed access research; a county flood query is not complete FEMA research; FEMA/road/soils/utilities/red-flag copy is correctly qualified.",
+      "inScope": [
+        "Research-completeness state model separating the six evidence tiers per lane",
+        "FEMA lane: separate Zone X result, coverage basis, panel status, effective date, BFE availability; county-layer vs federal FIRM",
+        "Road/access lane: separate classification, parcel contact, ROW contact, physical access, driveway, legal access, maintenance; unknown vs private ownership",
+        "Soils/septic lane: single-component vs mixed ratings; SSURGO map-unit limitation vs site septic feasibility; map-unit slope vs measured mean slope",
+        "Utilities lane: absence of mapped line is not proof of unavailability; preliminary likelihood labels",
+        "Critical red flags: incomplete screening not shown favorable; no-all-clear language matches unresolved categories"
+      ],
+      "backendServices": [
+        "src/landos/parallel-resolution-lanes.ts",
+        "src/landos/parallel-resolution.ts",
+        "src/landos/evidence-language.ts",
+        "src/landos/deal-card-dd.ts",
+        "src/landos/dd-business-status.ts",
+        "src/landos/public-records-research.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Due Diligence",
+        "Deal Card > Overview (research status)"
+      ],
+      "requiredDataState": "A verified Deal Card with unresolved zoning, researching parcel-road contact, unresolved legal access, unreviewed deed/easement, pending FEMA panel (acceptance example: 200 Sid Edens Rd).",
+      "browserJourney": {
+        "steps": [
+          "Open the verified Deal Card and read the research-status summary",
+          "Confirm the evidenced-lane count does not count zoning, legal access, deed/easement review, or FEMA panel as complete when they are not",
+          "Open FEMA detail and confirm Zone X / coverage basis / panel status / effective date / BFE availability are separate and county-layer vs FIRM is distinguished",
+          "Open road/access detail and confirm proximity is not called frontage and unknown ownership is not called private",
+          "Open soils/septic and utilities detail and confirm qualified wording",
+          "Refresh and confirm wording and counts persist"
+        ]
+      },
+      "testRequirements": [
+        "Lane-completeness tests for each of the six evidence tiers",
+        "FEMA: BFE-screened claim requires retrieved BFE; exact-acreage+BFE label requires both supported",
+        "Access: partial proximity does not mark access research complete; unknown ownership not rendered as private",
+        "Soils: single mapped component not described as split/mixed; utilities absence not rendered as unavailable",
+        "Red flags: incomplete screening lowers critical-risk completeness"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Evidenced-lane count includes lanes that have not genuinely resolved",
+        "BFE screened stated with no BFE retrieved, or exact-acreage+BFE marked complete unsupported",
+        "Road proximity shown as frontage, or unknown ownership shown as private",
+        "Single soil component described as split/mixed, or utility absence shown as unavailable",
+        "Incomplete screening presented favorably or no-all-clear language contradicts unresolved categories"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "refresh_persistence",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [
+        "ws1-acreage-basis"
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "requirements": [
+        {
+          "id": "ws2-r1",
+          "text": "Research counts separate provider-attempted, provider-retrieved, partial, business-resolved, legal-complete, external-required.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r2",
+          "text": "Partial proximity evidence is not counted as completed access research.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r3",
+          "text": "A county flood query is not counted as complete FEMA research when material FEMA tasks remain.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r4",
+          "text": "FEMA Zone X result, coverage basis, panel status, effective date, and BFE availability are separate; no unsupported BFE claim; county-layer vs FIRM distinguished; overlays use mapped geometry acreage.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r5",
+          "text": "Road: proximity is not frontage; unknown ownership is not called private; classification/contact/ROW/physical/driveway/legal/maintenance are separated; no unsupported recorded-private-road-rights claim.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r6",
+          "text": "Soils: single component not described as split/mixed; SSURGO limitation vs site septic feasibility distinguished; map-unit slope vs measured mean slope separated.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r7",
+          "text": "Utilities: absent mapped line is not proof of unavailability; well/septic labeled preliminary; provider research vs remaining confirmation separated.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        },
+        {
+          "id": "ws2-r8",
+          "text": "Critical red flags: incomplete screening is not favorable; access/title/acreage/zoning uncertainty affects critical-risk completeness; no-all-clear language matches unresolved categories.",
+          "verified": true,
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        }
+      ],
+      "status": "browser_qa_passed",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-15T17:35:14.693Z",
+        "reportPath": ".runtime/landos/qa/ws2-recheck2/recheck2-report.md",
+        "evidenceIds": [
+          "E27",
+          "E28",
+          "E29",
+          "E30"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F6",
+          "repairedAt": "2026-07-15T17:13:44.754Z",
+          "summary": "computeAccessStatus no longer upgrades a non-public/'private' road-layer tag to established private ownership: unknown-ownership roads are described as unknown; recorded private-road rights are only noted as conditional ('would be required IF confirmed private'), matching the Non-public headline and the public-intelligence road task; access concerns de-duplicated.",
+          "regressionCoverage": "operator-property-record.test.ts ws2-r5 unknown-ownership + concerns-dedup tests"
+        },
+        {
+          "findingId": "F6",
+          "repairedAt": "2026-07-15T17:31:32.184Z",
+          "summary": "Residual concerns-array string fixed via the shared sanitizeAccessLanguage sanitizer (covers summary AND concerns on every persisted run); source guard reworded. All accessStatus surfaces now describe unknown ownership with a conditional recorded-rights clause.",
+          "regressionCoverage": "evidence-language.test.ts ws2-r5 sanitizer test"
+        },
+        {
+          "findingId": "F7",
+          "repairedAt": "2026-07-15T17:31:33.277Z",
+          "summary": "Same shared-sanitizer repair neutralizes the /report operatorRecord.accessStatus.concerns[0] private-road assertion.",
+          "regressionCoverage": "evidence-language.test.ts ws2-r5 sanitizer test"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-15T17:02:56.338Z",
+          "detail": "Shared research-completeness tier model wired into operator record (partial proximity/county-flood no longer counted resolved); FEMA BFE/exact-acreage claims gated on evidence; road ownership 'unknown' not 'private' unless classified; single soil component never 'split/mixed'.",
+          "evidenceIds": [
+            "E17"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-15T17:02:57.354Z",
+          "detail": "research-completeness.test.ts 11/11 + operator-record 18 + evidence-language 5.",
+          "evidenceIds": [
+            "E17"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-15T17:02:58.490Z",
+          "detail": "system-consistency 45 + exec-summary + readiness + discovery + routes 70 + audit = 119 passed.",
+          "evidenceIds": [
+            "E18"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-15T17:02:59.462Z",
+          "detail": "tsc --noEmit exit 0.",
+          "evidenceIds": [
+            "E18"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-15T17:03:00.866Z",
+          "detail": "vite + tsc exit 0.",
+          "evidenceIds": [
+            "E18"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-15T17:03:01.878Z",
+          "detail": "landos:restart PID 29956, health HTTP 200 on fresh bundle.",
+          "evidenceIds": [
+            "E18"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-15T17:08:34.975Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws2/01-overview.png)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "fail",
+          "at": "2026-07-15T17:27:20.936Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws2-recheck/recheck-report.md)",
+          "evidenceIds": [
+            "E23",
+            "E24",
+            "E25"
+          ]
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-15T17:35:14.692Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws2-recheck2/recheck2-report.md)",
+          "evidenceIds": [
+            "E27",
+            "E28",
+            "E29",
+            "E30"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws3-readiness",
+      "name": "Unified readiness and strategy status",
+      "operatorOutcome": "One shared readiness record drives Overview, Market, Strategy, Seller, Reports, RAG, and Executive review; strategy readiness cannot read OK while all strategies are blocked; value readiness is not high merely because a median exists; offer readiness explains why it is researching/blocked; the consistency audit fails on any status disagreement.",
+      "inScope": [
+        "Shared readiness record separating research completeness, preliminary vs defensible valuation readiness, strategy screening availability vs scoreability vs actionability, offer readiness, contract readiness",
+        "All Deal Card tabs and reports consume the same readiness result",
+        "Materiality wiring: zoning/acreage-basis/access/title/physical constraints affect confidence and readiness",
+        "Consistency audit fails when visible statuses disagree"
+      ],
+      "backendServices": [
+        "src/landos/strategy-readiness.ts",
+        "src/landos/deal-card-readiness.ts",
+        "src/landos/deal-card-canonical.ts",
+        "src/landos/deal-card-executive-summary.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Overview (readiness)",
+        "Deal Card > Strategy",
+        "Deal Card > Market",
+        "Deal Card > Seller",
+        "Deal Card > Reports"
+      ],
+      "requiredDataState": "A verified Deal Card where all five strategies are blocked and offer readiness is researching (acceptance example: 200 Sid Edens Rd).",
+      "browserJourney": {
+        "steps": [
+          "Open the verified Deal Card Overview and read Strategy/Value/Offer readiness",
+          "Confirm Strategy Readiness is not OK/actionable while all five strategies are blocked",
+          "Open the Strategy tab and confirm screening-available vs actionability-blocked is expressed coherently",
+          "Confirm Value Readiness is not high merely because a median can be computed",
+          "Confirm Offer Readiness explains why it is researching/blocked",
+          "Open Market, Seller, Reports and confirm they show the same readiness result",
+          "Refresh and confirm readiness persists"
+        ]
+      },
+      "testRequirements": [
+        "All-strategies-blocked yields non-OK strategy readiness",
+        "Median-available alone does not yield high value readiness",
+        "Materiality: unresolved zoning/acreage/access/title lowers confidence and readiness",
+        "Single readiness record is the source for every tab/report",
+        "Audit fails on a seeded status disagreement"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Strategy Readiness OK while all strategies blocked",
+        "Value Readiness high solely from a computable median",
+        "Offer Readiness with no explanation",
+        "Two tabs/reports showing different readiness for the same card",
+        "Consistency audit passes despite disagreeing statuses"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "refresh_persistence",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [
+        "ws2-research-completeness"
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "requirements": [
+        {
+          "id": "ws3-r1",
+          "text": "If all five strategies are blocked, Strategy Readiness cannot display OK or actionable.",
+          "verified": true,
+          "evidenceIds": [
+            "E33",
+            "E34",
+            "E35"
+          ]
+        },
+        {
+          "id": "ws3-r2",
+          "text": "The UI may say strategy screening is available while actionability is blocked.",
+          "verified": true,
+          "evidenceIds": [
+            "E33",
+            "E34",
+            "E36"
+          ]
+        },
+        {
+          "id": "ws3-r3",
+          "text": "Value Readiness cannot be high or fully ready merely because a median can be calculated.",
+          "verified": true,
+          "evidenceIds": [
+            "E33",
+            "E34",
+            "E35"
+          ]
+        },
+        {
+          "id": "ws3-r4",
+          "text": "Zoning, acreage basis, access, title, and physical constraints affect confidence and readiness per materiality.",
+          "verified": true,
+          "evidenceIds": [
+            "E34",
+            "E35",
+            "E36"
+          ]
+        },
+        {
+          "id": "ws3-r5",
+          "text": "Offer readiness clearly explains why it remains researching or blocked.",
+          "verified": true,
+          "evidenceIds": [
+            "E33",
+            "E34",
+            "E35"
+          ]
+        },
+        {
+          "id": "ws3-r6",
+          "text": "All tabs and reports consume the same readiness result.",
+          "verified": true,
+          "evidenceIds": [
+            "E32",
+            "E33",
+            "E34",
+            "E38"
+          ]
+        },
+        {
+          "id": "ws3-r7",
+          "text": "The consistency audit fails when visible statuses disagree.",
+          "verified": true,
+          "evidenceIds": [
+            "E34",
+            "E35"
+          ]
+        }
+      ],
+      "status": "browser_qa_passed",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-15T20:47:53.510Z",
+        "reportPath": ".runtime/landos/qa/ws3-recheck2/report.md",
+        "evidenceIds": [
+          "E33"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F8",
+          "repairedAt": "2026-07-15T20:20:32.583Z",
+          "summary": "Shared repair: extracted the ONE canonical report projection (projectCanonicalReport) used by BOTH the live report GET and the report download route; the download now runs the same registry projection, gated valuation, refreshed narratives, clamped legacy offer label, and gate-aware executive summary, and propertyIntelligenceMarkdown renders the SHARED five-strategy record (blocked statuses + blockers) and the full unified readiness record instead of the legacy discovery ranking's High Potential labels; a primary strategy is never promoted while the pricing gate is closed",
+          "regressionCoverage": "readiness-surfaces-regression.test.ts F8 block: markdown renders every shared strategy as blocked, never High Potential/Room-to-acquire; Primary strategy: none while gate closed; contains '## Readiness (shared record)' with all dimensions + materiality; source-level assertion that both routes call projectCanonicalReport and the markdown builder receives the shared records"
+        },
+        {
+          "findingId": "F9",
+          "repairedAt": "2026-07-15T20:20:33.665Z",
+          "summary": "OverviewTab's record-bearing branch now renders OverviewSummary (executive summary incl. the shared readiness summary line) — the readiness mirror is visible on every Overview, not only on cards without an operator record",
+          "regressionCoverage": "readiness-surfaces-regression.test.ts F9 block: record branch renders <OverviewSummary>, OverviewSummary renders es.readiness.summaryLine, and the UnifiedReadinessStrip appears on >=5 tab surfaces"
+        },
+        {
+          "findingId": "F10",
+          "repairedAt": "2026-07-15T20:20:35.203Z",
+          "summary": "Market Pulse county price language rewritten: a computable median is 'market context only'; whether any valuation basis exists is decided by the shared pricing gate and value readiness, never by a computable median alone; 'the valuation basis' and 'same basis as the preliminary valuation' phrasings removed",
+          "regressionCoverage": "readiness-surfaces-regression.test.ts F10 block: routes source no longer contains the favorable phrasings and contains the qualified wording"
+        },
+        {
+          "findingId": "F11",
+          "repairedAt": "2026-07-15T20:20:36.213Z",
+          "summary": "operatorGapLabel returns '' for empty fields (callers filter) and names the raw field as subject for unrecognized fields; executive summary verifyBeforeOffer filters empty labels; pursuit remainingVerification filters bare 'Needs confirmation.' items; RemainingBlockersPanel collapses duplicate same-fact blocker wordings (one fact, one bullet)",
+          "regressionCoverage": "readiness-surfaces-regression.test.ts F11 block: empty->'' , unrecognized field names subject, operatorizePersistedGap('')==='', buildPursuitDecision filters subject-less items, panel dedup source assertion"
+        },
+        {
+          "findingId": "F12",
+          "repairedAt": "2026-07-15T20:39:38.533Z",
+          "summary": "Shared repair at the record level: buildStrategyReadiness's entry() dedupes identical blocker strings, and the Subdivide lane no longer pushes a variant acreage wording — it uses the ONE canonical 'Legal acreage unresolved (survey or recorded plat required)' string and only when the shared list does not already carry a legal-acreage fact. Every renderer (tabs, download, RAG) prints the record verbatim, so the duplicate cannot resurface anywhere",
+          "regressionCoverage": "readiness-surfaces-regression.test.ts F12 block: Subdivide blockers name the legal-acreage fact exactly once under an acreage conflict; no strategy repeats an identical blocker string"
+        },
+        {
+          "findingId": "F13",
+          "repairedAt": "2026-07-15T20:39:39.747Z",
+          "summary": "The downloadable report's Comparable Sales section now renders the validated unique comp registry (each property exactly once, with providers and a duplicates-merged/rejected count line) whenever the registry is available; the legacy inspection comp list with duplicate rows is only a fallback for callers without the canonical bundle. Download route passes projection.canonical.compRegistry",
+          "regressionCoverage": "readiness-surfaces-regression.test.ts F13 block: a legacy list containing the same sale twice never renders — each unique property appears exactly once, the registry count line is present, and the route wiring is asserted"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-15T19:49:22.787Z",
+          "detail": "Shared unified readiness record implemented: new src/landos/unified-readiness.ts (8 named sub-states: research, valuation context preliminary-vs-defensible, value, strategy screening/scoreability/actionability, offer, contract + materiality + consistency clamps); unifiedReadinessForDeal in deal-card-canonical.ts; routes report GET builds/ships unifiedReadiness, clamps legacy report.offerReadiness, computes legacy workflow readiness after projection; audit gains unified_readiness_agreement + readiness_states_reconcile checks; executive summary mirrors the record; RAG sync ingests canonical_readiness doc and stops presenting the registry count gate as value readiness; frontend UnifiedReadinessStrip renders the same record on Overview/Market/Strategy/Seller/Reports; Seller contract row and Market valuation chip now backend-driven; dead legacy offer badge removed",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-15T19:49:23.724Z",
+          "detail": "204/204 across 12 suites: unified-readiness 16, strategy-readiness, deal-card-readiness, operator-property-record, deal-card-audit 32 (incl. 9 new disagreement checks), system-consistency-regression 52 (incl. WS3 full-chain regression), deal-card-executive-summary, deal-card-strategy(+ui), deal-card-report, rag-canonical, research-completeness",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-15T19:49:51.029Z",
+          "detail": "126/126 integration + prior-workstream guard suites: routes 71 (incl. new API assertion that the payload carries ONE unified readiness record agreeing with operatorRecord/strategyReadiness/executiveSummary and the audit carries the two new readiness checks), deal-card-reconciliation, acreage-basis (WS1 guard), evidence-language (WS2 guard)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-15T19:50:10.315Z",
+          "detail": "tsc --noEmit exit 0, no diagnostics",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-15T19:51:00.193Z",
+          "detail": "npm run build (vite build + tsc) exit 0; fresh dist bundle; git diff --check clean (exit 0, no whitespace errors)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-15T19:52:43.622Z",
+          "detail": "Managed restart onto fresh bundle: PID 228904, http://localhost:3141 HTTP 200, health OK. Live report GET for Deal Card 19 (200 Sid Edens Rd, APN 5105-00-44-0497): unifiedReadiness present with all 8 dimensions + whys; allStrategiesBlocked=true with actionability=blocked, scoreability=not_scoreable, screening=available; value=conflicted (never OK on a bare 55-comp median; valuation context=preliminary); offer=researching with explanation; contract=blocked separately; executiveSummary.readiness mirrors byte-identical summaryLine; audit passes incl. unified_readiness_agreement + readiness_states_reconcile; legacy report.offerReadiness cannot outrank the shared record. Evidence: .runtime/landos/qa/ws3-pre/report-19-post.json",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-15T20:09:26.780Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws3-qa1/report.md)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "fail",
+          "at": "2026-07-15T20:37:47.032Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws3-recheck1/report.md)",
+          "evidenceIds": [
+            "E32"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-15T20:42:30.722Z",
+          "detail": "Post-repair full battery 403/403 across 20 suites (unified-readiness 16, readiness-surfaces-regression 20 incl. F8-F13 coverage, strategy-readiness, deal-card-audit 32, system-consistency-regression 52, routes 71, and all WS1/WS2 guard suites)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-15T20:42:31.657Z",
+          "detail": "routes 71/71 + deal-card-reconciliation + acreage-basis (WS1 guard) + evidence-language (WS2 guard) green post-repair",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-15T20:42:32.752Z",
+          "detail": "tsc --noEmit exit 0 after F8-F13 repairs",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-15T20:42:34.042Z",
+          "detail": "npm run build (vite+tsc) exit 0 after F8-F13 repairs; managed runtime restarted onto the fresh bundle",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-15T20:42:35.035Z",
+          "detail": "Managed runtime healthy on the repaired bundle (npm run landos:status: RUNNING, HTTP 200); live download for Deal Card 19 verified: registry-driven Comparable Sales (each property once + duplicates-merged line), no variant acreage blocker wording, shared strategy/readiness sections intact. Evidence: .runtime/landos/qa/ws3-pre/report-19-download2.md",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-15T20:47:53.510Z",
+          "detail": "independent browser QA (.runtime/landos/qa/ws3-recheck2/report.md)",
+          "evidenceIds": [
+            "E33"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws4-comps-valuation",
+      "name": "Comparable validation, provider coverage, and valuation",
+      "operatorOutcome": "Provider missions show real attempt/result and candidate/accepted/duplicate/rejected counts; every selected comp displays the full validation field set with a working or explicitly-missing provider link; weak/improved comps are penalized or excluded; materially different clusters are not blended into a high-confidence median; valuation discloses cluster, counts, median/weighted/average PPA, IQR, outliers, limitations, and confidence rationale; sold/valuation/map/registry counts reconcile.",
+      "inScope": [
+        "Per-provider mission transparency (LandPortal, Zillow, Redfin, Realie.ai, Realtor/HomeHarvest, county) with attempt/result/blocker and candidate/accepted/duplicate/rejected counts",
+        "Selected-comp validation record with the full 20-field set and provider link presence",
+        "Cluster detection and outlier handling; confidence gating on cluster coherence and subject similarity",
+        "Count reconciliation across selected set / sold count / valuation count / map count / registry count",
+        "Comp map and table share the same deduplicated records; links open safely in a new tab; raw LandPortal vs selected LandOS map differentiated",
+        "Valuation disclosure block"
+      ],
+      "backendServices": [
+        "src/landos/comp-orchestrator.ts",
+        "src/landos/comp-registry.ts",
+        "src/landos/comps.ts",
+        "src/landos/comp-valuation-band.ts",
+        "src/landos/comp-classification.ts",
+        "src/landos/comp-map.ts",
+        "src/landos/deal-card-market.ts",
+        "src/landos/deal-card-comp-recompute.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Market",
+        "Deal Card > Market > interactive comp map",
+        "Deal Card > Market > comp table and popups"
+      ],
+      "requiredDataState": "A verified Deal Card with many sold comps whose selected top-five PPA is widely dispersed (acceptance example: 200 Sid Edens Rd — ~55 comps, PPA ~$6,250 to ~$64,516/acre).",
+      "browserJourney": {
+        "steps": [
+          "Open the Deal Card Market tab",
+          "Confirm each provider mission shows attempt/result and candidate/accepted/duplicate/rejected counts (no coverage claim without a result)",
+          "Open each selected comp popup and confirm the full validation field set including provider name and link (or an explicit missing-link marker)",
+          "Confirm the Realie.ai comp link works when available and all links open in a new tab safely",
+          "Confirm materially dispersed PPA clusters are not blended into one high-confidence median; confidence is downgraded with rationale",
+          "Confirm sold count, valuation count, map count, registry count, and selected set reconcile and map/table use the same deduplicated records",
+          "Refresh and confirm the comp set and valuation persist"
+        ]
+      },
+      "testRequirements": [
+        "Provider mission record carries attempt/result/blocker and the four counts; coverage requires a real result",
+        "Selected-comp validation requires the full field set; missing provider link is flagged not omitted",
+        "Cluster detection: dispersed PPA blocks high confidence; outliers explained",
+        "Count reconciliation invariant across selected/sold/valuation/map/registry",
+        "Map and table use identical deduplicated records"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Provider coverage claimed with no real provider result",
+        "Selected comp missing a provider link with no visible marker; Realie.ai link broken when one is available",
+        "Five comps selected including weak/improved fillers when fewer are defensible",
+        "Dispersed PPA clusters blended into one high-confidence median; outliers unexplained",
+        "Displayed sold/valuation/map/registry counts disagree; map and table diverge"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "refresh_persistence",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [
+        "ws3-readiness"
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "requirements": [
+        {
+          "id": "ws4-r1",
+          "text": "Every provider mission shows attempt/result plus candidate/accepted/duplicate/rejected counts and failure/blocker reason; coverage is not claimed because an adapter exists.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r2",
+          "text": "Every selected comp displays the full validation field set (address..why-it-outranked-next-best).",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r3",
+          "text": "A missing provider URL is visibly identified rather than silently omitting view; the Realie.ai comp has a working link when available.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r4",
+          "text": "Weak comps are not selected to fill five; fewer than five are used when fewer are defensible; improved/unknown-improvement sales are excluded or penalized.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r5",
+          "text": "Materially different geographic/acreage/improvement/PPA clusters are detected and not blended into one high-confidence median; outliers are explained.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r6",
+          "text": "High confidence requires a coherent validated cluster and adequate subject similarity; otherwise preliminary/moderate/low/conflicted/insufficient.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r7",
+          "text": "Selected set, displayed sold count, valuation count, map count, and registry count reconcile; map and table use the same deduplicated records.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r8",
+          "text": "Provider links open safely in a new tab; LandPortal raw map and final LandOS selected map remain clearly differentiated.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r9",
+          "text": "Valuation discloses subject acreage basis, selected cluster, qualified closed-sale count, median/weighted/simple-average PPA, IQR, outliers, limitations, and confidence rationale.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws4-r10",
+          "text": "No high-confidence valuation when access/zoning/property-type/acreage-basis/comp coherence materially undermines confidence.",
+          "verified": false,
+          "evidenceIds": []
+        }
+      ],
+      "status": "planned",
+      "builderResult": null,
+      "browserQaResult": null,
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": []
+    },
+    {
+      "id": "ws5-audit-copy",
+      "name": "Executive audit and operator copy",
+      "operatorOutcome": "The consistency audit fails on each of the twelve enumerated inconsistencies and never reports all-pass while a visible inconsistency exists; misleading/awkward operator copy is repaired; seller questions are generated from actual unresolved facts and read naturally.",
+      "inScope": [
+        "Extend the audit with the twelve new fail conditions",
+        "Audit reconciles frontend and backend readiness",
+        "Repair the enumerated copy defects (grammar, unsupported private-road, duplicate paragraphs, unhelpful jargon)",
+        "Seller-question generation from unresolved facts"
+      ],
+      "backendServices": [
+        "src/landos/deal-card-audit.ts",
+        "src/landos/deal-card-executive-summary.ts",
+        "src/landos/evidence-language.ts",
+        "src/landos/operator-language.ts",
+        "src/landos/deal-card-report.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > Overview (executive audit)",
+        "Deal Card > Seller (seller questions)",
+        "Deal Card > Reports"
+      ],
+      "requiredDataState": "A verified Deal Card exhibiting at least one of the twelve inconsistencies and the enumerated copy defects (acceptance example: 200 Sid Edens Rd).",
+      "browserJourney": {
+        "steps": [
+          "Open the Deal Card Overview executive audit",
+          "Confirm the audit does not report all-pass while readiness/acreage-basis/comp inconsistencies are visible",
+          "Seed or confirm each of the twelve fail conditions is detectable",
+          "Read operator copy and confirm the enumerated defects are repaired (grammar, private-road, duplicate paragraphs)",
+          "Open Seller and confirm questions come from real unresolved facts and read naturally",
+          "Refresh and confirm audit results and copy persist"
+        ]
+      },
+      "testRequirements": [
+        "Twelve audit fail-condition tests, each red on a seeded inconsistency and green when resolved",
+        "Copy tests: grammar of place phrase, single-component wording, no unsupported private-road, no duplicate paragraphs",
+        "Seller-question tests: generated from unresolved facts, no Unnamed-road-as-usable-access phrasing"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Audit reports all-pass while a visible inconsistency exists",
+        "Any of the twelve conditions not detected",
+        "Enumerated copy defects still present",
+        "Seller questions reference Unnamed road as confirmed access or duplicate paragraphs remain"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "refresh_persistence",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [
+        "ws4-comps-valuation"
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "requirements": [
+        {
+          "id": "ws5-r1",
+          "text": "Audit fails on Strategy Readiness OK while all strategies blocked.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r2",
+          "text": "Audit fails on value confidence inconsistent with unresolved material facts.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r3",
+          "text": "Audit fails on missing Tyler decision for a material acreage discrepancy.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r4",
+          "text": "Audit fails on overlay acreage inconsistent with geometry acreage.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r5",
+          "text": "Audit fails on BFE claims unsupported by evidence.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r6",
+          "text": "Audit fails on partial access evidence counted as completed access research.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r7",
+          "text": "Audit fails on unknown road ownership described as private.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r8",
+          "text": "Audit fails on provider coverage claims without actual provider results.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r9",
+          "text": "Audit fails on a selected comp missing a provider link.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r10",
+          "text": "Audit fails on high-confidence valuation with incoherent comp clusters.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r11",
+          "text": "Audit fails on research-progress wording implying completed underwriting.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r12",
+          "text": "Audit fails on any frontend/backend readiness mismatch.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws5-r13",
+          "text": "Enumerated misleading/awkward copy is repaired and seller questions are generated from actual unresolved facts and read naturally.",
+          "verified": false,
+          "evidenceIds": []
+        }
+      ],
+      "status": "planned",
+      "builderResult": null,
+      "browserQaResult": null,
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": []
+    },
+    {
+      "id": "ws6-full-regression",
+      "name": "Complete Deal Card browser regression",
+      "operatorOutcome": "The full Deal Card operator experience is inspected end to end across every tab and multiple fixtures (verified, incomplete, unresolved, APN-conflict, thin-market, multi-parcel) with frontend/API/DB/accepted-facts/ledger reconciliation, fresh screenshots, refresh and managed-restart persistence, and every finding repaired and retested.",
+      "inScope": [
+        "Full click-through of Overview, Property, Due Diligence, Market, Strategy, Visuals, Seller, Documents, Activity",
+        "Interactive comp map, every selected comp popup, provider links, research status, readiness states, reports",
+        "Fixture coverage: acceptance example + two other jurisdictions + incomplete + unresolved + APN-conflict + thin-market + multi-parcel",
+        "Frontend/API/DB/accepted-facts/ledger reconciliation",
+        "Refresh and managed-restart persistence"
+      ],
+      "backendServices": [
+        "src/landos/deal-card-canonical.ts",
+        "src/landos/deal-card-audit.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "Deal Card > all tabs (Overview, Property, Due Diligence, Market, Strategy, Visuals, Seller, Documents, Activity)"
+      ],
+      "requiredDataState": "The full fixture set: 200 Sid Edens Rd (APN 5105-00-44-0497) plus two verified properties in other jurisdictions, one incomplete-research, one unresolved, one APN-conflict, one thin-market, one multi-parcel.",
+      "browserJourney": {
+        "steps": [
+          "For each fixture, open the Deal Card and click through all nine tabs",
+          "Open the interactive comp map and every selected comp popup and follow provider links",
+          "Reconcile frontend against API payload, DB state, accepted operator facts, and the requirement ledger",
+          "Capture fresh screenshots for each tab and fixture",
+          "Refresh each card and confirm persistence",
+          "Run a managed restart (npm run landos:restart) and confirm persistence"
+        ]
+      },
+      "testRequirements": [
+        "Combined Deal Card regression suite green",
+        "System-consistency regression green across fixtures",
+        "Persistence checks (refresh + managed restart) recorded"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "Any tab shows an internally inconsistent or unqualified fact for any fixture",
+        "Frontend disagrees with API/DB/accepted facts/ledger",
+        "A finding is not repaired and retested",
+        "State does not persist across refresh or managed restart"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "db_evidence",
+        "browser_journey",
+        "screenshot",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "final_regression"
+      ],
+      "dependsOn": [
+        "ws5-audit-copy"
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "requirements": [
+        {
+          "id": "ws6-r1",
+          "text": "Every Deal Card tab (Overview, Property, Due Diligence, Market, Strategy, Visuals, Seller, Documents, Activity) is inspected and internally consistent for every fixture.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws6-r2",
+          "text": "Interactive comp map, every selected comp popup, provider links, research status, readiness states, and reports are inspected and reconciled.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws6-r3",
+          "text": "Frontend reconciles with API payload, DB state, accepted operator facts, and the requirement ledger; accepted real-property information is not altered during QA.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws6-r4",
+          "text": "Fixtures cover acceptance example, two other jurisdictions, incomplete-research, unresolved, APN-conflict, thin-market, and multi-parcel.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "ws6-r5",
+          "text": "Fresh screenshots are captured; refresh and managed-restart persistence hold; every finding is repaired and retested.",
+          "verified": false,
+          "evidenceIds": []
+        }
+      ],
+      "status": "planned",
+      "builderResult": null,
+      "browserQaResult": null,
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": []
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "workstreamId": "ws1-acreage-basis",
+      "requirementId": "ws1-r2",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC, APN 5105-00-44-0497)",
+        "On Overview, read the FEMA FLOOD screening card",
+        "Open the Property tab and read the reconciliation facts (FEMA flood row)"
+      ],
+      "expected": "Spatial overlays are sampled against the mapped GIS geometry (1.15 ac). The card's own Acreage-basis disclosure states 'Overlays sampled against: gis geometry', so the FEMA flood coverage should be reported against 1.15 ac and never exceed it.",
+      "actual": "The FEMA flood overlay reports 'X 100% (1.32 ac)' — it uses the ASSESSED 1.32 ac, exceeding the 1.15 ac mapped geometry. Same 1.32 ac appears in govDd.flood.note, report.reconciliation.flood ('FEMA NFHL Zone X: 1.32 ac (100%)', marked conflict=false/status=reconciled), operatorRecord.decisionCards[3], and operatorRecord.workStatus[2]. This directly contradicts the card's own 'Overlays sampled against: gis geometry' disclosure and the card's own data-integrity risk that flags this exact overshoot.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-manual/01-overview.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-manual/05-property-tab.png"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report: report.govDd.flood.note='Flood zones cover the parcel: X 100% (1.32 ac).'; report.reconciliation.flood.primary='FEMA NFHL Zone X: 1.32 ac (100%)' conflict=false status=reconciled; operatorRecord.identity.mappedAcres=1.15, assessedAcres=1.32; operatorRecord.risks includes 'Data integrity: FEMA flood overlay reports 1.32 ac but the queried parcel geometry is only 1.15 ac.'",
+      "severity": "major",
+      "suspectedSubsystem": "govDd/reconciliation flood overlay computation (deal-card-report / property-analysis-report) not wired to the canonical mapped GIS geometry from acreage-basis",
+      "disposition": "internally_fixable",
+      "patternKey": "overlay-uses-wrong-acreage-basis",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T16:09:42.811Z",
+      "history": [
+        {
+          "at": "2026-07-15T16:09:42.811Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T16:19:13.485Z",
+          "event": "repaired",
+          "detail": "Flood overlay acreage pinned to mapped GIS geometry x parcelPercentage in operator record; source (public-property-intelligence-live NFHL path) now samples overlay area against queried geometry not provider/assessed acres."
+        },
+        {
+          "at": "2026-07-15T16:26:49.771Z",
+          "event": "retest_failed",
+          "detail": "E9"
+        },
+        {
+          "at": "2026-07-15T16:32:56.525Z",
+          "event": "repaired",
+          "detail": "All flood-acreage surfaces now flow from one shared pinOverlayAcresToGeometry helper: operator record regenerates flood.summary from pinned zones (fixes floodCard detail + workStatus); routes projectPublicScreening pins zones before composing reconciliation.flood + govDd.flood.note; source samples overlay against queried geometry. 100% Zone-X now reads mapped 1.15 ac everywhere."
+        },
+        {
+          "at": "2026-07-15T16:40:03.140Z",
+          "event": "retest_failed",
+          "detail": "E11"
+        },
+        {
+          "at": "2026-07-15T16:44:58.418Z",
+          "event": "repaired",
+          "detail": "Final surface pinned: new pinRunOverlaysToGeometry(run) normalizes the flood task's zones+summary at read time for the /public-intelligence endpoint (DD Public Property Intelligence panel). All flood surfaces across /report AND /public-intelligence now read mapped 1.15 ac."
+        },
+        {
+          "at": "2026-07-15T16:50:32.878Z",
+          "event": "retest_passed",
+          "detail": "E13"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "workstreamId": "ws1-acreage-basis",
+      "requirementId": "ws1-r4",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC)",
+        "Open the Property tab and read the reconciliation facts 'Acreage' row",
+        "Compare with the header chip and the Overview Acreage-basis / Value-readiness panels"
+      ],
+      "expected": "A material unresolved acreage basis (assessed 1.32 vs mapped 1.15) should surface a reconciliation issue in the reconciliation facts, consistent with the header/acreage-basis/value-readiness which all declare a CONFLICT and a Tyler decision.",
+      "actual": "The reconciliation facts panel shows 'Acreage: 1.15 ac / Provider verification' with conflict=false, status='reconciled', empty alternates and an empty conflicts array — a single unconflicted acreage that contradicts the header ('1.15 ac mapped / 1.32 ac assessed — CONFLICT'), the Acreage-basis panel (disputed / Tyler decision required), and Value readiness ('Acreage conflicted — pricing blocked'). The reconciliation subsystem does not record the acreage conflict at all.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-manual/05-property-tab.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-manual/01-overview.png"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report: report.reconciliation.acreage={primary:'1.15 ac', primarySource:'Provider verification', conflict:false, status:'reconciled', alternates:[]}, report.reconciliation.conflicts=[]; while operatorRecord.identity.acreageConflict=true and operatorRecord.identity.acreageBasis.disputed=true / tylerDecisionRequired=true.",
+      "severity": "major",
+      "suspectedSubsystem": "report.reconciliation acreage builder not consuming the canonical acreage-basis (assessed vs GIS conflict); divergence between operatorRecord and reconciliation facts",
+      "disposition": "internally_fixable",
+      "patternKey": "reconciliation-ignores-acreage-conflict",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T16:09:42.811Z",
+      "history": [
+        {
+          "at": "2026-07-15T16:09:42.811Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T16:19:14.540Z",
+          "event": "repaired",
+          "detail": "report.reconciliation.acreage now derived from canonical buildAcreageBasis via acreageFactFromBasis (shared 5%/0.1ac materiality) instead of a private 15% gate; conflict now surfaces for the 12.9% gap."
+        },
+        {
+          "at": "2026-07-15T16:26:46.313Z",
+          "event": "retest_passed",
+          "detail": "E7"
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "workstreamId": "ws1-acreage-basis",
+      "requirementId": "ws1-r7",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC)",
+        "Read the amber Executive-review banner at the top of the Overview tab"
+      ],
+      "expected": "A verified Deal Card presented to the operator should be internally consistent; the orchestration self-audit should pass (no 'need repair' state shown to Tyler).",
+      "actual": "The card renders 'Executive review: 24/25 checks passed — acreage conflict preserved need repair' with the note 'The operator record holds an acreage conflict but the reconciled facts show a single unconflicted acreage. Re-run Property Intelligence to repair.' The orchestration audit self-reports passed=false with failed check acreage_conflict_preserved. The card ships in a self-declared broken/needs-repair state — the operator-facing symptom of the flood-overlay and reconciliation divergences above.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-manual/01-overview.png"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report: orchestration.passed=false; failed check {id:'acreage_conflict_preserved', pass:false, repairable:true, detail:'The operator record holds an acreage conflict but the reconciled facts show a single unconflicted acreage.'}",
+      "severity": "major",
+      "suspectedSubsystem": "deal-card orchestration audit vs report.reconciliation divergence (same root as ws1-r4 finding): reconciliation not updated to the canonical acreage-basis conflict",
+      "disposition": "internally_fixable",
+      "patternKey": "reconciliation-ignores-acreage-conflict",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T16:09:42.811Z",
+      "history": [
+        {
+          "at": "2026-07-15T16:09:42.811Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T16:19:15.534Z",
+          "event": "repaired",
+          "detail": "Same canonical-basis wiring resolves the audit acreage_conflict_preserved mismatch and the orchestration 'need repair' banner: reconciliation.conflict now equals operatorRecord acreageBasis.disputed."
+        },
+        {
+          "at": "2026-07-15T16:26:48.005Z",
+          "event": "retest_passed",
+          "detail": "E8"
+        }
+      ]
+    },
+    {
+      "id": "F4",
+      "workstreamId": "ws1-acreage-basis",
+      "requirementId": "ws1-r2",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC, APN 5105-00-44-0497)",
+        "On the Overview tab read the FEMA FLOOD screening card",
+        "Open the Property tab and read the reconciliation 'FEMA flood' row",
+        "Hard-refresh (cache-busted) and re-read the flood card"
+      ],
+      "expected": "After repair, the FEMA flood overlay must be sampled against the ~1.15 ac mapped GIS geometry: a 100% zone should read ~1.15 ac and no overlay may report more acres than the mapped parcel (1.15 ac).",
+      "actual": "STILL OPEN. The FEMA FLOOD card still reads 'X 100%' / 'Flood zones cover the parcel: X 100% (1.32 ac).' — the assessed 1.32 ac, which exceeds the 1.15 ac mapped geometry. Same 1.32 ac persists in report.govDd.flood.note, report.reconciliation.flood.primary ('FEMA NFHL Zone X: 1.32 ac (100%)', still conflict=false/status=reconciled), operatorRecord.decisionCards[3].detail, and operatorRecord.workStatus[2].note, and survives a hard refresh. The builder's source fix only recomputes flood.zones[].approximateAcres from mapped geometry (operator-property-record.ts lines 523-533) but the operator-visible flood detail is rendered from flood.summary and the separate report.reconciliation.flood subsystem, neither of which was updated. Side effect: the previous data-integrity overlay-exceeds-geometry risk (checkOverlayConsistency) no longer fires because floodOverlayAcres is now forced to 1.15, so the overshoot is now silently displayed with no warning. Additionally the QA preflight reports production_build_fresh = FAIL (source files newer than the production build), so the running server may not even contain the partial source fix.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-recheck/01-overview.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-recheck/02-property-reconciliation.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-recheck/04-after-refresh.png"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report (PID 33352): report.govDd.flood.note='Flood zones cover the parcel: X 100% (1.32 ac).'; report.reconciliation.flood={primary:'FEMA NFHL Zone X: 1.32 ac (100%)', conflict:false, status:'reconciled'}; operatorRecord.identity.mappedAcres=1.15, assessedAcres=1.32; operatorRecord.risks no longer contains the flood overlay-exceeds-geometry data-integrity warning. Preflight: production_build_fresh FAIL.",
+      "severity": "major",
+      "suspectedSubsystem": "FEMA flood overlay display (flood.summary in the FEMA finding builder) and report.reconciliation.flood — neither pinned to the mapped GIS geometry; plus a stale (non-fresh) production build",
+      "disposition": "internally_fixable",
+      "patternKey": "overlay-uses-wrong-acreage-basis",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T16:25:41.003Z",
+      "history": [
+        {
+          "at": "2026-07-15T16:25:41.003Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T16:32:57.559Z",
+          "event": "repaired",
+          "detail": "Same shared-helper repair as F1: free-text flood surfaces (summary/reconciliation/govDd/workStatus) pinned to mapped geometry; rebuilt bundle so QA tests current source (fixes the stale production_build_fresh flag)."
+        },
+        {
+          "at": "2026-07-15T16:40:04.946Z",
+          "event": "retest_failed",
+          "detail": "E11"
+        },
+        {
+          "at": "2026-07-15T16:44:59.545Z",
+          "event": "repaired",
+          "detail": "Same read-time run pinning covers the DD panel free-text summary surface."
+        },
+        {
+          "at": "2026-07-15T16:50:34.355Z",
+          "event": "retest_passed",
+          "detail": "E13"
+        }
+      ]
+    },
+    {
+      "id": "F5",
+      "workstreamId": "ws1-acreage-basis",
+      "requirementId": "ws1-r2",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC, APN 5105-00-44-0497), cache-busted",
+        "Open the Due Diligence tab",
+        "Read the Public Property Intelligence panel FEMA flood task and the 'Flood zones (mapped)' table"
+      ],
+      "expected": "Every operator-visible flood-overlay surface must be sampled against the ~1.15 ac mapped GIS geometry; a 100% Zone-X overlay must read ~1.15 ac and no overlay may report more acres than the 1.15 ac mapped parcel anywhere on the card.",
+      "actual": "PARTIALLY OPEN. The /report-fed surfaces are now fixed (Overview flood card, report.reconciliation.flood, report.govDd.flood.note, decisionCards, workStatus all read 1.15 ac). BUT the Due Diligence 'Public Property Intelligence' panel, fed by a DIFFERENT endpoint GET /api/landos/deal-cards/19/public-intelligence, still reports the flood overlay as 1.32 ac: run.tasks[1].finding.zones[0].approximateAcres=1.32 and run.tasks[1].finding.summary='Flood zones cover the parcel: X 100% (1.32 ac).' Rendered live on the DD tab as 'Flood zones (mapped) | X | 1.32 ac | 100%' and 'FEMA flood succeeded ... Flood zones cover the parcel: X 100% (1.32 ac).' This 1.32 ac exceeds the 1.15 ac mapped geometry and, on the SAME DD tab, directly contradicts the Acreage-basis disclosure 'Overlays sampled against: gis geometry'. The shared pinOverlayAcresToGeometry helper was applied to the operator-property-record (/report) path but not to the public-intelligence endpoint that feeds the DD panel.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-recheck2/03-dd.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws1-recheck2/05-dd-flood-1.32.png"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/public-intelligence (PID 182512): publicIntelligence.run.tasks[1].finding.zones[0].approximateAcres=1.32; finding.summary='Flood zones cover the parcel: X 100% (1.32 ac).' Contrast GET /api/landos/deal-cards/19/report where govDd.flood.note and reconciliation.flood.primary now correctly read 1.15 ac and operatorRecord has 0 overlay-exceeds-geometry risks. mappedAcres=1.15.",
+      "severity": "major",
+      "suspectedSubsystem": "/api/landos/deal-cards/:id/public-intelligence endpoint (FEMA flood task finding zones/summary) not routed through the shared pinOverlayAcresToGeometry helper used by the /report path",
+      "disposition": "internally_fixable",
+      "patternKey": "overlay-uses-wrong-acreage-basis",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T16:39:47.057Z",
+      "history": [
+        {
+          "at": "2026-07-15T16:39:47.057Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T16:45:00.661Z",
+          "event": "repaired",
+          "detail": "The /public-intelligence-fed DD flood panel (zones table + summary) now pinned to mapped geometry via pinRunOverlaysToGeometry."
+        },
+        {
+          "at": "2026-07-15T16:50:35.967Z",
+          "event": "retest_passed",
+          "detail": "E14"
+        }
+      ]
+    },
+    {
+      "id": "F6",
+      "workstreamId": "ws2-research-completeness",
+      "requirementId": "ws2-r5",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC, APN 5105-00-44-0497), cache-busted",
+        "On Overview read the 'Road Proximity & Access' decision card",
+        "Open Due Diligence and read the road/access detail",
+        "Compare against the /report operatorRecord.accessStatus and the /public-intelligence road task"
+      ],
+      "expected": "A road whose ownership is unknown/unverified must be described as UNKNOWN ownership, not 'private', and the card must not assert that recorded private-road access rights are required unless the road is actually classified private. The public-intel road task already uses the correct wording: both roads '(non-public)', with contact/ROW/frontage/physical/legal/maintenance separated.",
+      "actual": "FAIL. The Road/Access decision card contradicts itself and overstates ownership. Headline: 'Non-public road proximity only'. Detail: 'Road proximity only to a road classified private: ~63 ft of Unnamed road centerline... ~546 ft of Sid Edens Rd centerline... Recorded access rights over a private road would be required and are unconfirmed.' operatorRecord.accessStatus.status='private_road_only' and concern 'Unnamed road is mapped as a private road; recorded access rights over it are required'. This calls the access 'private' and asserts a recorded-private-road-rights requirement, but (a) Sid Edens Rd — the address road, the longer ~546 ft proximity — is classified in the source as 'Local road (ownership unverified), Unknown' (adjoiningRoads status='unknown'), i.e. unknown ownership, not private; and (b) the Unnamed road's 'private' is only a TIGER road-TYPE hint ('Private drive or service road', ownership 'Unknown'), not confirmed private ownership. The underlying /public-intelligence road task correctly labels BOTH roads '(non-public)' and makes no private-road-rights claim, so the operatorRecord's computeAccessStatus wording diverges from its own source. Secondary: accessStatus.concerns[2] and [3] are duplicated. This wording renders on both Overview and Due Diligence and persists on refresh.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2/01-overview.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2/02-dd.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2/03-refresh.png"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report: operatorRecord.accessStatus.status='private_road_only'; summary/detail='...a road classified private... Recorded access rights over a private road would be required...'. GET /api/landos/deal-cards/19/public-intelligence: road task adjoiningRoads=[{name:'Unnamed road (Private drive or service road (TIGER classification), Unknown)', status:'private'},{name:'Sid Edens Rd (Local road (ownership unverified, TIGER classification), Unknown)', status:'unknown'}]; task summary describes both as '(non-public)'.",
+      "severity": "major",
+      "suspectedSubsystem": "computeAccessStatus in src/landos/operator-property-record.ts — upgrades non-public/TIGER-type-hint and unknown-ownership roads to 'private' and asserts recorded private-road rights, diverging from the correctly-worded public-intelligence road task",
+      "disposition": "internally_fixable",
+      "patternKey": "access-unknown-road-called-private",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T17:08:34.976Z",
+      "history": [
+        {
+          "at": "2026-07-15T17:08:34.976Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T17:13:44.754Z",
+          "event": "repaired",
+          "detail": "computeAccessStatus no longer upgrades a non-public/'private' road-layer tag to established private ownership: unknown-ownership roads are described as unknown; recorded private-road rights are only noted as conditional ('would be required IF confirmed private'), matching the Non-public headline and the public-intelligence road task; access concerns de-duplicated."
+        },
+        {
+          "at": "2026-07-15T17:27:26.596Z",
+          "event": "retest_failed",
+          "detail": "E23"
+        },
+        {
+          "at": "2026-07-15T17:31:32.184Z",
+          "event": "repaired",
+          "detail": "Residual concerns-array string fixed via the shared sanitizeAccessLanguage sanitizer (covers summary AND concerns on every persisted run); source guard reworded. All accessStatus surfaces now describe unknown ownership with a conditional recorded-rights clause."
+        },
+        {
+          "at": "2026-07-15T17:35:11.690Z",
+          "event": "retest_passed",
+          "detail": "E27"
+        }
+      ]
+    },
+    {
+      "id": "F7",
+      "workstreamId": "ws2-research-completeness",
+      "requirementId": "ws2-r5",
+      "liveUrl": "http://localhost:3141/landos?deal=19",
+      "steps": [
+        "npm run landos:status (RUNNING healthy PID 12656)",
+        "GET /api/landos/deal-cards/19/report (authed) and inspect operatorRecord.accessStatus",
+        "Open Deal Card 19 (200 Sid Edens Rd, Pickens, SC, APN 5105-00-44-0497) cache-busted; read Overview 'Road Proximity & Access' card and Due Diligence road detail; hard-reload"
+      ],
+      "expected": "After the F6 repair, NO surface of the access record may call an unknown-ownership road 'private' or assert that recorded private-road access rights are required unconditionally. accessStatus.concerns must be consistent with the fixed summary/decision card (unknown ownership; recorded private-road rights only conditional on the road being confirmed private).",
+      "actual": "PARTIAL FIX — F6 STILL-OPEN. The operator-visible decision card and feasibility-strip summary are now correct (unknown ownership, TIGER classification hint, conditional wording; 'classified private' and 'mapped as a private road' absent on Overview + DD, and persist correctly on refresh). BUT the served /report operatorRecord.accessStatus.concerns[0] still reads verbatim: 'Unnamed road is mapped as a private road; recorded access rights over it are required and are not confirmed by GIS.' This calls an unknown-ownership road 'a private road' and asserts recorded private-road rights are required UNCONDITIONALLY — the exact claim F6 named and ws2-r5 prohibits — and it directly contradicts the sibling accessStatus.summary in the same object ('Ownership is not established ... recorded private-road rights would only be required if a road is confirmed private, which is unconfirmed'). The phrase occurs exactly once in the entire /report payload: in accessStatus.concerns[0]. The frontend does not currently render accessStatus.concerns (FeasibilityStrip renders only summary+unresolved), so it is not visible on the deal card today, but it is served in the canonical operator record and is one render/export away from the operator. The builder's repair note claimed 'access concerns de-duplicated' but left the prohibited language.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2-recheck/shot-overview.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2-recheck/shot-dd-road.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2-recheck/shot-after-refresh.png",
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/ws2-recheck/report-19.json"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report: operatorRecord.accessStatus.summary is fixed ('roads of unknown ownership', 'Ownership is not established', conditional 'would only be required if a road is confirmed private, which is unconfirmed'); decisionCards access detail is fixed ('a classification hint, not proof of a private road'). BUT operatorRecord.accessStatus.concerns[0] = 'Unnamed road is mapped as a private road; recorded access rights over it are required and are not confirmed by GIS.' (only occurrence in the whole payload).",
+      "severity": "major",
+      "suspectedSubsystem": "Access concerns path, not the summary path. sanitizeAccessLanguage (src/landos/evidence-language.ts:17-26) rewrites only frontage wording and does not neutralize 'is mapped as a private road; recorded access rights over it are required'. The concern originates at src/landos/public-property-intelligence-live.ts:665 (guard /private/i.test(road.owner) fires on a non-public/TIGER type hint) and is carried verbatim through computeAccessStatus concerns mapping (src/landos/operator-property-record.ts:300 and :313). The summary was fixed; the concerns array was not. Fix: gate/rewrite this concern to conditional 'unknown ownership' language (or drop it when ownership is unverified), consistent with the summary and decision card.",
+      "disposition": "internally_fixable",
+      "patternKey": "access-unknown-road-called-private",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T17:27:20.936Z",
+      "history": [
+        {
+          "at": "2026-07-15T17:27:20.936Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T17:31:33.277Z",
+          "event": "repaired",
+          "detail": "Same shared-sanitizer repair neutralizes the /report operatorRecord.accessStatus.concerns[0] private-road assertion."
+        },
+        {
+          "at": "2026-07-15T17:35:13.144Z",
+          "event": "retest_passed",
+          "detail": "E27"
+        }
+      ]
+    },
+    {
+      "id": "F8",
+      "workstreamId": "ws3-readiness",
+      "requirementId": "ws3-r6",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19 (token redacted)",
+      "steps": "Open Deal Card 19 -> Documents tab -> Generated reports -> click 'Download Markdown' (or 'Download PDF' / 'Download Report'; all call GET /api/landos/deal-cards/19/report/download). Read the Strategy section of the downloaded file.",
+      "expected": "Every report consumes the same shared readiness record: all five strategies blocked / not scoreable / not actionable, pricing gate closed, value conflicted, comp counts from the validated unique registry (55 sold / 51 active).",
+      "actual": "The operator-downloadable report says 'Quick Flip: High Potential ... Room to acquire below value and resell/assign', 'Novation / Double Close: High Potential', 'Primary strategy: Quick flip (preliminary ...)', cites '(24 sold, 60 active)' comps, and lists favorable Green Flags ('anchor the discovery call around market-supported expectations') while the live card shows all 5 strategies Blocked, value Conflicted, offer Researching. Additionally the consistency audit still reads 27/27 passed (unified_readiness_agreement=true, readiness_states_reconcile=true) despite this operator-visible disagreement, which also violates ws3-r7.",
+      "evidencePaths": [
+        ".runtime/landos/qa/ws3-qa1/report-19-download.md",
+        ".runtime/landos/qa/ws3-qa1/report-19-download.pdf",
+        ".runtime/landos/qa/ws3-qa1/32-reports-downloads.png",
+        ".runtime/landos/qa/ws3-qa1/23-strategy-strip.png",
+        ".runtime/landos/qa/ws3-qa1/report-19.json"
+      ],
+      "apiOrDbEvidence": "GET /api/landos/deal-cards/19/report/download?format=md returns legacy propertyIntelligenceMarkdown (routes.ts ~2638-2692) built from buildExecutiveSummary/discoveryReport legacy strategy ranking, not from strategyReadiness/unifiedReadiness. GET /report shows strategyReadiness all blocked and orchestration 27/27 pass.",
+      "severity": "high",
+      "suspectedSubsystem": "legacy report download pipeline (src/landos/routes.ts /report/download + propertyIntelligenceMarkdown / legacy discovery strategy ranking)",
+      "disposition": "internally_fixable",
+      "patternKey": "report-download-bypasses-unified-readiness",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T20:09:26.781Z",
+      "history": [
+        {
+          "at": "2026-07-15T20:09:26.781Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T20:20:32.583Z",
+          "event": "repaired",
+          "detail": "Shared repair: extracted the ONE canonical report projection (projectCanonicalReport) used by BOTH the live report GET and the report download route; the download now runs the same registry projection, gated valuation, refreshed narratives, clamped legacy offer label, and gate-aware executive summary, and propertyIntelligenceMarkdown renders the SHARED five-strategy record (blocked statuses + blockers) and the full unified readiness record instead of the legacy discovery ranking's High Potential labels; a primary strategy is never promoted while the pricing gate is closed"
+        },
+        {
+          "at": "2026-07-15T20:37:26.173Z",
+          "event": "retest_passed",
+          "detail": "E32"
+        }
+      ]
+    },
+    {
+      "id": "F9",
+      "workstreamId": "ws3-readiness",
+      "requirementId": "ws3-r6",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19 (token redacted)",
+      "steps": "Open Deal Card 19 -> Overview tab. Search the whole tab for an Executive Summary block or the shared readiness summary line ('Readiness: research 5/8 resolved; ...').",
+      "expected": "The executive summary surface shows the shared readiness summary line (executiveSummary.readiness.summaryLine === unifiedReadiness.summaryLine).",
+      "actual": "No Executive Summary block renders anywhere on the Overview and the summary line is visible nowhere in the UI. OverviewTab renders OverviewSummary (the only consumer of es.readiness.summaryLine, DealCard.tsx ~2582-2600) only in the branch where no operatorRecord exists; card 19 (and every record-bearing card) takes the record branch (~3419-3454), so the wired summaryLine is dead UI. API has headline 'land, Pickens County — pricing blocked, research continuing' and a matching summaryLine that the operator never sees.",
+      "evidencePaths": [
+        ".runtime/landos/qa/ws3-qa1/01-overview.txt",
+        ".runtime/landos/qa/ws3-qa1/01-overview.png",
+        ".runtime/landos/qa/ws3-qa1/report-19.json"
+      ],
+      "apiOrDbEvidence": "report-19.json executiveSummary.readiness.summaryLine matches unifiedReadiness.summaryLine, but grep of the rendered Overview innerText finds no 'Executive Summary' and no 'Readiness:' line.",
+      "severity": "medium",
+      "suspectedSubsystem": "web/src/components/DealCard.tsx OverviewTab record-branch omits OverviewSummary",
+      "disposition": "internally_fixable",
+      "patternKey": "frontend-missing-value",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T20:09:26.781Z",
+      "history": [
+        {
+          "at": "2026-07-15T20:09:26.781Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T20:20:33.665Z",
+          "event": "repaired",
+          "detail": "OverviewTab's record-bearing branch now renders OverviewSummary (executive summary incl. the shared readiness summary line) — the readiness mirror is visible on every Overview, not only on cards without an operator record"
+        },
+        {
+          "at": "2026-07-15T20:37:27.232Z",
+          "event": "retest_passed",
+          "detail": "E32"
+        }
+      ]
+    },
+    {
+      "id": "F10",
+      "workstreamId": "ws3-readiness",
+      "requirementId": "ws3-r3",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19 (token redacted)",
+      "steps": "Open Deal Card 19 -> Market tab. Read the Market Pulse narrative at the top, then read the Readiness (shared record) strip below it on the same tab.",
+      "expected": "No surface calls a bare median 'the valuation basis' while the shared record states a computable median is preliminary context only and value readiness is conflicted.",
+      "actual": "Market Pulse says 'Land is generally going for about $39,737/acre in the county (median of 24 sold band comps — the valuation basis).' On the same tab the shared strip says 'a computable median is PRELIMINARY CONTEXT ONLY — it does not open pricing' and 'comp coherence (conflicted): ... a blended median would be misleading, so value readiness cannot be high.' Favorable 'the valuation basis' language contradicts the conflicted/preliminary shared state on the same screen.",
+      "evidencePaths": [
+        ".runtime/landos/qa/ws3-qa1/03-market.txt",
+        ".runtime/landos/qa/ws3-qa1/28-market-pulse.png",
+        ".runtime/landos/qa/ws3-qa1/26-market-strip.png"
+      ],
+      "apiOrDbEvidence": "Narrative string built at src/landos/routes.ts:1698 ('median of N sold band comps — the valuation basis') independent of unifiedReadiness.value state.",
+      "severity": "medium",
+      "suspectedSubsystem": "market pulse narrative builder (src/landos/routes.ts market pulse summary)",
+      "disposition": "internally_fixable",
+      "patternKey": "market-pulse-favorable-valuation-language",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T20:09:26.781Z",
+      "history": [
+        {
+          "at": "2026-07-15T20:09:26.781Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T20:20:35.203Z",
+          "event": "repaired",
+          "detail": "Market Pulse county price language rewritten: a computable median is 'market context only'; whether any valuation basis exists is decided by the shared pricing gate and value readiness, never by a computable median alone; 'the valuation basis' and 'same basis as the preliminary valuation' phrasings removed"
+        },
+        {
+          "at": "2026-07-15T20:37:28.563Z",
+          "event": "retest_passed",
+          "detail": "E32"
+        }
+      ]
+    },
+    {
+      "id": "F11",
+      "workstreamId": "ws3-readiness",
+      "requirementId": "ws3-r5",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19 (token redacted)",
+      "steps": "Open Deal Card 19 -> Strategy tab -> scroll to 'Remaining verification'.",
+      "expected": "Every remaining-verification item names the fact needing confirmation.",
+      "actual": "The list contains a dangling bullet reading only 'Needs confirmation.' with no subject — zero operator information (operatorGapLabel fallback at src/landos/deal-card-report.ts:169 for an unmapped field key). Also the 'Confirm before offer' list shows the same acreage blocker twice with different wording: 'Legal acreage unresolved (survey or recorded plat required)' and 'Legal acreage unresolved (survey/plat required)'.",
+      "evidencePaths": [
+        ".runtime/landos/qa/ws3-qa1/25-strategy-remaining-verification.png",
+        ".runtime/landos/qa/ws3-qa1/02-strategy.txt"
+      ],
+      "apiOrDbEvidence": "src/landos/deal-card-report.ts:169 returns bare 'Needs confirmation.' when no field pattern matches; duplicate blocker strings come from merged blocker sources without dedupe by meaning.",
+      "severity": "low",
+      "suspectedSubsystem": "operator gap labeling + blocker dedupe (deal-card-report.ts / strategy blockers aggregation)",
+      "disposition": "internally_fixable",
+      "patternKey": "operator-gap-label-empty-subject",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T20:09:26.781Z",
+      "history": [
+        {
+          "at": "2026-07-15T20:09:26.781Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T20:20:36.213Z",
+          "event": "repaired",
+          "detail": "operatorGapLabel returns '' for empty fields (callers filter) and names the raw field as subject for unrecognized fields; executive summary verifyBeforeOffer filters empty labels; pursuit remainingVerification filters bare 'Needs confirmation.' items; RemainingBlockersPanel collapses duplicate same-fact blocker wordings (one fact, one bullet)"
+        },
+        {
+          "at": "2026-07-15T20:37:29.608Z",
+          "event": "retest_passed",
+          "detail": "E32"
+        }
+      ]
+    },
+    {
+      "id": "F12",
+      "workstreamId": "ws3-readiness",
+      "requirementId": "ws3-r6",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19 (token redacted)",
+      "steps": "Documents tab -> Download Markdown -> read the '## Strategy' section, 'Subdivide or Minor Split' blockers list.",
+      "expected": "Each blocker names a distinct fact once; the same acreage fact is not repeated in variant wording.",
+      "actual": "Subdivide blockers print both 'Legal acreage unresolved (survey or recorded plat required)' and 'Legal acreage unresolved (survey/plat required)'. The shared strategyReadiness record itself still carries both strings (report-19.json); the F11 repair deduped the Strategy-tab Confirm-before-offer list at render time, but the canonicalized download prints the record's raw blocker array, so the duplicate resurfaces there.",
+      "evidencePaths": [
+        ".runtime/landos/qa/ws3-recheck1/report-19-download.md",
+        ".runtime/landos/qa/ws3-recheck1/report-19.json"
+      ],
+      "apiOrDbEvidence": "report-19.json strategyReadiness.strategies[Subdivide].blockers contains both variant strings; UI dedupe not applied at the record/download level.",
+      "severity": "low",
+      "suspectedSubsystem": "strategy blocker aggregation (semantic dedupe applied at one renderer instead of the shared record)",
+      "disposition": "internally_fixable",
+      "patternKey": "duplicate-blocker-lines",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T20:37:47.032Z",
+      "history": [
+        {
+          "at": "2026-07-15T20:37:47.032Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T20:39:38.533Z",
+          "event": "repaired",
+          "detail": "Shared repair at the record level: buildStrategyReadiness's entry() dedupes identical blocker strings, and the Subdivide lane no longer pushes a variant acreage wording — it uses the ONE canonical 'Legal acreage unresolved (survey or recorded plat required)' string and only when the shared list does not already carry a legal-acreage fact. Every renderer (tabs, download, RAG) prints the record verbatim, so the duplicate cannot resurface anywhere"
+        },
+        {
+          "at": "2026-07-15T20:47:32.148Z",
+          "event": "retest_passed",
+          "detail": "E33"
+        }
+      ]
+    },
+    {
+      "id": "F13",
+      "workstreamId": "ws3-readiness",
+      "requirementId": "ws3-r6",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=19 (token redacted)",
+      "steps": "Documents tab -> Download Markdown -> read the '## Comparable Sales' section.",
+      "expected": "Comp rows in an operator-facing report come from the deduplicated unique registry; no property appears twice.",
+      "actual": "'216 Gabriel Way, Pickens, SC, 29671 | $25,962/ac' appears twice (lines 63 and 68) while the validated unique registry holds that property exactly once. The download's Comparable Sales section draws from a non-registry comp list, contradicting the card's '10 duplicate rows merged' registry claim.",
+      "evidencePaths": [
+        ".runtime/landos/qa/ws3-recheck1/report-19-download.md",
+        ".runtime/landos/qa/ws3-recheck1/report-19.json"
+      ],
+      "apiOrDbEvidence": "report-19.json compRegistry.uniqueComps contains one '216 Gabriel Way' entry; the markdown Comparable Sales list contains two identical rows.",
+      "severity": "low",
+      "suspectedSubsystem": "download report Comparable Sales section sourced from legacy report.comps instead of compRegistry (WS4 comps/valuation adjacency)",
+      "disposition": "internally_fixable",
+      "patternKey": "report-comps-bypass-unique-registry",
+      "status": "closed_retested",
+      "openedAt": "2026-07-15T20:37:47.033Z",
+      "history": [
+        {
+          "at": "2026-07-15T20:37:47.033Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-15T20:39:39.747Z",
+          "event": "repaired",
+          "detail": "The downloadable report's Comparable Sales section now renders the validated unique comp registry (each property exactly once, with providers and a duplicates-merged/rejected count line) whenever the registry is available; the legacy inspection comp list with duplicate rows is only a fallback for callers without the canonical bundle. Download route passes projection.canonical.compRegistry"
+        },
+        {
+          "at": "2026-07-15T20:47:33.382Z",
+          "event": "retest_passed",
+          "detail": "E33"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-15T15:56:07.123Z",
+      "kind": "test_result",
+      "summary": "acreage-basis unit tests: 23 passed (basis reconciliation, overlay consistency, accepted-overwrite guard)",
+      "path": "src/landos/acreage-basis.test.ts",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-15T15:56:08.304Z",
+      "kind": "test_result",
+      "summary": "related integration/regression suites: 138 passed (system-consistency 45, deal-card-audit 23, reconciliation 19, strategy-readiness 10, operator-record 18, acreage-basis 23)",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-15T15:56:09.405Z",
+      "kind": "api_evidence",
+      "summary": "operator property record now emits identity.acreageBasis (8-basis record + display/overlay/valuation resolution) and tylerDecisions[]; served on /report (routes.ts:2549)",
+      "path": "src/landos/operator-property-record.ts",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-15T15:56:10.612Z",
+      "kind": "test_result",
+      "summary": "production build PASS: vite 1838 modules + tsc; managed runtime restarted healthy PID 163448 HTTP 200",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-15T16:19:11.040Z",
+      "kind": "test_result",
+      "summary": "Repair regression: reconciliation+acreage+audit+system-consistency suites 131 passed incl. new acreageFactFromBasis F2/F3 regression (12.9% gap => conflict)",
+      "path": "src/landos/deal-card-reconciliation.test.ts",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-15T16:19:12.133Z",
+      "kind": "test_result",
+      "summary": "Repair build/runtime: production build exit 0; managed runtime restarted healthy PID 33352 HTTP 200 on fixed bundle",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-15T16:26:33.754Z",
+      "kind": "screenshot",
+      "summary": "Recheck: Property tab reconciliation acreage now shows CONFLICT (1.15 mapped + 1.32 assessed alternate, conflictNote, needs_confirmation) - F2 closed",
+      "path": ".runtime/landos/qa/ws1-recheck/02-property-reconciliation.png",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-15T16:26:35.236Z",
+      "kind": "screenshot",
+      "summary": "Recheck: Overview exec review now 25/25 checks passed, no acreage need-repair banner; orchestration.passed=true, acreage_conflict_preserved PASS - F3 closed",
+      "path": ".runtime/landos/qa/ws1-recheck/01-overview.png",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-15T16:26:36.730Z",
+      "kind": "screenshot",
+      "summary": "Recheck: FEMA flood card still shows X 100% (1.32 ac) exceeding 1.15 ac mapped geometry - F1 still open",
+      "path": ".runtime/landos/qa/ws1-recheck/04-after-refresh.png",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-15T16:32:55.445Z",
+      "kind": "test_result",
+      "summary": "F1 deep repair: acreage-basis 27 + reconciliation 22 + operator-record 18 + system-consistency 45 + audit 23 = 135 passed; new pinOverlayAcresToGeometry regression (4 cases). Rebuilt fresh bundle, runtime PID 182512 HTTP 200.",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-15T16:39:39.740Z",
+      "kind": "api_evidence",
+      "summary": "Recheck2: /public-intelligence endpoint still serves flood approximateAcres=1.32 and summary X 100% (1.32 ac), rendered on DD tab as Flood zones (mapped) X 1.32 ac 100%; exceeds 1.15 mapped geometry",
+      "url": "http://localhost:3141/api/landos/deal-cards/19/public-intelligence",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-07-15T16:44:57.285Z",
+      "kind": "test_result",
+      "summary": "F1/F4/F5 repair: /public-intelligence endpoint now pins flood run overlay via pinRunOverlaysToGeometry; routes.test.ts 70 + acreage-basis 27 + system-consistency 45 = 142 passed; fresh build, runtime PID 78156 HTTP 200.",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-07-15T16:50:23.385Z",
+      "kind": "independent_browser_qa",
+      "summary": "Recheck3 PASS: all flood surfaces now 1.15 ac mapped geometry - Overview flood card 'X 100% (1.15 ac)', DD Public Property Intelligence 'Flood zones (mapped) X 1.15 ac 100%', reconciliation.flood '1.15 ac (100%)', govDd/decisionCards/workStatus all 1.15; /public-intelligence zones[0].approximateAcres=1.15 and summary 1.15; no overlay exceeds mapped geometry; DD 'Overlays sampled against gis geometry' disclosure consistent",
+      "path": ".runtime/landos/qa/ws1-recheck3/01-overview.png",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-07-15T16:50:25.187Z",
+      "kind": "api_evidence",
+      "summary": "Recheck3 API: /public-intelligence run.tasks[fema_flood].finding.zones[0].approximateAcres=1.15 and summary 'X 100% (1.15 ac)'; /report govDd.flood.note + reconciliation.flood.primary=1.15; every remaining 1.32 is the legitimate assessed-acreage value or a conflict explanation, never an overlay area",
+      "url": "http://localhost:3141/api/landos/deal-cards/19/public-intelligence",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-07-15T16:53:14.797Z",
+      "kind": "browser_journey",
+      "summary": "Recheck3 full operator journey on Deal Card 19: Overview (flood card 1.15, 25/25 checks, CONFLICT header, value-readiness pricing-blocked) -> Due Diligence (Acreage basis explanation, Tyler decision, 'Overlays sampled against gis geometry', flood panel 1.15) -> Property (reconciliation acreage conflicted + flood 1.15) -> refresh. Real Chrome over CDP.",
+      "path": ".runtime/landos/qa/ws1-recheck3/02-dd.png",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-07-15T16:53:16.262Z",
+      "kind": "refresh_persistence",
+      "summary": "Recheck3 refresh persistence: after browser reload, CONFLICT header, 25/25 consistency checks, acreage-basis explanation, Tyler decision, and flood 1.15 (no 1.32) all persist on Deal Card 19.",
+      "path": ".runtime/landos/qa/ws1-recheck3/04-refresh.png",
+      "workstreamId": "ws1-acreage-basis"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-07-15T17:02:53.155Z",
+      "kind": "test_result",
+      "summary": "research-completeness unit tests 11 passed (tier separation, partial not counted resolved, complete requires resolved); operator-record+evidence-language+system-consistency 79 passed",
+      "path": "src/landos/research-completeness.test.ts",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-07-15T17:02:54.106Z",
+      "kind": "test_result",
+      "summary": "consumer suites (exec-summary, readiness, discovery-briefing, routes 70, audit) 119 passed; typecheck exit 0; production build exit 0; runtime PID 29956 HTTP 200",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-07-15T17:02:55.126Z",
+      "kind": "api_evidence",
+      "summary": "operatorRecord.researchCompleteness now tiered (attempted/retrieved/partial/resolved/confirmed); red-flags + septic + access decision cards reworded; FEMA BFE claims gated on baseFloodElevation; served on /report",
+      "path": "src/landos/operator-property-record.ts",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-07-15T17:08:23.495Z",
+      "kind": "screenshot",
+      "summary": "WS2: Overview Road/Access card headline 'Non-public road proximity only' but detail 'a road classified private ... Recorded access rights over a private road would be required' - r5 violation (Sid Edens Rd ownership unverified/unknown)",
+      "path": ".runtime/landos/qa/ws2/01-overview.png",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-07-15T17:08:25.099Z",
+      "kind": "api_evidence",
+      "summary": "WS2: /report accessStatus.status=private_road_only vs /public-intelligence road task labels both roads (non-public); Sid Edens Rd adjoiningRoads status=unknown ownership unverified",
+      "url": "http://localhost:3141/api/landos/deal-cards/19/report",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-07-15T17:13:43.582Z",
+      "kind": "test_result",
+      "summary": "F6 repair: computeAccessStatus describes non-public roads as unknown ownership (private tag = hint only, no recorded-rights assertion), concerns de-duplicated; operator-record 19 + research-completeness 11 + system-consistency 45 = 75 passed; build exit 0; runtime PID 12656 HTTP 200",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E23",
+      "recordedAt": "2026-07-15T17:27:09.625Z",
+      "kind": "api_evidence",
+      "summary": "GET /report deal 19: accessStatus.summary+decisionCard fixed but accessStatus.concerns[0] still asserts 'mapped as a private road; recorded access rights over it are required' (only occurrence in payload)",
+      "path": ".runtime/landos/qa/ws2-recheck/report-19.json",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E24",
+      "recordedAt": "2026-07-15T17:27:11.198Z",
+      "kind": "screenshot",
+      "summary": "Card 19 Overview+DD road/access fixed on frontend; refresh persists",
+      "path": ".runtime/landos/qa/ws2-recheck/shot-after-refresh.png",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E25",
+      "recordedAt": "2026-07-15T17:27:12.754Z",
+      "kind": "independent_browser_qa",
+      "summary": "WS2 F6 recheck report: FAIL; concerns[0] residual, r1-r8 regression clean, refresh holds",
+      "path": ".runtime/landos/qa/ws2-recheck/recheck-report.md",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E26",
+      "recordedAt": "2026-07-15T17:31:30.910Z",
+      "kind": "test_result",
+      "summary": "F6/F7 repair: shared sanitizeAccessLanguage now neutralizes persisted private-road concern (read+write on every run); source guard emits conditional unknown-ownership wording; evidence-language 6 + operator-record 19 + system-consistency 45 = 70 passed; fresh build",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E27",
+      "recordedAt": "2026-07-15T17:34:39.721Z",
+      "kind": "api_evidence",
+      "summary": "Recheck2 GET /report+/public-intelligence deal 19: full-payload deep sweep 0 hits for private-road/rights-required phrases; accessStatus.concerns[0] now conditional unknown-ownership",
+      "path": ".runtime/landos/qa/ws2-recheck2/report-19.json",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E28",
+      "recordedAt": "2026-07-15T17:34:41.382Z",
+      "kind": "screenshot",
+      "summary": "Recheck2 card 19 Overview+DD road/access clean; refresh persists",
+      "path": ".runtime/landos/qa/ws2-recheck2/shot-after-refresh.png",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E29",
+      "recordedAt": "2026-07-15T17:34:42.945Z",
+      "kind": "refresh_persistence",
+      "summary": "Recheck2 hard reload: fixed access wording + research counts persist",
+      "path": ".runtime/landos/qa/ws2-recheck2/shot-after-refresh.png",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E30",
+      "recordedAt": "2026-07-15T17:34:44.481Z",
+      "kind": "independent_browser_qa",
+      "summary": "WS2 recheck2 PASS report: F6/F7 closed, r1-r8 regression clean",
+      "path": ".runtime/landos/qa/ws2-recheck2/recheck2-report.md",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E31",
+      "recordedAt": "2026-07-15T17:37:18.882Z",
+      "kind": "browser_journey",
+      "summary": "WS2 recheck2 live browser journey (Overview + DD road/access, FEMA, soils, utilities, red flags) reconciled vs /report + /public-intelligence; F6/F7 closed; refresh persistence held",
+      "path": ".runtime/landos/qa/ws2-recheck2/recheck2-report.md",
+      "workstreamId": "ws2-research-completeness"
+    },
+    {
+      "id": "E32",
+      "recordedAt": "2026-07-15T20:37:17.808Z",
+      "kind": "independent_browser_qa",
+      "summary": "WS3 recheck1: F8/F9/F10/F11 all retested PASS on the live dashboard + download (markdown+PDF); strips string-identical across five tabs; refresh persistence byte-identical; audit 27/27 incl. both readiness checks; 2 NEW low findings on the download surface (N1 duplicate blocker wordings from the shared record; N2 legacy comp list duplicate row)",
+      "path": ".runtime/landos/qa/ws3-recheck1/report.md",
+      "workstreamId": "ws3-readiness"
+    },
+    {
+      "id": "E33",
+      "recordedAt": "2026-07-15T20:47:23.817Z",
+      "kind": "independent_browser_qa",
+      "summary": "WS3 recheck2: PASS with zero findings. F12/F13 retested pass (shared strategy record deduped at record level; download Comparable Sales renders the unique registry with 0 duplicate addresses and exact count reconciliation). Regression clean: strips string-identical across five tabs, refresh persistence byte-identical, audit 27/27 incl. both readiness checks, no F8-F11 symptom in md or PDF. One WS4-scope observation handed off: comp-registry-unit-suffix-under-merge (surfaces mutually consistent; does not affect WS3)",
+      "path": ".runtime/landos/qa/ws3-recheck2/report.md",
+      "workstreamId": "ws3-readiness"
+    },
+    {
+      "id": "E34",
+      "recordedAt": "2026-07-15T20:48:29.936Z",
+      "kind": "test_result",
+      "summary": "403/403 tests across 20 suites: unified-readiness.test.ts 16 (all-blocked never OK, bare-median never ready, materiality, contract separate, seeded-clamp issues), readiness-surfaces-regression.test.ts 20 (F8-F13), deal-card-audit.test.ts 32 (unified_readiness_agreement + readiness_states_reconcile incl. seeded disagreements), system-consistency-regression.test.ts 52 (WS3 full-chain regression), routes.test.ts 71 (payload carries ONE unified record agreeing with every mirrored surface), strategy-readiness, operator-property-record, deal-card-readiness/report/executive-summary/strategy(+ui)/market-ui/ui, rag-canonical, research-completeness, reconciliation, acreage-basis (WS1), evidence-language (WS2), discovery-briefing",
+      "path": "src/landos/unified-readiness.test.ts",
+      "workstreamId": "ws3-readiness"
+    },
+    {
+      "id": "E35",
+      "recordedAt": "2026-07-15T20:48:30.913Z",
+      "kind": "api_evidence",
+      "summary": "Live authenticated GET /api/landos/deal-cards/19/report on the production bundle: unifiedReadiness with all 8 dimensions + whys; allStrategiesBlocked=true with actionability=blocked / scoreability=not_scoreable / screening=available; value=conflicted with 55 validated sold comps (valuation context=preliminary); offer=researching with explanation; contract=blocked separately; executiveSummary.readiness.summaryLine identical; audit 27/27 incl. both readiness checks; legacy report.offerReadiness clamped; download markdown renders the same shared records",
+      "path": ".runtime/landos/qa/ws3-pre/report-19-repair2.json",
+      "workstreamId": "ws3-readiness"
+    },
+    {
+      "id": "E36",
+      "recordedAt": "2026-07-15T20:48:31.922Z",
+      "kind": "screenshot",
+      "summary": "Browser-QA screenshots: readiness strips + readiness surfaces on Overview/Strategy/Market/Seller/Documents, exec-summary readiness line, Confirm-before-offer, Market Pulse wording (recheck1 shots 20-27 + recheck2 shots)",
+      "path": ".runtime/landos/qa/ws3-recheck2",
+      "workstreamId": "ws3-readiness"
+    },
+    {
+      "id": "E37",
+      "recordedAt": "2026-07-15T20:48:32.995Z",
+      "kind": "refresh_persistence",
+      "summary": "Hard-refresh persistence verified by independent browser QA in both rechecks: all five tabs byte-identical pre/post reload, readiness states unchanged",
+      "path": ".runtime/landos/qa/ws3-recheck2/report.md",
+      "workstreamId": "ws3-readiness"
+    },
+    {
+      "id": "E38",
+      "recordedAt": "2026-07-15T20:48:34.293Z",
+      "kind": "browser_journey",
+      "summary": "Independent browser QA drove the full WS3 journey twice on the real localhost dashboard: Overview readiness cards + strip, Strategy screening-vs-scoreability-vs-actionability, Market chip + pulse wording, Seller panel incl. backend-driven contract cell, Reports strip + downloads (md+PDF), frontend-vs-API reconciliation, refresh persistence, contradiction hunt across tabs",
+      "path": ".runtime/landos/qa/ws3-qa1/report.md",
+      "workstreamId": "ws3-readiness"
+    }
+  ],
+  "finalRegression": null,
+  "finalReview": null,
+  "sprintStatus": "active",
+  "log": [
+    {
+      "at": "2026-07-15T15:40:26.188Z",
+      "event": "sprint_created",
+      "detail": "Deal Card v2 repair and finish (shared operator correctness)"
+    },
+    {
+      "at": "2026-07-15T15:40:43.418Z",
+      "event": "workstream_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T15:56:24.292Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:implementation:pass"
+    },
+    {
+      "at": "2026-07-15T15:56:25.300Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-15T15:56:26.349Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-15T15:56:27.459Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:typecheck:pass"
+    },
+    {
+      "at": "2026-07-15T15:56:28.778Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:production_build:pass"
+    },
+    {
+      "at": "2026-07-15T15:56:29.775Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-15T16:09:42.811Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-15T16:09:42.811Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-acreage-basis:fail"
+    },
+    {
+      "at": "2026-07-15T16:19:13.484Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:19:13.485Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-15T16:19:14.539Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:19:14.540Z",
+      "event": "finding_repaired",
+      "detail": "F2"
+    },
+    {
+      "at": "2026-07-15T16:19:15.534Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:19:15.534Z",
+      "event": "finding_repaired",
+      "detail": "F3"
+    },
+    {
+      "at": "2026-07-15T16:25:41.003Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:browser_qa_recheck:fail"
+    },
+    {
+      "at": "2026-07-15T16:25:41.003Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-acreage-basis:fail"
+    },
+    {
+      "at": "2026-07-15T16:26:46.314Z",
+      "event": "finding_retested",
+      "detail": "F2:pass"
+    },
+    {
+      "at": "2026-07-15T16:26:48.006Z",
+      "event": "finding_retested",
+      "detail": "F3:pass"
+    },
+    {
+      "at": "2026-07-15T16:26:49.771Z",
+      "event": "finding_retested",
+      "detail": "F1:fail"
+    },
+    {
+      "at": "2026-07-15T16:32:56.524Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:32:56.525Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-15T16:32:57.558Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:32:57.559Z",
+      "event": "finding_repaired",
+      "detail": "F4"
+    },
+    {
+      "at": "2026-07-15T16:39:47.057Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:browser_qa_recheck:fail"
+    },
+    {
+      "at": "2026-07-15T16:39:47.057Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-acreage-basis:fail"
+    },
+    {
+      "at": "2026-07-15T16:40:03.141Z",
+      "event": "finding_retested",
+      "detail": "F1:fail"
+    },
+    {
+      "at": "2026-07-15T16:40:04.947Z",
+      "event": "finding_retested",
+      "detail": "F4:fail"
+    },
+    {
+      "at": "2026-07-15T16:44:58.418Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:44:58.418Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-15T16:44:59.544Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:44:59.545Z",
+      "event": "finding_repaired",
+      "detail": "F4"
+    },
+    {
+      "at": "2026-07-15T16:45:00.660Z",
+      "event": "repair_started",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:45:00.661Z",
+      "event": "finding_repaired",
+      "detail": "F5"
+    },
+    {
+      "at": "2026-07-15T16:50:32.879Z",
+      "event": "finding_retested",
+      "detail": "F1:pass"
+    },
+    {
+      "at": "2026-07-15T16:50:34.356Z",
+      "event": "finding_retested",
+      "detail": "F4:pass"
+    },
+    {
+      "at": "2026-07-15T16:50:35.969Z",
+      "event": "finding_retested",
+      "detail": "F5:pass"
+    },
+    {
+      "at": "2026-07-15T16:50:45.167Z",
+      "event": "phase_recorded",
+      "detail": "ws1-acreage-basis:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-15T16:50:45.167Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-acreage-basis:pass"
+    },
+    {
+      "at": "2026-07-15T16:51:13.427Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r1"
+    },
+    {
+      "at": "2026-07-15T16:51:15.020Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r2"
+    },
+    {
+      "at": "2026-07-15T16:51:16.549Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r3"
+    },
+    {
+      "at": "2026-07-15T16:51:18.072Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r4"
+    },
+    {
+      "at": "2026-07-15T16:51:19.607Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r5"
+    },
+    {
+      "at": "2026-07-15T16:51:21.234Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r6"
+    },
+    {
+      "at": "2026-07-15T16:51:22.769Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r7"
+    },
+    {
+      "at": "2026-07-15T16:51:24.328Z",
+      "event": "requirement_verified",
+      "detail": "ws1-acreage-basis/ws1-r8"
+    },
+    {
+      "at": "2026-07-15T16:53:25.457Z",
+      "event": "workstream_passed",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:53:57.205Z",
+      "event": "workstream_passed",
+      "detail": "ws1-acreage-basis"
+    },
+    {
+      "at": "2026-07-15T16:54:12.228Z",
+      "event": "workstream_started",
+      "detail": "ws2-research-completeness"
+    },
+    {
+      "at": "2026-07-15T17:02:56.339Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:implementation:pass"
+    },
+    {
+      "at": "2026-07-15T17:02:57.355Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-15T17:02:58.491Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-15T17:02:59.462Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:typecheck:pass"
+    },
+    {
+      "at": "2026-07-15T17:03:00.867Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:production_build:pass"
+    },
+    {
+      "at": "2026-07-15T17:03:01.878Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-15T17:08:34.976Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-15T17:08:34.976Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-research-completeness:fail"
+    },
+    {
+      "at": "2026-07-15T17:13:44.754Z",
+      "event": "repair_started",
+      "detail": "ws2-research-completeness"
+    },
+    {
+      "at": "2026-07-15T17:13:44.754Z",
+      "event": "finding_repaired",
+      "detail": "F6"
+    },
+    {
+      "at": "2026-07-15T17:27:20.936Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:browser_qa_recheck:fail"
+    },
+    {
+      "at": "2026-07-15T17:27:20.936Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-research-completeness:fail"
+    },
+    {
+      "at": "2026-07-15T17:27:26.596Z",
+      "event": "finding_retested",
+      "detail": "F6:fail"
+    },
+    {
+      "at": "2026-07-15T17:31:32.184Z",
+      "event": "repair_started",
+      "detail": "ws2-research-completeness"
+    },
+    {
+      "at": "2026-07-15T17:31:32.184Z",
+      "event": "finding_repaired",
+      "detail": "F6"
+    },
+    {
+      "at": "2026-07-15T17:31:33.276Z",
+      "event": "repair_started",
+      "detail": "ws2-research-completeness"
+    },
+    {
+      "at": "2026-07-15T17:31:33.277Z",
+      "event": "finding_repaired",
+      "detail": "F7"
+    },
+    {
+      "at": "2026-07-15T17:35:11.691Z",
+      "event": "finding_retested",
+      "detail": "F6:pass"
+    },
+    {
+      "at": "2026-07-15T17:35:13.144Z",
+      "event": "finding_retested",
+      "detail": "F7:pass"
+    },
+    {
+      "at": "2026-07-15T17:35:14.693Z",
+      "event": "phase_recorded",
+      "detail": "ws2-research-completeness:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-15T17:35:14.693Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-research-completeness:pass"
+    },
+    {
+      "at": "2026-07-15T17:35:20.050Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r1"
+    },
+    {
+      "at": "2026-07-15T17:35:21.454Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r2"
+    },
+    {
+      "at": "2026-07-15T17:35:23.024Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r3"
+    },
+    {
+      "at": "2026-07-15T17:35:24.877Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r4"
+    },
+    {
+      "at": "2026-07-15T17:35:26.494Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r5"
+    },
+    {
+      "at": "2026-07-15T17:35:28.024Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r6"
+    },
+    {
+      "at": "2026-07-15T17:35:29.807Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r7"
+    },
+    {
+      "at": "2026-07-15T17:35:31.311Z",
+      "event": "requirement_verified",
+      "detail": "ws2-research-completeness/ws2-r8"
+    },
+    {
+      "at": "2026-07-15T17:37:20.064Z",
+      "event": "workstream_passed",
+      "detail": "ws2-research-completeness"
+    },
+    {
+      "at": "2026-07-15T19:23:12.406Z",
+      "event": "workstream_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T19:49:22.787Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:implementation:pass"
+    },
+    {
+      "at": "2026-07-15T19:49:23.725Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-15T19:49:51.029Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-15T19:50:10.316Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:typecheck:pass"
+    },
+    {
+      "at": "2026-07-15T19:51:00.194Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:production_build:pass"
+    },
+    {
+      "at": "2026-07-15T19:52:43.623Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-15T20:09:26.781Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-15T20:09:26.781Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-readiness:fail"
+    },
+    {
+      "at": "2026-07-15T20:20:32.582Z",
+      "event": "repair_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T20:20:32.583Z",
+      "event": "finding_repaired",
+      "detail": "F8"
+    },
+    {
+      "at": "2026-07-15T20:20:33.665Z",
+      "event": "repair_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T20:20:33.665Z",
+      "event": "finding_repaired",
+      "detail": "F9"
+    },
+    {
+      "at": "2026-07-15T20:20:35.202Z",
+      "event": "repair_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T20:20:35.203Z",
+      "event": "finding_repaired",
+      "detail": "F10"
+    },
+    {
+      "at": "2026-07-15T20:20:36.213Z",
+      "event": "repair_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T20:20:36.213Z",
+      "event": "finding_repaired",
+      "detail": "F11"
+    },
+    {
+      "at": "2026-07-15T20:37:26.173Z",
+      "event": "finding_retested",
+      "detail": "F8:pass"
+    },
+    {
+      "at": "2026-07-15T20:37:27.233Z",
+      "event": "finding_retested",
+      "detail": "F9:pass"
+    },
+    {
+      "at": "2026-07-15T20:37:28.564Z",
+      "event": "finding_retested",
+      "detail": "F10:pass"
+    },
+    {
+      "at": "2026-07-15T20:37:29.609Z",
+      "event": "finding_retested",
+      "detail": "F11:pass"
+    },
+    {
+      "at": "2026-07-15T20:37:47.032Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:browser_qa_recheck:fail"
+    },
+    {
+      "at": "2026-07-15T20:37:47.033Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-readiness:fail"
+    },
+    {
+      "at": "2026-07-15T20:39:38.532Z",
+      "event": "repair_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T20:39:38.533Z",
+      "event": "finding_repaired",
+      "detail": "F12"
+    },
+    {
+      "at": "2026-07-15T20:39:39.747Z",
+      "event": "repair_started",
+      "detail": "ws3-readiness"
+    },
+    {
+      "at": "2026-07-15T20:39:39.747Z",
+      "event": "finding_repaired",
+      "detail": "F13"
+    },
+    {
+      "at": "2026-07-15T20:42:30.722Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-15T20:42:31.657Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-15T20:42:32.752Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:typecheck:pass"
+    },
+    {
+      "at": "2026-07-15T20:42:34.043Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:production_build:pass"
+    },
+    {
+      "at": "2026-07-15T20:42:35.036Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-15T20:47:32.148Z",
+      "event": "finding_retested",
+      "detail": "F12:pass"
+    },
+    {
+      "at": "2026-07-15T20:47:33.382Z",
+      "event": "finding_retested",
+      "detail": "F13:pass"
+    },
+    {
+      "at": "2026-07-15T20:47:53.510Z",
+      "event": "phase_recorded",
+      "detail": "ws3-readiness:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-15T20:47:53.510Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-readiness:pass"
+    },
+    {
+      "at": "2026-07-15T20:48:44.840Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r1"
+    },
+    {
+      "at": "2026-07-15T20:48:45.833Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r2"
+    },
+    {
+      "at": "2026-07-15T20:48:46.946Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r3"
+    },
+    {
+      "at": "2026-07-15T20:48:48.085Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r4"
+    },
+    {
+      "at": "2026-07-15T20:48:49.097Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r5"
+    },
+    {
+      "at": "2026-07-15T20:48:50.144Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r6"
+    },
+    {
+      "at": "2026-07-15T20:48:51.243Z",
+      "event": "requirement_verified",
+      "detail": "ws3-readiness/ws3-r7"
+    },
+    {
+      "at": "2026-07-15T20:49:00.289Z",
+      "event": "workstream_passed",
+      "detail": "ws3-readiness"
+    }
+  ]
+}

@@ -32,7 +32,7 @@ Set the flag (shell env wins; `.env` also works), then start the server:
 
 ```powershell
 $env:BROWSER_INTEL_LIVE = "1"          # optional: $env:BROWSER_INTEL_CDP_URL = "http://127.0.0.1:9222"
-node dist/index.js
+npm run landos:restart
 ```
 
 Or add to `.env`:

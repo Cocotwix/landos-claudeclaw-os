@@ -1,8 +1,13 @@
-# LandOS Handover
+# LandOS Handover (superseded — history only)
+
+Superseded 2026-07-15 by `.landos/CHECKPOINT.md` (auto-loaded current state)
+and `.landos/PERMANENT_MEMORY.md` (durable rules). Do not update this file and
+do not treat it as current; the content below is a stale 2026-07-04 snapshot
+retained as on-demand history.
 
 **Project:** LandOS
-**Purpose:** shared LandOS operating memory for the current LandOS build.
-**Last updated:** 2026-07-04
+**Purpose:** historical LandOS operating memory snapshot.
+**Last updated:** 2026-07-04 (frozen)
 
 ## Current Status
 
