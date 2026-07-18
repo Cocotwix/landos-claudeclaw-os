@@ -3,6 +3,7 @@ import { WebClient } from '@slack/web-api';
 import { SLACK_USER_TOKEN } from './config.js';
 import { saveSlackMessage } from './db.js';
 import { logger } from './logger.js';
+import { assertJarvisEgressAllowed } from './landos/jarvis-egress-policy.js';
 
 let client: WebClient | null = null;
 
@@ -170,6 +171,7 @@ export async function sendSlackMessage(
   channelName: string,
   threadTs?: string,
 ): Promise<void> {
+  assertJarvisEgressAllowed({ channel: 'slack', recipientId: channelId });
   const web = getClient();
 
   await web.chat.postMessage({

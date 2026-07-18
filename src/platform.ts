@@ -38,22 +38,20 @@ export function killProcess(pid: number, force = false): boolean {
  * Uses signal 0 on POSIX. Uses tasklist on Windows.
  */
 export function isProcessAlive(pid: number): boolean {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
-  try {
-    if (IS_WINDOWS) {
-      const out = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, {
-        stdio: 'pipe',
-        encoding: 'utf-8',
-      });
-      // tasklist prints "INFO: No tasks..." on stderr when missing, and an empty
-      // result on stdout. A live process produces a CSV row containing the PID.
-      return out.includes(`"${pid}"`);
-    }
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+  return liveProcessIds([pid]).has(pid);
+}
+
+/** Check a set of PIDs without starting an OS command. Node's signal-0 probe is
+ * supported on Windows and POSIX, completes immediately, and cannot flash a
+ * console window. */
+export function liveProcessIds(pids: Iterable<number>): Set<number> {
+  const requested = new Set([...pids].filter((pid) => Number.isInteger(pid) && pid > 0));
+  if (requested.size === 0) return new Set();
+  const live = new Set<number>();
+  for (const candidate of requested) {
+    try { process.kill(candidate, 0); live.add(candidate); } catch { /* not alive */ }
   }
+  return live;
 }
 
 /**

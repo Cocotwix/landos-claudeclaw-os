@@ -250,29 +250,37 @@ describe('registry-driven best comparables', () => {
       soldCandidate(1), soldCandidate(2),
       { provider: 'zillow', lane: 'active', addressDesc: '900 Ask St, Testville, SC', price: 90_000, priceKind: 'list', acres: 1.2 },
     ]);
-    const best = bestCompsFromRegistry(registry, 1.15);
+    const best = bestCompsFromRegistry(registry, 1.15, {
+      subjectCoords: { lat: 34.99, lng: -82.65 },
+      coordsByAddress: new Map([
+        ['101 comp st, testville, sc 29000', { lat: 35.0, lng: -82.65 }],
+        ['102 comp st, testville, sc 29000', { lat: 35.01, lng: -82.65 }],
+      ]),
+    });
     expect(best.comps.length).toBe(2);
     expect(best.comps.every((c) => c.lane === 'sold')).toBe(true);
     expect(best.comps[0].source).toContain('Realtor.com');
     expect(best.comps[0].source).not.toBe('homeharvest');
   });
 
-  it('computes straight-line distance when coordinates are known, honest null otherwise', () => {
+  it('computes straight-line distance when coordinates are known and excludes the unmeasured row', () => {
     const registry = buildCompRegistry({ state: 'SC', acres: 1.15 }, [soldCandidate(1), soldCandidate(2)]);
     const coords = new Map([[
       '101 comp st, testville, sc 29000'.replace(/\s+/g, ' '), { lat: 35.0, lng: -82.65 },
     ]]);
     const best = bestCompsFromRegistry(registry, 1.15, { subjectCoords: { lat: 34.99, lng: -82.65 }, coordsByAddress: coords });
-    const withDist = best.comps.find((c) => c.distanceMiles != null);
-    const without = best.comps.find((c) => c.distanceMiles == null);
-    expect(withDist?.distanceMethod).toBe('straight_line');
-    expect(without?.distanceMethod ?? null).toBeNull();
+    expect(best.comps).toHaveLength(1);
+    expect(best.comps[0]?.distanceMethod).toBe('straight_line');
+    expect(best.policy.exclusions.some((reason) => /distance is not established/i.test(reason))).toBe(true);
     expect(best.rationale).toMatch(/straight-line/i);
   });
 
   it('score components are exposed for every selected comp', () => {
     const registry = buildCompRegistry({ state: 'SC', acres: 1.15 }, [soldCandidate(1)]);
-    const best = bestCompsFromRegistry(registry, 1.15);
+    const best = bestCompsFromRegistry(registry, 1.15, {
+      subjectCoords: { lat: 34.99, lng: -82.65 },
+      coordsByAddress: new Map([['101 comp st, testville, sc 29000', { lat: 35.0, lng: -82.65 }]]),
+    });
     expect(best.comps[0].scoreComponents).toBeDefined();
     expect(best.comps[0].scoreComponents.laneStrength).toBeGreaterThan(0);
   });

@@ -27,7 +27,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'active',
     description: 'Coordination, approvals queue, daily brief.',
     agents: [
-      { agentId: 'main', name: 'Main', role: 'Coordination and triage', status: 'active' },
+      { agentId: 'main', name: 'Max', role: 'Chief of staff, coordination, and owner communication', status: 'active' },
     ],
   },
   {
@@ -36,7 +36,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'active',
     description: 'Seller psychology, call prep and analysis, follow-ups, offer-call framing. Seller-facing drafts only; Tyler sends.',
     agents: [
-      { agentId: 'acquisition-copilot', name: 'Ace', role: 'Acquisition co-pilot and seller communication support', status: 'active' },
+      { agentId: 'acquisition-copilot', name: 'Acquisitions Agent', role: 'Seller discovery, reconciliation, and follow-up planning', status: 'active' },
     ],
   },
   {
@@ -45,7 +45,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'active',
     description: 'First-pass DD, LandPortal workflow, scoring, EV, anomaly flags, comp workflows.',
     agents: [
-      { agentId: 'duke-due-diligence', name: 'Duke', role: 'Due diligence and LandPortal workflow', status: 'active' },
+      { agentId: 'duke-due-diligence', name: 'Due Diligence Agent', role: 'Due diligence and authenticated browser research', status: 'active' },
     ],
   },
   {
@@ -54,7 +54,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'active',
     description: 'Owns the Market Matrix — the master market-intelligence database answering "where should Tyler buy land?". Builds county-level market facts (PPA, DOM, sell-through, absorption, population growth) by geography + acreage band + quarter, runs deterministic MarketQueries + rankings, and serves every other department instead of duplicate market analysis. Facts only; the database computes, the AI interprets.',
     agents: [
-      { agentId: 'market-intelligence', name: 'Mara', role: 'Market intelligence and the Market Matrix', status: 'active' },
+      { agentId: 'market-intelligence', name: 'Market Research Agent', role: 'Market intelligence and the Market Matrix', status: 'active' },
     ],
   },
   {
@@ -63,7 +63,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'active',
     description: 'Owns browser automation for LandOS. Executes Browser Playbooks (reusable per-website navigation + extraction recipes) and returns validated-shape structured data to whichever department delegated the work. Playbook #1 is LandPortal Market Research (Market Research → Drill Deep only). It does NOT own any business domain — Market Intelligence owns market data and delegates browser collection here; future departments (county GIS, FEMA, assessor, zoning) will add their own playbooks. Read-only; never stores credentials.',
     agents: [
-      { agentId: 'browser-agent', name: 'Web', role: 'Browser automation and Browser Playbook execution', status: 'active' },
+      { agentId: 'browser-agent', name: 'Browser Agent', role: 'Browser automation and Browser Playbook execution', status: 'active' },
     ],
   },
   {
@@ -73,7 +73,7 @@ export const DEPARTMENTS: readonly Department[] = [
     description:
       'Teaches browser agents by live demonstration. Tyler shares a tab/window/desktop and talks through a workflow; LandOS watches, listens, holds a two-way voice conversation, records the browser events, extracts business rules, and generates a reusable Browser Playbook the Browser Agent department can execute. Training is always started manually and never auto-starts. Never teaches paid report flows; any billing/checkout/paid action stops with Approval Required. Reads LandPortal credentials only from .env; never stores secrets or property work product.',
     agents: [
-      { agentId: 'browser-training', name: 'Tutor', role: 'Live browser-workflow training and playbook authoring', status: 'active' },
+      { agentId: 'browser-training', name: 'Browser Training Agent', role: 'Live browser-workflow training and playbook authoring', status: 'active' },
     ],
   },
   {
@@ -82,7 +82,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'planned',
     description: 'Deal economics review, cost tracking, risk scoring, bookkeeping hooks.',
     agents: [
-      { agentId: 'finn-finance-risk', name: 'Finn', role: 'Finance and risk (planned)', status: 'planned' },
+      { agentId: 'finn-finance-risk', name: 'Finance & Risk Agent', role: 'Finance and risk (planned)', status: 'planned' },
     ],
   },
   {
@@ -91,7 +91,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'planned',
     description: 'Buyer research, exit prep, listing strategy.',
     agents: [
-      { agentId: 'drew-dispositions', name: 'Drew', role: 'Dispositions (planned)', status: 'planned' },
+      { agentId: 'drew-dispositions', name: 'Dispositions Agent', role: 'Dispositions (planned)', status: 'planned' },
     ],
   },
   {
@@ -100,7 +100,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'planned',
     description: 'Campaign and lead-source performance records. No live ad changes without approval.',
     agents: [
-      { agentId: 'mia-marketing', name: 'Mia', role: 'Marketing and lead gen (planned)', status: 'planned' },
+      { agentId: 'mia-marketing', name: 'Marketing Agent', role: 'Marketing and lead gen (planned)', status: 'planned' },
     ],
   },
   {
@@ -125,7 +125,7 @@ export const DEPARTMENTS: readonly Department[] = [
     status: 'planned',
     description: 'Market intelligence, industry intelligence, and AI evolution monitoring. Recommends only; never installs or switches anything without approval.',
     agents: [
-      { agentId: 'rex-research', name: 'Rex', role: 'Research (planned)', status: 'planned' },
+      { agentId: 'rex-research', name: 'Research Agent', role: 'Research (planned)', status: 'planned' },
     ],
   },
   {

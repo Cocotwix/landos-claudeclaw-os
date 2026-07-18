@@ -108,6 +108,29 @@ describe('CountyCapabilityRegistry (fixture contract)', () => {
     });
     expect(registry.get('TN', 'Monroe')?.lastSuccessfulRun).toBe('county-run/recovered');
   });
+  it('uses only value-free platform guidance for a new county, then prefers that county\'s evidenced recipe', () => {
+    const { registry } = setup();
+    seed(registry);
+    registry.upsert({
+      ...seed(registry), implementationStatus: 'live_tested', evidenceProvenance: evidence,
+    });
+    registry.recordVerifiedRecipe(recipe());
+    registry.upsert({
+      state: 'TN', county: 'Loudon', officialGisUrl: 'https://loudon.maps.arcgis.com/apps/viewer',
+      platformFamily: 'arcgis', implementationStatus: 'observed_only', supportedSearchMethods: ['address', 'apn'],
+      evidenceProvenance: [{ ...evidence[0], sourceUrl: 'https://loudon.maps.arcgis.com/apps/viewer' }],
+    });
+    const inherited = registry.getNavigationGuidance('TN', 'Loudon');
+    expect(inherited).toMatchObject({ kind: 'platform_template', templateFrom: { county: 'Monroe', version: 1 } });
+    expect(inherited.recipe?.steps.find((step) => step.action === 'navigate')?.url).toBeUndefined();
+    expect(inherited.recipe?.steps.find((step) => step.action === 'fill_identifier')?.target).toBeUndefined();
+    registry.recordVerifiedRecipe(recipe({
+      county: 'Loudon',
+      steps: [{ action: 'navigate', url: 'https://loudon.maps.arcgis.com/apps/viewer' }, { action: 'fill_identifier', valueSource: 'apn' }, { action: 'submit' }, { action: 'capture_evidence' }, { action: 'validate_fact', expected: 'APN' }],
+      verification: { status: 'successful', verifiedAt: NOW.toISOString(), runReference: 'county-run/loudon', validatedFacts: ['apn'], evidenceProvenance: [{ ...evidence[0], sourceUrl: 'https://loudon.maps.arcgis.com/apps/viewer' }] },
+    }));
+    expect(registry.getNavigationGuidance('TN', 'Loudon').kind).toBe('county_verified');
+  });
 });
 
 describe('county platform-family classifier (unit)', () => {
@@ -125,4 +148,3 @@ describe('county platform-family classifier (unit)', () => {
     expect(identifyCountyPlatformFamily({ url })).toBe(family);
   });
 });
-

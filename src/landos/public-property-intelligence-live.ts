@@ -28,6 +28,7 @@ type Arc = { features?: ArcFeature[]; error?: { message?: string } };
 
 const TN = 'https://services1.arcgis.com/YuVBSS7Y1of2Qud1/arcgis/rest/services/Tennessee_Property_Boundaries_Public_Use/FeatureServer/0';
 const BFT = 'https://gis.beaufortcountysc.gov/server/rest/services/ArchiveParcels/MapServer/14';
+const FAYETTE_PARCELS = 'https://gis.fayettecountyga.gov/arcgis/rest/services/Pictometry/parcelsRO/MapServer/0';
 // SCDOT's statewide public mirror of county parcel layers (one sublayer per SC
 // county). Official state-hosted GIS; schemas vary by county, so field mapping
 // is capability-probed per layer (see scdotParcel). A mirror can lag the county
@@ -65,6 +66,23 @@ export async function lookupOfficialParcel(
   const state = stateCode(input.state);
   const attempted: OfficialParcelLookupResult['attempted'] = [];
   try {
+    if (state === 'GA' && /fayette/i.test(input.county ?? '') && input.apn) {
+      const acceptedApn = input.apn;
+      const candidates = fayetteWhereCandidates(acceptedApn);
+      for (const where of candidates) {
+        const url = query(FAYETTE_PARCELS, where, true);
+        const hits = ((await json<Arc>(url, timeoutMs)).features ?? [])
+          .map((feature) => fayette(feature, url, input.address ?? null))
+          .filter((value): value is OfficialParcel => !!value)
+          .filter((value) => normalizedParcelId(value.apn) === normalizedParcelId(acceptedApn));
+        if (hits.length === 1) {
+          attempted.push({ source: 'Fayette County official GIS tax-parcel layer', status: 'matched', note: 'Exact APN matched in the county parcel geometry.' });
+          return { parcel: hits[0], attempted };
+        }
+      }
+      attempted.push({ source: 'Fayette County official GIS tax-parcel layer', status: 'no_match', note: 'No unambiguous exact APN match was returned from the county parcel geometry.' });
+      return { parcel: null, attempted };
+    }
     if (state === 'SC' && /beaufort/i.test(input.county ?? '') && input.apn) {
       const url = query(BFT, `PIN_ = '${sql(input.apn)}'`, true);
       const feature = (await json<Arc>(url, timeoutMs)).features?.[0];
@@ -1202,6 +1220,56 @@ function beaufort(feature: ArcFeature, url: string): OfficialParcel | null {
       salePrice: num(attrs.SalePrice),
       saleQualification: str(attrs.SaleQualif),
       deedBookPage: book && page ? `Book ${book}, Page ${page}` : null,
+    },
+  };
+}
+
+function normalizedParcelId(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+/** Fayette's published parcel service carries both a formatted PARCEL_NO and
+ * its component fields.  Try exact formatted identifiers first, then the
+ * component form; neither path accepts a nearest or partial candidate. */
+function fayetteWhereCandidates(apn: string): string[] {
+  const clean = apn.trim();
+  const parts = clean.split(/[^a-z0-9]+/i).filter(Boolean);
+  const candidates = [
+    `PARCEL_NO = '${sql(clean)}'`,
+    `PARCEL_KEY = '${sql(clean)}'`,
+  ];
+  if (parts.length === 4) {
+  const [district, square, lot, parcel] = parts.map((part, index) => part.padStart(index === 3 ? 3 : 2, '0'));
+    candidates.push(`DISTRICT = '${sql(district)}' AND SQUARE = '${sql(square)}' AND LOT = '${sql(lot)}' AND PARCEL = '${sql(parcel)}'`);
+  }
+  return [...new Set(candidates)];
+}
+
+function fayette(feature: ArcFeature, url: string, suppliedAddress: string | null): OfficialParcel | null {
+  const attrs = feature.attributes ?? {};
+  const rings = feature.geometry?.rings;
+  const components = [str(attrs.DISTRICT), str(attrs.SQUARE), str(attrs.LOT), str(attrs.PARCEL)].filter(Boolean);
+  const apn = str(attrs.PARCEL_NO) ?? str(attrs.PARCEL_KEY) ?? (components.length === 4 ? components.join('-') : null);
+  if (!rings?.length || !apn) return null;
+  return {
+    provider: 'Fayette County official GIS tax-parcel layer',
+    sourceUrl: url,
+    // The public geometry layer does not publish a situs field. The title uses
+    // the already accepted card address; the exact APN/geometry is the official
+    // evidence and is never presented as an address verification by this lane.
+    address: suppliedAddress?.trim() || `APN ${apn}`,
+    county: 'Fayette',
+    state: 'GA',
+    apn,
+    owner: null,
+    acres: num(attrs.acres),
+    coordinates: center(rings[0]),
+    geometry: { rings },
+    datasetDate: null,
+    facts: {
+      parcelNumber: apn,
+      gisAcres: num(attrs.acres),
+      zoning: str(attrs.Zoning),
     },
   };
 }

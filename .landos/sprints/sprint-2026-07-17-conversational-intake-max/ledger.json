@@ -1,0 +1,724 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-17-conversational-intake-max",
+  "title": "Conversational lead intake and persistent Max",
+  "createdAt": "2026-07-17T17:31:32.733Z",
+  "originalPrompt": "Replace the manual CRM-style New Lead form with one LLM-style free-form data-dump intake that preserves the raw submission, extracts whatever seller/property/contact/source clues are available without fabrication, creates a Lead Card even when fields are incomplete, and automatically begins research. Make the chief-of-staff assistant globally present on every LandOS page with immediate text and voice input, rename the operator-facing assistant from Jarvis to Max, preserve owner-only outbound and all Phase 1 safety boundaries, and verify the visible localhost experience.",
+  "promptSha256": "5f506bab615c498e12d0434578bf3f0f3b8d870a46cb8b3e7d9842ada230a437",
+  "workstreams": [
+    {
+      "id": "ws1-conversational-lead-intake",
+      "name": "One-box conversational manual lead intake",
+      "operatorOutcome": "The owner can paste or dictate one unstructured data dump, submit it once, and immediately receive a Lead Card whose extracted clues and unknowns are visible while research starts automatically.",
+      "inScope": [
+        "New Lead UI",
+        "raw lead intake",
+        "deterministic clue extraction",
+        "Lead Card creation",
+        "automatic research trigger"
+      ],
+      "backendServices": [
+        "manual lead route",
+        "Smart Intake",
+        "opportunity",
+        "research mission"
+      ],
+      "frontendScreens": [
+        "Acquisitions New Lead",
+        "Lead Workspace"
+      ],
+      "requiredDataState": "Raw input is preserved exactly; extracted items remain seller-supplied or needs-verification; incomplete input still creates an honest Lead Card.",
+      "browserJourney": {
+        "steps": [
+          "Open New Lead",
+          "Paste one mixed seller/property data dump",
+          "Submit once",
+          "Confirm Lead Card opens",
+          "Confirm extracted clues and queued/running research are visible",
+          "Refresh and confirm persistence"
+        ]
+      },
+      "testRequirements": [
+        "unstructured extraction",
+        "missing-field lead creation",
+        "raw preservation",
+        "research enqueue",
+        "single-box UI contract"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "individual CRM fields remain",
+        "seller name or parcel clue blocks creation",
+        "raw input is lost",
+        "fabricated values",
+        "research does not start",
+        "created card is not opened"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "R1-01",
+          "text": "New Lead presents one prominent free-form text area with optional microphone input and no required individual CRM fields.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "id": "R1-02",
+          "text": "A non-empty data dump always creates a durable Lead Card while preserving the exact raw input and provenance.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "id": "R1-03",
+          "text": "LandOS extracts only defensible seller, contact, source, and property clues; absent or uncertain values remain unknown or needs verification.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "id": "R1-04",
+          "text": "Lead creation immediately queues the durable property research mission and opens the resulting Lead Workspace.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E3",
+            "E4"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T17:58:52.184Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T17-58-11-623Z/report.md",
+        "evidenceIds": [
+          "E4"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T17:43:53.562Z",
+          "detail": "Replaced structured manual form with one raw text/voice intake, added cautious extraction and exact source preservation, queued research, and exposed original intake in Lead Workspace.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T17:46:09.820Z",
+          "detail": "Focused UI/parser/research tests passed (12/12).",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T17:46:10.558Z",
+          "detail": "Manual lead route integration suite passed, including exact raw preservation and identity-incomplete creation.",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T17:46:11.264Z",
+          "detail": "TypeScript no-emit typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T17:46:12.860Z",
+          "detail": "Production web bundle and server TypeScript build passed.",
+          "evidenceIds": [
+            "E2"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T17:47:40.842Z",
+          "detail": "Managed runtime healthy at localhost:3141 with the rebuilt bundle, PID 1752.",
+          "evidenceIds": [
+            "E3"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-17T17:58:52.184Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T17-58-11-623Z/report.md)",
+          "evidenceIds": [
+            "E4"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-persistent-max",
+      "name": "Persistent Max chief-of-staff surface",
+      "operatorOutcome": "Max is visibly present on every LandOS page with immediate text and microphone controls, receives replies without navigating away, and replaces Jarvis in operator-facing language.",
+      "inScope": [
+        "global application shell",
+        "persistent assistant dock",
+        "voice-to-text",
+        "chat stream",
+        "operator-facing chief-of-staff naming"
+      ],
+      "backendServices": [
+        "chat send",
+        "chat stream",
+        "main chief-of-staff agent"
+      ],
+      "frontendScreens": [
+        "all LandOS routes",
+        "Max conversation page",
+        "Sidebar",
+        "Lead Workspace"
+      ],
+      "requiredDataState": "Existing conversations and internal compatibility identifiers remain usable; no seller or external outbound capability is added.",
+      "browserJourney": {
+        "steps": [
+          "Open Mission Control",
+          "Confirm Max is present",
+          "Navigate Acquisitions and another department",
+          "Confirm Max persists",
+          "Use microphone or text control",
+          "Confirm response appears without opening a separate page",
+          "Refresh and restart"
+        ]
+      },
+      "testRequirements": [
+        "global render contract",
+        "chat send and stream behavior",
+        "voice capability fallback",
+        "Max naming",
+        "owner-only egress regression"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "Max requires navigating to a separate page",
+        "assistant disappears between routes",
+        "operator UI still calls the chief of staff Jarvis",
+        "voice control missing",
+        "external outbound boundary changes"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence",
+        "final_regression"
+      ],
+      "dependsOn": [
+        "ws1-conversational-lead-intake"
+      ],
+      "requirements": [
+        {
+          "id": "R2-01",
+          "text": "A persistent Max assistant dock renders in the global application shell on every primary LandOS route.",
+          "verified": true,
+          "evidenceIds": [
+            "E11",
+            "E14",
+            "E15",
+            "E17"
+          ]
+        },
+        {
+          "id": "R2-02",
+          "text": "The dock supports immediate text submission and browser speech-to-text without requiring navigation to the conversation page.",
+          "verified": true,
+          "evidenceIds": [
+            "E11",
+            "E14"
+          ]
+        },
+        {
+          "id": "R2-03",
+          "text": "Max replies and progress are visible globally through the existing chat stream and survive route changes.",
+          "verified": true,
+          "evidenceIds": [
+            "E11",
+            "E12",
+            "E14"
+          ]
+        },
+        {
+          "id": "R2-04",
+          "text": "Operator-facing chief-of-staff labels use Max while compatibility identifiers may remain internal.",
+          "verified": true,
+          "evidenceIds": [
+            "E11",
+            "E14"
+          ]
+        },
+        {
+          "id": "R2-05",
+          "text": "Owner-only outbound, no paid action, and no offer or contract sending rules remain enforced.",
+          "verified": true,
+          "evidenceIds": [
+            "E11",
+            "E12",
+            "E18"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T18:11:00.133Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T18-09-58-347Z/report.md",
+        "evidenceIds": [
+          "E14",
+          "E15",
+          "E16"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T18:08:12.056Z",
+          "detail": "Mounted a persistent Max dock above the global router with text, browser voice input, send, processing, reply stream, and operator-facing Max naming while retaining internal compatibility paths.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T18:08:13.473Z",
+          "detail": "Focused Max UI and safety tests passed (40/40).",
+          "evidenceIds": [
+            "E11"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T18:08:15.076Z",
+          "detail": "Routes and operator journey integration regression passed (93/93).",
+          "evidenceIds": [
+            "E12"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T18:08:15.862Z",
+          "detail": "TypeScript no-emit typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T18:08:16.575Z",
+          "detail": "Production web and server bundles rebuilt successfully.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T18:09:45.794Z",
+          "detail": "Managed runtime healthy at localhost:3141 with rebuilt Max bundle, PID 183380.",
+          "evidenceIds": [
+            "E13"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-17T18:11:00.133Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T18-09-58-347Z/report.md)",
+          "evidenceIds": [
+            "E14",
+            "E15",
+            "E16"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-17T17:43:54.250Z",
+      "kind": "test",
+      "summary": "Focused conversational intake, route, research-constraint, and UI regression passed (89 tests across the focused runs).",
+      "path": "src/landos/conversational-lead-intake.test.ts",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-17T17:46:12.054Z",
+      "kind": "build",
+      "summary": "Production web and server builds passed.",
+      "path": "dist/web/index.html",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-17T17:47:40.090Z",
+      "kind": "runtime",
+      "summary": "Managed LandOS runtime healthy after production rebuild and canonical restart: HTTP 200, PID 1752.",
+      "url": "http://localhost:3141/dept/acquisitions?section=new",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-17T17:58:51.397Z",
+      "kind": "browser_qa",
+      "summary": "Independent real-browser QA passed the conversational dump, exact source visibility, research controls, promotion, refresh persistence, and reconciled metrics in isolated QA storage.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T17-58-11-623Z/report.md",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-17T17:59:56.572Z",
+      "kind": "test_result",
+      "summary": "Focused automated regression passed for one-box UI, parser, research constraints, and routes.",
+      "path": "src/landos/conversational-lead-intake.test.ts",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-17T17:59:58.059Z",
+      "kind": "api_evidence",
+      "summary": "Route integration proved nonempty raw-only submissions create opportunities, preserve raw input exactly, expose extraction, and queue research.",
+      "path": "src/landos/routes.test.ts",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-17T17:59:59.625Z",
+      "kind": "browser_journey",
+      "summary": "Real-browser journey created a conversational lead, opened its workspace, exposed the original intake, and completed owner promotion.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T17-58-11-623Z/report.md",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-17T18:00:01.348Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent operator QA passed with zero findings in isolated synthetic-only storage.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T17-58-11-623Z/report.md",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-17T18:00:02.892Z",
+      "kind": "refresh_persistence",
+      "summary": "The created Lead Workspace and pursued Deal highlight persisted through hard browser refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T17-58-11-623Z/report.md",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-17T18:00:04.547Z",
+      "kind": "restart_persistence",
+      "summary": "Isolated QA records persisted across canonical stop/start cycles; later browser runs continued the same QA database sequence without operating-data mutation.",
+      "path": ".runtime/landos/qa/qa-data/landos-qa.db",
+      "workstreamId": "ws1-conversational-lead-intake"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-17T18:08:12.778Z",
+      "kind": "test_result",
+      "summary": "Max UI, navigation naming, owner-only egress, transcript safety, and acquisition regression passed (40 focused tests).",
+      "path": "src/landos/max-dock-ui.test.ts",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-07-17T18:08:14.224Z",
+      "kind": "api_evidence",
+      "summary": "Route and operator-runner integration regression passed (93 tests), preserving existing chat and safety APIs.",
+      "path": "src/landos/routes.test.ts",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-07-17T18:09:44.992Z",
+      "kind": "live_url",
+      "summary": "Rebuilt managed LandOS runtime healthy with Max at localhost:3141, PID 183380.",
+      "url": "http://localhost:3141/mission",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-07-17T18:10:48.042Z",
+      "kind": "browser_journey",
+      "summary": "Real-browser navigation confirmed Max on Mission Control, Acquisitions, and the full Max conversation page.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T18-09-58-347Z/report.md",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-07-17T18:10:49.389Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent real-browser Max journey passed with zero findings.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T18-09-58-347Z/report.md",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-07-17T18:10:50.703Z",
+      "kind": "refresh_persistence",
+      "summary": "Max remained present after cross-route navigation and hard refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T18-09-58-347Z/report.md",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-07-17T18:14:09.830Z",
+      "kind": "restart_persistence",
+      "summary": "After canonical stop/start into operating mode, the independent real-browser Max journey passed again with PID 202952.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T18-12-34-583Z/report.md",
+      "workstreamId": "ws2-persistent-max"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-07-17T18:14:11.045Z",
+      "kind": "final_regression",
+      "summary": "Complete repository Vitest regression exited successfully after both workstreams; focused acquisition, Max, safety, and route suites were included.",
+      "path": "package.json",
+      "workstreamId": "ws2-persistent-max"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-07-17T18:14:39.535Z",
+    "detail": "Complete repository Vitest suite, production builds, typecheck, conversational intake browser journey, Max cross-route browser journey, and operating-mode post-restart journey all passed.",
+    "evidenceIds": [
+      "E4",
+      "E11",
+      "E12",
+      "E15",
+      "E17",
+      "E18"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-07-17T18:14:40.305Z",
+    "detail": "LandOS independent operator-QA automation: Independent operator QA found zero open findings across conversational intake and persistent Max; frontend, API, storage isolation, refresh, restart, naming, and safety evidence agree.",
+    "evidenceIds": [
+      "E4",
+      "E8",
+      "E15",
+      "E17"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-07-17T17:31:32.734Z",
+      "event": "sprint_created",
+      "detail": "Conversational lead intake and persistent Max"
+    },
+    {
+      "at": "2026-07-17T17:31:33.742Z",
+      "event": "workstream_started",
+      "detail": "ws1-conversational-lead-intake"
+    },
+    {
+      "at": "2026-07-17T17:43:53.562Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T17:46:09.821Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T17:46:10.559Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T17:46:11.264Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T17:46:12.861Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T17:47:40.842Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T17:58:52.184Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conversational-lead-intake:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-17T17:58:52.184Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-conversational-lead-intake:pass"
+    },
+    {
+      "at": "2026-07-17T17:58:52.996Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conversational-lead-intake/R1-01"
+    },
+    {
+      "at": "2026-07-17T17:58:53.735Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conversational-lead-intake/R1-02"
+    },
+    {
+      "at": "2026-07-17T17:58:54.512Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conversational-lead-intake/R1-03"
+    },
+    {
+      "at": "2026-07-17T17:58:55.238Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conversational-lead-intake/R1-04"
+    },
+    {
+      "at": "2026-07-17T18:00:23.837Z",
+      "event": "workstream_passed",
+      "detail": "ws1-conversational-lead-intake"
+    },
+    {
+      "at": "2026-07-17T18:00:24.743Z",
+      "event": "workstream_started",
+      "detail": "ws2-persistent-max"
+    },
+    {
+      "at": "2026-07-17T18:08:12.057Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T18:08:13.474Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T18:08:15.077Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T18:08:15.863Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T18:08:16.575Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T18:09:45.795Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T18:11:00.133Z",
+      "event": "phase_recorded",
+      "detail": "ws2-persistent-max:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-17T18:11:00.133Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-persistent-max:pass"
+    },
+    {
+      "at": "2026-07-17T18:14:22.604Z",
+      "event": "requirement_verified",
+      "detail": "ws2-persistent-max/R2-01"
+    },
+    {
+      "at": "2026-07-17T18:14:23.285Z",
+      "event": "requirement_verified",
+      "detail": "ws2-persistent-max/R2-02"
+    },
+    {
+      "at": "2026-07-17T18:14:23.988Z",
+      "event": "requirement_verified",
+      "detail": "ws2-persistent-max/R2-03"
+    },
+    {
+      "at": "2026-07-17T18:14:24.740Z",
+      "event": "requirement_verified",
+      "detail": "ws2-persistent-max/R2-04"
+    },
+    {
+      "at": "2026-07-17T18:14:25.468Z",
+      "event": "requirement_verified",
+      "detail": "ws2-persistent-max/R2-05"
+    },
+    {
+      "at": "2026-07-17T18:14:26.145Z",
+      "event": "workstream_passed",
+      "detail": "ws2-persistent-max"
+    },
+    {
+      "at": "2026-07-17T18:14:39.536Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T18:14:40.306Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T18:14:41.035Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

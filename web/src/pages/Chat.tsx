@@ -265,7 +265,7 @@ export function Chat() {
   return (
     <div class="flex flex-col h-full">
       <PageHeader
-        title="Chat"
+        title="Max"
         actions={
           <span class="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
             <StatusDot tone={streamConnected ? 'done' : 'cancelled'} />

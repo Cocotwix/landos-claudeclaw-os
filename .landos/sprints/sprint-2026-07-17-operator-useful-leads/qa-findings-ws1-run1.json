@@ -1,0 +1,24 @@
+[
+  {
+    "liveUrl": "http://localhost:3141/dept/acquisitions",
+    "steps": ["Open the live Acquisitions Pipeline", "Assert canonical opportunity cards"],
+    "expected": "The journey should confirm that the board renders opportunity cards without requiring exactly one total card.",
+    "actual": "The generic test-id assertion interpreted an unspecified count as exactly one; 23 distinct opportunity cards were rendered.",
+    "evidencePaths": [".runtime/landos/qa/qa-2026-07-17T19-57-33-806Z/ws1-operator-opportunity-board/ws1-opportunity-board.png"],
+    "severity": "major",
+    "suspectedSubsystem": "operator-qa-journey-contract",
+    "disposition": "internally_fixable",
+    "patternKey": "ws1-qa-card-count-contract"
+  },
+  {
+    "liveUrl": "http://localhost:3141/dept/acquisitions",
+    "steps": ["Open the live Acquisitions Pipeline", "Assert business-stage lanes"],
+    "expected": "The independent journey should recognize the visible business-stage lanes.",
+    "actual": "The generic text assertion did not recognize the visible lane labels; stable lane test IDs are required.",
+    "evidencePaths": [".runtime/landos/qa/qa-2026-07-17T19-57-33-806Z/ws1-operator-opportunity-board/ws1-opportunity-board.png"],
+    "severity": "major",
+    "suspectedSubsystem": "operator-qa-journey-contract",
+    "disposition": "internally_fixable",
+    "patternKey": "ws1-qa-lane-selector-contract"
+  }
+]

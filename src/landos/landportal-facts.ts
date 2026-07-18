@@ -114,7 +114,12 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
   const stateCode = pick(fields, 'Parcel Address State');
   const zip = pick(fields, 'Parcel Address Zip Code', 'Parcel Address ZIP Code');
   const county = pick(fields, 'Parcel Address County');
-  const acres = num(pick(fields, 'Acres', 'Calc Acres', 'MLS Acres'));
+  // Some parcel records expose a placeholder zero in `Acres` while their
+  // geometry-backed `Calc Acres` is positive. Never let that placeholder
+  // suppress the usable acreage or downstream comparable matching.
+  const statedAcres = num(pick(fields, 'Acres'));
+  const calculatedAcres = num(pick(fields, 'Calc Acres', 'MLS Acres'));
+  const acres = statedAcres != null && statedAcres > 0 ? statedAcres : calculatedAcres;
   const acresLabel = acres != null ? `${acres} ac` : null;
   const parcelSqft = pick(fields, 'Parcel SqFt');
   const landUse = pick(fields, 'Parcel Use Description');

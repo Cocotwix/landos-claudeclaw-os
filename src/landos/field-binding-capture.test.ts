@@ -180,7 +180,7 @@ describe('execution extracts bound fields and writes them back', () => {
     const { page } = makePage({ selectorValues: { '#owner': 'Jane Doe' } });
     const res = await runTrainedPlaybook(id, { mode: 'live', dealCardId: 57, backend: backend(page) });
     expect(res.execution!.status).toBe('blocked');
-    expect(res.execution!.approvalRequired).toBe(true);
+    expect(res.execution!.approvalRequired).toBe(false);
     expect(res.execution!.extractedFields.length).toBe(0);
     expect(res.execution!.fieldsWritten).toBe(0);
     expect(listBrowserFacts(57)).toHaveLength(0);

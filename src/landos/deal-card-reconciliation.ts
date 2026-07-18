@@ -530,6 +530,13 @@ export interface CompCandidate {
   sourceLabel?: string | null;   // provider ("Realie", "zillow", "LandPortal visible", …)
   addressDesc?: string | null;
   distanceMiles?: number | null;
+  /** Cross-provider property identity when the source exposes it. */
+  apn?: string | null;
+  /** Explicit transaction label for mixed provider lanes such as visible browser rows. */
+  priceKind?: 'sold' | 'pending' | 'active' | 'list' | 'unknown' | null;
+  /** County-wide rows are opt-in and require a visible expansion reason. */
+  geographyScope?: 'local_radius' | 'county_wide' | null;
+  countyWideReason?: string | null;
   /** Comp classification from the provider mapping (vacant_land preferred). */
   compClass?: string | null;
   /** Which report lane it came from — drives base confidence. */
@@ -565,10 +572,22 @@ export interface SelectedComp {
 
 export interface BestCompsSelection {
   comps: SelectedComp[];       // 0-5, strongest first
+  /** Asking/pending/active observations are retained here, never in value comps. */
+  contextComps: SelectedComp[];
   /** One line explaining how the shortlist was chosen (drivers used). */
   rationale: string;
   consideredCount: number;
   subjectAcres: number | null;
+  policy: {
+    radiusMiles: 3 | 5 | 10;
+    recencyMonths: 12 | 18 | 24;
+    countyWideExpanded: boolean;
+    disclosure: string;
+    exclusions: string[];
+    soldSampleCount: number;
+    contextSampleCount: number;
+    duplicatesRemoved: number;
+  };
 }
 
 const LANE_LABEL: Record<CompCandidate['lane'], string> = {
@@ -583,11 +602,11 @@ const LANE_CONFIDENCE: Record<CompCandidate['lane'], 'high' | 'medium' | 'low'> 
 // Classes that are NOT vacant-land comps and must never sit in a land shortlist.
 const EXCLUDE_CLASS = /residential|manufactured|commercial|exclude/i;
 
-function saleAgeMonths(iso: string | null): number | null {
+function saleAgeMonths(iso: string | null, asOfMs = Date.now()): number | null {
   if (!iso) return null;
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return null;
-  const months = (Date.now() - t) / (1000 * 60 * 60 * 24 * 30.4);
+  const months = (asOfMs - t) / (1000 * 60 * 60 * 24 * 30.4375);
   return months >= 0 ? months : null;
 }
 
@@ -605,14 +624,67 @@ function saleDateShort(iso: string | null): string | null {
  * (improved) class are dropped. Never fabricates — unknown signals simply do not
  * earn their points instead of guessing.
  */
-export function selectBestComps(subjectAcres: number | null, candidates: CompCandidate[], limit = 5): BestCompsSelection {
+function compIdentity(c: CompCandidate): string {
+  const apn = (c.apn ?? '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (apn.length >= 5) return `apn:${apn}`;
+  const address = (c.addressDesc ?? '').toLowerCase()
+    .replace(/\b(street|st\.)\b/g, 'st').replace(/\b(road|rd\.)\b/g, 'rd')
+    .replace(/\b(avenue|ave\.)\b/g, 'ave').replace(/[^a-z0-9]/g, '');
+  if (address) return `address:${address}`;
+  return `transaction:${Math.round(c.price ?? 0)}|${c.acres ?? ''}|${(c.saleDateIso ?? '').slice(0, 10)}`;
+}
+
+function dedupeCandidates(candidates: CompCandidate[]): { rows: CompCandidate[]; removed: number } {
+  const byIdentity = new Map<string, CompCandidate>();
+  for (const candidate of candidates) {
+    const key = compIdentity(candidate);
+    const current = byIdentity.get(key);
+    if (!current) { byIdentity.set(key, candidate); continue; }
+    const richness = (c: CompCandidate) => [c.apn, c.addressDesc, c.price, c.pricePerAcre, c.acres, c.saleDateIso, c.distanceMiles, c.sourceUrl]
+      .filter((value) => value != null && value !== '').length;
+    if (richness(candidate) > richness(current)) byIdentity.set(key, candidate);
+  }
+  return { rows: [...byIdentity.values()], removed: candidates.length - byIdentity.size };
+}
+
+export function selectBestComps(subjectAcres: number | null, candidates: CompCandidate[], limit = 5, asOf = new Date()): BestCompsSelection {
   const subj = typeof subjectAcres === 'number' && Number.isFinite(subjectAcres) && subjectAcres > 0 ? subjectAcres : null;
 
-  const usable = candidates.filter((c) => {
+  const priced = candidates.filter((c) => {
     if (c.compClass && EXCLUDE_CLASS.test(c.compClass)) return false;
     const hasValue = (typeof c.price === 'number' && c.price > 0) || (typeof c.pricePerAcre === 'number' && c.pricePerAcre > 0);
     return hasValue;
   });
+  const deduped = dedupeCandidates(priced);
+  const isSold = (c: CompCandidate) => c.lane === 'sold' || c.lane === 'supplemental' || c.priceKind === 'sold';
+  const contextCandidates = deduped.rows.filter((c) => !isSold(c));
+  const exclusions: string[] = [];
+  const asOfMs = asOf.getTime();
+  const datedSold = deduped.rows.filter(isSold).filter((c) => {
+    const age = saleAgeMonths(c.saleDateIso, asOfMs);
+    if (age == null) { exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: missing or invalid sale date.`); return false; }
+    if (age > 24) { exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: sale is older than 24 months.`); return false; }
+    // A closed-sale row cannot become a valuation shortlist comp until its
+    // relationship to this subject is actually measured.  Leaving a missing
+    // distance in the candidate set used to make it look eligible simply
+    // because it earned zero distance points; that is not a distance check.
+    if (typeof c.distanceMiles !== 'number' || !Number.isFinite(c.distanceMiles) || c.distanceMiles < 0) {
+      exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: distance is not established.`); return false;
+    }
+    if (typeof c.distanceMiles === 'number' && c.distanceMiles > 10 && c.geographyScope !== 'county_wide') {
+      exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: outside the 10-mile local ceiling.`); return false;
+    }
+    if (c.geographyScope === 'county_wide' && !(c.countyWideReason ?? '').trim()) {
+      exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: county-wide row lacks an expansion reason.`); return false;
+    }
+    return true;
+  });
+  const recencyMonths = ([12, 18, 24] as const).find((months) => datedSold.filter((c) => (saleAgeMonths(c.saleDateIso, asOfMs) ?? Infinity) <= months).length >= 3) ?? 24;
+  const recencyEligible = datedSold.filter((c) => (saleAgeMonths(c.saleDateIso, asOfMs) ?? Infinity) <= recencyMonths);
+  const localKnown = recencyEligible.filter((c) => typeof c.distanceMiles === 'number' && c.geographyScope !== 'county_wide');
+  const radiusMiles = ([3, 5, 10] as const).find((radius) => localKnown.filter((c) => c.distanceMiles! <= radius).length >= 3) ?? 10;
+  const usable = recencyEligible.filter((c) => (c.distanceMiles ?? Number.POSITIVE_INFINITY) <= radiusMiles || c.geographyScope === 'county_wide');
+  const countyWideRows = usable.filter((c) => c.geographyScope === 'county_wide');
 
   const scored = usable.map((c) => {
     let score = 0;
@@ -633,7 +705,7 @@ export function selectBestComps(subjectAcres: number | null, candidates: CompCan
     }
 
     // Recency — a fresh close is worth far more than a stale one.
-    const age = saleAgeMonths(c.saleDateIso);
+    const age = saleAgeMonths(c.saleDateIso, asOfMs);
     if (age != null) {
       const recPts = Math.max(0, 25 * (1 - Math.min(age / 36, 1)));
       components.recency = Math.round(recPts);
@@ -683,11 +755,11 @@ export function selectBestComps(subjectAcres: number | null, candidates: CompCan
 
   // Strongest first; break ties toward closed sales, then higher confidence.
   scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, Math.max(1, limit)).map((x) => x.selected);
+  const top = scored.slice(0, Math.min(5, Math.max(1, limit))).map((x) => x.selected);
   // Only surface a shortlist when at least one comp exists.
   const comps = usable.length ? top : [];
 
-  const soldPicked = comps.filter((c) => c.lane === 'sold' || c.lane === 'supplemental').length;
+  const soldPicked = comps.length;
   let rationale: string;
   if (!comps.length) rationale = 'No usable comparables retrieved yet.';
   else {
@@ -695,8 +767,44 @@ export function selectBestComps(subjectAcres: number | null, candidates: CompCan
     if (comps.some((c) => c.saleDateIso)) drivers.push('recency');
     if (comps.some((c) => c.distanceMiles != null)) drivers.push('distance');
     drivers.push('source strength');
-    rationale = `Top ${comps.length} of ${usable.length} comps, ranked by ${drivers.join(', ')}${soldPicked ? ` (${soldPicked} closed sale${soldPicked === 1 ? '' : 's'})` : ''}.`;
+    rationale = `Top ${comps.length} of ${usable.length} eligible sold comps, ranked by ${drivers.join(', ')} (${soldPicked} closed sale${soldPicked === 1 ? '' : 's'}). Active, pending, and asking rows are context only.`;
   }
 
-  return { comps, rationale, consideredCount: usable.length, subjectAcres: subj };
+  const toContext = (c: CompCandidate): SelectedComp => ({
+    price: typeof c.price === 'number' && c.price > 0 ? c.price : null,
+    pricePerAcre: typeof c.pricePerAcre === 'number' && c.pricePerAcre > 0 ? c.pricePerAcre : null,
+    acres: typeof c.acres === 'number' && c.acres > 0 ? c.acres : null,
+    saleDateIso: c.saleDateIso ?? null,
+    distanceMiles: typeof c.distanceMiles === 'number' ? c.distanceMiles : null,
+    source: (c.sourceLabel && c.sourceLabel.trim()) || LANE_LABEL[c.lane],
+    sourceUrl: (c.sourceUrl && c.sourceUrl.trim()) || null,
+    addressDesc: (c.addressDesc && c.addressDesc.trim()) || null,
+    lane: c.lane,
+    confidence: 'low',
+    why: 'Context only — asking/pending/active evidence never determines preliminary value.',
+    score: 0,
+    scoreComponents: { acreageSimilarity: 0, recency: 0, laneStrength: 0, distance: 0 },
+    distanceMethod: typeof c.distanceMiles === 'number' && Number.isFinite(c.distanceMiles) ? 'provider' : null,
+  });
+  const countyWideExpanded = countyWideRows.length > 0;
+  const disclosure = countyWideExpanded
+    ? `COUNTY-WIDE EXPANSION: the local rural market remained thin after ${radiusMiles} miles; ${countyWideRows.map((c) => c.countyWideReason!.trim()).filter((v, i, a) => a.indexOf(v) === i).join(' ')}`
+    : `Local sold search: ${radiusMiles}-mile radius, ${recencyMonths}-month window. County-wide expansion was not used.`;
+  return {
+    comps,
+    contextComps: contextCandidates.slice(0, 5).map(toContext),
+    rationale,
+    consideredCount: usable.length,
+    subjectAcres: subj,
+    policy: {
+      radiusMiles,
+      recencyMonths,
+      countyWideExpanded,
+      disclosure,
+      exclusions,
+      soldSampleCount: comps.length,
+      contextSampleCount: contextCandidates.length,
+      duplicatesRemoved: deduped.removed,
+    },
+  };
 }

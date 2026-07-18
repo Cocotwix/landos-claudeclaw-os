@@ -54,6 +54,8 @@ describe('live-routing + ollama-host operator controls (persisted, effective sta
   const status = async () => (await (await app.request('/api/landos/model-router/status?token=' + TOKEN)).json()) as any;
 
   it('persisting live-routing=on flips the status flag without an env change', async () => {
+    const disable = await post('/api/landos/model-router/live-routing', { enabled: false });
+    expect(disable.status).toBe(200);
     const before = await status();
     expect(before.liveRouting).toBe(false);
     expect(before.safeMode).toBe(true);

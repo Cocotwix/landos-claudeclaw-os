@@ -1,0 +1,13 @@
+[
+  {
+    "liveUrl": "http://localhost:3141/mission",
+    "steps": ["Navigate Mission Control, Acquisitions, Jarvis, and back", "Refresh", "Managed restart"],
+    "expected": "The repaired navigation path remains healthy after managed restart.",
+    "actual": "The independent QA process could not stop the verified server: taskkill Access denied.",
+    "evidencePaths": [".runtime/landos/qa/qa-2026-07-17T15-24-55-595Z/report.md"],
+    "severity": "blocker",
+    "suspectedSubsystem": "phase1-windows-runtime",
+    "disposition": "internally_fixable",
+    "patternKey": "restart-permission-boundary"
+  }
+]

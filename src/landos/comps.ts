@@ -45,7 +45,7 @@ export type CompWorkflowMode =
 export const PAID_COMP_TOOLS = ['lp_comp_report_create', 'lp_comp_report_get'] as const;
 
 export function isPaidCompAllowed(mode: CompWorkflowMode): boolean {
-  return mode === 'live_property_workflow';
+  return false;
 }
 
 /**
@@ -56,7 +56,7 @@ export function isPaidCompAllowed(mode: CompWorkflowMode): boolean {
 export function assertPaidCompAllowed(mode: CompWorkflowMode, tool?: string): void {
   if (!isPaidCompAllowed(mode)) {
     throw new Error(
-      `paid comp tool${tool ? ` "${tool}"` : ''} blocked: comp credits may only be spent inside a live LandOS property workflow (mode was "${mode}")`,
+      `paid comp tool${tool ? ` "${tool}"` : ''} blocked: paid actions are prohibited in every workflow (mode was "${mode}")`,
     );
   }
 }

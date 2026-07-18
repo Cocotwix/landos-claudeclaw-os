@@ -11,6 +11,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { landosArtifactPath } from './storage-profile.js';
 
 /** A namespaced object key in the knowledge layer (forward-slash paths). */
 export type KnowledgeKey = string;
@@ -65,7 +66,7 @@ export class LocalFsKnowledgeStore implements KnowledgeStore {
   readonly backend = 'local-fs';
   private baseDir: string;
   constructor(opts: { baseDir?: string } = {}) {
-    this.baseDir = opts.baseDir ?? path.join(process.cwd(), 'store', 'landos-knowledge');
+    this.baseDir = opts.baseDir ?? landosArtifactPath('landos-knowledge');
   }
   private abs(key: KnowledgeKey): string {
     return path.join(this.baseDir, safeKey(key));

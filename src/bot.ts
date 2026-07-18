@@ -348,8 +348,9 @@ async function sendTyping(api: Api<RawApi>, chatId: number): Promise<void> {
  */
 function isAuthorised(chatId: number): boolean {
   if (!ALLOWED_CHAT_ID) {
-    // Not yet configured — let every request through but warn in the reply handler
-    return true;
+    // Phase 1 owner-only policy fails closed. Pairing/configuration is an owner
+    // setup action; Jarvis never replies to an unknown recipient.
+    return false;
   }
   return chatId.toString() === ALLOWED_CHAT_ID;
 }
@@ -929,13 +930,13 @@ export function createBot(): Bot {
   // Responds to anyone only when ALLOWED_CHAT_ID is not yet configured.
   // /chatid — only responds when ALLOWED_CHAT_ID is not yet configured (first-time setup)
   bot.command('chatid', (ctx) => {
-    if (ALLOWED_CHAT_ID) return; // Already configured — don't respond to anyone
+    if (!isAuthorised(ctx.chat!.id)) return;
     return ctx.reply(`Your chat ID: ${ctx.chat!.id}`);
   });
 
   // /start — simple greeting (auth-gated after setup)
   bot.command('start', (ctx) => {
-    if (ALLOWED_CHAT_ID && !isAuthorised(ctx.chat!.id)) return;
+    if (!isAuthorised(ctx.chat!.id)) return;
     if (AGENT_ID !== 'main') {
       return ctx.reply(`${AGENT_ID.charAt(0).toUpperCase() + AGENT_ID.slice(1)} agent online.`);
     }
@@ -1768,7 +1769,7 @@ async function processDashboardMessage(
       abortCtrl.abort();
     }, agentTimeoutMs);
 
-    const result = await runAgent(
+    const result = await runAgentWithRetry(
       fullMessage,
       sessionId,
       () => {}, // no typing action for dashboard
@@ -1776,6 +1777,8 @@ async function processDashboardMessage(
       effectiveModel,
       abortCtrl,
       undefined, // no streaming for dashboard
+      undefined, // no retry notification in the dashboard; progress remains in SSE
+      undefined,
       effectiveMcpAllowlist,
       effectiveMcpCwd,
       effectiveMaxTurns,

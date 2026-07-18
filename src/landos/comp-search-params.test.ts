@@ -38,7 +38,7 @@ describe('viewportFor', () => {
 
 describe('radiusLadder', () => {
   it('caps at the 10mi ceiling and starts at the given radius', () => {
-    expect(radiusLadder(2)).toEqual([2, 5, 10]);
+    expect(radiusLadder(3)).toEqual([3, 5, 10]);
     expect(radiusLadder(5)).toEqual([5, 10]);
     expect(radiusLadder(10)).toEqual([10]);
     expect(radiusLadder(2).every((r) => r <= RADIUS_CEILING_MILES)).toBe(true);
@@ -64,12 +64,12 @@ describe('planCompSearch — density-adaptive', () => {
     expect(plan.reason).toMatch(/never invented/);
   });
 
-  it('Tier A: parcel pinned, tight start radius, full 2->5->10 ladder, no area-level caveat', () => {
+  it('Tier A: parcel pinned, tight start radius, full 3->5->10 ladder, no area-level caveat', () => {
     const plan = planCompSearch({ apn: '123' }, { centroid: { lat: 39.66, lng: -89.65 }, tier: 'A' });
     expect(plan.tier).toBe('A');
     expect(plan.areaLevel).toBe(false);
     expect(plan.radiusMiles).toBe(TIER_A_START_RADIUS_MILES);
-    expect(plan.steps.map((s) => s.radiusMiles)).toEqual([2, 5, 10]);
+    expect(plan.steps.map((s) => s.radiusMiles)).toEqual([3, 5, 10]);
     expect(plan.tierLabel).not.toBe(AREA_LEVEL_TAG);
   });
 

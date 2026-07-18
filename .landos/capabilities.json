@@ -116,6 +116,65 @@
       },
       "acceptedAt": "2026-07-16T12:49:35.936Z",
       "sprintId": "sprint-2026-07-15-lead-workspace-foundation"
+    },
+    {
+      "id": "phase1-research-before-discovery",
+      "name": "Phase 1 durable research mission and truthful pre-call report",
+      "department": "acquisitions",
+      "acceptedVersion": "2026-07-17 correctness repair (uncommitted worktree)",
+      "goldenJourneyIds": [
+        "phase1-shell-free-navigation",
+        "phase1-verified-research-mission",
+        "phase1-unresolved-discovery-package"
+      ],
+      "regressionFixtures": [
+        "src/landos/opportunity-research-mission.test.ts",
+        "src/landos/opportunity-discovery-package.test.ts",
+        "src/landos/comparable-intelligence.test.ts",
+        "src/landos/sprint-system/operator-qa-runner.test.ts"
+      ],
+      "sharedInvariants": [
+        "Every manual lead starts or resumes one durable bounded research mission.",
+        "Operator-entered jurisdiction constraints remain immutable unless the owner explicitly corrects them.",
+        "Contradictory or insufficiently associated evidence is quarantined and cannot influence canonical facts, comps, valuation, score, strategy, or the report.",
+        "A pre-call report is ready only with verified parcel facts, a parcel-associated visual, qualified sold comps, a sourced market fact, and a Land Score.",
+        "Sold land comparables must pass status, age, distance, acreage/type similarity, price, and provenance gates; listings remain context only.",
+        "Transcript upload remains downstream of pre-call property research.",
+        "LandPortal API and MCP paths remain off-limits; paid actions and offer or contract sending remain prohibited."
+      ],
+      "browserAssertions": [
+        "Mission Control, Acquisitions, and Jarvis navigation stays shell-free and retains one application browser tab.",
+        "Lead Workspace shows research mission actor, immutable query, attempt, trace, verification, quarantine, gaps, and safe next action.",
+        "Unresolved reports show Incomplete — call may proceed plus exact blockers and never claim decision-useful readiness.",
+        "Unqualified comp rows never appear in the valuation set and unsupported strategies render only as validation hypotheses.",
+        "Truthful report state persists through refresh and canonical managed restart."
+      ],
+      "proofArtifacts": [
+        ".landos/sprints/sprint-2026-07-17-phase-1-correctness-repair/report.md",
+        ".runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/report.md",
+        ".runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md",
+        ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md"
+      ],
+      "knownLimitations": [
+        "Operating lead 25 remains unresolved because the available evidence did not establish the exact parcel; the report correctly exposes this rather than fabricating research.",
+        "An authentic seller discovery call and the owner's usefulness judgment remain outside this correctness-repair sprint."
+      ],
+      "deliberateExternalBlockers": [],
+      "sharedDependencyPaths": [
+        "src/platform.ts",
+        "src/landos/opportunity-research-mission.ts",
+        "src/landos/opportunity-discovery-package.ts",
+        "src/landos/comparable-intelligence.ts",
+        "src/landos/routes.ts",
+        "web/src/components/LeadWorkspace.tsx",
+        "src/landos/sprint-system"
+      ],
+      "tylerAcceptance": {
+        "required": false,
+        "grantedAt": null
+      },
+      "acceptedAt": "2026-07-17T16:50:26.909Z",
+      "sprintId": "sprint-2026-07-17-phase-1-correctness-repair"
     }
   ]
 }

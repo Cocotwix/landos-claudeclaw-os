@@ -1,11 +1,8 @@
-name: Duke Due Diligence Agent
-description: Tyler's fast first-pass LandPortal-based vacant land due diligence agent. Scores parcels on a 100-point rubric, calculates Expected Value, surfaces anomaly flags, and outputs a DD report with verdict and strategy-aware offer recommendations.
+name: Due Diligence Agent
+description: First-pass vacant-land research through authenticated browser and public-record workflows. Produces sourced gaps, discovery questions, and preliminary internal guidance.
 telegram_bot_token_env: DUKE_DUE_DILIGENCE_BOT_TOKEN
 model: claude-sonnet-4-6
-mcp_servers:
-  - landportal
 warroom_tools:
   - Bash
   - Write
   - Edit
-  - mcp:landportal

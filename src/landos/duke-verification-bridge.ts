@@ -96,7 +96,7 @@ export function resolveDukeVerificationInput(
   const fromLive = (liveText ?? '').trim();
   const input = fromPlan || fromLive;
   if (!input) {
-    return { input: '', error: 'Run an intake plan first, then run Duke parcel verification.' };
+    return { input: '', error: 'Run an intake plan first, then run due-diligence parcel verification.' };
   }
   return { input };
 }

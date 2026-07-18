@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLandosDb } from './db.js';
+import { landosArtifactPath } from './storage-profile.js';
 import { listComps, type CompRow } from './comps.js';
 import { buildCompRegistry, addressStateCode, type CompRegistry, type CompRegistryCandidate, type SubjectMarket } from './comp-registry.js';
 import { buildDocumentRegistry, type DocumentRegistry, type DocumentEvidenceRow, type UploadedDocumentRow } from './document-registry.js';
@@ -45,6 +46,8 @@ interface MarketCompLite {
   sourceUrl?: string | null;
   sourceLabel?: string | null;
   addressDesc?: string | null;
+  lat?: number | null;
+  lng?: number | null;
   compClass?: string | null;
 }
 
@@ -61,6 +64,8 @@ function laneCandidates(rows: MarketCompLite[] | null | undefined, lane: CompReg
     provider: (r.sourceLabel && r.sourceLabel.trim()) || fallbackProvider,
     lane,
     addressDesc: r.addressDesc ?? null,
+    lat: r.lat ?? null,
+    lng: r.lng ?? null,
     price: typeof r.price === 'number' ? r.price : null,
     priceKind: lane === 'sold' || lane === 'supplemental' ? 'sold' : lane === 'active' ? 'list' : null,
     saleOrListDate: r.saleDateIso ?? null,
@@ -105,7 +110,7 @@ export function compRegistryForDeal(dealCardId: number, subject: SubjectMarket, 
 // ── Document registry assembly ────────────────────────────────────────────────
 
 function visualsDir(): string {
-  return path.join(process.cwd(), 'store', 'visuals');
+  return landosArtifactPath('visuals');
 }
 
 export function documentRegistryForCard(cardId: number | null, opts: { acreageConflict?: boolean; dealCardId?: number | null } = {}): DocumentRegistry {

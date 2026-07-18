@@ -57,7 +57,7 @@ import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './s
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
 import type { DukePropertyData, DukeLandFacts, DukeValuation, DukeSimilars } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
-import { loadCardVisualCapture, loadEligibleCardVisualCapture, loadPropertyInspection, saveCardVisualCapture, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
+import { loadCardVisualCapture, loadEligibleCardVisualCapture, loadPropertyInspection, saveCardVisualCapture, supersedeCardVisualCaptures, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
 import { isMultiApnString, looksLikeApnIntakeText, assessVisualAssociation, UNVERIFIED_IMAGERY_MESSAGE } from './visual-eligibility.js';
 import { buildParcelFactSheet, type ParcelFactSheet } from './landportal-facts.js';
 import { sanitizeVisualObservation } from './evidence-language.js';
@@ -66,6 +66,7 @@ import { attachCardActivity } from './property-card.js';
 import type { ZillowFetchInput, ZillowCompsResult } from './zillow-land-comps.js';
 import type { RedfinFetchInput, RedfinCompsResult } from './redfin-land-comps.js';
 import { runCompProvidersParallel, type CompProviderJob } from './comp-orchestrator.js';
+import { distanceMilesFromSubject } from './comp-orchestrator.js';
 import { researchBrowserComps, type CompResearchResult } from './browser-comp-research.js';
 import { parseLandPortalCompRows } from './comp-extraction.js';
 import type { BrowserDriver } from './browser-intelligence.js';
@@ -92,6 +93,12 @@ import {
 
 export interface MarketCompView {
   price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
+  /** Crow-flies distance measured from the subject when the provider returned coordinates. */
+  distanceMiles?: number | null;
+  /** Source coordinates, retained for distance calculation and cross-provider
+   *  property identity. They are supporting market evidence, never parcel identity. */
+  lat?: number | null;
+  lng?: number | null;
   // ── Classification signals (set at provider mapping time) + the resulting
   //    class. The comp-classification engine uses these to keep residential/
   //    manufactured/commercial sales out of the vacant-land valuation band. ──
@@ -243,7 +250,14 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
         const hh = await fetchHomeHarvestComps({ address: q.address, city: q.city, zip: q.zip, county: q.county, state: q.state, acres: q.acres }, {});
         chain.push(`homeharvest:${hh.status}`);
         if (hh.status === 'collected') {
-          const toView = (c: { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; addressDesc?: string; yearBuilt: number | null; buildingAreaSqft: number | null; propertyTypeText: string | null; descriptionText: string | null }): MarketCompView => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: 'homeharvest', addressDesc: c.addressDesc, yearBuilt: c.yearBuilt, buildingAreaSqft: c.buildingAreaSqft, propertyTypeText: c.propertyTypeText, descriptionText: c.descriptionText });
+          const toView = (c: { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; addressDesc?: string; lat: number | null; lng: number | null; yearBuilt: number | null; buildingAreaSqft: number | null; propertyTypeText: string | null; descriptionText: string | null }): MarketCompView => ({
+            price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre,
+            sourceUrl: c.sourceUrl, sourceLabel: 'homeharvest', addressDesc: c.addressDesc,
+            lat: c.lat, lng: c.lng,
+            distanceMiles: distanceMilesFromSubject(q, c),
+            yearBuilt: c.yearBuilt, buildingAreaSqft: c.buildingAreaSqft,
+            propertyTypeText: c.propertyTypeText, descriptionText: c.descriptionText,
+          });
           // Sold land comps join the band set (classified raw-land already);
           // actives augment the active-listing context.
           v.sold = [...v.sold, ...hh.sold.map(toView)];
@@ -283,7 +297,7 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
         v.research = research;
         chain.push(`browser_research:${research.strength}`);
         // Merge researched comps by status; keep provider label for provenance.
-        const toView = (c: { price: number | null; dateIso: string | null; acres: number | null; pricePerAcre: number | null; url: string | null; source: string; location: string | null }): MarketCompView => ({ price: c.price ?? 0, saleDateIso: c.dateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.url ?? '', sourceLabel: c.source, addressDesc: c.location ?? undefined });
+        const toView = (c: { price: number | null; dateIso: string | null; acres: number | null; pricePerAcre: number | null; distanceMiles: number | null; url: string | null; source: string; location: string | null }): MarketCompView => ({ price: c.price ?? 0, saleDateIso: c.dateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, distanceMiles: c.distanceMiles, sourceUrl: c.url ?? '', sourceLabel: c.source, addressDesc: c.location ?? undefined });
         const soldR = research.comps.filter((c) => c.status === 'sold');
         const activeR = research.comps.filter((c) => c.status !== 'sold');
         if (soldR.length) v.sold = [...v.sold, ...soldR.map(toView)];
@@ -371,7 +385,7 @@ async function apifyComps(q: CompQueryLite, chain: string[], confirmed?: Confirm
   const res = confirmed
     ? await retrieveConfirmedParcelComps(confirmed, compQuery, { registry: reg.registry })
     : await retrieveAreaComps(compQuery, { registry: reg.registry });
-  const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc, propertyTypeCode: c.propertyTypeCode ?? null, descriptionText: c.descriptionText ?? null, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null, propertyTypeText: c.propertyTypeText ?? null }));
+  const sold: MarketCompView[] = res.comps.map((c) => ({ price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre, distanceMiles: c.distanceMiles ?? null, sourceUrl: c.sourceUrl, sourceLabel: c.sourceLabel, addressDesc: c.addressDesc, propertyTypeCode: c.propertyTypeCode ?? null, descriptionText: c.descriptionText ?? null, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null, propertyTypeText: c.propertyTypeText ?? null }));
   const doms = res.needsVerification.map((nn) => nn.daysOnMarket).filter((d): d is number => typeof d === 'number');
   const anyConnected = res.providers.some((p) => p.status === 'connected' || p.status === 'no_comps');
   const anyError = res.providers.some((p) => p.status === 'error' || p.status === 'timeout');
@@ -852,8 +866,27 @@ const s = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 const n = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 
+/**
+ * Coordinates are supporting evidence, never parcel identity. Once identity is
+ * verified, an inspection centroid can correct stale persisted coordinates only
+ * when both records name the exact same APN.
+ */
+export function supportingCoordinatesForVerifiedParcel(
+  verification: Pick<DukeVerificationResult, 'parcelVerified' | 'identity' | 'coordinates'>,
+  inspection?: { parcelFacts?: Record<string, string> } | null,
+): { lat: number; lng: number } | undefined {
+  const providerCoords = verification.coordinates;
+  if (!verification.parcelVerified || !inspection?.parcelFacts) return providerCoords;
+  const verifiedApn = s(verification.identity?.apn).replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const inspectionFacts = buildParcelFactSheet(inspection.parcelFacts);
+  const inspectionApn = s(inspectionFacts.apn).replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const { lat, lng } = inspectionFacts.centroid;
+  if (!verifiedApn || verifiedApn !== inspectionApn || lat == null || lng == null) return providerCoords;
+  return { lat, lng };
+}
+
 /** Loose LandPortal comparables row (from the inspection) the selector reads. */
-type LpComparableRowLite = { price?: number | null; pricePerAcre?: number | null; acres?: number | null; saleDate?: string; sourceUrl?: string | null; address?: string | null; distanceMiles?: number | null };
+type LpComparableRowLite = { price?: number | null; pricePerAcre?: number | null; acres?: number | null; saleDate?: string; status?: string | null; sourceUrl?: string | null; address?: string | null; distanceMiles?: number | null };
 
 /**
  * Build the ranked best-comps shortlist from persisted comp data. PURE — no
@@ -877,7 +910,7 @@ function computeBestComps(
     (rows ?? []).map((r) => ({
       price: r.price ?? null, pricePerAcre: r.pricePerAcre ?? null, acres: r.acres ?? null,
       saleDateIso: r.saleDateIso || null, sourceUrl: r.sourceUrl || null, sourceLabel: r.sourceLabel || null,
-      addressDesc: r.addressDesc || null, distanceMiles: null, compClass: r.compClass || null, lane: laneName,
+      addressDesc: r.addressDesc || null, distanceMiles: typeof r.distanceMiles === 'number' ? r.distanceMiles : null, compClass: r.compClass || null, lane: laneName,
     }));
   const richLp: CompCandidate[] = (lpComparables ?? []).map((c) => ({
     price: typeof c.price === 'number' ? c.price : null,
@@ -885,6 +918,7 @@ function computeBestComps(
     acres: typeof c.acres === 'number' ? c.acres : null,
     saleDateIso: c.saleDate || null, sourceUrl: c.sourceUrl || null, sourceLabel: 'LandPortal visible',
     addressDesc: c.address || null, distanceMiles: typeof c.distanceMiles === 'number' ? c.distanceMiles : null,
+    priceKind: /sold|closed/i.test(c.status ?? '') ? 'sold' : /pending/i.test(c.status ?? '') ? 'pending' : /active|listed/i.test(c.status ?? '') ? 'active' : 'unknown',
     compClass: null, lane: 'landportal' as const,
   }));
   // Only fall back to the parsed visible rows when the inspection had none.
@@ -1469,7 +1503,22 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
   // Recompute the best-comps shortlist from the persisted comp data on every read.
   // Pure + cheap, and it means older reports (persisted before best-comps existed)
   // light up the memo shortlist immediately, with no provider re-run.
-  const rehydratedMarketComps = (parsed.marketComps as MarketCompsView | undefined) ?? base.marketComps;
+  const persistedMarketComps = verifiedSaleCompsForRead(row.deal_card_id);
+  const storedMarketComps = (parsed.marketComps as MarketCompsView | undefined) ?? base.marketComps;
+  // A verified sale entered from its source page is a first-class market fact,
+  // not an orphaned registry row.  Preserve provider-retrieved lanes, then add
+  // source-backed manual sales to the supplemental sold lane so the shared
+  // comparable intelligence applies the same date, distance, acreage and type
+  // gates to every source.
+  const existingKeys = new Set((storedMarketComps.supplementalSold ?? []).map((c) => `${c.addressDesc ?? ''}|${c.price}|${c.saleDateIso}`.toLowerCase()));
+  const newVerifiedSales = persistedMarketComps.filter((c) => !existingKeys.has(`${c.addressDesc ?? ''}|${c.price}|${c.saleDateIso}`.toLowerCase()));
+  const rehydratedMarketComps: MarketCompsView = newVerifiedSales.length
+    ? {
+        ...storedMarketComps,
+        supplementalSold: [...(storedMarketComps.supplementalSold ?? []), ...newVerifiedSales],
+        providers: [...(storedMarketComps.providers ?? []), { providerId: 'verified_source_sales', status: 'collected', kept: newVerifiedSales.length }],
+      }
+    : storedMarketComps;
   const legacyValuation = (parsed.valuation as ValuationHierarchy | undefined) ?? base.valuation;
   const oneSaleCompValuation = legacyValuation.primary?.kind === 'comp_sold' && rehydratedMarketComps.soldCount < 3;
   const rehydratedValuation = oneSaleCompValuation ? { ...legacyValuation, confidence: 'low' as const, valueRange: null, nextAction: `Preliminary comp indication only: ${rehydratedMarketComps.soldCount} sold comp(s) is insufficient for a reliable value or offer range. Expand and validate comparable sales before pricing an offer.` } : legacyValuation;
@@ -1490,6 +1539,7 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
     ...base,
     ...parsed,
     dataGaps: ((parsed.dataGaps as string[] | undefined) ?? base.dataGaps).map(operatorizePersistedGap),
+    marketComps: rehydratedMarketComps,
     valuation: rehydratedValuation,
     bestComps: rehydratedBestComps,
     ddFactChecklist: rehydratedChecklist,
@@ -1514,6 +1564,33 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
     generatedAt: row.updated_at,
     updatedBy: row.updated_by,
   };
+}
+
+/** Convert operator-recorded, source-backed closed sales into the same view
+ * consumed by comparable intelligence.  Coordinates are used only to measure
+ * distance after the sale has been recorded; they never identify the subject. */
+function verifiedSaleCompsForRead(dealCardId: number): MarketCompView[] {
+  const deal = getDealCard(dealCardId);
+  const subject = (deal?.propertyCards as Array<Record<string, unknown>> | undefined)
+    ?.map((card) => ({ lat: typeof card.lat === 'number' ? card.lat : null, lng: typeof card.lng === 'number' ? card.lng : null }))
+    .find((card) => card.lat != null && card.lng != null) ?? null;
+  return listComps({ dealCardId })
+    .filter((comp) => comp.status === 'verified_sale' && comp.price_kind === 'sale' && comp.price != null && comp.acres != null && !!comp.sale_or_list_date && !!comp.source_url && !!comp.address_desc)
+    .map((comp) => ({
+      price: comp.price as number,
+      saleDateIso: comp.sale_or_list_date,
+      acres: comp.acres,
+      pricePerAcre: comp.price_per_acre,
+      sourceUrl: comp.source_url,
+      sourceLabel: comp.source_label || 'Verified sale',
+      addressDesc: comp.address_desc,
+      distanceMiles: distanceMilesFromSubject(subject, comp),
+      // The recorded source notes carry the observed property classification
+      // (for example, "Manufactured home").  The classifier receives these
+      // exact notes rather than guessing from an address.
+      propertyTypeText: comp.notes || null,
+      descriptionText: comp.notes || null,
+    }));
 }
 
 function getReportRow(dealCardId: number): DealCardReportRow | undefined {
@@ -1616,7 +1693,7 @@ function persistReport(dealCardId: number, view: DealCardReportView, updatedBy: 
  *  source order so a later source dedupes against earlier ones. Returns # added. */
 function persistExternalLandComps(opts: {
   dealCardId: number; cardId: number; entity: LandosEntity; sourceLabel: 'Zillow' | 'Redfin';
-  comps: Array<{ address: string; price: number; acres: number | null; url: string | null }>;
+  comps: Array<{ address: string; price: number; acres: number | null; url: string | null; status?: 'active' | 'sold' | 'pending' | 'unknown' }>;
   lpComparables: Array<{ price?: number | null; acres?: number | null }>;
   /** Subject state code (e.g. "SC"): a marketplace geocoder can silently resolve
    *  the search to a same-named place in another state, so out-of-state rows are
@@ -1639,7 +1716,10 @@ function persistExternalLandComps(opts: {
     if (state && !new RegExp(`[,\\s]${state}[\\s,]|[,\\s]${state}$`, 'i').test(z.address)) continue; // wrong-market guard
     seenAddr.add(akey);
     if (z.acres != null) priceAcre.add(`${z.price}:${z.acres}`);
-    addComp({ entity: opts.entity, dealCardId: opts.dealCardId, cardId: opts.cardId, sourceLabel: opts.sourceLabel, sourceUrl: z.url ?? '', addressDesc: z.address, price: z.price, priceKind: 'list', acres: z.acres ?? undefined, status: 'market_reference', addedBy: `${opts.sourceLabel.toLowerCase()}/browser` });
+    // Preserve the source's observed sale/list classification without promoting an
+    // automated row to a verified sale.  The shared reconciliation gate still
+    // requires source, date, distance, acreage, and type before valuation use.
+    addComp({ entity: opts.entity, dealCardId: opts.dealCardId, cardId: opts.cardId, sourceLabel: opts.sourceLabel, sourceUrl: z.url ?? '', addressDesc: z.address, price: z.price, priceKind: z.status === 'sold' ? 'sale' : 'list', acres: z.acres ?? undefined, status: 'market_reference', notes: z.status === 'sold' ? 'Public source showed this as sold; pending full valuation validation.' : 'Public market listing; not selected for valuation.', addedBy: `${opts.sourceLabel.toLowerCase()}/browser` });
     added++;
   }
   return added;
@@ -1716,6 +1796,12 @@ export async function runDealCardReport(
     } catch { /* verdict persistence never blocks the report */ }
   }
 
+  const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
+  // The inspection centroid is supporting evidence. It only replaces a stored
+  // coordinate after the currently verified APN matches exactly.
+  const rawInspection = visualCardId ? loadPropertyInspection(visualCardId) : null;
+  const supportingCoordinates = supportingCoordinatesForVerifiedParcel(verification, rawInspection);
+
   // Propagate VERIFIED IDENTITY to the subject property card so its
   // verification_status / kanban agree with the report. Parcel-identity
   // verification is SEPARATE from DD completeness: a Realie-verified parcel must
@@ -1738,8 +1824,8 @@ export async function runDealCardReport(
         acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
         // Persist verified-parcel coordinates (enrichment output) so a reopened
         // card keeps Realie/Zillow comps, imagery, and map context. Never identity.
-        lat: verification.coordinates?.lat ?? null,
-        lng: verification.coordinates?.lng ?? null,
+        lat: supportingCoordinates?.lat ?? null,
+        lng: supportingCoordinates?.lng ?? null,
         verified: true,
         verificationSource: verification.verificationSource ?? 'Realie.ai (non-credit)',
         summary: verification.propertyData.note ?? verification.summary,
@@ -1836,7 +1922,11 @@ export async function runDealCardReport(
   const areaCoords = areaContext && typeof areaContext.lat === 'number' && typeof areaContext.lng === 'number'
     ? { lat: areaContext.lat, lng: areaContext.lng }
     : null;
-  const govDd = await buildGovDd(verification, { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch }, areaCoords);
+  const govDd = await buildGovDd(
+    supportingCoordinates ? { ...verification, coordinates: supportingCoordinates } : verification,
+    { femaFetch: deps.femaFetch, nwiFetch: deps.nwiFetch, usgsFetch: deps.usgsFetch },
+    areaCoords,
+  );
   const ddChecklistRows = [
     ...buildIdentityChecklistRows(verification),
     ...mergeGovDdRows(
@@ -1845,7 +1935,6 @@ export async function runDealCardReport(
     ),
   ];
   const vid = verification.identity;
-  const visualCardId = (verifiedCard?.id ?? (deal.propertyCards as Array<Record<string, unknown>>)[0]?.id) as number | undefined;
   // ITEM 1: Google visual auto-capture/REUSE — VERIFIED PARCELS ONLY. Imagery is
   // generated exclusively from verified parcel coordinates (provider coords, or a
   // geocoded VERIFIED situs address as the parcel centroid). The card's raw
@@ -1854,10 +1943,19 @@ export async function runDealCardReport(
   // imagery of the wrong place. No coordinates → no Google imagery, honestly.
   const googleConfigured = deps.googleVisualConfigured ?? googleVisualConfigured();
   if (visualCardId && googleConfigured && verification.parcelVerified) {
-    const already = loadCardVisualCapture(visualCardId);
+    const existingCapture = loadCardVisualCapture(visualCardId);
+    const hasMismatchedCapture = Object.values(existingCapture).some((asset) => {
+      const coords = asset.association?.sourceCoords;
+      return !!supportingCoordinates && !!coords
+        && (Math.abs(coords.lat - supportingCoordinates.lat) > 0.001 || Math.abs(coords.lng - supportingCoordinates.lng) > 0.001);
+    });
+    if (hasMismatchedCapture) {
+      supersedeCardVisualCaptures(visualCardId, 'Capture coordinates disagreed with the APN-matched verified parcel centroid.');
+    }
+    const already = hasMismatchedCapture ? {} : existingCapture;
     const verifiedSitus = s(vid?.situsAddress) || '';
     if (Object.keys(already).length === 0) {
-      let imageryCoords = verification.coordinates ?? null;
+      let imageryCoords = supportingCoordinates ?? null;
       let associationBasis: 'verified_parcel_coordinates' | 'verified_parcel_centroid' = 'verified_parcel_coordinates';
       if (!imageryCoords && verifiedSitus && !isMultiApnString(verifiedSitus) && !looksLikeApnIntakeText(verifiedSitus)) {
         // Geocode the VERIFIED situs (never the operator's raw input) for a
@@ -1912,7 +2010,6 @@ export async function runDealCardReport(
     },
     { configured: deps.googleVisualConfigured ?? false, captured },
   );
-  const rawInspection = visualCardId ? loadPropertyInspection(visualCardId) : null;
   const landportalInspection = rawInspection
     ? {
         parcelUrl: rawInspection.parcelUrl,
@@ -2027,8 +2124,8 @@ export async function runDealCardReport(
       // ZIP for the Zillow supplemental lane — from the situs address tail.
       zip: vid?.situsAddress?.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1],
       acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
-      lat: verification.coordinates?.lat,
-      lng: verification.coordinates?.lng,
+      lat: supportingCoordinates?.lat,
+      lng: supportingCoordinates?.lng,
     };
   } else if (areaContext && (areaCoords || (areaContext.state && (areaContext.city || areaContext.zip || areaContext.county)))) {
     // Local Area Context comps: countywide / nearby $/acre from the geocoded

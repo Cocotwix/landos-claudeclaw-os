@@ -93,6 +93,31 @@ function countyFactMap(facts: BrowserFact[]): Record<string, string> {
   return map;
 }
 
+/**
+ * A LandPortal read can establish jurisdiction even when the original operator
+ * title did not contain a county.  County research must use that just-observed
+ * parcel locality rather than failing before it can reach the official record
+ * systems.  Placeholder values are deliberately not promoted into a route key.
+ */
+function inspectionFact(facts: Record<string, string>, names: string[]): string | undefined {
+  for (const name of names) {
+    const value = facts[name]?.trim();
+    if (value && !/^(?:-|--|n\/?a|not\s+(?:available|found)|unknown)$/i.test(value)) return value;
+  }
+  return undefined;
+}
+
+function countySearchKey(input: BrowserSearchKey, facts: Record<string, string>): BrowserSearchKey {
+  return {
+    ...input,
+    county: input.county ?? inspectionFact(facts, ['Parcel Address County', 'County']),
+    state: input.state ?? inspectionFact(facts, ['Parcel Address State', 'State', 'Situs State']),
+    city: input.city ?? inspectionFact(facts, ['Parcel Address City', 'City', 'Situs City']),
+    apn: input.apn ?? inspectionFact(facts, ['Parcel ID', 'APN', 'Parcel Number']),
+    address: input.address ?? inspectionFact(facts, ['Parcel Address', 'Situs Address', 'Property Address']),
+  };
+}
+
 function mergeFacts(base: Record<string, string>, incoming: Record<string, string>): Record<string, string> {
   const out = { ...base };
   for (const [k, v] of Object.entries(incoming)) if (!out[k] && v) out[k] = v;
@@ -313,10 +338,17 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   }
 
   const hasCoreParcelFacts = !!(inspection.parcelFacts['Owner Name'] || inspection.parcelFacts.Owner) && !!(inspection.parcelFacts['Parcel ID'] || inspection.parcelFacts.APN) && !!(inspection.parcelFacts.Acres || inspection.parcelFacts['Calc Acres']);
-  if ((!hasCoreParcelFacts || !inspection.parcelUrl) && countyEvidence == null && deps.countyRecordsBrowser?.configured()) {
-    countyEvidence = await deps.countyRecordsBrowser.runWorkflow({ searchKey: input.searchKey, mode: input.mode }, { timeoutMs: input.timeoutMs });
+  // A deep-record mission is not a parcel-identity shortcut.  Even after
+  // LandPortal identifies the parcel, it must continue to the public county
+  // record lanes for GIS/assessor/recorder evidence (including a deed attempt).
+  // The old core-facts gate silently skipped every one of those required paths.
+  const needsCountyDeepRecord = input.mode === 'deep_record';
+  if ((needsCountyDeepRecord || !hasCoreParcelFacts || !inspection.parcelUrl) && countyEvidence == null && deps.countyRecordsBrowser?.configured()) {
+    // Preserve explicit operator constraints, but let the immediately preceding
+    // LandPortal parcel read supply missing county/state routing context.
+    countyEvidence = await deps.countyRecordsBrowser.runWorkflow({ searchKey: countySearchKey(input.searchKey, inspection.parcelFacts), mode: input.mode }, { timeoutMs: input.timeoutMs });
   }
-  if ((!hasCoreParcelFacts || !inspection.parcelUrl) && countyEvidence) {
+  if ((needsCountyDeepRecord || !hasCoreParcelFacts || !inspection.parcelUrl) && countyEvidence) {
     mergeCountyRoutes(routes, countyEvidence);
     const countyPkg = packageFromCounty(countyEvidence);
     inspection.parcelUrl ??= countyPkg.parcelUrl;

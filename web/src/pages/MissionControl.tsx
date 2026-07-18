@@ -222,6 +222,23 @@ interface LandosOverview {
   pendingApprovals: number;
   modelCostUsd: number;
   costRecordsUsd: number;
+  storageProfile?: { mode: 'operating' | 'qa'; label: string; syntheticOnly: boolean };
+  opportunityMetrics?: {
+    totalOpportunities?: number;
+    newLeads: number;
+    researchRunning: number;
+    researchFailed: number;
+    researchIncomplete: number;
+    discoveryNeedsPreparation: number;
+    callsAwaitingTranscript: number;
+    transcriptsAwaitingReconciliation: number;
+    ownerDecisions: number;
+    followUpsDue: number;
+    followUpsOverdue: number;
+    pursuedDeals: number;
+    browserProviderFailures: number;
+    approvalRequired: number;
+  };
 }
 
 function greeting(): string {
@@ -234,8 +251,9 @@ function greeting(): string {
 function ExecutiveOverview({ totalActive, unassigned }: { totalActive: number; unassigned: number }) {
   const overview = useFetch<LandosOverview>('/api/landos/overview?entity=all', 30_000);
   const counts = overview.data?.counts ?? {};
-  const leads = counts.lead ?? 0;
-  const deals = counts.deal ?? 0;
+  const metrics = overview.data?.opportunityMetrics;
+  const leads = metrics?.newLeads ?? counts.lead ?? 0;
+  const deals = metrics?.pursuedDeals ?? counts.deal ?? 0;
   const approvals = overview.data?.pendingApprovals ?? 0;
   const spend = (overview.data?.modelCostUsd ?? 0) + (overview.data?.costRecordsUsd ?? 0);
   const wsName = workspaceName.value;
@@ -251,6 +269,11 @@ function ExecutiveOverview({ totalActive, unassigned }: { totalActive: number; u
     <div class="px-4 pt-4 pb-2 border-b border-[var(--color-border)]">
       <div class="text-[13px] text-[var(--color-text)] mb-3">
         {greeting()}{wsName && wsName !== 'ClaudeClaw' ? `, ${wsName}` : ''}. Here's what needs attention.
+        {overview.data?.storageProfile && (
+          <span class={`ml-2 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-wide ${overview.data.storageProfile.mode === 'qa' ? 'border-amber-400/50 text-amber-300 bg-amber-400/10' : 'border-emerald-400/40 text-emerald-300 bg-emerald-400/10'}`}>
+            {overview.data.storageProfile.label}
+          </span>
+        )}
       </div>
 
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -279,6 +302,35 @@ function ExecutiveOverview({ totalActive, unassigned }: { totalActive: number; u
           href="/dept/finance"
         />
       </div>
+
+      {metrics && (
+        <div data-testid="opportunity-metrics" class="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
+          {[
+            ['New leads', metrics.newLeads, 'new-leads'],
+            ['Research running', metrics.researchRunning, 'research-running'],
+            ['Research failed / incomplete', metrics.researchFailed + metrics.researchIncomplete, 'research-attention'],
+            ['Discovery prep', metrics.discoveryNeedsPreparation, 'discovery-prep'],
+            ['Awaiting transcript', metrics.callsAwaitingTranscript, 'awaiting-transcript'],
+            ['Reconcile transcript', metrics.transcriptsAwaitingReconciliation, 'transcript-reconciliation'],
+            ['Owner decisions', metrics.ownerDecisions, 'owner-decisions'],
+            ['Follow-ups due', metrics.followUpsDue, 'follow-ups-due'],
+            ['Follow-ups overdue', metrics.followUpsOverdue, 'follow-ups-overdue'],
+            ['Pursued deals', metrics.pursuedDeals, 'pursued-deals'],
+            ['Provider failures', metrics.browserProviderFailures, 'provider-failures'],
+            ['Approval required', metrics.approvalRequired, 'approval-required'],
+          ].map(([label, value, queue]) => (
+            <Link
+              key={String(queue)}
+              data-testid={`opportunity-metric-${queue}`}
+              href={`/dept/acquisitions?section=library&queue=${queue}`}
+              class={`rounded-lg border bg-[var(--color-card)] px-2.5 py-2 hover:bg-[var(--color-elevated)] ${Number(value) > 0 && ['research-attention', 'follow-ups-overdue', 'provider-failures', 'approval-required'].includes(String(queue)) ? 'border-amber-500/50' : 'border-[var(--color-border)]'}`}
+            >
+              <div class="text-[9.5px] uppercase tracking-wide text-[var(--color-text-faint)]">{label}</div>
+              <div class="mt-0.5 text-lg font-semibold tabular-nums text-[var(--color-text)]">{value}</div>
+            </Link>
+          ))}
+        </div>
+      )}
 
       {/* Department health — how much of the company is online. */}
       <div class="flex items-center gap-2 mt-3 flex-wrap">

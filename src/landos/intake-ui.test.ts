@@ -162,9 +162,9 @@ describe('Intake panel source-adapter / Market Pulse section (Sprint 6A)', () =>
   });
 });
 
-describe('Intake panel Duke due diligence result', () => {
-  it('has a Run Duke parcel verification button wired to the bridge route', () => {
-    expect(PANEL).toMatch(/Run Duke parcel verification/);
+describe('Intake panel due diligence result', () => {
+  it('has a functional-role parcel verification button wired to the bridge route', () => {
+    expect(PANEL).toMatch(/Run parcel verification/);
     expect(PANEL).toMatch(/apiPost<[^>]*>\('\/api\/landos\/intake\/duke-verification'/);
     expect(PANEL).toMatch(/function runDuke/);
     expect(PANEL).toMatch(/onClick=\{\(\) => void runDuke\(\)\}/);
@@ -179,7 +179,7 @@ describe('Intake panel Duke due diligence result', () => {
 
   it('shows an explicit loading panel and error state', () => {
     expect(PANEL).toMatch(/dukeLoading && \(/);
-    expect(PANEL).toMatch(/Running Duke parcel verification…/);
+    expect(PANEL).toMatch(/Running due-diligence parcel verification…/);
     expect(PANEL).toMatch(/Verifying…/);
     expect(PANEL).toMatch(/Verification failed/);
   });
@@ -223,8 +223,8 @@ describe('Intake panel Duke due diligence result', () => {
     expect(PANEL).toMatch(/offerReadiness\.minNetProfitBaselineUsd/);
   });
 
-  it('renders Ace seller discovery prep as questions', () => {
-    expect(PANEL).toMatch(/Ace Seller Discovery Prep/);
+  it('renders Acquisitions discovery prep as questions', () => {
+    expect(PANEL).toMatch(/Acquisitions Discovery Prep/);
     expect(PANEL).toMatch(/acePrep\.questions\.map/);
   });
 

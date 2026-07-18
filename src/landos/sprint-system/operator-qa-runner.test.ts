@@ -81,6 +81,18 @@ function fakeBrowser(pageTextByUrl: (url: string) => string, log: string[] = [],
       async clickText() {
         return true;
       },
+      async clickTestId(testId: string) {
+        log.push(`click-test-id ${testId}`);
+        return true;
+      },
+      async fillTestId(testId: string, value: string) {
+        log.push(`fill-test-id ${testId}=${value}`);
+        return true;
+      },
+      async uploadTestId(testId: string, filePath: string) {
+        log.push(`upload-test-id ${testId}=${path.basename(filePath)}`);
+        return true;
+      },
       async screenshot(filePath: string) {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         fs.writeFileSync(filePath, 'png', 'utf8');

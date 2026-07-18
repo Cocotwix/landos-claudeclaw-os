@@ -20,9 +20,8 @@ beforeEach(() => {
 });
 
 describe('paid comp-tool guardrail', () => {
-  it('only allows paid comp tools inside a live property workflow', () => {
-    expect(isPaidCompAllowed('live_property_workflow')).toBe(true);
-    for (const mode of ['build', 'test', 'mock', 'smoke', 'seed', 'debug', 'unknown'] as const) {
+  it('prohibits paid comp tools in every workflow', () => {
+    for (const mode of ['live_property_workflow', 'build', 'test', 'mock', 'smoke', 'seed', 'debug', 'unknown'] as const) {
       expect(isPaidCompAllowed(mode)).toBe(false);
       expect(() => assertPaidCompAllowed(mode, 'lp_comp_report_create')).toThrow(/blocked/i);
     }

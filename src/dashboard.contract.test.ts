@@ -1065,16 +1065,16 @@ describe('LandOS property card + memory endpoints', () => {
     expect(official.usableForOfferLogic).toBe(true);
   });
 
-  it('serves the kanban board grouped by status and updates status', async () => {
-    const card = (await jsonOf(await post('/api/landos/property-cards', {
-      entity: 'TY_LAND_BIZ', activeInputAddress: '8 Board Rd, Q SC',
-    }))).card;
-    const moved = await patch(`/api/landos/property-cards/${card.id}`, { kanbanStatus: 'underwriting' });
+  it('serves the canonical opportunity pipeline grouped by stage and updates that stage', async () => {
+    const lead = await jsonOf(await post('/api/landos/leads/manual', {
+      entity: 'TY_LAND_BIZ', sellerName: 'Board Seller', address: '8 Board Rd, Q SC', leadSource: 'contract-test',
+    }));
+    const moved = await patch(`/api/landos/opportunities/${lead.opportunityId}/pipeline-stage`, { stage: 'pursuing' });
     expect(moved.status).toBe(200);
     const board = await jsonOf(await get('/api/landos/board?entity=TY_LAND_BIZ'));
-    expect(Array.isArray(board.columns.underwriting)).toBe(true);
-    expect(board.columns.underwriting.length).toBe(1);
-    expect((await patch(`/api/landos/property-cards/${card.id}`, { kanbanStatus: 'bogus' })).status).toBe(400);
+    expect(Array.isArray(board.columns.pursuing)).toBe(true);
+    expect(board.columns.pursuing.length).toBe(1);
+    expect((await patch(`/api/landos/opportunities/${lead.opportunityId}/pipeline-stage`, { stage: 'bogus' })).status).toBe(400);
   });
 
   it('GET /api/landos/board returns 200 (not 404) for every entity filter incl. empty state', async () => {
@@ -1089,8 +1089,8 @@ describe('LandOS property card + memory endpoints', () => {
       expect(body.columns.new_lead, entity).toEqual([]);
     }
     // entity=all aggregates across both entities.
-    await post('/api/landos/property-cards', { entity: 'TY_LAND_BIZ', activeInputAddress: '70 All Rd, Lexington SC' });
-    await post('/api/landos/property-cards', { entity: 'LAND_ALLY', activeInputAddress: '72 All Rd, Lexington SC' });
+    await post('/api/landos/leads/manual', { entity: 'TY_LAND_BIZ', sellerName: 'All One', address: '70 All Rd, Lexington SC', leadSource: 'contract-test' });
+    await post('/api/landos/leads/manual', { entity: 'LAND_ALLY', sellerName: 'All Two', address: '72 All Rd, Lexington SC', leadSource: 'contract-test' });
     const all = await jsonOf(await get('/api/landos/board?entity=all'));
     const total = Object.values(all.columns).reduce((n: number, col: any) => n + (col as unknown[]).length, 0);
     expect(total).toBe(2);

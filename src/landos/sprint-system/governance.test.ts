@@ -3,7 +3,7 @@
 // independence from builder narrative.
 
 import { describe, expect, it } from 'vitest';
-import { addEvidence } from './ledger.js';
+import { addEvidence, renderLedgerReport } from './ledger.js';
 import { unsupportedClaims } from './claims.js';
 import {
   completeRootCauseReview,
@@ -61,6 +61,21 @@ describe('proof-backed completion claims', () => {
     expect(
       unsupportedClaims('The report is not verified yet. Repairs remain pending before it is complete.', ledger),
     ).toEqual([]);
+  });
+
+  it('proof-links generated workstream identifiers that contain claim words', () => {
+    const ledger = makeLedger();
+    for (const workstream of ledger.workstreams) workstream.operatorOutcome = 'Research details are visible.';
+    ledger.workstreams[0].id = 'ws-verified-research';
+    ledger.workstreams[0].name = 'Verified research mission';
+    const evidence = addEvidence(ledger, { kind: 'independent_browser_qa', summary: 'browser QA pass' }, FIXED_NOW);
+    ledger.workstreams[0].browserQaResult = {
+      result: 'pass',
+      at: FIXED_NOW(),
+      reportPath: 'qa/report.md',
+      evidenceIds: [evidence.id],
+    };
+    expect(unsupportedClaims(renderLedgerReport(ledger), ledger)).toEqual([]);
   });
 });
 

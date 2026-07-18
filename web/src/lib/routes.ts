@@ -20,12 +20,12 @@ export interface RouteDef {
   shortcut?: string;
 }
 
-// Executive layer — Jarvis / Command. Mission Control is the executive
-// dashboard ("what do I need to know first?"); Jarvis is the natural
+// Executive layer — Max / Command. Mission Control is the executive
+// dashboard ("what do I need to know first?"); Max is the natural
 // conversation + coordination layer (the Chat surface).
 const COMPANY_ROUTES: RouteDef[] = [
   { path: '/mission', label: 'Mission Control', section: 'company', icon: LayoutGrid,    shortcut: 'g m' },
-  { path: '/chat',    label: 'Jarvis',          section: 'company', icon: MessageSquare, shortcut: 'g c' },
+  { path: '/chat',    label: 'Max',             section: 'company', icon: MessageSquare, shortcut: 'g c' },
 ];
 
 // The eleven business departments, derived from the single department model

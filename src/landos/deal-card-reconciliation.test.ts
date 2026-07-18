@@ -194,7 +194,7 @@ describe('selectBestComps — the memo shortlist (best 3-5, not twenty)', () => 
 
   it('ranks a same-size recent sold comp above a stale, off-size active listing', () => {
     const cands: CompCandidate[] = [
-      { price: 100000, pricePerAcre: 20000, acres: 5, saleDateIso: iso(2), sourceLabel: 'Realie', lane: 'sold' },
+      { price: 100000, pricePerAcre: 20000, acres: 5, saleDateIso: iso(2), sourceLabel: 'Realie', distanceMiles: 2, lane: 'sold' },
       { price: 400000, pricePerAcre: 8000, acres: 50, saleDateIso: iso(30), sourceLabel: 'zillow', lane: 'active' },
     ];
     const r = selectBestComps(5, cands);
@@ -206,19 +206,19 @@ describe('selectBestComps — the memo shortlist (best 3-5, not twenty)', () => 
 
   it('caps the shortlist at five even when many comps exist', () => {
     const cands: CompCandidate[] = Array.from({ length: 12 }, (_, i) => ({
-      price: 90000 + i * 1000, pricePerAcre: 18000, acres: 5 + i * 0.1, saleDateIso: iso(3 + i), sourceLabel: 'Realie', lane: 'sold' as const,
+      price: 90000 + i * 1000, pricePerAcre: 18000, acres: 5 + i * 0.1, saleDateIso: iso(3 + i), sourceLabel: 'Realie', distanceMiles: 2, lane: 'sold' as const,
     }));
     const r = selectBestComps(5, cands);
     expect(r.comps.length).toBe(5);
-    expect(r.consideredCount).toBe(12);
-    expect(r.rationale).toMatch(/Top 5 of 12/);
+    expect(r.consideredCount).toBe(10); // 12-month tier was sufficient; older rows stay out.
+    expect(r.rationale).toMatch(/Top 5 of 10/);
   });
 
   it('drops improved/residential-class rows and price-less rows from the land shortlist', () => {
     const cands: CompCandidate[] = [
       { price: 250000, pricePerAcre: null, acres: 5, saleDateIso: iso(2), sourceLabel: 'Realie', compClass: 'residential', lane: 'sold' },
       { price: null, pricePerAcre: null, acres: 5, saleDateIso: iso(2), sourceLabel: 'Realie', lane: 'sold' },
-      { price: 95000, pricePerAcre: 19000, acres: 5, saleDateIso: iso(2), sourceLabel: 'Realie', compClass: 'vacant_land', lane: 'sold' },
+      { price: 95000, pricePerAcre: 19000, acres: 5, saleDateIso: iso(2), sourceLabel: 'Realie', distanceMiles: 2, compClass: 'vacant_land', lane: 'sold' },
     ];
     const r = selectBestComps(5, cands);
     expect(r.comps.length).toBe(1);
@@ -228,8 +228,8 @@ describe('selectBestComps — the memo shortlist (best 3-5, not twenty)', () => 
 
   it('rewards a known-close-distance comp and surfaces the mileage in the reason', () => {
     const cands: CompCandidate[] = [
-      { price: 100000, pricePerAcre: 20000, acres: 5, saleDateIso: iso(4), sourceLabel: 'LandPortal visible', distanceMiles: 2.3, lane: 'landportal' },
-      { price: 100000, pricePerAcre: 20000, acres: 5, saleDateIso: iso(4), sourceLabel: 'LandPortal visible', distanceMiles: 22, lane: 'landportal' },
+      { price: 100000, pricePerAcre: 20000, acres: 5, saleDateIso: iso(4), sourceLabel: 'LandPortal visible', distanceMiles: 2.3, priceKind: 'sold', lane: 'landportal' },
+      { price: 100000, pricePerAcre: 20000, acres: 5, saleDateIso: iso(4), sourceLabel: 'LandPortal visible', distanceMiles: 22, priceKind: 'sold', lane: 'landportal' },
     ];
     const r = selectBestComps(5, cands);
     expect(r.comps[0].distanceMiles).toBe(2.3);
@@ -241,5 +241,50 @@ describe('selectBestComps — the memo shortlist (best 3-5, not twenty)', () => 
     const r = selectBestComps(5, []);
     expect(r.comps).toEqual([]);
     expect(r.rationale).toMatch(/No usable comparables/i);
+  });
+
+  it('deduplicates the same property across providers and keeps active/pending rows as context only', () => {
+    const asOf = new Date('2026-07-17T12:00:00Z');
+    const r = selectBestComps(5, [
+      { apn: '12-34-567', addressDesc: '10 Oak Road', price: 90_000, pricePerAcre: 18_000, acres: 5, saleDateIso: '2026-02-01', sourceLabel: 'Zillow', distanceMiles: 2, lane: 'sold' },
+      { apn: '1234567', addressDesc: '10 Oak Rd.', price: 90_000, pricePerAcre: 18_000, acres: 5, saleDateIso: '2026-02-01', sourceLabel: 'Redfin', distanceMiles: 2, lane: 'sold' },
+      { addressDesc: '22 Pine Rd', price: 110_000, pricePerAcre: 22_000, acres: 5, saleDateIso: '2026-06-01', sourceLabel: 'Zillow', priceKind: 'active', lane: 'active' },
+    ], 5, asOf);
+    expect(r.comps).toHaveLength(1);
+    expect(r.comps.every((c) => c.lane !== 'active')).toBe(true);
+    expect(r.contextComps).toHaveLength(1);
+    expect(r.policy.duplicatesRemoved).toBe(1);
+  });
+
+  it('expands recency 12 then 18 then 24 months and never admits an older sale', () => {
+    const r = selectBestComps(5, [
+      { price: 80_000, pricePerAcre: 16_000, acres: 5, saleDateIso: '2026-03-01', addressDesc: '1 A Rd', distanceMiles: 2, lane: 'sold' },
+      { price: 82_000, pricePerAcre: 16_400, acres: 5, saleDateIso: '2025-10-01', addressDesc: '2 A Rd', distanceMiles: 2, lane: 'sold' },
+      { price: 84_000, pricePerAcre: 16_800, acres: 5, saleDateIso: '2025-02-01', addressDesc: '3 A Rd', distanceMiles: 2, lane: 'sold' },
+      { price: 86_000, pricePerAcre: 17_200, acres: 5, saleDateIso: '2024-01-01', addressDesc: '4 A Rd', distanceMiles: 2, lane: 'sold' },
+    ], 5, new Date('2026-07-17T12:00:00Z'));
+    expect(r.policy.recencyMonths).toBe(18);
+    expect(r.comps).toHaveLength(3);
+    expect(r.policy.exclusions.some((x) => /older than 24 months/.test(x))).toBe(true);
+  });
+
+  it('requires a reason for county-wide rows and prominently discloses an allowed thin-market expansion', () => {
+    const base = { price: 75_000, pricePerAcre: 15_000, acres: 5, saleDateIso: '2026-05-01', distanceMiles: 18, lane: 'sold' as const, geographyScope: 'county_wide' as const };
+    const r = selectBestComps(5, [
+      { ...base, addressDesc: '1 Rural Rd', countyWideReason: null },
+      { ...base, addressDesc: '2 Rural Rd', countyWideReason: 'Only two local closed sales were available after the 10-mile search.' },
+    ], 5, new Date('2026-07-17T12:00:00Z'));
+    expect(r.comps).toHaveLength(1);
+    expect(r.policy.countyWideExpanded).toBe(true);
+    expect(r.policy.disclosure).toMatch(/^COUNTY-WIDE EXPANSION:/);
+    expect(r.policy.exclusions.some((x) => /lacks an expansion reason/.test(x))).toBe(true);
+  });
+
+  it('keeps a sold row with no measured distance out of the valuation shortlist', () => {
+    const r = selectBestComps(5, [
+      { price: 90_000, pricePerAcre: 18_000, acres: 5, saleDateIso: '2026-05-01', addressDesc: 'Distance missing', lane: 'sold' },
+    ], 5, new Date('2026-07-17T12:00:00Z'));
+    expect(r.comps).toEqual([]);
+    expect(r.policy.exclusions).toContain('Distance missing: distance is not established.');
   });
 });

@@ -14,7 +14,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
-import { STORE_DIR } from '../config.js';
+import { getLandosStorageProfile } from './storage-profile.js';
 
 export type LandosEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';
 export const LANDOS_ENTITIES: readonly LandosEntity[] = ['LAND_ALLY', 'TY_LAND_BIZ'];
@@ -287,9 +287,7 @@ export type LeadJobStatus = (typeof LEAD_JOB_STATUSES)[number];
 
 /** Action types that always require a Tyler-approved landos_approval row. */
 export const GATED_ACTION_TYPES = [
-  'seller_message',
   'crm_change',
-  'paid_credit',
   'offer_price',
   'file_deletion',
   'package_install',
@@ -299,6 +297,25 @@ export const GATED_ACTION_TYPES = [
   'ad_change',
   'contract_edit',
 ] as const;
+
+/** Phase 1 absolute prohibitions. These are not approval-gated: no approval can
+ * authorize spending or Jarvis communication with an external party. Internal
+ * offer recommendations and contract drafts remain ordinary review artifacts. */
+export const PROHIBITED_ACTION_TYPES = [
+  'paid_credit',
+  'paid_action',
+  'landportal_comp_report',
+  'comp_credit_use',
+  'trained_playbook_paid_action',
+  'seller_message',
+  'external_message',
+  'offer_send',
+  'contract_send',
+] as const;
+
+export function isProhibitedActionType(actionType: string): boolean {
+  return (PROHIBITED_ACTION_TYPES as readonly string[]).includes(actionType);
+}
 
 let landosDb: Database.Database | null = null;
 
@@ -1530,6 +1547,308 @@ function createLandosSchema(db: Database.Database): void {
       learned_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
+
+    -- Additive, checksummed migration ledger introduced by the Phase 1 reset.
+    -- Existing CREATE/ALTER guards remain for compatibility while subsequent
+    -- Phase 1 schema changes receive explicit durable identities.
+    CREATE TABLE IF NOT EXISTS landos_schema_migration (
+      migration_id TEXT PRIMARY KEY,
+      checksum TEXT NOT NULL,
+      description TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Phase 1 opportunity authority. Legacy Deal/Property Cards remain intact
+    -- and are linked as migration aliases; lifecycle changes happen on this
+    -- one durable row instead of copying a lead into a second deal record.
+    CREATE TABLE IF NOT EXISTS landos_opportunity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      public_uid TEXT NOT NULL UNIQUE,
+      entity TEXT NOT NULL REFERENCES landos_business_entity(id),
+      title TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'manual',
+      raw_input TEXT NOT NULL DEFAULT '',
+      lifecycle TEXT NOT NULL DEFAULT 'lead'
+        CHECK (lifecycle IN ('lead', 'deal', 'disposed')),
+      disposition TEXT,
+      pursued_at INTEGER,
+      pursued_by TEXT,
+      research_status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK (research_status IN ('not_started', 'queued', 'running', 'partial', 'complete', 'failed')),
+      discovery_status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK (discovery_status IN ('not_started', 'brief_ready', 'call_complete', 'reconciled')),
+      legacy_deal_card_id INTEGER UNIQUE REFERENCES landos_deal_card(id),
+      primary_property_card_id INTEGER REFERENCES landos_property_card(id),
+      legacy_status TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      CHECK (lifecycle = 'disposed' OR disposition IS NULL),
+      CHECK (lifecycle <> 'deal' OR (pursued_at IS NOT NULL AND pursued_by IS NOT NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_opportunity_entity_lifecycle
+      ON landos_opportunity(entity, lifecycle, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_landos_opportunity_research
+      ON landos_opportunity(research_status, discovery_status);
+
+    -- Durable observe -> act -> verify research missions. Browser/process work
+    -- may stop at any time; queued/running rows are recoverable on startup.
+    CREATE TABLE IF NOT EXISTS landos_opportunity_research_mission (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      run_key TEXT NOT NULL UNIQUE,
+      trigger TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'running', 'partial', 'complete', 'failed', 'quarantined')),
+      attempt INTEGER NOT NULL DEFAULT 0,
+      constraints_json TEXT NOT NULL,
+      tool_trace_json TEXT NOT NULL DEFAULT '[]',
+      verification_json TEXT,
+      summary TEXT NOT NULL DEFAULT '',
+      safe_next_action TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      started_at INTEGER,
+      finished_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_research_mission_state
+      ON landos_opportunity_research_mission(status, updated_at, opportunity_id);
+
+    -- Wrong-property evidence is retained for audit but excluded from every
+    -- canonical consumer. The original activity and files are never deleted.
+    CREATE TABLE IF NOT EXISTS landos_quarantined_card_evidence (
+      activity_id INTEGER PRIMARY KEY REFERENCES landos_card_activity(id) ON DELETE RESTRICT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      reason TEXT NOT NULL,
+      verification_json TEXT NOT NULL,
+      quarantined_by TEXT NOT NULL DEFAULT 'Property Research Agent',
+      quarantined_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_quarantined_evidence_opportunity
+      ON landos_quarantined_card_evidence(opportunity_id, quarantined_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_opportunity_legacy_alias (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      alias_type TEXT NOT NULL CHECK (alias_type IN ('deal_card', 'property_card')),
+      legacy_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(alias_type, legacy_id),
+      UNIQUE(opportunity_id, alias_type, legacy_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_opportunity_alias_opportunity
+      ON landos_opportunity_legacy_alias(opportunity_id);
+
+    CREATE TABLE IF NOT EXISTS landos_opportunity_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      event_key TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      from_lifecycle TEXT,
+      to_lifecycle TEXT,
+      decision TEXT,
+      actor TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      occurred_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(opportunity_id, event_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_opportunity_history_timeline
+      ON landos_opportunity_history(opportunity_id, occurred_at DESC, id DESC);
+
+    -- One current, versioned discovery-call package per canonical opportunity.
+    -- The JSON is the exact projection consumed by the Lead Card and PDF route;
+    -- it points at the existing Deal/Property graph rather than creating another
+    -- card system. Rebuilding is deterministic over the persisted source rows.
+    CREATE TABLE IF NOT EXISTS landos_opportunity_discovery_package (
+      opportunity_id INTEGER PRIMARY KEY REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      package_version INTEGER NOT NULL DEFAULT 1,
+      content_hash TEXT NOT NULL,
+      package_json TEXT NOT NULL,
+      source_updated_at INTEGER NOT NULL,
+      generated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_by TEXT NOT NULL DEFAULT 'Property Research Agent'
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_discovery_package_generated
+      ON landos_opportunity_discovery_package(generated_at DESC);
+
+    -- Human discovery-call record. Raw transcript text is deliberately stored
+    -- separately from every derived projection and is immutable after insert.
+    CREATE TABLE IF NOT EXISTS landos_opportunity_transcript (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      source_type TEXT NOT NULL CHECK (source_type IN ('paste', 'upload')),
+      file_name TEXT,
+      content_sha256 TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      captured_by TEXT NOT NULL DEFAULT 'operator',
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(opportunity_id, content_sha256)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_transcript_opportunity
+      ON landos_opportunity_transcript(opportunity_id, created_at DESC, id DESC);
+    CREATE TRIGGER IF NOT EXISTS landos_transcript_immutable_update
+      BEFORE UPDATE ON landos_opportunity_transcript
+      BEGIN SELECT RAISE(ABORT, 'raw transcripts are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS landos_transcript_immutable_delete
+      BEFORE DELETE ON landos_opportunity_transcript
+      BEGIN SELECT RAISE(ABORT, 'raw transcripts are immutable'); END;
+
+    -- Reconciliation is versioned. Each version points back to the exact raw
+    -- transcript and discovery-package hash used for comparison.
+    CREATE TABLE IF NOT EXISTS landos_opportunity_reconciliation (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      transcript_id INTEGER NOT NULL REFERENCES landos_opportunity_transcript(id) ON DELETE RESTRICT,
+      version INTEGER NOT NULL,
+      discovery_package_hash TEXT,
+      reconciliation_json TEXT NOT NULL,
+      reconciled_by TEXT NOT NULL DEFAULT 'Acquisitions Agent',
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(opportunity_id, version),
+      UNIQUE(transcript_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_reconciliation_opportunity
+      ON landos_opportunity_reconciliation(opportunity_id, version DESC);
+
+    -- Append-only canonical field history. Seller statements never masquerade
+    -- as verified research: each value carries its transcript/reconciliation
+    -- provenance and conflict disposition.
+    CREATE TABLE IF NOT EXISTS landos_opportunity_canonical_fact (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      field_key TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      classification TEXT NOT NULL CHECK (classification IN ('seller_stated', 'verified')),
+      transcript_id INTEGER REFERENCES landos_opportunity_transcript(id) ON DELETE RESTRICT,
+      reconciliation_id INTEGER REFERENCES landos_opportunity_reconciliation(id) ON DELETE RESTRICT,
+      conflict_status TEXT NOT NULL DEFAULT 'none' CHECK (conflict_status IN ('none', 'possible', 'material')),
+      supersedes_fact_id INTEGER REFERENCES landos_opportunity_canonical_fact(id) ON DELETE RESTRICT,
+      recorded_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_canonical_fact_latest
+      ON landos_opportunity_canonical_fact(opportunity_id, field_key, created_at DESC, id DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_opportunity_reconciliation_task (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_id INTEGER NOT NULL REFERENCES landos_opportunity(id) ON DELETE RESTRICT,
+      reconciliation_id INTEGER NOT NULL REFERENCES landos_opportunity_reconciliation(id) ON DELETE RESTRICT,
+      task_type TEXT NOT NULL CHECK (task_type IN ('research', 'follow_up')),
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'complete', 'cancelled')),
+      assigned_role TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_reconciliation_task_open
+      ON landos_opportunity_reconciliation_task(opportunity_id, status, created_at DESC);
+  `);
+  addColumn('landos_opportunity', 'pipeline_stage', `pipeline_stage TEXT NOT NULL DEFAULT 'new_lead'`);
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260717_001_phase1_storage_profiles',
+    'sha256:dc37498a7d91a3932bd6afcc8445fa58b8dd902602319f97b17aed64bda3df08',
+    'Record the additive Phase 1 migration chain after operating/QA storage separation and verified backup.',
+  );
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260717_002_opportunity_authority',
+    'sha256:95a64a0fb7b9a0ff8f65bf2721bb315069be215201a3cc6578dd808ba5d1ef8a',
+    'Add one durable opportunity authority, legacy aliases, lifecycle state, and decision history.',
+  );
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260717_003_discovery_package',
+    'sha256:877c5b740dbe521f76133317ea563aed07dde03d3570f241da0ee54ea5c1694e',
+    'Persist one versioned discovery-call package projection per canonical opportunity.',
+  );
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260717_004_transcript_reconciliation',
+    'sha256:4f7a5d3e5860ce8e79eff75f3be949e23251ddeedbe8cd4c39e90bb90d214b2e',
+    'Add immutable raw transcripts, versioned reconciliation, provenance-linked facts, and shared follow-up work.',
+  );
+  // Historical QA fixtures predate the explicit lead_type column and therefore
+  // entered the operating database as `actual`. Preserve every row and its
+  // evidence, but correctly classify the three documented fixtures so they
+  // remain isolated from operator-facing operating views.
+  const fixtureIsolation = db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260718_005_reclassify_legacy_qa_fixtures',
+    'sha256:ab346d3ec762dbf8c4c3f9860b5573a9468a536ec4cf5c52b1a48aac7ca53c95',
+    'Reclassify documented legacy QA fixtures as TEST LEAD records without deleting their data.',
+  );
+  if (fixtureIsolation.changes > 0) {
+    db.exec(`
+      UPDATE landos_deal_card
+      SET lead_type = 'test'
+      WHERE title IN (
+        '999 Model Validation Test Ln, Beaufort County, SC',
+        '12345 Sprint Test Rd, Pickens, SC 29671',
+        '00000 Nonexistent Qa Fixture Rd, Pickens, SC 29671'
+      );
+
+      UPDATE landos_property_card
+      SET lead_type = 'test'
+      WHERE id IN (
+        SELECT dcp.card_id
+        FROM landos_deal_card_property dcp
+        JOIN landos_deal_card d ON d.id = dcp.deal_card_id
+        WHERE d.lead_type = 'test'
+      );
+    `);
+  }
+
+  // Additive legacy backfill. Every existing Deal Card gets exactly one lead
+  // opportunity, including soft-deleted/research cards. We deliberately retain
+  // the legacy status rather than interpreting old deletion/status semantics as
+  // a new pursuit or disposition decision.
+  db.exec(`
+    INSERT OR IGNORE INTO landos_opportunity (
+      public_uid, entity, title, source, lifecycle, legacy_deal_card_id,
+      primary_property_card_id, legacy_status, created_at, updated_at
+    )
+    SELECT
+      'opp_' || lower(hex(randomblob(16))),
+      d.entity,
+      d.title,
+      CASE WHEN d.lead_type = 'manual' THEN 'manual' ELSE 'legacy_deal_card' END,
+      'lead',
+      d.id,
+      (SELECT dcp.card_id FROM landos_deal_card_property dcp
+       WHERE dcp.deal_card_id = d.id
+       ORDER BY CASE WHEN dcp.role = 'subject' THEN 0 ELSE 1 END, dcp.id
+       LIMIT 1),
+      d.status,
+      d.created_at,
+      d.updated_at
+    FROM landos_deal_card d
+    WHERE NOT EXISTS (
+      SELECT 1 FROM landos_opportunity o WHERE o.legacy_deal_card_id = d.id
+    );
+
+    INSERT OR IGNORE INTO landos_opportunity_legacy_alias
+      (opportunity_id, alias_type, legacy_id, created_at)
+    SELECT o.id, 'deal_card', o.legacy_deal_card_id, o.created_at
+    FROM landos_opportunity o
+    WHERE o.legacy_deal_card_id IS NOT NULL;
+
+    INSERT OR IGNORE INTO landos_opportunity_legacy_alias
+      (opportunity_id, alias_type, legacy_id, created_at)
+    SELECT o.id, 'property_card', dcp.card_id, dcp.created_at
+    FROM landos_opportunity o
+    JOIN landos_deal_card_property dcp ON dcp.deal_card_id = o.legacy_deal_card_id;
+
+    INSERT OR IGNORE INTO landos_opportunity_history (
+      opportunity_id, event_key, event_type, from_lifecycle, to_lifecycle,
+      decision, actor, note, occurred_at
+    )
+    SELECT o.id, 'legacy-backfill', 'backfilled', NULL, 'lead', NULL,
+           'phase1-migration',
+           'Legacy Deal Card preserved as an alias; no pursuit or disposition inferred.',
+           o.created_at
+    FROM landos_opportunity o
+    WHERE o.legacy_deal_card_id IS NOT NULL;
   `);
 }
 
@@ -1548,11 +1867,13 @@ export function isLeadType(v: unknown): v is LeadType {
  *  LandOS data never create the file. */
 export function getLandosDb(): Database.Database {
   if (landosDb) return landosDb;
-  fs.mkdirSync(STORE_DIR, { recursive: true });
-  const dbPath = path.join(STORE_DIR, 'landos.db');
+  const storage = getLandosStorageProfile();
+  fs.mkdirSync(storage.root, { recursive: true });
+  const dbPath = storage.databasePath;
   landosDb = new Database(dbPath);
   landosDb.pragma('journal_mode = WAL');
   landosDb.pragma('busy_timeout = 5000');
+  landosDb.pragma('foreign_keys = ON');
   createLandosSchema(landosDb);
   try {
     for (const suffix of ['', '-wal', '-shm']) {
@@ -1623,6 +1944,13 @@ export function createApproval(opts: {
   requestedBy: string;
   entity?: LandosEntity | null;
 }): number {
+  if (isProhibitedActionType(opts.actionType)) {
+    landosAudit(opts.requestedBy, 'prohibited_action_blocked', `${opts.actionType}: ${opts.title}`, {
+      entity: opts.entity ?? null,
+      blocked: true,
+    });
+    throw new Error(`prohibited action cannot be approved: ${opts.actionType}`);
+  }
   const db = getLandosDb();
   const result = db.prepare(
     `INSERT INTO landos_approval (entity, action_type, title, payload, requested_by)
@@ -1707,6 +2035,14 @@ export function gateAction(opts: {
   approvalId?: number;
 }): GateResult {
   const db = getLandosDb();
+
+  if (isProhibitedActionType(opts.actionType)) {
+    landosAudit(opts.requestedBy, 'prohibited_action_blocked', `${opts.actionType}: ${opts.title}`, {
+      entity: opts.entity ?? null,
+      blocked: true,
+    });
+    return { allowed: false, approvalId: 0, status: 'prohibited' };
+  }
 
   if (opts.approvalId !== undefined) {
     const row = getApproval(opts.approvalId);

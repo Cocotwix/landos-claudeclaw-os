@@ -122,21 +122,7 @@ client.on('message', async (msg: wwebjs.Message) => {
 });
 
 function startOutboxPoller(): void {
-  setInterval(async () => {
-    const pending = db.prepare(
-      `SELECT id, to_chat_id, body FROM wa_outbox WHERE sent_at IS NULL ORDER BY created_at`,
-    ).all() as Array<{ id: number; to_chat_id: string; body: string }>;
-
-    for (const item of pending) {
-      try {
-        await client.sendMessage(item.to_chat_id, item.body);
-        db.prepare(`UPDATE wa_outbox SET sent_at = ? WHERE id = ?`)
-          .run(Math.floor(Date.now() / 1000), item.id);
-      } catch (err) {
-        console.error('[wa-daemon] outbox send error:', err);
-      }
-    }
-  }, 3000);
+  console.log('[wa-daemon] outbound delivery disabled by Jarvis owner-only egress policy');
 }
 
 // ── HTTP API ────────────────────────────────────────────────────────

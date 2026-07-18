@@ -10,6 +10,7 @@ import { buildDashboardApp } from '../dashboard.js';
 import { logger } from '../logger.js';
 import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
 import { emptyLpPropertySummary } from './landportal-client.js';
+import { createOpportunity } from './opportunity.js';
 
 // The live DD routes now default to the parcel-identity CAPABILITY. These route
 // tests exercise the verification BRIDGE mapping, so delegate the capability to
@@ -42,11 +43,15 @@ describe('LandOS routes - erroneous duplicate visibility', () => {
     })).json()) as any;
     getLandosDb().prepare(`INSERT INTO landos_property_correction_link (erroneous_card_id, canonical_card_id, relationship, note) VALUES (?, ?, 'erroneous_duplicate', 'bad automated instruction')`)
       .run(erroneous.card.id, canonical.card.id);
+    const deal = (await (await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Canonical duplicate-visibility lead' })).json()) as any;
 
     const properties = (await (await get('/api/landos/property-cards')).json()) as any;
     expect(properties.cards.map((card: any) => card.id)).toEqual([canonical.card.id]);
     const board = (await (await get('/api/landos/board')).json()) as any;
-    expect(Object.values(board.columns).flat().map((card: any) => card.id)).toEqual([canonical.card.id]);
+    const boardCards = Object.values(board.columns).flat() as any[];
+    expect(boardCards).toHaveLength(1);
+    expect(boardCards[0].dealCardId).toBe(deal.dealCard.id);
+    expect(boardCards[0].address).not.toContain('Venore');
   });
 });
 
@@ -121,6 +126,36 @@ async function post(path: string, body?: unknown) {
   });
 }
 
+describe('LandOS routes - Phase 1 transcript reconciliation', () => {
+  it('supports pasted JSON and text-file multipart upload and exposes the latest durable reconciliation', async () => {
+    const opportunity = createOpportunity({ entity: 'TY_LAND_BIZ', title: 'Transcript route lead' });
+    const pasted = await post(`/api/landos/opportunities/${opportunity.id}/transcripts`, {
+      content: 'Seller inherited the parcel. Asking price is $90,000 and wants to sell within 45 days.',
+      sourceType: 'paste',
+    });
+    expect(pasted.status).toBe(201);
+    const pastedBody = (await pasted.json()) as any;
+    expect(pastedBody.transcript.sourceType).toBe('paste');
+    expect(pastedBody.reconciliation.version).toBe(1);
+    expect(pastedBody.reconciliation.safety).toMatchObject({ outboundAllowed: false, paidActionsAllowed: false, offerOrContractSendingAllowed: false });
+
+    const form = new FormData();
+    form.append('file', new File(['Seller says asking price is $85,000. Call me back tomorrow.'], '../unsafe/call-two.txt', { type: 'text/plain' }));
+    const uploaded = await app.request(`/api/landos/opportunities/${opportunity.id}/transcripts?token=${TOKEN}`, { method: 'POST', body: form });
+    expect(uploaded.status).toBe(201);
+    const uploadedBody = (await uploaded.json()) as any;
+    expect(uploadedBody.transcript).toMatchObject({ sourceType: 'upload', fileName: 'call-two.txt' });
+    expect(uploadedBody.reconciliation.version).toBe(2);
+    expect(uploadedBody.reconciliation.followUpTasks.some((task: any) => /call me back tomorrow/i.test(task.title))).toBe(true);
+
+    const transcripts = (await (await get(`/api/landos/opportunities/${opportunity.id}/transcripts`)).json()) as any;
+    expect(transcripts.transcripts).toHaveLength(2);
+    const latest = (await (await get(`/api/landos/opportunities/${opportunity.id}/reconciliation`)).json()) as any;
+    expect(latest.reconciliation.id).toBe(uploadedBody.reconciliation.id);
+    expect(latest.tasks.some((task: any) => task.status === 'open' && task.assignedRole === 'Acquisitions Agent')).toBe(true);
+  });
+});
+
 describe('LandOS routes - Lead Workspace', () => {
   it('composes the versioned workspace from existing canonical records', async () => {
     const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Lead workspace route' });
@@ -138,6 +173,80 @@ describe('LandOS routes - Lead Workspace', () => {
   it('rejects invalid and missing Lead Workspace ids', async () => {
     expect((await get('/api/landos/lead-workspace/not-a-number')).status).toBe(400);
     expect((await get('/api/landos/lead-workspace/999999')).status).toBe(404);
+  });
+});
+
+describe('LandOS routes - Phase 1 manual opportunity workflow', () => {
+  it('accepts one conversational dump, preserves it exactly, and does not require structured fields', async () => {
+    const rawInput = 'Seller: Conversational QA Seller\nPhone: 704-555-0119\nAbout 4 acres near Testville, NC. They inherited it and want a call next week.';
+    const created = await post('/api/landos/leads/manual', { entity: 'TY_LAND_BIZ', rawInput });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as any;
+    expect(body.dealCardId).toBeGreaterThan(0);
+    expect(body.opportunity.rawInput).toBe(rawInput);
+    expect(body.extraction).toMatchObject({ sellerName: 'Conversational QA Seller', phone: '704-555-0119', acreage: 4 });
+    expect(body.researchStatus).toBe('queued');
+
+    const thinRaw = 'Caller inherited land but did not know the parcel number or address yet.';
+    const thin = await post('/api/landos/leads/manual', { rawInput: thinRaw });
+    expect(thin.status).toBe(201);
+    const thinBody = (await thin.json()) as any;
+    expect(thinBody.opportunity.rawInput).toBe(thinRaw);
+    expect(thinBody.extraction.sellerName).toBeNull();
+  });
+
+  it('creates one durable lead immediately, starts research, and reconciles every count surface', async () => {
+    const created = await post('/api/landos/leads/manual', {
+      entity: 'TY_LAND_BIZ', sellerName: 'Synthetic Route Seller',
+      address: '101 QA Isolation Road, Testville, NC', county: 'Test', state: 'NC',
+      acreage: 7.5, sellerClues: 'Synthetic acceptance fixture only.', leadSource: 'operator_qa',
+    });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as any;
+    expect(body).toMatchObject({ researchStatus: 'queued' });
+    expect(body.dealCardId).toBeGreaterThan(0);
+    expect(body.opportunityId).toBeGreaterThan(0);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const workspace = (await (await get(`/api/landos/lead-workspace/${body.dealCardId}`)).json()) as any;
+    expect(workspace.opportunity.id).toBe(body.opportunityId);
+    expect(workspace.opportunity.lifecycleStatus).toBe('lead');
+    expect(['running', 'partial']).toContain(workspace.opportunity.researchStatus);
+    expect(workspace.lead.id).toBe(body.dealCardId);
+    expect(workspace.discoveryPackage.callPrep.ready).toBe(false);
+    expect(workspace.discoveryPackage.callPrep.status).toBe('incomplete');
+    expect(workspace.discoveryPackage.strategyMode).toBe('validation_hypotheses');
+    expect(workspace.discoveryPackage.strategies).toHaveLength(2);
+    expect(workspace.discoveryPackage.preliminaryValue.offerPreparationAllowed).toBe(false);
+
+    const rebuilt = await post(`/api/landos/opportunities/${body.opportunityId}/discovery-package/run`, {});
+    expect(rebuilt.status).toBe(200);
+    const rebuiltBody = (await rebuilt.json()) as any;
+    const packageRead = (await (await get(`/api/landos/opportunities/${body.opportunityId}/discovery-package`)).json()) as any;
+    expect(packageRead.discoveryPackage.contentHash).toBe(rebuiltBody.discoveryPackage.contentHash);
+    const markdown = await get(`/api/landos/opportunities/${body.opportunityId}/discovery-package/download?format=md`);
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get('content-type')).toContain('text/markdown');
+    expect(await markdown.text()).toContain(body.publicUid);
+
+    const metrics = (await (await get('/api/landos/opportunities/metrics')).json()) as any;
+    const jarvis = (await (await get('/api/landos/jarvis/opportunity-counts')).json()) as any;
+    const overview = (await (await get('/api/landos/overview')).json()) as any;
+    expect(metrics.counts.total).toBe(metrics.records.length);
+    expect(jarvis.counts).toEqual(metrics.counts);
+    expect(overview.opportunityMetrics.totalOpportunities).toBe(metrics.counts.total);
+  });
+
+  it('promotes the same opportunity and rejects prohibited disposition values', async () => {
+    const body = (await (await post('/api/landos/leads/manual', {
+      sellerName: 'Synthetic Promotion Seller', apn: 'QA-ONLY-001', state: 'NC',
+    })).json()) as any;
+    const before = (await (await get(`/api/landos/opportunities/${body.opportunityId}`)).json()) as any;
+    const pursued = await post(`/api/landos/opportunities/${body.opportunityId}/decision`, { decision: 'pursue' });
+    expect(pursued.status).toBe(200);
+    const after = (await pursued.json()) as any;
+    expect(after.opportunity).toMatchObject({ id: before.opportunity.id, publicUid: before.opportunity.publicUid, lifecycle: 'deal' });
+    expect((await post(`/api/landos/opportunities/${body.opportunityId}/decision`, { decision: 'disposition', disposition: 'paid_offer_sent' })).status).toBe(400);
   });
 });
 
@@ -258,30 +367,17 @@ describe('LandOS routes — entity filter', () => {
 });
 
 describe('LandOS routes — approval workflow', () => {
-  it('creates, lists, and approves a gated-action request', async () => {
-    const created = (await (await post('/api/landos/approvals', {
+  it('absolutely rejects paid-action approval requests in Phase 1', async () => {
+    const response = await post('/api/landos/approvals', {
       actionType: 'paid_credit',
       title: 'Use 1 LandPortal comp credit for test parcel',
       requestedBy: 'duke-due-diligence',
-    })).json()) as any;
-    expect(created.id).toBeTypeOf('number');
-    expect(created.status).toBe('pending');
+    });
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as any).error).toContain('prohibited');
 
     const pending = (await (await get('/api/landos/approvals?status=pending')).json()) as any;
-    expect(pending.approvals).toHaveLength(1);
-
-    const approved = (await (await post(`/api/landos/approvals/${created.id}/approve`, { decidedBy: 'tyler' })).json()) as any;
-    expect(approved.approval.status).toBe('approved');
-
-    // Decision is final: a second decision 404s.
-    const again = await post(`/api/landos/approvals/${created.id}/reject`, {});
-    expect(again.status).toBe(404);
-
-    // Audit trail captured request + decision.
-    const audit = (await (await get('/api/landos/audit')).json()) as any;
-    const actions = audit.audit.map((a: any) => a.action);
-    expect(actions).toContain('approval_requested');
-    expect(actions).toContain('approval_approved');
+    expect(pending.approvals).toHaveLength(0);
   });
 
   it('rejects approval creation without required fields', async () => {
@@ -789,7 +885,8 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
     // r2.missing carries env KEY NAMES only, never values
     expect(Array.isArray(b.knowledgeStore.r2.missing)).toBe(true);
     const ids = b.dataProviders.parcelProviders.map((p: any) => p.id).sort();
-    expect(ids).toEqual(['landportal', 'realie']);
+    expect(ids).toEqual(['realie']);
+    expect(ids).not.toContain('landportal');
     const realie = b.dataProviders.parcelProviders.find((p: any) => p.id === 'realie');
     expect(typeof realie.configured).toBe('boolean');
     // No secret VALUE leaks into the payload (key NAMES like
@@ -1109,10 +1206,11 @@ describe('LandOS routes — post-discovery DD layer', () => {
     const rb = (await rep.json()) as any;
     expect(rb.leadType).toBe('test');
     expect(rb.leadTypeLabel).toBe('TEST LEAD');
-    // list row exposes lead_type for the badge
+    // Operating lists must not present synthetic TEST LEAD records as real
+    // inventory; the direct report keeps its explicit label for isolated QA.
     const list = await get('/api/landos/deal-cards');
     const item = ((await list.json()) as any).dealCards.find((d: any) => d.id === dc.id);
-    expect(item.lead_type).toBe('test');
+    expect(item).toBeUndefined();
   });
 
   it('dd-providers status: free gov providers dormant by default', async () => {

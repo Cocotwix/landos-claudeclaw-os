@@ -6,8 +6,9 @@ const { Client, LocalAuth } = wwebjs;
 type Message = wwebjs.Message;
 
 import { STORE_DIR } from './config.js';
-import { getPendingWaMessages, markWaMessageSent, saveWaMessage } from './db.js';
+import { saveWaMessage } from './db.js';
 import { logger } from './logger.js';
+import { assertJarvisEgressAllowed } from './landos/jarvis-egress-policy.js';
 
 export type OnIncomingMessage = (contactName: string, isGroup: boolean, groupName?: string) => void;
 
@@ -111,6 +112,7 @@ export async function getWaChatMessages(chatId: string, limit = 10): Promise<WaM
 }
 
 export async function sendWhatsAppMessage(chatId: string, text: string): Promise<void> {
+  assertJarvisEgressAllowed({ channel: 'whatsapp', recipientId: chatId });
   if (!client) throw new Error('WhatsApp client not initialized');
   await client.sendMessage(chatId, text);
   saveWaMessage(chatId, 'You', text, Math.floor(Date.now() / 1000), true);
@@ -121,17 +123,5 @@ export function isWhatsAppReady(): boolean {
 }
 
 function startOutboxPoller(): void {
-  setInterval(async () => {
-    if (!client) return;
-    const pending = getPendingWaMessages();
-    for (const item of pending) {
-      try {
-        await client.sendMessage(item.to_chat_id, item.body);
-        markWaMessageSent(item.id);
-        logger.info({ to: item.to_chat_id, id: item.id }, 'Outbox message sent');
-      } catch (err) {
-        logger.error({ err, id: item.id }, 'Failed to send outbox message');
-      }
-    }
-  }, 3000);
+  logger.info('WhatsApp outbox delivery disabled by Jarvis owner-only egress policy');
 }

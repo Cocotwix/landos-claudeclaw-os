@@ -397,19 +397,14 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
     expect(r.match_notes).toMatch(/APN mismatch/i);
   });
 
-  it('B. full address routes to /v2/properties address search (no hard block, no point fallback)', async () => {
+  it('B. dashboard address verification never reaches the off-limits LandPortal API', async () => {
     install(url => {
       if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN', city: 'COTTAGEVILLE', state: 'SC', zip_code: '29435' }));
       return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN', city: 'COTTAGEVILLE', state: 'SC', zip_code: '29435' })]));
     });
     const outcome = await runDukePreflight('217 Clydeville Ln, Cottageville, SC 29435', ['landportal'], 10_000);
-    const searchCall = calls.find(c => c.includes('/v2/properties?'))!;
-    expect(searchCall).toContain('address=');
-    expect(searchCall).toContain('city=Cottageville');
-    expect(searchCall).toContain('state=SC');
-    expect(searchCall).toContain('zip=29435');
-    expect(calls.some(c => isPoint(c))).toBe(false);
-    expect(outcome.type).toBe('verified');
+    expect(calls.every(c => !c.includes('/v2/properties') && !c.includes('/wp-json/'))).toBe(true);
+    expect(outcome.type).not.toBe('verified');
   });
 
   it('C. encoded LP URL normalizes APN 08-2518 and uses v2 parcelnumb search', async () => {
@@ -669,19 +664,14 @@ describe('LandPortal API v2 adapter (LANDPORTAL_API_VERSION=v2)', () => {
   });
 
   // ── Duke dashboard path does not bypass the version selector ────────────────
-  it('runDukePreflight (Duke/dashboard path) routes APN+FIPS through the v2 selector', async () => {
+  it('runDukePreflight keeps APN+FIPS away from the off-limits LandPortal API', async () => {
     install(url => {
       if (isDetail(url)) return jsonRes(200, detailBody({ property_id: 555, apn: '08-2518', fips: '37061', street_address: '217 CLYDEVILLE LN' }));
       return jsonRes(200, searchBody([feature({ property_id: '555', apn: '08-2518', fips: '37061' })]));
     });
     const outcome = await runDukePreflight('Run DD on APN: 08-2518 fips: 37061', ['landportal', 'filesystem'], 10_000);
-    // The dashboard path hit the v2 endpoints (no bypass to v1 /search).
-    expect(calls.some(c => c.includes('/v2/properties?') && c.includes('parcelnumb=08-2518') && c.includes('fips=37061'))).toBe(true);
-    expect(calls.every(c => !c.includes('/wp-json/'))).toBe(true);
-    expect(outcome.type).toBe('verified');
-    // Verified preflight excludes the (v1) landportal MCP from the run.
-    const v = outcome as Extract<typeof outcome, { type: 'verified' }>;
-    expect(v.filteredMcpAllowlist).not.toContain('landportal');
+    expect(calls.every(c => !c.includes('/v2/properties') && !c.includes('/wp-json/'))).toBe(true);
+    expect(outcome.type).not.toBe('verified');
   });
 
   it('v2 APN/FIPS does not verify when the detail FIPS differs from the requested FIPS', async () => {

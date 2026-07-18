@@ -40,8 +40,8 @@ function agentModelPolicy(
 // freeform model by default.
 const DUKE: AgentRegistryEntry = {
   agentId: 'duke-due-diligence',
-  name: 'Duke',
-  role: 'Parcel verification and parcel due diligence',
+  name: 'Property Research Agent',
+  role: 'Parcel verification, public-record research, and due diligence',
   departmentId: 'research_due_diligence',
   lifecycle: 'operational',
   capability: {
@@ -77,7 +77,7 @@ const DUKE: AgentRegistryEntry = {
     canDeleteFiles: false,
     canCommitOrPush: false,
     canReadSecrets: false,
-    requiresApprovalFor: ['landportal_comp_report', 'comp_credit_use'],
+    requiresApprovalFor: [],
   },
   modelPolicy: agentModelPolicy('duke-due-diligence', 'deterministic_code', {
     escalation: { allowed: true, toRoute: 'reasoning_oriented', reason: 'Summary/anomaly explanation only.', requiresTylerApproval: false },
@@ -154,9 +154,9 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     id: 'acquisition',
     label: 'Acquisition',
     lifecycle: 'shell',
-    description: 'Seller discovery prep and communication (Ace). Seller-facing drafts only; Tyler sends.',
+    description: 'Seller discovery preparation and internal communication drafts. The owner sends anything external.',
     capability: { departmentId: 'acquisition', operational: false, capabilities: ['seller_discovery_prep', 'seller_communication_prep'] },
-    agents: [shellAgent('acquisition-copilot', 'Ace', 'Seller discovery prep and communication', 'acquisition', 'reasoning_oriented', 'operational')],
+    agents: [shellAgent('acquisition-copilot', 'Acquisitions Agent', 'Seller discovery preparation and reconciliation', 'acquisition', 'reasoning_oriented', 'operational')],
     buildoutInterview: { departmentId: 'acquisition', topics: COMMON_BUILDOUT_TOPICS },
     modelPolicy: { departmentId: 'acquisition', defaultRoute: 'reasoning_oriented', escalationRoute: 'approval_required' },
   },
@@ -165,7 +165,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     label: 'Research and Due Diligence',
     lifecycle: 'operational',
     description:
-      'Operational. Duke performs parcel verification and parcel due diligence with deterministic/exact-source-first behavior. ' +
+      'Operational. The Property Research Agent performs parcel verification and parcel due diligence with deterministic/exact-source-first behavior. ' +
       'Local area vacant-land market research is a separate lane and returns an honest status until an approved browsing/search adapter is connected.',
     capability: {
       departmentId: 'research_due_diligence',
@@ -173,8 +173,8 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
       capabilities: [
         'parcel_verification',
         'parcel_due_diligence',
-        'duke_input_parsing',
-        'landportal_exact_lookup',
+        'property_input_parsing',
+        'landportal_authenticated_browser_lookup',
         'no_comp_credit_rule',
         'no_coordinate_verification_rule',
         'unverified_parcel_blocking',
@@ -211,7 +211,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Campaign and lead-source performance. No live ad changes without approval.',
     capability: { departmentId: 'marketing', operational: false, capabilities: ['campaign_records', 'lead_source_performance'] },
-    agents: [shellAgent('mia-marketing', 'Mia', 'Marketing and lead gen', 'marketing', 'task_oriented')],
+    agents: [shellAgent('mia-marketing', 'Marketing Agent', 'Marketing and lead generation', 'marketing', 'task_oriented')],
     buildoutInterview: { departmentId: 'marketing', topics: COMMON_BUILDOUT_TOPICS },
     modelPolicy: { departmentId: 'marketing', defaultRoute: 'task_oriented', escalationRoute: 'reasoning_oriented', defaultModelId: 'gemma-4-e4b' },
   },
@@ -221,7 +221,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Buyer research, exit prep, listing strategy.',
     capability: { departmentId: 'dispositions', operational: false, capabilities: ['buyer_research', 'exit_prep', 'listing_strategy'] },
-    agents: [shellAgent('drew-dispositions', 'Drew', 'Dispositions', 'dispositions', 'reasoning_oriented')],
+    agents: [shellAgent('drew-dispositions', 'Dispositions Agent', 'Dispositions', 'dispositions', 'reasoning_oriented')],
     buildoutInterview: { departmentId: 'dispositions', topics: COMMON_BUILDOUT_TOPICS },
     modelPolicy: { departmentId: 'dispositions', defaultRoute: 'reasoning_oriented' },
   },
@@ -241,7 +241,7 @@ export const DEPARTMENT_REGISTRY: readonly DepartmentRegistryEntry[] = [
     lifecycle: 'shell',
     description: 'Deal economics, cost tracking, bookkeeping. Prefers deterministic calculation and conservative models.',
     capability: { departmentId: 'finance_bookkeeping', operational: false, capabilities: ['cost_tracking', 'deal_economics', 'bookkeeping_hooks'] },
-    agents: [shellAgent('finn-finance-risk', 'Finn', 'Finance and bookkeeping', 'finance_bookkeeping', 'deterministic_code')],
+    agents: [shellAgent('finn-finance-risk', 'Finance Agent', 'Finance and bookkeeping', 'finance_bookkeeping', 'deterministic_code')],
     buildoutInterview: { departmentId: 'finance_bookkeeping', topics: COMMON_BUILDOUT_TOPICS },
     modelPolicy: { departmentId: 'finance_bookkeeping', defaultRoute: 'deterministic_code', escalationRoute: 'reasoning_oriented' },
   },

@@ -1,0 +1,13 @@
+{
+  "failurePattern": "frontend-missing-value",
+  "sharedRootCause": "Backend domain records and frontend read models evolved with similar but non-identical field names, while adapters spread raw records without an explicit versioned projection contract.",
+  "whyAutomatedTestsMissedIt": "Prior source-scan and service tests proved each side independently but did not assert the serialized Lead Workspace lifecycle field after an owner mutation.",
+  "whyBrowserQaMissedIt": "Earlier journeys checked that components existed; they did not mutate a lifecycle state and then assert its semantic visual projection across refresh.",
+  "missingInvariant": "Every domain lifecycle mutation must be projected through an explicit route field consumed by the UI, and route tests must assert both the stored value and serialized field.",
+  "missingAcceptanceJourney": "A real-browser journey that creates a lead, promotes the same opportunity, asserts the Deal highlight, and repeats the assertion after refresh was missing.",
+  "sharedRepair": "The Lead Workspace adapter now explicitly maps opportunity.lifecycle to lifecycleStatus instead of relying on raw-record field coincidence.",
+  "newRegressionTest": "The Phase 1 route integration test asserts opportunity.lifecycleStatus on the serialized Lead Workspace and same-ID/publicUid promotion behavior.",
+  "newBrowserAssertion": "phase1-manual-lead-promotion asserts deal-card-highlight immediately after pursuit and after hard refresh.",
+  "affectedCapabilities": ["phase1-actionable-lead", "lead-workspace"],
+  "reopenAcceptedCapability": false
+}

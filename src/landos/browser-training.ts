@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { generateContent, parseJsonResponse } from '../gemini.js';
 import { landosAudit } from './db.js';
+import { landosArtifactPath } from './storage-profile.js';
 import {
   addTrainingUsage,
   appendTrainingEvent,
@@ -119,7 +120,7 @@ export function trainingSystemInstruction(opts: { website?: string; title?: stri
     '- NEVER buy reports, comps, or sold data; never skip-trace, checkout, subscribe, or touch',
     '  billing, payment, or account-settings pages. If Tyler heads toward any paid or checkout',
     '  action, stop and say clearly that it looks like a paid action, and that you are marking',
-    '  this Approval Required and not doing it.',
+    '  this Prohibited and not doing it. Paid actions cannot be approved.',
     '- Never read or repeat passwords, API keys, tokens, cookies, or .env values, even if they',
     '  appear on screen. Treat them as invisible.',
     '',
@@ -251,7 +252,7 @@ export function recordScreenshot(
   const raw = (input.dataBase64 || '').replace(/^data:image\/\w+;base64,/, '');
   const buf = Buffer.from(raw, 'base64');
   if (!buf.length || buf.length > MAX_SHOT_BYTES) throw new Error('invalid or oversized screenshot');
-  const dir = path.join(process.cwd(), 'store', 'training-shots', String(sessionId));
+  const dir = landosArtifactPath('training-shots', String(sessionId));
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `shot_${Date.now()}.jpg`);
   fs.writeFileSync(file, buf, { mode: 0o600 });
@@ -499,7 +500,7 @@ export function synthesizeFromEventsDeterministic(session: TrainingSession, even
     exceptions: [],
     commonMistakes: [],
     neverDo: ['Never purchase reports, comps, or sold data.', 'Never checkout, subscribe, or enter payment.'],
-    paidActionBlockers: blocks.length ? blocks : ['Stop and mark Approval Required on any billing/checkout/paid action.'],
+    paidActionBlockers: blocks.length ? blocks : ['Stop and mark Prohibited on any billing/checkout/paid action. It cannot be approved.'],
     failureHandling: ['If a step fails, capture a screenshot and stop for review.'],
     qaChecklist: ['Confirm each extracted field is present and plausible.'],
     expectedOutputs: [],

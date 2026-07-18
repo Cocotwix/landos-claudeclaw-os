@@ -149,7 +149,9 @@ export function buildRedfinLandUrl(step: GeoStep, opts: { sold: boolean; band: A
   const base = step.level === 'zip'
     ? `https://www.redfin.com/zipcode/${step.slug}`
     : step.level === 'city'
-      ? `https://www.redfin.com/city/${encodeURIComponent((step.slug.split(',')[1] || '').trim().toUpperCase())}/${encodeURIComponent(slugCity((step.slug.split(',')[0] || '').trim()))}`
+      // Redfin city routes are city-id/state/city-name.  The readable slug form
+      // works as a search route and avoids the previous reversed TX/Winters URL.
+      ? `https://www.redfin.com/city/${encodeURIComponent(slugCity((step.slug.split(',')[0] || '').trim()))}/${encodeURIComponent((step.slug.split(',')[1] || '').trim().toUpperCase())}`
       : step.level === 'county'
         ? `https://www.redfin.com/county/${encodeURIComponent(step.slug.replace(/\s+/g, '-'))}`
         : `https://www.redfin.com/state/${encodeURIComponent(step.slug.toUpperCase())}`;

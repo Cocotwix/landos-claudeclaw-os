@@ -55,7 +55,7 @@ describe('Browser Training endpoints (operator QA)', () => {
     });
     const paidBody = (await paid.json()) as any;
     expect(paidBody.approvalRequired).toBe(true);
-    expect(paidBody.reason).toMatch(/Approval Required/);
+    expect(paidBody.reason).toMatch(/prohibited and cannot be approved/i);
 
     // 4. end + synthesize (no LLM key in tests -> deterministic fallback still yields a draft)
     const ended = await post(`/api/landos/training/sessions/${session.id}/end`, {});

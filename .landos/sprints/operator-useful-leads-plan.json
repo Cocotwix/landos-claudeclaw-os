@@ -1,0 +1,72 @@
+{
+  "sprintId": "sprint-2026-07-17-operator-useful-leads",
+  "title": "Operator-useful Lead Cards and resilient property research",
+  "originalPrompt": "Fix the lead cards ASAP. The active board must not duplicate one opportunity across parcel verification, seller discovery, and researching rows. Add an operator-controlled delete that preserves recoverability. A new lead may contain any partial combination of seller-provided address, APN/parcel ID, county, city, state, contact details, and notes. It must be a full investigative intake, not a task delegator: normalize APN formatting without changing digits, resolve incomplete locations through reasonable online, county, GIS, assessor, recorder, and browser search paths, use authenticated LandPortal browser access as a high-value research workspace but never as a canonical authority or stopping point, then continue to county/deed, Zillow, and Redfin research. LandPortal API/MCP and paid actions remain forbidden. The Lead Card must visibly show actual parcel/satellite/street/comps-map evidence, selected sold comps, county facts, deed artifact plus owner/easement/restriction review, market pulse, land characteristics, honest score/strategy/valuation gates, and one obvious discovery-call report. Unsupported data must be an explicit gap, never a fabricated result. Max and later training are out of scope until this manual-lead-to-usable-discovery-package loop works. Before completion, the builder must visually operate the live localhost app, open a real operating-style Lead Card and isolated QA Lead Card, inspect the evidence and report, exercise trash/delete, refresh/restart, and verify the usable frontend result rather than relying on backend tests or simulations.",
+  "workstreams": [
+    {
+      "id": "ws1-single-card-operator-board",
+      "name": "One-card-per-opportunity board and recoverable operator deletion",
+      "operatorOutcome": "The Acquisitions board is a comprehensible Kanban board where each opportunity appears once, card-level blockers do not create duplicate lanes, Lead-to-Deal is a state change, and the owner can trash and restore an unwanted card.",
+      "inScope": ["Acquisitions pipeline lanes", "deduplication", "lead/deal lifecycle rendering", "trash and restore", "operator card actions"],
+      "backendServices": ["opportunity identity", "pipeline projection", "trash lifecycle", "duplicate candidate detection"],
+      "frontendScreens": ["Acquisitions Pipeline", "Deal Library", "Lead Workspace"],
+      "requiredDataState": "Existing operating records are preserved. Removal from the active board moves a record to recoverable trash and does not delete evidence or documents without a separate confirmed purge.",
+      "browserJourney": {"steps": ["Open the operating Acquisitions board", "Confirm a known opportunity appears in exactly one active lane", "Create an isolated QA lead and confirm it appears once", "Move it through a lifecycle transition without duplication", "Trash it from the card", "Confirm it leaves active lanes", "Restore it from Trash", "Refresh and restart and confirm persistence"]},
+      "testRequirements": ["canonical duplicate-key behavior", "one-active-lane invariant", "lead-to-deal continuity", "trash/restore persistence", "active-board browser contract"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["one opportunity renders in multiple active lanes", "parcel verification creates a separate board card", "a card is permanently lost by ordinary delete", "trash/restore fails after restart", "operator cannot identify the next business stage"],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "independent_browser_qa", "refresh_persistence", "restart_persistence"],
+      "dependsOn": [],
+      "requirements": [
+        {"id": "R1-01", "text": "Each opportunity has exactly one active Kanban card; parcel verification, research state, and discovery gaps are visible card-level status, not duplicate board placement."},
+        {"id": "R1-02", "text": "The board uses owner-comprehensible operating stages and a Lead becoming a Deal remains the same canonical opportunity."},
+        {"id": "R1-03", "text": "The owner can move a lead to recoverable Trash and restore it; ordinary deletion does not destroy related operating evidence."},
+        {"id": "R1-04", "text": "Address/APN duplicate candidates are surfaced for review while distinct parcels are never silently merged."}
+      ]
+    },
+    {
+      "id": "ws2-investigative-intake-mission",
+      "name": "Investigative lead intake and multi-path parcel resolution",
+      "operatorOutcome": "A partial free-form lead dump launches an observable research mission that intelligently resolves parcel identity through formatted APN variants and multiple browser/public search paths rather than stopping after one provider fails.",
+      "inScope": ["conversational lead intake", "APN normalization", "location inference", "multi-path parcel resolution", "durable research orchestration", "authenticated LandPortal browser handoff", "county/GIS/assessor/recorder and web fallback planning"],
+      "backendServices": ["conversational intake", "opportunity research mission", "parcel resolution", "browser agent", "research activity and provenance"],
+      "frontendScreens": ["Acquisitions New Lead", "Lead Workspace research timeline and next action"],
+      "requiredDataState": "Raw seller input remains immutable. Original APN strings and every safe formatting candidate remain attributable. Incomplete or contradictory identity never updates canonical parcel facts without corroboration.",
+      "browserJourney": {"steps": ["Open New Lead", "Paste an address/APN/county partial data dump", "Submit once", "Confirm the original is visible", "Confirm candidate identity and research attempt states are visible", "Confirm LandPortal is one attempt rather than a terminal gate", "Confirm a no-match produces explicit next research paths rather than a false completion", "Refresh and restart and confirm the mission state persists"]},
+      "testRequirements": ["APN separator/decimal normalization without digit mutation", "partial-address jurisdiction inference", "multi-path fallback sequencing", "identity corroboration gate", "durable retry/restart recovery", "LandPortal API/MCP prohibition"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["raw intake is lost", "provider no-match ends research", "APN digits are changed", "wrong parcel becomes canonical", "research is only an in-memory task", "LandPortal API/MCP is invoked", "a provider claim is shown without visible attempt/provenance"],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "independent_browser_qa", "refresh_persistence", "restart_persistence"],
+      "dependsOn": ["ws1-single-card-operator-board"],
+      "requirements": [
+        {"id": "R2-01", "text": "A non-empty free-form lead dump launches an observable, durable investigative mission, not only a task record or generic queue entry."},
+        {"id": "R2-02", "text": "Parcel search preserves seller input and tests safe county-aware APN/address formatting variants before declaring no match."},
+        {"id": "R2-03", "text": "LandPortal browser research is a preferred enrichment path when useful but a no-match or UI failure triggers other permitted search paths rather than ending research."},
+        {"id": "R2-04", "text": "The Lead Card visibly reports attempted paths, evidence, conflicts, confidence, unresolved identity, and safe next action."},
+        {"id": "R2-05", "text": "No LandPortal API, MCP wrapper, paid action, seller contact, offer, or contract action is used."}
+      ]
+    },
+    {
+      "id": "ws3-visible-discovery-package",
+      "name": "Visible evidence-backed discovery-call package",
+      "operatorOutcome": "When research succeeds, the owner can open one obvious discovery-call package on the Lead Card and visually inspect parcel maps, comps, deed, property facts, market pulse, and honest strategy readiness. When research is incomplete, the package plainly shows what was attempted and what is still needed.",
+      "inScope": ["Lead Workspace report hierarchy", "visual evidence previews", "LandPortal browser captures", "comp cards and map evidence", "county/deed documents and preliminary review", "market pulse", "strategy and valuation truth gates", "PDF parity"],
+      "backendServices": ["discovery package", "property inspection", "visual/document evidence", "comp registry", "deed review", "market pulse", "strategy evaluation"],
+      "frontendScreens": ["Lead Workspace", "Discovery Call Package", "PDF download"],
+      "requiredDataState": "Existing evidence is preserved and must never be misrepresented as parcel-associated. Each rendered fact, visual, comp, document, and conclusion has visible provenance and confidence.",
+      "browserJourney": {"steps": ["Open a resolved isolated QA lead and the operating-style 200 Sid Edens card", "Open the discovery package", "Visually inspect embedded satellite/street/parcel/comps-map evidence", "Inspect selected sold comp cards and disclosures", "Open the deed artifact and preliminary review", "Inspect market pulse and strategy readiness", "Confirm incomplete research does not show unsupported value or strategy conclusions", "Download or open report output", "Refresh and restart and repeat the visual check"]},
+      "testRequirements": ["visual evidence projection", "deed artifact/review projection", "sold-comp selection and source disclosure", "gated valuation/strategy consistency", "report/PDF parity", "operator-visible no-fabrication assertions"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["evidence is only an invisible backend link", "deed is claimed reviewed without an artifact or explicit unavailable state", "active/pending comps drive valuation", "pricing gates contradict displayed ranges", "strategies are generic or blocked without actionable missing evidence", "report is hard to find", "QA passes without opening the live report"],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "independent_browser_qa", "refresh_persistence", "restart_persistence", "final_regression"],
+      "dependsOn": ["ws2-investigative-intake-mission"],
+      "requirements": [
+        {"id": "R3-01", "text": "The Lead Card exposes one obvious pre-discovery report entry point and visibly renders current parcel-associated evidence instead of opaque links or count-only claims."},
+        {"id": "R3-02", "text": "The report shows actual research artifacts where available: parcel/satellite/street/terrain/comps-map visuals, selected sold comp cards, county facts, and a deed document or an explicit retrieval gap."},
+        {"id": "R3-03", "text": "Deed review visibly identifies record owners and preliminary easement/restriction findings with attributable document provenance; it does not substitute for title/legal advice."},
+        {"id": "R3-04", "text": "Land characteristics, Market Pulse, valuation, offer range, Land Score, and exit strategies are displayed only when their evidence thresholds are met; otherwise the card states the exact gaps and safe next research action."},
+        {"id": "R3-05", "text": "Final browser verification is performed against the managed operating localhost app, including opening a Lead Card and its report, not only backend output or isolated simulation."}
+      ]
+    }
+  ]
+}

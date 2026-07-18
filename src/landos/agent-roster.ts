@@ -57,7 +57,7 @@ export const AGENT_ROSTER: readonly AgentDef[] = [
     status: 'scaffold',
   },
   {
-    key: 'dd_bot', name: 'Due Diligence Specialist', group: 'acquisitions',
+    key: 'dd_bot', name: 'Property Research Agent', group: 'acquisitions',
     role: 'Data gatherer. Parcel verification, DD facts, Land Score, radius/locality comps, five/six-section Discovery report (Markdown + PDF), pre-call 40-60% offer math. Mathematical, not deep underwriting.',
     defaultTier: 'tier2', attachment: 'property',
     knowledgePath: 'agents/dd_bot/knowledge', memoryPath: 'agents/dd_bot/memory',

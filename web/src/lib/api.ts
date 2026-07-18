@@ -104,6 +104,17 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
   return res.json();
 }
 
+/** POST browser-native form data while preserving the local dashboard session.
+ * The browser supplies the multipart boundary; callers must not set content-type. */
+export async function apiPostForm<T = unknown>(path: string, body: FormData): Promise<T> {
+  const res = await fetch(withToken(path), { method: 'POST', body });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, errBody, `POST ${path} failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function apiPatch<T = unknown>(path: string, body: unknown): Promise<T> {
   const res = await fetch(withToken(path), {
     method: 'PATCH',

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   ensureBrowserSession, browserSessionStatus, browserSessionHealth, disconnectBrowserSession,
-  makeLiveBrowserDriver, readSessionConfig, _resetBrowserSession,
+  makeLiveBrowserDriver, readSessionConfig, _resetBrowserSession, withWorkingPage,
   startBrowserSession, openLandPortalInSession, resolveChromePath,
   type PuppeteerLike, type BrowserLike, type PageLike, type BrowserSessionConfig, type SpawnLike,
 } from './browser-session.js';
@@ -87,6 +87,35 @@ describe('persistent browser session', () => {
     expect(pup._counts.connect).toBe(1); // connected once, reused
   });
 
+  it('serializes concurrent missions through the one persistent working tab', async () => {
+    const pup = fakePuppeteer(LP_FIELDS);
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const releaseFirstPromise = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let active = 0;
+    let maxActive = 0;
+
+    const first = withWorkingPage(async () => {
+      active += 1; maxActive = Math.max(maxActive, active); firstStarted();
+      await releaseFirstPromise;
+      active -= 1;
+      return 'first';
+    }, { config: LIVE, puppeteer: pup });
+    await firstStartedPromise;
+    const second = withWorkingPage(async () => {
+      active += 1; maxActive = Math.max(maxActive, active); active -= 1;
+      return 'second';
+    }, { config: LIVE, puppeteer: pup });
+
+    expect(active).toBe(1);
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ ok: true, value: 'first' });
+    await expect(second).resolves.toMatchObject({ ok: true, value: 'second' });
+    expect(maxActive).toBe(1);
+    expect(pup._counts.newPage).toBe(1);
+  });
+
   it('reports UNREACHABLE when no Chrome answers (parked, not a crash)', async () => {
     const pup: PuppeteerLike = { async connect() { throw new Error('ECONNREFUSED'); } };
     const status = await ensureBrowserSession({ config: LIVE, puppeteer: pup });
@@ -142,7 +171,7 @@ describe('live BrowserDriver (read-only)', () => {
     await driver.open('https://landportal.com', { timeoutMs: 1000 });
     await driver.readFields({ timeoutMs: 1000 });
     expect(pup._counts.connect).toBe(1);
-  });
+  }, 10_000);
 
   it('auth detection: a login-like page flips status to auth_needed (no fabrication)', async () => {
     const pup = fakePuppeteer({ url: 'https://www.landportal.com/login', fields: {}, loginLike: true });

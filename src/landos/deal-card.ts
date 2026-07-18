@@ -39,6 +39,7 @@ import {
   isLeadType,
   type LeadType,
 } from './db.js';
+import { getLandosStorageProfile } from './storage-profile.js';
 import {
   getPropertyCardRow,
   upsertCardFromDukeRun,
@@ -185,6 +186,9 @@ export function createDealCard(input: {
   const status: DealCardStatus =
     input.status && (DEAL_CARD_STATUSES as readonly string[]).includes(input.status) ? input.status : 'new';
   const leadType: LeadType = isLeadType(input.leadType) ? input.leadType : 'actual';
+  if (getLandosStorageProfile().syntheticOnly && leadType !== 'test') {
+    throw new Error('Isolated QA storage accepts synthetic TEST LEAD records only');
+  }
   const id = db.prepare(
     `INSERT INTO landos_deal_card (entity, title, status, seller_notes, asking_price, combined_strategy, package_notes, lead_type)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -241,6 +245,10 @@ export function listDealCards(opts: { entity?: string; status?: DealCardStatus; 
   // the Trash (soft-deleted) cards, most-recently-deleted first.
   const where: string[] = [opts.trashed ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
   const args: unknown[] = [];
+  // Synthetic TEST LEAD records belong to the isolated QA profile. If legacy
+  // fixtures remain in the operating database, preserve them for migration
+  // safety but never present them as operating inventory (including Trash).
+  if (!getLandosStorageProfile().syntheticOnly) where.push("lead_type <> 'test'");
   if (opts.entity) { where.push('entity = ?'); args.push(opts.entity); }
   if (opts.status) { where.push('status = ?'); args.push(opts.status); }
   const clause = `WHERE ${where.join(' AND ')} `;

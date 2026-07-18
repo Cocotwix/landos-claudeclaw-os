@@ -129,6 +129,16 @@ export function classifyError(err: unknown, contextTokens?: number): AgentError 
   const raw = err instanceof Error ? err : new Error(String(err));
   const text = raw.message;
 
+  if (/no conversation found with session id/i.test(text)) {
+    return new AgentError('unknown', {
+      shouldRetry: true,
+      shouldNewChat: true,
+      shouldSwitchModel: false,
+      retryAfterMs: 0,
+      userMessage: 'The prior Max session expired; starting a fresh session.',
+    }, raw);
+  }
+
   // Context exhaustion: process exits with code 1 when context is full
   if (text.includes('exited with code 1') && contextTokens && contextTokens > 0) {
     return new AgentError('context_exhausted', {

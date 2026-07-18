@@ -27,6 +27,7 @@ import { Department } from '@/pages/Department';
 import { Acquisitions } from '@/pages/Acquisitions';
 import { BrowserConnect } from '@/pages/BrowserConnect';
 import { DEFAULT_ROUTE } from '@/lib/routes';
+import { MaxDock } from '@/components/MaxDock';
 
 export function App() {
   const open = sidebarOpen.value;
@@ -94,6 +95,7 @@ export function App() {
       </main>
       <CommandPalette />
       <ToastStack />
+      <MaxDock />
     </div>
   );
 }

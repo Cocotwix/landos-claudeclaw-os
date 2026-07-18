@@ -21,46 +21,20 @@ import type { DealCardReportView } from './deal-card-report.js';
 import type { ExecutiveSummary } from './deal-card-executive-summary.js';
 import { computeOfferLanes, GLOBAL_MIN_NET_PROFIT_USD, type OfferLane } from './offer-engine.js';
 import { buildComparableIntelligence, type ComparableIntelligence } from './comparable-intelligence.js';
-import { buildMarketIntelligence, type MarketIntelligence } from './market-intelligence.js';
+import { buildMarketIntelligence, type MarketIntelligence, type MarketResearchInput } from './market-intelligence.js';
 import type { MarketMatrixReportSection } from './market-matrix-read.js';
 import type { ConfirmedParcel } from './parcel-identity.js';
 
 const money = (n: number | null | undefined): string => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
 
-// Unified $/acre price band. Prefers SOLD comps (real transactions); when a
-// market has no recent sold land, falls back to ACTIVE-listing asking prices as
-// a clearly-weaker signal (land typically sells at or below asking) so a
-// comp-sparse rural lead still gets usable price context + a rough offer.
-export interface PriceBand { basis: 'sold' | 'asking'; low: number | null; mid: number | null; high: number | null; count: number; }
+// Unified $/acre price band. Phase 1 permits closed sales only to determine
+// preliminary value. Asking/pending/active rows remain market context.
+export interface PriceBand { basis: 'sold'; low: number | null; mid: number | null; high: number | null; count: number; }
 
-function askingPpaBand(report: DealCardReportView, comps?: ComparableIntelligence): PriceBand | null {
-  if (comps?.estimatedPricePerAcre.mid != null) {
-    const ppas = comps.selectedComparables
-      .filter((c) => c.status === 'active' || c.status === 'listed' || c.status === 'pending')
-      .map((c) => c.pricePerAcre)
-      .filter((n): n is number => typeof n === 'number' && n > 0)
-      .sort((a, b) => a - b);
-    if (ppas.length > 0) {
-      return {
-        basis: 'asking',
-        low: comps.estimatedPricePerAcre.low ?? ppas[0],
-        mid: comps.estimatedPricePerAcre.mid,
-        high: comps.estimatedPricePerAcre.high ?? ppas[ppas.length - 1],
-        count: ppas.length,
-      };
-    }
-  }
-  const rows = [...(report.marketComps?.active ?? []), ...(report.marketComps?.supplementalSold ?? [])];
-  const ppas = rows.map((c) => c.pricePerAcre).filter((n): n is number => typeof n === 'number' && n > 0).sort((a, b) => a - b);
-  if (ppas.length === 0) return null;
-  const mid = ppas[Math.floor(ppas.length / 2)];
-  return { basis: 'asking', low: ppas[0], mid, high: ppas[ppas.length - 1], count: ppas.length };
-}
-
-function priceBand(report: DealCardReportView, es: ExecutiveSummary, comps?: ComparableIntelligence): PriceBand | null {
+function priceBand(_report: DealCardReportView, es: ExecutiveSummary, _comps?: ComparableIntelligence): PriceBand | null {
   const m = es.marketPulse.pricePerAcre;
   if (m.median != null) return { basis: 'sold', low: m.p25 ?? m.low, mid: m.median, high: m.p75 ?? m.high, count: es.marketPulse.soldCount };
-  return askingPpaBand(report, comps);
+  return null;
 }
 
 // ── Section 1: Smart Input Interpretation ────────────────────────────────────
@@ -371,7 +345,6 @@ export function buildRoughOfferRange(report: DealCardReportView, es: ExecutiveSu
   const r = es.preliminaryAcquisitionRange;
   const band = priceBand(report, es, comps);
   const ppa = { low: band?.low ?? null, mid: band?.mid ?? null, high: band?.high ?? null };
-  const asking = band?.basis === 'asking';
   const basis: RoughOfferRange['basis'] = verified ? 'parcel' : (ppa.mid != null ? 'area' : 'insufficient');
   const whatCouldChange = [
     ...r.increaseValueIf.map((x) => `↑ ${x}`),
@@ -393,9 +366,10 @@ export function buildRoughOfferRange(report: DealCardReportView, es: ExecutiveSu
     };
   }
 
-  // Per-acre only: a $/acre band exists but acreage is unknown (or no verified
-  // sold-based total). Works off sold OR asking $/acre (asking labeled weaker).
+  // Per-acre only: a sold $/acre band exists but acreage is unknown (or no
+  // verified sold-based total). Asking rows never backfill a sold band.
   if (ppa.mid != null) {
+    const asking = false;
     const priceWord = asking ? `asks around ${money(ppa.mid)}/acre (ACTIVE listings — asking, not sold; land usually sells at/below asking)` : `trades around ${money(ppa.mid)}/acre`;
     return {
       basis: 'area', available: true, acres: r.acres,
@@ -454,11 +428,12 @@ export function buildDiscoveryCallReport(
   es: ExecutiveSummary,
   intake: DiscoveryIntake,
   parcelConfirmed?: boolean,
+  marketResearch?: MarketResearchInput,
 ): DiscoveryCallReport {
   const verified = parcelConfirmed ?? report.parcelVerified;
   const smartInput = buildSmartInput(intake, report, verified);
   const comparableIntelligence = buildComparableIntelligence(report);
-  const marketIntelligence = buildMarketIntelligence(report, comparableIntelligence);
+  const marketIntelligence = buildMarketIntelligence(report, comparableIntelligence, marketResearch);
   const strategyEvaluation = buildStrategyEvaluation(report, es, comparableIntelligence);
   const roughOfferRange = buildRoughOfferRange(report, es, comparableIntelligence, verified);
   const contextLabel = verified ? 'Parcel Verified' : 'Local Area Context, Not Parcel Verified';

@@ -9,6 +9,7 @@ describe('redfin URL + path helpers', () => {
   });
   it('builds the Lots/Land filter URL', () => {
     expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres')).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land');
+    expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres', { sold: true })).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land,include=sold');
   });
 });
 
@@ -60,6 +61,15 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
     expect(r.status).toBe('retrieved');
     expect(r.comps).toHaveLength(1);
     expect(r.routeTried).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land');
+  });
+
+  it('uses the public sold-land filter and marks otherwise-ambiguous rows sold', async () => {
+    const r = await fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
+      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(HREFS, listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+    });
+    expect(r.filtersUsed).toContain('include=sold');
+    expect(r.routeTried).toContain('include=sold');
+    expect(r.comps[0]?.status).toBe('sold');
   });
 
   it('reports none when the search dropdown surfaces no city page', async () => {

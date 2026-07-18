@@ -1,0 +1,1138 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-17-phase-1-correctness-repair",
+  "title": "Phase 1 correctness repair: verified research before discovery",
+  "createdAt": "2026-07-17T15:10:54.674Z",
+  "originalPrompt": "Repair the unusable Phase 1 Lead Workspace shown for 272 McAlister Road, Kingstree SC. Research must occur before transcript upload and must never mix or silently override the operator's city, county, or state. The current run incorrectly researched 272 McAlister Road in Lincolnton, NC, persisted wrong-parcel evidence, left the opportunity research status not_started, and displayed an empty call-package shell with unsupported generic strategy rankings. Repair the complete manual-lead-to-discovery research path, quarantine mismatched evidence without deleting important data, make research durable and observable, ensure the Lead Card consumes only parcel-associated evidence, require sold/date/distance/type-qualified comps for valuation, and verify useful populated output rather than headings. Also stop the blank Windows shell window that flashes on navigation. Evolve the runtime toward Hermes-style durable role agents: shared canonical memory, bounded tool use, observe-plan-act-verify behavior, outcome records, safe reusable learning, Jarvis coordination and double-checking, while preserving owner-only outbound, no paid actions, no offer/contract sending, LandPortal authenticated browser-only access, local-first model policy, existing data, and unrelated work. Complete the repair autonomously through implementation, staged tests, independent browser QA, combined regression, and live operator verification; leave LandOS healthy at localhost:3141.",
+  "promptSha256": "c4e794b9dda609930a2fdb27f1011d2eb236b1e64a82648cf0eb4b581b8c0a14",
+  "workstreams": [
+    {
+      "id": "ws1-windows-runtime",
+      "name": "Invisible and bounded Windows process health",
+      "operatorOutcome": "Navigating among Mission Control, Acquisitions, and Jarvis never opens a console window and agent status loads without repeated blocking shell processes.",
+      "inScope": [
+        "Windows process health",
+        "agent status endpoint",
+        "navigation performance"
+      ],
+      "backendServices": [
+        "platform process helpers",
+        "agent status API"
+      ],
+      "frontendScreens": [
+        "Mission Control",
+        "Acquisitions",
+        "Jarvis"
+      ],
+      "requiredDataState": "No operating data mutation.",
+      "browserJourney": {
+        "steps": [
+          "Navigate Mission Control to Acquisitions to Jarvis and back",
+          "Confirm no external shell window is launched",
+          "Confirm agent status remains accurate and responsive"
+        ]
+      },
+      "testRequirements": [
+        "Windows hidden-process regression",
+        "single/bounded process-status query",
+        "agent endpoint integration"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "console window opens",
+        "one shell invocation per agent",
+        "agent status breaks",
+        "navigation blocks for seconds"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "independent_browser_qa",
+        "restart_persistence"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "R1-01",
+          "text": "Windows process checks never create a visible console and do not invoke one blocking shell per configured agent.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E4"
+          ]
+        },
+        {
+          "id": "R1-02",
+          "text": "Mission Control, Acquisitions, and Jarvis navigation remains functional, responsive, and shell-free after restart.",
+          "verified": true,
+          "evidenceIds": [
+            "E3",
+            "E4",
+            "E5"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T15:33:13.695Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/report.md",
+        "evidenceIds": [
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-17T15:30:08.427Z",
+          "summary": "Run the independent restart journey with the same approved Windows authority required by the canonical managed runtime; no application data or generic process killing.",
+          "regressionCoverage": "Re-run phase1-shell-free-navigation including the canonical restart_persistence step outside the restricted sandbox."
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T15:24:45.172Z",
+          "detail": "Removed per-agent tasklist shells; roster PID status now uses in-process signal-0 probes.",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T15:24:45.894Z",
+          "detail": "Focused platform regression passed.",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T15:24:46.598Z",
+          "detail": "Operator QA runner regression and live cross-surface timing passed.",
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T15:24:47.309Z",
+          "detail": "tsc --noEmit passed.",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T15:24:47.979Z",
+          "detail": "Full Vite and server TypeScript production build passed.",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T15:24:48.657Z",
+          "detail": "Canonical restart healthy on localhost:3141 PID 50964.",
+          "evidenceIds": [
+            "E2",
+            "E3"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-17T15:29:48.462Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T15-24-55-595Z/report.md)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T15:33:13.694Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/report.md)",
+          "evidenceIds": [
+            "E4",
+            "E5",
+            "E6",
+            "E7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-verified-research-mission",
+      "name": "Durable jurisdiction-safe research agent mission",
+      "operatorOutcome": "Every manual lead starts one durable research mission that preserves operator input, rejects wrong-jurisdiction parcels, records each tool attempt and verification result, and safely reuses learning without promoting bad evidence.",
+      "inScope": [
+        "manual and migrated lead research",
+        "identity constraints",
+        "evidence quarantine",
+        "research mission state",
+        "browser navigation learning",
+        "Jarvis verification contract"
+      ],
+      "backendServices": [
+        "opportunity",
+        "property inspection",
+        "LandPortal browser",
+        "parcel resolution",
+        "agent mission runtime",
+        "institutional memory"
+      ],
+      "frontendScreens": [
+        "Lead Card research status",
+        "research evidence and failures"
+      ],
+      "requiredDataState": "Wrong-parcel Lead 25 inspection is preserved but quarantined; existing accepted data is unchanged.",
+      "browserJourney": {
+        "steps": [
+          "Create an isolated manual lead",
+          "Observe automatic durable research",
+          "Exercise conflicting same-address jurisdiction",
+          "Confirm wrong parcel is quarantined",
+          "Confirm retry and restart resume safely"
+        ]
+      },
+      "testRequirements": [
+        "hard city/state/county constraints",
+        "operator-input precedence",
+        "wrong-parcel quarantine",
+        "durable mission transitions",
+        "restart recovery",
+        "navigation-learning semantic guard"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "jurisdiction contamination",
+        "wrong parcel promoted",
+        "research remains not_started",
+        "background work disappears on restart",
+        "navigation learning bypasses identity verification"
+      ],
+      "requiredProofs": [
+        "db_evidence",
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence"
+      ],
+      "dependsOn": [
+        "ws1-windows-runtime"
+      ],
+      "requirements": [
+        {
+          "id": "R2-01",
+          "text": "Operator-entered city, county, and state are immutable research constraints unless the owner explicitly corrects them.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E9",
+            "E10"
+          ]
+        },
+        {
+          "id": "R2-02",
+          "text": "Wrong-jurisdiction or contradictory parcel evidence is preserved as quarantined evidence and cannot update canonical facts, comps, valuation, score, strategy, or report.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E9",
+            "E11"
+          ]
+        },
+        {
+          "id": "R2-03",
+          "text": "Automatic research is a durable, idempotent, observable mission with bounded retries and restart recovery, not only an in-memory timer.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "R2-04",
+          "text": "Browser navigation learning records how to use a site but can only be promoted after semantic parcel-identity verification and successful replay.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E10"
+          ]
+        },
+        {
+          "id": "R2-05",
+          "text": "Jarvis and the Property Research Agent expose who acted, tools used, evidence obtained, verification result, unresolved gaps, and the safe next action.",
+          "verified": true,
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T16:18:15.716Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md",
+        "evidenceIds": [
+          "E11",
+          "E12",
+          "E13",
+          "E14"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T16:18:07.374Z",
+          "detail": "Added durable observe-plan-act-verify research missions, immutable identity constraints, wrong-evidence quarantine, verified-only promotion, bounded retry/recovery, trace, and visible safe next action.",
+          "evidenceIds": [
+            "E9",
+            "E10"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T16:18:08.698Z",
+          "detail": "Focused mission and stale restart/retry tests passed.",
+          "evidenceIds": [
+            "E8"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T16:18:10.043Z",
+          "detail": "Routes, UI contract, and QA runner integrations passed.",
+          "evidenceIds": [
+            "E8"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T16:18:11.390Z",
+          "detail": "tsc --noEmit passed after the research mission changes.",
+          "evidenceIds": [
+            "E8"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T16:18:12.742Z",
+          "detail": "Fresh Vite and server TypeScript production build passed.",
+          "evidenceIds": [
+            "E8"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T16:18:14.375Z",
+          "detail": "Canonical managed restart returned healthy at localhost:3141 and mission state persisted.",
+          "evidenceIds": [
+            "E14"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-17T16:18:15.715Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md)",
+          "evidenceIds": [
+            "E11",
+            "E12",
+            "E13",
+            "E14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws3-useful-discovery-report",
+      "name": "Evidence-backed pre-call report and truthful operator acceptance",
+      "operatorOutcome": "Before transcript upload, the Lead Card shows the correct research, visuals, sold-comp analysis, Market Pulse, Land Score, and defensible strategy guidance, or a concise honest failure state with research actions—never an empty report labeled ready.",
+      "inScope": [
+        "discovery package projection",
+        "Lead Card",
+        "comp qualification",
+        "strategy gates",
+        "PDF",
+        "operator QA assertions"
+      ],
+      "backendServices": [
+        "discovery package",
+        "comp registry",
+        "market pulse",
+        "land score",
+        "PDF"
+      ],
+      "frontendScreens": [
+        "Lead Workspace",
+        "Discovery Call Package"
+      ],
+      "requiredDataState": "Only parcel-associated verified evidence is projected; active/pending are context and solds drive value.",
+      "browserJourney": {
+        "steps": [
+          "Open a correctly resolved researched lead",
+          "Reconcile visible facts against persisted evidence",
+          "Inspect visuals and sold comps",
+          "Inspect report and PDF",
+          "Open an unresolved lead",
+          "Confirm no unsupported strategy ranking or ready claim",
+          "verify refresh and restart"
+        ]
+      },
+      "testRequirements": [
+        "report/evidence reconciliation",
+        "sold comp date-distance-acreage-type gates",
+        "strategy evidence thresholds",
+        "resolved and unresolved operator journeys",
+        "PDF parity",
+        "real-value browser assertions"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "empty package called ready",
+        "wrong evidence hidden but sprint passes",
+        "generic strategies ranked without facts",
+        "listed comps treated as solds",
+        "QA checks only headings",
+        "transcript presented as prerequisite to research"
+      ],
+      "requiredProofs": [
+        "db_evidence",
+        "test_result",
+        "api_evidence",
+        "screenshot",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence",
+        "final_regression"
+      ],
+      "dependsOn": [
+        "ws2-verified-research-mission"
+      ],
+      "requirements": [
+        {
+          "id": "R3-01",
+          "text": "The Lead Card and PDF consume one current parcel-associated evidence projection and visibly reconcile with database source records.",
+          "verified": true,
+          "evidenceIds": [
+            "E16",
+            "E17",
+            "E18"
+          ]
+        },
+        {
+          "id": "R3-02",
+          "text": "A package is labeled ready only when it contains decision-useful pre-call research; unresolved fallback is labeled incomplete and prioritizes research status and seller identity questions.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "R3-03",
+          "text": "Valuation uses qualified sold land comps with status, date, distance, acreage/type similarity, radius/recency tier, and provenance; listings are context only.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E17",
+            "E18"
+          ]
+        },
+        {
+          "id": "R3-04",
+          "text": "Strategies are ranked only when minimum parcel and market evidence supports them; otherwise the UI shows validation hypotheses, not strongest strategies.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "R3-05",
+          "text": "Independent browser QA fails on wrong jurisdiction, empty evidence, stale projections, unqualified comps, unsupported strategy rankings, or frontend/database disagreement.",
+          "verified": true,
+          "evidenceIds": [
+            "E19",
+            "E20",
+            "E21",
+            "E22"
+          ]
+        },
+        {
+          "id": "R3-06",
+          "text": "Transcript paste/upload remains downstream of pre-call research and is not presented as the remedy for missing research.",
+          "verified": true,
+          "evidenceIds": [
+            "E18",
+            "E19"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T16:36:10.548Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md",
+        "evidenceIds": [
+          "E18",
+          "E19",
+          "E20",
+          "E21",
+          "E22"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T16:36:01.868Z",
+          "detail": "Replaced false ready state with decision-useful readiness, explicit blockers, verified-only visuals, qualified sold comp table, Market Pulse/score evidence, strategy hypotheses, fresh canonical projection, and downstream transcript labeling.",
+          "evidenceIds": [
+            "E16",
+            "E17",
+            "E18"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T16:36:03.233Z",
+          "detail": "Unresolved and ready package states plus comp date/distance/type/acreage/status gates passed.",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T16:36:04.723Z",
+          "detail": "Lead Workspace routes, UI contracts, PDF-ready markdown, and QA runner integrations passed.",
+          "evidenceIds": [
+            "E15",
+            "E17"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T16:36:06.154Z",
+          "detail": "tsc --noEmit passed.",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T16:36:07.623Z",
+          "detail": "Fresh Vite and server production build passed.",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T16:36:09.133Z",
+          "detail": "Fresh build ran on localhost and direct paired-browser inspection matched the evidence-backed API projection.",
+          "evidenceIds": [
+            "E17",
+            "E18",
+            "E22"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-17T16:36:10.547Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md)",
+          "evidenceIds": [
+            "E18",
+            "E19",
+            "E20",
+            "E21",
+            "E22"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "workstreamId": "ws1-windows-runtime",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/mission",
+      "steps": [
+        "Navigate Mission Control, Acquisitions, Jarvis, and back",
+        "Refresh",
+        "Managed restart"
+      ],
+      "expected": "The repaired navigation path remains healthy after managed restart.",
+      "actual": "The independent QA process could not stop the verified server: taskkill Access denied.",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T15-24-55-595Z/report.md"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "blocker",
+      "suspectedSubsystem": "phase1-windows-runtime",
+      "disposition": "internally_fixable",
+      "patternKey": "restart-permission-boundary",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T15:29:48.463Z",
+      "history": [
+        {
+          "at": "2026-07-17T15:29:48.463Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T15:30:08.427Z",
+          "event": "repaired",
+          "detail": "Run the independent restart journey with the same approved Windows authority required by the canonical managed runtime; no application data or generic process killing."
+        },
+        {
+          "at": "2026-07-17T15:32:53.488Z",
+          "event": "retest_passed",
+          "detail": "E4"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-17T15:24:27.884Z",
+      "kind": "test_result",
+      "summary": "Platform and operator-QA focused regression: 17 tests passed; process probe completes in 2ms; TypeScript typecheck passed.",
+      "path": "src/platform.test.ts",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-17T15:24:28.735Z",
+      "kind": "api_evidence",
+      "summary": "Live paired-browser navigation after repair: Mission Control 115ms, Acquisitions 310ms, Jarvis 107ms, Mission Control 107ms; prior path took approximately 3 seconds and spawned tasklist shells.",
+      "url": "http://localhost:3141/api/agents",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-17T15:24:29.642Z",
+      "kind": "restart_persistence",
+      "summary": "Production build loaded through canonical restart; LandOS healthy at PID 50964 and localhost:3141.",
+      "url": "http://localhost:3141",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-17T15:32:33.885Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent real-browser cross-surface navigation, /api/agents reconciliation, refresh, and approved canonical restart passed with zero findings.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/report.md",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-17T15:32:34.776Z",
+      "kind": "screenshot",
+      "summary": "Mission Control after shell-free Mission Control-Acquisitions-Jarvis navigation.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/phase1-shell-free-navigation/phase1-shell-free-navigation.png",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-17T15:33:06.217Z",
+      "kind": "browser_journey",
+      "summary": "Real-browser Mission Control to Acquisitions to Jarvis to Mission Control navigation passed; /api/agents returned 200.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/report.md",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-17T15:33:07.266Z",
+      "kind": "refresh_persistence",
+      "summary": "Mission Control remained healthy after hard refresh in the independent shell-free navigation journey.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T15-30-31-053Z/report.md",
+      "workstreamId": "ws1-windows-runtime"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-17T16:17:47.819Z",
+      "kind": "test_result",
+      "summary": "Research mission, route integration, UI contract, operator-QA runner, stale-restart recovery, and retry-ceiling regressions passed (92 focused assertions across the recorded runs).",
+      "path": "src/landos/opportunity-research-mission.test.ts",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-17T16:17:49.140Z",
+      "kind": "db_evidence",
+      "summary": "Operating opportunity 24 retains three quarantined activity rows; latest mission uses immutable 272 McAlister Road, Kingstree, SC constraints and rejects insufficiently associated evidence without canonical promotion.",
+      "path": "store/landos.db",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-17T16:17:50.551Z",
+      "kind": "api_evidence",
+      "summary": "Lead Workspace research envelope exposes actor role, immutable constraints, attempt, trace, verification verdict, unresolved gap, safe next action, and quarantined evidence.",
+      "url": "http://localhost:3141/api/landos/lead-workspace/25",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-17T16:17:51.961Z",
+      "kind": "browser_journey",
+      "summary": "Independent real browser selected the durable quarantined-research fixture and verified mission status, immutable search, semantic verification, exclusion notice, API agreement, refresh, and managed-restart persistence.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-07-17T16:17:53.367Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent operator QA passed with zero findings in a real headed browser.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-07-17T16:17:54.709Z",
+      "kind": "refresh_persistence",
+      "summary": "Research mission constraints, verification, and quarantine remained visible after browser refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-07-17T16:17:56.159Z",
+      "kind": "restart_persistence",
+      "summary": "Durable mission and quarantine survived canonical managed restart; LandOS returned healthy.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-16-00-711Z/report.md",
+      "workstreamId": "ws2-verified-research-mission"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-07-17T16:35:11.675Z",
+      "kind": "test_result",
+      "summary": "Discovery package, comp qualification, route integration, UI contract, and operator-QA regressions passed; unresolved and decision-useful report states are both covered.",
+      "path": "src/landos/opportunity-discovery-package.test.ts",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-07-17T16:35:13.131Z",
+      "kind": "db_evidence",
+      "summary": "Discovery package v2 is a deterministic projection from the current opportunity, property, report, evidence, visual, deed, score, market, and comp records; quarantined activity is excluded by canonical readers.",
+      "path": "src/landos/opportunity-discovery-package.ts",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-07-17T16:35:14.558Z",
+      "kind": "api_evidence",
+      "summary": "Live Lead Workspace for deal 25 returned package status incomplete, six evidence blockers, zero qualified sold comps, and validation_hypotheses while keeping the discovery call available.",
+      "url": "http://localhost:3141/api/landos/lead-workspace/25",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-07-17T16:35:16.044Z",
+      "kind": "screenshot",
+      "summary": "Live unresolved report visibly shows incomplete status, missing research, qualified-comp gate, Market Pulse, Land Score, hypotheses, and downstream transcript section.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/phase1-unresolved-discovery-package/phase1-unresolved-call-package.png",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-07-17T16:35:17.497Z",
+      "kind": "browser_journey",
+      "summary": "Real browser journey verified the repaired report on operating deal 25, including absence of the former false-ready and strongest-strategy claims.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-07-17T16:35:19.206Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent headed-browser QA passed with zero findings.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-07-17T16:35:20.753Z",
+      "kind": "refresh_persistence",
+      "summary": "Truthful incomplete report and blockers persisted after hard refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-07-17T16:35:22.175Z",
+      "kind": "restart_persistence",
+      "summary": "Report state and canonical evidence gates persisted through managed restart; live bundle returned healthy.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T16-31-31-118Z/report.md",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E23",
+      "recordedAt": "2026-07-17T16:42:04.788Z",
+      "kind": "final_regression",
+      "summary": "Full combined Vitest regression passed: 276 files, 3461 tests, 0 failures; targeted stale-test repair passed 160/160.",
+      "path": "src/landos/opportunity-discovery-package.test.ts",
+      "workstreamId": "ws3-useful-discovery-report"
+    },
+    {
+      "id": "E24",
+      "recordedAt": "2026-07-17T16:44:49.036Z",
+      "kind": "browser_journey",
+      "summary": "Paired live-browser final review after production rebuild/restart: lead 25 shows truthful incomplete readiness, six exact research blockers, qualified-comp gates, parcel-association status, hypothesis-only strategies, and transcript placement after the call; Mission Control-to-Acquisitions navigation kept one browser tab.",
+      "url": "http://localhost:3141/dept/acquisitions?deal=25",
+      "workstreamId": "ws3-useful-discovery-report"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-07-17T16:42:06.222Z",
+    "detail": "Combined Phase 1 correctness regression passed: 276 test files and 3461 tests; WS1-WS3 browser QA reports pass; no open findings.",
+    "evidenceIds": [
+      "E23"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-07-17T16:44:49.710Z",
+    "detail": "Independent operator QA runner and paired-browser final reviewer: Independent operator QA report plus paired post-restart browser review found no open findings. Report truthfulness, evidence gating, Windows navigation behavior, safety policies, and full regression all passed.",
+    "evidenceIds": [
+      "E22",
+      "E23",
+      "E24"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-07-17T15:10:54.675Z",
+      "event": "sprint_created",
+      "detail": "Phase 1 correctness repair: verified research before discovery"
+    },
+    {
+      "at": "2026-07-17T15:10:55.416Z",
+      "event": "workstream_started",
+      "detail": "ws1-windows-runtime"
+    },
+    {
+      "at": "2026-07-17T15:24:45.173Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T15:24:45.894Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T15:24:46.598Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T15:24:47.310Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T15:24:47.980Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T15:24:48.657Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T15:29:48.463Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-17T15:29:48.463Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-windows-runtime:fail"
+    },
+    {
+      "at": "2026-07-17T15:30:08.426Z",
+      "event": "repair_started",
+      "detail": "ws1-windows-runtime"
+    },
+    {
+      "at": "2026-07-17T15:30:08.427Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-17T15:32:53.489Z",
+      "event": "finding_retested",
+      "detail": "F1:pass"
+    },
+    {
+      "at": "2026-07-17T15:32:54.319Z",
+      "event": "requirement_verified",
+      "detail": "ws1-windows-runtime/R1-01"
+    },
+    {
+      "at": "2026-07-17T15:32:55.375Z",
+      "event": "requirement_verified",
+      "detail": "ws1-windows-runtime/R1-02"
+    },
+    {
+      "at": "2026-07-17T15:33:13.695Z",
+      "event": "phase_recorded",
+      "detail": "ws1-windows-runtime:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T15:33:13.695Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-windows-runtime:pass"
+    },
+    {
+      "at": "2026-07-17T15:33:14.590Z",
+      "event": "workstream_passed",
+      "detail": "ws1-windows-runtime"
+    },
+    {
+      "at": "2026-07-17T15:33:15.770Z",
+      "event": "workstream_started",
+      "detail": "ws2-verified-research-mission"
+    },
+    {
+      "at": "2026-07-17T16:18:07.375Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:08.698Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:10.044Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:11.391Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:12.743Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:14.376Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:15.716Z",
+      "event": "phase_recorded",
+      "detail": "ws2-verified-research-mission:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:15.716Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-verified-research-mission:pass"
+    },
+    {
+      "at": "2026-07-17T16:18:26.926Z",
+      "event": "requirement_verified",
+      "detail": "ws2-verified-research-mission/R2-01"
+    },
+    {
+      "at": "2026-07-17T16:18:28.265Z",
+      "event": "requirement_verified",
+      "detail": "ws2-verified-research-mission/R2-02"
+    },
+    {
+      "at": "2026-07-17T16:18:29.781Z",
+      "event": "requirement_verified",
+      "detail": "ws2-verified-research-mission/R2-03"
+    },
+    {
+      "at": "2026-07-17T16:18:31.113Z",
+      "event": "requirement_verified",
+      "detail": "ws2-verified-research-mission/R2-04"
+    },
+    {
+      "at": "2026-07-17T16:18:32.481Z",
+      "event": "requirement_verified",
+      "detail": "ws2-verified-research-mission/R2-05"
+    },
+    {
+      "at": "2026-07-17T16:18:33.951Z",
+      "event": "workstream_passed",
+      "detail": "ws2-verified-research-mission"
+    },
+    {
+      "at": "2026-07-17T16:18:35.294Z",
+      "event": "workstream_started",
+      "detail": "ws3-useful-discovery-report"
+    },
+    {
+      "at": "2026-07-17T16:36:01.869Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:03.233Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:04.723Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:06.155Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:07.623Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:09.134Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:10.548Z",
+      "event": "phase_recorded",
+      "detail": "ws3-useful-discovery-report:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:10.548Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-useful-discovery-report:pass"
+    },
+    {
+      "at": "2026-07-17T16:36:25.498Z",
+      "event": "requirement_verified",
+      "detail": "ws3-useful-discovery-report/R3-01"
+    },
+    {
+      "at": "2026-07-17T16:36:26.975Z",
+      "event": "requirement_verified",
+      "detail": "ws3-useful-discovery-report/R3-02"
+    },
+    {
+      "at": "2026-07-17T16:36:28.408Z",
+      "event": "requirement_verified",
+      "detail": "ws3-useful-discovery-report/R3-03"
+    },
+    {
+      "at": "2026-07-17T16:36:29.856Z",
+      "event": "requirement_verified",
+      "detail": "ws3-useful-discovery-report/R3-04"
+    },
+    {
+      "at": "2026-07-17T16:36:31.485Z",
+      "event": "requirement_verified",
+      "detail": "ws3-useful-discovery-report/R3-05"
+    },
+    {
+      "at": "2026-07-17T16:36:32.870Z",
+      "event": "requirement_verified",
+      "detail": "ws3-useful-discovery-report/R3-06"
+    },
+    {
+      "at": "2026-07-17T16:42:05.469Z",
+      "event": "workstream_passed",
+      "detail": "ws3-useful-discovery-report"
+    },
+    {
+      "at": "2026-07-17T16:42:06.222Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T16:44:49.710Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T16:44:50.395Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

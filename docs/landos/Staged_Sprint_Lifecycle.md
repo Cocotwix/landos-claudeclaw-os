@@ -1,17 +1,20 @@
-# LandOS Staged Sprint Lifecycle (canonical, all coding agents)
+# LandOS Staged Sprint Lifecycle (optional supporting process)
 
-This is development infrastructure for every LandOS capability and department.
-It applies to Claude Code, Codex, and every approved coding agent working in
-this repository, in every browser and for every route. It is enforced by
-repository tooling (`npm run landos:sprint`, `npm run landos:operator-qa`),
-not merely documented.
+This is optional bookkeeping and QA infrastructure. It may be used when it
+materially helps deliver or protect an owner-visible business outcome. It is
+not the authority for scope, sequencing, effort, acceptance, or completion;
+`AGENTS.md` and the personally verified live operator outcome outrank it.
+Repository tooling (`npm run landos:sprint`, `npm run landos:operator-qa`)
+must never displace implementation, force the wrong work order, consume the
+majority of a session, or convert internal gate success into a completion
+claim.
 
 The live operator experience is the final acceptance standard. Tests, build
 success, API correctness, and HTTP 200 alone never establish completion.
 
-## Enforced lifecycle
+## Optional lifecycle
 
-Every substantial LandOS prompt runs through:
+When this process is useful, a substantial LandOS prompt may run through:
 
 1. Prompt intake → requirement ledger creation
    (`npm run landos:sprint -- create --file <plan.json>`). The plan converts

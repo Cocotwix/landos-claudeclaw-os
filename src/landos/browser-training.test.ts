@@ -295,7 +295,8 @@ describe('replay engine', () => {
 describe('training persona', () => {
   it('names allowed actions and the paid-action stop rule, no secrets', () => {
     const sys = trainingSystemInstruction({ website: 'https://landportal.com', title: 'Map Search' });
-    expect(sys).toMatch(/Approval Required/);
+    expect(sys).toMatch(/Prohibited/);
+    expect(sys).toMatch(/cannot be approved/i);
     expect(sys).toMatch(/screenshots/i);
     expect(sys).not.toMatch(/LANDPORTAL_PASSWORD|api[_-]?key/i);
   });

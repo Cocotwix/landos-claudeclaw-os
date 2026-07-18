@@ -1,0 +1,95 @@
+{
+  "sprintId": "sprint-2026-07-17-phase-1-strategic-reset",
+  "title": "LandOS Phase 1 strategic reset: manual lead through discovery",
+  "originalPromptPath": "phase-1-strategic-reset-prompt.md",
+  "workstreams": [
+    {
+      "id": "ws1-stabilize-safety",
+      "name": "Data stabilization, QA isolation, and hard safety boundaries",
+      "operatorOutcome": "Operating data is protected and recoverable, synthetic QA is physically separate, and every prohibited LandPortal API/MCP, paid, external-outbound, offer-send, and contract-send path is disabled before workflow use.",
+      "inScope": ["additive database/migration inventory", "private backup and restore", "QA database and artifact isolation", "browser-only LandPortal cutover", "functional role terminology", "critical policy guards"],
+      "backendServices": ["landos database", "runtime configuration", "provider routing", "agent policy", "backup tooling"],
+      "frontendScreens": ["Acquisitions intake", "agent roster", "provider status"],
+      "requiredDataState": "Existing operating database backed up and reconciled; QA database starts synthetic and separate.",
+      "browserJourney": {"steps": ["Confirm operating/QA identity is visible", "Confirm LandPortal is described as authenticated browser-only", "Confirm only functional role names appear in Phase 1 surfaces"]},
+      "testRequirements": ["row-count and integrity proof", "backup/restore drill", "QA isolation tests", "LandPortal API/MCP unreachable tests", "paid/outbound/offer/contract guard tests", "functional terminology tests"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["real records used as QA fixtures", "LandPortal API/token/MCP runtime reachable", "paid action selectable", "Jarvis can contact external parties", "offer or contract can be sent", "important data is overwritten or lost"],
+      "requiredProofs": ["db_evidence", "test_result", "browser_journey", "independent_browser_qa", "restart_persistence"],
+      "dependsOn": [],
+      "requirements": [
+        {"id":"P1-02","text":"Real operating data and QA data/artifacts are visibly and physically separated."},
+        {"id":"P1-16","text":"A private encrypted backup/restore path restores business data into a clean local target with row-count and integrity reconciliation."},
+        {"id":"P1-S1","text":"LandPortal API, token, manual endpoint, and MCP routes are unavailable at runtime; authenticated read-only browser work is the only approved path."},
+        {"id":"P1-S2","text":"Jarvis outbound is owner-only and paid actions, spending, offer sending, and contract sending are prohibited by focused guards."},
+        {"id":"P1-S3","text":"Phase 1 surfaces use functional role labels and preserve legacy IDs only as hidden compatibility aliases."}
+      ]
+    },
+    {
+      "id": "ws2-actionable-lead",
+      "name": "Unified actionable Lead Card and reconciled executive counts",
+      "operatorOutcome": "Manual intake immediately creates one durable actionable Lead Card, automatically starts progressive research, and the same opportunity drives Acquisitions, Mission Control, Jarvis explanations, and Lead-to-Deal promotion.",
+      "inScope": ["manual intake", "opportunity aggregate", "Lead Workspace actions", "automatic research state", "dashboard metrics", "Jarvis count explanations", "pursuit/disposition"],
+      "backendServices": ["deal card", "lead workspace", "acquisitions", "business spine", "research orchestration", "dashboard command contract"],
+      "frontendScreens": ["Acquisitions", "Lead Card", "Mission Control", "Jarvis"],
+      "requiredDataState": "Existing Lead/Property/Deal records adapted without copying or loss; synthetic QA opportunities only in QA storage.",
+      "browserJourney": {"steps": ["Enter a synthetic manual lead", "Open its Lead Card immediately", "Observe progressive research state and actions", "Reconcile all executive counts and drilldowns", "Disposition and pursue opportunities", "Verify pursued glow", "refresh and managed restart"]},
+      "testRequirements": ["additive migration/adaptation", "manual intake integration", "automatic research", "count reconciliation", "same-record promotion", "refresh/restart persistence"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["duplicate competing opportunity created", "read-only card", "research does not start", "counts disagree", "pursuit copies a record", "incomplete research blocks a discovery call"],
+      "requiredProofs": ["db_evidence", "test_result", "api_evidence", "screenshot", "browser_journey", "independent_browser_qa", "refresh_persistence", "restart_persistence"],
+      "dependsOn": ["ws1-stabilize-safety"],
+      "requirements": [
+        {"id":"P1-01","text":"Manual lead entry creates one durable Lead Card immediately and automatically starts research."},
+        {"id":"P1-03","text":"Mission Control, Acquisitions, Jarvis explanations, and database counts derive from the same opportunity records and reconcile."},
+        {"id":"P1-04","text":"The Lead Card progressively updates, remains actionable, and never blocks a discovery call because research is incomplete."},
+        {"id":"P1-06","text":"County/public/property research progress and provider failures are visible, actionable, and recoverable."},
+        {"id":"P1-12","text":"The owner can promote the same opportunity from Lead to Deal and the pursued card receives a subtle visible highlight."}
+      ]
+    },
+    {
+      "id": "ws3-discovery-package",
+      "name": "Best-available discovery research package",
+      "operatorOutcome": "Every Lead Card exposes one evidence-backed current discovery report and PDF with parcel, visual, comp, market, scoring, strategy, gap, confidence, and call-prep information even when identity or providers remain unresolved.",
+      "inScope": ["authenticated LandPortal browser evidence", "county/public research", "visuals", "comp policy", "Market Pulse", "Land Score", "two strategies", "deed findings", "single report projection", "PDF and concise call prep"],
+      "backendServices": ["browser session", "property inspection", "comp registry", "discovery call report", "document/visual services"],
+      "frontendScreens": ["Lead Card report", "call-prep mode", "provider/gap states"],
+      "requiredDataState": "Authenticated browser session when available plus isolated resolved, unresolved, thin-market, and provider-failure QA fixtures.",
+      "browserJourney": {"steps": ["Run authenticated read-only LandPortal visible extraction", "Capture parcel facts, visible comps, free Show on Map, and visuals", "Open complete resolved report and PDF", "Open unresolved report and confirm useful identity questions", "verify no paid/API action"]},
+      "testRequirements": ["comp radius/recency/dedupe/status policy", "county-wide disclosure", "wrong-parcel valuation/offer guards", "report/Card/PDF identity", "unresolved brief", "browser provenance and paid-action prohibition"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["API/MCP request", "paid report or credit use", "active/pending drives value", "sale older than 24 months", "unsupported property conclusion", "separate contradictory report projections", "missing research blocks call prep"],
+      "requiredProofs": ["test_result", "api_evidence", "screenshot", "browser_journey", "independent_browser_qa", "refresh_persistence", "restart_persistence"],
+      "dependsOn": ["ws2-actionable-lead"],
+      "requirements": [
+        {"id":"P1-05","text":"A real authenticated LandPortal browser session extracts visible parcel facts, visible comps, the free Show on Map screenshot, and relevant visual evidence without API dependence or paid action."},
+        {"id":"P1-07","text":"Comparable selection enforces sold-driven value, active/pending context, up to five, 3/5/10-mile expansion, 12/18/24-month limits, county-wide disclosure, and provider deduplication."},
+        {"id":"P1-08","text":"One current report drives the Lead Card and PDF and includes identity, visuals, land characteristics, deed findings, Market Pulse, explainable Land Score, preliminary value and 40-60 percent offer range, two strategies, gaps, sources, confidence, and call questions."},
+        {"id":"P1-09","text":"An incomplete or unresolved property still produces a useful seller-focused call brief while unsupported parcel conclusions, confident valuation, offer preparation, and automatic pursuit remain blocked."}
+      ]
+    },
+    {
+      "id": "ws4-transcript-acceptance",
+      "name": "Transcript reconciliation and complete Phase 1 acceptance",
+      "operatorOutcome": "A human can paste or upload a transcript, Jarvis and the Acquisitions Agent reconcile it into durable shared memory and work, and the entire five-lead/day workflow survives refresh, restart, recovery, and independent live review.",
+      "inScope": ["immutable transcripts", "paste/upload", "summary and seller statements", "motivation", "contradictions", "tasks/follow-up", "next action", "five-lead simulation", "combined regression", "real-lead and owner acceptance readiness"],
+      "backendServices": ["acquisitions", "transcript store", "reconciliation", "tasks", "Jarvis orchestration"],
+      "frontendScreens": ["Lead Card discovery", "Acquisitions", "Jarvis", "Mission Control"],
+      "requiredDataState": "Five synthetic QA opportunities in isolated QA storage; operating data used only for explicit live owner acceptance.",
+      "browserJourney": {"steps": ["Paste transcript", "Upload transcript file", "Inspect original and reconciliation outputs", "open created tasks and owner decision", "run five-lead simulation", "hard refresh", "managed restart", "combined cross-surface reconciliation"]},
+      "testRequirements": ["immutable-original invariant", "paste/upload equivalence", "extraction/reconciliation", "task and next-action integration", "five-lead simulation", "full regression", "secret/private-data diff audit"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["original transcript mutates", "seller statements become verified facts", "missing motivation evidence", "no contradictions/tasks/follow-up/next action", "state lost on refresh or restart", "QA writes operating data"],
+      "requiredProofs": ["test_result", "db_evidence", "api_evidence", "screenshot", "browser_journey", "independent_browser_qa", "refresh_persistence", "restart_persistence", "final_regression"],
+      "dependsOn": ["ws3-discovery-package"],
+      "requirements": [
+        {"id":"P1-10","text":"Transcript paste and transcript-file upload both preserve an immutable original and work from the Lead Card."},
+        {"id":"P1-11","text":"Jarvis and the Acquisitions Agent reconciliation produces a concise summary, seller statements separate from verified facts, named parties, explainable motivation, asking price/timeline/property statements, contradictions, deeper-research tasks, follow-up, and one allowed next action."},
+        {"id":"P1-13","text":"The complete Phase 1 state survives hard refresh and managed restart."},
+        {"id":"P1-14","text":"A five-lead/day synthetic simulation passes entirely in isolated QA storage."},
+        {"id":"P1-15","text":"One real lead can complete the entire workflow live without using real records as QA fixtures."},
+        {"id":"P1-17","text":"The workflow is ready for and receives the owner's usefulness judgment after independent combined live verification."}
+      ]
+    }
+  ]
+}

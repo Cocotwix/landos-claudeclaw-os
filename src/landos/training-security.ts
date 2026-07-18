@@ -87,7 +87,7 @@ export function screenPaidUrl(url: string): GuardVerdict {
       return {
         allowed: false,
         approvalRequired: true,
-        reason: `Billing/paid page detected (${describeUrl(u)}). Stopped — Approval Required.`,
+        reason: `Billing/paid page detected (${describeUrl(u)}). Stopped — prohibited and cannot be approved.`,
       };
     }
   }
@@ -103,7 +103,7 @@ export function screenPaidAction(controlText: string): GuardVerdict {
       return {
         allowed: false,
         approvalRequired: true,
-        reason: `Paid/prohibited action detected ("${clip(t, 60)}"). Stopped — Approval Required.`,
+        reason: `Paid action detected ("${clip(t, 60)}"). Stopped — prohibited and cannot be approved.`,
       };
     }
   }

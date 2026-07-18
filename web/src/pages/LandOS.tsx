@@ -193,8 +193,8 @@ export function LandOS() {
             </h2>
             {data.pendingApprovalList.length === 0 ? (
               <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-4">
-                No gated actions waiting. Gated actions (seller messages, paid credits, offers, deletions,
-                installs, config changes, exports, external connections) appear here and block until decided.
+                No gated actions waiting. Paid actions, external messages, and offer/contract sending are
+                prohibited; reversible internal changes appear here and block until decided.
               </div>
             ) : (
               <div class="space-y-2">

@@ -10,6 +10,7 @@ import { logger } from '../logger.js';
 import { DEPARTMENTS } from './departments.js';
 import {
   GATED_ACTION_TYPES,
+  PROHIBITED_ACTION_TYPES,
   LANDOS_ENTITIES,
   PLAYBOOK_STAGES,
   countRows,
@@ -24,6 +25,7 @@ import {
   listApprovals,
   listLandosAudit,
   listRows,
+  isProhibitedActionType,
   type ModelPreferenceScopeKind,
 } from './db.js';
 import {
@@ -96,6 +98,7 @@ import {
   loadVisualIntelligence,
   getPropertyCardRow,
   getCardActivity,
+  upsertPropertyCard,
 } from './property-card.js';
 import { captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { resolveGoogleVisualEnv, VISUAL_SERVICES } from './providers/google-visual.js';
@@ -112,6 +115,7 @@ import { suggestAddresses } from './address-suggest.js';
 import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
 import { extractZipCandidate, extractApnCandidates } from './intake-normalize.js';
 import { buildSmartIntake } from './smart-intake.js';
+import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
 import { planResolver, type IntakeFields } from './resolver-planner.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
@@ -121,7 +125,7 @@ import { listNavigationModels } from './browser-navigation-model.js';
 import { listSitePlaybooks } from './browser-learning.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
-import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds } from './browser-session.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds } from './browser-session.js';
 import { getCountySources } from './county-source-map.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
 import { runPublicPropertyIntelligence, type PublicIntelligenceRun } from './public-property-intelligence.js';
@@ -181,7 +185,7 @@ import {
 } from './landos-structure.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
-import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard } from './deal-card.js';
+import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, linkPropertyToDeal, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard } from './deal-card.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
 import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
 import { resolveParcelParallel, type ParallelResolution } from './parallel-resolution.js';
@@ -204,6 +208,47 @@ import { buildDiscoveryBriefing } from './discovery-briefing.js';
 import { buildExecutiveSummary } from './deal-card-executive-summary.js';
 import { buildOperatorPropertyRecord, type OperatorPropertyRecord } from './operator-property-record.js';
 import { buildLeadWorkspace } from './lead-workspace.js';
+import { getLandosStorageProfile, landosArtifactPath } from './storage-profile.js';
+import {
+  ensureOpportunityForLegacyDealCard,
+  getExecutiveOpportunitySnapshot,
+  getOpportunity,
+  getOpportunityByDealCardId,
+  getOpportunityDetail,
+  listOpportunityBoardCards,
+  listOpportunities,
+  OPPORTUNITY_PIPELINE_STAGES,
+  ownerDisposeOpportunity,
+  ownerPursueOpportunity,
+  setOpportunityPipelineStage,
+  updateOpportunityResearchStatus,
+  updateOpportunityDiscoveryStatus,
+  type OpportunityRecord,
+} from './opportunity.js';
+import {
+  buildOpportunityDiscoveryPackage,
+  renderDiscoveryPackageMarkdown,
+} from './opportunity-discovery-package.js';
+import {
+  claimResearchMission,
+  createResearchMission,
+  failResearchMission,
+  finishResearchMission,
+  getResearchMission,
+  latestResearchMission,
+  listQuarantinedResearchEvidence,
+  quarantineLatestPropertyInspection,
+  quarantineMismatchedPropertyInspections,
+  recoverableResearchMissionIds,
+  researchConstraintsFor,
+  verifyInspectionIdentity,
+} from './opportunity-research-mission.js';
+import {
+  getLatestOpportunityReconciliation,
+  ingestAndReconcileTranscript,
+  listOpportunityReconciliationTasks,
+  listOpportunityTranscripts,
+} from './opportunity-transcript-reconciliation.js';
 import { buildAcreageBasis, pinOverlayAcresToGeometry } from './acreage-basis.js';
 import { acreageFactFromBasis } from './deal-card-reconciliation.js';
 import {
@@ -212,6 +257,8 @@ import {
   type ReportCompLanes,
 } from './deal-card-canonical.js';
 import { isServableDocumentPage, type RegisteredDocument } from './document-registry.js';
+import { recordDeedPage } from './recorded-deed-pages.js';
+import { validateRecordedLienReview, type RecordedLienStatus } from './recorded-lien-review.js';
 import { buildDdBusinessStatus } from './dd-business-status.js';
 import { saveDocumentUpload, listDocumentUploads, servableUploadPath, UPLOAD_CATEGORIES } from './document-uploads.js';
 import { retrieveRagChunks, buildAgentRagContext, ingestRagDocument, ragIndexStats, htmlToText, RAG_DOC_TYPES, type RagAgentKind, type RagDocType } from './rag-knowledge.js';
@@ -255,11 +302,253 @@ import {
 const isEntity = (v: unknown): v is LandosEntity =>
   v === 'LAND_ALLY' || v === 'TY_LAND_BIZ';
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+// Browser sources sometimes render an unavailable field as "-".  This is not
+// usable locality data and must never overwrite the owner-supplied city or
+// leak into the visible Lead Card / map links.
+const meaningfulStr = (v: unknown): string | undefined => {
+  const value = str(v)?.trim();
+  return value && !/^(?:-|--|n\/?a|not\s+(?:available|found)|unknown)$/i.test(value) ? value : undefined;
+};
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
 function entityParam(raw: string | undefined): string | undefined {
   if (!raw || raw === 'all') return undefined;
   return (LANDOS_ENTITIES as readonly string[]).includes(raw) ? raw : undefined;
+}
+
+const PHASE1_DISPOSITIONS = new Set([
+  'follow_up', 'nurture', 'dead_lead', 'wrong_property',
+  'do_not_contact', 'duplicate', 'unlocatable',
+]);
+
+/** Begin the free, local research lane after the durable lead already exists.
+ * WS2 records honest progressive state; the discovery workstream enriches the
+ * same property/deal/opportunity graph. Failures remain visible and retryable. */
+const scheduledResearchMissionIds = new Set<number>();
+let researchMissionRecoveryScheduled = false;
+// This is call-prep research, not a blocking deep-DD job. LandPortal and the
+// county fallback run sequentially, so the inherited three-minute-per-lane
+// ceiling could leave one lead looking hung for roughly six minutes.
+const PHASE1_RESEARCH_LANE_TIMEOUT_MS = 45_000;
+
+function scheduleResearchMission(missionId: number): void {
+  if (scheduledResearchMissionIds.has(missionId)) return;
+  scheduledResearchMissionIds.add(missionId);
+  setTimeout(async () => {
+    try {
+      const mission = claimResearchMission(missionId);
+      if (!mission) return;
+      const opportunity = getOpportunity(mission.opportunityId);
+      if (!opportunity) throw new Error(`opportunity ${mission.opportunityId} no longer exists`);
+      const running = updateOpportunityResearchStatus(opportunity.id, 'running', {
+        actor: 'property-research-agent',
+        note: `Durable research mission ${mission.runKey} started (attempt ${mission.attempt}).`,
+      });
+      if (running.primaryPropertyCardId) {
+        addCardNextAction({
+          cardId: running.primaryPropertyCardId,
+          action: 'Review available identity clues and prepare discovery questions; missing research does not block the call.',
+          createdBy: 'property-research-agent',
+        });
+        attachCardActivity({
+          cardId: running.primaryPropertyCardId,
+          kind: 'phase1_research_started',
+          summary: 'Automatic research started. Public/county and authenticated-browser evidence will progressively update this card.',
+          agentId: 'property-research-agent',
+        });
+      }
+      const profile = getLandosStorageProfile();
+      if (profile.syntheticOnly || !running.legacyDealCardId || !running.primaryPropertyCardId) {
+        const discoveryPackage = buildOpportunityDiscoveryPackage(opportunity.id, { persist: true, actor: 'property-research-agent' });
+        updateOpportunityDiscoveryStatus(opportunity.id, 'brief_ready', {
+          actor: 'property-research-agent',
+          note: discoveryPackage.callPrep.ready
+            ? 'Synthetic pre-call research report is decision-useful.'
+            : 'Synthetic pre-call research is incomplete; identity-confirmation questions are available.',
+        });
+        updateOpportunityResearchStatus(opportunity.id, 'partial', {
+          actor: 'property-research-agent',
+          note: profile.syntheticOnly
+            ? 'Synthetic QA lead is actionable; external research is intentionally isolated and retry remains available.'
+            : 'Lead is actionable now; a subject property is still needed for external research.',
+        });
+        finishResearchMission(mission.id, {
+          status: 'partial',
+          summary: 'Synthetic or identity-incomplete lead remains actionable; external browser research was not promoted.',
+          safeNextAction: 'Confirm the missing parcel identifier during discovery or retry after adding it.',
+          verification: {
+            accepted: false, verdict: 'insufficient_identity', reasons: ['A real subject property was not available for external research.'],
+            expected: mission.constraints, observed: { address: null, city: null, county: null, state: null, apn: null },
+          },
+          toolTrace: mission.toolTrace,
+        });
+        return;
+      }
+      const deal = getDealCard(running.legacyDealCardId);
+      const prop = (deal?.propertyCards?.[0] ?? {}) as {
+        active_input_address?: string | null; apn?: string | null; county?: string | null;
+        state?: string | null; city?: string | null; owner?: string | null;
+      };
+      // First quarantine any previously retained inspection that conflicts with
+      // the immutable operator constraints. Nothing is deleted.
+      const priorQuarantines = quarantineMismatchedPropertyInspections(
+        running.id, running.primaryPropertyCardId, mission.constraints,
+      );
+      // A lead-card retry is the normal operator path for parcel research.  A
+      // bare browser session is not enough: it leaves the authenticated
+      // LandPortal lane unavailable even when the existing, safely-loaded
+      // environment credentials are configured.  Ensure the shared session is
+      // signed in here; the helper retains credentials inside the process and
+      // returns only readiness metadata.  Public/county inspection remains
+      // available if that optional source cannot be reached.
+      await ensureLandPortalAuthenticated();
+      const result = await runPropertyInspection({
+        cardId: running.primaryPropertyCardId,
+        searchKey: {
+          address: mission.constraints.address ?? undefined,
+          apn: mission.constraints.apn ?? undefined,
+          county: mission.constraints.county ?? undefined,
+          state: mission.constraints.state ?? undefined,
+          city: mission.constraints.city ?? undefined,
+          owner: str(prop.owner ?? undefined),
+        },
+        mode: 'deep_record',
+        timeoutMs: PHASE1_RESEARCH_LANE_TIMEOUT_MS,
+      }, {
+        landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
+        countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
+        googleVisualConfigured: googleVisualConfiguredResolved(),
+      });
+      persistPropertyInspection(running.primaryPropertyCardId, result.inspection);
+      const verification = verifyInspectionIdentity(mission.constraints, result.inspection);
+      const toolTrace = [...mission.toolTrace, ...result.routes.map((route) => ({
+        provider: route.provider, stage: route.stage, status: route.status,
+        confidence: route.confidence, url: route.url ?? null, note: route.note,
+      }))];
+      if (!verification.accepted) {
+        quarantineLatestPropertyInspection(running.id, running.primaryPropertyCardId, verification);
+        const discoveryPackage = buildOpportunityDiscoveryPackage(opportunity.id, { persist: true, actor: 'property-research-agent' });
+        updateOpportunityDiscoveryStatus(opportunity.id, 'brief_ready', {
+          actor: 'property-research-agent',
+          note: 'Pre-call research is incomplete: conflicting parcel evidence was quarantined and identity questions are available.',
+        });
+        updateOpportunityResearchStatus(opportunity.id, 'partial', {
+          actor: 'property-research-agent',
+          note: `Wrong or insufficient parcel evidence was quarantined: ${verification.reasons.join('; ')}`,
+        });
+        finishResearchMission(mission.id, {
+          status: 'quarantined',
+          summary: `No parcel evidence was promoted. ${verification.reasons.join('; ')}`,
+          safeNextAction: discoveryPackage.callPrep.nextResearchActions[0] ?? 'Confirm the parcel/APN and retry research.',
+          verification, toolTrace,
+        });
+        attachCardActivity({
+          cardId: running.primaryPropertyCardId, kind: 'phase1_research_quarantined', agentId: 'property-research-agent',
+          summary: `Research mission quarantined wrong-property evidence: ${verification.reasons.join('; ')}`,
+          ref: JSON.stringify({ missionId: mission.id, verification, priorQuarantinedActivityIds: priorQuarantines.map((row) => row.activityId) }),
+        });
+        return;
+      }
+      const observedFacts = result.inspection.parcelFacts;
+      const observedApn = meaningfulStr(observedFacts['Parcel ID'] ?? observedFacts.APN);
+      const observedCounty = meaningfulStr(observedFacts['Parcel Address County'] ?? observedFacts.County) ?? mission.constraints.county ?? undefined;
+      const observedState = meaningfulStr(observedFacts['Parcel Address State'] ?? observedFacts.State) ?? mission.constraints.state ?? undefined;
+      const observedCity = meaningfulStr(observedFacts['Parcel Address City'] ?? observedFacts.City) ?? mission.constraints.city ?? undefined;
+      const observedOwner = meaningfulStr(observedFacts['Owner Name']);
+      const statedAcres = Number(meaningfulStr(observedFacts.Acres));
+      const calculatedAcres = Number(meaningfulStr(observedFacts['Calc Acres']));
+      const observedAcres = Number.isFinite(statedAcres) && statedAcres > 0 ? statedAcres : calculatedAcres;
+      upsertPropertyCard({
+        entity: running.entity, cardId: running.primaryPropertyCardId,
+        activeInputAddress: mission.constraints.address ?? str(prop.active_input_address) ?? running.title,
+        city: observedCity, county: observedCounty, state: observedState, apn: observedApn,
+        owner: observedOwner, acres: Number.isFinite(observedAcres) && observedAcres > 0 ? observedAcres : undefined,
+        verified: true, verificationSource: 'LandPortal authenticated browser',
+        summary: 'Parcel identity verified against immutable operator jurisdiction constraints.',
+        agentId: 'property-research-agent',
+      });
+      // Once the subject has passed the immutable identity gate, continue the
+      // same operator-requested mission into the read-only Zillow/Redfin browser
+      // fallback.  Previously this only happened from the separate Deal Library
+      // report action, leaving a Lead Card research retry with no marketplace
+      // work at all.  The report path persists returned rows into the shared
+      // comp registry and retains site-specific blockers when a site refuses
+      // automation; no paid LandPortal workflow is involved.
+      const marketTrace: Array<Record<string, unknown>> = [];
+      try {
+        const marketRun = await runDealCardReport(running.legacyDealCardId, {
+          resolve: resolveParcelIdentityResult,
+          timeoutMs: PHASE1_RESEARCH_LANE_TIMEOUT_MS,
+          actor: 'property-research-agent',
+          compResearchDriver: makeLiveBrowserDriver('market_research'),
+        });
+        const research = (marketRun?.report.marketComps as unknown as {
+          research?: { attempts?: Array<{ source?: string; outcome?: string; note?: string; url?: string | null; compCount?: number }> };
+        } | undefined)?.research;
+        for (const attempt of research?.attempts ?? []) {
+          marketTrace.push({
+            provider: attempt.source === 'zillow' ? 'Zillow' : attempt.source === 'redfin' ? 'Redfin' : 'Marketplace browser',
+            stage: 'comparable_market', status: attempt.outcome ?? 'unknown', url: attempt.url ?? null,
+            note: `${attempt.compCount ?? 0} visible row(s). ${attempt.note ?? ''}`.trim(),
+          });
+        }
+        if (!research?.attempts?.length) {
+          marketTrace.push({ provider: 'Zillow / Redfin browser', stage: 'comparable_market', status: 'not_attempted', note: 'No browser marketplace attempt was returned by the report workflow.' });
+        }
+      } catch (error) {
+        marketTrace.push({ provider: 'Zillow / Redfin browser', stage: 'comparable_market', status: 'error', note: error instanceof Error ? error.message : 'Marketplace browser research failed before results could be returned.' });
+      }
+      const discoveryPackage = buildOpportunityDiscoveryPackage(opportunity.id, { persist: true, actor: 'property-research-agent' });
+      updateOpportunityDiscoveryStatus(opportunity.id, 'brief_ready', {
+        actor: 'property-research-agent',
+        note: discoveryPackage.callPrep.ready
+          ? 'Pre-call research report is decision-useful.'
+          : 'Pre-call research remains incomplete; discovery questions are available.',
+      });
+      const usefulEvidence = Object.keys(result.inspection.parcelFacts).length > 0
+        || result.inspection.assets.length > 0
+        || (result.inspection.evidence?.length ?? 0) > 0;
+      const failures = result.routes.filter((route) => route.status === 'error');
+      updateOpportunityResearchStatus(opportunity.id, usefulEvidence && failures.length === 0 ? 'complete' : 'partial', {
+        actor: 'property-research-agent',
+        note: usefulEvidence
+          ? `Research captured best-available evidence${failures.length ? `; ${failures.map((route) => route.provider).join(', ')} failed and can be retried` : ''}.`
+          : `No parcel evidence was captured; ${failures.map((route) => route.provider).join(', ') || 'providers'} remain retryable.`,
+      });
+      finishResearchMission(mission.id, {
+        status: usefulEvidence && failures.length === 0 ? 'complete' : 'partial',
+        summary: usefulEvidence ? 'Verified parcel-associated research was promoted to the shared Lead Card.' : 'No useful verified evidence was captured.',
+        safeNextAction: discoveryPackage.callPrep.nextResearchActions[0] ?? 'Review the verified research package before the discovery call.',
+        verification,
+        toolTrace: [...toolTrace, ...marketTrace, {
+          stage: 'learning_promotion', status: 'accepted',
+          note: 'Research outcome was promoted only after subject-parcel identity verification. Site-navigation mechanics remain separate from parcel facts.',
+        }],
+      });
+    } catch (error) {
+      try {
+        const mission = getResearchMission(missionId);
+        if (mission) failResearchMission(missionId, error instanceof Error ? error.message : 'Research mission failed.');
+        if (mission) updateOpportunityResearchStatus(mission.opportunityId, 'failed', {
+          actor: 'property-research-agent',
+          note: error instanceof Error ? error.message : 'Research worker failed; retry is available.',
+        });
+      } catch {
+        // The durable lead remains intact even if status recording also fails.
+      }
+    } finally {
+      scheduledResearchMissionIds.delete(missionId);
+    }
+  }, 0);
+}
+
+function queuePhase1Research(opportunity: OpportunityRecord, trigger = 'automatic_intake'): void {
+  const property = opportunity.primaryPropertyCardId
+    ? (getPropertyCardRow(opportunity.primaryPropertyCardId) as Record<string, unknown> | undefined)
+    : undefined;
+  const constraints = researchConstraintsFor(opportunity, property);
+  const mission = createResearchMission(opportunity, constraints, trigger);
+  scheduleResearchMission(mission.id);
 }
 /** A persisted public-intelligence run is the stronger full-parcel screening source.
  * Project it deterministically at read time so older report snapshots cannot revive
@@ -934,14 +1223,277 @@ export function liveCompsReadinessStatus(preflight: LiveDataPreflight): LiveComp
 }
 
 export function registerLandosRoutes(app: Hono): void {
+  if (!researchMissionRecoveryScheduled) {
+    researchMissionRecoveryScheduled = true;
+    setTimeout(() => {
+      for (const missionId of recoverableResearchMissionIds()) scheduleResearchMission(missionId);
+    }, 0);
+  }
   app.get('/api/landos/overview', (c) => {
     const entity = entityParam(c.req.query('entity'));
     const overview = getOverview(entity);
+    const opportunitySnapshot = getExecutiveOpportunitySnapshot(entity as LandosEntity | undefined);
+    const oc = opportunitySnapshot.counts;
     return c.json({
       ...overview,
+      opportunityMetrics: {
+        totalOpportunities: oc.total,
+        newLeads: oc.leads,
+        researchRunning: oc.research.queued + oc.research.running,
+        researchFailed: oc.research.failed,
+        researchIncomplete: oc.research.not_started + oc.research.partial + oc.research.failed,
+        discoveryNeedsPreparation: oc.discovery.not_started,
+        callsAwaitingTranscript: oc.discovery.brief_ready,
+        transcriptsAwaitingReconciliation: oc.discovery.call_complete,
+        ownerDecisions: oc.leads,
+        followUpsDue: 0,
+        followUpsOverdue: 0,
+        pursuedDeals: oc.deals,
+        browserProviderFailures: oc.research.failed,
+        approvalRequired: overview.pendingApprovals,
+      },
+      storageProfile: (() => {
+        const p = getLandosStorageProfile();
+        return { mode: p.mode, label: p.label, syntheticOnly: p.syntheticOnly };
+      })(),
       departments: DEPARTMENTS,
       pendingApprovalList: listApprovals('pending', 20),
     });
+  });
+
+  app.get('/api/landos/storage-profile', (c) => {
+    const p = getLandosStorageProfile();
+    return c.json({ mode: p.mode, label: p.label, syntheticOnly: p.syntheticOnly });
+  });
+
+  app.get('/api/landos/opportunities', (c) => {
+    const entity = entityParam(c.req.query('entity')) as LandosEntity | undefined;
+    return c.json(getExecutiveOpportunitySnapshot(entity));
+  });
+
+  app.get('/api/landos/opportunities/metrics', (c) => {
+    const entity = entityParam(c.req.query('entity')) as LandosEntity | undefined;
+    return c.json(getExecutiveOpportunitySnapshot(entity));
+  });
+
+  // Jarvis reads the exact same count/drilldown snapshot as Mission Control and
+  // Acquisitions, so every number can be explained by opening its records.
+  app.get('/api/landos/jarvis/opportunity-counts', (c) => {
+    const entity = entityParam(c.req.query('entity')) as LandosEntity | undefined;
+    const snapshot = getExecutiveOpportunitySnapshot(entity);
+    return c.json({ ...snapshot, explanation: 'Counts are computed from the returned opportunity records using their lifecycle, research, and discovery states.' });
+  });
+
+  app.get('/api/landos/opportunities/:id', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id < 1) return c.json({ error: 'invalid id' }, 400);
+    const opportunity = getOpportunityDetail(id);
+    return opportunity ? c.json({ opportunity }) : c.json({ error: 'opportunity not found' }, 404);
+  });
+
+  app.get('/api/landos/opportunities/:id/research-mission', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    return c.json({
+      mission: latestResearchMission(id),
+      quarantinedEvidence: listQuarantinedResearchEvidence(id),
+    });
+  });
+
+  app.post('/api/landos/leads/manual', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const conversationalRaw = typeof body.rawInput === 'string' ? body.rawInput : null;
+    if (conversationalRaw !== null && !conversationalRaw.trim()) {
+      return c.json({ error: 'Paste or dictate the lead information first.' }, 400);
+    }
+    const legacyRaw = JSON.stringify({
+      sellerName: str(body.sellerName)?.trim() ?? '', phone: str(body.phone)?.trim() ?? '',
+      email: str(body.email)?.trim() ?? '', leadSource: str(body.leadSource)?.trim() || 'manual',
+      address: str(body.address)?.trim() ?? '', apn: str(body.apn)?.trim() ?? '',
+      acreage: str(body.acreage)?.trim() ?? '', city: str(body.city)?.trim() ?? '',
+      county: str(body.county)?.trim() ?? '', state: str(body.state)?.trim() ?? '',
+      sellerClues: str(body.sellerClues)?.trim() ?? '',
+    });
+    const rawInput = conversationalRaw ?? legacyRaw;
+    const parsed = conversationalRaw !== null ? parseConversationalLeadIntake(rawInput) : null;
+    const sellerName = parsed?.sellerName ?? (str(body.sellerName)?.trim() || null);
+    const address = parsed?.address ?? (str(body.address)?.trim() || null);
+    const apn = parsed?.apn ?? (str(body.apn)?.trim() || null);
+    if (conversationalRaw === null && !sellerName) return c.json({ error: 'sellerName is required' }, 400);
+    if (conversationalRaw === null && !address && !apn) return c.json({ error: 'address or APN is required' }, 400);
+    const source = parsed?.leadSource ?? (str(body.leadSource)?.trim() || 'manual');
+    const propertyLabel = parsed?.propertyLabel ?? address ?? (apn ? `Parcel ${apn}` : 'Unresolved property');
+    const acresRaw = parsed?.acreage ?? (typeof body.acreage === 'number' ? body.acreage : Number(str(body.acreage)));
+    const city = parsed?.city ?? (str(body.city)?.trim() || null);
+    const county = parsed?.county ?? (str(body.county)?.trim() || null);
+    const state = parsed?.state ?? (str(body.state)?.trim() || null);
+    const storageLabel = propertyLabel === 'Unresolved property' ? `Unresolved property lead ${Date.now()}` : propertyLabel;
+    const property = upsertPropertyCard({
+      entity,
+      activeInputAddress: storageLabel,
+      city: city ?? undefined,
+      county: county ?? undefined,
+      state: state ?? undefined,
+      apn: apn ?? undefined,
+      owner: sellerName ?? undefined,
+      acres: Number.isFinite(acresRaw) && acresRaw > 0 ? acresRaw : undefined,
+      verified: false,
+      summary: rawInput,
+      agentId: 'acquisitions-agent',
+    }).card;
+    const profile = getLandosStorageProfile();
+    const deal = createDealCard({
+      entity,
+      title: `${sellerName || 'Unidentified seller'} — ${propertyLabel}`,
+      sellerNotes: rawInput,
+      leadType: profile.syntheticOnly ? 'test' : 'manual',
+    });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' });
+    let opportunity = ensureOpportunityForLegacyDealCard(deal.id);
+    getLandosDb().prepare(`
+      UPDATE landos_opportunity SET source = ?, raw_input = ?, research_status = 'queued', pipeline_stage = 'researching', updated_at = unixepoch()
+      WHERE id = ?
+    `).run(source, rawInput, opportunity.id);
+    opportunity = getOpportunity(opportunity.id)!;
+    queuePhase1Research(opportunity, 'automatic_manual_intake');
+    return c.json({
+      opportunityId: opportunity.id,
+      publicUid: opportunity.publicUid,
+      opportunity,
+      dealCardId: deal.id,
+      propertyCardId: property.id,
+      researchStatus: opportunity.researchStatus,
+      extraction: parsed ? {
+        sellerName: parsed.sellerName, phone: parsed.phone, email: parsed.email,
+        leadSource: parsed.leadSource, address: parsed.address, apn: parsed.apn,
+        city: parsed.city, county: parsed.county, state: parsed.state, acreage: parsed.acreage,
+        dealIntelligence: parsed.dealIntelligence,
+      } : null,
+    }, 201);
+  });
+
+  app.post('/api/landos/opportunities/:id/research', (c) => {
+    const id = Number(c.req.param('id'));
+    const opportunity = Number.isInteger(id) ? getOpportunity(id) : undefined;
+    if (!opportunity) return c.json({ error: 'opportunity not found' }, 404);
+    const queued = updateOpportunityResearchStatus(id, 'queued', { actor: 'owner', note: 'Owner requested research run/retry.' });
+    queuePhase1Research(queued, 'owner_retry');
+    return c.json({ opportunity: queued, mission: latestResearchMission(id) }, 202);
+  });
+
+  app.post('/api/landos/opportunities/:id/decision', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const decision = str(body.decision);
+    if (decision === 'pursue') return c.json({ opportunity: ownerPursueOpportunity(id, { owner: 'owner' }) });
+    if (decision === 'disposition') {
+      const disposition = str(body.disposition) ?? '';
+      if (!PHASE1_DISPOSITIONS.has(disposition)) return c.json({ error: 'invalid disposition' }, 400);
+      return c.json({ opportunity: ownerDisposeOpportunity(id, { owner: 'owner', disposition }) });
+    }
+    return c.json({ error: 'decision must be pursue or disposition' }, 400);
+  });
+
+  app.get('/api/landos/opportunities/:id/discovery-package', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    const discoveryPackage = buildOpportunityDiscoveryPackage(id, { persist: false });
+    return c.json({ discoveryPackage });
+  });
+
+  app.post('/api/landos/opportunities/:id/discovery-package/run', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    const discoveryPackage = buildOpportunityDiscoveryPackage(id, { persist: true, actor: 'property-research-agent' });
+    updateOpportunityDiscoveryStatus(id, 'brief_ready', {
+      actor: 'property-research-agent',
+      note: discoveryPackage.callPrep.ready
+        ? 'Pre-call research report is decision-useful.'
+        : 'Pre-call research is incomplete; confirmation questions are available and unsupported conclusions remain blocked.',
+    });
+    return c.json({ discoveryPackage });
+  });
+
+  app.get('/api/landos/opportunities/:id/discovery-package/download', async (c) => {
+    const id = Number(c.req.param('id'));
+    const opportunity = Number.isInteger(id) ? getOpportunity(id) : undefined;
+    if (!opportunity) return c.json({ error: 'opportunity not found' }, 404);
+    const discoveryPackage = buildOpportunityDiscoveryPackage(id, { persist: false });
+    const markdown = renderDiscoveryPackageMarkdown(discoveryPackage);
+    const format = (c.req.query('format') ?? 'pdf').toLowerCase();
+    const baseName = `discovery-package-${discoveryPackage.opportunityPublicUid}`;
+    if (format === 'md' || format === 'markdown') {
+      return new Response(markdown, { headers: {
+        'content-type': 'text/markdown; charset=utf-8',
+        'content-disposition': `attachment; filename="${baseName}.md"`,
+        'cache-control': 'private, max-age=60',
+      } });
+    }
+    const inspection = opportunity.primaryPropertyCardId ? loadPropertyInspection(opportunity.primaryPropertyCardId) : null;
+    const visualRoot = landosArtifactPath('visuals');
+    const imagePaths = (inspection?.assets ?? []).map((asset) => asset.storedPath).filter((storedPath) => {
+      const resolved = path.resolve(storedPath);
+      return resolved.startsWith(visualRoot + path.sep);
+    });
+    const pdf = await buildPropertyIntelligencePdf(markdown, imagePaths);
+    return new Response(new Uint8Array(pdf), { headers: {
+      'content-type': 'application/pdf',
+      'content-disposition': `attachment; filename="${baseName}.pdf"`,
+      'cache-control': 'private, max-age=60',
+    } });
+  });
+
+  app.post('/api/landos/opportunities/:id/transcripts', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    try {
+      const contentType = c.req.header('content-type') ?? '';
+      let content = '';
+      let sourceType: 'paste' | 'upload' = 'paste';
+      let fileName: string | null = null;
+      let actor = 'operator';
+      if (/multipart\/form-data/i.test(contentType)) {
+        const body = await c.req.parseBody();
+        const file = body.file;
+        if (!(file instanceof File)) return c.json({ error: 'a text transcript file is required' }, 400);
+        const textExtension = /\.(txt|text|md)$/i.test(file.name);
+        const textMime = !file.type || /^(text\/(plain|markdown)|application\/octet-stream)$/i.test(file.type);
+        if (!textExtension || !textMime) {
+          return c.json({ error: 'initial transcript upload supports text files only' }, 400);
+        }
+        if (file.size > 2_000_000) return c.json({ error: 'transcript content exceeds 2 MB UTF-8 text limit' }, 400);
+        content = await file.text();
+        sourceType = 'upload';
+        fileName = file.name;
+        if (typeof body.actor === 'string' && body.actor.trim()) actor = body.actor.trim();
+      } else {
+        const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+        content = typeof body.content === 'string' ? body.content : '';
+        sourceType = body.sourceType === 'upload' ? 'upload' : 'paste';
+        fileName = typeof body.fileName === 'string' ? body.fileName : null;
+        actor = typeof body.actor === 'string' && body.actor.trim() ? body.actor.trim() : 'operator';
+      }
+      return c.json(ingestAndReconcileTranscript({ opportunityId: id, content, sourceType, fileName, actor }), 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'transcript reconciliation failed' }, 400);
+    }
+  });
+
+  app.get('/api/landos/opportunities/:id/transcripts', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    return c.json({ transcripts: listOpportunityTranscripts(id) });
+  });
+
+  app.get('/api/landos/opportunities/:id/reconciliation', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    const reconciliation = getLatestOpportunityReconciliation(id);
+    return reconciliation
+      ? c.json({ reconciliation, tasks: listOpportunityReconciliationTasks(id, reconciliation.id) })
+      : c.json({ error: 'reconciliation not found' }, 404);
   });
 
   app.get('/api/landos/entities', (c) => {
@@ -1204,6 +1756,7 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({
       approvals: listApprovals(status && status !== 'all' ? status : undefined),
       gatedActionTypes: GATED_ACTION_TYPES,
+      prohibitedActionTypes: PROHIBITED_ACTION_TYPES,
     });
   });
 
@@ -1212,6 +1765,9 @@ export function registerLandosRoutes(app: Hono): void {
     const { actionType, title, payload, requestedBy, entity } = body as Record<string, unknown>;
     if (typeof actionType !== 'string' || typeof title !== 'string' || !actionType || !title) {
       return c.json({ error: 'actionType and title are required' }, 400);
+    }
+    if (isProhibitedActionType(actionType)) {
+      return c.json({ error: `action is prohibited and cannot be approved: ${actionType}` }, 403);
     }
     const id = createApproval({
       actionType,
@@ -1398,12 +1954,21 @@ export function registerLandosRoutes(app: Hono): void {
   // is a CONCISE pipeline summary of a Deal Card — never a second property
   // intelligence surface. deal_card_id lets a click open the canonical Deal Card.
   app.get('/api/landos/board', (c) => {
-    const entity = entityParam(c.req.query('entity'));
-    const cards = withBoardSummary(withPropertyWorkspaceSummary(suppressWeakerDuplicatePropertyCards(listPropertyCards({ entity, limit: 500 }))));
+    const entity = entityParam(c.req.query('entity')) as LandosEntity | undefined;
+    const cards = listOpportunityBoardCards(entity);
     const columns: Record<string, unknown[]> = {};
-    for (const s of KANBAN_STATUSES) columns[s] = [];
-    for (const card of cards) columns[(card as { kanban_status: string }).kanban_status]?.push(card);
-    return c.json({ columns, statuses: KANBAN_STATUSES });
+    for (const s of OPPORTUNITY_PIPELINE_STAGES) columns[s] = [];
+    for (const card of cards) columns[card.pipelineStage].push(card);
+    return c.json({ columns, statuses: OPPORTUNITY_PIPELINE_STAGES });
+  });
+
+  app.patch('/api/landos/opportunities/:id/pipeline-stage', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getOpportunity(id)) return c.json({ error: 'opportunity not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const stage = str(body.stage);
+    if (!stage || !(OPPORTUNITY_PIPELINE_STAGES as readonly string[]).includes(stage)) return c.json({ error: 'invalid pipeline stage' }, 400);
+    return c.json({ opportunity: setOpportunityPipelineStage(id, stage as (typeof OPPORTUNITY_PIPELINE_STAGES)[number], 'owner') });
   });
 
   // Resolve-or-create the canonical Deal Card for a property card. The Property
@@ -1506,6 +2071,222 @@ export function registerLandosRoutes(app: Hono): void {
     }
     if (!updated) return c.json({ error: 'no valid field (use kanbanStatus, or verificationStatus=rejected_mismatch|archived with a reason)' }, 400);
     return c.json({ card: updated });
+  });
+
+  // Owner correction for a lead's locality before parcel verification. This is
+  // deliberately narrower than a parcel correction: it preserves the card,
+  // address history, APN, owner, and verification state, and it can never
+  // promote, merge, or substitute a parcel identity.
+  app.post('/api/landos/property-cards/:id/locality-correction', async (c) => {
+    const id = Number(c.req.param('id'));
+    const existing = getPropertyCard(id);
+    if (!existing) return c.json({ error: 'property card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const city = str(body.city);
+    const county = str(body.county);
+    const state = str(body.state)?.toUpperCase();
+    if (!city || !county || !state || !/^[A-Z]{2}$/.test(state)) {
+      return c.json({ error: 'city, county, and a two-letter state are required' }, 400);
+    }
+    const result = upsertPropertyCard({
+      entity: existing.entity as LandosEntity,
+      cardId: id,
+      activeInputAddress: existing.active_input_address,
+      city,
+      county,
+      state,
+      verified: false,
+      summary: existing.summary,
+      agentId: 'owner-locality-correction',
+    });
+    const locality = `${city}, ${county.replace(/\s+County$/i, '')} County, ${state}`;
+    attachCardSourceEvidence({
+      cardId: id,
+      fact: 'Operator-confirmed locality',
+      value: locality,
+      sourceLabel: 'Owner correction',
+      note: 'Locality correction only; it does not verify or replace the parcel identity.',
+      parcelVerified: false,
+    });
+    attachCardActivity({
+      cardId: id,
+      agentId: 'owner-locality-correction',
+      kind: 'locality_corrected',
+      summary: `Lead locality corrected to ${locality}; parcel identity remains independently verified only through research.`,
+    });
+    return c.json({ card: result.card, warnings: result.warnings });
+  });
+
+  // A conflicting APN/owner is not a locality edit.  This guarded owner action
+  // replaces an accepted parcel identity only when the operator supplies the
+  // authoritative record and explicitly confirms the replacement. Existing
+  // inspection evidence is retained for audit but quarantined when it conflicts
+  // with the newly reconciled parcel; it is never merged into the new identity.
+  app.post('/api/landos/property-cards/:id/verified-parcel-reconciliation', async (c) => {
+    const id = Number(c.req.param('id'));
+    const existing = getPropertyCard(id);
+    if (!existing) return c.json({ error: 'property card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const address = str(body.address) ?? existing.active_input_address;
+    const city = str(body.city);
+    const county = str(body.county);
+    const state = str(body.state)?.toUpperCase();
+    const apn = str(body.apn);
+    const owner = str(body.owner);
+    const sourceUrl = str(body.sourceUrl);
+    const sourceLabel = str(body.sourceLabel) ?? 'Official parcel record';
+    const deedReference = str(body.deedReference);
+    if (!address || !city || !county || !state || !apn || !owner || !sourceUrl || !/^https?:\/\//i.test(sourceUrl)) {
+      return c.json({ error: 'address, city, county, state, APN, owner, and an official source URL are required' }, 400);
+    }
+    if (!/^[A-Z]{2}$/.test(state)) return c.json({ error: 'state must be a two-letter code' }, 400);
+    if (body.confirmAcceptedIdentityReplacement !== true) {
+      return c.json({ error: 'explicit confirmation is required before replacing an accepted parcel identity' }, 400);
+    }
+    const result = upsertPropertyCard({
+      entity: existing.entity as LandosEntity,
+      cardId: id,
+      activeInputAddress: address,
+      city,
+      county,
+      state,
+      apn,
+      owner,
+      verified: true,
+      verificationSource: `Owner-confirmed official parcel record — ${sourceLabel}: ${sourceUrl}`,
+      summary: 'Operator-confirmed parcel identity reconciled against the supplied official record.',
+      agentId: 'owner-verified-parcel-reconciliation',
+    });
+    attachCardSourceEvidence({
+      cardId: id,
+      fact: 'Official parcel identity',
+      value: `${address} — APN ${apn}; owner ${owner}`,
+      sourceLabel,
+      sourceUrl,
+      note: 'Operator-confirmed replacement of a conflicting previously accepted parcel identity.',
+      parcelVerified: true,
+    });
+    if (deedReference) {
+      attachCardSourceEvidence({
+        cardId: id,
+        fact: 'Deed book/page',
+        value: deedReference,
+        sourceLabel,
+        sourceUrl,
+        note: 'Recorded reference shown by the authoritative parcel record; document image retrieval remains a separate evidence step.',
+        parcelVerified: true,
+      });
+    }
+    const dealCardId = getDealCardIdForPropertyCard(id);
+    const opportunity = dealCardId ? getOpportunityByDealCardId(dealCardId) : null;
+    const quarantined = opportunity ? quarantineMismatchedPropertyInspections(opportunity.id, id, {
+      address, city, county, state, apn, source: 'property_fallback',
+    }) : [];
+    if (opportunity) buildOpportunityDiscoveryPackage(opportunity.id, { persist: true, actor: 'owner-verified-parcel-reconciliation' });
+    attachCardActivity({
+      cardId: id,
+      agentId: 'owner-verified-parcel-reconciliation',
+      kind: 'verified_parcel_reconciled',
+      summary: `Accepted parcel identity reconciled to ${apn} / ${owner} from ${sourceLabel}; ${quarantined.length} conflicting inspection record(s) quarantined.`,
+    });
+    return c.json({ card: result.card, warnings: result.warnings, quarantined: quarantined.length });
+  });
+
+  // A recorder image must come from an operator-visible official record. This
+  // explicit action stores one captured page with its source URL; it does not
+  // log into a county site, create an account, or convert a book/page reference
+  // into a document image. The shared registry projects it onto every owner
+  // card that uses this property-card document model.
+  app.post('/api/landos/property-cards/:id/recorded-deed-pages', async (c) => {
+    const id = Number(c.req.param('id'));
+    const existing = getPropertyCard(id);
+    if (!existing) return c.json({ error: 'property card not found' }, 404);
+    const body = await c.req.parseBody();
+    const file = body.file;
+    const documentId = str(body.documentId);
+    const sourceUrl = str(body.sourceUrl);
+    const sourceLabel = str(body.sourceLabel) ?? 'County recorder';
+    const title = str(body.title) ?? 'Recorded deed';
+    const pageNumber = Number(str(body.pageNumber));
+    if (!(file instanceof File)) return c.json({ error: 'A recorder page image is required.' }, 400);
+    if (!documentId || !sourceUrl || !/^https?:\/\//i.test(sourceUrl)) {
+      return c.json({ error: 'A recorded document/book-page reference and official recorder URL are required.' }, 400);
+    }
+    if (String(body.confirmedOfficialSource ?? '') !== 'true') {
+      return c.json({ error: 'Confirm that this exact image was displayed by the official county recorder before attaching it.' }, 400);
+    }
+    try {
+      const page = recordDeedPage({
+        cardId: id,
+        documentId,
+        pageNumber,
+        fileName: file.name,
+        mimeType: file.type,
+        bytes: Buffer.from(await file.arrayBuffer()),
+      });
+      attachCardSourceEvidence({
+        cardId: id,
+        fact: 'Vesting deed',
+        sourceLabel,
+        sourceUrl,
+        dateAccessed: new Date().toISOString(),
+        note: `${title} — ${documentId}, cited page ${page.pageNumber}. Operator-attested image captured from the official county recorder page. This is preliminary document review, not a title search or title opinion.`,
+        parcelVerified: true,
+      });
+      attachCardActivity({
+        cardId: id,
+        agentId: 'owner-recorded-deed-page',
+        kind: 'recorded_deed_page_attached',
+        summary: `Recorded deed page ${page.pageNumber} for ${documentId} attached from ${sourceLabel}.`,
+        ref: sourceUrl,
+      });
+      return c.json({ page, sourceUrl, title }, 201);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  // Record an official lien-index or recorded-lien review. This shared owner
+  // workflow intentionally stores a qualified result rather than a generic
+  // "liens clear" flag: a name-index result alone cannot establish a property
+  // encumbrance or clear title.
+  app.post('/api/landos/property-cards/:id/recorded-lien-review', async (c) => {
+    const id = Number(c.req.param('id'));
+    const existing = getPropertyCard(id);
+    if (!existing) return c.json({ error: 'property card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    try {
+      const review = validateRecordedLienReview({
+        status: str(body.status) as RecordedLienStatus,
+        sourceLabel: str(body.sourceLabel) ?? '',
+        sourceUrl: str(body.sourceUrl) ?? '',
+        searchedNameOrReference: str(body.searchedNameOrReference) ?? '',
+        recordingReference: str(body.recordingReference),
+        lienType: str(body.lienType),
+        propertyMatch: str(body.propertyMatch),
+        notes: str(body.notes),
+        confirmedOfficialSource: body.confirmedOfficialSource === true,
+      });
+      attachCardSourceEvidence({
+        cardId: id,
+        fact: 'Recorded lien review',
+        sourceLabel: review.sourceLabel,
+        sourceUrl: review.sourceUrl,
+        dateAccessed: new Date().toISOString(),
+        note: review.note,
+        parcelVerified: existing.verification_status === 'verified_property',
+      });
+      attachCardActivity({
+        cardId: id,
+        agentId: 'owner-recorded-lien-review',
+        kind: 'recorded_lien_review',
+        summary: `Recorded lien review saved: ${review.status.replace(/_/g, ' ')}.`,
+        ref: review.sourceUrl,
+      });
+      return c.json({ review }, 201);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
   });
 
   // Attach a Nearby Search Reference (verified subject parcel only). Never
@@ -2623,7 +3404,7 @@ export function registerLandosRoutes(app: Hono): void {
 
   // Read-only composition of existing canonical records. This route deliberately
   // does not invoke browser or provider lanes, or independently derive WS1-WS3.
-  app.get('/api/landos/lead-workspace/:id', (c) => {
+  app.get('/api/landos/lead-workspace/:id', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
@@ -2634,7 +3415,8 @@ export function registerLandosRoutes(app: Hono): void {
     const projection = projectCanonicalReport({ id, deal, report, publicRun, cardId, growthSummary: null });
     const acquisition = getAcquisition(id);
     const nextAction = acquisitionNextAction(acquisition, { ddParcelVerified: report.parcelVerified });
-    return c.json(buildLeadWorkspace({
+    const opportunity = getOpportunityByDealCardId(id);
+    const workspace = buildLeadWorkspace({
       deal: deal as unknown as Record<string, unknown>,
       report: report as unknown as Record<string, unknown>,
       acquisition: acquisition as unknown as Record<string, unknown>,
@@ -2643,12 +3425,32 @@ export function registerLandosRoutes(app: Hono): void {
       canonical: projection.canonical as unknown as Record<string, unknown>,
       compRegistry: projection.canonical.compRegistry as unknown as Record<string, unknown>,
       documents: (projection.canonical.documentRegistry ?? {}) as unknown as Record<string, unknown>,
-      mission: (missionViewForCard(cardId) ?? {}) as unknown as Record<string, unknown>,
+      mission: {
+        legacy: missionViewForCard(cardId) ?? {},
+        research: latestResearchMission(opportunity.id),
+        quarantinedEvidence: listQuarantinedResearchEvidence(opportunity.id),
+      } as unknown as Record<string, unknown>,
       activity: cardId ? getCardActivity(cardId) : [],
       marketPulse: null,
       marketMatrix: marketMatrixFor(deal),
       resolution: readResolutionSnapshot(id) as unknown as Record<string, unknown> | null,
-    }));
+    });
+    // The owner brief is a live market read. Retain only the material,
+    // source-bound public evidence in its concise Market Pulse; no raw feed or
+    // browser trace is exposed here.
+    const browserMarketIntel = await browserIntelFor(deal as unknown as Record<string, unknown>);
+    const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
+    const growthSummary = summarizeGrowthDrivers(browserMarketIntel as never);
+    const discoveryPackage = buildOpportunityDiscoveryPackage(opportunity.id, {
+      persist: false,
+      marketResearch: { browserIntel: browserMarketIntel, growthSummary },
+    });
+    return c.json({
+      ...workspace,
+      property: { ...workspace.property, cardId },
+      opportunity: { ...opportunity, lifecycleStatus: opportunity.lifecycle },
+      discoveryPackage,
+    });
   });
 
   app.get('/api/landos/deal-cards/:id/report', async (c) => {
@@ -2776,7 +3578,7 @@ export function registerLandosRoutes(app: Hono): void {
     const inspection = cardId ? loadPropertyInspection(cardId) : null;
     const imagePaths = (inspection?.assets ?? []).map((a) => a.storedPath).filter((p) => {
       const resolved = path.resolve(p);
-      const root = path.resolve(process.cwd(), 'store', 'visuals');
+      const root = landosArtifactPath('visuals');
       return resolved.startsWith(root + path.sep);
     });
     const format = (c.req.query('format') ?? 'pdf').toLowerCase();
@@ -2865,7 +3667,7 @@ export function registerLandosRoutes(app: Hono): void {
       // county-subdivision locality (e.g. "St. Helena Island") when the LandPortal
       // fact sheet has no city — without it the land-comp search silently disables.
       captureZillowComps: (input: Parameters<typeof fetchZillowLandComps>[0]) => fetchZillowLandComps({ ...publicLocalityFallback(id, input), subjectAcres: input.subjectAcres }),
-      captureRedfinComps: (input: Parameters<typeof fetchRedfinLandComps>[0]) => fetchRedfinLandComps({ ...input, ...publicLocalityFallback(id, input) }),
+      captureRedfinComps: (input: Parameters<typeof fetchRedfinLandComps>[0]) => fetchRedfinLandComps({ ...input, ...publicLocalityFallback(id, input), mode: 'sold' }),
       compResearchDriver: makeLiveBrowserDriver('comp_research'),
     };
     let result = await runDealCardReport(id, reportRunOptions);
@@ -3292,11 +4094,13 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const cardId = subjectCardId(deal);
     if (cardId == null || !isServableDocumentPage(cardId, file)) return c.json({ error: 'document page not found' }, 404);
-    const abs = path.join(process.cwd(), 'store', 'visuals', file);
+    const abs = landosArtifactPath('visuals', file);
     if (!fs.existsSync(abs)) return c.json({ error: 'document page not found' }, 404);
     const bytes = fs.readFileSync(abs);
+    const ext = path.extname(file).toLowerCase();
+    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
-      'Content-Type': 'image/png',
+      'Content-Type': mime,
       'Cache-Control': 'private, max-age=3600',
     });
   });
@@ -3539,6 +4343,13 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(dealCardId);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     if (!isEntity(deal.entity)) return c.json({ error: 'deal card has no valid entity' }, 400);
+    const status = str(body.status) as CompStatus | undefined;
+    const priceKind = str(body.priceKind) as CompPriceKind | undefined;
+    // A row marked as a verified sale must be reproducible from its source,
+    // otherwise it stays a market reference instead of leaking into pricing.
+    if (status === 'verified_sale' && (!str(body.sourceUrl) || !str(body.addressDesc) || num(body.price) == null || num(body.acres) == null || !str(body.saleOrListDate) || priceKind !== 'sale')) {
+      return c.json({ error: 'A verified sale needs its source link, property, sale price, sale date, acreage, and a closed-sale classification.' }, 400);
+    }
     const comp = addComp({
       entity: deal.entity,
       dealCardId,
@@ -3550,13 +4361,15 @@ export function registerLandosRoutes(app: Hono): void {
       county: str(body.county),
       state: str(body.state),
       price: num(body.price),
-      priceKind: str(body.priceKind) as CompPriceKind | undefined,
+      priceKind,
       saleOrListDate: str(body.saleOrListDate),
       acres: num(body.acres),
       pricePerAcre: num(body.pricePerAcre),
       notes: str(body.notes),
       addedBy: str(body.addedBy),
-      status: str(body.status) as CompStatus | undefined,
+      status,
+      lat: num(body.lat),
+      lng: num(body.lng),
     });
     return c.json({ comp }, 201);
   });
@@ -3817,7 +4630,7 @@ export function registerLandosRoutes(app: Hono): void {
         actor: 'tyler/from-verification',
         googleVisualConfigured: googleVisualConfiguredResolved(),
         captureZillowComps: fetchZillowLandComps,
-        captureRedfinComps: fetchRedfinLandComps,
+        captureRedfinComps: (input) => fetchRedfinLandComps({ ...input, mode: 'sold' }),
         compResearchDriver: makeLiveBrowserDriver('comp_research'),
       })) as { warnings?: string[] } | null;
       if (rep && Array.isArray(rep.warnings)) reportWarnings = rep.warnings;
@@ -4054,7 +4867,7 @@ export function registerLandosRoutes(app: Hono): void {
                 timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
                 googleVisualConfigured: false,
                 captureZillowComps: fetchZillowLandComps,
-                captureRedfinComps: fetchRedfinLandComps,
+                captureRedfinComps: (input) => fetchRedfinLandComps({ ...input, mode: 'sold' }),
                 compResearchDriver: makeLiveBrowserDriver('comp_research'),
               });
               if (result?.report.parcelVerified) ensurePublicIntelligenceMission(dealCardId, 'parallel resolution');
@@ -4155,7 +4968,7 @@ export function registerLandosRoutes(app: Hono): void {
             timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
             googleVisualConfigured: false,
             captureZillowComps: fetchZillowLandComps,
-            captureRedfinComps: fetchRedfinLandComps,
+          captureRedfinComps: (input) => fetchRedfinLandComps({ ...input, mode: 'sold' }),
             compResearchDriver: makeLiveBrowserDriver('comp_research'),
           });
           if (result?.report.parcelVerified) ensurePublicIntelligenceMission(dealCardId, 'parallel resolution');
@@ -4256,7 +5069,7 @@ export function registerLandosRoutes(app: Hono): void {
       prefetchedVerification: resolution.verifiedData,
       googleVisualConfigured: false,
       captureZillowComps: fetchZillowLandComps,
-      captureRedfinComps: fetchRedfinLandComps,
+      captureRedfinComps: (input) => fetchRedfinLandComps({ ...input, mode: 'sold' }),
       compResearchDriver: makeLiveBrowserDriver('comp_research'),
     });
     const reportVerified = result?.report.parcelVerified === true;
@@ -4997,7 +5810,7 @@ export function registerLandosRoutes(app: Hono): void {
     const asset = loadEligibleCardVisualCapture(cardId)[service];
     if (!asset?.storedPath) return c.json({ error: 'image excluded: parcel association could not be confirmed' }, 404);
     const resolved = path.resolve(asset.storedPath);
-    const root = path.resolve(process.cwd(), 'store', 'visuals');
+    const root = landosArtifactPath('visuals');
     if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
     try {
       const buf = fs.readFileSync(resolved);
@@ -5018,7 +5831,7 @@ export function registerLandosRoutes(app: Hono): void {
     const asset = inspection?.assets.find((a) => a.key === key);
     if (!asset?.storedPath) return c.json({ error: 'no captured image' }, 404);
     const resolved = path.resolve(asset.storedPath);
-    const root = path.resolve(process.cwd(), 'store', 'visuals');
+    const root = landosArtifactPath('visuals');
     if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
     try {
       const buf = fs.readFileSync(resolved);
@@ -5131,7 +5944,7 @@ export function registerLandosRoutes(app: Hono): void {
     const asset = rec?.sources?.find((s) => s.source === source && s.state === 'captured' && s.storedPath);
     if (!asset?.storedPath) return c.json({ error: 'image excluded: parcel association could not be confirmed' }, 404);
     const resolved = path.resolve(asset.storedPath);
-    const root = path.resolve(process.cwd(), 'store', 'visuals');
+    const root = landosArtifactPath('visuals');
     if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
     try {
       const buf = fs.readFileSync(resolved);
@@ -5302,10 +6115,21 @@ export function registerLandosRoutes(app: Hono): void {
     const operationalBackend = pickMarketResearchBackend('operational');
     const info = playbookInfo(landportalMarketResearchPlaybook, operationalBackend);
     const runs = listBrowserAgentRuns(undefined, 50);
+    // This page previously claimed the live backend was "not wired" even when
+    // the agent had just completed a real LandPortal run. Report only the
+    // current in-process session state here; do not create a fresh CDP
+    // connection merely to render a status page.
+    const sessionState = browserSessionStatus();
+    const liveVisualNavigation = {
+      live: 'connected',
+      auth_needed: 'authentication needed',
+      disabled: 'not connected',
+      unreachable: 'not reachable',
+    }[sessionState];
     return {
-      employee: { id: 'browser_agent', name: 'Web', role: 'Browser automation and Browser Playbook execution' },
-      liveVisualNavigation: 'not_wired' as const,
-      liveVisualNote: 'No authenticated visual browser backend is wired in this environment. The operational backend is the captured Drill Deep replay (identical pipeline); a real live session would implement the same MarketResearchBackend and fail honestly (awaiting_authentication) until authenticated.',
+      employee: { id: 'browser_agent', name: 'Browser Agent', role: 'Browser automation and Browser Playbook execution' },
+      liveVisualNavigation,
+      liveVisualNote: `Live LandPortal session is ${liveVisualNavigation}.`,
       playbooks: [{
         ...info,
         acreageBands: Object.entries(DRILL_DEEP_ACREAGE_LABEL).map(([band, label]) => ({ band, uiLabel: label, supported: label !== null })),

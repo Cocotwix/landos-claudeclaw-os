@@ -12,9 +12,9 @@ describe('14-agent roster', () => {
     expect(executiveAgent().group).toBe('orchestrator');
   });
 
-  it('positions Duke as the Due Diligence Specialist lane (active)', () => {
+  it('positions the hidden legacy worker id behind the Property Research Agent role', () => {
     const dd = getAgentDef('dd_bot');
-    expect(dd?.name).toBe('Due Diligence Specialist');
+    expect(dd?.name).toBe('Property Research Agent');
     expect(dd?.implAgentId).toBe('duke-due-diligence');
     expect(dd?.status).toBe('active');
     expect(dd?.group).toBe('acquisitions');

@@ -199,7 +199,7 @@ import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
 import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
-import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
+import { killProcess, isProcessAlive, liveProcessIds, findProcessesByPattern } from './platform.js';
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
   const agentIds = listAgentIds();
@@ -3018,18 +3018,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // List all configured agents with status
   app.get('/api/agents', (c) => {
     const agentIds = listAgentIds();
+    const pidByAgent = new Map<string, number>();
+    const readPid = (agentId: string, fileName: string) => {
+      const pidFile = path.join(STORE_DIR, fileName);
+      if (!fs.existsSync(pidFile)) return;
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+        if (Number.isInteger(pid) && pid > 0) pidByAgent.set(agentId, pid);
+      } catch { /* invalid or unreadable pid file */ }
+    };
+    for (const id of agentIds) readPid(id, `agent-${id}.pid`);
+    readPid('main', 'claudeclaw.pid');
+    // One in-process signal-0 pass for the whole roster. The previous code ran
+    // one visible blocking shell per PID whenever a page requested /api/agents.
+    const livePids = liveProcessIds(pidByAgent.values());
     const agents = agentIds.map((id) => {
       try {
         const config = loadAgentConfig(id);
-        // Check if agent process is alive via PID file
-        const pidFile = path.join(STORE_DIR, `agent-${id}.pid`);
-        let running = false;
-        if (fs.existsSync(pidFile)) {
-          try {
-            const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-            running = isProcessAlive(pid);
-          } catch { /* process not running */ }
-        }
+        const pid = pidByAgent.get(id);
+        const running = pid !== undefined && livePids.has(pid);
         const stats = getAgentTokenStats(id);
         const mainOverride = id === 'main' ? getMainModelOverride() : undefined;
         return {
@@ -3051,14 +3058,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
 
     // Include main bot too
-    const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
-    let mainRunning = false;
-    if (fs.existsSync(mainPidFile)) {
-      try {
-        const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
-        mainRunning = isProcessAlive(pid);
-      } catch { /* not running */ }
-    }
+    const mainPid = pidByAgent.get('main');
+    const mainRunning = mainPid !== undefined && livePids.has(mainPid);
     const mainStats = getAgentTokenStats('main');
     const allAgents = [
       { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },

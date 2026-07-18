@@ -1,0 +1,24 @@
+[
+  {
+    "liveUrl": "http://localhost:3141/dept/acquisitions",
+    "steps": ["Create synthetic lead", "Promote the opportunity", "Observe the same card"],
+    "expected": "The promoted card receives the subtle Deal highlight",
+    "actual": "The mutation persisted but the workspace adapter omitted lifecycleStatus, so the UI continued to render Lead",
+    "evidencePaths": [".runtime/landos/qa/qa-2026-07-17T06-12-00-871Z/report.md"],
+    "severity": "major",
+    "suspectedSubsystem": "phase1-actionable-lead",
+    "disposition": "internally_fixable",
+    "patternKey": "frontend-missing-value"
+  },
+  {
+    "liveUrl": "http://localhost:3141/dept/acquisitions",
+    "steps": ["Promote the synthetic opportunity", "Hard refresh the workspace"],
+    "expected": "Promotion remains visibly highlighted after refresh",
+    "actual": "The persisted lifecycle was not projected into the lifecycleStatus field consumed by the workspace",
+    "evidencePaths": [".runtime/landos/qa/qa-2026-07-17T06-12-00-871Z/report.md"],
+    "severity": "blocker",
+    "suspectedSubsystem": "phase1-actionable-lead",
+    "disposition": "internally_fixable",
+    "patternKey": "refresh-data-loss"
+  }
+]

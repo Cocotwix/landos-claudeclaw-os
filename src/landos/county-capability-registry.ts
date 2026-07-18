@@ -110,6 +110,16 @@ export interface CountyNavigationRecipe {
   updatedAt: string;
 }
 
+/** Guidance may be borrowed from a proven platform family, but it is never
+ * represented as a verified recipe for the new county.  County-specific URLs,
+ * selectors, and quirks are learned only after that county returns facts. */
+export interface CountyNavigationGuidance {
+  kind: 'county_verified' | 'platform_template' | 'none';
+  platformFamily: CountyPlatformFamily;
+  recipe: CountyNavigationRecipe | null;
+  templateFrom: { state: string; county: string; version: number } | null;
+}
+
 export interface CountyCapabilityInput {
   state: string;
   county: string;
@@ -329,6 +339,28 @@ export class CountyCapabilityRegistry {
     return recipe;
   }
 
+  /**
+   * Return the safest available starting guidance for a county.  A verified
+   * county recipe always wins.  Otherwise we reuse only the value-free action
+   * sequence of a recently proven portal family; the new county must still be
+   * observed and successfully searched before it receives its own recipe.
+   */
+  getNavigationGuidance(state: string, county: string, options: { maxAgeDays?: number; now?: Date } = {}): CountyNavigationGuidance {
+    const capability = this.get(state, county);
+    const family = capability?.platformFamily ?? 'unknown';
+    const current = this.getUsableRecipe(state, county, options);
+    if (current) return { kind: 'county_verified', platformFamily: family, recipe: current, templateFrom: null };
+    if (family === 'unknown') return { kind: 'none', platformFamily: family, recipe: null, templateFrom: null };
+    const template = this.findUsableFamilyRecipe(family, options);
+    if (!template) return { kind: 'none', platformFamily: family, recipe: null, templateFrom: null };
+    return {
+      kind: 'platform_template',
+      platformFamily: family,
+      recipe: makeValueFreeFamilyTemplate(template),
+      templateFrom: { state: template.state, county: template.county, version: template.version },
+    };
+  }
+
   recordRecipeSuccess(state: string, county: string, version: number, runReference: string, verifiedAt = this.isoNow()): CountyNavigationRecipe {
     const recipe = this.requireRecipe(state, county, version);
     if (recipe.status === 'superseded') throw new Error('A superseded county recipe cannot be reactivated as current.');
@@ -443,6 +475,32 @@ export class CountyCapabilityRegistry {
   }
 
   private isoNow(): string { return this.now().toISOString(); }
+
+  private findUsableFamilyRecipe(platformFamily: CountyPlatformFamily, options: { maxAgeDays?: number; now?: Date }): CountyNavigationRecipe | null {
+    const rows = this.db.prepare(`
+      SELECT r.* FROM landos_county_navigation_recipe r
+      INNER JOIN landos_county_capability c ON c.state = r.state AND c.county = r.county
+      WHERE r.status = 'current' AND r.platform_family = ? AND c.implementation_status = 'live_tested'
+      ORDER BY r.verified_at DESC, r.version DESC
+    `).all(platformFamily) as Record<string, unknown>[];
+    const maxAgeMs = Math.max(1, options.maxAgeDays ?? 90) * 86_400_000;
+    const now = options.now ?? this.now();
+    return rows.map(recipeFromRow).find((recipe) => now.getTime() - new Date(recipe.verifiedAt).getTime() <= maxAgeMs) ?? null;
+  }
+}
+
+function makeValueFreeFamilyTemplate(recipe: CountyNavigationRecipe): CountyNavigationRecipe {
+  return {
+    ...recipe,
+    // A county URL or DOM selector is a county-specific quirk, not a reusable
+    // platform guarantee.  Preserve only generic navigation actions/value kinds.
+    steps: recipe.steps.map((step) => ({
+      action: step.action,
+      valueSource: step.valueSource,
+      expected: step.action === 'validate_fact' ? step.expected : undefined,
+      timeoutMs: step.timeoutMs,
+    })),
+  };
 }
 
 /** Classifies common portal families; it does not assert the portal has a working recipe. */
@@ -570,4 +628,3 @@ function normalizeIso(input: string): string {
 function nullable(value: unknown): string | null { return value === null || value === undefined ? null : String(value); }
 function nullableNumber(value: unknown): number | null { return value === null || value === undefined ? null : Number(value); }
 function parseJson<T>(value: unknown, fallback: T): T { try { return JSON.parse(String(value)) as T; } catch { return fallback; } }
-

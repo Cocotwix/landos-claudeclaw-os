@@ -29,6 +29,10 @@ interface PuppeteerPage {
   setViewport?(viewport: { width: number; height: number; deviceScaleFactor?: number; isMobile?: boolean }): Promise<void>;
   close(): Promise<void>;
   url(): string;
+  $(selector: string): Promise<{
+    evaluate<T>(fn: (node: any) => T): Promise<T>;
+    uploadFile(...paths: string[]): Promise<void>;
+  } | null>;
 }
 interface PuppeteerBrowser {
   newPage(): Promise<PuppeteerPage>;
@@ -106,6 +110,45 @@ function wrapPage(page: PuppeteerPage): QaPageDriver {
         }) as unknown as (arg: string) => boolean,
         text,
       );
+    },
+    async clickTestId(testId: string) {
+      return page.evaluate<boolean>(
+        ((id: string) => {
+          const target = document.querySelector(`[data-testid="${id}"]`) as any;
+          if (!target || typeof target.click !== 'function') return false;
+          target.click();
+          return true;
+        }) as unknown as (arg: string) => boolean,
+        testId,
+      );
+    },
+    async fillTestId(testId: string, value: string) {
+      return page.evaluate<boolean>(
+        (((encoded: string) => {
+          const [id, nextValue] = JSON.parse(encoded) as [string, string];
+          const target = document.querySelector(`[data-testid="${id}"]`) as any;
+          if (!target || !('value' in target)) return false;
+          const prototype = target.tagName === 'TEXTAREA'
+            ? (globalThis as any).HTMLTextAreaElement?.prototype
+            : (globalThis as any).HTMLInputElement?.prototype;
+          const setter = prototype ? Object.getOwnPropertyDescriptor(prototype, 'value')?.set : undefined;
+          if (setter) setter.call(target, nextValue);
+          else target.value = nextValue;
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+          target.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }) as unknown as (arg: string) => boolean),
+        JSON.stringify([testId, value]),
+      );
+    },
+    async uploadTestId(testId: string, filePath: string) {
+      const handle = await page.$(`[data-testid="${testId}"]`);
+      if (!handle) return false;
+      const isFile = await handle.evaluate((node: any) => node?.tagName === 'INPUT' && node?.type === 'file');
+      if (!isFile || typeof (handle as any).uploadFile !== 'function') return false;
+      await (handle as any).uploadFile(filePath);
+      await handle.evaluate((node: any) => node.dispatchEvent(new Event('change', { bubbles: true })));
+      return true;
     },
     async screenshot(filePath: string) {
       await page.screenshot({ path: filePath, fullPage: false });

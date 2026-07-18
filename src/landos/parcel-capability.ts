@@ -3,8 +3,8 @@
 // The business workflow (Due Diligence) requests the CAPABILITY "verify parcel
 // identity"; it never names a vendor. This router selects a provider by config
 // (intended primary: Realie.ai once REALIE_API_KEY is present), falls back only
-// to other CONFIGURED providers (LandPortal as legacy fallback; County Records
-// Browser Agent as a future official-record provider), and NEVER silently
+// to other CONFIGURED providers (County Records Browser as a future official-
+// record provider), and NEVER silently
 // substitutes — the chosen provider + fallback reason are reported as provenance.
 //
 // Output is the canonical LpResolveResult the DD path already consumes (kept as
@@ -20,14 +20,7 @@
 import { logger } from '../logger.js';
 import { readEnvFile, withEnvFileSecrets } from '../env.js';
 import { deriveCounty } from './providers/county-geocode.js';
-import {
-  lpResolveForPreflight,
-  landPortalConfigured,
-  emptyLpPropertySummary,
-  type LpResolveArgs,
-  type LpResolveResult,
-  type LpPropertySummary,
-} from './landportal-client.js';
+import type { LpResolveArgs, LpResolveResult, LpPropertySummary } from './landportal-client.js';
 import {
   makeRealieParcelAdapter,
   type ParcelLookupArgs,
@@ -40,14 +33,14 @@ import { makeCountyRecordsBrowserPlaceholder } from './browser-agents.js';
 export type { LpResolveArgs, LpResolveResult } from './landportal-client.js';
 
 export const PARCEL_PROVIDER_ENV = 'LANDOS_PARCEL_PROVIDER';
-export type ParcelProviderId = 'realie' | 'landportal' | 'county_records_browser';
+export type ParcelProviderId = 'realie' | 'county_records_browser';
 
 /** Intended production primary. Realie sits behind this abstraction; it becomes
  *  active automatically once REALIE_API_KEY is present. */
 export const DEFAULT_PRIMARY_PARCEL_PROVIDER: ParcelProviderId = 'realie';
-/** Fallback order after the active provider (legacy LandPortal, then the future
- *  official-record County Records Browser). */
-export const DEFAULT_PARCEL_FALLBACK_ORDER: ParcelProviderId[] = ['landportal', 'county_records_browser'];
+/** Fallback order after the active provider. LandPortal is browser-only and can
+ * never be selected by this structured-provider runtime. */
+export const DEFAULT_PARCEL_FALLBACK_ORDER: ParcelProviderId[] = ['county_records_browser'];
 
 export interface ParcelProvenance {
   provider: ParcelProviderId | 'none';
@@ -66,7 +59,6 @@ export interface ParcelIdentityOutcome {
 
 export interface ResolveParcelDeps {
   /** Injected in tests so no .env/network is touched. */
-  landPortalResolve?: (args: LpResolveArgs, timeoutMs: number) => Promise<LpResolveResult>;
   realieLookup?: (args: ParcelLookupArgs, opts: { timeoutMs: number }) => Promise<NormalizedParcel>;
   /** Override availability per provider (tests). Default = real presence checks. */
   configured?: Partial<Record<ParcelProviderId, boolean>>;
@@ -83,7 +75,7 @@ function present(v: string | undefined): boolean {
 /** Active provider from config; defaults to the intended primary (Realie). */
 export function activeParcelProvider(env: NodeJS.ProcessEnv = process.env): ParcelProviderId {
   const v = (env[PARCEL_PROVIDER_ENV] ?? '').trim().toLowerCase();
-  if (v === 'realie' || v === 'landportal' || v === 'county_records_browser') return v;
+  if (v === 'realie' || v === 'county_records_browser') return v;
   return DEFAULT_PRIMARY_PARCEL_PROVIDER;
 }
 
@@ -99,7 +91,6 @@ function isConfigured(id: ParcelProviderId, deps: ResolveParcelDeps): boolean {
   if (deps.configured && id in deps.configured) return !!deps.configured[id];
   switch (id) {
     case 'realie': return realieConfigured();
-    case 'landportal': return landPortalConfigured();
     case 'county_records_browser': return makeCountyRecordsBrowserPlaceholder().configured(); // false until wired
   }
 }
@@ -135,7 +126,9 @@ function normalizedToResult(n: NormalizedParcel): LpResolveResult {
   // Fields the provider didn't supply stay blank -> honest data gaps, never faked.
   let property_summary: LpPropertySummary | undefined;
   if (n.verified) {
-    const ps = emptyLpPropertySummary();
+    // Transitional canonical shape. Type-only compatibility is retained while
+    // the LandPortal network client stays entirely outside the runtime graph.
+    const ps = {} as LpPropertySummary;
     ps.propertyid = n.propertyId ?? '';
     ps.apn = n.apn ?? '';
     ps.county = n.county ?? '';
@@ -210,9 +203,7 @@ export async function resolveParcelIdentity(
     }
     try {
       let result: LpResolveResult;
-      if (id === 'landportal') {
-        result = await (deps.landPortalResolve ?? lpResolveForPreflight)(args, timeoutMs);
-      } else if (id === 'realie') {
+      if (id === 'realie') {
         // Wire the live Census county derivation so Realie address lookups are
         // locality-constrained (root-cause fix). Tests inject deps.realieLookup
         // and never hit the network.

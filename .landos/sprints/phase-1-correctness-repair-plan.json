@@ -1,0 +1,71 @@
+{
+  "sprintId": "sprint-2026-07-17-phase-1-correctness-repair",
+  "title": "Phase 1 correctness repair: verified research before discovery",
+  "originalPrompt": "Repair the unusable Phase 1 Lead Workspace shown for 272 McAlister Road, Kingstree SC. Research must occur before transcript upload and must never mix or silently override the operator's city, county, or state. The current run incorrectly researched 272 McAlister Road in Lincolnton, NC, persisted wrong-parcel evidence, left the opportunity research status not_started, and displayed an empty call-package shell with unsupported generic strategy rankings. Repair the complete manual-lead-to-discovery research path, quarantine mismatched evidence without deleting important data, make research durable and observable, ensure the Lead Card consumes only parcel-associated evidence, require sold/date/distance/type-qualified comps for valuation, and verify useful populated output rather than headings. Also stop the blank Windows shell window that flashes on navigation. Evolve the runtime toward Hermes-style durable role agents: shared canonical memory, bounded tool use, observe-plan-act-verify behavior, outcome records, safe reusable learning, Jarvis coordination and double-checking, while preserving owner-only outbound, no paid actions, no offer/contract sending, LandPortal authenticated browser-only access, local-first model policy, existing data, and unrelated work. Complete the repair autonomously through implementation, staged tests, independent browser QA, combined regression, and live operator verification; leave LandOS healthy at localhost:3141.",
+  "workstreams": [
+    {
+      "id": "ws1-windows-runtime",
+      "name": "Invisible and bounded Windows process health",
+      "operatorOutcome": "Navigating among Mission Control, Acquisitions, and Jarvis never opens a console window and agent status loads without repeated blocking shell processes.",
+      "inScope": ["Windows process health", "agent status endpoint", "navigation performance"],
+      "backendServices": ["platform process helpers", "agent status API"],
+      "frontendScreens": ["Mission Control", "Acquisitions", "Jarvis"],
+      "requiredDataState": "No operating data mutation.",
+      "browserJourney": {"steps": ["Navigate Mission Control to Acquisitions to Jarvis and back", "Confirm no external shell window is launched", "Confirm agent status remains accurate and responsive"]},
+      "testRequirements": ["Windows hidden-process regression", "single/bounded process-status query", "agent endpoint integration"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["console window opens", "one shell invocation per agent", "agent status breaks", "navigation blocks for seconds"],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "independent_browser_qa", "restart_persistence"],
+      "dependsOn": [],
+      "requirements": [
+        {"id":"R1-01","text":"Windows process checks never create a visible console and do not invoke one blocking shell per configured agent."},
+        {"id":"R1-02","text":"Mission Control, Acquisitions, and Jarvis navigation remains functional, responsive, and shell-free after restart."}
+      ]
+    },
+    {
+      "id": "ws2-verified-research-mission",
+      "name": "Durable jurisdiction-safe research agent mission",
+      "operatorOutcome": "Every manual lead starts one durable research mission that preserves operator input, rejects wrong-jurisdiction parcels, records each tool attempt and verification result, and safely reuses learning without promoting bad evidence.",
+      "inScope": ["manual and migrated lead research", "identity constraints", "evidence quarantine", "research mission state", "browser navigation learning", "Jarvis verification contract"],
+      "backendServices": ["opportunity", "property inspection", "LandPortal browser", "parcel resolution", "agent mission runtime", "institutional memory"],
+      "frontendScreens": ["Lead Card research status", "research evidence and failures"],
+      "requiredDataState": "Wrong-parcel Lead 25 inspection is preserved but quarantined; existing accepted data is unchanged.",
+      "browserJourney": {"steps": ["Create an isolated manual lead", "Observe automatic durable research", "Exercise conflicting same-address jurisdiction", "Confirm wrong parcel is quarantined", "Confirm retry and restart resume safely"]},
+      "testRequirements": ["hard city/state/county constraints", "operator-input precedence", "wrong-parcel quarantine", "durable mission transitions", "restart recovery", "navigation-learning semantic guard"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["jurisdiction contamination", "wrong parcel promoted", "research remains not_started", "background work disappears on restart", "navigation learning bypasses identity verification"],
+      "requiredProofs": ["db_evidence", "test_result", "api_evidence", "browser_journey", "independent_browser_qa", "refresh_persistence", "restart_persistence"],
+      "dependsOn": ["ws1-windows-runtime"],
+      "requirements": [
+        {"id":"R2-01","text":"Operator-entered city, county, and state are immutable research constraints unless the owner explicitly corrects them."},
+        {"id":"R2-02","text":"Wrong-jurisdiction or contradictory parcel evidence is preserved as quarantined evidence and cannot update canonical facts, comps, valuation, score, strategy, or report."},
+        {"id":"R2-03","text":"Automatic research is a durable, idempotent, observable mission with bounded retries and restart recovery, not only an in-memory timer."},
+        {"id":"R2-04","text":"Browser navigation learning records how to use a site but can only be promoted after semantic parcel-identity verification and successful replay."},
+        {"id":"R2-05","text":"Jarvis and the Property Research Agent expose who acted, tools used, evidence obtained, verification result, unresolved gaps, and the safe next action."}
+      ]
+    },
+    {
+      "id": "ws3-useful-discovery-report",
+      "name": "Evidence-backed pre-call report and truthful operator acceptance",
+      "operatorOutcome": "Before transcript upload, the Lead Card shows the correct research, visuals, sold-comp analysis, Market Pulse, Land Score, and defensible strategy guidance, or a concise honest failure state with research actions—never an empty report labeled ready.",
+      "inScope": ["discovery package projection", "Lead Card", "comp qualification", "strategy gates", "PDF", "operator QA assertions"],
+      "backendServices": ["discovery package", "comp registry", "market pulse", "land score", "PDF"],
+      "frontendScreens": ["Lead Workspace", "Discovery Call Package"],
+      "requiredDataState": "Only parcel-associated verified evidence is projected; active/pending are context and solds drive value.",
+      "browserJourney": {"steps": ["Open a correctly resolved researched lead", "Reconcile visible facts against persisted evidence", "Inspect visuals and sold comps", "Inspect report and PDF", "Open an unresolved lead", "Confirm no unsupported strategy ranking or ready claim", "verify refresh and restart"]},
+      "testRequirements": ["report/evidence reconciliation", "sold comp date-distance-acreage-type gates", "strategy evidence thresholds", "resolved and unresolved operator journeys", "PDF parity", "real-value browser assertions"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["empty package called ready", "wrong evidence hidden but sprint passes", "generic strategies ranked without facts", "listed comps treated as solds", "QA checks only headings", "transcript presented as prerequisite to research"],
+      "requiredProofs": ["db_evidence", "test_result", "api_evidence", "screenshot", "browser_journey", "independent_browser_qa", "refresh_persistence", "restart_persistence", "final_regression"],
+      "dependsOn": ["ws2-verified-research-mission"],
+      "requirements": [
+        {"id":"R3-01","text":"The Lead Card and PDF consume one current parcel-associated evidence projection and visibly reconcile with database source records."},
+        {"id":"R3-02","text":"A package is labeled ready only when it contains decision-useful pre-call research; unresolved fallback is labeled incomplete and prioritizes research status and seller identity questions."},
+        {"id":"R3-03","text":"Valuation uses qualified sold land comps with status, date, distance, acreage/type similarity, radius/recency tier, and provenance; listings are context only."},
+        {"id":"R3-04","text":"Strategies are ranked only when minimum parcel and market evidence supports them; otherwise the UI shows validation hypotheses, not strongest strategies."},
+        {"id":"R3-05","text":"Independent browser QA fails on wrong jurisdiction, empty evidence, stale projections, unqualified comps, unsupported strategy rankings, or frontend/database disagreement."},
+        {"id":"R3-06","text":"Transcript paste/upload remains downstream of pre-call research and is not presented as the remedy for missing research."}
+      ]
+    }
+  ]
+}

@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLandosDb } from './db.js';
+import { landosArtifactPath } from './storage-profile.js';
 import type { RegisteredDocument, UploadedDocumentRow } from './document-registry.js';
 
 export const UPLOAD_CATEGORIES: Array<{ value: RegisteredDocument['category']; label: string }> = [
@@ -47,7 +48,7 @@ function ensureTable(): void {
 }
 
 function uploadDir(dealCardId: number): string {
-  return path.join(process.cwd(), 'store', 'documents', `card_${dealCardId}`);
+  return landosArtifactPath('documents', `card_${dealCardId}`);
 }
 
 function safeBaseName(name: string): string {

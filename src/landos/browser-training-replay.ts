@@ -81,7 +81,7 @@ export async function replayPlaybook(
 
     // Guard: never execute a paid step.
     if (screenPaidUrl(url).approvalRequired || screenPaidAction(action).approvalRequired) {
-      results.push({ index: i, action, status: 'skipped_paid', detail: 'Paid/prohibited step — skipped (Approval Required).' });
+      results.push({ index: i, action, status: 'skipped_paid', detail: 'Paid action prohibited — skipped permanently.' });
       continue;
     }
 

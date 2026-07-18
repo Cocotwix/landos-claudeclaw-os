@@ -12,7 +12,7 @@ function runnerWith(rows: HomeHarvestRow[], status: HomeHarvestBridgeResponse['s
 }
 
 const soldLand = (over: Partial<HomeHarvestRow> = {}): HomeHarvestRow => ({
-  property_url: 'https://www.realtor.com/x', style: 'LAND', status: 'SOLD', listing_type: 'sold',
+  property_url: 'https://www.realtor.com/x', style: 'LAND', status: 'SOLD', listing_type: 'sold', latitude: 33.66, longitude: -79.83,
   sold_price: 60000, last_sold_date: '2026-05-01 00:00:00', lot_sqft: 87120 /* 2 ac */, year_built: null, ...over,
 });
 const activeLand = (over: Partial<HomeHarvestRow> = {}): HomeHarvestRow => ({
@@ -47,6 +47,7 @@ describe('fetchHomeHarvestComps — retrieval + classification', () => {
     expect(r.sold[0].pricePerAcre).toBe(30000); // 60000 / 2 ac
     expect(r.sold[0].compClass).toBe('vacant_land');
     expect(r.sold[0].saleDateIso).toBe('2026-05-01');
+    expect(r.sold[0]).toMatchObject({ lat: 33.66, lng: -79.83 });
   });
 
   it('classifies FARM style as raw land (farm)', async () => {

@@ -430,10 +430,10 @@ export function planLandosIntake(intake: LandOSIntake): WorkerDispatchPlan {
   // ── Duke parcel verification lane ──────────────────────────────────────
   const dukeRoute = dukeFresh ? routeDukeRequest(intake.text).route : undefined;
   const dukeParcelVerification = dukeFresh
-    ? lane('Duke Parcel Verification', 'planned' as const,
-        id === 'owner_county' ? 'Owner + county/state: plan Duke owner search.' : `Plan Duke parcel verification (${id}).`,
+    ? lane('Due Diligence Parcel Verification', 'planned' as const,
+        id === 'owner_county' ? 'Owner + county/state: plan owner search.' : `Plan parcel verification (${id}).`,
         { route: dukeRoute, modelRouting: selectModel({ taskType: 'parcel_verification' }) })
-    : lane('Duke Parcel Verification', 'not_applicable' as const,
+    : lane('Due Diligence Parcel Verification', 'not_applicable' as const,
         areaOnly ? 'Area-only input: no parcel to verify.' : 'No parcel identity in input.');
 
   // ── Market Research lane (honest: no approved adapter) ──────────────────
@@ -464,10 +464,10 @@ export function planLandosIntake(intake: LandOSIntake): WorkerDispatchPlan {
     (areaOnly && id === 'street_city_state_only') ||
     (dukeFresh && (id === 'property_ambiguous' || id === 'owner_county' || id === 'full_address' || id === 'apn_county'));
   const aceDiscoveryPrep = aceNeeded
-    ? lane('Ace Discovery Prep', 'planned' as const,
-        areaOnly || id === 'property_ambiguous' || id === 'street_city_state_only' ? 'Missing parcel identity: plan Ace missing-info questions.' : 'Plan Ace seller discovery prep.',
+    ? lane('Acquisitions Discovery Prep', 'planned' as const,
+        areaOnly || id === 'property_ambiguous' || id === 'street_city_state_only' ? 'Missing parcel identity: plan acquisitions missing-info questions.' : 'Plan acquisitions seller discovery prep.',
         { modelRouting: selectModel({ taskType: 'seller_prep', escalationAllowed: true }) })
-    : lane('Ace Discovery Prep', 'not_applicable' as const, 'No seller discovery needed for this input.');
+    : lane('Acquisitions Discovery Prep', 'not_applicable' as const, 'No seller discovery needed for this input.');
 
   // ── Deal-card persistence ───────────────────────────────────────────────
   const persistencePlan = buildPersistencePlan(c, id, intake.context);

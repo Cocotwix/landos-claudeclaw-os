@@ -1,0 +1,1776 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-17-phase-1-strategic-reset",
+  "title": "LandOS Phase 1 strategic reset: manual lead through discovery",
+  "createdAt": "2026-07-17T05:20:30.865Z",
+  "originalPrompt": "Implement the LandOS Phase 1 strategic reset using docs/landos/LandOS_Phase_1_Implementation_Handoff_2026-07-17.md as the complete outcome-focused authority and docs/landos/LandOS_Strategic_Reset_Audit_2026-07-17.md as supporting evidence.\nInspect live repository, database, runtime, and UI state first. Preserve all important data and unrelated work. Do not resume the old Deal Card v2 roadmap. Work autonomously through design, delegation, implementation, migration, testing, repair, and live operator verification.\nDeliver the complete manual-lead-to-discovery workflow. Keep LandPortal API/MCP off-limits, use the authenticated browser workflow, isolate QA data, use functional agent roles, enforce owner-only Jarvis outbound communication, prohibit paid actions and offer/contract sending, and leave LandOS running at localhost when finished.\nDo not stop at a plan or backend completion. Continue until the Phase 1 acceptance criteria in the handoff are satisfied or a genuinely owner-dependent decision blocks progress.\n",
+  "promptSha256": "60ad96a9ff4873f026d4b3b94c593d192c66aecf4437b3891c602e86c8b341da",
+  "workstreams": [
+    {
+      "id": "ws1-stabilize-safety",
+      "name": "Data stabilization, QA isolation, and hard safety boundaries",
+      "operatorOutcome": "Operating data is protected and recoverable, synthetic QA is physically separate, and every prohibited LandPortal API/MCP, paid, external-outbound, offer-send, and contract-send path is disabled before workflow use.",
+      "inScope": [
+        "additive database/migration inventory",
+        "private backup and restore",
+        "QA database and artifact isolation",
+        "browser-only LandPortal cutover",
+        "functional role terminology",
+        "critical policy guards"
+      ],
+      "backendServices": [
+        "landos database",
+        "runtime configuration",
+        "provider routing",
+        "agent policy",
+        "backup tooling"
+      ],
+      "frontendScreens": [
+        "Acquisitions intake",
+        "agent roster",
+        "provider status"
+      ],
+      "requiredDataState": "Existing operating database backed up and reconciled; QA database starts synthetic and separate.",
+      "browserJourney": {
+        "steps": [
+          "Confirm operating/QA identity is visible",
+          "Confirm LandPortal is described as authenticated browser-only",
+          "Confirm only functional role names appear in Phase 1 surfaces"
+        ]
+      },
+      "testRequirements": [
+        "row-count and integrity proof",
+        "backup/restore drill",
+        "QA isolation tests",
+        "LandPortal API/MCP unreachable tests",
+        "paid/outbound/offer/contract guard tests",
+        "functional terminology tests"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "real records used as QA fixtures",
+        "LandPortal API/token/MCP runtime reachable",
+        "paid action selectable",
+        "Jarvis can contact external parties",
+        "offer or contract can be sent",
+        "important data is overwritten or lost"
+      ],
+      "requiredProofs": [
+        "db_evidence",
+        "test_result",
+        "browser_journey",
+        "independent_browser_qa",
+        "restart_persistence"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "P1-02",
+          "text": "Real operating data and QA data/artifacts are visibly and physically separated.",
+          "verified": true,
+          "evidenceIds": [
+            "E2",
+            "E8",
+            "E9"
+          ]
+        },
+        {
+          "id": "P1-16",
+          "text": "A private encrypted backup/restore path restores business data into a clean local target with row-count and integrity reconciliation.",
+          "verified": true,
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "id": "P1-S1",
+          "text": "LandPortal API, token, manual endpoint, and MCP routes are unavailable at runtime; authenticated read-only browser work is the only approved path.",
+          "verified": true,
+          "evidenceIds": [
+            "E3",
+            "E8"
+          ]
+        },
+        {
+          "id": "P1-S2",
+          "text": "Jarvis outbound is owner-only and paid actions, spending, offer sending, and contract sending are prohibited by focused guards.",
+          "verified": true,
+          "evidenceIds": [
+            "E3",
+            "E8"
+          ]
+        },
+        {
+          "id": "P1-S3",
+          "text": "Phase 1 surfaces use functional role labels and preserve legacy IDs only as hidden compatibility aliases.",
+          "verified": true,
+          "evidenceIds": [
+            "E3",
+            "E8",
+            "E10"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "final_regression_pending",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T05:48:42.995Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/report.md",
+        "evidenceIds": [
+          "E8",
+          "E9",
+          "E10"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-17T05:46:00.341Z",
+          "summary": "Aligned the canonical dd_bot display name to Property Research Agent while preserving the stable legacy ID",
+          "regressionCoverage": "Phase 1 stabilization operator journey plus org-roster string assertion"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T05:39:01.385Z",
+          "detail": "Additive storage separation, encrypted recovery, browser-only cutover, functional roles, and hard policy guards implemented",
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T05:39:02.880Z",
+          "detail": "Focused Phase 1 safety and storage suites passed",
+          "evidenceIds": [
+            "E3"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T05:39:04.384Z",
+          "detail": "Dashboard contract passed in isolation; combined mutable-module run identified test-state interaction only",
+          "evidenceIds": [
+            "E4"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T05:39:06.011Z",
+          "detail": "tsc --noEmit passed",
+          "evidenceIds": [
+            "E6"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T05:39:07.579Z",
+          "detail": "Vite production bundle and server build passed",
+          "evidenceIds": [
+            "E7"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T05:39:08.972Z",
+          "detail": "Canonical restart completed; one healthy managed runtime PID 99052 at localhost:3141",
+          "evidenceIds": [
+            "E5"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-17T05:45:47.065Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T05-44-15-661Z/report.md)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T05:48:42.994Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/report.md)",
+          "evidenceIds": [
+            "E8",
+            "E9",
+            "E10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-actionable-lead",
+      "name": "Unified actionable Lead Card and reconciled executive counts",
+      "operatorOutcome": "Manual intake immediately creates one durable actionable Lead Card, automatically starts progressive research, and the same opportunity drives Acquisitions, Mission Control, Jarvis explanations, and Lead-to-Deal promotion.",
+      "inScope": [
+        "manual intake",
+        "opportunity aggregate",
+        "Lead Workspace actions",
+        "automatic research state",
+        "dashboard metrics",
+        "Jarvis count explanations",
+        "pursuit/disposition"
+      ],
+      "backendServices": [
+        "deal card",
+        "lead workspace",
+        "acquisitions",
+        "business spine",
+        "research orchestration",
+        "dashboard command contract"
+      ],
+      "frontendScreens": [
+        "Acquisitions",
+        "Lead Card",
+        "Mission Control",
+        "Jarvis"
+      ],
+      "requiredDataState": "Existing Lead/Property/Deal records adapted without copying or loss; synthetic QA opportunities only in QA storage.",
+      "browserJourney": {
+        "steps": [
+          "Enter a synthetic manual lead",
+          "Open its Lead Card immediately",
+          "Observe progressive research state and actions",
+          "Reconcile all executive counts and drilldowns",
+          "Disposition and pursue opportunities",
+          "Verify pursued glow",
+          "refresh and managed restart"
+        ]
+      },
+      "testRequirements": [
+        "additive migration/adaptation",
+        "manual intake integration",
+        "automatic research",
+        "count reconciliation",
+        "same-record promotion",
+        "refresh/restart persistence"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "duplicate competing opportunity created",
+        "read-only card",
+        "research does not start",
+        "counts disagree",
+        "pursuit copies a record",
+        "incomplete research blocks a discovery call"
+      ],
+      "requiredProofs": [
+        "db_evidence",
+        "test_result",
+        "api_evidence",
+        "screenshot",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence"
+      ],
+      "dependsOn": [
+        "ws1-stabilize-safety"
+      ],
+      "requirements": [
+        {
+          "id": "P1-01",
+          "text": "Manual lead entry creates one durable Lead Card immediately and automatically starts research.",
+          "verified": true,
+          "evidenceIds": [
+            "E14",
+            "E15",
+            "E16"
+          ]
+        },
+        {
+          "id": "P1-03",
+          "text": "Mission Control, Acquisitions, Jarvis explanations, and database counts derive from the same opportunity records and reconcile.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E16",
+            "E17"
+          ]
+        },
+        {
+          "id": "P1-04",
+          "text": "The Lead Card progressively updates, remains actionable, and never blocks a discovery call because research is incomplete.",
+          "verified": true,
+          "evidenceIds": [
+            "E14",
+            "E16"
+          ]
+        },
+        {
+          "id": "P1-06",
+          "text": "County/public/property research progress and provider failures are visible, actionable, and recoverable.",
+          "verified": true,
+          "evidenceIds": [
+            "E14",
+            "E16",
+            "E17"
+          ]
+        },
+        {
+          "id": "P1-12",
+          "text": "The owner can promote the same opportunity from Lead to Deal and the pursued card receives a subtle visible highlight.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E16"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "final_regression_pending",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T06:24:50.449Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/report.md",
+        "evidenceIds": [
+          "E18",
+          "E19",
+          "E20",
+          "E21",
+          "E22"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F2",
+          "repairedAt": "2026-07-17T06:18:24.180Z",
+          "summary": "Explicitly projected opportunity.lifecycle as lifecycleStatus in the Lead Workspace route adapter.",
+          "regressionCoverage": "Route integration asserts serialized lifecycleStatus; browser journey asserts the Deal highlight."
+        },
+        {
+          "findingId": "F3",
+          "repairedAt": "2026-07-17T06:18:25.728Z",
+          "summary": "Used the same explicit persisted lifecycle projection on every Lead Workspace read, including refresh.",
+          "regressionCoverage": "Browser journey hard-refresh assertion plus route lifecycle serialization test."
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T06:11:54.345Z",
+          "detail": "Opportunity schema, structured manual intake, progressive research state, unified counts, and same-row owner decisions implemented; 104 focused tests, typecheck, and production build passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T06:14:46.014Z",
+          "detail": "104 focused tests passed across routes, opportunity lifecycle, UI contracts, and operator-QA harness.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T06:14:47.493Z",
+          "detail": "Manual lead route, Lead Workspace projection, Jarvis/Mission Control count reconciliation, and same-row promotion integration passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T06:14:49.160Z",
+          "detail": "npm run typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T06:14:50.677Z",
+          "detail": "npm run build passed and emitted current production frontend/server artifacts.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T06:14:52.204Z",
+          "detail": "Managed LandOS QA runtime PID 64328 is healthy at http://localhost:3141 and reports isolated synthetic-only QA storage.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-17T06:15:08.990Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T06-12-00-871Z/report.md)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T06:19:44.458Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T06-18-45-117Z/report.md)",
+          "evidenceIds": [
+            "E16"
+          ]
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T06:24:50.448Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/report.md)",
+          "evidenceIds": [
+            "E18",
+            "E19",
+            "E20",
+            "E21",
+            "E22"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws3-discovery-package",
+      "name": "Best-available discovery research package",
+      "operatorOutcome": "Every Lead Card exposes one evidence-backed current discovery report and PDF with parcel, visual, comp, market, scoring, strategy, gap, confidence, and call-prep information even when identity or providers remain unresolved.",
+      "inScope": [
+        "authenticated LandPortal browser evidence",
+        "county/public research",
+        "visuals",
+        "comp policy",
+        "Market Pulse",
+        "Land Score",
+        "two strategies",
+        "deed findings",
+        "single report projection",
+        "PDF and concise call prep"
+      ],
+      "backendServices": [
+        "browser session",
+        "property inspection",
+        "comp registry",
+        "discovery call report",
+        "document/visual services"
+      ],
+      "frontendScreens": [
+        "Lead Card report",
+        "call-prep mode",
+        "provider/gap states"
+      ],
+      "requiredDataState": "Authenticated browser session when available plus isolated resolved, unresolved, thin-market, and provider-failure QA fixtures.",
+      "browserJourney": {
+        "steps": [
+          "Run authenticated read-only LandPortal visible extraction",
+          "Capture parcel facts, visible comps, free Show on Map, and visuals",
+          "Open complete resolved report and PDF",
+          "Open unresolved report and confirm useful identity questions",
+          "verify no paid/API action"
+        ]
+      },
+      "testRequirements": [
+        "comp radius/recency/dedupe/status policy",
+        "county-wide disclosure",
+        "wrong-parcel valuation/offer guards",
+        "report/Card/PDF identity",
+        "unresolved brief",
+        "browser provenance and paid-action prohibition"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "API/MCP request",
+        "paid report or credit use",
+        "active/pending drives value",
+        "sale older than 24 months",
+        "unsupported property conclusion",
+        "separate contradictory report projections",
+        "missing research blocks call prep"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "screenshot",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence"
+      ],
+      "dependsOn": [
+        "ws2-actionable-lead"
+      ],
+      "requirements": [
+        {
+          "id": "P1-05",
+          "text": "A real authenticated LandPortal browser session extracts visible parcel facts, visible comps, the free Show on Map screenshot, and relevant visual evidence without API dependence or paid action.",
+          "verified": true,
+          "evidenceIds": [
+            "E24"
+          ]
+        },
+        {
+          "id": "P1-07",
+          "text": "Comparable selection enforces sold-driven value, active/pending context, up to five, 3/5/10-mile expansion, 12/18/24-month limits, county-wide disclosure, and provider deduplication.",
+          "verified": true,
+          "evidenceIds": [
+            "E23",
+            "E24"
+          ]
+        },
+        {
+          "id": "P1-08",
+          "text": "One current report drives the Lead Card and PDF and includes identity, visuals, land characteristics, deed findings, Market Pulse, explainable Land Score, preliminary value and 40-60 percent offer range, two strategies, gaps, sources, confidence, and call questions.",
+          "verified": true,
+          "evidenceIds": [
+            "E23",
+            "E25",
+            "E26",
+            "E28",
+            "E29"
+          ]
+        },
+        {
+          "id": "P1-09",
+          "text": "An incomplete or unresolved property still produces a useful seller-focused call brief while unsupported parcel conclusions, confident valuation, offer preparation, and automatic pursuit remain blocked.",
+          "verified": true,
+          "evidenceIds": [
+            "E23",
+            "E25",
+            "E26",
+            "E27"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "final_regression_pending",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T06:53:08.071Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/report.md",
+        "evidenceIds": [
+          "E25",
+          "E26",
+          "E27",
+          "E28",
+          "E29"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F4",
+          "repairedAt": "2026-07-17T06:46:16.920Z",
+          "summary": "Restart persistence assertion now waits for both expected text and the semantic discovery-package test id after the SPA's asynchronous workspace render.",
+          "regressionCoverage": "QA runner restart_persistence supports expectTestId; focused runner tests 16/16, typecheck, and production build pass."
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "pending",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T06:40:07.943Z",
+          "detail": "Canonical DiscoveryPackage persistence/rendering, call-prep UI/PDF, automatic browser/county research orchestration, and Phase 1 comp policy implemented.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T06:40:09.490Z",
+          "detail": "103 focused comp, report, package, UI, and QA-harness tests passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T06:40:11.052Z",
+          "detail": "Manual lead to persisted unresolved package, identical package hash for API/Markdown, and PDF route integration passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T06:40:12.483Z",
+          "detail": "npm run typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T06:40:13.983Z",
+          "detail": "npm run build passed with current production frontend/server artifacts.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T06:40:15.565Z",
+          "detail": "Managed isolated-QA runtime PID 153288 is healthy at http://localhost:3141.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-17T06:43:08.690Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T06-40-25-776Z/report.md)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T06:53:08.070Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/report.md)",
+          "evidenceIds": [
+            "E25",
+            "E26",
+            "E27",
+            "E28",
+            "E29"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws4-transcript-acceptance",
+      "name": "Transcript reconciliation and complete Phase 1 acceptance",
+      "operatorOutcome": "A human can paste or upload a transcript, Jarvis and the Acquisitions Agent reconcile it into durable shared memory and work, and the entire five-lead/day workflow survives refresh, restart, recovery, and independent live review.",
+      "inScope": [
+        "immutable transcripts",
+        "paste/upload",
+        "summary and seller statements",
+        "motivation",
+        "contradictions",
+        "tasks/follow-up",
+        "next action",
+        "five-lead simulation",
+        "combined regression",
+        "real-lead and owner acceptance readiness"
+      ],
+      "backendServices": [
+        "acquisitions",
+        "transcript store",
+        "reconciliation",
+        "tasks",
+        "Jarvis orchestration"
+      ],
+      "frontendScreens": [
+        "Lead Card discovery",
+        "Acquisitions",
+        "Jarvis",
+        "Mission Control"
+      ],
+      "requiredDataState": "Five synthetic QA opportunities in isolated QA storage; operating data used only for explicit live owner acceptance.",
+      "browserJourney": {
+        "steps": [
+          "Paste transcript",
+          "Upload transcript file",
+          "Inspect original and reconciliation outputs",
+          "open created tasks and owner decision",
+          "run five-lead simulation",
+          "hard refresh",
+          "managed restart",
+          "combined cross-surface reconciliation"
+        ]
+      },
+      "testRequirements": [
+        "immutable-original invariant",
+        "paste/upload equivalence",
+        "extraction/reconciliation",
+        "task and next-action integration",
+        "five-lead simulation",
+        "full regression",
+        "secret/private-data diff audit"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "original transcript mutates",
+        "seller statements become verified facts",
+        "missing motivation evidence",
+        "no contradictions/tasks/follow-up/next action",
+        "state lost on refresh or restart",
+        "QA writes operating data"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "db_evidence",
+        "api_evidence",
+        "screenshot",
+        "browser_journey",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence",
+        "final_regression"
+      ],
+      "dependsOn": [
+        "ws3-discovery-package"
+      ],
+      "requirements": [
+        {
+          "id": "P1-10",
+          "text": "Transcript paste and transcript-file upload both preserve an immutable original and work from the Lead Card.",
+          "verified": true,
+          "evidenceIds": [
+            "E30",
+            "E31",
+            "E32",
+            "E33",
+            "E34"
+          ]
+        },
+        {
+          "id": "P1-11",
+          "text": "Jarvis and the Acquisitions Agent reconciliation produces a concise summary, seller statements separate from verified facts, named parties, explainable motivation, asking price/timeline/property statements, contradictions, deeper-research tasks, follow-up, and one allowed next action.",
+          "verified": true,
+          "evidenceIds": [
+            "E30",
+            "E32",
+            "E33",
+            "E34",
+            "E35"
+          ]
+        },
+        {
+          "id": "P1-13",
+          "text": "The complete Phase 1 state survives hard refresh and managed restart.",
+          "verified": true,
+          "evidenceIds": [
+            "E31",
+            "E36",
+            "E37",
+            "E38"
+          ]
+        },
+        {
+          "id": "P1-14",
+          "text": "A five-lead/day synthetic simulation passes entirely in isolated QA storage.",
+          "verified": true,
+          "evidenceIds": [
+            "E31",
+            "E32",
+            "E38"
+          ]
+        },
+        {
+          "id": "P1-15",
+          "text": "One real lead can complete the entire workflow live without using real records as QA fixtures.",
+          "verified": false,
+          "evidenceIds": []
+        },
+        {
+          "id": "P1-17",
+          "text": "The workflow is ready for and receives the owner's usefulness judgment after independent combined live verification.",
+          "verified": false,
+          "evidenceIds": []
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "externally_blocked",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T07:22:35.107Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/report.md",
+        "evidenceIds": [
+          "E33",
+          "E34",
+          "E35",
+          "E36",
+          "E37"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "externally_blocked",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T07:15:48.845Z",
+          "detail": "Immutable transcript paste/upload, versioned Jarvis + Acquisitions reconciliation, visible task/fact/conflict UI, genuine browser file upload, and QA-only five-lead simulator implemented.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T07:15:50.416Z",
+          "detail": "106 focused route, service, opportunity, UI, and QA-runner tests passed; simulator focused tests 4/4 passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T07:15:51.887Z",
+          "detail": "JSON paste and multipart upload routes preserve exact originals, reconcile facts/tasks/actions, and the live five-lead HTTP simulation passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T07:15:53.377Z",
+          "detail": "npm run typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T07:15:54.944Z",
+          "detail": "npm run build passed with current production server and frontend artifacts.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T07:15:56.530Z",
+          "detail": "Final operating runtime is healthy at http://localhost:3141; isolated QA simulation and journeys were run only under QA DATA.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-17T07:22:35.106Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/report.md)",
+          "evidenceIds": [
+            "E33",
+            "E34",
+            "E35",
+            "E36",
+            "E37"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "workstreamId": "ws1-stabilize-safety",
+      "requirementId": "P1-S3",
+      "liveUrl": "http://localhost:3141/landos?view=org",
+      "steps": [
+        "Open Mission Control and confirm OPERATING DATA is visible.",
+        "Open LandOS Spine, Org / Agents.",
+        "Inspect the acquisitions and property-research functional roles."
+      ],
+      "expected": "The Phase 1 organization surface uses the approved functional labels, including Acquisitions Agent and Property Research Agent, and contains no mascot labels.",
+      "actual": "Acquisitions Agent is visible and mascot labels are absent, but the canonical org roster still renders the older functional label Due Diligence Specialist instead of Property Research Agent.",
+      "evidencePaths": [
+        "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/qa-2026-07-17T05-44-15-661Z/phase1-stabilization-safety/phase1-functional-roles.png"
+      ],
+      "apiOrDbEvidence": "The live /api/landos/org payload is driven by src/landos/agent-roster.ts, where dd_bot retained the older display name.",
+      "severity": "major",
+      "suspectedSubsystem": "functional agent roster display mapping",
+      "disposition": "internal_fixable",
+      "patternKey": "functional-role-label-mismatch",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T05:45:47.068Z",
+      "history": [
+        {
+          "at": "2026-07-17T05:45:47.068Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T05:46:00.341Z",
+          "event": "repaired",
+          "detail": "Aligned the canonical dd_bot display name to Property Research Agent while preserving the stable legacy ID"
+        },
+        {
+          "at": "2026-07-17T05:48:42.163Z",
+          "event": "retest_passed",
+          "detail": "E8"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "workstreamId": "ws2-actionable-lead",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/dept/acquisitions",
+      "steps": [
+        "Create synthetic lead",
+        "Promote the opportunity",
+        "Observe the same card"
+      ],
+      "expected": "The promoted card receives the subtle Deal highlight",
+      "actual": "The mutation persisted but the workspace adapter omitted lifecycleStatus, so the UI continued to render Lead",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T06-12-00-871Z/report.md"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "major",
+      "suspectedSubsystem": "phase1-actionable-lead",
+      "disposition": "internally_fixable",
+      "patternKey": "frontend-missing-value",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T06:15:08.991Z",
+      "history": [
+        {
+          "at": "2026-07-17T06:15:08.991Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T06:18:24.180Z",
+          "event": "repaired",
+          "detail": "Explicitly projected opportunity.lifecycle as lifecycleStatus in the Lead Workspace route adapter."
+        },
+        {
+          "at": "2026-07-17T06:19:41.453Z",
+          "event": "retest_passed",
+          "detail": "E16"
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "workstreamId": "ws2-actionable-lead",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/dept/acquisitions",
+      "steps": [
+        "Promote the synthetic opportunity",
+        "Hard refresh the workspace"
+      ],
+      "expected": "Promotion remains visibly highlighted after refresh",
+      "actual": "The persisted lifecycle was not projected into the lifecycleStatus field consumed by the workspace",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T06-12-00-871Z/report.md"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "blocker",
+      "suspectedSubsystem": "phase1-actionable-lead",
+      "disposition": "internally_fixable",
+      "patternKey": "refresh-data-loss",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T06:15:08.991Z",
+      "history": [
+        {
+          "at": "2026-07-17T06:15:08.991Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T06:18:25.728Z",
+          "event": "repaired",
+          "detail": "Used the same explicit persisted lifecycle projection on every Lead Workspace read, including refresh."
+        },
+        {
+          "at": "2026-07-17T06:19:42.964Z",
+          "event": "retest_passed",
+          "detail": "E16"
+        }
+      ]
+    },
+    {
+      "id": "F4",
+      "workstreamId": "ws3-discovery-package",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=3",
+      "steps": [
+        "Open synthetic unresolved package",
+        "Hard refresh",
+        "Canonical managed restart",
+        "Reload package"
+      ],
+      "expected": "The persisted discovery package is visible after managed restart",
+      "actual": "The API returned 200 after restart, but the QA assertion sampled page text before the asynchronous semantic package root rendered",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T06-40-25-776Z/report.md"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "major",
+      "suspectedSubsystem": "operator-qa async restart assertion",
+      "disposition": "internally_fixable",
+      "patternKey": "restart-assertion-races-async-render",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T06:43:08.691Z",
+      "history": [
+        {
+          "at": "2026-07-17T06:43:08.691Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T06:46:16.920Z",
+          "event": "repaired",
+          "detail": "Restart persistence assertion now waits for both expected text and the semantic discovery-package test id after the SPA's asynchronous workspace render."
+        },
+        {
+          "at": "2026-07-17T06:53:06.564Z",
+          "event": "retest_passed",
+          "detail": "E29"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-17T05:38:38.590Z",
+      "kind": "db_evidence",
+      "summary": "Encrypted online backup and clean restore drill: quick_check ok, zero FK violations, schema/table row counts match, 385 artifacts hash-match",
+      "path": ".runtime/landos/backup-restore-drill/2026-07-17T05-30-13-883Z/report.json",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-17T05:38:40.064Z",
+      "kind": "db_evidence",
+      "summary": "Isolated QA profile initialized at .runtime/landos/qa-data with zero opportunities; operating store remains store/landos.db",
+      "path": ".runtime/landos/qa-data/landos-qa.db",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-17T05:38:41.557Z",
+      "kind": "test_result",
+      "summary": "Phase 1 storage, LandPortal cutover, paid-action, egress, functional-role, browser guard, and approval suites: 13 files, 190 tests passed",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-17T05:38:42.982Z",
+      "kind": "test_result",
+      "summary": "Dashboard contract isolated integration: 140 tests passed",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-17T05:38:44.457Z",
+      "kind": "live_url",
+      "summary": "Fresh production build on one healthy managed runtime, PID 99052",
+      "url": "http://localhost:3141",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-17T05:38:50.841Z",
+      "kind": "test_result",
+      "summary": "TypeScript typecheck passed after combined WS1 changes",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-17T05:38:52.216Z",
+      "kind": "test_result",
+      "summary": "Production Vite and server TypeScript build passed; fresh bundle installed",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-17T05:48:21.517Z",
+      "kind": "independent_browser_qa",
+      "summary": "Focused Phase 1 stabilization live browser journey passed after role-label repair; operating profile/API, functional roles, mascot absence, screenshots, refresh",
+      "path": ".runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/report.md",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-17T05:48:22.973Z",
+      "kind": "screenshot",
+      "summary": "Live Mission Control operating-data badge",
+      "path": ".runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/phase1-stabilization-safety/phase1-operating-data.png",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-17T05:48:24.539Z",
+      "kind": "screenshot",
+      "summary": "Live functional agent roles after repair",
+      "path": ".runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/phase1-stabilization-safety/phase1-functional-roles.png",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-17T05:51:40.666Z",
+      "kind": "browser_journey",
+      "summary": "Focused Phase 1 stabilization real-browser journey passed",
+      "path": ".runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/report.md",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-07-17T05:51:42.267Z",
+      "kind": "refresh_persistence",
+      "summary": "Operating-data identity and functional roles persisted across browser refresh",
+      "path": ".runtime/landos/qa/qa-2026-07-17T05-47-47-852Z/report.md",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-07-17T05:51:43.750Z",
+      "kind": "restart_persistence",
+      "summary": "Live Deal Card and database state survived canonical managed restart",
+      "path": ".runtime/landos/qa/qa-2026-07-17T05-49-52-995Z/report.md",
+      "workstreamId": "ws1-stabilize-safety"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-07-17T06:19:19.571Z",
+      "kind": "test_result",
+      "summary": "WS2 focused regression: 104 tests passed; typecheck and production build passed.",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-07-17T06:19:21.118Z",
+      "kind": "db_evidence",
+      "summary": "Additive opportunity migration/backfill preserves every legacy Deal Card and aliases one opportunity per Deal Card; same-row pursuit covered by DB tests.",
+      "path": "src/landos/opportunity.test.ts",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-07-17T06:19:22.688Z",
+      "kind": "browser_qa",
+      "summary": "Isolated QA real-browser manual lead creation, automatic research, same-row pursuit, glow, refresh persistence, and metrics journey passed.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-18-45-117Z/report.md",
+      "url": "http://localhost:3141/dept/acquisitions?section=new",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-07-17T06:19:24.220Z",
+      "kind": "api_evidence",
+      "summary": "Mission Control, Acquisitions, Jarvis, and drilldowns share the same opportunity snapshot contract.",
+      "path": "src/landos/routes.test.ts",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-07-17T06:24:36.548Z",
+      "kind": "screenshot",
+      "summary": "Live isolated-QA Lead Card with progressive research controls, discovery guardrail, and owner actions.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/phase1-manual-lead-promotion/phase1-manual-lead.png",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-07-17T06:24:38.138Z",
+      "kind": "browser_journey",
+      "summary": "Complete real-browser manual lead and same-record promotion journey passed in isolated QA storage.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/report.md",
+      "url": "http://localhost:3141/dept/acquisitions?section=new",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-07-17T06:24:39.644Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent operator-QA harness passed with zero findings and current production bundle.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/report.json",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-07-17T06:24:41.143Z",
+      "kind": "refresh_persistence",
+      "summary": "Pursued Deal highlight and same opportunity persisted through hard refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/report.md",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-07-17T06:24:42.621Z",
+      "kind": "restart_persistence",
+      "summary": "Pursued Deal state persisted through canonical managed restart while remaining in isolated QA storage.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-22-56-519Z/report.md",
+      "workstreamId": "ws2-actionable-lead"
+    },
+    {
+      "id": "E23",
+      "recordedAt": "2026-07-17T06:52:42.456Z",
+      "kind": "test_result",
+      "summary": "103 focused WS3 tests plus 2 Phase 1 route integrations, 16 QA runner tests, typecheck, and production build passed.",
+      "path": ".landos/sprints/sprint-2026-07-17-phase-1-strategic-reset/ledger.json",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E24",
+      "recordedAt": "2026-07-17T06:52:44.016Z",
+      "kind": "api_evidence",
+      "summary": "Authenticated operating LandPortal browser inspection on existing lead 25 persisted 1 parcel-fact set, 4 visible comps, 9 routes/sources, and parcel page, 3D, overlay, and comparables-map evidence; session authenticated=true; no API/MCP or paid action used.",
+      "url": "http://localhost:3141/api/landos/property-inspection/run",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E25",
+      "recordedAt": "2026-07-17T06:52:45.607Z",
+      "kind": "screenshot",
+      "summary": "Independent real-browser capture shows the unresolved seller-call Discovery Package with semantic sections and prohibited actions absent.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/phase1-unresolved-discovery-package/phase1-unresolved-call-package.png",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E26",
+      "recordedAt": "2026-07-17T06:52:47.193Z",
+      "kind": "browser_journey",
+      "summary": "Manual lead through durable unresolved discovery package, exact two strategies, call questions, PDF, refresh, and managed restart passed in a real browser.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/report.md",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E27",
+      "recordedAt": "2026-07-17T06:52:48.703Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent operator QA recheck passed with zero findings after repairing the async post-restart render assertion.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/report.json",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E28",
+      "recordedAt": "2026-07-17T06:52:50.263Z",
+      "kind": "refresh_persistence",
+      "summary": "Discovery package remained present and semantically complete after full page refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/report.md",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E29",
+      "recordedAt": "2026-07-17T06:52:51.843Z",
+      "kind": "restart_persistence",
+      "summary": "Discovery package remained present after canonical managed server restart and asynchronous SPA reload.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T06-46-21-766Z/report.md",
+      "workstreamId": "ws3-discovery-package"
+    },
+    {
+      "id": "E30",
+      "recordedAt": "2026-07-17T07:16:48.617Z",
+      "kind": "test_result",
+      "summary": "106 focused WS4-inclusive tests, four simulator tests, typecheck, and production build passed.",
+      "path": "src/landos/opportunity-transcript-reconciliation.test.ts",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E31",
+      "recordedAt": "2026-07-17T07:16:50.168Z",
+      "kind": "db_evidence",
+      "summary": "Immutable UPDATE/DELETE triggers and exact raw-text SHA-256 invariants passed; five-lead simulation confirmed operating store/landos.db SHA-256 unchanged.",
+      "path": ".runtime/landos/phase1-simulations/phase1-five-lead-2026-07-17T07-05-07-139Z-beb50abb/report.json",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E32",
+      "recordedAt": "2026-07-17T07:16:51.679Z",
+      "kind": "api_evidence",
+      "summary": "Live QA HTTP flow created five unique leads, alternated JSON paste and multipart upload, returned reconciliations/tasks/safe next actions, and applied explicit owner decisions.",
+      "path": ".runtime/landos/phase1-simulations/phase1-five-lead-2026-07-17T07-05-07-139Z-beb50abb/report.md",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E33",
+      "recordedAt": "2026-07-17T07:16:53.117Z",
+      "kind": "screenshot",
+      "summary": "Real-browser Lead Card capture shows immutable original access, attributed seller statements vs verified facts, summary, motivation, conflicts, tasks, and one safe action.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/phase1-transcript-reconciliation/phase1-transcript-reconciliation.png",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E34",
+      "recordedAt": "2026-07-17T07:16:54.531Z",
+      "kind": "browser_journey",
+      "summary": "Real browser pasted one transcript and uploaded a real runtime-generated text file through the Lead Card, reconciled both, and found no prohibited action.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/report.md",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E35",
+      "recordedAt": "2026-07-17T07:16:56.143Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent transcript reconciliation journey passed in isolated QA with zero findings.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/report.json",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E36",
+      "recordedAt": "2026-07-17T07:16:57.653Z",
+      "kind": "refresh_persistence",
+      "summary": "Complete transcript reconciliation surface remained after a hard refresh.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/report.md",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E37",
+      "recordedAt": "2026-07-17T07:16:59.144Z",
+      "kind": "restart_persistence",
+      "summary": "Originals, reconciliation, tasks, and safe next action remained after canonical managed restart.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T07-12-17-025Z/report.md",
+      "workstreamId": "ws4-transcript-acceptance"
+    },
+    {
+      "id": "E38",
+      "recordedAt": "2026-07-17T07:17:00.739Z",
+      "kind": "final_regression",
+      "summary": "Profile-split combined Phase 1 regression passed: operating safety in OPERATING DATA and manual lead, unresolved package, and transcript workflows in isolated QA DATA.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T07-14-56-863Z/report.md",
+      "workstreamId": "ws4-transcript-acceptance"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-07-17T07:24:09.763Z",
+    "detail": "Profile-split combined regression passed: operating safety under OPERATING DATA; manual lead/promotion, unresolved discovery package, transcript paste/upload, refresh/restart, and five-lead simulation under isolated QA DATA.",
+    "evidenceIds": [
+      "E30",
+      "E31",
+      "E32",
+      "E34",
+      "E35",
+      "E36",
+      "E37",
+      "E38"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-07-17T07:27:35.675Z",
+    "detail": "independent acceptance review agent: Independent review found no material implementation, safety, isolation, evidence, secret, or PII defect; technically ready for owner live acceptance. P1-15 and P1-17 remain correctly owner-dependent.",
+    "evidenceIds": [
+      "E24",
+      "E30",
+      "E31",
+      "E32",
+      "E33",
+      "E34",
+      "E35",
+      "E36",
+      "E37",
+      "E38"
+    ]
+  },
+  "sprintStatus": "active",
+  "log": [
+    {
+      "at": "2026-07-17T05:20:30.866Z",
+      "event": "sprint_created",
+      "detail": "LandOS Phase 1 strategic reset: manual lead through discovery"
+    },
+    {
+      "at": "2026-07-17T05:20:32.341Z",
+      "event": "workstream_started",
+      "detail": "ws1-stabilize-safety"
+    },
+    {
+      "at": "2026-07-17T05:39:01.386Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T05:39:02.880Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T05:39:04.384Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T05:39:06.012Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T05:39:07.579Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T05:39:08.973Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T05:45:47.067Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-17T05:45:47.068Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-stabilize-safety:fail"
+    },
+    {
+      "at": "2026-07-17T05:46:00.341Z",
+      "event": "repair_started",
+      "detail": "ws1-stabilize-safety"
+    },
+    {
+      "at": "2026-07-17T05:46:00.341Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-17T05:48:42.164Z",
+      "event": "finding_retested",
+      "detail": "F1:pass"
+    },
+    {
+      "at": "2026-07-17T05:48:42.995Z",
+      "event": "phase_recorded",
+      "detail": "ws1-stabilize-safety:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T05:48:42.995Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-stabilize-safety:pass"
+    },
+    {
+      "at": "2026-07-17T05:48:51.942Z",
+      "event": "requirement_verified",
+      "detail": "ws1-stabilize-safety/P1-02"
+    },
+    {
+      "at": "2026-07-17T05:48:53.503Z",
+      "event": "requirement_verified",
+      "detail": "ws1-stabilize-safety/P1-16"
+    },
+    {
+      "at": "2026-07-17T05:48:55.103Z",
+      "event": "requirement_verified",
+      "detail": "ws1-stabilize-safety/P1-S1"
+    },
+    {
+      "at": "2026-07-17T05:48:56.614Z",
+      "event": "requirement_verified",
+      "detail": "ws1-stabilize-safety/P1-S2"
+    },
+    {
+      "at": "2026-07-17T05:48:58.097Z",
+      "event": "requirement_verified",
+      "detail": "ws1-stabilize-safety/P1-S3"
+    },
+    {
+      "at": "2026-07-17T05:52:12.158Z",
+      "event": "workstream_passed",
+      "detail": "ws1-stabilize-safety"
+    },
+    {
+      "at": "2026-07-17T05:52:12.910Z",
+      "event": "workstream_started",
+      "detail": "ws2-actionable-lead"
+    },
+    {
+      "at": "2026-07-17T06:11:54.346Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T06:14:46.014Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T06:14:47.493Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T06:14:49.160Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T06:14:50.677Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T06:14:52.205Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T06:15:08.991Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-17T06:15:08.991Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-actionable-lead:fail"
+    },
+    {
+      "at": "2026-07-17T06:18:24.179Z",
+      "event": "repair_started",
+      "detail": "ws2-actionable-lead"
+    },
+    {
+      "at": "2026-07-17T06:18:24.180Z",
+      "event": "finding_repaired",
+      "detail": "F2"
+    },
+    {
+      "at": "2026-07-17T06:18:25.727Z",
+      "event": "repair_started",
+      "detail": "ws2-actionable-lead"
+    },
+    {
+      "at": "2026-07-17T06:18:25.728Z",
+      "event": "finding_repaired",
+      "detail": "F3"
+    },
+    {
+      "at": "2026-07-17T06:19:41.453Z",
+      "event": "finding_retested",
+      "detail": "F2:pass"
+    },
+    {
+      "at": "2026-07-17T06:19:42.964Z",
+      "event": "finding_retested",
+      "detail": "F3:pass"
+    },
+    {
+      "at": "2026-07-17T06:19:44.459Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T06:19:44.459Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-actionable-lead:pass"
+    },
+    {
+      "at": "2026-07-17T06:19:45.873Z",
+      "event": "requirement_verified",
+      "detail": "ws2-actionable-lead/P1-01"
+    },
+    {
+      "at": "2026-07-17T06:19:47.417Z",
+      "event": "requirement_verified",
+      "detail": "ws2-actionable-lead/P1-03"
+    },
+    {
+      "at": "2026-07-17T06:19:48.965Z",
+      "event": "requirement_verified",
+      "detail": "ws2-actionable-lead/P1-04"
+    },
+    {
+      "at": "2026-07-17T06:19:50.441Z",
+      "event": "requirement_verified",
+      "detail": "ws2-actionable-lead/P1-06"
+    },
+    {
+      "at": "2026-07-17T06:19:52.021Z",
+      "event": "requirement_verified",
+      "detail": "ws2-actionable-lead/P1-12"
+    },
+    {
+      "at": "2026-07-17T06:24:50.449Z",
+      "event": "phase_recorded",
+      "detail": "ws2-actionable-lead:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T06:24:50.449Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-actionable-lead:pass"
+    },
+    {
+      "at": "2026-07-17T06:25:02.760Z",
+      "event": "workstream_passed",
+      "detail": "ws2-actionable-lead"
+    },
+    {
+      "at": "2026-07-17T06:25:08.337Z",
+      "event": "workstream_started",
+      "detail": "ws3-discovery-package"
+    },
+    {
+      "at": "2026-07-17T06:40:07.943Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T06:40:09.491Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T06:40:11.053Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T06:40:12.486Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T06:40:13.984Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T06:40:15.566Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T06:43:08.691Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-17T06:43:08.691Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-discovery-package:fail"
+    },
+    {
+      "at": "2026-07-17T06:46:16.920Z",
+      "event": "repair_started",
+      "detail": "ws3-discovery-package"
+    },
+    {
+      "at": "2026-07-17T06:46:16.920Z",
+      "event": "finding_repaired",
+      "detail": "F4"
+    },
+    {
+      "at": "2026-07-17T06:53:06.565Z",
+      "event": "finding_retested",
+      "detail": "F4:pass"
+    },
+    {
+      "at": "2026-07-17T06:53:08.071Z",
+      "event": "phase_recorded",
+      "detail": "ws3-discovery-package:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T06:53:08.071Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-discovery-package:pass"
+    },
+    {
+      "at": "2026-07-17T06:53:09.709Z",
+      "event": "requirement_verified",
+      "detail": "ws3-discovery-package/P1-05"
+    },
+    {
+      "at": "2026-07-17T06:53:11.249Z",
+      "event": "requirement_verified",
+      "detail": "ws3-discovery-package/P1-07"
+    },
+    {
+      "at": "2026-07-17T06:53:12.763Z",
+      "event": "requirement_verified",
+      "detail": "ws3-discovery-package/P1-08"
+    },
+    {
+      "at": "2026-07-17T06:53:14.296Z",
+      "event": "requirement_verified",
+      "detail": "ws3-discovery-package/P1-09"
+    },
+    {
+      "at": "2026-07-17T06:53:15.952Z",
+      "event": "workstream_passed",
+      "detail": "ws3-discovery-package"
+    },
+    {
+      "at": "2026-07-17T06:53:17.508Z",
+      "event": "workstream_started",
+      "detail": "ws4-transcript-acceptance"
+    },
+    {
+      "at": "2026-07-17T07:15:48.845Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T07:15:50.417Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T07:15:51.888Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T07:15:53.378Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T07:15:54.945Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T07:15:56.531Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T07:22:35.107Z",
+      "event": "phase_recorded",
+      "detail": "ws4-transcript-acceptance:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-17T07:22:35.107Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws4-transcript-acceptance:pass"
+    },
+    {
+      "at": "2026-07-17T07:22:36.732Z",
+      "event": "requirement_verified",
+      "detail": "ws4-transcript-acceptance/P1-10"
+    },
+    {
+      "at": "2026-07-17T07:22:38.339Z",
+      "event": "requirement_verified",
+      "detail": "ws4-transcript-acceptance/P1-11"
+    },
+    {
+      "at": "2026-07-17T07:22:39.908Z",
+      "event": "requirement_verified",
+      "detail": "ws4-transcript-acceptance/P1-13"
+    },
+    {
+      "at": "2026-07-17T07:22:41.517Z",
+      "event": "requirement_verified",
+      "detail": "ws4-transcript-acceptance/P1-14"
+    },
+    {
+      "at": "2026-07-17T07:23:57.637Z",
+      "event": "workstream_externally_blocked",
+      "detail": "ws4-transcript-acceptance: External human dependency: no authentic seller-call transcript exists in operating storage, so a human must conduct/use one real seller discovery call for P1-15; Tyler must then provide the usefulness judgment required by P1-17. Synthetic QA content cannot ethically substitute."
+    },
+    {
+      "at": "2026-07-17T07:24:09.763Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T07:27:35.675Z",
+      "event": "final_review",
+      "detail": "pass"
+    }
+  ]
+}

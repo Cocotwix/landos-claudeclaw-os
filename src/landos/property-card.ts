@@ -23,6 +23,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { getLandosStorageProfile, landosArtifactPath } from './storage-profile.js';
 
 import {
   getLandosDb,
@@ -358,7 +359,7 @@ export function upsertPropertyCard(
   if (weakAcceptedAliasMatch) pushPrior(input.activeInputAddress);
 
   const isVerifiedNow = verificationStatus === 'verified_property';
-  const summaryToPersist = existing?.verification_status === 'verified_property' && !strong ? '' : (input.summary ?? '');
+  let summaryToPersist = existing?.verification_status === 'verified_property' && !strong ? '' : (input.summary ?? '');
 
   // ── Accepted-identity preservation (permanent rule: previously accepted
   // operator information cannot change without Tyler's confirmation). An
@@ -372,10 +373,39 @@ export function upsertPropertyCard(
     warnings.push(
       'existing verified card matched — accepted identity records preserved; the new run\'s values were NOT applied. Target the card explicitly (cardId) with Tyler\'s confirmation to change accepted records.',
     );
-    return { card: existing, created: false, warnings };
+    return { card: existing!, created: false, warnings };
+  }
+
+  // A deliberately owner-reconciled official parcel identity is a hard guard
+  // against a later automated provider resolving a neighboring/similar parcel.
+  // The provider may still enrich this card when it confirms the same APN, but
+  // it may never replace the accepted APN through an automated refresh.
+  const normalized = (value?: string | null) => (value ?? '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+  const preserveOwnerReconciledIdentity = !!(
+    existing
+    && /owner-confirmed official parcel record/i.test(existing.verification_source ?? '')
+    && input.agentId !== 'owner-verified-parcel-reconciliation'
+  );
+  if (
+    preserveOwnerReconciledIdentity
+    && input.apn
+    && normalized(input.apn) !== normalized(existing!.apn)
+  ) {
+    warnings.push('owner-confirmed official parcel identity preserved; automated research returned a conflicting APN and was not applied.');
+    return { card: existing!, created: false, warnings };
   }
 
   if (existing) {
+    // A same-APN automated run used to replace the owner-confirmed provenance
+    // with "LandPortal authenticated browser." That removed the hard guard
+    // above, letting the *next* automated run replace the parcel entirely.
+    // Keep the complete owner-confirmed identity immutable for every automated
+    // update, while still allowing non-identity enrichment (such as acreage or
+    // coordinates) on the same card. Only the explicit reconciliation action
+    // may change these accepted fields and their provenance.
+    const preservedAddress = preserveOwnerReconciledIdentity ? existing.active_input_address : addressToPersist;
+    const preservedAddressKey = preserveOwnerReconciledIdentity ? existing.address_key : addressKey;
+    if (preserveOwnerReconciledIdentity) summaryToPersist = '';
     // A verified parcel no longer "needs parcel verification": advance the kanban
     // off the pre-verification stages so the card stops reading as unverified.
     const kanban: KanbanStatus =
@@ -410,23 +440,23 @@ export function upsertPropertyCard(
     ).run(
       verificationStatus,
       kanban,
-      addressToPersist,
-      addressKey,
+      preservedAddress,
+      preservedAddressKey,
       JSON.stringify(prior),
-      input.apn ?? '', input.apn ?? '',
-      input.lpPropertyId ?? '', input.lpPropertyId ?? '',
-      input.fips ?? '', input.fips ?? '',
-      input.lpUrl ?? '', input.lpUrl ?? '',
-      input.county ?? '', input.county ?? '',
-      input.state ?? '', input.state ?? '',
-      input.city ?? '', input.city ?? '',
-      input.owner ?? '', input.owner ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.apn ?? '', preserveOwnerReconciledIdentity ? '' : input.apn ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.lpPropertyId ?? '', preserveOwnerReconciledIdentity ? '' : input.lpPropertyId ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.fips ?? '', preserveOwnerReconciledIdentity ? '' : input.fips ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.lpUrl ?? '', preserveOwnerReconciledIdentity ? '' : input.lpUrl ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.county ?? '', preserveOwnerReconciledIdentity ? '' : input.county ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.state ?? '', preserveOwnerReconciledIdentity ? '' : input.state ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.city ?? '', preserveOwnerReconciledIdentity ? '' : input.city ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.owner ?? '', preserveOwnerReconciledIdentity ? '' : input.owner ?? '',
       input.acres ?? null,
       input.lat ?? null,
       input.lng ?? null,
-      effectiveSource, effectiveSource,
-      input.propertyId ?? null,
-      input.parcelId ?? null,
+      preserveOwnerReconciledIdentity ? existing!.verification_source : effectiveSource, preserveOwnerReconciledIdentity ? existing!.verification_source : effectiveSource,
+      preserveOwnerReconciledIdentity ? null : input.propertyId ?? null,
+      preserveOwnerReconciledIdentity ? null : input.parcelId ?? null,
       summaryToPersist, summaryToPersist,
       now,
       now,
@@ -555,6 +585,9 @@ export function listPropertyCards(opts: { entity?: string; kanbanStatus?: Kanban
   const limit = Math.min(opts.limit ?? 200, 500);
   const where: string[] = [];
   const args: unknown[] = [];
+  // Preserve historic QA fixtures in storage, but never surface TEST LEAD
+  // property cards in the operating workspace.
+  if (!getLandosStorageProfile().syntheticOnly) where.push("lead_type <> 'test'");
   if (opts.entity) { where.push('entity = ?'); args.push(opts.entity); }
   if (opts.kanbanStatus) { where.push('kanban_status = ?'); args.push(opts.kanbanStatus); }
   if (opts.verificationStatus) { where.push('verification_status = ?'); args.push(opts.verificationStatus); }
@@ -846,7 +879,7 @@ function inspectionFileName(cardId: number, key: string, sourcePath: string): st
 }
 
 function visualsDir(): string {
-  return path.join(process.cwd(), 'store', 'visuals');
+  return landosArtifactPath('visuals');
 }
 
 function copyInspectionAsset(cardId: number, asset: PendingLandPortalInspectionAsset): LandPortalInspectionAsset | null {
@@ -903,7 +936,11 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
 /** Load the newest persisted LandPortal inspection for a property card. */
 export function loadPropertyInspection(cardId: number): PropertyInspectionRecord | null {
   const row = getLandosDb()
-    .prepare("SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind IN ('property_inspection','landportal_inspection') ORDER BY created_at DESC, id DESC LIMIT 1")
+    .prepare(`SELECT a.ref FROM landos_card_activity a
+      WHERE a.card_id = ?
+        AND a.kind IN ('property_inspection','landportal_inspection')
+        AND NOT EXISTS (SELECT 1 FROM landos_quarantined_card_evidence q WHERE q.activity_id = a.id)
+      ORDER BY a.created_at DESC, a.id DESC LIMIT 1`)
     .get(cardId) as { ref: string } | undefined;
   if (!row?.ref) return null;
   try {

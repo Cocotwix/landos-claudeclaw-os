@@ -121,23 +121,23 @@ describe('entity separation', () => {
 });
 
 describe('approval gate', () => {
-  it('blocks a gated action with no approval and creates a pending request', () => {
+  it('hard-prohibits paid actions without creating an approval', () => {
     const result = gateAction({
       actionType: 'paid_credit',
       title: 'Use 1 LandPortal comp credit',
       requestedBy: 'duke-due-diligence',
     });
     expect(result.allowed).toBe(false);
-    expect(result.status).toBe('pending');
+    expect(result.status).toBe('prohibited');
     const approval = getApproval(result.approvalId);
-    expect(approval?.status).toBe('pending');
+    expect(approval).toBeUndefined();
 
     const audit = listLandosAudit() as Array<{ action: string; blocked: number }>;
-    expect(audit.some((a) => a.action === 'gated_action_blocked' && a.blocked === 1)).toBe(true);
-    expect(audit.some((a) => a.action === 'approval_requested')).toBe(true);
+    expect(audit.some((a) => a.action === 'prohibited_action_blocked' && a.blocked === 1)).toBe(true);
+    expect(audit.some((a) => a.action === 'approval_requested')).toBe(false);
   });
 
-  it('allows a gated action exactly once after approval', () => {
+  it('hard-prohibits seller messages even when an approval id is supplied', () => {
     const blocked = gateAction({
       actionType: 'seller_message',
       title: 'Send follow-up draft',
@@ -145,15 +145,14 @@ describe('approval gate', () => {
     });
     expect(blocked.allowed).toBe(false);
 
-    decideApproval(blocked.approvalId, 'approved', 'tyler', 'go');
-
     const allowed = gateAction({
       actionType: 'seller_message',
       title: 'Send follow-up draft',
       requestedBy: 'acquisition-copilot',
       approvalId: blocked.approvalId,
     });
-    expect(allowed.allowed).toBe(true);
+    expect(allowed.allowed).toBe(false);
+    expect(allowed.status).toBe('prohibited');
 
     // Single use: the same approval cannot authorize a second action.
     const replay = gateAction({

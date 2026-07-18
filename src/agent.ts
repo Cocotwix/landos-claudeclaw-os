@@ -423,8 +423,11 @@ export async function runAgentWithRetry(
   onRetry?: (attempt: number, error: AgentError) => void,
   fallbackModels?: string[],
   mcpAllowlist?: string[],
+  agentCwd?: string,
+  maxTurns?: number,
 ): Promise<AgentResult> {
   let lastError: AgentError | undefined;
+  let activeSessionId = sessionId;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -435,13 +438,22 @@ export async function runAgentWithRetry(
           : model;
 
       return await runAgent(
-        message, sessionId, onTyping, onProgress,
+        message, activeSessionId, onTyping, onProgress,
         currentModel, abortController, onStreamText,
-        mcpAllowlist,
+        mcpAllowlist, agentCwd, maxTurns,
       );
     } catch (err) {
       if (!(err instanceof AgentError)) throw err;
       lastError = err;
+
+      // A managed restart can leave the persisted SDK session id pointing at a
+      // conversation the SDK no longer has. Start a fresh session immediately
+      // instead of leaving Max permanently unable to answer.
+      if (err.recovery.shouldNewChat && activeSessionId && !abortController?.signal.aborted) {
+        logger.warn({ attempt: attempt + 1, category: err.category }, 'Restarting agent query with a fresh session');
+        activeSessionId = undefined;
+        continue;
+      }
 
       // Don't retry non-retryable errors or if aborted
       if (!err.recovery.shouldRetry || abortController?.signal.aborted) {

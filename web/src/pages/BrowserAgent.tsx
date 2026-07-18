@@ -118,7 +118,7 @@ export function BrowserAgent() {
                 </div>
                 <p class="mt-1 text-[12px] text-[var(--color-text-muted)] leading-relaxed">{summary.employee.role}. Owns browser automation and executes Browser Playbooks. It never owns a business domain — departments delegate browser collection here.</p>
                 <div class="mt-2 flex items-center gap-2 text-[11px] text-amber-400/90">
-                  <ShieldCheck size={12} /> Live visual navigation: {summary.liveVisualNavigation.replace('_', ' ')}
+                  <ShieldCheck size={12} /> Live research session: {summary.liveVisualNavigation.replace('_', ' ')}
                 </div>
               </div>
             </div>

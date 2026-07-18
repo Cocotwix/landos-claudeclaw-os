@@ -20,6 +20,7 @@ import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
 import { readEnvFile } from '../env.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
+import { landosArtifactPath } from './storage-profile.js';
 
 // The functions passed to page.evaluate() below execute INSIDE the operator's
 // browser (not Node), so the DOM globals are declared as `any` purely to satisfy
@@ -96,7 +97,7 @@ export function readSessionConfig(env?: Record<string, string | undefined>): Bro
   return {
     enabled: flag === '1' || flag === 'true' || flag === 'yes',
     cdpUrl: get('BROWSER_INTEL_CDP_URL') || 'http://127.0.0.1:9222',
-    screenshotDir: get('BROWSER_INTEL_SHOT_DIR') || path.join(os.tmpdir(), 'landos-browser-shots'),
+    screenshotDir: get('BROWSER_INTEL_SHOT_DIR') || landosArtifactPath('browser-shots'),
     chromePath: get('BROWSER_INTEL_CHROME_PATH') || undefined,
     profileDir: get('BROWSER_INTEL_PROFILE_DIR') || path.join(os.homedir(), '.landos-chrome'),
   };
@@ -118,6 +119,13 @@ interface SessionState {
   screenshotDir: string;
 }
 const state: SessionState = { browser: null, workingPage: null, status: 'disabled', cdpUrl: '', connectedAtIso: null, auth: { authenticated: null, atIso: null }, lastCheckIso: null, screenshotDir: '' };
+
+// Chrome exposes one dedicated LandOS working tab. Every read-only mission must
+// lend that tab exclusively: overlapping CDP workflows can stall target setup
+// (observed as `Network.enable timed out`) before either workflow reaches its
+// actual provider action. Keep the queue alive after a failed mission so a
+// recoverable provider error never blocks the next owner-requested retry.
+let workingPageGate: Promise<unknown> = Promise.resolve();
 
 export interface SessionDeps {
   puppeteer?: PuppeteerLike;
@@ -178,14 +186,14 @@ function safeConnected(b: BrowserLike): boolean {
   try { return b.isConnected(); } catch { return false; }
 }
 
-/** Acquire (and cache) a single dedicated LandOS working tab in the operator's
- *  Chrome. Reuses an existing tab when possible; opens one new tab otherwise so
- *  we never spawn a tab per call. Never closes operator tabs. */
+/** Acquire (and cache) one dedicated LandOS working tab. Do not attach to an
+ * arbitrary existing Chrome page: a heavy or stale target can hang CDP target
+ * setup before the provider workflow begins. The fresh tab is created once per
+ * managed session and then reused across leads; operator tabs are never closed. */
 async function getWorkingPage(): Promise<PageLike> {
   if (!state.browser) throw new Error('No live browser session.');
   if (state.workingPage) return state.workingPage;
-  const pages = await state.browser.pages();
-  state.workingPage = pages.length ? pages[pages.length - 1] : await state.browser.newPage();
+  state.workingPage = await state.browser.newPage();
   return state.workingPage;
 }
 
@@ -233,11 +241,16 @@ export async function withWorkingPage<T>(
   fn: (page: PageLike) => Promise<T>,
   deps: SessionDeps = {},
 ): Promise<{ ok: boolean; status: BrowserSessionStatus; value?: T }> {
-  const status = await ensureBrowserSession(deps);
-  if (status !== 'live' && status !== 'auth_needed') return { ok: false, status };
-  const page = await getWorkingPage();
-  const value = await fn(page);
-  return { ok: true, status, value };
+  const lend = async (): Promise<{ ok: boolean; status: BrowserSessionStatus; value?: T }> => {
+    const status = await ensureBrowserSession(deps);
+    if (status !== 'live' && status !== 'auth_needed') return { ok: false, status };
+    const page = await getWorkingPage();
+    const value = await fn(page);
+    return { ok: true, status, value };
+  };
+  const run = workingPageGate.then(lend, lend);
+  workingPageGate = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 /** Disconnect (NOT close) — the operator's browser stays open all day. */
@@ -252,6 +265,7 @@ export async function disconnectBrowserSession(): Promise<void> {
 export function _resetBrowserSession(): void {
   state.browser = null; state.workingPage = null; state.status = 'disabled'; state.cdpUrl = '';
   state.connectedAtIso = null; state.auth = { authenticated: null, atIso: null }; state.lastCheckIso = null; state.screenshotDir = '';
+  workingPageGate = Promise.resolve();
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -673,11 +687,29 @@ const EXTRACT_FN = (): { fields: Record<string, string>; snippets: string[]; log
     const k = el.textContent || ''; const sib = (el.nextElementSibling && el.nextElementSibling.textContent) || '';
     if (k && sib) add(k, sib);
   });
+  // Listing sites are client-rendered and rarely expose useful values through
+  // label/value pairs.  Keep only compact, visible card text that carries both
+  // a price and a lot-size/address signal; this gives the comp parser one
+  // complete listing record instead of unrelated page headings.
   const snippets: string[] = [];
-  document.querySelectorAll('h1,h2,h3').forEach((h: any) => { const t = (h.textContent || '').trim(); if (t) snippets.push(t.slice(0, 120)); });
+  const seen = new Set<string>();
+  const visible = (el: any): boolean => {
+    const r = el?.getBoundingClientRect?.();
+    if (!r || r.width < 1 || r.height < 1) return false;
+    const s = (window as any).getComputedStyle?.(el);
+    return !(s && (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity || '1') < 0.1));
+  };
+  document.querySelectorAll('article,li,[data-test*="property" i],[data-testid*="property" i],[class*="list-card" i],[class*="ListCard"]').forEach((el: any) => {
+    if (!visible(el)) return;
+    const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t.length >= 20 && t.length <= 900 && /\$\s?[\d,]{4,}/.test(t) && /\b(?:acres?|ac|sq\s?ft\s*lot|lot)\b/i.test(t) && !seen.has(t)) {
+      seen.add(t); snippets.push(t);
+    }
+  });
+  document.querySelectorAll('h1,h2,h3').forEach((h: any) => { const t = (h.textContent || '').trim(); if (t && !seen.has(t)) snippets.push(t.slice(0, 120)); });
   const bodyText = (document.body && document.body.innerText) || '';
   const loginLike = /sign in|log in|login|password/i.test(bodyText.slice(0, 2000)) && Object.keys(fields).length === 0;
-  return { fields, snippets: snippets.slice(0, 8), loginLike };
+  return { fields, snippets: snippets.slice(0, 40), loginLike };
 };
 
 async function readPage(page: PageLike): Promise<BrowserPageRead & { loginLike: boolean }> {
@@ -726,6 +758,10 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     await ensureBrowserSession(deps);
     const page = await getWorkingPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    // Zillow/Redfin and public-record portals paint result cards after DOM
+    // content loads.  Reading immediately produces an empty page and a false
+    // "no results" outcome; wait briefly for the visible client-side render.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
     const read = await readPage(page);
     if (deps.detectAuth !== false && read.loginLike) state.status = 'auth_needed';
     return { url: read.url, fields: read.fields, snippets: read.snippets };

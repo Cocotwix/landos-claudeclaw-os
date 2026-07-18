@@ -9,7 +9,6 @@
 // NO live/paid calls; the LandPortal adapter only calls out when actually invoked
 // (its resolver is injected so tests run with no network).
 
-import type { LpResolveArgs, LpResolveResult } from '../landportal-client.js';
 import { validateLocality } from './locality-validation.js';
 
 export type DataDomain = 'parcel' | 'comps' | 'crm' | 'market';
@@ -88,42 +87,6 @@ export interface ParcelProvider {
 }
 
 // ── LandPortal parcel adapter (wraps the existing resolver) ───────────────────
-
-export interface LandPortalParcelDeps {
-  /** Injected so tests need no live call; default wires the real resolver. */
-  resolve?: (args: LpResolveArgs, timeoutMs: number) => Promise<LpResolveResult>;
-}
-
-export function makeLandPortalParcelAdapter(deps: LandPortalParcelDeps = {}): ParcelProvider {
-  return {
-    id: 'landportal',
-    label: 'LandPortal v2 (exact, non-credit)',
-    configured() { return true; }, // already wired in LandOS
-    async lookup(args, opts): Promise<NormalizedParcel> {
-      const resolve = deps.resolve ?? (await import('../landportal-client.js')).lpResolveForPreflight;
-      const r = await resolve(
-        { address: args.address, city: args.city, state: args.state, zip: args.zip, apn: args.apn, county: args.county, fips: args.fips, owner: args.owner, propertyid: args.propertyId },
-        opts.timeoutMs,
-      );
-      const ps = r.property_summary;
-      return {
-        verified: r.verified,
-        source: 'LandPortal v2',
-        status: r.status,
-        apn: r.apn,
-        fips: r.fips,
-        propertyId: r.propertyid,
-        situsAddress: r.situs_address ?? null,
-        city: r.city ?? null,
-        county: ps ? (ps.county ?? null) : null,
-        state: r.state ?? null,
-        owner: r.owner ?? null,
-        acres: ps && ps.lot_size_acres ? Number(ps.lot_size_acres) || null : null,
-        note: r.match_notes,
-      };
-    },
-  };
-}
 
 // ── Realie.ai parcel adapter — matches the VERIFIED official API contract ─────
 //
@@ -368,15 +331,13 @@ export interface DataSourcesConfig {
 }
 
 export const DEFAULT_DATA_SOURCES: DataSourcesConfig = {
-  parcel: 'landportal',
+  parcel: 'realie',
   comps: 'apify_redfin',
   crm: 'none',
   market: 'apify_census',
 };
 
-export interface DataRegistryDeps {
-  landPortal?: LandPortalParcelDeps;
-}
+export interface DataRegistryDeps {}
 
 /**
  * The data-provider registry. Selects the active provider per domain from config
@@ -387,14 +348,13 @@ export interface DataRegistryDeps {
 export class DataProviderRegistry {
   private config: DataSourcesConfig;
   private parcelAdapters: Map<string, ParcelProvider>;
-  constructor(config: DataSourcesConfig = DEFAULT_DATA_SOURCES, deps: DataRegistryDeps = {}) {
+  constructor(config: DataSourcesConfig = DEFAULT_DATA_SOURCES, _deps: DataRegistryDeps = {}) {
     this.config = config;
     this.parcelAdapters = new Map<string, ParcelProvider>([
-      ['landportal', makeLandPortalParcelAdapter(deps.landPortal)],
       ['realie', makeRealieParcelAdapter()],
     ]);
   }
-  /** The active parcel provider per config (default LandPortal). */
+  /** The active structured parcel provider (default Realie). */
   parcel(): ParcelProvider {
     const p = this.parcelAdapters.get(this.config.parcel);
     if (!p) throw new Error(`no parcel adapter registered for "${this.config.parcel}"`);

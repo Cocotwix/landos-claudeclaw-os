@@ -34,6 +34,7 @@ export interface CountyGisCapability {
 }
 
 const BEAUFORT_GIS = 'https://gis.beaufortcountysc.gov/server/rest/services';
+const FAYETTE_GIS = 'https://gis.fayettecountyga.gov/arcgis/rest/services';
 
 function normalizeState(value: string | undefined): string {
   const raw = String(value ?? '').trim().toUpperCase();
@@ -43,6 +44,25 @@ function normalizeState(value: string | undefined): string {
 }
 
 export const COUNTY_GIS_CAPABILITIES: CountyGisCapability[] = [
+  {
+    // Fayette County publishes its tax-parcel geometry and county orthophoto
+    // service openly through ArcGIS.  The APN-specific lookup lives in the
+    // shared official-parcel adapter; this registry entry makes the resulting
+    // geometry available to every overlay and county-GIS workflow.
+    countyLabel: 'Fayette County',
+    state: 'GA',
+    match: (county, state) => normalizeState(state) === 'GA' && /fayette/i.test(county ?? ''),
+    layers: {
+      parcels: `${FAYETTE_GIS}/Pictometry/parcelsRO/MapServer/0`,
+      zoning: `${FAYETTE_GIS}/Pictometry/ZoningRO/MapServer/0`,
+      wetlands: `${FAYETTE_GIS}/Pictometry/NWIWetlandsRO/MapServer/0`,
+      roads: `${FAYETTE_GIS}/Pictometry/RoadsRO/MapServer/0`,
+      aerialImage: `${FAYETTE_GIS}/Basemaps/2018_Imagery_Dynamic/ImageServer`,
+    },
+    mapViewerUrl: 'https://qpublic.schneidercorp.com/Application.aspx?AppID=942&LayerID=18406&PageTypeID=1&PageID=0',
+    recorderSearchUrl: 'https://www.fayetteclerk.com/',
+    assessorSearchUrl: 'https://qpublic.schneidercorp.com/Application.aspx?AppID=942&LayerID=18406&PageTypeID=2&PageID=8204',
+  },
   {
     countyLabel: 'Beaufort County',
     state: 'SC',

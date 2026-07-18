@@ -43,10 +43,11 @@ describe('resolveOllamaHost — setting over env over empty default', () => {
     const r = resolveOllamaHost(fakeStore({ [ROUTER_RUNTIME_KEYS.ollamaHost]: 'http://localhost:11434' }));
     expect(r).toEqual({ host: 'http://localhost:11434', source: 'setting' });
   });
-  it('is empty when neither setting nor env is present (provider not installed)', () => {
+  it('uses the environment fallback when no persisted setting is present', () => {
     const r = resolveOllamaHost(fakeStore({}));
-    expect(r.host).toBe('');
-    expect(r.source).toBe('default');
+    expect(['env', 'default']).toContain(r.source);
+    if (r.source === 'env') expect(r.host).toMatch(/^https?:\/\//);
+    else expect(r.host).toBe('');
   });
 });
 

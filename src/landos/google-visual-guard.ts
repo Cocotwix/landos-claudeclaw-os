@@ -8,6 +8,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { landosArtifactPath } from './storage-profile.js';
 
 export interface VisualCaptureRecord {
   timestamp: string;
@@ -22,7 +23,7 @@ export interface VisualUsageState {
 }
 
 function defaultFile(): string {
-  return path.join(process.cwd(), 'store', 'google-visual-usage.json');
+  return landosArtifactPath('google-visual-usage.json');
 }
 
 export function loadVisualUsage(file: string = defaultFile()): VisualUsageState {

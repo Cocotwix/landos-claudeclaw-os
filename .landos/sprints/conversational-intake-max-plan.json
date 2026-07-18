@@ -1,0 +1,50 @@
+{
+  "sprintId": "sprint-2026-07-17-conversational-intake-max",
+  "title": "Conversational lead intake and persistent Max",
+  "originalPrompt": "Replace the manual CRM-style New Lead form with one LLM-style free-form data-dump intake that preserves the raw submission, extracts whatever seller/property/contact/source clues are available without fabrication, creates a Lead Card even when fields are incomplete, and automatically begins research. Make the chief-of-staff assistant globally present on every LandOS page with immediate text and voice input, rename the operator-facing assistant from Jarvis to Max, preserve owner-only outbound and all Phase 1 safety boundaries, and verify the visible localhost experience.",
+  "workstreams": [
+    {
+      "id": "ws1-conversational-lead-intake",
+      "name": "One-box conversational manual lead intake",
+      "operatorOutcome": "The owner can paste or dictate one unstructured data dump, submit it once, and immediately receive a Lead Card whose extracted clues and unknowns are visible while research starts automatically.",
+      "inScope": ["New Lead UI", "raw lead intake", "deterministic clue extraction", "Lead Card creation", "automatic research trigger"],
+      "backendServices": ["manual lead route", "Smart Intake", "opportunity", "research mission"],
+      "frontendScreens": ["Acquisitions New Lead", "Lead Workspace"],
+      "requiredDataState": "Raw input is preserved exactly; extracted items remain seller-supplied or needs-verification; incomplete input still creates an honest Lead Card.",
+      "browserJourney": {"steps": ["Open New Lead", "Paste one mixed seller/property data dump", "Submit once", "Confirm Lead Card opens", "Confirm extracted clues and queued/running research are visible", "Refresh and confirm persistence"]},
+      "testRequirements": ["unstructured extraction", "missing-field lead creation", "raw preservation", "research enqueue", "single-box UI contract"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["individual CRM fields remain", "seller name or parcel clue blocks creation", "raw input is lost", "fabricated values", "research does not start", "created card is not opened"],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "independent_browser_qa", "refresh_persistence"],
+      "dependsOn": [],
+      "requirements": [
+        {"id":"R1-01","text":"New Lead presents one prominent free-form text area with optional microphone input and no required individual CRM fields."},
+        {"id":"R1-02","text":"A non-empty data dump always creates a durable Lead Card while preserving the exact raw input and provenance."},
+        {"id":"R1-03","text":"LandOS extracts only defensible seller, contact, source, and property clues; absent or uncertain values remain unknown or needs verification."},
+        {"id":"R1-04","text":"Lead creation immediately queues the durable property research mission and opens the resulting Lead Workspace."}
+      ]
+    },
+    {
+      "id": "ws2-persistent-max",
+      "name": "Persistent Max chief-of-staff surface",
+      "operatorOutcome": "Max is visibly present on every LandOS page with immediate text and microphone controls, receives replies without navigating away, and replaces Jarvis in operator-facing language.",
+      "inScope": ["global application shell", "persistent assistant dock", "voice-to-text", "chat stream", "operator-facing chief-of-staff naming"],
+      "backendServices": ["chat send", "chat stream", "main chief-of-staff agent"],
+      "frontendScreens": ["all LandOS routes", "Max conversation page", "Sidebar", "Lead Workspace"],
+      "requiredDataState": "Existing conversations and internal compatibility identifiers remain usable; no seller or external outbound capability is added.",
+      "browserJourney": {"steps": ["Open Mission Control", "Confirm Max is present", "Navigate Acquisitions and another department", "Confirm Max persists", "Use microphone or text control", "Confirm response appears without opening a separate page", "Refresh and restart"]},
+      "testRequirements": ["global render contract", "chat send and stream behavior", "voice capability fallback", "Max naming", "owner-only egress regression"],
+      "persistence": {"refresh": true, "restart": true},
+      "failureConditions": ["Max requires navigating to a separate page", "assistant disappears between routes", "operator UI still calls the chief of staff Jarvis", "voice control missing", "external outbound boundary changes"],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "independent_browser_qa", "refresh_persistence", "restart_persistence", "final_regression"],
+      "dependsOn": ["ws1-conversational-lead-intake"],
+      "requirements": [
+        {"id":"R2-01","text":"A persistent Max assistant dock renders in the global application shell on every primary LandOS route."},
+        {"id":"R2-02","text":"The dock supports immediate text submission and browser speech-to-text without requiring navigation to the conversation page."},
+        {"id":"R2-03","text":"Max replies and progress are visible globally through the existing chat stream and survive route changes."},
+        {"id":"R2-04","text":"Operator-facing chief-of-staff labels use Max while compatibility identifiers may remain internal."},
+        {"id":"R2-05","text":"Owner-only outbound, no paid action, and no offer or contract sending rules remain enforced."}
+      ]
+    }
+  ]
+}

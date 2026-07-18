@@ -76,6 +76,10 @@ export interface HomeHarvestComp {
   sourceUrl: string;
   sourceLabel: 'homeharvest';
   addressDesc?: string;
+  /** Provider coordinates retained so the shared valuation gate can measure
+   *  subject-to-comp distance instead of treating a real local sale as unknown. */
+  lat: number | null;
+  lng: number | null;
   daysOnMarket: number | null;
   // classification signals + result (so the band engine can re-verify, and the UI
   // can show why a row is land vs excluded).
@@ -182,6 +186,8 @@ function toComp(row: HomeHarvestRow, isActive: boolean): HomeHarvestComp | null 
     sourceUrl,
     sourceLabel: 'homeharvest',
     addressDesc: str(row.formatted_address) ?? str(row.full_street_line) ?? undefined,
+    lat: num(row.latitude),
+    lng: num(row.longitude),
     daysOnMarket: num(row.days_on_mls),
     yearBuilt,
     buildingAreaSqft,

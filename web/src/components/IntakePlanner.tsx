@@ -391,7 +391,7 @@ export function IntakePlanner() {
     // textarea. Never silently no-op: an empty input shows a clear error.
     const input = (planText || text).trim();
     if (!input) {
-      setDukeError('Run an intake plan first, then run Duke parcel verification.');
+      setDukeError('Run an intake plan first, then run due-diligence parcel verification.');
       setDuke(null);
       return;
     }
@@ -447,7 +447,7 @@ export function IntakePlanner() {
               checked={parcelVerified}
               onChange={(e) => setParcelVerified((e.target as HTMLInputElement).checked)}
             />
-            Parcel identity already verified (prior Duke run)
+            Parcel identity already verified (prior due-diligence run)
           </label>
           <div class="ml-auto flex items-center gap-2">
             <button
@@ -489,14 +489,14 @@ export function IntakePlanner() {
             }`}>
               <div class={`text-[12px] font-medium ${duke.verification.parcelVerified ? 'text-[var(--color-status-done)]' : 'text-[var(--color-text)]'}`}>
                 {duke.verification.parcelVerified
-                  ? 'Duke execution verified this parcel — the verified result below supersedes the read-only plan status.'
-                  : 'Read-only plan shown. The Duke execution result below is the current result.'}
+                  ? 'Due Diligence Agent verified this parcel — the verified result below supersedes the read-only plan status.'
+                  : 'Read-only plan shown. The due-diligence execution result below is the current result.'}
               </div>
             </div>
           )}
 
           {/* Guard banners — hard business rules from the READ-ONLY plan. Once a
-              Duke execution result verifies the parcel, the stale "unverified"
+              Due-diligence execution verifies the parcel, so the stale "unverified"
               banner is suppressed so it cannot contradict the verified result. */}
           {strategyBlocked && !duke?.verification.parcelVerified && (
             <div class="border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] rounded-lg px-4 py-2.5">
@@ -779,23 +779,23 @@ export function IntakePlanner() {
           {/* ── Duke Execution Bridge (Sprint 6B/6C) ───────────────────── */}
           <div class="border-t border-[var(--color-border)] pt-4">
             <div class="flex items-center gap-3 flex-wrap">
-              <SectionTitle>Duke Parcel Verification</SectionTitle>
+              <SectionTitle>Due Diligence Parcel Verification</SectionTitle>
               <button
                 type="button"
                 disabled={dukeLoading}
                 onClick={() => void runDuke()}
                 class="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium text-[var(--color-text)] border border-[var(--color-border)] bg-[var(--color-elevated)] hover:opacity-90 disabled:opacity-40"
               >
-                <Search size={12} /> {dukeLoading ? 'Verifying…' : 'Run Duke parcel verification'}
+                <Search size={12} /> {dukeLoading ? 'Verifying…' : 'Run parcel verification'}
               </button>
             </div>
             <div class="text-[10px] text-[var(--color-text-faint)] mb-2">
-              Runs the safe Duke verification path only (bounded LandPortal exact lookup). No comp credit, no GIS scraping, no CRM writes.
+              Runs authenticated browser and public-record verification only. No API, paid action, or CRM write.
             </div>
 
             {dukeLoading && (
               <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-2.5 text-[12px] text-[var(--color-text-muted)]">
-                Running Duke parcel verification… bounded LandPortal exact lookup, this can take a moment.
+                Running due-diligence parcel verification… this can take a moment.
               </div>
             )}
 
@@ -811,7 +811,7 @@ export function IntakePlanner() {
                 {/* Verification header */}
                 <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Duke Due Diligence Result</span>
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Due Diligence Result</span>
                     <StatusBadge status={duke.verification.status} />
                     {duke.verification.localAreaContextLabel && (
                       <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[color-mix(in_srgb,var(--color-status-failed)_40%,transparent)] text-[var(--color-status-failed)]">
@@ -994,7 +994,7 @@ export function IntakePlanner() {
                 {/* ── Ace seller discovery prep ──────────────────────────── */}
                 <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-2">
                   <div class="flex items-center gap-2">
-                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Ace Seller Discovery Prep</span>
+                    <span class="text-[12px] font-semibold text-[var(--color-text)]">Acquisitions Discovery Prep</span>
                     <span class="ml-auto"><StatusBadge status={duke.acePrep.status} /></span>
                   </div>
                   <div class="space-y-1">

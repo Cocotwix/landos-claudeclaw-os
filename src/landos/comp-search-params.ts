@@ -1,7 +1,7 @@
 // LandOS comp search-params layer — density-adaptive, identity-safe.
 //
 // Builds the search plan the two-stage Redfin flow uses: WHERE to search (a
-// trusted centroid), HOW WIDE (radius stepping 2 -> 5 -> 10mi ceiling, stop at 5
+// trusted centroid), HOW WIDE (radius stepping 3 -> 5 -> 10mi ceiling, stop at 5
 // comps), and HOW comps are ranked (crow-flies distance). It NEVER invents a
 // location.
 //
@@ -23,11 +23,12 @@ export interface LatLng {
 }
 
 /** Density-adaptive radius ladder (miles). Stop stepping once enough comps land. */
-export const RADIUS_STEPS_MILES = [2, 5, 10] as const;
+/** Phase 1 search ladder: local first, widening only when the market is thin. */
+export const RADIUS_STEPS_MILES = [3, 5, 10] as const;
 export const RADIUS_CEILING_MILES = 10;
 export const TARGET_COMP_COUNT = 5;
 /** Tier A (parcel pinned) starts tight; Tier B (area-level) starts wider. */
-export const TIER_A_START_RADIUS_MILES = 2;
+export const TIER_A_START_RADIUS_MILES = 3;
 export const TIER_B_START_RADIUS_MILES = 5;
 
 export const AREA_LEVEL_TAG = 'area-level, parcel not pinned — verify in underwriting';

@@ -38,7 +38,7 @@ import {
 } from './browser-training-db.js';
 import { writeBrowserFact } from './browser-fact-store.js';
 import { withWorkingPage, type PageLike } from './browser-session.js';
-import { createApproval, landosAudit } from './db.js';
+import { landosAudit } from './db.js';
 import {
   chooseExtraction, labelValueScript, selectorTextScript, toFactConfidence,
   type FieldSelectorEntry,
@@ -383,13 +383,7 @@ export async function runTrainedPlaybook(playbookId: number, opts: RunTrainedOpt
   let approvalRequired = false;
   if (blockedActions.length > 0) {
     status = 'blocked';
-    approvalRequired = true;
-    createApproval({
-      actionType: 'trained_playbook_paid_action',
-      title: `Paid/prohibited action during "${pb.name}" replay`,
-      payload: { playbookId, blockedActions },
-      requestedBy: 'browser-agent',
-    });
+    approvalRequired = false;
     landosAudit('browser-agent', 'trained_execution_blocked', blockedActions.map((b) => b.reason).join('; '), {
       refTable: 'landos_training_playbook', refId: playbookId, blocked: true,
     });

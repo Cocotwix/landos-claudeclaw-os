@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { landosArtifactPath } from './storage-profile.js';
 
 import {
   GOOGLE_MAPS_ENV_KEY,
@@ -111,7 +112,7 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
 
   const key = (env[GOOGLE_MAPS_ENV_KEY] ?? '').trim();
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchBinary);
-  const storeDir = deps.storeDir ?? path.join(process.cwd(), 'store', 'visuals');
+  const storeDir = deps.storeDir ?? landosArtifactPath('visuals');
   fs.mkdirSync(storeDir, { recursive: true });
 
   const coords = inputCoords;

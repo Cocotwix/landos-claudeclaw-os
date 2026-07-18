@@ -666,9 +666,9 @@ function ExecutionResult({ exec }: { exec: Execution }) {
       <div class="text-xs">
         <span class="uppercase tracking-wide text-[10px] text-[var(--color-text-muted)] mr-2">{exec.mode}</span>
         <span class={tone[exec.status] || ''}>{exec.status}</span>
-        {exec.approvalRequired && <span class="ml-2 text-amber-300">· Approval Required</span>}
+        {exec.blockedActions.length > 0 && <span class="ml-2 text-amber-300">· Prohibited</span>}
       </div>
-      {exec.approvalRequired && exec.blockedActions.length > 0 && (
+      {exec.blockedActions.length > 0 && (
         <div class="text-xs text-amber-300 flex items-start gap-1">
           <ShieldAlert size={13} class="mt-0.5 shrink-0" />
           <span>{exec.blockedActions.map((b) => b.reason).join(' ')}</span>

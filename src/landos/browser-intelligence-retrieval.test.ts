@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   classifyCountyLink, officialDomainScore, extractCountySources, netrIsStale,
   officialSearchQuery, pickOfficialResult, searchEngineUrl, unwrapSearchResults,
+  governmentSourceScope, orderCountySourcesLocalFirst,
 } from './netr-routing.js';
 import { extractRecordFacts, unresolvedFact, extractAgencyContact, parcelRecordSignal } from './semantic-extract.js';
 import { saveCountySources, getCountySources, isCountyCacheFresh } from './county-source-map.js';
@@ -56,6 +57,19 @@ describe('NETR routing — semantic link classification (no county scrapers)', (
     const picked = pickOfficialResult(results, 'tax', 'White', 'GA');
     expect(picked!.url).toContain('whitecountytax.gov');
     expect(picked!.origin).toBe('search_fallback');
+  });
+
+  it('always prefers a local county/city/township source before a statewide index', () => {
+    const localClerk = { type: 'recorder' as const, url: 'https://fccottweb.fayettecountyga.gov/external/', label: 'Fayette County Clerk eSearch', origin: 'search_fallback' as const, confidence: 0.64 };
+    const statewideIndex = { type: 'recorder' as const, url: 'https://records.georgia.gov/statewide-records', label: 'Georgia Statewide Recorder Index', origin: 'search_fallback' as const, confidence: 0.96 };
+    expect(governmentSourceScope(localClerk, { county: 'Fayette', city: 'Fayetteville', state: 'GA' })).toBe('county');
+    expect(governmentSourceScope(statewideIndex, { county: 'Fayette', city: 'Fayetteville', state: 'GA' })).toBe('statewide');
+    expect(orderCountySourcesLocalFirst([statewideIndex, localClerk], { county: 'Fayette', city: 'Fayetteville', state: 'GA' })[0]).toBe(localClerk);
+    const selected = extractCountySources([
+      { text: statewideIndex.label, href: statewideIndex.url },
+      { text: localClerk.label, href: localClerk.url },
+    ], { origin: 'search_fallback', county: 'Fayette', state: 'GA' });
+    expect(selected.find((source) => source.type === 'recorder')!.url).toBe(localClerk.url);
   });
 
   it('builds a static-results search URL and unwraps DuckDuckGo redirects', () => {

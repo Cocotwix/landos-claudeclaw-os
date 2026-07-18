@@ -9,6 +9,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { landosArtifactPath } from './storage-profile.js';
 import type { PropertyAnalysisResult } from './property-analysis.js';
 import type { StrategyScenario } from './offer-engine.js';
 import { buildVisualPropertyContext, renderVisualContextMarkdown, googleVisualConfiguredResolved } from './providers/google-visual.js';
@@ -197,7 +198,7 @@ export async function savePropertyAnalysisReport(
   r: PropertyAnalysisResult,
   opts: { baseDir?: string } = {},
 ): Promise<SaveReportResult> {
-  const baseDir = opts.baseDir ?? path.join(process.cwd(), 'store', 'landos-reports');
+  const baseDir = opts.baseDir ?? landosArtifactPath('landos-reports');
   fs.mkdirSync(baseDir, { recursive: true });
   const stamp = r.reportTimestamp.replace(/[:.]/g, '-');
   const base = `${slug(r.input)}_${stamp}`;

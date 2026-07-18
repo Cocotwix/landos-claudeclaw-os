@@ -11,6 +11,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { landosArtifactPath } from './storage-profile.js';
 
 /** Account facts (informational) + the session-approved live-call budget. */
 export const REALIE_TRIAL = {
@@ -35,7 +36,7 @@ export interface RealieTrialState {
 }
 
 function defaultFile(): string {
-  return path.join(process.cwd(), 'store', 'realie-trial-counter.json');
+  return landosArtifactPath('realie-trial-counter.json');
 }
 
 export function loadTrialState(file: string = defaultFile()): RealieTrialState {

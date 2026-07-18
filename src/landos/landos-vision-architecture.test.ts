@@ -119,9 +119,9 @@ describe('Sidebar / router structure reflects the architecture', () => {
     expect(ROUTES).toMatch(/DEPARTMENTS\.map\(\(d\) => \(\{[\s\S]*?path: `\/dept\/\$\{d\.slug\}`/);
   });
 
-  it('keeps Mission Control as the executive default and surfaces Jarvis', () => {
+  it('keeps Mission Control as the executive default and surfaces Max', () => {
     expect(ROUTES).toContain("export const DEFAULT_ROUTE = '/mission'");
-    expect(ROUTES).toContain("label: 'Jarvis'");
+    expect(ROUTES).toContain("label: 'Max'");
   });
 
   it('routes every department through the Department workspace page', () => {
@@ -164,7 +164,7 @@ describe('Mission Control is the executive dashboard', () => {
 describe('Property Board stays acquisitions pipeline and opens the Deal Card', () => {
   it('still opens the canonical Deal Card via /landos?deal=', () => {
     expect(BOARD).toMatch(/\/landos\?deal=\$\{[^}]+\}/);
-    expect(BOARD).toMatch(/function openDealCard/);
+    expect(BOARD).toMatch(/function open\(/);
   });
 
   it('does not rebuild a competing property intelligence surface', () => {

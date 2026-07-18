@@ -25,6 +25,62 @@ export interface CountySourceLink {
 
 export interface PageLink { text: string; href: string }
 
+/**
+ * Government-record source order is a business rule, not a one-off county
+ * exception.  A county, city, or township office owns the most useful parcel
+ * context, so LandOS must attempt it before a statewide index.  Statewide
+ * systems remain a fallback: they can be useful for a wider index, but never
+ * displace an available local-record path.
+ */
+export type GovernmentSourceScope = 'township' | 'municipal' | 'county' | 'regional' | 'statewide' | 'unknown';
+
+export interface GovernmentSourceLocality {
+  county?: string;
+  city?: string;
+  township?: string;
+  state?: string;
+}
+
+function normalizedPlace(value?: string): string {
+  return String(value ?? '').toLowerCase().replace(/\b(county|city|township|town|village)\b/g, '').replace(/[^a-z0-9]/g, '');
+}
+
+/** Classify the ownership scope of a public-record source from safe link text
+ * and URL only.  A link found on the county's NETR page is treated as county
+ * local unless it identifies itself as a statewide index. */
+export function governmentSourceScope(source: Pick<CountySourceLink, 'url' | 'label' | 'origin'>, locality: GovernmentSourceLocality): GovernmentSourceScope {
+  const host = hostOf(source.url);
+  const blob = `${source.label} ${host} ${source.url}`.toLowerCase();
+  const township = normalizedPlace(locality.township);
+  const city = normalizedPlace(locality.city);
+  const county = normalizedPlace(locality.county);
+  const compact = blob.replace(/[^a-z0-9]/g, '');
+  if (township && compact.includes(township)) return 'township';
+  if (city && compact.includes(city)) return 'municipal';
+  if (county && compact.includes(county)) return 'county';
+  if (/\b(statewide|state\s+(land|lien|deed|record|records|index)|secretary\s+of\s+state)\b|gsccca|state\.\w+\.us/.test(blob)) return 'statewide';
+  if (/\b(regional|multi[-\s]?county|district)\b/.test(blob)) return 'regional';
+  return source.origin === 'netr' ? 'county' : 'unknown';
+}
+
+const SOURCE_SCOPE_PRIORITY: Record<GovernmentSourceScope, number> = {
+  township: 0, municipal: 1, county: 2, regional: 3, statewide: 4, unknown: 5,
+};
+
+export function governmentSourceScopePriority(source: Pick<CountySourceLink, 'url' | 'label' | 'origin'>, locality: GovernmentSourceLocality): number {
+  return SOURCE_SCOPE_PRIORITY[governmentSourceScope(source, locality)];
+}
+
+/** Stable local-first ordering for every county public-record workflow. */
+export function orderCountySourcesLocalFirst<T extends CountySourceLink>(sources: readonly T[], locality: GovernmentSourceLocality): T[] {
+  return sources.map((source, index) => ({ source, index })).sort((a, b) => {
+    const scopeDiff = governmentSourceScopePriority(a.source, locality) - governmentSourceScopePriority(b.source, locality);
+    if (scopeDiff !== 0) return scopeDiff;
+    const confidenceDiff = b.source.confidence - a.source.confidence;
+    return confidenceDiff !== 0 ? confidenceDiff : a.index - b.index;
+  }).map(({ source }) => source);
+}
+
 // Semantic classifiers — match BOTH the visible link text and the URL. Ordered:
 // more specific types first so "property appraiser" → appraiser (not assessor).
 const TYPE_PATTERNS: Array<{ type: CountySourceType; rx: RegExp }> = [
@@ -91,7 +147,10 @@ export function extractCountySources(
     const confidence = Math.min(1, 0.4 + domain * 0.6);
     const cand: CountySourceLink = { type, url: link.href, label: (link.text || type).slice(0, 80).trim(), origin: opts.origin, confidence };
     const prev = best.get(type);
-    if (!prev || cand.confidence > prev.confidence) best.set(type, cand);
+    const locality = { county: opts.county, state: opts.state };
+    const candidateScope = governmentSourceScopePriority(cand, locality);
+    const previousScope = prev ? governmentSourceScopePriority(prev, locality) : Number.POSITIVE_INFINITY;
+    if (!prev || candidateScope < previousScope || (candidateScope === previousScope && cand.confidence > prev.confidence)) best.set(type, cand);
   }
   return [...best.values()];
 }
@@ -143,7 +202,10 @@ export function pickOfficialResult(results: PageLink[], type: CountySourceType, 
     const domain = officialDomainScore(r.href, county, state);
     if (domain === 0) continue;
     const cand: CountySourceLink = { type, url: r.href, label: (r.text || type).slice(0, 80).trim(), origin: 'search_fallback', confidence: Math.min(1, 0.35 + domain * 0.6) };
-    if (!best || cand.confidence > best.confidence) best = cand;
+    const locality = { county, state };
+    const candidateScope = governmentSourceScopePriority(cand, locality);
+    const previousScope = best ? governmentSourceScopePriority(best, locality) : Number.POSITIVE_INFINITY;
+    if (!best || candidateScope < previousScope || (candidateScope === previousScope && cand.confidence > best.confidence)) best = cand;
   }
   return best;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runPropertyInspection } from './property-inspection.js';
-import type { BrowserEvidence, BrowserService } from './browser-intelligence.js';
+import type { BrowserEvidence, BrowserSearchKey, BrowserService } from './browser-intelligence.js';
 
 function fakeService(ev: BrowserEvidence): BrowserService {
   return {
@@ -83,5 +83,38 @@ describe('Property Inspection capability', () => {
     expect(result.inspection.parcelFacts['Official owner']).toBe('DOE');
     expect(result.routes.find((r) => r.provider === 'Official Assessor')?.status).toBe('used');
     expect(result.routes.find((r) => r.provider === 'NETR')?.status).toBe('used');
+  });
+
+  it('continues to county records for deep-record work after LandPortal has core parcel facts', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: { parcelUrl: 'https://landportal.example/parcel', comparablesUrl: null, parcelFacts: { 'Owner Name': 'DOE', 'Parcel ID': 'R123', Acres: '10' }, assets: [], overlays: [], visualObservations: [], comparables: [] },
+    } satisfies BrowserEvidence;
+    const county = {
+      service: 'county_records', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, screenshots: [], blocked: [], sourceUrls: ['https://county.example/recorder'], note: 'recorder reached',
+      facts: [{ key: 'deedLink', label: 'Recorder / Register of Deeds link', value: 'https://county.example/recorder', sourceName: 'County Recorder', sourceType: 'recorder', sourceUrl: 'https://county.example/recorder', confidence: 'high', origin: 'netr_county', status: 'extracted' }],
+      sourcesUsed: [{ type: 'recorder', url: 'https://county.example/recorder', origin: 'netr_county', confidence: 0.9 }],
+    } satisfies BrowserEvidence;
+    const result = await runPropertyInspection({ searchKey: { address: '1 Main St', county: 'Example', state: 'TX' }, mode: 'deep_record', timeoutMs: 1000 }, {
+      landPortalBrowser: fakeService(landportal), countyRecordsBrowser: fakeService(county), googleVisualConfigured: false,
+    });
+    expect(result.routes.find((route) => route.provider === 'Official Recorder')?.status).toBe('used');
+    expect((result.inspection.sources ?? []).some((source) => source.provider === 'County Records Browser')).toBe(true);
+  });
+
+  it('routes county work from verified LandPortal locality when the intake omitted jurisdiction', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: { parcelUrl: 'https://landportal.example/parcel', comparablesUrl: null, parcelFacts: { 'Owner Name': 'DOE', 'Parcel ID': 'R123', Acres: '10', County: 'Runnels', State: 'TX' }, assets: [], overlays: [], visualObservations: [], comparables: [] },
+    } satisfies BrowserEvidence;
+    let receivedKey: BrowserSearchKey | undefined;
+    const county: BrowserService = {
+      ...fakeService({ service: 'county_records', mode: 'workflow', status: 'partial', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'county route attempted' }),
+      async runWorkflow(input) { receivedKey = input.searchKey; return { service: 'county_records', mode: 'workflow', status: 'partial', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'county route attempted' }; },
+    };
+    await runPropertyInspection({ searchKey: { address: '2510 State Highway 153' }, mode: 'deep_record', timeoutMs: 1000 }, {
+      landPortalBrowser: fakeService(landportal), countyRecordsBrowser: county, googleVisualConfigured: false,
+    });
+    expect(receivedKey).toMatchObject({ county: 'Runnels', state: 'TX', address: '2510 State Highway 153' });
   });
 });

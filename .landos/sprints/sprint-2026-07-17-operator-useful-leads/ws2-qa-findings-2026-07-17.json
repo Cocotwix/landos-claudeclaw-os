@@ -1,0 +1,22 @@
+[
+  {
+    "requirementId": "R2-05",
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=27",
+    "steps": [
+      "Run the read-only ws2-investigative-intake-mission journey",
+      "Verify all visible intake and research-path assertions",
+      "Run the required canonical managed restart persistence step"
+    ],
+    "expected": "The durable investigative mission survives the canonical managed restart and remains visible in the live browser.",
+    "actual": "All browser assertions and refresh persistence passed, but the non-elevated QA child process could not terminate the verified runtime PID: taskkill returned Access denied.",
+    "evidencePaths": [
+      ".runtime/landos/qa/qa-2026-07-17T20-17-13-818Z/report.json",
+      ".runtime/landos/qa/qa-2026-07-17T20-17-13-818Z/ws2-investigative-intake-mission/ws2-investigative-paths.png"
+    ],
+    "apiOrDbEvidence": "The runtime was healthy and repository-associated at preflight; the failure was limited to Windows process-control permission during restart.",
+    "severity": "high",
+    "suspectedSubsystem": "managed-runtime-process-control",
+    "disposition": "repair_required",
+    "patternKey": "managed-restart-access-denied"
+  }
+]

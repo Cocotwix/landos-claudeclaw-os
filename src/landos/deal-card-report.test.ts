@@ -13,7 +13,7 @@ import { createDealCard } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd } from './deal-card-dd.js';
 import { getDealCardStrategy } from './deal-card-strategy.js';
 import { getDealCardMarket } from './deal-card-market.js';
-import { getDealCardReport, runDealCardReport, buildIdentityText, buildPersistedResolver } from './deal-card-report.js';
+import { getDealCardReport, runDealCardReport, buildIdentityText, buildPersistedResolver, supportingCoordinatesForVerifiedParcel } from './deal-card-report.js';
 import { runDukeVerification } from './duke-verification-bridge.js';
 import { getDealCard } from './deal-card.js';
 import { upsertCardFromDukeRun, getPropertyCardRow } from './property-card.js';
@@ -22,6 +22,22 @@ import type { LpPropertySummary, LpResolveArgs, LpResolveResult } from './landpo
 
 beforeEach(() => {
   _initTestLandosDb();
+});
+
+it('uses an APN-matched inspection centroid instead of stale supporting coordinates', () => {
+  const coordinates = supportingCoordinatesForVerifiedParcel(
+    { parcelVerified: true, identity: { apn: '45-177-182' }, coordinates: { lat: 35.4852725, lng: -81.2050275 } },
+    { parcelFacts: { APN: '45-177-182', 'Centroid Latitude': '33.6530000551421', 'Centroid Longitude': '-79.80467810051303' } },
+  );
+  expect(coordinates).toEqual({ lat: 33.6530000551421, lng: -79.80467810051303 });
+});
+
+it('does not accept an inspection centroid from a different APN', () => {
+  const coordinates = supportingCoordinatesForVerifiedParcel(
+    { parcelVerified: true, identity: { apn: '45-177-182' }, coordinates: { lat: 35.4852725, lng: -81.2050275 } },
+    { parcelFacts: { APN: '45-177-182.B', 'Centroid Latitude': '33.6530000551421', 'Centroid Longitude': '-79.80467810051303' } },
+  );
+  expect(coordinates).toEqual({ lat: 35.4852725, lng: -81.2050275 });
 });
 
 it('buildIdentityText includes the street address so address-only leads can verify (regression)', () => {

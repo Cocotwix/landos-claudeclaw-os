@@ -1,0 +1,13 @@
+[
+  {
+    "liveUrl": "http://localhost:3141/dept/acquisitions?deal=3",
+    "steps": ["Open synthetic unresolved package", "Hard refresh", "Canonical managed restart", "Reload package"],
+    "expected": "The persisted discovery package is visible after managed restart",
+    "actual": "The API returned 200 after restart, but the QA assertion sampled page text before the asynchronous semantic package root rendered",
+    "evidencePaths": [".runtime/landos/qa/qa-2026-07-17T06-40-25-776Z/report.md"],
+    "severity": "major",
+    "suspectedSubsystem": "operator-qa async restart assertion",
+    "disposition": "internally_fixable",
+    "patternKey": "restart-assertion-races-async-render"
+  }
+]

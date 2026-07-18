@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { findCountyGis, type CountyGisCapability } from './county-gis-capabilities.js';
 import type { Rings } from './parcel-spatial.js';
+import { landosArtifactPath } from './storage-profile.js';
 
 export const PARCEL_OVERLAY_KINDS = ['aerial', 'wetlands', 'flood', 'zoning', 'flu', 'soils', 'roads'] as const;
 export type ParcelOverlayKind = (typeof PARCEL_OVERLAY_KINDS)[number];
@@ -174,7 +175,7 @@ export async function buildParcelOverlaySvg(input: OverlayBuildInput): Promise<s
 </svg>`;
 }
 
-const CACHE_ROOT = path.resolve(process.cwd(), 'store', 'visuals', 'parcel-overlays');
+const CACHE_ROOT = landosArtifactPath('visuals', 'parcel-overlays');
 
 export interface OverlayCacheEntry { filePath: string; freshlyBuilt: boolean }
 

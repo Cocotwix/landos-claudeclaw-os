@@ -1,0 +1,21 @@
+[
+  {
+    "requirementId": "P1-S3",
+    "liveUrl": "http://localhost:3141/landos?view=org",
+    "steps": [
+      "Open Mission Control and confirm OPERATING DATA is visible.",
+      "Open LandOS Spine, Org / Agents.",
+      "Inspect the acquisitions and property-research functional roles."
+    ],
+    "expected": "The Phase 1 organization surface uses the approved functional labels, including Acquisitions Agent and Property Research Agent, and contains no mascot labels.",
+    "actual": "Acquisitions Agent is visible and mascot labels are absent, but the canonical org roster still renders the older functional label Due Diligence Specialist instead of Property Research Agent.",
+    "evidencePaths": [
+      "C:/Users/tbutt/claudeclaw-os/.runtime/landos/qa/qa-2026-07-17T05-44-15-661Z/phase1-stabilization-safety/phase1-functional-roles.png"
+    ],
+    "apiOrDbEvidence": "The live /api/landos/org payload is driven by src/landos/agent-roster.ts, where dd_bot retained the older display name.",
+    "severity": "major",
+    "suspectedSubsystem": "functional agent roster display mapping",
+    "disposition": "internal_fixable",
+    "patternKey": "functional-role-label-mismatch"
+  }
+]

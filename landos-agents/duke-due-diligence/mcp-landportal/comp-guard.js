@@ -25,7 +25,7 @@ export function isPaidComp(name) {
 }
 
 export function isLivePropertyWorkflow(mode) {
-  return mode === LIVE_PROPERTY_WORKFLOW_MODE;
+  return false;
 }
 
 /**
@@ -36,7 +36,6 @@ export function isLivePropertyWorkflow(mode) {
  */
 export function paidCompDecision(name, mode) {
   if (!isPaidComp(name)) return { allowed: true };
-  if (isLivePropertyWorkflow(mode)) return { allowed: true };
   return {
     allowed: false,
     error: {
@@ -44,8 +43,8 @@ export function paidCompDecision(name, mode) {
       blocked: true,
       status: 'paid_comp_blocked',
       message:
-        `LandPortal comp credits can only be used inside a live LandOS property workflow. ` +
-        `"${name}" was blocked because the runtime mode is "${mode}", not "${LIVE_PROPERTY_WORKFLOW_MODE}". ` +
+        `Paid LandPortal actions are prohibited in every runtime mode. ` +
+        `"${name}" was blocked while the runtime mode was "${mode}". ` +
         `No comp credit was spent.`,
     },
   };

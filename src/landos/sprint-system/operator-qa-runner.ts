@@ -39,6 +39,9 @@ export interface QaPageDriver {
   testIdCount(testId: string): Promise<number>;
   setViewport(width: number, height: number): Promise<void>;
   clickText(text: string): Promise<boolean>;
+  clickTestId(testId: string): Promise<boolean>;
+  fillTestId(testId: string, value: string): Promise<boolean>;
+  uploadTestId(testId: string, filePath: string): Promise<boolean>;
   screenshot(filePath: string): Promise<void>;
   reload(): Promise<void>;
 }
@@ -308,6 +311,8 @@ const CRITERIA_PATTERNS: Record<Exclude<CardCriteria, 'any'>, RegExp[]> = {
   acreage_conflict: [/acre/i, /(conflict|mismatch)/i],
   strong_comps: [/comp/i],
   thin_comps: [/comp/i],
+  quarantined_research: [/quarantin/i],
+  investigative_path_plan: [/apn_variants/i, /county_recorder/i],
   provider_fallback: [/fallback/i],
   multi_parcel: [/parcel/i],
 };
@@ -345,6 +350,33 @@ export async function selectFixtureCard(
         | undefined;
       if (resolution.status === 200 && snapshot?.identityConflict) {
         return { dealId: id, detail: `genuine identity conflict (requested ${snapshot.identityConflict.requestedApn ?? '?'} vs resolved ${snapshot.identityConflict.resolvedApn ?? '?'})` };
+      }
+      continue;
+    }
+    if (criteria === 'quarantined_research') {
+      const workspace = await fetcher(`/api/landos/lead-workspace/${id}`);
+      const mission = (workspace.json as Record<string, unknown> | null)?.work as Record<string, unknown> | undefined;
+      const envelope = mission?.mission as Record<string, unknown> | undefined;
+      const research = envelope?.research as Record<string, unknown> | undefined;
+      const quarantined = envelope?.quarantinedEvidence;
+      if (workspace.status === 200
+        && research?.status === 'quarantined'
+        && Array.isArray(quarantined)
+        && quarantined.length > 0) {
+        return { dealId: id, detail: `${quarantined.length} quarantined evidence row(s) with a durable research mission` };
+      }
+      continue;
+    }
+    if (criteria === 'investigative_path_plan') {
+      const workspace = await fetcher(`/api/landos/lead-workspace/${id}`);
+      const work = (workspace.json as Record<string, unknown> | null)?.work as Record<string, unknown> | undefined;
+      const envelope = work?.mission as Record<string, unknown> | undefined;
+      const research = envelope?.research as Record<string, unknown> | undefined;
+      const trace = Array.isArray(research?.toolTrace) ? research.toolTrace as Array<Record<string, unknown>> : [];
+      const providers = new Set(trace.map((row) => String(row.provider ?? row.stage ?? '')));
+      const required = ['apn_variants', 'landportal_browser', 'county_gis', 'county_assessor', 'county_recorder', 'web_search', 'zillow', 'redfin'];
+      if (workspace.status === 200 && required.every((provider) => providers.has(provider))) {
+        return { dealId: id, detail: 'durable multi-path investigative plan' };
       }
       continue;
     }
@@ -399,6 +431,9 @@ const PATTERN_BY_STEP: Partial<Record<JourneyStep['kind'], string>> = {
   refresh_persistence: 'refresh-data-loss',
   restart_persistence: 'restart-data-loss',
   click_text: 'dead-control',
+  click_test_id: 'dead-control',
+  fill_test_id: 'dead-control',
+  upload_text_test_id: 'dead-control',
   navigate: 'page-load-failure',
 };
 
@@ -477,8 +512,26 @@ export async function runJourney(
     return { status: response.status, json, text };
   };
 
+  if (journey.mutating) {
+    const profile = await apiFetch('/api/landos/storage-profile');
+    const body = profile.json as { mode?: unknown; syntheticOnly?: unknown } | null;
+    if (profile.status !== 200 || body?.mode !== 'qa' || body.syntheticOnly !== true) {
+      steps.push({
+        index: 0,
+        kind: 'manual',
+        description: 'isolated QA storage guard',
+        status: 'skipped',
+        detail: 'mutating operator QA is permitted only when the live runtime reports QA DATA and syntheticOnly=true',
+      });
+      return finish('mutation_refused', 'not_run');
+    }
+  }
+
   let dealId: number | null = null;
-  const substitute = (raw: string): string => raw.replace('{dealId}', dealId === null ? '' : String(dealId));
+  let opportunityId: number | null = null;
+  const substitute = (raw: string): string => raw
+    .replace('{dealId}', dealId === null ? '' : String(dealId))
+    .replace('{opportunityId}', opportunityId === null ? '' : String(opportunityId));
 
   if (!deps.browserFactory) {
     steps.push({
@@ -543,6 +596,10 @@ export async function runJourney(
               return finish('fixture_unavailable', mode);
             }
             dealId = selected.dealId;
+            const workspace = await apiFetch(`/api/landos/lead-workspace/${selected.dealId}`);
+            const workspaceBody = workspace.json as { opportunity?: { id?: unknown } } | null;
+            const linkedOpportunityId = Number(workspaceBody?.opportunity?.id);
+            opportunityId = Number.isInteger(linkedOpportunityId) ? linkedOpportunityId : null;
             record(step, index, 'pass', `deal card ${selected.dealId} (${selected.detail})`);
             break;
           }
@@ -614,6 +671,39 @@ export async function runJourney(
             }
             break;
           }
+          case 'click_test_id': {
+            const clicked = await page.clickTestId(step.testId);
+            if (clicked) record(step, index, 'pass', `clicked data-testid="${step.testId}"`);
+            else if (step.optional) record(step, index, 'skipped', `data-testid="${step.testId}" not present (optional)`);
+            else {
+              failed = true;
+              record(step, index, 'fail', `data-testid="${step.testId}" missing or unclickable`);
+            }
+            break;
+          }
+          case 'fill_test_id': {
+            const filled = await page.fillTestId(step.testId, substitute(step.value));
+            if (filled) record(step, index, 'pass', `filled data-testid="${step.testId}"`);
+            else {
+              failed = true;
+              record(step, index, 'fail', `data-testid="${step.testId}" missing or not editable`);
+            }
+            break;
+          }
+          case 'upload_text_test_id': {
+            const safeName = path.basename(step.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+            const inputDir = path.join(evidenceDir, 'inputs');
+            fs.mkdirSync(inputDir, { recursive: true });
+            const file = path.join(inputDir, safeName);
+            fs.writeFileSync(file, substitute(step.content), 'utf8');
+            const uploaded = await page.uploadTestId(step.testId, file);
+            if (uploaded) record(step, index, 'pass', `uploaded runtime QA text fixture to data-testid="${step.testId}"`);
+            else {
+              failed = true;
+              record(step, index, 'fail', `data-testid="${step.testId}" missing or not a file input`);
+            }
+            break;
+          }
           case 'screenshot': {
             const file = path.join(evidenceDir, `${step.name}.png`);
             await page.screenshot(file);
@@ -675,12 +765,19 @@ export async function runJourney(
               break;
             }
             await page.reload();
-            const after = await page.pageText();
-            const kept = step.expectAnyOf.find((t) => after.includes(t));
-            if (kept) record(step, index, 'pass', `data persisted across managed restart ("${kept}")`);
+            let after = await page.pageText();
+            let kept = step.expectAnyOf.find((t) => after.includes(t));
+            let semanticCount = step.expectTestId ? await page.testIdCount(step.expectTestId) : 0;
+            for (let waited = 0; !kept && semanticCount === 0 && waited < 5_000; waited += 250) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 250));
+              after = await page.pageText();
+              kept = step.expectAnyOf.find((t) => after.includes(t));
+              semanticCount = step.expectTestId ? await page.testIdCount(step.expectTestId) : 0;
+            }
+            if (kept || semanticCount > 0) record(step, index, 'pass', kept ? `data persisted across managed restart ("${kept}")` : `data persisted across managed restart (data-testid="${step.expectTestId}")`);
             else {
               failed = true;
-              record(step, index, 'fail', `after managed restart none of [${step.expectAnyOf.join(', ')}] remained visible`);
+              record(step, index, 'fail', `after managed restart none of [${step.expectAnyOf.join(', ')}] or data-testid="${step.expectTestId ?? '(none)'}" remained visible`);
             }
             break;
           }

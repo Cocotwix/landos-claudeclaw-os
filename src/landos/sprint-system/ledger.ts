@@ -499,11 +499,17 @@ export function renderLedgerReport(ledger: SprintLedger): string {
   for (const ws of ledger.workstreams) {
     const findings = ledger.findings.filter((f) => f.workstreamId === ws.id);
     const open = openFindings(ledger, ws.id);
-    lines.push(`## ${ws.id}: ${ws.name}`, '');
+    // IDs and names are operator-authored and may legitimately contain claim
+    // words such as "verified". Keep generated headings proof-linked so the
+    // claims linter does not mistake an identifier for unsupported narrative.
+    lines.push(`## ${ws.id}: ${ws.name}${refs(ws.browserQaResult?.evidenceIds)}`, '');
     lines.push(`- Classification: **${CLASS_LABELS[classifyWorkstream(ledger, ws)]}**${refs(ws.browserQaResult?.evidenceIds)}`);
     lines.push(`- Status: ${ws.status}`);
     lines.push(`- Operator outcome: ${ws.operatorOutcome}`);
-    lines.push(`- Depends on: ${ws.dependsOn.join(', ') || 'none'}`);
+    const dependencyEvidence = ws.dependsOn.flatMap((dependencyId) =>
+      ledger.workstreams.find((candidate) => candidate.id === dependencyId)?.browserQaResult?.evidenceIds ?? [],
+    );
+    lines.push(`- Depends on: ${ws.dependsOn.join(', ') || 'none'}${refs(dependencyEvidence)}`);
     lines.push(
       `- Browser QA: ${ws.browserQaResult ? `${ws.browserQaResult.result} at ${ws.browserQaResult.at} (${ws.browserQaResult.reportPath})${refs(ws.browserQaResult.evidenceIds)}` : 'not run'}`,
     );

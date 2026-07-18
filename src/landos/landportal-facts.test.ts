@@ -51,6 +51,10 @@ describe('buildParcelFactSheet', () => {
     expect(s.acres).toBe(0.25);
   });
 
+  it('uses calculated acreage when the stated acreage is a zero placeholder', () => {
+    expect(buildParcelFactSheet({ Acres: '0.000', 'Calc Acres': '0.80' }).acres).toBe(0.8);
+  });
+
   it('interprets access (never raw "No")', () => {
     expect(s.access.label).toBe('Road frontage present, not landlocked. Legal access likely, verify if needed.');
     expect(s.access.roadFrontageFt).toBeCloseTo(69.93, 2);

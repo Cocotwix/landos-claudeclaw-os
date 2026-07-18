@@ -126,21 +126,20 @@ describe('discovery-call-report — rough offer range', () => {
     expect(range.acquisition).toEqual({ low: 20000, high: 30000 });
   });
 
-  it('falls back to ACTIVE-listing asking $/acre when no sold band exists (weaker context)', () => {
+  it('keeps ACTIVE-listing asking $/acre out of value and offer guidance', () => {
     const r = report({ marketComps: { active: [
       { price: 20000, saleDateIso: '', acres: 5, pricePerAcre: 4000, sourceUrl: '', sourceLabel: 'homeharvest' },
       { price: 30000, saleDateIso: '', acres: 5, pricePerAcre: 6000, sourceUrl: '', sourceLabel: 'homeharvest' },
       { price: 25000, saleDateIso: '', acres: 5, pricePerAcre: 5000, sourceUrl: '', sourceLabel: 'homeharvest' },
     ], sold: [], supplementalSold: [], metrics: {} } as any });
     const range = buildRoughOfferRange(r, exec({ acres: null, median: null }));
-    expect(range.available).toBe(true);
-    expect(range.basis).toBe('area');
-    expect(range.pricePerAcre.mid).toBe(5000); // median asking
-    expect(range.perAcreAcquisition).toEqual({ low: 2000, high: 3000 }); // 40-60% of asking
-    expect(range.note.toLowerCase()).toContain('asking');
+    expect(range.available).toBe(false);
+    expect(range.basis).toBe('insufficient');
+    expect(range.pricePerAcre.mid).toBeNull();
+    expect(range.perAcreAcquisition).toBeNull();
   });
 
-  it('uses comparable-intelligence asking fallback when marketComps sold data is unavailable', () => {
+  it('does not use comparable-intelligence asking rows when sold data is unavailable', () => {
     const r = report({
       parcelVerified: true,
       parcelVerificationStatus: 'Parcel verified',
@@ -164,10 +163,9 @@ describe('discovery-call-report — rough offer range', () => {
       marketComps: { active: [], sold: [], supplementalSold: [], metrics: {} } as any,
     });
     const ci = buildDiscoveryCallReport(r, exec({ acres: 0.25, median: null, available: false, estMid: null, recRange: null }), intake);
-    expect(ci.roughOfferRange.available).toBe(true);
-    expect(ci.roughOfferRange.pricePerAcre.mid).toBe(69000);
-    expect(ci.roughOfferRange.marketValue?.mid).toBe(17250);
-    expect(ci.headline).toMatch(/asking-market/i);
+    expect(ci.roughOfferRange.available).toBe(false);
+    expect(ci.roughOfferRange.pricePerAcre.mid).toBeNull();
+    expect(ci.roughOfferRange.marketValue).toBeNull();
   });
 
   it('insufficient when no comp band at all', () => {

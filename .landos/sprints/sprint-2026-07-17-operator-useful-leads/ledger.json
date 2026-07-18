@@ -1,0 +1,1290 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-17-operator-useful-leads",
+  "title": "Operator-useful Lead Cards and resilient property research",
+  "createdAt": "2026-07-17T19:10:32.467Z",
+  "originalPrompt": "Fix the lead cards ASAP. The active board must not duplicate one opportunity across parcel verification, seller discovery, and researching rows. Add an operator-controlled delete that preserves recoverability. A new lead may contain any partial combination of seller-provided address, APN/parcel ID, county, city, state, contact details, and notes. It must be a full investigative intake, not a task delegator: normalize APN formatting without changing digits, resolve incomplete locations through reasonable online, county, GIS, assessor, recorder, and browser search paths, use authenticated LandPortal browser access as a high-value research workspace but never as a canonical authority or stopping point, then continue to county/deed, Zillow, and Redfin research. LandPortal API/MCP and paid actions remain forbidden. The Lead Card must visibly show actual parcel/satellite/street/comps-map evidence, selected sold comps, county facts, deed artifact plus owner/easement/restriction review, market pulse, land characteristics, honest score/strategy/valuation gates, and one obvious discovery-call report. Unsupported data must be an explicit gap, never a fabricated result. Max and later training are out of scope until this manual-lead-to-usable-discovery-package loop works. Before completion, the builder must visually operate the live localhost app, open a real operating-style Lead Card and isolated QA Lead Card, inspect the evidence and report, exercise trash/delete, refresh/restart, and verify the usable frontend result rather than relying on backend tests or simulations.",
+  "promptSha256": "8bdab276d7866f923a7bf9eb9bd6a023938589a0f4ebdb1c35bd24aff230a91e",
+  "workstreams": [
+    {
+      "id": "ws1-single-card-operator-board",
+      "name": "One-card-per-opportunity board and recoverable operator deletion",
+      "operatorOutcome": "The Acquisitions board is a comprehensible Kanban board where each opportunity appears once, card-level blockers do not create duplicate lanes, Lead-to-Deal is a state change, and the owner can trash and restore an unwanted card.",
+      "inScope": [
+        "Acquisitions pipeline lanes",
+        "deduplication",
+        "lead/deal lifecycle rendering",
+        "trash and restore",
+        "operator card actions"
+      ],
+      "backendServices": [
+        "opportunity identity",
+        "pipeline projection",
+        "trash lifecycle",
+        "duplicate candidate detection"
+      ],
+      "frontendScreens": [
+        "Acquisitions Pipeline",
+        "Deal Library",
+        "Lead Workspace"
+      ],
+      "requiredDataState": "Existing operating records are preserved. Removal from the active board moves a record to recoverable trash and does not delete evidence or documents without a separate confirmed purge.",
+      "browserJourney": {
+        "steps": [
+          "Open the operating Acquisitions board",
+          "Confirm a known opportunity appears in exactly one active lane",
+          "Create an isolated QA lead and confirm it appears once",
+          "Move it through a lifecycle transition without duplication",
+          "Trash it from the card",
+          "Confirm it leaves active lanes",
+          "Restore it from Trash",
+          "Refresh and restart and confirm persistence"
+        ]
+      },
+      "testRequirements": [
+        "canonical duplicate-key behavior",
+        "one-active-lane invariant",
+        "lead-to-deal continuity",
+        "trash/restore persistence",
+        "active-board browser contract"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "one opportunity renders in multiple active lanes",
+        "parcel verification creates a separate board card",
+        "a card is permanently lost by ordinary delete",
+        "trash/restore fails after restart",
+        "operator cannot identify the next business stage"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "R1-01",
+          "text": "Each opportunity has exactly one active Kanban card; parcel verification, research state, and discovery gaps are visible card-level status, not duplicate board placement.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E3",
+            "E4",
+            "E5",
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "R1-02",
+          "text": "The board uses owner-comprehensible operating stages and a Lead becoming a Deal remains the same canonical opportunity.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E3",
+            "E4",
+            "E5"
+          ]
+        },
+        {
+          "id": "R1-03",
+          "text": "The owner can move a lead to recoverable Trash and restore it; ordinary deletion does not destroy related operating evidence.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E3",
+            "E5",
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "R1-04",
+          "text": "Address/APN duplicate candidates are surfaced for review while distinct parcels are never silently merged.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E4",
+            "E5"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T20:05:31.754Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T20-03-07-370Z/report.json",
+        "evidenceIds": [
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-17T20:00:40.793Z",
+          "summary": "Changed the WS1 QA journey from an invalid exact-one card assertion to stable single lane-container assertions; distinct opportunities remain multiple cards.",
+          "regressionCoverage": "property-board-ui.test.ts plus operator-qa-runner/governance focused suite (32 tests)."
+        },
+        {
+          "findingId": "F2",
+          "repairedAt": "2026-07-17T20:00:41.472Z",
+          "summary": "Replaced brittle visible-text matching with stable opportunity-lane-new_lead and opportunity-lane-discovery_ready test IDs.",
+          "regressionCoverage": "property-board-ui.test.ts verifies owner-facing stage labels and stable lane contracts."
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T19:46:29.764Z",
+          "detail": "Canonical opportunity board projection with owner-facing business stages and visible duplicate review warnings implemented; existing Trash/Restore preserved.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T19:46:30.565Z",
+          "detail": "26 focused WS1 opportunity, board, and Trash/Restore tests passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T19:46:31.235Z",
+          "detail": "Live Hono route tests cover one-card invariant, Lead-to-Deal continuity, Trash removal, and Restore.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T19:46:31.908Z",
+          "detail": "npm run typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T19:46:32.636Z",
+          "detail": "npm run build passed; Vite production web bundle and server TypeScript compiled.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T19:48:24.326Z",
+          "detail": "Managed runtime healthy after fresh production build; PID 205160 at http://localhost:3141.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-17T20:00:23.076Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T19-57-33-806Z/report.json)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T20:05:31.753Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T20-03-07-370Z/report.json)",
+          "evidenceIds": [
+            "E4",
+            "E5",
+            "E6",
+            "E7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-investigative-intake-mission",
+      "name": "Investigative lead intake and multi-path parcel resolution",
+      "operatorOutcome": "A partial free-form lead dump launches an observable research mission that intelligently resolves parcel identity through formatted APN variants and multiple browser/public search paths rather than stopping after one provider fails.",
+      "inScope": [
+        "conversational lead intake",
+        "APN normalization",
+        "location inference",
+        "multi-path parcel resolution",
+        "durable research orchestration",
+        "authenticated LandPortal browser handoff",
+        "county/GIS/assessor/recorder and web fallback planning"
+      ],
+      "backendServices": [
+        "conversational intake",
+        "opportunity research mission",
+        "parcel resolution",
+        "browser agent",
+        "research activity and provenance"
+      ],
+      "frontendScreens": [
+        "Acquisitions New Lead",
+        "Lead Workspace research timeline and next action"
+      ],
+      "requiredDataState": "Raw seller input remains immutable. Original APN strings and every safe formatting candidate remain attributable. Incomplete or contradictory identity never updates canonical parcel facts without corroboration.",
+      "browserJourney": {
+        "steps": [
+          "Open New Lead",
+          "Paste an address/APN/county partial data dump",
+          "Submit once",
+          "Confirm the original is visible",
+          "Confirm candidate identity and research attempt states are visible",
+          "Confirm LandPortal is one attempt rather than a terminal gate",
+          "Confirm a no-match produces explicit next research paths rather than a false completion",
+          "Refresh and restart and confirm the mission state persists"
+        ]
+      },
+      "testRequirements": [
+        "APN separator/decimal normalization without digit mutation",
+        "partial-address jurisdiction inference",
+        "multi-path fallback sequencing",
+        "identity corroboration gate",
+        "durable retry/restart recovery",
+        "LandPortal API/MCP prohibition"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "raw intake is lost",
+        "provider no-match ends research",
+        "APN digits are changed",
+        "wrong parcel becomes canonical",
+        "research is only an in-memory task",
+        "LandPortal API/MCP is invoked",
+        "a provider claim is shown without visible attempt/provenance"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence"
+      ],
+      "dependsOn": [
+        "ws1-single-card-operator-board"
+      ],
+      "requirements": [
+        {
+          "id": "R2-01",
+          "text": "A non-empty free-form lead dump launches an observable, durable investigative mission, not only a task record or generic queue entry.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10",
+            "E12",
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "R2-02",
+          "text": "Parcel search preserves seller input and tests safe county-aware APN/address formatting variants before declaring no match.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10",
+            "E11"
+          ]
+        },
+        {
+          "id": "R2-03",
+          "text": "LandPortal browser research is a preferred enrichment path when useful but a no-match or UI failure triggers other permitted search paths rather than ending research.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10",
+            "E11"
+          ]
+        },
+        {
+          "id": "R2-04",
+          "text": "The Lead Card visibly reports attempted paths, evidence, conflicts, confidence, unresolved identity, and safe next action.",
+          "verified": true,
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12",
+            "E13",
+            "E14"
+          ]
+        },
+        {
+          "id": "R2-05",
+          "text": "No LandPortal API, MCP wrapper, paid action, seller contact, offer, or contract action is used.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T20:22:12.188Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T20-19-44-504Z/report.json",
+        "evidenceIds": [
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F3",
+          "repairedAt": "2026-07-17T20:19:30.987Z",
+          "summary": "Rerun the same canonical read-only browser journey with the Windows process-control permission required by AGENTS.md after taskkill access denied",
+          "regressionCoverage": "Repeat every visible WS2 assertion, refresh persistence, and canonical managed restart persistence against the same durable fixture"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T20:07:38.306Z",
+          "detail": "Durable investigative missions now persist digit-preserving APN variants and explicit LandPortal-browser, county GIS/assessor/recorder, web, Zillow, and Redfin paths; no provider is terminal.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T20:07:38.999Z",
+          "detail": "18 focused WS2 intake, mission, visible workspace, and safety tests passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T20:07:39.683Z",
+          "detail": "Durable mission claim/recovery/quarantine and visible trace contracts passed integration coverage.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T20:07:40.363Z",
+          "detail": "npm run typecheck passed.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T20:08:33.627Z",
+          "detail": "npm run build passed for WS2 production bundle and server.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T20:10:17.826Z",
+          "detail": "Managed runtime healthy on fresh WS2 build; PID 34428 at http://localhost:3141.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-17T20:19:10.216Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T20-17-13-818Z/report.json)",
+          "evidenceIds": [
+            "E8"
+          ]
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-17T20:22:12.187Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T20-19-44-504Z/report.json)",
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12",
+            "E13",
+            "E14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws3-visible-discovery-package",
+      "name": "Visible evidence-backed discovery-call package",
+      "operatorOutcome": "When research succeeds, the owner can open one obvious discovery-call package on the Lead Card and visually inspect parcel maps, comps, deed, property facts, market pulse, and honest strategy readiness. When research is incomplete, the package plainly shows what was attempted and what is still needed.",
+      "inScope": [
+        "Lead Workspace report hierarchy",
+        "visual evidence previews",
+        "LandPortal browser captures",
+        "comp cards and map evidence",
+        "county/deed documents and preliminary review",
+        "market pulse",
+        "strategy and valuation truth gates",
+        "PDF parity"
+      ],
+      "backendServices": [
+        "discovery package",
+        "property inspection",
+        "visual/document evidence",
+        "comp registry",
+        "deed review",
+        "market pulse",
+        "strategy evaluation"
+      ],
+      "frontendScreens": [
+        "Lead Workspace",
+        "Discovery Call Package",
+        "PDF download"
+      ],
+      "requiredDataState": "Existing evidence is preserved and must never be misrepresented as parcel-associated. Each rendered fact, visual, comp, document, and conclusion has visible provenance and confidence.",
+      "browserJourney": {
+        "steps": [
+          "Open a resolved isolated QA lead and the operating-style 200 Sid Edens card",
+          "Open the discovery package",
+          "Visually inspect embedded satellite/street/parcel/comps-map evidence",
+          "Inspect selected sold comp cards and disclosures",
+          "Open the deed artifact and preliminary review",
+          "Inspect market pulse and strategy readiness",
+          "Confirm incomplete research does not show unsupported value or strategy conclusions",
+          "Download or open report output",
+          "Refresh and restart and repeat the visual check"
+        ]
+      },
+      "testRequirements": [
+        "visual evidence projection",
+        "deed artifact/review projection",
+        "sold-comp selection and source disclosure",
+        "gated valuation/strategy consistency",
+        "report/PDF parity",
+        "operator-visible no-fabrication assertions"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "evidence is only an invisible backend link",
+        "deed is claimed reviewed without an artifact or explicit unavailable state",
+        "active/pending comps drive valuation",
+        "pricing gates contradict displayed ranges",
+        "strategies are generic or blocked without actionable missing evidence",
+        "report is hard to find",
+        "QA passes without opening the live report"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "screenshot",
+        "independent_browser_qa",
+        "refresh_persistence",
+        "restart_persistence",
+        "final_regression"
+      ],
+      "dependsOn": [
+        "ws2-investigative-intake-mission"
+      ],
+      "requirements": [
+        {
+          "id": "R3-01",
+          "text": "The Lead Card exposes one obvious pre-discovery report entry point and visibly renders current parcel-associated evidence instead of opaque links or count-only claims.",
+          "verified": true,
+          "evidenceIds": [
+            "E17",
+            "E18",
+            "E19",
+            "E22"
+          ]
+        },
+        {
+          "id": "R3-02",
+          "text": "The report shows actual research artifacts where available: parcel/satellite/street/terrain/comps-map visuals, selected sold comp cards, county facts, and a deed document or an explicit retrieval gap.",
+          "verified": true,
+          "evidenceIds": [
+            "E16",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "R3-03",
+          "text": "Deed review visibly identifies record owners and preliminary easement/restriction findings with attributable document provenance; it does not substitute for title/legal advice.",
+          "verified": true,
+          "evidenceIds": [
+            "E16",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "R3-04",
+          "text": "Land characteristics, Market Pulse, valuation, offer range, Land Score, and exit strategies are displayed only when their evidence thresholds are met; otherwise the card states the exact gaps and safe next research action.",
+          "verified": true,
+          "evidenceIds": [
+            "E16",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "R3-05",
+          "text": "Final browser verification is performed against the managed operating localhost app, including opening a Lead Card and its report, not only backend output or isolated simulation.",
+          "verified": true,
+          "evidenceIds": [
+            "E18",
+            "E20",
+            "E21",
+            "E22"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-17T20:36:10.975Z",
+        "reportPath": ".runtime/landos/qa/qa-2026-07-17T20-33-49-043Z/report.json",
+        "evidenceIds": [
+          "E18",
+          "E19",
+          "E20",
+          "E21",
+          "E22"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-17T20:33:21.450Z",
+          "detail": "Added one obvious report entry, artifact and comp-card rendering, attributable deed/source sections, explicit retrieval gaps, and evidence-threshold gating",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-17T20:33:22.678Z",
+          "detail": "Discovery-package projection and Lead Workspace UI focused tests passed",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-17T20:33:23.993Z",
+          "detail": "Four focused suites passed 101 of 101 tests including routes and operator-QA runner",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-17T20:33:25.187Z",
+          "detail": "TypeScript no-emit typecheck passed",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-17T20:33:26.363Z",
+          "detail": "Vite production web build completed successfully",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-17T20:33:27.602Z",
+          "detail": "Managed runtime restarted healthy on PID 131064 and live Lead Workspace record 27 rendered report entry, deed/source sections, blockers, hypotheses, PDF, and withheld thresholds",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-17T20:36:10.974Z",
+          "detail": "independent browser QA (.runtime/landos/qa/qa-2026-07-17T20-33-49-043Z/report.json)",
+          "evidenceIds": [
+            "E18",
+            "E19",
+            "E20",
+            "E21",
+            "E22"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "workstreamId": "ws1-single-card-operator-board",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/dept/acquisitions",
+      "steps": [
+        "Open the live Acquisitions Pipeline",
+        "Assert canonical opportunity cards"
+      ],
+      "expected": "The journey should confirm that the board renders opportunity cards without requiring exactly one total card.",
+      "actual": "The generic test-id assertion interpreted an unspecified count as exactly one; 23 distinct opportunity cards were rendered.",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T19-57-33-806Z/ws1-operator-opportunity-board/ws1-opportunity-board.png"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "major",
+      "suspectedSubsystem": "operator-qa-journey-contract",
+      "disposition": "internally_fixable",
+      "patternKey": "ws1-qa-card-count-contract",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T20:00:23.076Z",
+      "history": [
+        {
+          "at": "2026-07-17T20:00:23.076Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T20:00:40.793Z",
+          "event": "repaired",
+          "detail": "Changed the WS1 QA journey from an invalid exact-one card assertion to stable single lane-container assertions; distinct opportunities remain multiple cards."
+        },
+        {
+          "at": "2026-07-17T20:05:19.559Z",
+          "event": "retest_passed",
+          "detail": "E5"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "workstreamId": "ws1-single-card-operator-board",
+      "requirementId": null,
+      "liveUrl": "http://localhost:3141/dept/acquisitions",
+      "steps": [
+        "Open the live Acquisitions Pipeline",
+        "Assert business-stage lanes"
+      ],
+      "expected": "The independent journey should recognize the visible business-stage lanes.",
+      "actual": "The generic text assertion did not recognize the visible lane labels; stable lane test IDs are required.",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T19-57-33-806Z/ws1-operator-opportunity-board/ws1-opportunity-board.png"
+      ],
+      "apiOrDbEvidence": null,
+      "severity": "major",
+      "suspectedSubsystem": "operator-qa-journey-contract",
+      "disposition": "internally_fixable",
+      "patternKey": "ws1-qa-lane-selector-contract",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T20:00:23.076Z",
+      "history": [
+        {
+          "at": "2026-07-17T20:00:23.076Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T20:00:41.472Z",
+          "event": "repaired",
+          "detail": "Replaced brittle visible-text matching with stable opportunity-lane-new_lead and opportunity-lane-discovery_ready test IDs."
+        },
+        {
+          "at": "2026-07-17T20:05:20.255Z",
+          "event": "retest_passed",
+          "detail": "E5"
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "workstreamId": "ws2-investigative-intake-mission",
+      "requirementId": "R2-05",
+      "liveUrl": "http://localhost:3141/dept/acquisitions?deal=27",
+      "steps": [
+        "Run the read-only ws2-investigative-intake-mission journey",
+        "Verify all visible intake and research-path assertions",
+        "Run the required canonical managed restart persistence step"
+      ],
+      "expected": "The durable investigative mission survives the canonical managed restart and remains visible in the live browser.",
+      "actual": "All browser assertions and refresh persistence passed, but the non-elevated QA child process could not terminate the verified runtime PID: taskkill returned Access denied.",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-17T20-17-13-818Z/report.json",
+        ".runtime/landos/qa/qa-2026-07-17T20-17-13-818Z/ws2-investigative-intake-mission/ws2-investigative-paths.png"
+      ],
+      "apiOrDbEvidence": "The runtime was healthy and repository-associated at preflight; the failure was limited to Windows process-control permission during restart.",
+      "severity": "high",
+      "suspectedSubsystem": "managed-runtime-process-control",
+      "disposition": "repair_required",
+      "patternKey": "managed-restart-access-denied",
+      "status": "closed_retested",
+      "openedAt": "2026-07-17T20:19:10.217Z",
+      "history": [
+        {
+          "at": "2026-07-17T20:19:10.217Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-17T20:19:30.987Z",
+          "event": "repaired",
+          "detail": "Rerun the same canonical read-only browser journey with the Windows process-control permission required by AGENTS.md after taskkill access denied"
+        },
+        {
+          "at": "2026-07-17T20:21:56.046Z",
+          "event": "retest_passed",
+          "detail": "E13"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-17T20:05:03.183Z",
+      "kind": "test_result",
+      "summary": "Focused WS1 suite: 26 opportunity-board and Trash/Restore tests passed; sprint runner regression suite: 32 passed.",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-17T20:05:04.041Z",
+      "kind": "api_evidence",
+      "summary": "Live Hono coverage proves one canonical card, same-row Lead-to-Deal transition, Trash exclusion, and Restore.",
+      "path": "src/landos/property-board-redesign.routes.test.ts",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-17T20:05:04.828Z",
+      "kind": "browser_journey",
+      "summary": "Manual live isolated QA journey created APN 777-88-991, verified one card, moved to Ready for Discovery Call, trashed, restored, refreshed, and restarted.",
+      "url": "http://localhost:3141/dept/acquisitions",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-17T20:05:05.560Z",
+      "kind": "screenshot",
+      "summary": "Independent live Acquisitions opportunity board screenshot.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-03-07-370Z/ws1-operator-opportunity-board/ws1-opportunity-board.png",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-17T20:05:06.300Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent real-browser QA passed with zero findings.",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-03-07-370Z/report.json",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-17T20:05:07.060Z",
+      "kind": "refresh_persistence",
+      "summary": "QA opportunity remained exactly once in Ready for Discovery Call after browser refresh.",
+      "url": "http://localhost:3141/dept/acquisitions",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-17T20:05:07.843Z",
+      "kind": "restart_persistence",
+      "summary": "Independent QA and manual journey both preserved the canonical board and QA stage across managed restart; current PID 228832.",
+      "url": "http://localhost:3141/dept/acquisitions",
+      "workstreamId": "ws1-single-card-operator-board"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-17T20:19:04.227Z",
+      "kind": "browser_journey",
+      "summary": "Independent WS2 browser journey passed all visible assertions and refresh, then hit Windows access denied on managed restart",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-17-13-818Z/report.json",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-17T20:21:34.681Z",
+      "kind": "test_result",
+      "summary": "Focused mission, intake, operator-QA runner, and board regression suite passed 30 of 30 tests; TypeScript typecheck and production web build passed",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-17T20:21:36.049Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent WS2 real-browser journey passed every visible, prohibited-action, refresh, and managed-restart assertion",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-19-44-504Z/report.json",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-17T20:21:37.434Z",
+      "kind": "screenshot",
+      "summary": "Owner-visible original intake, expandable multi-path investigation trace, and discovery guardrail",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-19-44-504Z/ws2-investigative-intake-mission/ws2-investigative-paths.png",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-07-17T20:21:38.918Z",
+      "kind": "refresh_persistence",
+      "summary": "Durable investigative mission and visible trace survived hard browser refresh",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-19-44-504Z/report.json",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-07-17T20:21:40.455Z",
+      "kind": "restart_persistence",
+      "summary": "Durable investigative mission survived canonical managed restart; healthy server PID 26332",
+      "url": "http://localhost:3141",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-07-17T20:21:41.776Z",
+      "kind": "live_url",
+      "summary": "Live WS2 workspace verified in the claimed in-app browser against the healthy managed runtime",
+      "url": "http://localhost:3141/dept/acquisitions?deal=27",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-07-17T20:22:40.161Z",
+      "kind": "api_evidence",
+      "summary": "Independent fixture selection reconciled Lead Workspace API record 27 and required all eight durable providers before browser navigation",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-19-44-504Z/report.json",
+      "workstreamId": "ws2-investigative-intake-mission"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-07-17T20:35:39.270Z",
+      "kind": "test_result",
+      "summary": "Discovery package, Lead Workspace, routes, and operator-QA suites passed 101 of 101 tests; TypeScript typecheck and production web build passed",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-07-17T20:35:40.854Z",
+      "kind": "api_evidence",
+      "summary": "Independent fixture selection reconciled the canonical Lead Workspace API package before opening the same record in the browser",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-33-49-043Z/report.json",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-07-17T20:35:42.479Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent real-browser WS3 journey passed entry, evidence, deed/provenance, threshold, prohibited-action, refresh, and restart assertions",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-33-49-043Z/report.json",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-07-17T20:35:44.285Z",
+      "kind": "screenshot",
+      "summary": "Visible evidence-backed pre-discovery report opened from the Lead Card",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-33-49-043Z/ws3-visible-discovery-package/ws3-visible-discovery-package.png",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-07-17T20:35:45.757Z",
+      "kind": "refresh_persistence",
+      "summary": "Report entry and current package survived hard browser refresh",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-33-49-043Z/report.json",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-07-17T20:35:47.259Z",
+      "kind": "restart_persistence",
+      "summary": "Discovery package survived canonical managed restart; healthy server PID 212424",
+      "url": "http://localhost:3141",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-07-17T20:35:48.720Z",
+      "kind": "live_url",
+      "summary": "Lead Card and pre-discovery report verified in the managed operating localhost browser app",
+      "url": "http://localhost:3141/dept/acquisitions?deal=27#pre-discovery-report",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E23",
+      "recordedAt": "2026-07-17T20:37:04.719Z",
+      "kind": "browser_journey",
+      "summary": "Manual in-app browser opened Lead Card 27, used the single report entry, and verified visible evidence gaps, deed disclaimer, two hypotheses, PDF, and withheld unsupported outputs",
+      "url": "http://localhost:3141/dept/acquisitions?deal=27#pre-discovery-report",
+      "workstreamId": "ws3-visible-discovery-package"
+    },
+    {
+      "id": "E24",
+      "recordedAt": "2026-07-17T20:42:05.615Z",
+      "kind": "final_regression",
+      "summary": "Post-WS3 combined real-browser regression passed WS1, WS2, and WS3 with zero findings; reports qa-2026-07-17T20-37-16-714Z, qa-2026-07-17T20-38-52-640Z, and qa-2026-07-17T20-40-31-823Z",
+      "path": ".runtime/landos/qa/qa-2026-07-17T20-40-31-823Z/report.json",
+      "workstreamId": "ws3-visible-discovery-package"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-07-17T20:42:26.393Z",
+    "detail": "Final build passed 101 focused integration tests and all three post-WS3 real-browser journeys with refresh/restart persistence and zero findings",
+    "evidenceIds": [
+      "E16",
+      "E24"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-07-17T20:42:42.626Z",
+    "detail": "Codex final audit plus independent operator-QA runner: Independent operator-QA runner passed all three final journeys with zero findings; ledger validation, diff whitespace check, typecheck, production build, and 101 focused tests are clean",
+    "evidenceIds": [
+      "E16",
+      "E18",
+      "E24"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-07-17T19:10:32.468Z",
+      "event": "sprint_created",
+      "detail": "Operator-useful Lead Cards and resilient property research"
+    },
+    {
+      "at": "2026-07-17T19:10:37.956Z",
+      "event": "workstream_started",
+      "detail": "ws1-single-card-operator-board"
+    },
+    {
+      "at": "2026-07-17T19:46:29.764Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T19:46:30.566Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T19:46:31.236Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T19:46:31.908Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T19:46:32.636Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T19:48:24.326Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T20:00:23.076Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-17T20:00:23.076Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-single-card-operator-board:fail"
+    },
+    {
+      "at": "2026-07-17T20:00:40.792Z",
+      "event": "repair_started",
+      "detail": "ws1-single-card-operator-board"
+    },
+    {
+      "at": "2026-07-17T20:00:40.793Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-17T20:00:41.471Z",
+      "event": "repair_started",
+      "detail": "ws1-single-card-operator-board"
+    },
+    {
+      "at": "2026-07-17T20:00:41.472Z",
+      "event": "finding_repaired",
+      "detail": "F2"
+    },
+    {
+      "at": "2026-07-17T20:05:19.559Z",
+      "event": "finding_retested",
+      "detail": "F1:pass"
+    },
+    {
+      "at": "2026-07-17T20:05:20.255Z",
+      "event": "finding_retested",
+      "detail": "F2:pass"
+    },
+    {
+      "at": "2026-07-17T20:05:21.057Z",
+      "event": "requirement_verified",
+      "detail": "ws1-single-card-operator-board/R1-01"
+    },
+    {
+      "at": "2026-07-17T20:05:21.787Z",
+      "event": "requirement_verified",
+      "detail": "ws1-single-card-operator-board/R1-02"
+    },
+    {
+      "at": "2026-07-17T20:05:22.529Z",
+      "event": "requirement_verified",
+      "detail": "ws1-single-card-operator-board/R1-03"
+    },
+    {
+      "at": "2026-07-17T20:05:23.355Z",
+      "event": "requirement_verified",
+      "detail": "ws1-single-card-operator-board/R1-04"
+    },
+    {
+      "at": "2026-07-17T20:05:31.754Z",
+      "event": "phase_recorded",
+      "detail": "ws1-single-card-operator-board:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T20:05:31.754Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-single-card-operator-board:pass"
+    },
+    {
+      "at": "2026-07-17T20:05:32.474Z",
+      "event": "workstream_passed",
+      "detail": "ws1-single-card-operator-board"
+    },
+    {
+      "at": "2026-07-17T20:05:44.726Z",
+      "event": "workstream_started",
+      "detail": "ws2-investigative-intake-mission"
+    },
+    {
+      "at": "2026-07-17T20:07:38.308Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T20:07:38.999Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T20:07:39.683Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T20:07:40.363Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T20:08:33.627Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T20:10:17.827Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T20:19:10.217Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-17T20:19:10.217Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-investigative-intake-mission:fail"
+    },
+    {
+      "at": "2026-07-17T20:19:30.986Z",
+      "event": "repair_started",
+      "detail": "ws2-investigative-intake-mission"
+    },
+    {
+      "at": "2026-07-17T20:19:30.987Z",
+      "event": "finding_repaired",
+      "detail": "F3"
+    },
+    {
+      "at": "2026-07-17T20:21:56.046Z",
+      "event": "finding_retested",
+      "detail": "F3:pass"
+    },
+    {
+      "at": "2026-07-17T20:21:57.333Z",
+      "event": "requirement_verified",
+      "detail": "ws2-investigative-intake-mission/R2-01"
+    },
+    {
+      "at": "2026-07-17T20:21:58.658Z",
+      "event": "requirement_verified",
+      "detail": "ws2-investigative-intake-mission/R2-02"
+    },
+    {
+      "at": "2026-07-17T20:22:00.064Z",
+      "event": "requirement_verified",
+      "detail": "ws2-investigative-intake-mission/R2-03"
+    },
+    {
+      "at": "2026-07-17T20:22:01.556Z",
+      "event": "requirement_verified",
+      "detail": "ws2-investigative-intake-mission/R2-04"
+    },
+    {
+      "at": "2026-07-17T20:22:02.953Z",
+      "event": "requirement_verified",
+      "detail": "ws2-investigative-intake-mission/R2-05"
+    },
+    {
+      "at": "2026-07-17T20:22:12.188Z",
+      "event": "phase_recorded",
+      "detail": "ws2-investigative-intake-mission:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-17T20:22:12.188Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-investigative-intake-mission:pass"
+    },
+    {
+      "at": "2026-07-17T20:22:53.695Z",
+      "event": "workstream_passed",
+      "detail": "ws2-investigative-intake-mission"
+    },
+    {
+      "at": "2026-07-17T20:23:02.604Z",
+      "event": "workstream_started",
+      "detail": "ws3-visible-discovery-package"
+    },
+    {
+      "at": "2026-07-17T20:33:21.451Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:implementation:pass"
+    },
+    {
+      "at": "2026-07-17T20:33:22.678Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-17T20:33:23.994Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-17T20:33:25.187Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:typecheck:pass"
+    },
+    {
+      "at": "2026-07-17T20:33:26.364Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:production_build:pass"
+    },
+    {
+      "at": "2026-07-17T20:33:27.603Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-17T20:36:10.975Z",
+      "event": "phase_recorded",
+      "detail": "ws3-visible-discovery-package:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-17T20:36:10.975Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-visible-discovery-package:pass"
+    },
+    {
+      "at": "2026-07-17T20:36:12.519Z",
+      "event": "requirement_verified",
+      "detail": "ws3-visible-discovery-package/R3-01"
+    },
+    {
+      "at": "2026-07-17T20:36:13.877Z",
+      "event": "requirement_verified",
+      "detail": "ws3-visible-discovery-package/R3-02"
+    },
+    {
+      "at": "2026-07-17T20:36:15.293Z",
+      "event": "requirement_verified",
+      "detail": "ws3-visible-discovery-package/R3-03"
+    },
+    {
+      "at": "2026-07-17T20:36:16.684Z",
+      "event": "requirement_verified",
+      "detail": "ws3-visible-discovery-package/R3-04"
+    },
+    {
+      "at": "2026-07-17T20:36:18.151Z",
+      "event": "requirement_verified",
+      "detail": "ws3-visible-discovery-package/R3-05"
+    },
+    {
+      "at": "2026-07-17T20:42:20.999Z",
+      "event": "workstream_passed",
+      "detail": "ws3-visible-discovery-package"
+    },
+    {
+      "at": "2026-07-17T20:42:26.394Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T20:42:42.627Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-17T20:42:48.675Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

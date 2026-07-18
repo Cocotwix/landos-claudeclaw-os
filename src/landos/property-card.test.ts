@@ -430,4 +430,33 @@ describe('accepted-identity preservation on verified cards', () => {
     expect(explicit.card.id).toBe(v.card.id);
     expect(explicit.card.owner).toBe('ELROD MELINDA KAY TRUST');
   });
+
+  it('keeps an owner-reconciled identity and provenance through same-APN enrichment and a later conflicting retry', () => {
+    const reconciled = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '272 Mcallister Rd, Kingstree SC',
+      apn: '45-177-182', county: 'Williamsburg', state: 'SC', city: 'Kingstree', owner: 'WRAGG JESSICA MARIE',
+      verified: true,
+      verificationSource: 'Owner-confirmed official parcel record — Williamsburg County Assessor GIS: https://williamsburgsc.wthgis.com/',
+      agentId: 'owner-verified-parcel-reconciliation',
+    }).card;
+
+    const sameParcelEnrichment = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', cardId: reconciled.id, activeInputAddress: '272 McAlister Road',
+      apn: '45-177-182', county: 'Williamsburg', state: 'SC', city: 'Kingstree', owner: 'WRAGG JESSICA M', acres: 0.8,
+      verified: true, verificationSource: 'LandPortal authenticated browser', agentId: 'property-research-agent',
+    }).card;
+    expect(sameParcelEnrichment.apn).toBe('45-177-182');
+    expect(sameParcelEnrichment.owner).toBe('WRAGG JESSICA MARIE');
+    expect(sameParcelEnrichment.verification_source).toMatch(/Owner-confirmed official parcel record/);
+    expect(sameParcelEnrichment.acres).toBe(0.8);
+
+    const conflictingRetry = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', cardId: reconciled.id, activeInputAddress: '272 McAlister Road',
+      apn: '45-177-182.B', county: 'Williamsburg', state: 'SC', city: 'Kingstree', owner: 'WILSON TONY',
+      verified: true, verificationSource: 'LandPortal authenticated browser', agentId: 'duke-due-diligence',
+    });
+    expect(conflictingRetry.card.apn).toBe('45-177-182');
+    expect(conflictingRetry.card.owner).toBe('WRAGG JESSICA MARIE');
+    expect(conflictingRetry.warnings.join(' ')).toMatch(/owner-confirmed official parcel identity preserved/i);
+  });
 });

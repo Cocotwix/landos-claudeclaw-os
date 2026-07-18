@@ -23,6 +23,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
+import { landosArtifactPath } from './storage-profile.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 
@@ -240,7 +241,7 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
 /** Copy a captured screenshot into store/visuals (the only web-served dir) with
  *  a deterministic per-card/per-source name. Returns the stored path. */
 export function storeVisualCopy(srcPath: string, cardId: number, source: VisualSourceKind, storeDir?: string): string {
-  const dir = storeDir ?? path.join(process.cwd(), 'store', 'visuals');
+  const dir = storeDir ?? landosArtifactPath('visuals');
   fs.mkdirSync(dir, { recursive: true });
   const h = crypto.createHash('sha256').update(`${cardId}:${source}`).digest('hex').slice(0, 8);
   const dest = path.join(dir, `vi_${cardId}_${source}_${h}.png`);

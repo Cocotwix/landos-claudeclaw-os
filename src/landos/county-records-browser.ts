@@ -26,10 +26,12 @@ import { COUNTY_WORKFLOW_FOR, type DdField } from './missing-field-analysis.js';
 import {
   extractCountySources, officialSearchQuery, pickOfficialResult, netrIsStale,
   searchEngineUrl, unwrapSearchResults,
+  governmentSourceScopePriority, orderCountySourcesLocalFirst,
   COUNTY_SOURCE_TYPES, type CountySourceLink, type CountySourceType,
 } from './netr-routing.js';
 import { extractRecordFacts, extractAgencyContact, parcelRecordSignal } from './semantic-extract.js';
 import { getCountySources, saveCountySources, isCountyCacheFresh } from './county-source-map.js';
+import { CountyResearchCapability } from './county-research-capability.js';
 
 /** County workflow targets (the public resources the researcher navigates). */
 export const COUNTY_WORKFLOWS = [
@@ -155,6 +157,17 @@ async function runCountyWorkflow(
   }
 
   ev.sourcesUsed = sources.map((s) => ({ type: s.type, url: s.url, origin: s.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const, confidence: s.confidence }));
+  // Persist only safe local-routing metadata and obtain a county-specific
+  // recipe or a value-free platform-family starting sequence. The actual form
+  // is still inspected in this county; a family match is never treated as a
+  // verified lookup or authenticated access.
+  const countyCapability = new CountyResearchCapability();
+  const runReference = `county-records/${state.toLowerCase()}/${county.toLowerCase().replace(/[^a-z0-9]+/g, '-')}/${now()}`;
+  let guidanceKind: 'county_verified' | 'platform_template' | 'none' = 'none';
+  try {
+    countyCapability.observeLocalSources({ state, county, sources, observedAt: now(), runReference });
+    guidanceKind = countyCapability.guidance(state, county).kind;
+  } catch { /* capability memory must never prevent public-record retrieval */ }
 
   // ── 5. Visit official sources → AI navigation: locate the parcel search,
   //       pick the strongest identifier, search, open the record, extract facts
@@ -163,9 +176,18 @@ async function runCountyWorkflow(
   const emit = (f: BrowserFact) => { facts.push(f); try { hooks.onFact?.(f); } catch { /* non-fatal */ } };
   const factPriority: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'gis', 'recorder', 'planning', 'building'];
   const deepPriority: CountySourceType[] = ['recorder', 'planning', 'building', 'assessor', 'appraiser', 'tax', 'gis'];
-  const ordered = [...sources].sort((a, b) => (mode === 'deep_record' ? deepPriority : factPriority).indexOf(a.type) - (mode === 'deep_record' ? deepPriority : factPriority).indexOf(b.type));
+  const locality = { county, city: key.city, state };
+  // Local government is the first research lane. A city/township/county source
+  // is exhausted before a regional or statewide index; the record type only
+  // chooses the order within the same government scope.
+  const ordered = orderCountySourcesLocalFirst(sources, locality).sort((a, b) => {
+    const localDiff = governmentSourceScopePriority(a, locality) - governmentSourceScopePriority(b, locality);
+    if (localDiff !== 0) return localDiff;
+    return (mode === 'deep_record' ? deepPriority : factPriority).indexOf(a.type) - (mode === 'deep_record' ? deepPriority : factPriority).indexOf(b.type);
+  });
   let screenshotTaken = false;
   let stopped = false;
+  let recipeRecorded = false;
   for (const src of ordered) {
     if (cancelled()) { stopped = true; break; }
     const ctx = { sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url, origin: src.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const };
@@ -207,6 +229,17 @@ async function runCountyWorkflow(
       const linkFact: BrowserFact = { key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: ctx.sourceName, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: ctx.origin, status: 'extracted', extractionMethod: 'official source link' };
       if (ext.length > 0) {
         for (const f of ext) emit(f); // stream verified parcel facts to the Deal Card
+        if (!recipeRecorded) {
+          try {
+            const searchMethods = [key.apn ? 'apn' : null, key.address ? 'address' : null, key.owner ? 'owner' : null]
+              .filter((value): value is 'apn' | 'address' | 'owner' => value !== null);
+            countyCapability.recordSuccessfulLookup({
+              state, county, source: src, searchMethods: searchMethods.length ? searchMethods : ['address'],
+              validatedFacts: [...new Set(ext.map((fact) => fact.key))], observedAt: now(), runReference,
+            });
+            recipeRecorded = true;
+          } catch { /* real facts remain usable even if reusable memory cannot update */ }
+        }
         if (!screenshotTaken) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
       } else {
         // Not a parcel record: keep the official source link, and PRESERVE any
@@ -224,7 +257,7 @@ async function runCountyWorkflow(
   const stoppedNote = stopped ? 'Stopped by operator — facts already found are saved. ' : '';
   ev.note = sources.length === 0
     ? `${stoppedNote}No official county source could be routed for ${county}, ${state} (NETR + search). Records marked Needs Verification.`
-    : `${stoppedNote}County Records (${mode}) via ${usedSearchFallback ? 'NETR + official search fallback' : 'NETR Online'}: ${sources.length} official source(s) (${ev.sourcesUsed.map((s) => s.type).join(', ')}); ${extractedCount} public-record fact(s) with provenance. LandPortal-first; no duplicate retrieval.`;
+    : `${stoppedNote}County Records (${mode}) via ${usedSearchFallback ? 'NETR + official search fallback' : 'NETR Online'}: ${sources.length} official source(s) (${ev.sourcesUsed.map((s) => s.type).join(', ')}); ${extractedCount} public-record fact(s) with provenance. ${guidanceKind === 'county_verified' ? 'Reused a verified county navigation recipe.' : guidanceKind === 'platform_template' ? 'Started from value-free guidance learned from this portal family; county facts were still independently verified.' : 'No prior county/platform recipe was assumed.'} LandPortal-first; no duplicate retrieval.`;
   return ev;
 }
 

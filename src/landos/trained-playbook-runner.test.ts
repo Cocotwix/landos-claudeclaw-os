@@ -79,7 +79,7 @@ describe('approved-only execution', () => {
 });
 
 describe('paid-action guard during execution', () => {
-  it('stops immediately and marks Approval Required, no fields written', async () => {
+  it('stops immediately as prohibited, no approval and no fields written', async () => {
     const pb = approvedPlaybook({
       website: 'https://landportal.com/',
       steps: [
@@ -94,9 +94,9 @@ describe('paid-action guard during execution', () => {
     expect(res.ok).toBe(true);
     const exec = res.execution!;
     expect(exec.status).toBe('blocked');
-    expect(exec.approvalRequired).toBe(true);
+    expect(exec.approvalRequired).toBe(false);
     expect(exec.blockedActions.length).toBe(1);
-    expect(exec.blockedActions[0].reason).toMatch(/Approval Required/);
+    expect(exec.blockedActions[0].reason).toMatch(/prohibited and cannot be approved/i);
     // stopped before the screenshot step and before any extraction/writeback
     expect(log.screenshots.length).toBe(0);
     expect(exec.fieldsWritten).toBe(0);
@@ -111,7 +111,7 @@ describe('paid-action guard during execution', () => {
     const { page } = makeFakePage();
     const res = await runTrainedPlaybook(pb.id, { mode: 'dry_run', backend: fakeBackend(page) });
     expect(res.execution!.status).toBe('blocked');
-    expect(res.execution!.approvalRequired).toBe(true);
+    expect(res.execution!.approvalRequired).toBe(false);
   });
 });
 
