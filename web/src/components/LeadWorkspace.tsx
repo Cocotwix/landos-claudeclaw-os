@@ -85,6 +85,14 @@ function Unavailable({ label = 'Unavailable' }: { label?: string }) {
 // destination.  Only captured image endpoints and explicit image files belong
 // in an <img>; rendering an interactive page URL as an image leaves the owner
 // with a broken thumbnail.
+// The API surface is token-gated; <img> requests carry no auth header, so
+// same-origin API image URLs must embed the dashboard token as a query param
+// (the same pattern the GIS overlay and PDF download links already use).
+function withDashboardToken(url: string): string {
+  if (!url.startsWith('/api/') || !dashboardToken || /[?&]token=/.test(url)) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+}
+
 function isRenderableImageArtifact(url: string | undefined): boolean {
   return !!url && (
     /^\/api\/landos\/(?:inspection|visual)\/image(?:\?|$)/.test(url)
@@ -241,7 +249,14 @@ function OwnerBrief({
   const visibleFacts = pendingReplacementResearch ? [] : facts.filter((fact) => asString(fact.status) === 'verified').slice(0, 24);
   const imageVisuals = pendingReplacementResearch ? [] : visuals.filter((visual) => isRenderableImageArtifact(asString(visual.url)));
   const terrain = imageVisuals.filter((visual) => /terrain|slope|contour|topograph/i.test(`${asString(visual.label) ?? ''} ${asString(visual.kind) ?? ''}`));
-  const landPortalVisuals = imageVisuals.filter((visual) => !terrain.includes(visual));
+  const googleVisuals = imageVisuals.filter((visual) => !terrain.includes(visual) && (
+    /^\/api\/landos\/visual\/image/.test(asString(visual.url) ?? '')
+    || /google/i.test(`${asString(visual.kind) ?? ''} ${asString(visual.key) ?? ''} ${asString(visual.label) ?? ''}`)
+  ));
+  const landPortalVisuals = imageVisuals.filter((visual) => !terrain.includes(visual) && !googleVisuals.includes(visual));
+  const landPortalSourceUrl = asString(facts.find((fact) => /landportal/i.test(asString(fact.source) ?? '') && asString(fact.sourceUrl))?.sourceUrl);
+  const googleSourceAddress = [asString(identity.address) ?? title, asString(identity.county), asString(identity.state)].filter(Boolean).join(', ');
+  const googleSourceUrl = googleSourceAddress ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleSourceAddress)}` : null;
   const officialGisVisual = {
     key: `official-gis-${dealCardId}`,
     label: 'Official county GIS parcel map',
@@ -261,8 +276,8 @@ function OwnerBrief({
     const url = asString(visual.url);
     if (!url) return null;
     const label = asString(visual.label) ?? 'Property visual';
-    return <button key={`${asString(visual.key) ?? label}-${index}`} type="button" onClick={() => onOpenVisual({ url, label })} class="group overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-elevated)] text-left transition hover:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]">
-      <img src={url} alt={label} loading="lazy" class="h-48 w-full object-cover transition duration-200 group-hover:scale-[1.02]" />
+    return <button key={`${asString(visual.key) ?? label}-${index}`} type="button" onClick={() => onOpenVisual({ url: withDashboardToken(url), label })} class="group overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-elevated)] text-left transition hover:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]">
+      <img src={withDashboardToken(url)} alt={label} loading="lazy" class="h-48 w-full object-cover transition duration-200 group-hover:scale-[1.02]" />
       <span class="block px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">{label}</span>
     </button>;
   };
@@ -295,7 +310,7 @@ function OwnerBrief({
     .filter((comp) => !recordedMarketKeys.has(compLabel(comp).replace(/[^a-z0-9]/gi, '').toLowerCase()))
     .slice(0, 5);
 
-  return <div data-testid="owner-lead-brief" class="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+  return <div data-testid="owner-lead-brief" class="px-4 py-5 sm:px-6">
     <div class="mx-auto max-w-6xl space-y-5">
       <header class="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] px-5 py-5 shadow-sm">
         <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-muted)]">Acquisitions brief</p>
@@ -348,6 +363,8 @@ function OwnerBrief({
         <p class="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">5. LandPortal visuals</p>
         <p class="mt-1 text-[12px] text-[var(--color-text-muted)]">Select an image to inspect it full size.</p>
         {landPortalVisuals.length ? <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{landPortalVisuals.map(renderVisual)}</div> : <p class="mt-3 text-[12px] text-[var(--color-text-muted)]">{pendingEvidence}</p>}
+        {landPortalVisuals.length && landPortalSourceUrl ? <a data-testid="owner-brief-landportal-source-link" class="mt-2 inline-block text-[12px] font-semibold text-[var(--color-accent)] underline" href={landPortalSourceUrl} target="_blank" rel="noreferrer">Open LandPortal source</a> : null}
+        {googleVisuals.length ? <div class="mt-5"><p class="text-[12px] font-semibold text-[var(--color-text)]">Google visuals</p><div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{googleVisuals.map(renderVisual)}</div>{googleSourceUrl ? <a data-testid="owner-brief-google-source-link" class="mt-2 inline-block text-[12px] font-semibold text-[var(--color-accent)] underline" href={googleSourceUrl} target="_blank" rel="noreferrer">Open Google Maps source</a> : null}</div> : null}
         {terrain.length ? <div class="mt-5"><p class="text-[12px] font-semibold text-[var(--color-text)]">Terrain</p>{slope ? <p class="mt-1 text-[12px] text-[var(--color-text-muted)]">{asString(slope.label)}: {String(slope.value)}</p> : null}<div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{terrain.map(renderVisual)}</div></div> : null}
       </section>
 
@@ -417,6 +434,14 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
     void load();
     return () => { active = false; };
   }, [dealCardId]);
+
+  // While the Lead Workspace is mounted the browser document must be the only
+  // vertical scroll surface (full-page capture tools depend on it). The tag on
+  // <body> releases the app shell's viewport lock via a scoped CSS override.
+  useEffect(() => {
+    document.body.classList.add('lead-workspace-doc-scroll');
+    return () => { document.body.classList.remove('lead-workspace-doc-scroll'); };
+  }, []);
 
   async function refreshWorkspace() {
     const [payload, compPayload] = await Promise.all([
@@ -974,7 +999,7 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
                 const label = asString(visual.label) ?? asString(visual.kind) ?? 'Visual evidence';
                 const kind = asString(visual.kind)?.replace(/_/g, ' ') ?? 'visual';
                 return <div data-testid="discovery-package-visual-artifact" key={`${asString(visual.key) ?? 'visual'}-${index}`} class="overflow-hidden rounded border border-[var(--color-border)] p-2">
-                  {isRenderableImageArtifact(url) ? <img src={url!} alt={label} loading="lazy" class="mb-2 h-32 w-full rounded bg-[var(--color-card)] object-cover" /> : url ? <div data-testid="external-visual-artifact" class="mb-2 flex h-32 items-center rounded border border-dashed border-[var(--color-border)] bg-[var(--color-card)] px-3 text-[11px] text-[var(--color-text-muted)]">Interactive external map or Earth artifact — open the link below.</div> : null}
+                  {isRenderableImageArtifact(url) ? <img src={withDashboardToken(url!)} alt={label} loading="lazy" class="mb-2 h-32 w-full rounded bg-[var(--color-card)] object-cover" /> : url ? <div data-testid="external-visual-artifact" class="mb-2 flex h-32 items-center rounded border border-dashed border-[var(--color-border)] bg-[var(--color-card)] px-3 text-[11px] text-[var(--color-text-muted)]">Interactive external map or Earth artifact — open the link below.</div> : null}
                   <p class="text-[11.5px] font-semibold text-[var(--color-text)]">{label}</p><p class="text-[10.5px] text-[var(--color-text-muted)]">{visual.parcelAssociated === true ? 'Parcel associated' : 'Not parcel associated'} · {asString(visual.confidence) ?? 'unknown'} confidence · {asString(visual.source) ?? 'source unavailable'}</p>{url ? <a href={url} target="_blank" rel="noreferrer" class="text-[10.5px] text-[var(--color-accent)]">View full {kind} artifact</a> : <p class="text-[10.5px] text-[var(--color-text-faint)]">Artifact retrieval gap: no captured image URL.</p>}
                 </div>;
               })}</div> : <p class="mt-1 text-[11px] text-[var(--color-text-muted)]">Artifact retrieval gap: no verified parcel boundary, satellite, street, comps-map, overlay, or terrain image is available.</p>}
@@ -1475,7 +1500,7 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
     </div>
   );
 
-  return <>
+  return <div data-testid="lead-workspace-root" class="min-w-0 flex-1">
     <OwnerBrief
       dealCardId={dealCardId}
       title={asString(packageIdentity.leadTitle) ?? asString(workspace.lead.title) ?? 'Untitled lead'}
@@ -1630,5 +1655,5 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
         <p class="mt-2 text-center text-[12px] font-semibold text-white">{selectedVisual.label}</p>
       </div>
     </div> : null}
-  </>;
+  </div>;
 }

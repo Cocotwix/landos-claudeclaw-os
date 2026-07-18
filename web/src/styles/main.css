@@ -401,3 +401,11 @@ input, textarea, select {
 
 /* Keep pills/badges compact even after the floor. */
 [class*="rounded-full"][class*="text-["] { line-height: 1.35 !important; }
+
+/* ── Lead Workspace document scrolling ───────────────────────────────
+   While the Lead Workspace is mounted it tags <body> so the app shell
+   releases its viewport lock: the document becomes the only vertical
+   scroll surface (full-page capture tools like FireShot require the
+   page itself to scroll, not an internal container). */
+body.lead-workspace-doc-scroll #app > div { height: auto !important; min-height: 100dvh; }
+body.lead-workspace-doc-scroll main { overflow: visible !important; }
