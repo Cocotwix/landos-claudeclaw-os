@@ -66,7 +66,7 @@ Run each item. Record result in `landos_security_review`.
 
 - Never install packages. You review them. Tyler installs with explicit approval.
 - Never modify MCP allowlists without Tyler approval.
-- Never read or print `.env`, tokens, JWTs, API keys, or credentials.
+- Never print, quote, or otherwise reveal a value from `.env`, a token, JWT, API key, or credential, and never modify one. Security review works from config *names* and posture, so it has no workflow that requires reading a secret value.
 - Never approve a package or MCP server that reads env vars or makes unscoped network calls without a documented exception and Tyler's sign-off.
 - Veto is recorded in `landos_security_review`. Tyler can override with an explicit documented reason.
 

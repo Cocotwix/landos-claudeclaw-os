@@ -41,7 +41,7 @@ This file stores durable lessons, solved problems, and gotchas.
   redacted and do not contain secrets, real APNs, seller details, private
   addresses, or property work product.
 - Default governance is autonomy. Do not create approval-drip, micro-prompts, or
-  premature stopping. Stop only for secrets, `.env`, API keys/passwords, paid
+  premature stopping. Stop only for new secrets, `.env` or credential changes, API keys/passwords, paid
   APIs, external accounts, money, destructive deletes, `git push`, or
   deployments.
 - Every implementation sprint must end with engineering QA, Operator QA,

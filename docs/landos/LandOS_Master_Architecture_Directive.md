@@ -27,9 +27,11 @@ This is not a planning exercise. Do not produce a phased roadmap or a "build thi
 - Engineering QA, Operator QA, Business QA, and memory updates are part of completion.
 
 **Secrets**
-- Never read or print .env unless Tyler explicitly approves in the current exchange and there is no safer path.
-- Never print tokens, JWTs, API keys, credentials, Telegram tokens, dashboard tokens, Gemini keys, LandPortal tokens, cookies, or passwords.
-- Never commit or stage .env.
+- Environment files and stored credentials are read only. An agent may securely read and use an existing credential from `.env` when an explicitly approved local LandOS workflow requires it, including signing into LandPortal through the visible browser. Reading a credential privately and entering it into its intended approved login form is permitted; the value stays concealed throughout.
+- Never modify `.env` or any stored credential unless Tyler explicitly directs that exact change. Adding a new secret still requires approval.
+- Never print tokens, JWTs, API keys, credentials, Telegram tokens, dashboard tokens, Gemini keys, LandPortal tokens, cookies, or passwords, and never place them in reports, screenshots, terminal output, logs, fixtures, browser console output, source files, prompts, or documentation.
+- Never copy a secret into another file or pass it through command arguments where it may be recorded, and never send a credential to an unapproved external service.
+- Never commit or stage .env or any secret.
 
 **Paid tools / money**
 - Never call lp_comp_report_create unless Tyler explicitly approves spending one LandPortal comp credit in the same exchange.

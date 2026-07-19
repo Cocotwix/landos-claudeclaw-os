@@ -39,7 +39,7 @@ in repo memory; use the database for exact values when needed.
   `.landos/CONTINUITY_PROTOCOL.md`, `.landos/OPERATOR_QA.md`,
   `.landos/BUSINESS_QA.md`, `.landos/CURRENT_SPRINT.md`,
   `.landos/KNOWN_LIMITATIONS.md`, and `docs/reference-ui/`.
-- Governance was reset to autonomy by default. Only secrets, `.env`, API keys,
+- Governance was reset to autonomy by default. Only new secrets, `.env` or credential changes, API keys,
   passwords, paid APIs, external accounts, money, destructive deletes,
   `git push`, and deployments remain approval gates.
 

@@ -45,7 +45,7 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 ## Execution policy - autonomy mode (settled 2026-07-04)
 - LandOS is in autonomy mode. The agent builds without per-step approval.
 - Configured non-paid operational providers may be used to complete business milestones. Log usage, avoid duplicate/runaway calls, preserve provenance, protect secrets.
-- The only approval gates are secrets, `.env`, API keys/passwords, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments.
+- The only approval gates are new secrets, `.env` or credential changes, API keys/passwords, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments.
 - Git hygiene still applies: never commit `.env`, secrets, logs, generated reports, property work product, or local trial counters. Do not `git push` without approval.
 - Operator QA and Business QA are required before claiming implementation completion.
 
@@ -73,7 +73,7 @@ This log captures decisions that are **settled** unless Tyler intentionally chan
 
 - Default is autonomy for LandOS, future ClaudeClaw-based systems, Codex,
   Claude Code, and future build agents.
-- The only approval gates are secrets, `.env`, API keys/passwords, paid APIs,
+- The only approval gates are new secrets, `.env` or credential changes, API keys/passwords, paid APIs,
   external accounts, money, destructive deletes, `git push`, and deployments.
 - Everything else is approved for autonomous execution inside the current
   mission.

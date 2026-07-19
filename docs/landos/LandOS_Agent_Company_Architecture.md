@@ -309,7 +309,8 @@ Unknown / Needs verification).
 - No geocoder / coordinate / proximity / map-pin parcel verification.
 - No scoring, valuation, or offer before verified parcel identity.
 - No paid comp credits without explicit, same-exchange approval.
-- No secrets in the repo; never read or print `.env`.
+- No secrets in the repo. `.env` and stored credentials are read only: usable
+  privately for an approved workflow, never printed, modified, or committed.
 - No property-specific private work product in the repo.
 - No `git add .`; exact file staging only.
 - No push without Tyler's approval on the exact staged file list.

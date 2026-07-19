@@ -27,8 +27,20 @@
    fragments.
 10. Approval is required for new secrets, paid accounts/charges, credential
     changes, destructive deletion/reset, git push, and deployment. Existing
-    configured providers are authorized for ordinary in-scope use. Never read,
-    copy, print, change, or commit `.env` contents.
+    configured providers are authorized for ordinary in-scope use.
+    **Environment files and stored credentials are read only.** An agent may
+    securely read and use an existing credential from `.env` when an explicitly
+    approved local LandOS workflow requires it, including signing into
+    LandPortal through the visible browser. An agent must never (a) modify
+    `.env` or any stored credential unless Tyler directs that exact change;
+    (b) print, echo, display, summarize, or otherwise reveal a secret value;
+    (c) include a credential in any response, report, screenshot, terminal
+    output, log, test fixture, browser console output, source file, prompt,
+    commit, or document; (d) copy a secret into another file or pass it through
+    command arguments where it may be recorded; (e) commit or push `.env` or any
+    secret; or (f) send a credential to an unapproved external service. Reading
+    a credential privately and entering it into its intended approved login form
+    is permitted; the value stays concealed throughout.
 11. Live repository and runtime inspection override memory-file narrative.
     Preserve unrelated dirty work.
 12. Replace `.landos/CHECKPOINT.md` in place. Keep automatic memory compact:

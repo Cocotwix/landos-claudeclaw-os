@@ -49,7 +49,7 @@ Two browser agents are recognized product requirements; the architecture leaves 
 ## Cost / safety governance (autonomy mode, 2026-07-04)
 - **Configured operational providers are approved for normal use** to complete business milestones (Apify Redfin, Google Maps/Street View/Static Maps, free gov APIs). Usage is logged; provenance preserved; no duplicate/runaway calls; secrets never leaked.
 - `realie-trial-guard.ts` — local, gitignored trial counter that **logs** Realie usage and enforces a per-sprint allowance; reuse persisted verification first.
-- Only approval gates: secrets, `.env`, API keys/passwords, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments.
+- Only approval gates: new secrets, `.env` or credential changes, API keys/passwords, paid APIs, external accounts, money, destructive deletes, `git push`, and deployments.
 - Approval/audit spine, rubric, offer engine, departments/agent roster (`db.ts`, `rubric.ts`, `offer-engine.ts`, `departments.ts`, `agent-roster.ts`). Cost + model-call logging tables.
 
 ## Storage separation
@@ -63,7 +63,7 @@ Node 22 + TypeScript; Hono (dashboard API); better-sqlite3; React/Preact + Vite 
 
 LandOS, Claude Code, Codex, and future build agents operate autonomously by
 default. Agents continue until the business outcome is complete unless they hit
-one of the only approval gates: secrets, `.env`, API keys/passwords, paid APIs,
+one of the only approval gates: new secrets, `.env` or credential changes, API keys/passwords, paid APIs,
 external accounts, money, destructive deletes, `git push`, or deployments.
 
 Configured non-paid operational providers, local dashboard/database checks,

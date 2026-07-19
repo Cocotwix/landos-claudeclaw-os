@@ -10,7 +10,7 @@ Default is autonomy. Roadmap work proceeds until the business outcome is
 complete unless it reaches one of the only approval gates:
 
 - secrets
-- `.env`
+- `.env` or credential changes (reading an existing credential privately for an approved workflow is allowed)
 - API keys/passwords
 - paid APIs
 - external accounts

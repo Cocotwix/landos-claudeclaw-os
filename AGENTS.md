@@ -88,10 +88,27 @@ Ordinary in-scope use of providers already configured in LandOS is authorized,
 including existing authenticated browser sessions and configured APIs such as
 Realie.ai. Do not ask for separate permission merely to use an existing
 connection to perform the requested workflow. Let the application consume its
-configured credentials through the existing secret-loading path. The entire
-`.env` file is read-only: never encode, embed, copy, print, expose, rewrite, or
-commit any of its contents into source code, generated assets, documentation,
-logs, tests, fixtures, or version control.
+configured credentials through the existing secret-loading path.
+
+Environment files and stored credentials are **read only**. An agent may
+securely read and use an existing credential from `.env` when an explicitly
+approved local LandOS workflow requires it, including signing into LandPortal
+through the visible browser. An agent must never:
+
+1. Modify `.env` or any stored credential unless Tyler explicitly directs that
+   exact change.
+2. Print, echo, display, summarize, or reveal a secret value.
+3. Include a credential in a response, report, screenshot, terminal output, log,
+   test fixture, browser console output, source file, prompt, commit, or
+   documentation.
+4. Copy a secret into another file, or expose it through command arguments where
+   it may be recorded.
+5. Commit or push `.env` or any secret.
+6. Send a credential to an unapproved external service.
+
+Reading a credential privately and entering it into its intended approved login
+form is permitted. The secret value must remain concealed throughout the
+operation.
 
 Approval is still required before creating a new paid account, purchasing
 credits or reports, upgrading a plan, initiating an unapproved charge, changing

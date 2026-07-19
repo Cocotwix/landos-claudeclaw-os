@@ -9,7 +9,9 @@ When you're ready to run local/open or other cloud providers for low-risk
 grunt-work, add the values below to `.env`. **You do not need any of this now** —
 the system already builds, tests, and runs without it.
 
-> The agent never reads or prints `.env`. These are the keys *you* add when ready.
+> The agent never prints `.env` values and never edits the file. These are the
+> keys *you* add when ready. (An existing credential may be read privately when
+> an approved local workflow needs it; the value is never revealed.)
 
 ## Enable live routing
 ```
