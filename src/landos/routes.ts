@@ -155,6 +155,12 @@ import {
   getHeatmapData, getCountyDrilldown, listReviewQueue, listCountyRef, listFlaggedSnapshots,
 } from './market-matrix-store.js';
 import { makeFixtureMarketProvider, makeLiveBrowserMarketProvider, delegateMarketResearchToBrowserAgent, pickMarketResearchBackend } from './market-browser-provider.js';
+import {
+  importMatrixBaseline, listMrSnapshots, getMrSnapshot, listMrRows, getMrGeoSummary,
+  MR_METRIC_DICTIONARY,
+} from './market-research-snapshots.js';
+import { collectQuarterlyMarketSnapshot, collectMarketGapFill, collectMarketVerifySweep, isCollectionActive, getCollectionStatus } from './market-research-collector.js';
+import { getZipGeometries } from './market-research-geometry.js';
 import { resolveMarketMatrix, resolveMarketMatrixSection } from './market-matrix-read.js';
 import { playbookInfo, listBrowserAgentRuns } from './browser-agent.js';
 import {
@@ -6105,6 +6111,98 @@ export function registerLandosRoutes(app: Hono): void {
         side: isMarketSide(side) ? side : undefined,
       }),
     });
+  });
+
+  // ── Market Research — retained quarterly LandPortal snapshots ───────
+  // The Market Research department workspace (Heat Map + Drill Deep) reads
+  // ONLY LandOS-retained snapshot data. Collection runs through the visible
+  // authenticated LandPortal Drill Deep workflow; diagnostics stay internal.
+
+  app.get('/api/landos/market-research/overview', (c) => {
+    importMatrixBaseline(); // idempotent: attach already-retained LandPortal rows once
+    const snapshots = listMrSnapshots();
+    return c.json({
+      snapshots,
+      dictionary: MR_METRIC_DICTIONARY,
+      collection: getCollectionStatus(),
+      bands: ['all', '0-1', '1-2', '2-5', '5-10', '10-20', '20-50', '50-100', '100+'].map((band) => ({
+        band,
+        // A band is only presented when real retained results exist for it.
+        retained: snapshots.some((s) => s.filters.acreageBand === band && (s.counts.state + s.counts.county + s.counts.zip) > 0),
+      })),
+    });
+  });
+
+  app.get('/api/landos/market-research/snapshots/:id/rows', (c) => {
+    const id = Number(c.req.param('id'));
+    const level = str(c.req.query('level'));
+    if (!Number.isFinite(id) || !level || !['state', 'county', 'zip'].includes(level)) {
+      return c.json({ error: 'snapshot id and level=state|county|zip required' }, 400);
+    }
+    const snapshot = getMrSnapshot(id);
+    if (!snapshot) return c.json({ error: 'unknown snapshot' }, 404);
+    const parent = str(c.req.query('parent'));
+    return c.json({ snapshot, rows: listMrRows(id, level as 'state' | 'county' | 'zip', parent || undefined) });
+  });
+
+  app.get('/api/landos/market-research/snapshots/:id/summary', (c) => {
+    const id = Number(c.req.param('id'));
+    const geo = str(c.req.query('geo'));
+    if (!Number.isFinite(id) || !geo) return c.json({ error: 'snapshot id and geo key required' }, 400);
+    const summary = getMrGeoSummary(id, geo);
+    if (!summary) return c.json({ error: 'no retained result for this geography in this snapshot' }, 404);
+    return c.json({ summary });
+  });
+
+  // ZIP (ZCTA) polygons — retained in landos_mr_geometry; fetched once from
+  // the free public Census TIGERweb service when missing.
+  app.get('/api/landos/market-research/zip-geometry', async (c) => {
+    const zips = (str(c.req.query('zips')) ?? '').split(',').map((z) => z.trim()).filter(Boolean);
+    if (zips.length === 0 || zips.length > 200) return c.json({ error: '1–200 comma-separated ZIPs required' }, 400);
+    return c.json(await getZipGeometries(zips));
+  });
+
+  // The normal internal workflow: "Collect quarterly land market snapshot".
+  // Runs the visible LandPortal Drill Deep flow; resumable and idempotent.
+  app.post('/api/landos/market-research/collect', async (c) => {
+    if (isCollectionActive()) return c.json({ started: false, note: 'A collection run is already in progress.' });
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const maxStates = typeof body.maxStateExpansions === 'number' ? body.maxStateExpansions : undefined;
+    const maxZips = typeof body.maxZipExpansions === 'number' ? body.maxZipExpansions : undefined;
+    const states = Array.isArray(body.states) ? body.states.filter((s): s is string => typeof s === 'string') : undefined;
+    void collectQuarterlyMarketSnapshot({
+      states, maxStateExpansions: maxStates, maxZipExpansions: maxZips,
+      onProgress: (m) => logger.info({ scope: 'market-research-collect' }, m),
+    }).catch((e) => logger.error({ scope: 'market-research-collect', err: String(e) }, 'collection run failed'));
+    return c.json({ started: true });
+  });
+
+  app.get('/api/landos/market-research/collect/status', (c) => c.json(getCollectionStatus()));
+
+  // Verify-and-complete sweep: normal visible clicks, retention from the
+  // grid's OWN JSON payloads; declared ZIP counts prove per-county coverage.
+  app.post('/api/landos/market-research/verify-sweep', async (c) => {
+    if (isCollectionActive()) return c.json({ started: false, note: 'A collection, gap-fill, or sweep run is already in progress.' });
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    void collectMarketVerifySweep({
+      maxStateVisits: typeof body.maxStateVisits === 'number' ? body.maxStateVisits : undefined,
+      onProgress: (m) => logger.info({ scope: 'market-research-sweep' }, m),
+    }).catch((e) => logger.error({ scope: 'market-research-sweep', err: String(e) }, 'verify-sweep run failed'));
+    return c.json({ started: true });
+  });
+
+  // Audited ADD-ONLY gap fill: re-reads every retained geography that has a
+  // missing metric from the live Drill Deep grid, fills only absent values,
+  // and verifies the rest as blank on the provider itself.
+  app.post('/api/landos/market-research/fill-gaps', async (c) => {
+    if (isCollectionActive()) return c.json({ started: false, note: 'A collection or gap-fill run is already in progress.' });
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    void collectMarketGapFill({
+      maxStateVisits: typeof body.maxStateVisits === 'number' ? body.maxStateVisits : undefined,
+      maxCountyOpens: typeof body.maxCountyOpens === 'number' ? body.maxCountyOpens : undefined,
+      onProgress: (m) => logger.info({ scope: 'market-research-gap-fill' }, m),
+    }).catch((e) => logger.error({ scope: 'market-research-gap-fill', err: String(e) }, 'gap-fill run failed'));
+    return c.json({ started: true });
   });
 
   // ── Browser Agent — its own employee; owns browser automation ───────

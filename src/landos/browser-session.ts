@@ -42,6 +42,11 @@ export interface PageLike {
   type?(selector: string, text: string, opts?: { delay?: number }): Promise<void>;
   keyboard?: { press(key: string): Promise<void> };
   bringToFront?(): Promise<void>;
+  /** Puppeteer event API (present on real pages; optional for test fakes).
+   *  Used to passively read the JSON responses the page itself loads during
+   *  the normal visible workflow — never to issue requests of our own. */
+  on?(event: string, handler: (...args: never[]) => void): void;
+  off?(event: string, handler: (...args: never[]) => void): void;
 }
 export interface BrowserLike {
   version(): Promise<string>;
@@ -251,6 +256,17 @@ export async function withWorkingPage<T>(
   const run = workingPageGate.then(lend, lend);
   workingPageGate = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/** Discard the shared working tab so the next workflow gets a FRESH one.
+ *  Used after a watchdog timeout: a page wedged by a provider render storm
+ *  can hang CDP calls indefinitely, and reusing that tab poisons every
+ *  subsequent run. Also clears a stuck lending gate. */
+export function resetWorkingPage(): void {
+  const page = state.workingPage as unknown as { close?: () => Promise<void> } | null;
+  state.workingPage = null;
+  workingPageGate = Promise.resolve();
+  if (page?.close) void page.close().catch(() => { /* already gone */ });
 }
 
 /** Disconnect (NOT close) — the operator's browser stays open all day. */

@@ -125,3 +125,31 @@ describe('LandPortal live extraction — raw dump → RawMarketTable (regression
     expect(listReviewQueue('open')).toHaveLength(0);
   });
 });
+
+describe('clickExactText target selection (regression)', () => {
+  // The Drill Deep tab is <li><a>Drill Deep</a></li>: both elements share the
+  // exact text, but only the <a> owns the router handler. Document order put
+  // the <li> first, so the click silently did nothing and a fresh session
+  // never left the Heatmap view (owner-visible collection stall, 2026-07-19).
+  it('clicks the interactive leaf, not the container that shares its text', async () => {
+    const { clickExactText } = await import('./browser-playbook-landportal-market-live.js');
+    const clicks: string[] = [];
+    const mk = (tag: string, text: string, children: any[] = []) => {
+      const el: any = {
+        tagName: tag.toUpperCase(), textContent: text, children,
+        getBoundingClientRect: () => ({ width: 100 }),
+        getAttribute: () => null,
+        click: () => clicks.push(tag),
+        contains: (other: any) => children.includes(other) || children.some((c) => c.contains && c.contains(other)),
+      };
+      return el;
+    };
+    const a = mk('a', 'Drill Deep');
+    const li = mk('li', 'Drill Deep', [a]);
+    (globalThis as any).document = { querySelectorAll: () => [li, a] };
+    try {
+      expect(clickExactText('Drill Deep')).toBe(true);
+      expect(clicks).toEqual(['a']);
+    } finally { delete (globalThis as any).document; }
+  });
+});

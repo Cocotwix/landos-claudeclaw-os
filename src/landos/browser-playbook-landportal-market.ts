@@ -49,13 +49,20 @@ export interface AcreageBandConfig {
   supported: boolean;          // is this band enabled in the playbook yet?
   optionMatch: string | null;  // regex matching the #acre_range <option> text
 }
+// Current live `#acre_range` options (probed 2026-07-19): Custom range…, All,
+// 0-1 acre, 1-2 acres, 2-5 acres, 5-10 acres, 10-20 acres, 20-50 acres,
+// 50-100 acres, 100+ acres.
 export const DRILL_DEEP_ACREAGE: Record<AcreageBand, AcreageBandConfig> = {
-  '2-5':   { uiLabel: '2–5 Acres',   supported: true,  optionMatch: '2\\s*-\\s*5' },
-  all:     { uiLabel: 'All',         supported: false, optionMatch: '^All$' },
-  '5-10':  { uiLabel: '5–10 Acres',  supported: false, optionMatch: '5\\s*-\\s*10' },
-  '10-20': { uiLabel: '10–20 Acres', supported: false, optionMatch: '10\\s*-\\s*20' },
-  '20-50': { uiLabel: '20–50 Acres', supported: false, optionMatch: '20\\s*-\\s*50' },
-  '50+':   { uiLabel: '50+ Acres',   supported: false, optionMatch: null }, // LandPortal splits 50-70/70-100/100-150/150+; compose later
+  '2-5':    { uiLabel: '2–5 Acres',    supported: true, optionMatch: '2\\s*-\\s*5' },
+  all:      { uiLabel: 'All acreage',  supported: true, optionMatch: '^All$' },
+  '0-1':    { uiLabel: '0–1 Acre',     supported: true, optionMatch: '0\\s*-\\s*1' },
+  '1-2':    { uiLabel: '1–2 Acres',    supported: true, optionMatch: '1\\s*-\\s*2' },
+  '5-10':   { uiLabel: '5–10 Acres',   supported: true, optionMatch: '5\\s*-\\s*10' },
+  '10-20':  { uiLabel: '10–20 Acres',  supported: true, optionMatch: '10\\s*-\\s*20' },
+  '20-50':  { uiLabel: '20–50 Acres',  supported: true, optionMatch: '20\\s*-\\s*50' },
+  '50-100': { uiLabel: '50–100 Acres', supported: true, optionMatch: '50\\s*-\\s*100' },
+  '100+':   { uiLabel: '100+ Acres',   supported: true, optionMatch: '100\\s*\\+' },
+  '50+':    { uiLabel: '50+ Acres',    supported: false, optionMatch: null }, // no native option; LandPortal splits 50-100 / 100+ (both collected)
 };
 
 /** Back-compat label map (null = unsupported) derived from the config. */

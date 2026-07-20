@@ -664,6 +664,19 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
   });
 
+  // US state/county boundary TopoJSON (vendored under web/public/geo/,
+  // copied to dist/web/geo/ at build time) for the Market Research maps.
+  app.get('/geo/:filename{.+\\.json}', (c) => {
+    const filename = c.req.param('filename');
+    const filePath = path.join(PROJECT_ROOT, 'dist', 'web', 'geo', filename);
+    const root = path.join(PROJECT_ROOT, 'dist', 'web', 'geo');
+    if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
+    if (!fs.existsSync(filePath)) return c.text('', 404);
+    return new Response(new Uint8Array(fs.readFileSync(filePath)), {
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=86400' },
+    });
+  });
+
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.

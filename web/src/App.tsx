@@ -20,6 +20,7 @@ import { AgentFiles } from '@/pages/AgentFiles';
 import { LandOS } from '@/pages/LandOS';
 import { PropertyBoard } from '@/pages/PropertyBoard';
 import { MarketIntelligence } from '@/pages/MarketIntelligence';
+import { MarketResearch } from '@/pages/MarketResearch';
 import { BrowserAgent } from '@/pages/BrowserAgent';
 import { BrowserTraining } from '@/pages/BrowserTraining';
 import { Forge } from '@/pages/Forge';
@@ -59,6 +60,7 @@ export function App() {
           <Route path="/mission"><MissionControl /></Route>
           {/* Acquisitions is a full department workspace, not a generic hub. */}
           <Route path="/dept/acquisitions"><Acquisitions /></Route>
+          <Route path="/dept/market-research"><MarketResearch /></Route>
           <Route path="/dept/:slug">{(params: { slug: string }) => <Department slug={params.slug} />}</Route>
           <Route path="/landos"><LandOS /></Route>
           <Route path="/board"><PropertyBoard /></Route>

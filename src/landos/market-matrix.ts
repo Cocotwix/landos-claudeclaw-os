@@ -75,14 +75,15 @@ export interface Geography {
 // Acreage bands / periods / side
 // ─────────────────────────────────────────────────────────────────────────
 
-export const ACREAGE_BANDS = ['all', '2-5', '5-10', '10-20', '20-50', '50+'] as const;
+export const ACREAGE_BANDS = ['all', '0-1', '1-2', '2-5', '5-10', '10-20', '20-50', '50-100', '100+', '50+'] as const;
 export type AcreageBand = (typeof ACREAGE_BANDS)[number];
 export function isAcreageBand(v: unknown): v is AcreageBand {
   return typeof v === 'string' && (ACREAGE_BANDS as readonly string[]).includes(v);
 }
 export const ACREAGE_BAND_LABEL: Record<AcreageBand, string> = {
-  all: 'All acreage', '2-5': '2–5 acres', '5-10': '5–10 acres',
-  '10-20': '10–20 acres', '20-50': '20–50 acres', '50+': '50+ acres',
+  all: 'All acreage', '0-1': '0–1 acre', '1-2': '1–2 acres', '2-5': '2–5 acres', '5-10': '5–10 acres',
+  '10-20': '10–20 acres', '20-50': '20–50 acres', '50-100': '50–100 acres', '100+': '100+ acres',
+  '50+': '50+ acres',
 };
 
 export const MARKET_SIDES = ['sold', 'for_sale'] as const;

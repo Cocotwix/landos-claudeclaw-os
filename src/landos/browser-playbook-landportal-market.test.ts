@@ -35,23 +35,30 @@ describe('LandPortal Market Research playbook — extraction primitives', () => 
     expect(parseCell(undefined)).toBeNull();
   });
 
-  it('drillDeepPageState is the v1 page state (config-driven acreage); unsupported bands throw', () => {
+  it('drillDeepPageState is config-driven per band; unsupported bands throw', () => {
     const ps = drillDeepPageState('2-5');
     expect(ps.status).toBe('Sold');
     expect(ps.data).toBe('Land');
     expect(ps.time).toBe('1 Year');
     expect(ps.acreageOptionMatch).toBe('2\\s*-\\s*5'); // matcher comes from config, drives the live select
+    expect(drillDeepPageState('5-10').acreageOptionMatch).toBe('5\\s*-\\s*10');
     expect(isSupportedBand('2-5')).toBe(true);
-    expect(isSupportedBand('5-10')).toBe(false);
-    expect(() => drillDeepPageState('5-10')).toThrow(/not supported/);
+    expect(isSupportedBand('5-10')).toBe(true);
+    // '50+' has NO native LandPortal option (the site splits it into 50-100 and
+    // 100+, both collected separately) — it must still fail honestly.
+    expect(isSupportedBand('50+')).toBe(false);
+    expect(() => drillDeepPageState('50+')).toThrow(/not supported/);
   });
 
-  it('acreage architecture supports future bands via CONFIG (enabling is a config flip, not code)', () => {
-    // Every band that maps to a single LandPortal option already has its matcher
-    // predefined — flipping `supported: true` is all it takes to enable it.
-    for (const b of ['5-10', '10-20', '20-50', 'all'] as const) expect(DRILL_DEEP_ACREAGE[b].optionMatch).toBeTruthy();
-    expect(DRILL_DEEP_ACREAGE['50+'].optionMatch).toBeNull(); // documented: needs composition (LandPortal splits 50+)
-    expect(Object.keys(DRILL_DEEP_ACREAGE).sort()).toEqual(['10-20', '2-5', '20-50', '5-10', '50+', 'all']);
+  it('every band with a native LandPortal option is enabled; composites are not', () => {
+    for (const b of ['0-1', '1-2', '2-5', '5-10', '10-20', '20-50', '50-100', '100+', 'all'] as const) {
+      expect(DRILL_DEEP_ACREAGE[b].optionMatch, b).toBeTruthy();
+      expect(DRILL_DEEP_ACREAGE[b].supported, b).toBe(true);
+    }
+    expect(DRILL_DEEP_ACREAGE['50+'].optionMatch).toBeNull(); // documented: LandPortal splits 50+
+    expect(DRILL_DEEP_ACREAGE['50+'].supported).toBe(false);
+    expect(Object.keys(DRILL_DEEP_ACREAGE).sort()).toEqual(
+      ['0-1', '1-2', '10-20', '100+', '2-5', '20-50', '5-10', '50+', '50-100', 'all'].sort());
   });
 
   it('extracts State→County→ZIP payloads; Unknown metric stays absent (Richmond growth)', () => {
@@ -106,7 +113,8 @@ describe('LandPortal Market Research playbook — via the Browser Agent', () => 
 
   it('unsupported acreage band fails honestly (no navigation)', async () => {
     const backend = makeReplayMarketResearchBackend(drillDeepTableForState);
-    const { run } = await executeBrowserPlaybook(landportalMarketResearchPlaybook, backend, { state: 'GA', acreageBand: '5-10' });
+    // '50+' is the composite band with no native LandPortal option.
+    const { run } = await executeBrowserPlaybook(landportalMarketResearchPlaybook, backend, { state: 'GA', acreageBand: '50+' });
     expect(run.status).toBe('failed');
     expect(run.note).toMatch(/not supported/);
   });

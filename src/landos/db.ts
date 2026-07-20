@@ -1420,6 +1420,120 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_market_county_ref_state ON landos_market_county_ref(state, county_name);
 
+    -- ── Market Research quarterly snapshot store ─────────────────────────
+    -- LandOS-owned retained market research (the Market Research department
+    -- workspace). One landos_mr_snapshot per reporting quarter + exact filter
+    -- set; metrics live in landos_mr_metric keyed by snapshot + geography and
+    -- are NEVER overwritten by a later collection (idempotent INSERT OR
+    -- IGNORE; corrections only through the audited correction log). Geography
+    -- identity/hierarchy is shared with the Market Matrix (USPS state, county
+    -- FIPS, ZIP) — one geography system, not a parallel one.
+    CREATE TABLE IF NOT EXISTS landos_mr_snapshot (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      quarter        TEXT NOT NULL DEFAULT '',
+      filter_key     TEXT NOT NULL DEFAULT '',
+      filters_json   TEXT NOT NULL DEFAULT '{}',
+      provider       TEXT NOT NULL DEFAULT '',
+      collected_at   TEXT NOT NULL DEFAULT '',
+      status         TEXT NOT NULL DEFAULT 'collecting'
+                     CHECK (status IN ('collecting','retained')),
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE (quarter, filter_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS landos_mr_geography (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      geo_key        TEXT NOT NULL UNIQUE,
+      level          TEXT NOT NULL CHECK (level IN ('state','county','zip')),
+      state          TEXT NOT NULL DEFAULT '',
+      fips           TEXT NOT NULL DEFAULT '',
+      zip            TEXT NOT NULL DEFAULT '',
+      name           TEXT NOT NULL DEFAULT '',
+      parent_key     TEXT NOT NULL DEFAULT '',
+      geometry_ref   TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_mr_geography_parent ON landos_mr_geography(parent_key, level);
+
+    CREATE TABLE IF NOT EXISTS landos_mr_metric (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_id    INTEGER NOT NULL,
+      geography_id   INTEGER NOT NULL,
+      metrics_json   TEXT NOT NULL DEFAULT '{}',
+      county_count   INTEGER,
+      zip_count      INTEGER,
+      provider       TEXT NOT NULL DEFAULT '',
+      source_ref     TEXT NOT NULL DEFAULT '',
+      observed_at    TEXT NOT NULL DEFAULT '',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE (snapshot_id, geography_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mr_metric_snapshot ON landos_mr_metric(snapshot_id, geography_id);
+
+    -- Internal resumable collection state + diagnostics. NEVER owner-facing.
+    CREATE TABLE IF NOT EXISTS landos_mr_collection_run (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_id    INTEGER NOT NULL,
+      status         TEXT NOT NULL DEFAULT 'running'
+                     CHECK (status IN ('running','paused','completed','failed')),
+      progress_json  TEXT NOT NULL DEFAULT '{}',
+      diagnostics    TEXT NOT NULL DEFAULT '',
+      started_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mr_run_snapshot ON landos_mr_collection_run(snapshot_id, started_at DESC);
+
+    -- Audited corrections: the ONLY path that may change a retained metric.
+    CREATE TABLE IF NOT EXISTS landos_mr_correction (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      metric_id      INTEGER NOT NULL,
+      before_json    TEXT NOT NULL DEFAULT '{}',
+      after_json     TEXT NOT NULL DEFAULT '{}',
+      reason         TEXT NOT NULL DEFAULT '',
+      corrected_by   TEXT NOT NULL DEFAULT '',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
+    -- ZIP ↔ county membership as the PROVIDER lists it. A ZIP crossing county
+    -- lines appears under EVERY county LandPortal groups it under, while the
+    -- geography hierarchy keeps one canonical parent. County ZIP listings
+    -- render the union so no provider-listed row is ever invisible.
+    CREATE TABLE IF NOT EXISTS landos_mr_zip_county (
+      zip            TEXT NOT NULL,
+      fips           TEXT NOT NULL,
+      source         TEXT NOT NULL DEFAULT '',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      PRIMARY KEY (zip, fips)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mr_zip_county_fips ON landos_mr_zip_county(fips);
+
+    -- Band-collection unit ledger: one row per (snapshot, request unit) for
+    -- the payload-replay collector. Resumable, honest completeness: 'retained'
+    -- means items were stored; 'empty' means the provider returned NO rows for
+    -- the unit under that band (a real absence, never fabricated).
+    CREATE TABLE IF NOT EXISTS landos_mr_band_unit (
+      snapshot_id    INTEGER NOT NULL,
+      unit_key       TEXT NOT NULL,
+      status         TEXT NOT NULL DEFAULT 'pending',
+      items          INTEGER NOT NULL DEFAULT 0,
+      updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      PRIMARY KEY (snapshot_id, unit_key)
+    );
+    -- Seed membership from each ZIP's canonical geography parent (idempotent).
+    INSERT OR IGNORE INTO landos_mr_zip_county (zip, fips, source)
+      SELECT zip, fips, 'geography-parent' FROM landos_mr_geography
+      WHERE level = 'zip' AND zip != '' AND fips != '';
+
+    -- Map geometry cache, stored SEPARATELY from market values (efficient
+    -- rendering; ZCTA polygons fetched once from the public Census TIGERweb
+    -- service and retained).
+    CREATE TABLE IF NOT EXISTS landos_mr_geometry (
+      geo_key        TEXT PRIMARY KEY,
+      geometry_json  TEXT NOT NULL DEFAULT '',
+      source         TEXT NOT NULL DEFAULT '',
+      fetched_at     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
     -- Browser Agent run log — the Browser Agent is its OWN employee that owns
     -- browser automation and EXECUTES Browser Playbooks. This table records every
     -- playbook run (not the market data itself — that lives in the Market Matrix)

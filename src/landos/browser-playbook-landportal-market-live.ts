@@ -32,14 +32,14 @@ declare const Event: any;
 
 // page.evaluate() in PageLike is typed as (() => T) — a helper to pass an
 // argument-taking in-page function without losing type-safety at the call site.
-type EvalFn<T> = (() => T);
-const withArgs = <T>(fn: (...a: any[]) => T): EvalFn<T> => fn as unknown as EvalFn<T>;
+export type EvalFn<T> = (() => T);
+export const withArgs = <T>(fn: (...a: any[]) => T): EvalFn<T> => fn as unknown as EvalFn<T>;
 
 // LandPortal Drill Deep selector/config map — the ONE place DOM coordinates live.
 // These are STABLE SEMANTIC selectors (element IDs + data-* attributes + a
 // dedicated grid class), not brittle nth-child paths, so a LandPortal markup
 // change is a config edit here, not a code rewrite.
-const LP = {
+export const LP = {
   url: 'https://landportal.com/market-research/',
   drillDeepTab: 'Drill Deep',
   grid: '.drill-table-scroll table',
@@ -65,21 +65,28 @@ function currentPeriod(now = new Date()): string {
 // ── In-page readers/actions (run INSIDE the operator's browser) ─────────────
 // Kept as plain function refs (compiled by tsc for the built server). Read-only.
 
-function readLoginLike(): boolean {
+export function readLoginLike(): boolean {
   const body = ((document as any).body?.innerText || '').slice(0, 2000);
   const hasGrid = !!(document as any).querySelector('.drill-table-scroll, .drill_deep');
   return /sign in|log in|password/i.test(body) && !hasGrid;
 }
 
-function clickExactText(t: string): boolean {
+export function clickExactText(t: string): boolean {
   const norm = (e: any) => (e.textContent || '').replace(/\s+/g, ' ').trim();
-  const els = Array.from((document as any).querySelectorAll('a,button,[role=tab],li,span,div'));
-  const el = els.find((e: any) => norm(e).toLowerCase() === t.toLowerCase() && e.getBoundingClientRect && e.getBoundingClientRect().width > 1) as any;
-  if (el) { el.click(); return true; }
-  return false;
+  const els = Array.from((document as any).querySelectorAll('a,button,[role=tab],li,span,div'))
+    .filter((e: any) => norm(e).toLowerCase() === t.toLowerCase() && e.getBoundingClientRect && e.getBoundingClientRect().width > 1) as any[];
+  if (els.length === 0) return false;
+  // Click the REAL interactive element. Document order finds the shallowest
+  // match first, but a container (e.g. the tab <li>) shares its text with the
+  // <a>/<button> leaf that owns the handler — clicking the container does
+  // nothing (this silently kept the Drill Deep tab from ever activating).
+  const rank = (e: any) => (e.tagName === 'A' || e.tagName === 'BUTTON' || (e.getAttribute && e.getAttribute('role') === 'tab')) ? 0 : 1;
+  els.sort((a: any, b: any) => rank(a) - rank(b) || (a.contains && a.contains(b) ? 1 : b.contains && b.contains(a) ? -1 : 0));
+  els[0].click();
+  return true;
 }
 
-function setSelect(id: string, rx: string): boolean {
+export function setSelect(id: string, rx: string): boolean {
   const s = (document as any).getElementById(id); if (!s) return false;
   const re = new RegExp(rx, 'i');
   const opt = Array.from(s.options).find((o: any) => re.test((o.textContent || '').trim())) as any;
@@ -90,7 +97,7 @@ function setSelect(id: string, rx: string): boolean {
   return true;
 }
 
-function gridDataReady(): boolean {
+export function gridDataReady(): boolean {
   const t = (document as any).querySelector('.drill-table-scroll table');
   if (!t) return false;
   const rows = Array.from(t.querySelectorAll('tr')).slice(1) as any[];
@@ -101,21 +108,28 @@ function gridDataReady(): boolean {
 // The expander is a TOGGLE, and LandPortal persists expansion state across
 // reloads — so expand IDEMPOTENTLY: only click when the row is not already
 // expanded (an already-expanded '.active' row would otherwise collapse).
-function expandIfCollapsed(sel: string): string {
+export function expandIfCollapsed(sel: string): string {
   const row = (document as any).querySelector(sel); if (!row) return 'norow';
   if ((row.className || '').includes('active')) return 'already';
   const btn = row.querySelector('button.expander-btn'); if (!btn) return 'nobtn';
   btn.click(); return 'expanded';
 }
 
-function countRows(sel: string): number {
+export function collapseIfExpanded(sel: string): string {
+  const row = (document as any).querySelector(sel); if (!row) return 'norow';
+  if (!(row.className || '').includes('active')) return 'already';
+  const btn = row.querySelector('button.expander-btn'); if (!btn) return 'nobtn';
+  btn.click(); return 'collapsed';
+}
+
+export function countRows(sel: string): number {
   return (document as any).querySelectorAll(sel).length;
 }
 
 // Best-effort, GUARDED dismissal of unexpected modals/overlays (promos, tips).
 // Only clicks generic close affordances, and NEVER anything whose text implies a
 // paid/irreversible action (buy/unlock/cart/export/purchase/upgrade/token/report).
-function dismissDialogs(): number {
+export function dismissDialogs(): number {
   const FORBIDDEN = /buy|unlock|cart|export|purchase|upgrade|subscribe|token|report|checkout/i;
   let closed = 0;
   const closers = Array.from((document as any).querySelectorAll(
