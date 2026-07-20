@@ -14,13 +14,23 @@
 // it only stops for payments, credentialed logins, destructive actions, or
 // unsolvable CAPTCHAs. Driver is injectable; the default parked stub never fakes.
 
+// The functions passed to driver.evaluate() execute INSIDE the operator's
+// browser (not Node), so the DOM globals are declared as `any` purely to satisfy
+// the Node typechecker. They are never executed in this process.
+declare const document: any;
+declare const Event: any;
+declare const window: any;
+declare const HTMLFormElement: any;
+declare const HTMLSelectElement: any;
+declare const HTMLInputElement: any;
+
 import {
   type BrowserService, type BrowserDriver, type BrowserEvidence, type BrowserWorkflowInput,
   type BrowserSearchKey, type BrowserFact, type BrowserRunHooks,
   makeParkedDriver, emptyEvidence, routeBrowserQuestion, recordBlocked,
 } from './browser-intelligence.js';
 import type { PropertyPatch } from './normalized-property.js';
-import { planParcelSearch, pickParcelRecordLink, type FormInfo } from './browser-navigator.js';
+import { planParcelSearch, pickParcelRecordLink, type FormInfo, type NavSearchKey } from './browser-navigator.js';
 import { planNetrWorkflow, buildNetrStateUrl, type NetrStep } from './browser-retrieval.js';
 import { COUNTY_WORKFLOW_FOR, type DdField } from './missing-field-analysis.js';
 import {
@@ -29,9 +39,11 @@ import {
   governmentSourceScopePriority, orderCountySourcesLocalFirst,
   COUNTY_SOURCE_TYPES, type CountySourceLink, type CountySourceType,
 } from './netr-routing.js';
-import { extractRecordFacts, extractAgencyContact, parcelRecordSignal } from './semantic-extract.js';
+import { extractRecordFacts, extractAgencyContact, parcelRecordSignal, type ExtractContext } from './semantic-extract.js';
 import { getCountySources, saveCountySources, isCountyCacheFresh } from './county-source-map.js';
 import { CountyResearchCapability } from './county-research-capability.js';
+import { apnSearchVariants } from './opportunity-research-mission.js';
+import { statewidePortalFor, type StatewidePortal } from './statewide-assessment-portals.js';
 
 /** County workflow targets (the public resources the researcher navigates). */
 export const COUNTY_WORKFLOWS = [
@@ -64,7 +76,6 @@ function workflowsForNeeded(neededFields?: string[]): CountyWorkflow[] {
     const wf = COUNTY_WORKFLOW_FOR[f as DdField];
     if (wf) set.add(wf);
   }
-  // Always include planning_zoning if zoning-ish gaps exist; assessor as baseline.
   return [...set].filter((w): w is CountyWorkflow => (COUNTY_WORKFLOWS as readonly string[]).includes(w));
 }
 
@@ -109,7 +120,6 @@ async function runCountyWorkflow(
     return ev;
   }
 
-  // ── 1. County Source Map cache (reuse routing across leads) ─────────────
   let sources: CountySourceLink[] = [];
   let netrUrl: string | null = null;
   let usedSearchFallback = false;
@@ -118,7 +128,6 @@ async function runCountyWorkflow(
     sources = cached.sources; netrUrl = cached.netrUrl; usedSearchFallback = cached.usedSearchFallback;
     ev.sourceUrls.push('cache:county-source-map');
   } else {
-    // ── 2. NETR routing: state page → county link → county sources ────────
     try {
       const stateUrl = buildNetrStateUrl(state);
       await driver.open(stateUrl, { timeoutMs });
@@ -132,9 +141,6 @@ async function runCountyWorkflow(
       sources = extractCountySources(countyLinks, { origin: 'netr', county, state });
     } catch { sources = []; }
 
-    // ── 3. Search fallback for missing core sources (NETR stale/dead) ──────
-    // Real web search (static-results engine the browser can read), not a page
-    // form. Prefer official .gov / county sources; label as search_fallback.
     if (netrIsStale(sources)) {
       usedSearchFallback = true;
       for (const type of ['assessor', 'appraiser', 'tax', 'recorder', 'gis'] as CountySourceType[]) {
@@ -148,19 +154,29 @@ async function runCountyWorkflow(
       }
     }
 
-    // ── 4. Persist routing to the County Source Map ───────────────────────
     const status: 'routed' | 'partial' | 'not_found' = sources.length === 0 ? 'not_found' : netrIsStale(sources) ? 'partial' : 'routed';
     const confidence: 'high' | 'medium' | 'low' = status === 'routed' ? 'high' : status === 'partial' ? 'medium' : 'low';
     try {
       saveCountySources({ state, county, netrUrl, sources, usedSearchFallback, status, confidence, notes: usedSearchFallback ? 'NETR thin/stale — used official search fallback for missing sources.' : 'Routed via NETR Online.' });
     } catch { /* cache best-effort */ }
+
+    const deepLinks = new Map<string, CountySourceLink>();
+    for (const src of sources) {
+      try {
+        await driver.open(src.url, { timeoutMs: timeoutMs / 2 });
+        const found = await scanPageForSearchLinks(driver, src.url, timeoutMs / 2);
+        for (const dl of found) {
+          const k = dl.url;
+          if (!deepLinks.has(k)) deepLinks.set(k, dl);
+        }
+      } catch { /* skip */ }
+    }
+    if (deepLinks.size > 0) {
+      sources = [...sources, ...deepLinks.values()];
+    }
   }
 
   ev.sourcesUsed = sources.map((s) => ({ type: s.type, url: s.url, origin: s.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const, confidence: s.confidence }));
-  // Persist only safe local-routing metadata and obtain a county-specific
-  // recipe or a value-free platform-family starting sequence. The actual form
-  // is still inspected in this county; a family match is never treated as a
-  // verified lookup or authenticated access.
   const countyCapability = new CountyResearchCapability();
   const runReference = `county-records/${state.toLowerCase()}/${county.toLowerCase().replace(/[^a-z0-9]+/g, '-')}/${now()}`;
   let guidanceKind: 'county_verified' | 'platform_template' | 'none' = 'none';
@@ -169,17 +185,11 @@ async function runCountyWorkflow(
     guidanceKind = countyCapability.guidance(state, county).kind;
   } catch { /* capability memory must never prevent public-record retrieval */ }
 
-  // ── 5. Visit official sources → AI navigation: locate the parcel search,
-  //       pick the strongest identifier, search, open the record, extract facts
-  //       (streamed to the Deal Card immediately). Mode picks the source set. ──
   const facts: BrowserFact[] = [];
   const emit = (f: BrowserFact) => { facts.push(f); try { hooks.onFact?.(f); } catch { /* non-fatal */ } };
   const factPriority: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'gis', 'recorder', 'planning', 'building'];
   const deepPriority: CountySourceType[] = ['recorder', 'planning', 'building', 'assessor', 'appraiser', 'tax', 'gis'];
   const locality = { county, city: key.city, state };
-  // Local government is the first research lane. A city/township/county source
-  // is exhausted before a regional or statewide index; the record type only
-  // chooses the order within the same government scope.
   const ordered = orderCountySourcesLocalFirst(sources, locality).sort((a, b) => {
     const localDiff = governmentSourceScopePriority(a, locality) - governmentSourceScopePriority(b, locality);
     if (localDiff !== 0) return localDiff;
@@ -194,41 +204,51 @@ async function runCountyWorkflow(
     try {
       let page = await driver.open(src.url, { timeoutMs });
       let merged: Record<string, string> = { ...page.fields };
-      // ── Semantic parcel-search navigation (no per-county logic) ──────────
       let method = 'official source link';
       const forms: FormInfo[] = (await driver.readForms?.({ timeoutMs })) ?? [];
-      const plan = planParcelSearch(forms, key);
-      if (plan && driver.fillAndSubmit) {
-        // Try the strongest identifier, then alternate formats, until results appear.
-        for (const value of [plan.value, ...plan.valueAlternates].slice(0, 4)) {
+      let plan = planParcelSearch(forms, key);
+      let foundRecord = false;
+      let searchKey = key;
+      const identifierFallbacks: Array<NavSearchKey> = [];
+      if (key.apn) identifierFallbacks.push({ apn: key.apn, county: key.county, state: key.state });
+      if (key.owner) identifierFallbacks.push({ owner: key.owner, county: key.county, state: key.state });
+      if (key.address) identifierFallbacks.push({ address: key.address, county: key.county, state: key.state });
+      for (const fallbackKey of identifierFallbacks) {
+        if (foundRecord) break;
+        plan = planParcelSearch(forms, fallbackKey);
+        if (!plan || !driver.fillAndSubmit) continue;
+        const values = plan.idKind === 'apn'
+          ? [plan.value, ...apnSearchVariants(plan.value).slice(1)].slice(0, 6)
+          : [plan.value, ...plan.valueAlternates].slice(0, 4);
+        for (const value of values) {
           if (cancelled()) { stopped = true; break; }
           const after = await driver.fillAndSubmit(plan.fieldSelector, value, plan.submitSelector, { timeoutMs });
-          // If a results list appeared, open the most likely parcel record.
           const links = (await driver.readLinks?.({ timeoutMs })) ?? [];
-          const record = pickParcelRecordLink(links, key);
-          if (record) { const rp = await driver.open(record.href, { timeoutMs }); merged = { ...merged, ...rp.fields, ...(await driver.readFields({ timeoutMs })).fields }; method = `parcel search (${plan.idKind}) → record`; break; }
-          if (Object.keys(after.fields).length > Object.keys(page.fields).length) { merged = { ...merged, ...after.fields }; method = `parcel search (${plan.idKind})`; }
+          const record = pickParcelRecordLink(links, fallbackKey);
+          if (record) {
+            const rp = await driver.open(record.href, { timeoutMs });
+            merged = { ...merged, ...rp.fields, ...(await driver.readFields({ timeoutMs })).fields };
+            method = `parcel search (${plan.idKind}) → record`;
+            foundRecord = true;
+            break;
+          }
+          if (Object.keys(after.fields).length > Object.keys(page.fields).length) {
+            merged = { ...merged, ...after.fields };
+            method = `parcel search (${plan.idKind})`;
+          }
         }
-      } else {
+      }
+      if (!foundRecord) {
         merged = { ...merged, ...(await driver.readFields({ timeoutMs })).fields };
       }
       if (stopped) break;
-      // Only extract PARCEL facts (situs/mailing/owner/apn/acreage) once we have
-      // actually reached a parcel-specific record — never off a landing / contact
-      // / office / search / GIS-home page. Evidence: the search opened a record OR
-      // the page carries strong parcel-defining fields.
-      // A page is a PARCEL RECORD only if it carries TWO+ distinct parcel-defining
-      // fields (owner/APN/acreage/land-use/value/deed). A landing / contact /
-      // office / search page has none — so an office "Physical/Mailing Address" is
-      // never mistaken for the parcel's situs/mailing. Evidence over navigation:
-      // opening a link whose URL merely says "records" is NOT proof of a record.
       const pageIsRecord = parcelRecordSignal(merged) >= 2;
       const ext = pageIsRecord
         ? extractRecordFacts(merged, ctx, { pageIsRecord: true }).map((f) => ({ ...f, extractionMethod: method }))
         : [];
       const linkFact: BrowserFact = { key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: ctx.sourceName, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: ctx.origin, status: 'extracted', extractionMethod: 'official source link' };
       if (ext.length > 0) {
-        for (const f of ext) emit(f); // stream verified parcel facts to the Deal Card
+        for (const f of ext) emit(f);
         if (!recipeRecorded) {
           try {
             const searchMethods = [key.apn ? 'apn' : null, key.address ? 'address' : null, key.owner ? 'owner' : null]
@@ -242,12 +262,28 @@ async function runCountyWorkflow(
         }
         if (!screenshotTaken) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
       } else {
-        // Not a parcel record: keep the official source link, and PRESERVE any
-        // office/contact address as a labeled agency contact (never parcel data).
         emit(linkFact);
         for (const a of extractAgencyContact(merged, ctx)) emit({ ...a, extractionMethod: 'agency contact page (not a parcel record)' });
       }
     } catch { /* try the next source; never stop on one */ }
+  }
+
+  const statewideFacts = facts.filter((f) => f.status === 'extracted').length === 0
+    ? await (async (): Promise<BrowserFact[] | null> => {
+        const portal = statewidePortalFor(state);
+        if (!portal || !driver.evaluate) return null;
+        const portalCtx: ExtractContext = {
+          sourceName: `${state} Statewide Assessment Portal`,
+          sourceType: 'assessor',
+          sourceUrl: portal.url,
+          origin: 'search_fallback',
+        };
+        return tryStatewidePortalFallback(driver, portal, key, portalCtx, timeoutMs, now, countyCapability, runReference);
+      })()
+    : null;
+  if (statewideFacts) {
+    for (const f of statewideFacts) emit(f);
+    ev.sourceUrls.push(`statewide:${state}`);
   }
 
   ev.facts = facts;
@@ -265,8 +301,163 @@ function labelFor(t: CountySourceType): string {
   return ({ assessor: 'Assessor', appraiser: 'Property Appraiser', tax: 'Tax Office', gis: 'GIS', recorder: 'Recorder / Register of Deeds', planning: 'Planning & Zoning', building: 'Building Dept' } as Record<CountySourceType, string>)[t];
 }
 
-/** Map extracted county facts → a property patch (gap-fill only; mergeNormalized
- *  never overwrites a verified-source value). Identity facts only when official. */
+// ── Deep-link following + statewide fallback ──────────────────────────────────
+
+async function scanPageForSearchLinks(
+  driver: BrowserDriver,
+  baseUrl: string,
+  timeoutMs: number,
+): Promise<CountySourceLink[]> {
+  const links = (await driver.readLinks?.({ timeoutMs })) ?? [];
+  const searchRx = /property\s+search|parcel\s+search|parcel\s+viewer|gis\s+map|assessment|tax\s+search|record\s+search|deed\s+search/i;
+  const vendorRx = /tylertech|tylerhost|governmax|qpublic|schneidercorp|schneidergis|beacon|arcgis\.com/i;
+  const out: CountySourceLink[] = [];
+  for (const l of links) {
+    const hay = `${l.text} ${l.href}`.toLowerCase();
+    if (!/^https?:/i.test(l.href)) continue;
+    if (/netronline|zillow|realtor|redfin|trulia|spokeo|whitepages|propertyshark|landglide|regrid|loopnet|facebook|google\.com\/search/i.test(l.href)) continue;
+    const isSearch = searchRx.test(hay) || vendorRx.test(hay);
+    if (!isSearch) continue;
+    let type: CountySourceType = 'gis';
+    if (/assessor|appraisal|assessment/i.test(hay)) type = 'assessor';
+    else if (/tax\s+search|tax\s+collector|treasurer|property\s+tax/i.test(hay)) type = 'tax';
+    else if (/recorder|register\s+of\s+deeds|deed/i.test(hay)) type = 'recorder';
+    else if (/planning|zoning/i.test(hay)) type = 'planning';
+    out.push({ type, url: l.href, label: l.text.slice(0, 80).trim(), origin: 'search_fallback', confidence: 0.6 });
+  }
+  return out;
+}
+
+async function tryStatewidePortalFallback(
+  driver: BrowserDriver,
+  portal: StatewidePortal,
+  key: BrowserSearchKey,
+  ctx: ExtractContext,
+  timeoutMs: number,
+  now: () => string,
+  countyCapability: CountyResearchCapability,
+  runReference: string,
+): Promise<BrowserFact[] | null> {
+  const facts: BrowserFact[] = [];
+  try {
+    if (!driver.evaluate) return null;
+    let page = await driver.open(portal.url, { timeoutMs });
+    await new Promise((r) => setTimeout(r, 3000));
+    let merged: Record<string, string> = { ...page.fields };
+
+    const evaluate = <T>(fn: (() => T) | string, ...args: unknown[]): Promise<T | undefined> => driver.evaluate!(fn as unknown as () => T, ...args);
+
+    if (portal.platform === 'aspnet') {
+      const GET_COUNTY_CODE = (() => {
+        const fn = (countyName: string): string | null => {
+          const sel = document.querySelector('#countySelect, select[name="Jur"]');
+          if (!sel) return null;
+          for (const opt of (sel as any).options) {
+            if ((opt.textContent || '').toLowerCase().includes(countyName.toLowerCase())) return opt.value;
+          }
+          return null;
+        };
+        return fn as unknown as () => string;
+      })();
+      const countyCode = await evaluate(GET_COUNTY_CODE, key.county ?? '');
+
+      const FILL_FORM = (() => {
+        const fn = (params: Record<string, string | undefined>): string => {
+          const out: string[] = [];
+          if (params.countyCode) {
+            const sel = document.querySelector('#countySelect, select[name="Jur"]') as any;
+            if (sel) { sel.value = params.countyCode; sel.dispatchEvent(new Event('change', { bubbles: true })); out.push('county=' + params.countyCode); }
+          }
+          const parts = (params.apn || '').replace(/[^0-9A-Za-z]/g, ' ').trim().split(/\s+/);
+          const cm = parts[0] || '';
+          const pn = parts[parts.length - 1] || '';
+          const cmInput = document.querySelector('#controlMapSelect, input[name="ControlMap"]') as any;
+          if (cmInput) { cmInput.value = cm; cmInput.dispatchEvent(new Event('input', { bubbles: true })); out.push('cm=' + cm); }
+          const pnInput = document.querySelector('#parcelSelect, input[name="ParcelNumber"]') as any;
+          if (pnInput) { pnInput.value = pn; pnInput.dispatchEvent(new Event('input', { bubbles: true })); out.push('pn=' + pn); }
+          const qInput = document.querySelector('#Query, input[name="Query"]') as any;
+          if (qInput) { qInput.value = params.apn; qInput.dispatchEvent(new Event('input', { bubbles: true })); out.push('query=' + params.apn); }
+          const oInput = document.querySelector('#ownerSelect, input[name="Owner"]') as any;
+          if (oInput && params.owner) { oInput.value = params.owner; oInput.dispatchEvent(new Event('input', { bubbles: true })); out.push('owner=' + params.owner); }
+          const aInput = document.querySelector('#propertyAddressSelect, input[name="PropertyAddress"]') as any;
+          if (aInput && params.address) { aInput.value = params.address; aInput.dispatchEvent(new Event('input', { bubbles: true })); out.push('addr=' + params.address); }
+          return out.join(',');
+        };
+        return fn as unknown as () => string;
+      })();
+      await evaluate(FILL_FORM, { countyCode: countyCode ?? undefined, apn: key.apn ?? '', owner: key.owner, address: key.address });
+
+      const CLICK_SEARCH = (() => {
+        const fn = (): string => {
+          const btns = Array.from(document.querySelectorAll('button.searchButton, input.searchButton, button[type="submit"], input[type="submit"]'));
+          const searchBtn = btns.find((b: any) => ((b.textContent || b.getAttribute?.('value') || '')).trim() === 'Search') as any;
+          if (searchBtn) { searchBtn.click(); return 'clicked_search'; }
+          const form = document.querySelector('#advancedSearchForm, #basicSearchForm, form');
+          if (form) { form.submit(); return 'submitted_form'; }
+          return 'not_found';
+        };
+        return fn as unknown as () => string;
+      })();
+      const clicked = await evaluate(CLICK_SEARCH);
+
+      if (clicked === 'clicked_search' || clicked === 'submitted_form') {
+        await new Promise((r) => setTimeout(r, 5000));
+        const afterPage = await driver.readFields?.({ timeoutMs });
+        if (afterPage) merged = { ...merged, ...afterPage.fields };
+      }
+    }
+
+    const GET_BODY = (() => {
+      const fn = (): string => { return (document.body?.innerText || '').slice(0, 2000); };
+      return fn as unknown as () => string;
+    })();
+    const bodySnippet = (await evaluate(GET_BODY)) ?? '';
+    const resultsRx = /showing\s+\d+\s+to\s+\d+\s+of\s+\d+\s+entries|results\s+for/i;
+    if (bodySnippet && resultsRx.test(bodySnippet.toLowerCase())) {
+      const GET_PARCEL_LINKS = (() => {
+        const fn = (): Array<{ text: string; href: string }> => {
+          const out: Array<{ text: string; href: string }> = [];
+          document.querySelectorAll('a').forEach((a: any) => {
+            const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+            const href = a.getAttribute('href') || '';
+            if (/view|parcel|detail|property/i.test(text) && href && !/^(https?:)?\/\/tnmap/.test(href)) {
+              out.push({ text, href });
+            }
+          });
+          return out;
+        };
+        return fn as unknown as () => Array<{ text: string; href: string }>;
+      })();
+      const parcelLinks = await evaluate(GET_PARCEL_LINKS);
+
+      if (parcelLinks && parcelLinks.length > 0) {
+        let detailPage = await driver.open(parcelLinks[0].href, { timeoutMs });
+        await new Promise((r) => setTimeout(r, 4000));
+        const detailFields = await driver.readFields?.({ timeoutMs }) ?? detailPage;
+        merged = { ...merged, ...detailFields.fields };
+
+        const pageIsRecord = parcelRecordSignal(merged) >= 2;
+        if (pageIsRecord) {
+          const ext = extractRecordFacts(merged, ctx, { pageIsRecord: true });
+          facts.push(...ext);
+          try {
+            countyCapability.recordSuccessfulLookup({
+              state: ctx.sourceUrl.includes('tn.gov') ? 'TN' : '',
+              county: key.county ?? '',
+              source: { type: 'assessor', url: portal.url, label: `${key.county} County Assessor (statewide)`, origin: 'search_fallback', confidence: 0.7 },
+              searchMethods: key.apn ? ['apn'] : key.owner ? ['owner'] : ['address'],
+              validatedFacts: [...new Set(ext.map((f) => f.key))],
+              observedAt: now(),
+              runReference,
+            });
+          } catch { /* best-effort */ }
+        }
+      }
+    }
+  } catch { /* statewide portal is best-effort */ }
+  return facts.length > 0 ? facts : null;
+}
+
 function factsToPatch(facts: BrowserFact[]): PropertyPatch {
   const patch: PropertyPatch = {};
   const fact = (key: string) => facts.find((f) => f.key === key && f.status === 'extracted');
@@ -288,7 +479,6 @@ export function makeCountyRecordsBrowser(deps: CountyRecordsBrowserDeps = {}): B
     runWorkflow(input, opts) { return runCountyWorkflow(input, driver, now, opts.timeoutMs, opts); },
     async ask(question, ctx, opts) {
       const route = routeBrowserQuestion(question, ctx);
-      // Map the asked intent to its county workflow target.
       const wf = COUNTY_WORKFLOW_FOR[route.intent as DdField] ?? 'assessor';
       const ev = await runCountyWorkflow({ searchKey: route.searchKey, neededFields: [route.intent] }, driver, now, opts.timeoutMs);
       ev.mode = 'ask';
@@ -298,8 +488,6 @@ export function makeCountyRecordsBrowser(deps: CountyRecordsBrowserDeps = {}): B
   };
 }
 
-/** The county researcher legitimately stops only for payment/login/destructive/
- *  CAPTCHA — recorded as blocked, never a refusal to do normal public research. */
 export function countyStopExample(condition: (typeof COUNTY_STOP_CONDITIONS)[number]): BrowserEvidence {
   const ev = emptyEvidence('county_records', 'workflow');
   if (condition === 'payment') recordBlocked(ev, 'purchase', 'A paid record purchase was required — stopped (no payment).');

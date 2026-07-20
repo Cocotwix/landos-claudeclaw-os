@@ -5,7 +5,7 @@
 // sources may later normalize a candidate (for example, "venore" to a different
 // municipality), while the raw input and the supplied candidate remain intact.
 
-import { extractApnCandidates, extractZipCandidate } from './intake-normalize.js';
+import { extractApnCandidates, extractZipCandidate, maskFieldLabels } from './intake-normalize.js';
 
 export type IntakeCandidateKind = 'street' | 'city' | 'county' | 'state' | 'zip' | 'apn' | 'owner';
 export type IntakeCandidateCertainty = 'supplied' | 'uncertain';
@@ -65,7 +65,7 @@ const ROUTE_STREET =
   '(?:highway|hwy|route|rte|county\\s+road|ranch\\s+road|farm\\s+road|state\\s+road)' +
   '|(?:fm|cr|sr|rr|sh|us)[-\\s]|[a-z]{2}-)\\s*-?\\s*\\d+[A-Za-z]?';
 const STREET_RE = new RegExp(
-  `\\b(\\d+[A-Za-z]?\\s+(?:${ROUTE_STREET}|[A-Za-z0-9][A-Za-z0-9.'’\\-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9.'’\\-]*)*?\\s+(?:${STREET_SUFFIX})))\\b`,
+  `\\b(\\d+[A-Za-z]?\\s+(?:${ROUTE_STREET}|[A-Za-z0-9][A-Za-z0-9.'’\\-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9.'’\\-]*){0,2}\\s+(?:${STREET_SUFFIX})))\\b`,
   'i',
 );
 
@@ -96,11 +96,27 @@ function findState(text: string): { raw: string; normalized: string; index: numb
 function findCounty(text: string): string | undefined {
   const labeled = text.match(/\bcounty\s*[:=-]\s*([A-Za-z][A-Za-z .'’\-]{0,60}?)(?=\s*(?:[,;\n]|$))/i)?.[1];
   if (labeled && !/^(?:road|rd|route|highway)$/i.test(labeled.trim())) return clean(labeled);
-  return clean(text.match(/\b([A-Za-z][A-Za-z.'’\-]*(?:\s+[A-Za-z][A-Za-z.'’\-]*){0,2})\s+County\b/i)?.[1]);
+  const lastCounty = text.lastIndexOf('County');
+  if (lastCounty < 0) return undefined;
+  const segment = text.slice(0, lastCounty).trim();
+  const lastSep = Math.max(segment.lastIndexOf(';'), segment.lastIndexOf(','), segment.lastIndexOf('\n'));
+  const candidate = lastSep >= 0 ? segment.slice(lastSep + 1).trim() : segment;
+  const words = candidate.split(/\s+/).slice(-2);
+  let county = words.join(' ');
+  const statePattern = /\b(?:[A-Z]{2}|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming)\b/i;
+  if (words.length >= 2 && statePattern.test(words[0])) {
+    county = words[1];
+  } else if (words.length >= 2 && statePattern.test(words[1])) {
+    county = words[0];
+  }
+  if (/^[A-Za-z][A-Za-z.'’\-]*$/.test(county) && !/^(?:road|rd|route|highway)$/i.test(county)) {
+    return county;
+  }
+  return undefined;
 }
 
 function findOwner(text: string): string | undefined {
-  return clean(text.match(/\bowner(?:\s+name)?\s*[:=-]\s*([A-Za-z][A-Za-z .'’\-]*?)(?=\s*(?:[,;\n]|\b(?:apn|parcel|county|state|address|acreage|acres)\b|$))/i)?.[1]);
+  return clean(text.match(/\bowner(?:\s+name)?[:\s-]+([A-Za-z][A-Za-z .'’\-]*?)(?=\s{2,}|,|\n|\b(?:apn|parcel|county|state|address|acreage|acres)\b|$)/i)?.[1]);
 }
 
 function candidate(
@@ -113,6 +129,13 @@ function candidate(
   return value ? { kind, value, ...(normalized ? { normalized } : {}), certainty, reason } : undefined;
 }
 
+function isCorruptedAddress(address: string): boolean {
+  const upper = address.toUpperCase();
+  if (/\b(?:PARCEL\s+ID|PARCEL\s+ADDRESS|PARCEL\s+NUMBER|OWNER\s+NAME|OWNER\s+ID)\b/.test(upper)) return true;
+  if (/\b\d{2,6}(?:[-. ]\d{1,6}){1,2}\b/.test(address)) return true;
+  return false;
+}
+
 /**
  * Parse ordinary address/APN/owner property intake without consulting a
  * provider. A city/locality adjacent to a street is kept as an uncertain
@@ -121,13 +144,16 @@ function candidate(
 export function parsePropertyIntake(rawInput: string | null | undefined): StructuredPropertyIntake {
   const raw = rawInput ?? '';
   const searchText = raw.replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
+  const maskedText = maskFieldLabels(searchText);
   const stateHit = findState(searchText);
-  const zip = extractZipCandidate(searchText);
+  const zip = extractZipCandidate(maskedText);
   const county = findCounty(searchText);
   const owner = findOwner(searchText);
   const apns = extractApnCandidates(searchText);
-  const streetMatch = searchText.match(STREET_RE);
-  const address = clean(streetMatch?.[1]);
+  let address = clean(maskedText.match(STREET_RE)?.[1]);
+  if (address && isCorruptedAddress(address)) {
+    address = undefined;
+  }
   const candidates: IntakeFieldCandidate[] = [];
   const warnings: string[] = [];
 
@@ -135,6 +161,7 @@ export function parsePropertyIntake(rawInput: string | null | undefined): Struct
   if (streetCandidate) candidates.push(streetCandidate);
 
   let city: string | undefined;
+  const streetMatch = maskedText.match(STREET_RE);
   if (address && streetMatch && stateHit) {
     const addressEnd = (streetMatch.index ?? 0) + streetMatch[0].length;
     if (stateHit.index >= addressEnd) {

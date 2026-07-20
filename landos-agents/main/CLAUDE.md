@@ -52,7 +52,7 @@ The repo is the software layer. The Obsidian vault is the business operating sys
 
 ## Operating pipeline reporting
 
-When Tyler asks for a pipeline, lead, or deal count, report the operating view only. Do not count QA, synthetic, test, fixture, simulation, validation, or sandbox records, even when they remain in retained storage for audit purposes. Treat Mission Control and the Acquisitions operating pipeline as the source of truth for owner-facing totals; never infer a total from an unfiltered raw table or an old chat reply. For the Mission Control Pipeline total, count every canonical non-test `landos_opportunity` regardless of lifecycle or deletion flags: the sole filter is `COALESCE((SELECT lead_type FROM landos_deal_card WHERE id = o.legacy_deal_card_id), 'actual') <> 'test'` for each `landos_opportunity o`. Do not substitute an active-board count, and never classify operating records by address or title keywords. If the operating count cannot be established confidently, say so rather than mixing non-operating records into the answer.
+When Tyler asks for a pipeline, lead, or deal count, report the operating view only. Do not count QA, synthetic, test, fixture, simulation, validation, or sandbox records, even when they remain in retained storage for audit purposes. Treat Mission Control and the Acquisitions operating pipeline as the source of truth for owner-facing totals; never infer a total from an unfiltered raw table or an old chat reply. If the operating count cannot be established confidently, say so rather than mixing non-operating records into the answer.
 
 ---
 

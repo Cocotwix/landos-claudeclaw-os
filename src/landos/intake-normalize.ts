@@ -181,11 +181,9 @@ export function extractApnCandidates(text: string): ApnCandidates {
 export function extractZipCandidate(text: string | null | undefined): string | undefined {
   const t = (text ?? '').trim();
   if (!t) return undefined;
-  // Blank APN-like runs (e.g. 002-07637-000, 094 02008 000, 072-00230-000-R)
-  // so their inner segments can never read as a ZIP.
-  const cleaned = t.replace(/\b\d{1,4}[-. ]\d{3,6}[-. ]\d{1,5}(?:[-. ][A-Za-z0-9]{1,4})?\b/g, ' ');
-  // A sentence-ending period is punctuation, not an APN separator. Reject a
-  // dot only when another digit follows it (e.g. an APN decimal segment).
-  const m = cleaned.match(/(?<![\d-])(\d{5})(?:-\d{4})?(?![\d-]|\.\d)/);
-  return m?.[1];
+  const cleaned = t.replace(/\b(?!(?:\d{5}-\d{4})$)\d{2,6}(?:[-. ]\d{1,6}){1,2}\b/g, ' ');
+  const matches = [...cleaned.matchAll(/(?<![\d-])(\d{5})(?:-\d{4})?(?![\d-]|\.\d)/g)];
+  if (!matches.length) return undefined;
+  const last = matches[matches.length - 1];
+  return last[1];
 }

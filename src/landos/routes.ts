@@ -383,7 +383,9 @@ function scheduleResearchMission(missionId: number): void {
           summary: 'Synthetic or identity-incomplete lead remains actionable; external browser research was not promoted.',
           safeNextAction: 'Confirm the missing parcel identifier during discovery or retry after adding it.',
           verification: {
-            accepted: false, verdict: 'insufficient_identity', reasons: ['A real subject property was not available for external research.'],
+            accepted: false, identityState: 'unresolved', verdict: 'insufficient_identity',
+            reasons: ['A real subject property was not available for external research.'],
+            warnings: [],
             expected: mission.constraints, observed: { address: null, city: null, county: null, state: null, apn: null },
           },
           toolTrace: mission.toolTrace,
@@ -455,6 +457,7 @@ function scheduleResearchMission(missionId: number): void {
         });
         return;
       }
+      const isCandidate = verification.identityState === 'candidate';
       const observedFacts = result.inspection.parcelFacts;
       const observedApn = meaningfulStr(observedFacts['Parcel ID'] ?? observedFacts.APN);
       const observedCounty = meaningfulStr(observedFacts['Parcel Address County'] ?? observedFacts.County) ?? mission.constraints.county ?? undefined;
@@ -469,8 +472,13 @@ function scheduleResearchMission(missionId: number): void {
         activeInputAddress: mission.constraints.address ?? str(prop.active_input_address) ?? running.title,
         city: observedCity, county: observedCounty, state: observedState, apn: observedApn,
         owner: observedOwner, acres: Number.isFinite(observedAcres) && observedAcres > 0 ? observedAcres : undefined,
-        verified: true, verificationSource: 'LandPortal authenticated browser',
-        summary: 'Parcel identity verified against immutable operator jurisdiction constraints.',
+        verified: !isCandidate,
+        verificationSource: isCandidate
+          ? `Candidate parcel — APN + county + state match; address discrepancy flagged: ${verification.warnings.join('; ')}`
+          : 'LandPortal authenticated browser',
+        summary: isCandidate
+          ? 'Parcel identity is a candidate (APN + county + state match; address discrepancy requires official county verification).'
+          : 'Parcel identity verified against immutable operator jurisdiction constraints.',
         agentId: 'property-research-agent',
       });
       // Once the subject has passed the immutable identity gate, continue the
@@ -515,16 +523,23 @@ function scheduleResearchMission(missionId: number): void {
         || result.inspection.assets.length > 0
         || (result.inspection.evidence?.length ?? 0) > 0;
       const failures = result.routes.filter((route) => route.status === 'error');
-      updateOpportunityResearchStatus(opportunity.id, usefulEvidence && failures.length === 0 ? 'complete' : 'partial', {
+      const discrepancyNote = isCandidate
+        ? ` Address discrepancy: ${verification.warnings.join('; ')}. Official county verification recommended.`
+        : '';
+      updateOpportunityResearchStatus(opportunity.id, usefulEvidence && failures.length === 0 && !isCandidate ? 'complete' : 'partial', {
         actor: 'property-research-agent',
         note: usefulEvidence
-          ? `Research captured best-available evidence${failures.length ? `; ${failures.map((route) => route.provider).join(', ')} failed and can be retried` : ''}.`
+          ? `Research captured best-available evidence${failures.length ? `; ${failures.map((route) => route.provider).join(', ')} failed and can be retried` : ''}.${discrepancyNote}`
           : `No parcel evidence was captured; ${failures.map((route) => route.provider).join(', ') || 'providers'} remain retryable.`,
       });
       finishResearchMission(mission.id, {
-        status: usefulEvidence && failures.length === 0 ? 'complete' : 'partial',
-        summary: usefulEvidence ? 'Verified parcel-associated research was promoted to the shared Lead Card.' : 'No useful verified evidence was captured.',
-        safeNextAction: discoveryPackage.callPrep.nextResearchActions[0] ?? 'Review the verified research package before the discovery call.',
+        status: usefulEvidence && failures.length === 0 && !isCandidate ? 'complete' : 'partial',
+        summary: usefulEvidence
+          ? (isCandidate ? 'Candidate parcel evidence was promoted with address discrepancy flagged.' : 'Verified parcel-associated research was promoted to the shared Lead Card.')
+          : 'No useful verified evidence was captured.',
+        safeNextAction: isCandidate
+          ? `Verify the official situs address with ${mission.constraints.county} County ${mission.constraints.state} records. ${discoveryPackage.callPrep.nextResearchActions[0] ?? ''}`.trim()
+          : discoveryPackage.callPrep.nextResearchActions[0] ?? 'Review the verified research package before the discovery call.',
         verification,
         toolTrace: [...toolTrace, ...marketTrace, {
           stage: 'learning_promotion', status: 'accepted',

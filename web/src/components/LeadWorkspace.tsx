@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
-import { apiDelete, apiGet, apiPost, apiPostForm, dashboardToken } from '@/lib/api';
+import { apiGet, apiPost, apiPostForm, dashboardToken } from '@/lib/api';
+import { TrashCardButton } from '@/components/TrashCardButton';
 import { formatRelativeTime } from '@/lib/format';
 import {
   acreageEntries,
@@ -189,6 +190,9 @@ type OwnerBriefProps = {
   onRecordLienReview: () => void;
   onRecordVerifiedSale: () => void;
   onOpenVisual: (visual: { url: string; label: string }) => void;
+  trashed: boolean;
+  onTrashed: () => void;
+  onTrashError: (message: string) => void;
 };
 
 /** Owner cards state the evidence-backed finding, never its internal artifact
@@ -208,6 +212,7 @@ function OwnerBrief({
   dealCardId, title, identity, propertyIdentity, deed, deedFindings, deedPages, lienReview, lienFindings, facts, visuals, comparables, recordedSales, marketSales,
   marketPulse, strategies, researchRunning, actionBusy,
   onResearch, onCorrectLocality, onReconcileVerifiedParcel, onAttachRecordedDeedPage, onRecordLienReview, onRecordVerifiedSale, onOpenVisual,
+  trashed, onTrashed, onTrashError,
 }: OwnerBriefProps) {
   const [officialGisUnavailable, setOfficialGisUnavailable] = useState(false);
   const [countyResearch, setCountyResearch] = useState<RecordValue | null>(null);
@@ -319,6 +324,19 @@ function OwnerBrief({
           <button type="button" data-testid="owner-brief-research" disabled={actionBusy || researchRunning} onClick={onResearch} class="rounded-lg bg-[var(--color-accent)] px-3.5 py-2 text-[12px] font-semibold text-white disabled:opacity-50">
             Refresh property research
           </button>
+          {trashed
+            ? <span class="ml-auto text-[11px] font-semibold text-[var(--color-text-faint)]">In Trash</span>
+            : <span class="ml-auto"><TrashCardButton
+                dealCardId={dealCardId}
+                title={title}
+                variant="labelled"
+                label="Move to Trash"
+                testId="lead-trash-action"
+                confirmTestId="lead-trash-confirm"
+                disabled={actionBusy}
+                onDeleted={onTrashed}
+                onError={onTrashError}
+              /></span>}
         </div>
       </header>
 
@@ -395,9 +413,8 @@ function OwnerBrief({
 export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
   const [workspace, setWorkspace] = useState<LeadWorkspacePayload | null>(null);
   const [error, setError] = useState('');
-  const [actionBusy, setActionBusy] = useState<'research' | 'decision' | 'package' | 'transcript' | 'trash' | 'locality' | 'parcel' | 'deed' | 'lien' | 'comp' | null>(null);
+  const [actionBusy, setActionBusy] = useState<'research' | 'decision' | 'package' | 'transcript' | 'locality' | 'parcel' | 'deed' | 'lien' | 'comp' | null>(null);
   const [actionMessage, setActionMessage] = useState('');
-  const [confirmTrash, setConfirmTrash] = useState(false);
   const [trashed, setTrashed] = useState(false);
   const [transcriptText, setTranscriptText] = useState('');
   const [transcripts, setTranscripts] = useState<RecordValue[]>([]);
@@ -654,17 +671,6 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
       setActionMessage('The current discovery-call package is ready.');
     } catch (err) {
       setActionMessage(`Discovery package could not be rebuilt: ${(err as Error).message}`);
-    } finally { setActionBusy(null); }
-  }
-
-  async function trashLead() {
-    setActionBusy('trash'); setActionMessage('');
-    try {
-      await apiDelete(`/api/landos/deal-cards/${dealCardId}`);
-      setTrashed(true); setConfirmTrash(false);
-      setActionMessage('Moved to Trash. The lead, research, and documents are preserved and can be restored from Deal Library → Trash.');
-    } catch (err) {
-      setActionMessage(`Could not move this Lead Card to Trash: ${(err as Error).message}`);
     } finally { setActionBusy(null); }
   }
 
@@ -944,8 +950,7 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
             </select>
             {opportunity?.disposition ? <span class="text-[11px] text-[var(--color-text-muted)]">Current: {opportunity.disposition.replace(/_/g, ' ')}</span> : null}
             <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{trashed ? 'In Trash' : 'Need to remove this lead?'}</span>
-            {!trashed && !confirmTrash && <button type="button" data-testid="lead-trash-action" disabled={actionBusy !== null} onClick={() => setConfirmTrash(true)} class="rounded-md border border-red-500/60 px-3 py-1.5 text-[11.5px] font-semibold text-red-700 hover:bg-red-500/10 disabled:opacity-45 dark:text-red-300">Move to Trash</button>}
-            {!trashed && confirmTrash && <span class="inline-flex items-center gap-2 rounded-md border border-red-500/60 bg-red-500/10 px-2 py-1"><span class="text-[10.5px] font-semibold text-red-700 dark:text-red-300">Move this lead to Trash?</span><button type="button" data-testid="lead-trash-confirm" disabled={actionBusy !== null} onClick={() => void trashLead()} class="rounded bg-red-600 px-2 py-0.5 text-[10.5px] font-semibold text-white disabled:opacity-45">{actionBusy === 'trash' ? 'Moving…' : 'Yes, move it'}</button><button type="button" disabled={actionBusy !== null} onClick={() => setConfirmTrash(false)} class="text-[10.5px] text-[var(--color-text-muted)]">Cancel</button></span>}
+            {/* The live trash control lives in the Owner Brief header. */}
           </div>
           {actionMessage ? <div class="mt-2 text-[11px] text-[var(--color-text-muted)]" role="status">{actionMessage}</div> : null}
         </section>
@@ -1527,6 +1532,9 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
       onRecordLienReview={openRecordedLienReviewEditor}
       onRecordVerifiedSale={openVerifiedSaleEditor}
       onOpenVisual={setSelectedVisual}
+      trashed={trashed}
+      onTrashed={() => { setTrashed(true); setActionMessage('Moved to Trash. The lead, research, and documents are preserved and can be restored from Deal Library → Trash.'); }}
+      onTrashError={setActionMessage}
     />
     <div class="mx-auto max-w-7xl space-y-3 px-4 pb-4 sm:px-6">
       <section data-testid="discovery-package" class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">

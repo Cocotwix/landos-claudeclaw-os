@@ -17,6 +17,7 @@ import {
   ReconciledLandScorePanel, OfficialRecordsPanel, DocumentUploadPanel, type DdBusinessStatusRow,
 } from '@/components/DealCardPanels';
 import { CompMap } from '@/components/landos/CompMap';
+import { TrashCardButton } from '@/components/TrashCardButton';
 
 // The Resolution view payload — shown instead of a half-populated Deal Card until
 // the parcel is confirmed.
@@ -3991,21 +3992,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     }
   }
 
-  // Delete Deal Card → move to Trash (soft). Confirmed once; fully reversible.
-  async function trashCard(id: number) {
-    if (!window.confirm('Move this Deal Card to Trash? It will be hidden from your boards but can be restored from Trash.')) return;
-    setTrashBusy(id);
-    try {
-      await apiDelete(`/api/landos/deal-cards/${id}`);
-      if (deal?.id === id) backToList();
-      await refreshList();
-      await refreshTrash();
-    } catch (err: any) {
-      setListError(err?.message || String(err));
-    } finally {
-      setTrashBusy(null);
-    }
-  }
+  // Soft delete now lives in the shared TrashCardButton control, which every
+  // Deal Card surface uses. Restore / purge below remain Trash-view specific.
 
   async function restoreCard(id: number) {
     setTrashBusy(id);
@@ -4184,14 +4172,13 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               </button>
             )}
             {deal && !dealCardId && (
-              <button
-                type="button"
-                onClick={() => void trashCard(deal.id)}
-                disabled={trashBusy === deal.id}
-                class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-status-failed)] text-[var(--color-status-failed)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
-              >
-                {trashBusy === deal.id ? 'Deleting…' : 'Delete'}
-              </button>
+              <TrashCardButton
+                dealCardId={deal.id}
+                title={deal.title || `Deal #${deal.id}`}
+                variant="labelled"
+                onDeleted={() => { backToList(); void refreshTrash(); }}
+                onError={setListError}
+              />
             )}
           </>
         )}
@@ -4226,27 +4213,37 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {cards !== null && cards.length > 0 && (
             <div class="space-y-1.5">
               {cards.map((c) => (
-                <button
+                <div
                   key={c.id}
-                  type="button"
-                  onClick={() => { if (onOpenDeal) onOpenDeal(c.id); else void load(c.id); }}
-                  class={`w-full text-left rounded-md border px-3 py-2 hover:bg-[var(--color-elevated)] ${
+                  class={`flex items-center gap-2 rounded-md border pr-2 hover:bg-[var(--color-elevated)] ${
                     deal?.id === c.id ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'
                   }`}
                 >
-                  <div class="flex items-center gap-2">
-                    <span class="text-[12px] font-medium truncate">{c.title || `Deal #${c.id}`}</span>
-                    <LeadTypeBadge leadType={c.lead_type} />
-                    <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
-                      {entityBadge(c.entity)}
-                    </span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
-                      {c.status}
-                    </span>
-                    <DdChip s={c.reportSummary} />
-                    <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">#{c.id} · {formatRelativeTime(c.updated_at)}</span>
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => { if (onOpenDeal) onOpenDeal(c.id); else void load(c.id); }}
+                    class="min-w-0 flex-1 text-left px-3 py-2"
+                  >
+                    <div class="flex items-center gap-2">
+                      <span class="text-[12px] font-medium truncate">{c.title || `Deal #${c.id}`}</span>
+                      <LeadTypeBadge leadType={c.lead_type} />
+                      <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                        {entityBadge(c.entity)}
+                      </span>
+                      <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                        {c.status}
+                      </span>
+                      <DdChip s={c.reportSummary} />
+                      <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">#{c.id} · {formatRelativeTime(c.updated_at)}</span>
+                    </div>
+                  </button>
+                  <TrashCardButton
+                    dealCardId={c.id}
+                    title={c.title || `Deal #${c.id}`}
+                    onDeleted={() => { void refreshList(); void refreshTrash(); }}
+                    onError={setListError}
+                  />
+                </div>
               ))}
             </div>
           )}

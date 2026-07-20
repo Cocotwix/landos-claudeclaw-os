@@ -278,6 +278,11 @@ describe('APN segments are never ZIP codes', () => {
     expect(extractZipCandidate('De Queen AR 71832-1234')).toBe('71832');
   });
 
+  it('a two-segment APN like 027 04512 is never promoted to a ZIP code', () => {
+    expect(extractZipCandidate('Parcel ID 027 04512, Cocke County, TN')).toBeUndefined();
+    expect(extractZipCandidate('027 04512, Newport TN')).toBeUndefined();
+  });
+
   it('smart intake on the raw lead: two APNs, De Queen AR, no street address, raw preserved, resolution required', () => {
     const si = buildSmartIntake(BAD_INTAKE);
     expect(si.rawText).toBe(BAD_INTAKE);

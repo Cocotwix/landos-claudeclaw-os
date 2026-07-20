@@ -1305,5 +1305,9 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await page.screenshot({ path: file, fullPage: (opts as { fullPage?: boolean } | undefined)?.fullPage === true });
       return { path: file, capturedAtIso: now(), purpose };
     },
+    async evaluate(fn, ...args) {
+      const page = await getWorkingPage();
+      return page.evaluate(fn, ...args);
+    },
   };
 }

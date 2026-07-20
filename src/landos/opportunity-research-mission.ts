@@ -37,8 +37,10 @@ export interface ResearchMissionRecord {
 
 export interface ResearchVerification {
   accepted: boolean;
+  identityState: 'confirmed' | 'candidate' | 'unresolved' | 'conflicted';
   verdict: 'matched' | 'insufficient_identity' | 'jurisdiction_mismatch' | 'apn_mismatch' | 'address_mismatch';
   reasons: string[];
+  warnings: string[];
   expected: ResearchIdentityConstraints;
   observed: { address: string | null; city: string | null; county: string | null; state: string | null; apn: string | null };
 }
@@ -239,26 +241,52 @@ export function verifyInspectionIdentity(
     apn: fact(facts, ['Parcel ID', 'APN', 'Parcel Number']),
   };
   const reasons: string[] = [];
+  const warnings: string[] = [];
   const stateMatches = !expected.state || !observed.state || upper(expected.state) === upper(observed.state);
   const countyMatches = !expected.county || !observed.county || countyValue(expected.county) === countyValue(observed.county);
   const apnMatches = !!expected.apn && !!observed.apn && apnValue(expected.apn) === apnValue(observed.apn);
   const addressMatches = !expected.address || !observed.address || addressesMatch(expected.address, observed.address);
   if (!stateMatches) reasons.push(`state mismatch: expected ${expected.state}, observed ${observed.state}`);
   if (!countyMatches) reasons.push(`county mismatch: expected ${expected.county}, observed ${observed.county}`);
-  // Postal/locality labels can vary inside a county. An exact APN plus matching
-  // street, county, and state is stronger parcel identity evidence than that
-  // label difference, so it must not quarantine the matching parcel.
   const cityMatches = !expected.city || !observed.city || cityValue(expected.city) === cityValue(observed.city);
   const exactParcelDespiteLocalityVariant = apnMatches && addressMatches && stateMatches && countyMatches;
   if (!cityMatches && !exactParcelDespiteLocalityVariant) reasons.push(`city mismatch: expected ${expected.city}, observed ${observed.city}`);
   if (expected.apn && observed.apn && !apnMatches) reasons.push(`APN mismatch: expected ${expected.apn}, observed ${observed.apn}`);
-  if (expected.address && observed.address && !addressMatches) reasons.push(`address mismatch: expected ${expected.address}, observed ${observed.address}`);
+  if (expected.address && observed.address && !addressMatches) {
+    const apnCountyStateMatch = apnMatches && stateMatches && countyMatches;
+    if (apnCountyStateMatch) {
+      warnings.push(`address mismatch: expected ${expected.address}, observed ${observed.address} — APN + county + state match exactly; treat as candidate and verify official situs.`);
+    } else {
+      reasons.push(`address mismatch: expected ${expected.address}, observed ${observed.address}`);
+    }
+  }
   const enoughObserved = !!(observed.apn || (observed.address && observed.state));
-  const verdict: ResearchVerification['verdict'] = reasons.some((reason) => /^state|^county|^city/.test(reason)) ? 'jurisdiction_mismatch'
-    : reasons.some((reason) => /^APN/.test(reason)) ? 'apn_mismatch'
-    : reasons.some((reason) => /^address/.test(reason)) ? 'address_mismatch'
-    : enoughObserved ? 'matched' : 'insufficient_identity';
-  return { accepted: reasons.length === 0 && enoughObserved, verdict, reasons: reasons.length ? reasons : enoughObserved ? [] : ['The inspected page did not expose enough parcel identity to associate its evidence.'], expected, observed };
+  const identityState: ResearchVerification['identityState'] = reasons.some((reason) => /^state|^county|^city/.test(reason))
+    ? 'conflicted'
+    : reasons.some((reason) => /^APN/.test(reason))
+      ? 'conflicted'
+      : warnings.length > 0 && enoughObserved
+        ? 'candidate'
+        : enoughObserved
+          ? 'confirmed'
+          : 'unresolved';
+  const accepted = identityState === 'confirmed' || identityState === 'candidate';
+  const verdict: ResearchVerification['verdict'] = identityState === 'confirmed'
+    ? 'matched'
+    : identityState === 'candidate'
+      ? 'address_mismatch'
+      : identityState === 'conflicted'
+        ? reasons.some((r) => /^APN/.test(r)) ? 'apn_mismatch' : 'jurisdiction_mismatch'
+        : reasons.some((reason) => /^address/.test(reason)) ? 'address_mismatch' : 'insufficient_identity';
+  return {
+    accepted,
+    identityState,
+    verdict,
+    reasons: reasons.length ? reasons : (enoughObserved ? [] : ['The inspected page did not expose enough parcel identity to associate its evidence.']),
+    warnings,
+    expected,
+    observed,
+  };
 }
 
 function mapMission(row: MissionRow): ResearchMissionRecord {
@@ -363,7 +391,9 @@ export function quarantineMismatchedPropertyInspections(
       quarantined.push({ activityId: row.id, verification });
     } catch {
       const verification: ResearchVerification = {
-        accepted: false, verdict: 'insufficient_identity', reasons: ['Stored inspection could not be parsed safely.'],
+        accepted: false, identityState: 'unresolved', verdict: 'insufficient_identity',
+        reasons: ['Stored inspection could not be parsed safely.'],
+        warnings: [],
         expected: constraints, observed: { address: null, city: null, county: null, state: null, apn: null },
       };
       db.prepare(`INSERT OR IGNORE INTO landos_quarantined_card_evidence

@@ -204,4 +204,63 @@ describe('durable opportunity research mission', () => {
     });
     expect(getLandosDb().prepare('SELECT COUNT(*) AS n FROM landos_card_activity WHERE id = ?').get(quarantined[0].activityId)).toEqual({ n: 1 });
   });
+
+  it('accepts a parcel as candidate when APN, county, and state match exactly but the displayed address differs', () => {
+    const expected = {
+      address: '1023 Baysinger Rd', city: 'Newport', county: 'Cocke', state: 'TN', apn: '027 04512',
+      source: 'manual_input' as const,
+    };
+    const verification = verifyInspectionIdentity(expected, {
+      ...emptyInspection,
+      parcelFacts: {
+        'Parcel Address': 'TALLEY RD', 'Parcel Address City': '',
+        'Parcel Address County': 'Cocke', 'Parcel Address State': 'TN', 'Parcel ID': '027 04512',
+        'Owner Name': 'JOINES TRAVIS',
+      },
+    });
+
+    expect(verification.accepted).toBe(true);
+    expect(verification.identityState).toBe('candidate');
+    expect(verification.verdict).toBe('address_mismatch');
+    expect(verification.reasons).toEqual([]);
+    expect(verification.warnings.join(' ')).toMatch(/address mismatch.*APN \+ county \+ state match exactly/i);
+  });
+
+  it('keeps a conflicting APN fatal even when the rest of the parcel matches', () => {
+    const expected = {
+      address: '1023 Baysinger Rd', city: 'Newport', county: 'Cocke', state: 'TN', apn: '027 04512',
+      source: 'manual_input' as const,
+    };
+    const verification = verifyInspectionIdentity(expected, {
+      ...emptyInspection,
+      parcelFacts: {
+        'Parcel Address': 'TALLEY RD', 'Parcel Address City': 'Newport',
+        'Parcel Address County': 'Cocke', 'Parcel Address State': 'TN', 'Parcel ID': '027 04513',
+      },
+    });
+
+    expect(verification.accepted).toBe(false);
+    expect(verification.identityState).toBe('conflicted');
+    expect(verification.verdict).toBe('apn_mismatch');
+    expect(verification.reasons.join(' ')).toMatch(/APN mismatch/);
+  });
+
+  it('preserves city mismatch forgiveness when APN, address, county, and state all match', () => {
+    const expected = {
+      address: '473 Seaside Rd', city: 'Beaufort', county: 'Beaufort', state: 'SC', apn: 'R300 018 000 0085 0000',
+      source: 'manual_input' as const,
+    };
+    const verification = verifyInspectionIdentity(expected, {
+      ...emptyInspection,
+      parcelFacts: {
+        'Parcel Address': '473 SEASIDE RD', 'Parcel Address City': 'SAINT HELENA ISLAND',
+        'Parcel Address County': 'Beaufort County', 'Parcel Address State': 'SC', 'Parcel ID': 'R300 018 000 0085 0000',
+      },
+    });
+
+    expect(verification.accepted).toBe(true);
+    expect(verification.identityState).toBe('confirmed');
+    expect(verification.verdict).toBe('matched');
+    expect(verification.reasons).toEqual([]);
+  });
 });

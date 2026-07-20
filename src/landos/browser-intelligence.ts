@@ -242,6 +242,10 @@ export interface BrowserDriver {
   clickCandidate?(index: number, opts: { timeoutMs: number }): Promise<void>;
   /** Type a value into a search box WITHOUT submitting (drives a typeahead). */
   typeSearch?(selector: string, value: string, opts: { timeoutMs: number }): Promise<void>;
+  /** Execute arbitrary JavaScript in the page context (read-only). Returns the
+   *  serialized result. Useful for complex form interactions, DOM inspection,
+   *  and platform-specific workflows that the generic primitives cannot express. */
+  evaluate?: <T>(fn: (() => T) | string, ...args: unknown[]) => Promise<T>;
   /** Submit the current search AFTER a typeahead option was selected — some sites
    *  (e.g. LandPortal's APN / Parcel-ID autocomplete) require selecting the matching
    *  parcel option first, THEN clicking Search / pressing Enter to open the parcel.

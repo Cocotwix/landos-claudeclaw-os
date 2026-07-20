@@ -4,6 +4,7 @@ import { ArrowRight, MapPin, RefreshCw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Pill } from '@/components/Pill';
+import { TrashCardButton } from '@/components/TrashCardButton';
 import { apiGet, apiPatch } from '@/lib/api';
 
 interface OpportunityCard {
@@ -93,13 +94,13 @@ export function PropertyBoard({ onOpenDeal, embedded = false }: { onOpenDeal?: (
       {!loading && columns.length === 0 && <PageState empty emptyTitle="No active opportunities" emptyDescription="Create a lead to add one card to the pipeline." />}
       {!loading && <div class="flex min-w-max gap-3">{columns.map((stage) => <div key={stage} data-testid={`opportunity-lane-${stage}`} class="w-72 shrink-0">
         <div class="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]"><span>{STAGE_LABEL[stage] ?? stage}</span><span>{board?.columns[stage]?.length ?? 0}</span></div>
-        <div class="space-y-2">{(board?.columns[stage] ?? []).map((card) => <OpportunityPipelineCard key={card.id} card={card} statuses={statuses} moving={movingCardId === card.id} onOpen={() => open(card)} onMoveStart={() => setMovingCardId(card.id)} onMoveCancel={() => setMovingCardId(null)} onMove={(next) => void move(card.id, next)} />)}</div>
+        <div class="space-y-2">{(board?.columns[stage] ?? []).map((card) => <OpportunityPipelineCard key={card.id} card={card} statuses={statuses} moving={movingCardId === card.id} onOpen={() => open(card)} onMoveStart={() => setMovingCardId(card.id)} onMoveCancel={() => setMovingCardId(null)} onMove={(next) => void move(card.id, next)} onDeleted={() => void load()} onError={setError} />)}</div>
       </div>)}</div>}
     </div>
   </div>;
 }
 
-function OpportunityPipelineCard({ card, statuses, moving, onOpen, onMoveStart, onMoveCancel, onMove }: { card: OpportunityCard; statuses: string[]; moving: boolean; onOpen: () => void; onMoveStart: () => void; onMoveCancel: () => void; onMove: (stage: string) => void }) {
+function OpportunityPipelineCard({ card, statuses, moving, onOpen, onMoveStart, onMoveCancel, onMove, onDeleted, onError }: { card: OpportunityCard; statuses: string[]; moving: boolean; onOpen: () => void; onMoveStart: () => void; onMoveCancel: () => void; onMove: (stage: string) => void; onDeleted: () => void; onError: (message: string) => void }) {
   const place = [card.city, card.county, card.state].filter(Boolean).join(', ');
   const identity = card.address || (card.apn ? `APN ${card.apn}` : 'Parcel identity unresolved');
   return <article data-testid="opportunity-card" data-opportunity-id={card.id} class={`rounded-lg border bg-[var(--color-card)] ${card.lifecycle === 'deal' ? 'border-sky-500/70 shadow-[0_0_12px_rgba(14,165,233,0.18)]' : 'border-[var(--color-border)]'}`}>
@@ -112,6 +113,6 @@ function OpportunityPipelineCard({ card, statuses, moving, onOpen, onMoveStart, 
       {card.duplicateCandidates.length > 0 && <div data-testid="duplicate-candidate-warning" class="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-800 dark:text-amber-200">Possible duplicate ({card.duplicateCandidates.length}) — review before merging. Distinct parcels remain separate.</div>}
       <div class="mt-2 flex items-center gap-1 text-[10.5px] text-[var(--color-text-muted)]"><ArrowRight size={11} class="text-[var(--color-accent)]" />Open Lead Workspace</div>
     </button>
-    <div class="border-t border-[var(--color-border)] px-3 py-2">{moving ? <div class="flex items-center gap-1.5"><select aria-label={`Business stage for ${card.title}`} value={card.pipelineStage} onChange={(event) => onMove((event.target as HTMLSelectElement).value)} class="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[10.5px]">{statuses.map((stage) => <option value={stage}>{STAGE_LABEL[stage] ?? stage}</option>)}</select><button type="button" onClick={onMoveCancel} class="text-[10px] text-[var(--color-text-faint)]">Cancel</button></div> : <button type="button" onClick={onMoveStart} class="text-[10px] text-[var(--color-text-faint)] hover:text-[var(--color-text)]">Move business stage →</button>}</div>
+    <div class="flex items-center gap-2 border-t border-[var(--color-border)] px-3 py-2">{moving ? <div class="flex flex-1 items-center gap-1.5"><select aria-label={`Business stage for ${card.title}`} value={card.pipelineStage} onChange={(event) => onMove((event.target as HTMLSelectElement).value)} class="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[10.5px]">{statuses.map((stage) => <option value={stage}>{STAGE_LABEL[stage] ?? stage}</option>)}</select><button type="button" onClick={onMoveCancel} class="text-[10px] text-[var(--color-text-faint)]">Cancel</button></div> : <button type="button" onClick={onMoveStart} class="flex-1 text-left text-[10px] text-[var(--color-text-faint)] hover:text-[var(--color-text)]">Move business stage →</button>}<TrashCardButton dealCardId={card.dealCardId} title={card.title} onDeleted={onDeleted} onError={onError} /></div>
   </article>;
 }

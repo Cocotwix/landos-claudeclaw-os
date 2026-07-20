@@ -40,4 +40,58 @@ describe('public-first property intake', () => {
     expect(intake.zip).toBeUndefined();
     expect(intake.apn).toBe('002-07637-000');
   });
+
+  it('parses labeled fields with parcel ID before parcel address without corrupting the address', () => {
+    const raw = `Owner Name
+JOINES TRAVIS
+
+Parcel ID
+027 04512
+
+Parcel Address
+1023 Baysinger Rd, Newport Tennessee
+
+Cocke County
+
+Acres
+5.820`;
+    const intake = parsePropertyIntake(raw);
+
+    expect(intake.rawInput).toBe(raw);
+    expect(intake.address).toBe('1023 Baysinger Rd');
+    expect(intake.city).toBe('Newport');
+    expect(intake.state).toBe('TN');
+    expect(intake.county).toBe('Cocke');
+    expect(intake.apn).toBe('027 04512');
+    expect(intake.owner).toBe('JOINES TRAVIS');
+    expect(intake.zip).toBeUndefined();
+    expect(intake.warnings.join(' ')).not.toMatch(/corrupted/i);
+  });
+
+  it('does not swallow field labels and the parcel ID into a street address', () => {
+    const intake = parsePropertyIntake('Parcel ID 027 04512 Parcel Address 1023 Baysinger Rd, Newport Tennessee');
+    expect(intake.address).toBe('1023 Baysinger Rd');
+    expect(intake.apn).toBe('027 04512');
+    expect(intake.city).toBe('Newport');
+    expect(intake.state).toBe('TN');
+  });
+
+  it('does not promote a two-segment APN segment to a ZIP code', () => {
+    const intake = parsePropertyIntake('027 04512, Cocke County, TN');
+    expect(intake.zip).toBeUndefined();
+    expect(intake.apn).toBe('027 04512');
+  });
+
+  it('accepts legitimate long rural and directional addresses without rejecting them', () => {
+    const cases = [
+      '12000 SW Old Farm Rd SW, Rural Route 3, Knoxville TN 37932',
+      '8752 North Fork Road NE, Comstock WI 54826',
+      '2907 County Road 3050, Bloomfield NM 87413',
+    ];
+    for (const raw of cases) {
+      const intake = parsePropertyIntake(raw);
+      expect(intake.address, `Expected address for: ${raw}`).toBeDefined();
+      expect(intake.address!.length).toBeGreaterThan(0);
+    }
+  });
 });
