@@ -4,6 +4,12 @@
 // UI, database, browser, or network code: every provider is injected. That keeps
 // the identity gate, task isolation, time limits, evidence provenance, and
 // precedence rules deterministic and reusable by the Deal Card workflow.
+//
+// This module consumes the canonical Property Intelligence Contract
+// (src/landos/property-intelligence-contract.ts). Every adapter output is
+// validated against the contract before persistence.
+
+import { PROPERTY_INTELLIGENCE_CONTRACT, evaluateStageCompletion, validateStageOutput, type CompletionState, type PropertyIntelligenceContract, type ResearchStage } from './property-intelligence-contract.js';
 
 export const PUBLIC_INTELLIGENCE_TASKS = [
   'wetlands',
@@ -451,6 +457,17 @@ export interface PublicIntelligenceTaskRecord {
   failureReason?: string;
   retryEligible: boolean;
   confidence: IntelligenceConfidence;
+  completionState?: CompletionState;
+  operatorMessage?: string;
+  contractViolations?: string[];
+  attempts?: number;
+  providerOutcomes?: Array<{
+    providerId: string;
+    status: PublicTaskStatus | 'not_applicable';
+    attemptCount: number;
+    evidenceCount: number;
+    note: string;
+  }>;
   /** Once identity passes, every provider task is isolated and non-blocking. */
   blocking: false;
   diagnostics: { adapterId?: string };
@@ -486,6 +503,10 @@ function roleFor(task: PublicIntelligenceTaskKind): PublicIntelligenceTaskRecord
 function boundTimeout(requested: number | undefined, fallback: number, maximum: number): number {
   const finite = typeof requested === 'number' && Number.isFinite(requested) ? requested : fallback;
   return Math.min(Math.max(1, Math.round(finite)), Math.max(1, Math.round(maximum)));
+}
+
+function emptyContractFields(): Pick<PublicIntelligenceTaskRecord, 'completionState' | 'operatorMessage' | 'contractViolations' | 'attempts' | 'providerOutcomes'> {
+  return { completionState: 'not_attempted', operatorMessage: '', contractViolations: [], attempts: 1, providerOutcomes: [] };
 }
 
 class PublicTaskTimeoutError extends Error {
@@ -537,6 +558,7 @@ async function runOneTask(
       failureReason: `${PUBLIC_INTELLIGENCE_TASK_LABELS[task]} is not connected.`,
       retryEligible: true,
       confidence: 'none',
+      ...emptyContractFields(),
     };
   }
 
@@ -571,6 +593,7 @@ async function runOneTask(
         failureReason: `Adapter returned ${output.finding?.kind} for ${task}.`,
         retryEligible: false,
         confidence: 'none',
+        ...emptyContractFields(),
       };
     }
     const noEvidence = output.status === 'succeeded' && evidence.length === 0;
@@ -591,6 +614,7 @@ async function runOneTask(
       failureReason,
       retryEligible: noEvidence || fixtureInLiveRun ? true : output.retryEligible,
       confidence: noEvidence || fixtureInLiveRun ? 'low' : output.confidence,
+      ...emptyContractFields(),
     };
   } catch (error: unknown) {
     const timedOut = error instanceof PublicTaskTimeoutError;
@@ -603,6 +627,7 @@ async function runOneTask(
       failureReason: timedOut ? error.message : ((error as Error)?.message || String(error)),
       retryEligible: true,
       confidence: 'none',
+      ...emptyContractFields(),
     };
   } finally {
     if (timer) clearTimeout(timer);
@@ -631,7 +656,89 @@ function skippedTask(
     confidence: 'none',
     blocking: false,
     diagnostics: {},
+    ...emptyContractFields(),
   };
+}
+
+function operatorMessageFor(stage: ResearchStage, state: CompletionState): string {
+  if (state === 'complete') return stage.operatorMessages.complete;
+  if (state === 'partial') return stage.operatorMessages.partial;
+  if (state === 'blocked') return stage.operatorMessages.blocked;
+  if (state === 'no_result') return stage.operatorMessages.noResult;
+  if (state === 'not_applicable') return stage.operatorMessages.notApplicable;
+  return stage.operatorMessages.notAttempted;
+}
+
+function applyContract(task: PublicIntelligenceTaskRecord, attempts: number): PublicIntelligenceTaskRecord {
+  const stage = PROPERTY_INTELLIGENCE_CONTRACT.stages.find((item) => item.legacyTaskKind === task.task);
+  if (!stage) return { ...task, attempts };
+  const context = { status: task.status, finding: task.finding, evidence: task.evidence };
+  const validation = validateStageOutput(stage, context);
+  let completionState = task.status === 'skipped_identity_gate'
+    ? 'not_attempted' as const
+    : evaluateStageCompletion(stage, context);
+  if (!validation.valid && completionState === 'complete') completionState = 'partial';
+  const adapterId = task.diagnostics.adapterId ?? stage.providers[0]?.providerId ?? 'unconnected';
+  const providerOutcomes: PublicIntelligenceTaskRecord['providerOutcomes'] = [{
+    providerId: adapterId,
+    status: task.status,
+    attemptCount: attempts,
+    evidenceCount: task.evidence.length,
+    note: task.failureReason ?? task.finding?.summary ?? operatorMessageFor(stage, completionState),
+  }];
+  for (const requirement of stage.providers) {
+    if (requirement.providerId === adapterId) continue;
+    providerOutcomes.push({
+      providerId: requirement.providerId,
+      status: 'not_applicable',
+      attemptCount: 0,
+      evidenceCount: 0,
+      note: 'Alternative provider was not selected for this run.',
+    });
+  }
+  return {
+    ...task,
+    completionState,
+    operatorMessage: operatorMessageFor(stage, completionState),
+    contractViolations: validation.violations,
+    attempts,
+    providerOutcomes,
+  };
+}
+
+async function runTaskWithContract(
+  task: PublicIntelligenceTaskKind,
+  adapter: PublicIntelligenceAdapter | undefined,
+  subject: PublicIntelligenceSubject,
+  options: Required<Pick<PublicIntelligenceRunOptions, 'captureMode' | 'defaultTimeoutMs' | 'maxTimeoutMs' | 'now' | 'clockMs'>>,
+): Promise<PublicIntelligenceTaskRecord> {
+  const stage = PROPERTY_INTELLIGENCE_CONTRACT.stages.find((item) => item.legacyTaskKind === task);
+  const boundedAdapter = adapter && stage
+    ? { ...adapter, timeoutMs: Math.min(adapter.timeoutMs ?? stage.timeoutMs, stage.timeoutMs) }
+    : adapter;
+  const retryRule = stage?.escalationRules.find((rule) => rule.action === 'retry');
+  const maxAttempts = Math.max(1, retryRule?.maxAttempts ?? 1);
+  let attempt = 1;
+  let record = await runOneTask(task, boundedAdapter, subject, options);
+  while (attempt < maxAttempts && record.retryEligible && (record.status === 'failed' || record.status === 'timed_out')) {
+    attempt += 1;
+    record = await runOneTask(task, boundedAdapter, subject, options);
+  }
+  return applyContract(record, attempt);
+}
+
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const output = new Array<R>(items.length);
+  let index = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (true) {
+      const current = index++;
+      if (current >= items.length) return;
+      output[current] = await fn(items[current]);
+    }
+  });
+  await Promise.all(workers);
+  return output;
 }
 
 /**
@@ -656,7 +763,7 @@ export async function runPublicPropertyIntelligence(
       downstreamAllowed: false,
       gate,
       captureMode,
-      tasks: PUBLIC_INTELLIGENCE_TASKS.map((task) => skippedTask(task, gate, now, defaultTimeoutMs)),
+      tasks: PUBLIC_INTELLIGENCE_TASKS.map((task) => applyContract(skippedTask(task, gate, now, defaultTimeoutMs), 0)),
       nonBlockingGaps: [],
       startedAt,
       completedAt: now(),
@@ -668,11 +775,15 @@ export async function runPublicPropertyIntelligence(
     if (!byTask.has(adapter.task)) byTask.set(adapter.task, adapter);
   }
   const options = { captureMode, defaultTimeoutMs, maxTimeoutMs, now, clockMs };
-  const tasks = await Promise.all(PUBLIC_INTELLIGENCE_TASKS.map((task) => runOneTask(task, byTask.get(task), subject, options)));
+  const tasks = await mapWithConcurrency(
+    PUBLIC_INTELLIGENCE_TASKS,
+    PROPERTY_INTELLIGENCE_CONTRACT.parallelPolicy.maxConcurrency,
+    (task) => runTaskWithContract(task, byTask.get(task), subject, options),
+  );
   const nonBlockingGaps = tasks
     .filter((task) => task.status !== 'succeeded')
     .map((task) => task.task);
-  return {
+  const run: PublicIntelligenceRun = {
     status: nonBlockingGaps.length === 0 ? 'complete' : 'complete_with_gaps',
     downstreamAllowed: true,
     gate,
@@ -682,6 +793,7 @@ export async function runPublicPropertyIntelligence(
     startedAt,
     completedAt: now(),
   };
+  return run;
 }
 
 const SOURCE_TIER_RANK: Record<PublicSourceTier, number> = {

@@ -71,7 +71,7 @@ export const VISUAL_SOURCE_LABEL: Record<VisualSourceKind, string> = {
   google_earth_overhead: 'Google Earth (overhead)',
   google_earth_3d: 'Google Earth 3D / tilted terrain',
   street_view: 'Street View',
-  landportal: 'LandPortal',
+  landportal: 'LandPortal Parcel + Neighbor Context',
   landportal_3d: 'LandPortal 3D',
   landportal_comps: 'LandPortal comps map',
   county_gis: 'County GIS',
@@ -446,10 +446,10 @@ function assetEligible(a: VisualAssetMeta, stores: SanitizeStores): boolean {
     // Store-backed capture: must ALSO be in the eligible set (association-proven).
     return Object.values(stores.eligibleGoogle).some((x) => x.storedPath === a.storedPath);
   }
-  // Live capture (Google Earth / live Street View): eligible only when it was
-  // navigated by verified parcel coordinates (subject coords recorded).
-  return typeof a.subject?.lat === 'number' && Number.isFinite(a.subject.lat)
-    && typeof a.subject?.lng === 'number' && Number.isFinite(a.subject.lng);
+  // Browser-rendered Google frames are not evidence: a splash screen or black
+  // canvas can carry the correct URL/coordinates and still be useless. Every
+  // owner-facing Google asset must be present in the association-verified store.
+  return false;
 }
 
 /** Sanitize a persisted VI record: exclude association-less Google imagery and
@@ -483,13 +483,16 @@ export function sanitizeVisualIntelligenceRecord(
   // rewritten claim is at most a nearby-feature note - never "positive".
   const observations = (record.observations ?? []).map((obs) => {
     const safe = sanitizeVisualConclusion(obs.observation);
-    return { ...obs, observation: safe.text, signal: safe.rewritten && obs.signal === 'positive' ? 'neutral' as const : obs.signal };
+    const category: VisualObservation['category'] = /road[_ ]frontage/i.test(obs.category) ? 'road_context' : obs.category;
+    return { ...obs, category, observation: safe.text, signal: safe.rewritten && obs.signal === 'positive' ? 'neutral' as const : obs.signal };
   });
+  const safeSummary = sanitizeVisualConclusion(record.observationSummary ?? '');
   return {
     ...record,
     sources,
     gallery,
     observations,
+    observationSummary: safeSummary.text,
     hero,
     heroReason: hero
       ? `${hero.label} is the highest-priority verified parcel image.`

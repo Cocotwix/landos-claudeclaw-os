@@ -5,19 +5,19 @@ import { apiGet, apiPost, apiPatch, apiPut, apiDelete, dashboardToken } from '@/
 import { formatRelativeTime } from '@/lib/format';
 import { ResolutionView, type ResolutionSnapshotView, type ParcelIdentityView } from '@/components/ResolutionView';
 import {
-  OperatorCrmHeader, DecisionCardRail, RisksUnknownsPanel, WorkStatusBoard,
-  EvidenceGallery, SellerQuestionsPanel, FeasibilityStrip, type OperatorRecordView,
+  OperatorCrmHeader, DecisionCardRail, RisksUnknownsPanel,
+  SellerQuestionsPanel, FeasibilityStrip, type OperatorRecordView,
 } from '@/components/OperatorRecordView';
 import {
-  CompRegistryPanel, StrategyReadinessPanel, DocumentRegistryPanel, MissionPanel, ReconcileBar, UnifiedReadinessStrip,
-  type CompRegistryView, type StrategyReadinessView, type DocumentRegistryView, type MissionViewT, type ModelVersionView, type UnifiedReadinessView,
+  DocumentRegistryPanel,
+  type CompRegistryView, type DocumentRegistryView,
 } from '@/components/CanonicalPanels';
 import {
-  DdBusinessStatusPanel, SellerReadinessPanel, CallGuardrailsPanel, RemainingBlockersPanel,
-  ReconciledLandScorePanel, OfficialRecordsPanel, DocumentUploadPanel, type DdBusinessStatusRow,
+  ReconciledLandScorePanel, OfficialRecordsPanel, DocumentUploadPanel,
 } from '@/components/DealCardPanels';
-import { CompMap } from '@/components/landos/CompMap';
 import { TrashCardButton } from '@/components/TrashCardButton';
+import { CompMap } from '@/components/landos/CompMap';
+import { PublicRecordsPanel, ResourcesContactsPanel, SmartIntakePanel } from '@/components/LeadCardIntake';
 
 // The Resolution view payload — shown instead of a half-populated Deal Card until
 // the parcel is confirmed.
@@ -25,6 +25,76 @@ interface ResolutionData {
   parcelIdentity: ParcelIdentityView | null;
   snapshot: ResolutionSnapshotView | null;
   confirmed: boolean;
+}
+
+interface DealResearchOpportunity {
+  id: number;
+  researchStatus: 'not_started' | 'queued' | 'running' | 'partial' | 'complete' | 'failed';
+  discoveryStatus: string;
+  pipelineStage: string;
+}
+
+interface DealResearchMission {
+  id: number;
+  status: 'queued' | 'running' | 'partial' | 'complete' | 'failed' | 'quarantined';
+  attempt: number;
+  summary: string;
+  safeNextAction: string;
+  error: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  updatedAt: number;
+  verification?: { accepted?: boolean; identityState?: string } | null;
+}
+
+interface DealResearchProgress {
+  opportunity: DealResearchOpportunity;
+  mission: DealResearchMission | null;
+}
+
+const ACTIVE_RESEARCH_STATUSES = new Set(['queued', 'running']);
+
+function DealResearchProgressPanel({ progress, retrying, actionError, onRetry }: { progress: DealResearchProgress; retrying: boolean; actionError: string; onRetry: () => void }) {
+  const mission = progress.mission;
+  if (!mission) return null;
+  const running = ACTIVE_RESEARCH_STATUSES.has(mission.status);
+  const verified = mission.verification?.accepted === true || mission.verification?.identityState === 'confirmed';
+  const title = running
+    ? 'Automatic property research is running'
+    : mission.status === 'complete'
+      ? 'Automatic property research complete'
+      : mission.status === 'partial' && verified
+        ? 'Property research updated this card'
+        : mission.status === 'quarantined'
+          ? 'Research needs parcel confirmation'
+          : mission.status === 'failed'
+            ? 'Automatic research needs a retry'
+            : 'Property research finished with gaps';
+  const detail = running
+    ? 'Keep this Deal Card open. LandOS checks for new evidence every few seconds and refreshes the facts, visuals, comps, and summary when the run finishes.'
+    : mission.summary || (verified ? 'Verified parcel evidence was saved to this Deal Card.' : 'The run finished without enough evidence to confirm the parcel.');
+  const tone = running ? 'border-sky-500/50 bg-sky-500/10' : verified ? 'border-emerald-500/45 bg-emerald-500/10' : 'border-amber-500/50 bg-amber-500/10';
+  return (
+    <section data-testid="deal-card-research-progress" class={`rounded-lg border p-3 ${tone}`}>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div class="flex items-center gap-2 text-[12.5px] font-semibold text-[var(--color-text)]">
+            {running && <span class="inline-block h-2 w-2 animate-pulse rounded-full bg-sky-500" />}
+            {title}
+          </div>
+          <div class="mt-1 text-[11.5px] leading-relaxed text-[var(--color-text-muted)]">{detail}</div>
+          {!running && mission.safeNextAction && <div class="mt-1 text-[11px] text-[var(--color-text-muted)]"><span class="font-medium text-[var(--color-text)]">Next:</span> {mission.safeNextAction}</div>}
+          {mission.error && <div class="mt-1 text-[11px] text-[var(--color-status-failed)]">{mission.error}</div>}
+          {actionError && <div class="mt-1 text-[11px] text-[var(--color-status-failed)]">{actionError}</div>}
+        </div>
+        {!running && mission.status !== 'complete' && (
+          <button type="button" data-testid="deal-card-research-retry" disabled={retrying} onClick={onRetry} class="shrink-0 rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-accent)] disabled:opacity-45">
+            {retrying ? 'Starting…' : 'Re-run research'}
+          </button>
+        )}
+      </div>
+    </section>
+  );
 }
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
@@ -266,6 +336,7 @@ interface ReportView {
   /** Browser Intelligence evidence (LandPortal-first, then County gap-fill).
    *  Surfaced as a clean status block — never raw logs or workflow internals. */
   browserEvidence?: BrowserEvidenceView[];
+  landportalInspection?: DiscoveryReportView['landportalInspection'];
   generatedAt: number | null;
   updatedBy: string;
 }
@@ -499,11 +570,6 @@ function AcquisitionsPanel({ dealId }: { dealId: number }) {
       )}
       {d0 && <div class="text-[11px]"><span class="text-[var(--color-text-faint)]">Latest discovery:</span> tone {String(d0.emotionalTone)} · urgency {String(d0.urgency)}</div>}
 
-      {/* Playbook + training readiness */}
-      <div class="flex items-center gap-2 flex-wrap text-[10px]">
-        <span class="px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">Playbook: {v.playbook.status}</span>
-        <span class="px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">Training storage: {v.trainingReadiness.backend}{v.trainingReadiness.r2Configured ? ' (R2)' : ' (R2-ready)'} · ingestion: future</span>
-      </div>
       {msg && <div class="text-[11px] text-[var(--color-text-muted)]">{msg}</div>}
     </div>
   );
@@ -541,6 +607,16 @@ interface MarketMatrixView {
   talkingPoints: string[];
   note: string;
 }
+interface ParcelFactSheetView {
+  apn: string | null;
+  owner: string | null;
+  acres: number | null;
+  centroid: { lat: number | null; lng: number | null };
+  access: { roadFrontageFt: number | null; roadName: string | null; landLocked: boolean | null; note: string | null };
+  buildability: { pct: number | null; acres: number | null; note: string | null };
+  environment: { wetlandsPct: string | null; femaCoveragePct: string | null; floodZone: string | null; slope: string | null };
+  valuation: { lastSalePrice: string | null; lastSaleDate: string | null; assessedValue: string | null; totalMarketValue: string | null; lpEstimatePrice: string | null; lpEstimatePpa: string | null };
+}
 interface DiscoveryReportView {
   marketMatrix?: MarketMatrixView;
   available: boolean;
@@ -566,6 +642,7 @@ interface DiscoveryReportView {
     evidence: Array<{ label: string; status: string; detail: string; confidence: string; source?: string | null; url?: string | null }>;
     discoveryQuestions: string[];
     missingInformation: string[];
+    factSheet?: ParcelFactSheetView;
   };
   comparableIntelligence?: {
     subjectClassification: { type: string; confidence: string; evidence: string[]; note: string };
@@ -598,6 +675,28 @@ interface DiscoveryReportView {
     perAcreAcquisition: { low: number | null; high: number | null } | null;
     confidence: string; whatCouldChange: string[]; note: string;
   };
+}
+interface OwnerMarketMetricView {
+  salesCount: number | null; daysOnMarket: number | null; sellThroughRate: number | null;
+  absorptionRate: number | null; monthsOfSupply: number | null; population: number | null;
+  populationDensity: number | null; populationGrowth: number | null;
+  medianPrice: number | null; medianPricePerAcre: number | null;
+}
+interface OwnerMarketRowView { area: string; level: 'county' | 'zip'; metrics: OwnerMarketMetricView }
+interface OwnerAnalysisView {
+  market: {
+    available: boolean; band: string; bandLabel: string; period: string | null; source: string | null;
+    county: OwnerMarketRowView | null; zip: OwnerMarketRowView | null; pulse: string[];
+  };
+  grades: Array<{ name: string; grade: string; explanation: string; sourceNote: string | null }>;
+  valuation: {
+    available: boolean;
+    comps: Array<{ address: string; salePrice: number; acres: number; pricePerAcre: number; saleDate: string; source: string; sourceUrl: string | null; distanceMiles: number | null; why: string | null; statusLabel?: string | null }>;
+    averagePricePerAcre: number | null; subjectAcres: number | null; roughFairMarketValue: number | null;
+    acquisitionBand: { low: number; high: number } | null; note: string;
+  };
+  strategies: Array<{ strategy: string; suitability: string; why: string; mainRisk: string }>;
+  recommendation: string;
 }
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
 // ── Discovery Call Intelligence Report (Acquisition Specialist v1) ────────────
@@ -642,6 +741,135 @@ function MarketMatrixPanel({ mm, compact = false }: { mm?: MarketMatrixView | nu
       )}
       <div class="text-[9px] text-[var(--color-text-faint)]">Source: {mm.source ?? 'Market Matrix'} · {mm.staleness}</div>
     </div>
+  );
+}
+
+const ownerNumber = (value: number | null | undefined, digits = 0) => value == null ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: digits });
+const ownerPct = (value: number | null | undefined) => value == null ? '—' : `${ownerNumber(value, 2)}%`;
+
+function MarketResearchStrip({ analysis }: { analysis?: OwnerAnalysisView | null }) {
+  const market = analysis?.market;
+  if (!market) return null;
+  const rows = [market.county, market.zip].filter((row): row is OwnerMarketRowView => !!row);
+  return (
+    <Section title="Market Research">
+      <div class="flex items-center gap-2 flex-wrap mb-2">
+        <span class="text-[12px] font-semibold text-[var(--color-text)]">{market.bandLabel}</span>
+        <span class="text-[10px] text-[var(--color-text-faint)]">Sold Land · trailing 12 months{market.period ? ` · ${market.period}` : ''}</span>
+      </div>
+      {rows.length ? (
+        <div class="overflow-x-auto rounded-md border border-[var(--color-border)]">
+          <table class="w-full min-w-[1080px] text-[11px]">
+            <thead class="bg-[var(--color-bg)] text-[var(--color-text-faint)]">
+              <tr>{['Area', 'Count', 'DOM', 'STR', 'Absorption', 'Months Supply', 'Population', 'Density', 'Growth', 'Median Price', 'Price/Acre'].map((label) => <th key={label} class="px-2 py-1.5 text-left font-medium whitespace-nowrap">{label}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const m = row.metrics;
+                return (
+                  <tr key={row.level} class="border-t border-[var(--color-border)] text-[var(--color-text)]">
+                    <td class="px-2 py-1.5 font-medium whitespace-nowrap">{row.area}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerNumber(m.salesCount)}</td>
+                    <td class="px-2 py-1.5 tabular-nums whitespace-nowrap">{ownerNumber(m.daysOnMarket)} days</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerPct(m.sellThroughRate)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerPct(m.absorptionRate)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerNumber(m.monthsOfSupply, 2)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerNumber(m.population)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerNumber(m.populationDensity, 2)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{ownerPct(m.populationGrowth)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{usd(m.medianPrice)}</td>
+                    <td class="px-2 py-1.5 tabular-nums">{usd(m.medianPricePerAcre)}</td>
+                  </tr>
+                );
+              })}
+              {!market.county && <tr class="border-t border-[var(--color-border)]"><td class="px-2 py-1.5 text-[var(--color-text-faint)]" colSpan={11}>County row unavailable — no substitute used.</td></tr>}
+              {!market.zip && <tr class="border-t border-[var(--color-border)]"><td class="px-2 py-1.5 text-[var(--color-text-faint)]" colSpan={11}>ZIP row unavailable — no county substitute used.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ) : <Placeholder text={`No ${market.bandLabel} Sold Land snapshot is available for the county or ZIP.`} />}
+      {market.pulse.length > 0 && (
+        <div class="mt-2.5 rounded-md bg-[var(--color-bg)] border border-[var(--color-border)] p-2.5">
+          <div class="text-[11px] font-semibold text-[var(--color-text)] mb-1">Market Pulse</div>
+          <div class="space-y-1">{market.pulse.map((line, i) => <p key={i} class="text-[11px] leading-relaxed text-[var(--color-text-muted)]">{line}</p>)}</div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function PropertyGradesPanel({ analysis }: { analysis?: OwnerAnalysisView | null }) {
+  if (!analysis) return null;
+  return (
+    <Section title="Property grades">
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
+        {analysis.grades.map((grade) => (
+          <div key={grade.name} class="rounded-md border border-[var(--color-border)] p-2.5">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] font-semibold text-[var(--color-text)]">{grade.name}</span>
+              <span class={`text-[18px] leading-none font-bold ${grade.grade === 'Pending' ? 'text-[var(--color-text-faint)] text-[12px]' : 'text-[var(--color-accent)]'}`}>{grade.grade}</span>
+            </div>
+            <div class="text-[10.5px] leading-relaxed text-[var(--color-text-muted)] mt-1.5">{grade.explanation}</div>
+            {grade.sourceNote && <div class="text-[9.5px] text-[var(--color-text-faint)] mt-1">{grade.sourceNote}</div>}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function SoldCompValuationPanel({ analysis }: { analysis?: OwnerAnalysisView | null }) {
+  const valuation = analysis?.valuation;
+  if (!valuation) return null;
+  return (
+    <Section title="LandPortal comp valuation">
+      {!valuation.available ? (
+        <div class="rounded-md border border-dashed border-[var(--color-border)] p-3 text-[11.5px] text-[var(--color-text-muted)]">{valuation.note}</div>
+      ) : (
+        <div class="space-y-2.5">
+          <div class="space-y-1">
+            {valuation.comps.map((comp, i) => (
+              <div key={`${comp.address}-${i}`} class="grid grid-cols-[1fr_auto] gap-3 rounded-md border border-[var(--color-border)] p-2 text-[11px]">
+                <div class="min-w-0">
+                  <div class="font-medium text-[var(--color-text)] truncate">{comp.address}</div>
+                  <div class="text-[var(--color-text-faint)]">{comp.statusLabel ?? 'LandPortal comp'}{comp.saleDate ? ` ${comp.saleDate}` : ''} · {comp.distanceMiles == null ? 'distance unavailable' : `${ownerNumber(comp.distanceMiles, 1)} mi`} · {comp.source}{comp.sourceUrl ? <> · <a href={comp.sourceUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">source</a></> : null}</div>
+                  {comp.why && <div class="text-[9.5px] text-[var(--color-text-faint)] mt-0.5">Why selected: {comp.why}</div>}
+                </div>
+                <div class="text-right tabular-nums text-[var(--color-text)] whitespace-nowrap">{usd(comp.salePrice)} ÷ {ownerNumber(comp.acres, 2)} ac = <span class="font-semibold">{usd(comp.pricePerAcre)}/ac</span></div>
+              </div>
+            ))}
+          </div>
+          <div class="rounded-md bg-[var(--color-bg)] border border-[var(--color-border)] p-3 space-y-1 text-[12px]">
+            <div>Average LandPortal comp price per acre ({valuation.comps.length} closest usable comp{valuation.comps.length === 1 ? '' : 's'}): <span class="font-semibold">{usd(valuation.averagePricePerAcre)}/ac</span></div>
+            <div>{usd(valuation.averagePricePerAcre)}/ac × {ownerNumber(valuation.subjectAcres, 2)} subject acres = <span class="font-semibold">{usd(valuation.roughFairMarketValue)} fair market value</span></div>
+            <div>Rough offer range (40%–60% of FMV): <span class="font-semibold text-[var(--color-status-done)]">{usd(valuation.acquisitionBand?.low)}–{usd(valuation.acquisitionBand?.high)}</span></div>
+          </div>
+          <div class="text-[10px] text-[var(--color-text-faint)]">{valuation.note}</div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function OwnerStrategiesPanel({ analysis }: { analysis?: OwnerAnalysisView | null }) {
+  if (!analysis) return null;
+  return (
+    <Section title="Five strategy evaluations">
+      <div class="space-y-2">
+        {analysis.strategies.map((row, i) => (
+          <div key={row.strategy} class="rounded-md border border-[var(--color-border)] p-3">
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] text-[var(--color-text-faint)] tabular-nums">{i + 1}</span>
+              <span class="text-[12.5px] font-semibold text-[var(--color-text)]">{row.strategy}</span>
+              <span class={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full border ${row.suitability === 'Strong fit' ? 'text-[var(--color-status-done)] border-[var(--color-status-done)]' : row.suitability === 'Weak fit' ? 'text-[var(--color-status-failed)] border-[var(--color-status-failed)]' : 'text-[var(--color-accent)] border-[var(--color-accent)]'}`}>{row.suitability}</span>
+            </div>
+            <div class="text-[11.5px] leading-relaxed text-[var(--color-text-muted)] mt-1">{row.why}</div>
+            <div class="text-[10.5px] leading-relaxed text-[var(--color-text-faint)] mt-1"><span class="font-medium">Main risk / confirm:</span> {row.mainRisk}</div>
+          </div>
+        ))}
+      </div>
+      <div class="mt-2.5 rounded-md border border-[var(--color-accent)]/40 bg-[var(--color-bg)] p-3 text-[11.5px] leading-relaxed text-[var(--color-text)]"><span class="font-semibold">Recommendation:</span> {analysis.recommendation}</div>
+    </Section>
   );
 }
 
@@ -1164,33 +1392,24 @@ function PostDiscoveryPanel({ dealId, onChange }: { dealId: number; onChange: ()
 // Full DD fact checklist — mirrors the Discovery Call Report. Every standard
 // field shows a Verified value (+source) or an explicit Unknown / Needs
 // Verification status. Read-only; never fabricated.
-function DdFactChecklist({ rows, completeness }: { rows?: DdChecklistRowView[]; completeness?: ReportView['ddCompleteness'] }) {
+function DdFactChecklist({ rows }: { rows?: DdChecklistRowView[] }) {
   if (!rows || rows.length === 0) return null;
-  const pct = completeness?.percentComplete ?? 0;
   return (
     <div>
-      <div class="flex items-center justify-between mb-1">
+      <div class="mb-1">
         <span class="text-[11px] text-[var(--color-text-muted)]">Due Diligence fact checklist</span>
-        {completeness && (
-          <span class="text-[11px] text-[var(--color-text-faint)] tabular-nums">{completeness.label}</span>
-        )}
       </div>
-      {completeness && (
-        <div class="h-1.5 w-full rounded-full bg-[var(--color-elevated)] overflow-hidden mb-2">
-          <div class="h-full bg-[var(--color-status-done)]" style={{ width: `${pct}%` }} />
-        </div>
-      )}
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] divide-y divide-[var(--color-border)]">
         {rows.map((r) => (
           <div key={r.key} class="flex items-center gap-2 px-3 py-1.5 text-[12px]">
             <span class="flex-1">{r.label}</span>
             {r.status === 'verified' ? (
               <span class="text-[var(--color-text)]">
-                {r.value} <span class="text-[10px] text-[var(--color-status-done)]">Verified{r.source ? ` · ${r.source}` : ''}</span>
+                {r.value} {r.source && <span class="text-[10px] text-[var(--color-text-faint)]">· {r.source}</span>}
               </span>
             ) : (
               <span class="text-[10px] px-1.5 py-0.5 rounded-full border text-[var(--color-text-faint)] border-[var(--color-border)]">
-                Unknown / Needs Verification{r.noConnectedSource ? ' (no source)' : ''}
+                Unknown
               </span>
             )}
           </div>
@@ -1210,6 +1429,7 @@ interface VisualAssetView {
   apiService: string;
   verificationStatus: string;
   note: string;
+  association?: { distanceToParcelM?: number | null } | null;
 }
 interface VisualContextView {
   provider: string;
@@ -1234,7 +1454,7 @@ function isStreetView(a: VisualAssetView): boolean { return /street/i.test(`${a.
 
 function VisualContextSection({ ctx, token }: { ctx?: VisualContextView; token: string }) {
   if (!ctx) return null;
-  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+  const withToken = (u: string) => appendDashboardToken(u, token);
   const captured = ctx.assets.filter((a) => a.status === 'captured' && a.imageUrl);
   const sat = captured.find(isSatellite);
   const street = captured.find(isStreetView);
@@ -1278,7 +1498,7 @@ function VisualContextSection({ ctx, token }: { ctx?: VisualContextView; token: 
         {street ? (
           <figure class="m-0">
             <img src={withToken(street.imageUrl as string)} alt="street view" class="w-full h-40 sm:h-44 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
-            <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">Street View · nearby context for the verified parcel location</figcaption>
+            <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">Street View · nearest road imagery{typeof street.association?.distanceToParcelM === 'number' ? `, ${Math.round(street.association.distanceToParcelM)} m from the verified parcel point` : ''} · context only, not proof of frontage or access</figcaption>
           </figure>
         ) : streetUnavailable ? (
           <div class="text-[11px] text-[var(--color-text-muted)] rounded-lg border border-dashed border-[var(--color-border)] p-3 flex items-center">Street View unavailable — no imagery within the allowed context distance of the verified parcel location.</div>
@@ -1305,11 +1525,9 @@ function VisualContextSection({ ctx, token }: { ctx?: VisualContextView; token: 
 }
 
 // ── Visual Intelligence — operator-grade multi-source visual workflow ────────
-// Renders the source status panel (Google Earth, Google Earth 3D, Street View,
-// LandPortal, LandPortal 3D, County GIS + static-map fallback: captured /
-// unavailable / blocked with the exact reason), the captured-visual gallery with
-// source labels, the selected hero, and the visual observations. Reuses the same
-// record the backend persists; static map is fallback only, never fabricated.
+// The full Visuals tab already owns the verified parcel and Google imagery.
+// This component adds only concise visual observations there, while the compact
+// form supplies a parcel-scoped hero for multi-parcel roster entries.
 interface ViSubject { address?: string | null; lat?: number | null; lng?: number | null }
 interface ViAsset {
   source: string; label: string; state: 'captured' | 'unavailable' | 'blocked';
@@ -1321,12 +1539,6 @@ interface ViRecord {
   cardId: number; generatedAt: string; subject: ViSubject;
   sources: ViAsset[]; gallery: ViAsset[]; hero: ViAsset | null; heroReason: string;
   observations: ViObservation[]; observationSummary: string; note: string;
-}
-
-function viStateBadge(state: ViAsset['state']): { text: string; cls: string } {
-  if (state === 'captured') return { text: 'captured', cls: 'text-emerald-600 border-emerald-500/40' };
-  if (state === 'unavailable') return { text: 'unavailable', cls: 'text-amber-600 border-amber-500/40' };
-  return { text: 'blocked', cls: 'text-rose-600 border-rose-500/40' };
 }
 
 function VisualIntelligencePanel({ cardId, token, compact }: { cardId: number; token: string; compact?: boolean }) {
@@ -1374,64 +1586,30 @@ function VisualIntelligencePanel({ cardId, token, compact }: { cardId: number; t
     );
   }
 
-  // Full (Property → Visuals): status panel + gallery + observations.
+  // Full Visuals view: the verified parcel gallery and Google imagery already
+  // render immediately above this panel. Keep this section focused on the
+  // operator-facing interpretation instead of duplicating images or exposing
+  // provider/session diagnostics.
   return (
     <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-3">
       <div class="flex items-center justify-between gap-2 flex-wrap">
-        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Visual Intelligence</span>
-        <button type="button" onClick={() => void run()} disabled={busy} class="px-2 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">{busy ? 'Running all sources…' : rec ? 'Re-run capture' : 'Run visual capture'}</button>
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Visual observations</span>
+        <button type="button" onClick={() => void run()} disabled={busy} class="px-2 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40">{busy ? 'Refreshing…' : 'Refresh observations'}</button>
       </div>
-
-      {!rec && <div class="text-[11px] text-[var(--color-text-muted)]">Not run yet. Click "Run visual capture" to attempt Google Earth, Google Earth 3D, Street View, LandPortal, LandPortal 3D, and County GIS. Static map is used only as a last-resort fallback.</div>}
-
-      {/* Source status panel */}
-      {rec && (
-        <div class="space-y-1">
-          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Source status</div>
-          {rec.sources.map((s) => {
-            const b = viStateBadge(s.state);
-            return (
-              <div class="flex items-start justify-between gap-2 border-b border-[var(--color-border)]/60 py-1">
-                <div class="min-w-0">
-                  <div class="text-[12px] text-[var(--color-text)]">{s.label}{s.fallback ? ' · fallback' : ''}{hero && hero.source === s.source ? ' · hero' : ''}</div>
-                  {s.state !== 'captured' && s.blocker && <div class="text-[10px] text-[var(--color-text-faint)]">{s.blocker}</div>}
-                </div>
-                <span class={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${b.cls}`}>{b.text}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Gallery */}
-      {rec && rec.gallery.length > 0 && (
-        <div class="space-y-1">
-          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Captured visuals ({rec.gallery.length})</div>
-          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {rec.gallery.filter((a) => a.imageRoute).map((a) => (
-              <figure class="m-0">
-                <img src={withToken(a.imageRoute as string)} alt={a.label} class="w-full h-28 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
-                <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5 truncate">{a.label}{hero && hero.source === a.source ? ' · hero' : ''}</figcaption>
-              </figure>
-            ))}
-          </div>
-          <div class="text-[10px] text-[var(--color-text-faint)]">{rec.heroReason} Supporting context / visual signals only — never parcel identity.</div>
-        </div>
-      )}
-
-      {/* Observations */}
+      <div class="text-[11px] text-[var(--color-text-muted)]">
+        Verified parcel imagery and Google road context are shown above. Imagery supports screening only; it does not prove frontage, access, utilities, or buildability.
+      </div>
+      {!rec && <div class="text-[11px] text-[var(--color-text-muted)]">No visual observations have been saved yet.</div>}
       {rec && rec.observations.length > 0 && (
         <div class="space-y-1">
-          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Visual observations</div>
           {rec.observations.map((o) => (
             <div class="text-[12px] text-[var(--color-text-muted)]">
               <span class="text-[var(--color-text)]">{o.category.replace(/_/g, ' ')}:</span> {o.observation}
-              <span class="text-[10px] text-[var(--color-text-faint)]"> [{o.signal} · {o.confidence} · {o.sourceImage}]</span>
             </div>
           ))}
-          {rec.observationSummary && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{rec.observationSummary}</div>}
         </div>
       )}
+      {rec && rec.observations.length === 0 && <div class="text-[11px] text-[var(--color-text-muted)]">No reliable visual observations were extracted from the saved imagery.</div>}
 
       {msg && <div class="text-[11px] text-rose-600">{msg}</div>}
     </div>
@@ -1453,7 +1631,7 @@ const ACTIVITY_KIND_LABEL: Record<string, string> = {
   duke_verified_run: 'Property Intelligence (verified)', duke_unverified_run: 'Property Intelligence (unresolved)',
 };
 function activityKindLabel(kind: string): string {
-  return ACTIVITY_KIND_LABEL[kind] ?? kind.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+  return ACTIVITY_KIND_LABEL[kind] ?? 'Activity';
 }
 function ActivityTimeline({ dealId }: { dealId: number }) {
   const [events, setEvents] = useState<ActivityEventView[] | null>(null);
@@ -1467,15 +1645,16 @@ function ActivityTimeline({ dealId }: { dealId: number }) {
   }, [dealId]);
   if (msg) return <div class="text-[11px] text-[var(--color-status-failed)]">{msg}</div>;
   if (!events) return <Placeholder text="Loading activity…" />;
-  if (events.length === 0) return <Placeholder text="No activity recorded yet. Running Property Intelligence, Visual Intelligence, or comp research will record events here." />;
+  const visibleEvents = events.filter((event) => !/(orchestrat|provider|contract|evidence|readiness|classified|attempt)/i.test(`${event.kind} ${event.summary}`));
+  if (visibleEvents.length === 0) return <Placeholder text="No owner-facing activity recorded yet." />;
   return (
     <ol class="space-y-1.5 m-0 p-0 list-none">
-      {events.map((e) => (
+      {visibleEvents.map((e) => (
         <li key={e.id} class="flex items-start gap-2 border-b border-[var(--color-border)]/60 pb-1.5">
           <span class="shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">{activityKindLabel(e.kind)}</span>
           <div class="min-w-0 flex-1">
             <div class="text-[12px] text-[var(--color-text)] break-words">{e.summary || activityKindLabel(e.kind)}</div>
-            <div class="text-[10px] text-[var(--color-text-faint)]">{formatRelativeTime(e.createdAt)}{e.agentId ? ` · ${e.agentId}` : ''}</div>
+            <div class="text-[10px] text-[var(--color-text-faint)]">{formatRelativeTime(e.createdAt)}</div>
           </div>
         </li>
       ))}
@@ -1549,7 +1728,6 @@ function AtAGlanceStrip({ report, propertyType }: { report: ReportView; property
     { label: 'Wetlands', value: wetTxt },
     { label: 'Slope', value: slopeTxt },
     { label: 'Improvement', value: improved },
-    { label: 'DD complete', value: report.ddCompleteness ? `${report.ddCompleteness.percentComplete}%` : '—' },
   ];
   return (
     <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-elevated)] p-3">
@@ -1630,7 +1808,6 @@ function LandScoreSection({ ls, parcelVerified }: { ls?: LandScoreView | null; p
             <span class={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${landScoreVerdictClass(ls.verdict, dataLimited)}`}>
               {dataLimited ? 'Data-limited' : ls.verdict}
             </span>
-            <span class="text-[10px] text-[var(--color-text-faint)]">confidence: {ls.confidence.replace(/_/g, ' ')}</span>
           </div>
           {dataLimited && (
             <div class="mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-1.5 text-[11px] text-[var(--color-text-muted)]">
@@ -1661,37 +1838,48 @@ function LandScoreSection({ ls, parcelVerified }: { ls?: LandScoreView | null; p
             })}
           </div>
           {ls.flags.length > 0 && <DdList title="Score flags" items={ls.flags} empty="No flags" />}
-          <div class="text-[10px] text-[var(--color-text-faint)] mt-2">{ls.note}</div>
         </div>
       )}
     </Section>
   );
 }
 
-function MarketPulseSection({ mp, mc, validatedSoldCount }: { mp?: MarketPulseView | null; mc?: MarketCompsView | null; validatedSoldCount?: number | null }) {
+function MarketPulseSection({ mp, mc, registry }: { mp?: MarketPulseView | null; mc?: MarketCompsView | null; registry?: CompRegistryView | null }) {
   if (!mp) return null;
   const usd = (n: number | null) => (n == null ? '—' : `$${Math.round(n).toLocaleString()}`);
   // One-point honesty: a single validated closed sale is never a median, band,
   // sell-through, or demand read. Statistics render only from ≥3 closed sales.
-  const soldBasis = validatedSoldCount ?? (mc?.soldCount ?? 0);
+  const soldBasis = registry?.counts.validatedSold ?? (mc?.soldCount ?? 0);
   const statsSupported = soldBasis >= 3;
   // A softening/mixed read is caution, not failure — amber, never alarm-red.
   const dirTone = mp.direction === 'strengthening' ? 'text-[var(--color-status-done)]' : mp.direction === 'softening' ? 'text-amber-600 dark:text-amber-400' : 'text-[var(--color-text)]';
 
   // Derive period + named sources + active-retrieval status from existing comp
   // data (no new providers). "Active" is only a real count when retrieval ran.
-  const soldRows = mc?.sold ?? [];
+  const canonicalRows = (rows: CompRegistryView['validatedSold']): MarketCompRowView[] => rows.map((row) => ({
+    price: row.primary.price ?? 0,
+    saleDateIso: row.primary.dateIso ?? '',
+    acres: row.acresDisplay ?? row.acres,
+    pricePerAcre: row.primary.pricePerAcre,
+    sourceUrl: row.transactions.flatMap((transaction) => transaction.sourceUrls).find(Boolean) ?? '',
+    sourceLabel: row.providers.join(', '),
+    addressDesc: row.address ?? undefined,
+  }));
+  const soldRows = registry ? canonicalRows(registry.validatedSold) : (mc?.sold ?? []);
   const soldDates = soldRows.map((r) => r.saleDateIso).filter(Boolean).sort() as string[];
   const period = soldDates.length ? `${soldDates[0]} → ${soldDates[soldDates.length - 1]}` : 'no dated sold comps';
   const uniq = (xs: Array<string | undefined>) => Array.from(new Set(xs.filter(Boolean) as string[]));
   const soldSrc = uniq(soldRows.map((r) => r.sourceLabel)).join(', ') || (mc?.providerChain?.find((c) => /realie|homeharvest/i.test(c)) ?? 'none');
-  const activeSrc = uniq((mc?.active ?? []).map((r) => r.sourceLabel)).join(', ') || (mc?.providerChain?.find((c) => /apify|zillow|realtor/i.test(c)) ?? 'Zillow/Apify');
+  const activeRows = registry ? canonicalRows(registry.validatedActive) : (mc?.active ?? []);
+  const activeSrc = uniq(activeRows.map((r) => r.sourceLabel)).join(', ') || (mc?.providerChain?.find((c) => /apify|zillow|realtor/i.test(c)) ?? 'none');
   const activeState = mc ? activeRetrievalState(mc) : 'not_run';
-  const activeStatusTxt = activeState === 'ran' ? `ran (${mp.activeCount} found)` : activeState === 'not_run' ? 'not run yet' : 'incomplete (provider error/timeout)';
+  const activeBasis = registry?.counts.validatedActive ?? mp.activeCount;
+  const activeStatusTxt = registry
+    ? `${activeBasis} validated active listing${activeBasis === 1 ? '' : 's'}`
+    : activeState === 'ran' ? `ran (${activeBasis} found)` : activeState === 'not_run' ? 'not run yet' : 'incomplete (provider error/timeout)';
 
   // Land $/ac by acreage band + active land asking prices (from existing comps).
   const bands = ppaByAcreageBand(soldRows);
-  const activeRows = mc?.active ?? [];
   const activeAsks = activeRows.map((r) => r.price).filter((p): p is number => p != null);
   const askLo = activeAsks.length ? Math.min(...activeAsks) : null;
   const askMed = median(activeAsks);
@@ -1828,9 +2016,10 @@ interface PropertyCardLite {
   id: number;
   active_input_address?: string | null;
   apn?: string | null;
+  city?: string | null;
   county?: string | null;
   state?: string | null;
-  active_input_address?: string | null;
+  owner?: string | null;
   acres?: number | null;
   zoning?: string | null;
   verification_status?: string | null;
@@ -2396,7 +2585,7 @@ function PublicRecordsResearchSection({ dealId }: { dealId: number }) {
 // deeper, editable detail (property DD + visuals + browser intelligence live
 // under Property; report generation + files under Documents; the report/audit
 // timeline under Activity).
-type DealTab = 'overview' | 'property' | 'diligence' | 'market' | 'strategy' | 'visuals' | 'seller' | 'documents' | 'activity';
+type DealTab = 'overview' | 'property' | 'diligence' | 'market' | 'strategy' | 'visuals' | 'seller' | 'resources' | 'documents' | 'activity';
 const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'property', label: 'Property' },
@@ -2405,6 +2594,7 @@ const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
   { id: 'strategy', label: 'Strategy' },
   { id: 'visuals', label: 'Visuals' },
   { id: 'seller', label: 'Seller' },
+  { id: 'resources', label: 'Resources' },
   { id: 'documents', label: 'Documents' },
   { id: 'activity', label: 'Activity' },
 ];
@@ -2512,6 +2702,7 @@ function DealIdentityGrid({ report, deal, prop, seller }: {
   const apn = factOf(report, 'apn', 'parcelId').value ?? prop?.apn ?? null;
   const county = factOf(report, 'county').value ?? prop?.county ?? null;
   const state = factOf(report, 'state').value ?? prop?.state ?? null;
+  const ownerOfRecord = factOf(report, 'owner').value ?? report?.landportalInspection?.factSheet?.owner ?? prop?.owner ?? null;
   const city = cityFromSitus(situs);
   const acres = report?.reconciliation?.acreage?.primary
     ?? factOf(report, 'acres').value
@@ -2520,6 +2711,7 @@ function DealIdentityGrid({ report, deal, prop, seller }: {
   return (
     <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1.5">
       <HeaderField label="Seller / Lead" value={seller?.name ?? undefined} />
+      <HeaderField label="Owner of record" value={ownerOfRecord} />
       <HeaderField label="Address" value={situs} />
       <HeaderField label="City" value={city} />
       <HeaderField label="County" value={county} />
@@ -2541,8 +2733,7 @@ function HeroVisual({ report, prop, discoveryReport, token }: {
   const ctx = report?.visualContext;
   const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
   // 1. LandPortal parcel imagery (APN-page association) — the preferred hero.
-  const lpAssets = (report?.landportalInspection?.assets ?? []).filter((a) => a.kind !== 'google' && a.url);
-  const lpHero = lpAssets.find((a) => /parcel_page|parcel_3d/i.test(a.kind)) ?? lpAssets.find((a) => !/overlay|comparables/i.test(a.kind));
+  const lpHero = preferredLandPortalHero(report);
   // 2/3. Eligible (association-proven) Google captures — the backend already
   //     excluded anything without verified-parcel-coordinate proof.
   const captured = (ctx?.assets ?? []).filter((a) => a.status === 'captured' && a.imageUrl);
@@ -2578,25 +2769,31 @@ function HeroVisual({ report, prop, discoveryReport, token }: {
   );
 }
 
+function appendDashboardToken(url: string, token: string): string {
+  if (!url.startsWith('/api/')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
+
+function preferredLandPortalHero(report: ReportView | null): NonNullable<NonNullable<ReportView['landportalInspection']>['assets']>[number] | null {
+  const assets = (report?.landportalInspection?.assets ?? []).filter((asset) => asset.kind !== 'google' && asset.url);
+  return assets.find((asset) => /parcel_page/i.test(asset.kind))
+    ?? assets.find((asset) => /parcel_3d/i.test(asset.kind))
+    ?? assets.find((asset) => !/overlay|comparables/i.test(asset.kind))
+    ?? null;
+}
+
 // Executive property summary — synthesized narrative, normal operator language.
 // Uses the backend executive summary when present; honest prompt otherwise.
 function OverviewSummary({ es, report }: { es: ExecSummaryView | null; report: ReportView | null }) {
   if (es) {
-    const tone = es.confidence === 'high' ? 'text-[var(--color-status-done)]' : es.confidence === 'low' ? 'text-[var(--color-text-faint)]' : 'text-[var(--color-accent)]';
     return (
       <div class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-1.5">
-        <div class="flex items-center gap-2">
+        <div>
           <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">Executive Summary</span>
-          <span class={`ml-auto text-[10px] px-2 py-0.5 rounded-full border border-[var(--color-border)] ${tone}`}>confidence: {es.confidence}</span>
         </div>
         <div class="text-[14px] font-semibold text-[var(--color-text)]">{es.headline}</div>
         {es.whatItIs && <div class="text-[12.5px] text-[var(--color-text-muted)]">{es.whatItIs}</div>}
         {es.whyInteresting && <div class="text-[12.5px] text-[var(--color-text-muted)]">{es.whyInteresting}</div>}
-        {es.readiness && (
-          <div class="text-[12px] text-[var(--color-text-muted)] border-t border-[var(--color-border)] pt-1.5" title={`${es.readiness.value.why} ${es.readiness.offer.why} ${es.readiness.strategyActionability.why}`}>
-            {es.readiness.summaryLine}
-          </div>
-        )}
       </div>
     );
   }
@@ -2632,9 +2829,13 @@ function KeyFactsGrid({ report }: { report: ReportView | null }) {
     { label: 'State', keyOrValue: factOf(report, 'state') },
     { label: 'Land use', keyOrValue: factOf(report, 'landUse') },
     { label: 'Zoning', keyOrValue: factOf(report, 'zoning') },
+    { label: 'Utilities', keyOrValue: factOf(report, 'utility_summary') },
     { label: 'Road frontage', keyOrValue: reconciledFact(report, 'roadFrontage', factOf(report, 'roadFrontageFt')) },
     { label: 'Access', keyOrValue: factOf(report, 'landLocked') },
     { label: 'Buildability', keyOrValue: factOf(report, 'buildabilityPct') },
+    { label: 'Assessed value', keyOrValue: factOf(report, 'officialAssessedValue', 'assessedValue') },
+    { label: 'Market value', keyOrValue: factOf(report, 'officialMarketValue', 'marketValue') },
+    { label: 'Last recorded sale', keyOrValue: factOf(report, 'officialSaleInfo', 'lastSale') },
     { label: 'Flood', keyOrValue: reconciledFact(report, 'flood', { value: floodText(g), source: g?.flood?.status === 'verified' ? 'FEMA' : null }) },
     { label: 'Wetlands', keyOrValue: reconciledFact(report, 'wetlands', { value: wetlandsText(g), source: g?.wetlands?.status === 'verified' ? 'USFWS' : null }) },
     { label: 'Slope', keyOrValue: reconciledFact(report, 'slope', { value: slopeText(g), source: g?.slope?.status === 'verified' ? 'USGS' : null }) },
@@ -2736,6 +2937,7 @@ function KeyRisksUnknowns({ report, es }: { report: ReportView | null; es: ExecS
 // Neighbor sale is NOT an acquisition strategy and is excluded.
 function StrategySnapshot({ dcr, es }: { dcr: DiscoveryReportView | null; es: ExecSummaryView | null }) {
   const excl = /neighbor/i;
+  const ownerStrategyName = (name: string) => name === 'Cash Flip' ? 'Quick Flip' : name === 'Novation / Double Close' ? 'Novation or Double Close' : name === 'Subdivide' ? 'Subdivide or Minor Split' : name;
   // A lane held up by INCOMPLETE RESEARCH is "blocked", never "not viable" —
   // not-viable is reserved for a real disqualifier proven by evidence.
   const honest = (suitability: string, reason: string) =>
@@ -2755,7 +2957,7 @@ function StrategySnapshot({ dcr, es }: { dcr: DiscoveryReportView | null; es: Ex
         {rows.map((r, i) => (
           <div key={i} class="rounded-md border border-[var(--color-border)] p-2">
             <div class="flex items-center gap-2 flex-wrap">
-              <span class="text-[12.5px] font-medium text-[var(--color-text)]">{r.strategy}</span>
+              <span class="text-[12.5px] font-medium text-[var(--color-text)]">{ownerStrategyName(r.strategy)}</span>
               <span class={`text-[10px] px-1.5 py-0.5 rounded-full border ${verdictTone(r.suitability)}`}>{r.suitability}</span>
               {strongest && strongest === r.strategy && <span class="text-[10px] text-[var(--color-status-done)]">strongest</span>}
             </div>
@@ -2770,8 +2972,17 @@ function StrategySnapshot({ dcr, es }: { dcr: DiscoveryReportView | null; es: Ex
 }
 
 // Seller / discovery snapshot — helps talk to the seller. Full detail on Seller.
+function ownerFacingSellerNote(raw: string | null | undefined): string {
+  const note = (raw || '').trim();
+  if (!note) return '';
+  const structuredParcelIntake = /\bowner name\b/i.test(note)
+    && /\bparcel (?:id|address)\b/i.test(note)
+    && /\bacres?\b/i.test(note);
+  return structuredParcelIntake ? '' : note;
+}
+
 function SellerSnapshot({ deal, seller, es }: { deal: DealCardDetail; seller?: PersonLite; es: ExecSummaryView | null }) {
-  const notes = (deal.seller_notes || '').trim();
+  const notes = ownerFacingSellerNote(deal.seller_notes);
   const questions = es?.sellerQuestions ?? [];
   const hasAny = !!seller?.name || deal.asking_price != null || notes || questions.length > 0;
   return (
@@ -2815,10 +3026,8 @@ function usdShort(n: number | null | undefined): string {
  *  operator never has to hunt for a hidden contradiction. */
 function ContradictionBanner({ report, record }: { report?: ReportView | null; record?: OperatorRecordView | null }) {
   const rec = report?.reconciliation;
-  const val = report?.valuation;
   const items: string[] = [];
   if (rec?.conflicts?.length) items.push(...rec.conflicts);
-  if (val?.conflict && val.conflictNote) items.push(val.conflictNote);
   // The access question belongs in the main conflict banner: proximity is
   // mapped but contact is unproven, and intervening land may exist.
   if (record?.accessStatus?.status === 'public_road_proximity') {
@@ -2897,9 +3106,6 @@ function ValuationPanel({ val }: { val?: ValuationHierarchyView }) {
         <div class="text-[11px] text-[var(--color-text-muted)]">Basis: {p.label}. {p.note}</div>
         {val.valueRange && <div class="text-[11px] text-[var(--color-text-muted)]">Range (this basis): {usdShort(val.valueRange.low)} – {usdShort(val.valueRange.high)}</div>}
       </div>
-      {val.conflict && val.conflictNote && (
-        <div class="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-600 dark:text-amber-400">{val.conflictNote}</div>
-      )}
       {val.supporting.length > 0 && (
         <div>
           <div class="text-[10px] text-[var(--color-text-faint)] mb-0.5">Supporting values (not the underwriting basis)</div>
@@ -3224,22 +3430,106 @@ function MarketScanSection({ dealId }: { dealId: number }) {
 }
 
 // ── LandPortal imagery + observations (Property tab) ─────────────────────────
+function RetainedLandPortalPanel({ inspection, token, ownerName }: { inspection?: ReportView['landportalInspection']; token: string; ownerName?: string | null }) {
+  if (!inspection) return null;
+  const withToken = (url: string) => url.startsWith('/api/')
+    ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+    : url;
+  const assets = (Array.isArray(inspection.assets) ? inspection.assets : [])
+    .filter((asset) => asset?.kind !== 'google' && typeof asset?.url === 'string' && asset.url.length > 0);
+  const facts = inspection.factSheet;
+  const rows: Array<[string, unknown]> = [
+    ['Parcel ID', facts?.apn],
+    ['Owner of record', ownerName ?? facts?.owner],
+    ['Acres', facts?.acres],
+    ['Road frontage', facts?.access?.roadFrontageFt == null ? null : `${facts.access.roadFrontageFt} ft`],
+    ['Buildable area', facts?.buildability?.acres == null ? null : /\bac\b/i.test(String(facts.buildability.acres)) ? String(facts.buildability.acres) : `${facts.buildability.acres} ac`],
+    ['Wetlands', facts?.environment?.wetlandsPct],
+    ['Flood zone', facts?.environment?.floodZone],
+    ['Average slope', facts?.environment?.slope],
+    ['Last sale price', facts?.valuation?.lastSalePrice],
+    ['Last sale date', facts?.valuation?.lastSaleDate],
+    ['Assessed value', facts?.valuation?.assessedValue],
+    ['Market value', facts?.valuation?.totalMarketValue],
+  ].filter(([, value]) => value !== null && value !== undefined && value !== '');
+  return (
+    <Section title="LandPortal property facts & visuals">
+      {inspection.parcelUrl && /landportal/i.test(inspection.parcelUrl) && (
+        <a href={inspection.parcelUrl} target="_blank" rel="noreferrer" class="text-[11px] text-[var(--color-accent)] underline">Open LandPortal parcel page</a>
+      )}
+      {rows.length > 0 && (
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-2" data-testid="landportal-fact-sheet">
+          {rows.map(([label, value]) => (
+            <div key={label} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2">
+              <div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">{label}</div>
+              <div class="text-[12px] font-medium text-[var(--color-text)] mt-0.5">{String(value)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {assets.length > 0 ? (
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-testid="landportal-visual-gallery">
+          {assets.map((asset, index) => {
+            const label = String(asset.label || asset.kind || `Parcel visual ${index + 1}`);
+            const url = withToken(asset.url);
+            return (
+              <figure key={`${asset.key || asset.kind || 'visual'}-${index}`} class="m-0" data-visual-kind={asset.kind || 'parcel_visual'}>
+                <a href={url} target="_blank" rel="noreferrer" aria-label={`Open ${label}`}>
+                  <img src={url} alt={label} class="w-full h-44 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+                </a>
+                <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{label}</figcaption>
+              </figure>
+            );
+          })}
+        </div>
+      ) : <Placeholder text="No retained parcel visuals are available yet." />}
+    </Section>
+  );
+}
+
 function LandPortalImageryPanel({ inspection, token }: { inspection?: ReportView['landportalInspection']; token: string }) {
   if (!inspection) return null;
-  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : u);
   const shots = (inspection.assets ?? []).filter((a) => a.url);
-  if (!shots.length && !(inspection.visualObservations ?? []).length) return null;
+  const facts = inspection.factSheet;
+  if (!shots.length && !(inspection.visualObservations ?? []).length && !facts) return null;
+  const parcelUrlIsLandPortal = !!inspection.parcelUrl && /landportal/i.test(inspection.parcelUrl);
+  const factRows: Array<[string, string | number | null | undefined]> = facts ? [
+    ['Parcel ID', facts.apn],
+    ['Owner of record', facts.owner],
+    ['Acres', facts.acres],
+    ['Road frontage', facts.access?.roadFrontageFt == null ? null : `${facts.access.roadFrontageFt.toLocaleString()} ft${facts.access.roadName ? ` on ${facts.access.roadName}` : ''}`],
+    ['Buildable area', facts.buildability?.acres == null ? null : `${facts.buildability.acres.toFixed(2)} ac${facts.buildability.pct == null ? '' : ` (${facts.buildability.pct.toFixed(2)}%)`}`],
+    ['Wetlands', facts.environment?.wetlandsPct],
+    ['Flood zone', [facts.environment.floodZone, facts.environment.femaCoveragePct].filter(Boolean).join(' · ') || null],
+    ['Average slope', facts.environment?.slope],
+    ['Last sale', [facts.valuation.lastSalePrice, facts.valuation.lastSaleDate].filter(Boolean).join(' · ') || null],
+    ['Assessed value', facts.valuation?.assessedValue],
+    ['Market value', facts.valuation?.totalMarketValue],
+  ] : [];
   return (
-    <Section title="LandPortal imagery & observations">
+    <Section title="LandPortal property facts & visuals">
       {inspection.parcelUrl && (
-        <div class="text-[11px] mb-1"><a href={inspection.parcelUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Open LandPortal parcel page</a></div>
+        <div class="text-[11px] mb-1"><a href={inspection.parcelUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">{parcelUrlIsLandPortal ? 'Open LandPortal parcel page' : 'Open official parcel source'}</a></div>
+      )}
+      {facts && (
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3" data-testid="landportal-fact-sheet">
+          {factRows.filter(([, value]) => value !== null && value !== undefined && value !== '').map(([label, value]) => (
+            <div key={label} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2">
+              <div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">{label}</div>
+              <div class="text-[12px] font-medium text-[var(--color-text)] mt-0.5">{String(value)}</div>
+            </div>
+          ))}
+        </div>
       )}
       {shots.length > 0 && (
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-testid="landportal-visual-gallery">
           {shots.map((a) => (
-            <figure key={a.key} class="m-0">
-              <img src={withToken(a.url)} alt={a.label} class="w-full h-40 sm:h-44 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
-              <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{a.label}</figcaption>
+            <figure key={a.key} class="m-0" data-visual-kind={a.kind}>
+              <a href={withToken(a.url)} target="_blank" rel="noreferrer" aria-label={`Open ${a.label}`}>
+                <img src={withToken(a.url)} alt={a.label} class="w-full h-40 sm:h-44 object-cover rounded-lg border border-[var(--color-border)]" loading="lazy" />
+              </a>
+              <figcaption class="text-[10px] text-[var(--color-text-faint)] mt-0.5">{a.label}{a.overlay ? ` · ${a.overlay}` : ''}{a.note ? ` — ${a.note}` : ''}</figcaption>
             </figure>
           ))}
         </div>
@@ -3250,7 +3540,6 @@ function LandPortalImageryPanel({ inspection, token }: { inspection?: ReportView
           {inspection.visualObservations.map((o, i) => (
             <div key={i} class="text-[11.5px] text-[var(--color-text-muted)]">
               <span class="text-[var(--color-text)]">{o.label}:</span> {o.detail}
-              <span class="text-[10px] text-[var(--color-text-faint)]"> — visual signal, {o.confidence}</span>
             </div>
           ))}
         </div>
@@ -3262,6 +3551,170 @@ function LandPortalImageryPanel({ inspection, token }: { inspection?: ReportView
 // ── Multi-parcel roster (Parcel A / Parcel B — never conflated) ──────────────
 // Mirrors parcelRosterFor in routes.ts. Each APN renders its own honest state;
 // Parcel B never inherits Parcel A's imagery, and no generic image fills a gap.
+function LandPortalCompMapEvidence({ inspection, token }: { inspection?: ReportView['landportalInspection']; token: string }) {
+  const map = inspection?.assets?.find((asset) => asset.url && /comparables?_map/i.test(asset.kind));
+  if (!map) return null;
+  const url = map.url.startsWith('/api/') ? `${map.url}&token=${encodeURIComponent(token)}` : map.url;
+  return (
+    <Section title="LandPortal comparable locations">
+      <img
+        src={url}
+        alt={map.label || 'LandPortal subject and comparable locations'}
+        class="w-full max-h-[34rem] object-contain rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+        loading="lazy"
+      />
+      <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">
+        Saved LandPortal view of the subject and nearby asking references.
+      </div>
+    </Section>
+  );
+}
+
+function LandPortalComparableTable({ inspection }: { inspection?: ReportView['landportalInspection'] }) {
+  const rows = inspection?.comparables ?? [];
+  if (!rows.length) return null;
+  const pricesPerAcre = rows.map((row) => row.pricePerAcre).filter((value): value is number => typeof value === 'number' && value > 0).sort((a, b) => a - b);
+  const midpoint = pricesPerAcre.length ? pricesPerAcre[Math.floor(pricesPerAcre.length / 2)] : null;
+  return (
+    <Section title="LandPortal asking references">
+      <div class="text-[11.5px] text-[var(--color-text-muted)] mb-2">
+        {rows.length} saved nearby land references{midpoint != null ? ` center around ${usd(midpoint)} per acre` : ''}. These are asking references, not closed-sale proof.
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-[11px]" data-testid="landportal-comparables">
+          <thead><tr class="text-left text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]"><th class="py-1.5 pr-3">Parcel</th><th class="py-1.5 pr-3">Acres</th><th class="py-1.5 pr-3">Ask</th><th class="py-1.5 pr-3">Ask / acre</th><th class="py-1.5">Source</th></tr></thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={`${row.apn ?? row.address ?? index}-${row.price ?? ''}`} class="border-t border-[var(--color-border)]">
+                <td class="py-2 pr-3 font-medium text-[var(--color-text)]">{row.address ?? (row.apn ? `APN ${row.apn}` : `Reference ${index + 1}`)}</td>
+                <td class="py-2 pr-3 tabular-nums">{row.acres == null ? '—' : row.acres.toFixed(2)}</td>
+                <td class="py-2 pr-3 tabular-nums">{row.price == null ? '—' : usd(row.price)}</td>
+                <td class="py-2 pr-3 tabular-nums">{row.pricePerAcre == null ? '—' : usd(row.pricePerAcre)}</td>
+                <td class="py-2">{row.sourceUrl ? <a href={row.sourceUrl} target="_blank" rel="noreferrer" class="text-[var(--color-accent)] underline">Open reference</a> : 'Saved record'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
+
+function PropertyIdentityControl({ report, prop, onSaved }: {
+  report: ReportView | null; prop: PropertyCardLite; onSaved: () => Promise<void> | void;
+}) {
+  const situs = factOf(report, 'situsAddress', 'address').value ?? prop.active_input_address ?? '';
+  const initialAddress = [situs, prop.city, prop.state].filter(Boolean).join(', ');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    address: initialAddress,
+    city: prop.city ?? cityFromSitus(situs) ?? '',
+    county: factOf(report, 'county').value ?? prop.county ?? '',
+    state: factOf(report, 'state').value ?? prop.state ?? '',
+    apn: factOf(report, 'apn', 'parcelId').value ?? prop.apn ?? '',
+    owner: factOf(report, 'owner').value ?? report?.landportalInspection?.factSheet?.owner ?? prop.owner ?? '',
+    sourceUrl: '',
+    sourceLabel: 'Official parcel record',
+    confirmed: false,
+  });
+  useEffect(() => {
+    setOpen(false);
+    setMessage(null);
+    setForm({
+      address: initialAddress,
+      city: prop.city ?? cityFromSitus(situs) ?? '',
+      county: factOf(report, 'county').value ?? prop.county ?? '',
+      state: factOf(report, 'state').value ?? prop.state ?? '',
+      apn: factOf(report, 'apn', 'parcelId').value ?? prop.apn ?? '',
+      owner: factOf(report, 'owner').value ?? report?.landportalInspection?.factSheet?.owner ?? prop.owner ?? '',
+      sourceUrl: '',
+      sourceLabel: 'Official parcel record',
+      confirmed: false,
+    });
+  }, [prop.id]);
+  const setField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((current) => ({ ...current, [key]: value }));
+  async function saveIdentity() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await apiPost(`/api/landos/property-cards/${prop.id}/verified-parcel-reconciliation`, {
+        address: form.address.trim(), city: form.city.trim(), county: form.county.trim(), state: form.state.trim().toUpperCase(),
+        apn: form.apn.trim(), owner: form.owner.trim(), sourceUrl: form.sourceUrl.trim(), sourceLabel: form.sourceLabel.trim(),
+        confirmAcceptedIdentityReplacement: form.confirmed,
+      });
+      await onSaved();
+      setForm((current) => ({ ...current, confirmed: false }));
+      setMessage('Property identity saved. The prior intake address remains in Activity history.');
+      setOpen(false);
+    } catch (error: any) {
+      setMessage(error?.message || String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const inputClass = 'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px]';
+  return (
+    <Section title="Property identity">
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="text-[12px] text-[var(--color-text-muted)] flex-1">Correct the property address or official parcel identity without changing the seller or lead contact.</div>
+        <button type="button" onClick={() => setOpen((value) => !value)} class="px-2.5 py-1 rounded-md border border-[var(--color-border)] text-[11px] hover:bg-[var(--color-elevated)]">{open ? 'Cancel' : 'Correct property identity'}</button>
+      </div>
+      {open && (
+        <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label class="sm:col-span-2 text-[10.5px] text-[var(--color-text-faint)]">Canonical property address<input class={inputClass} value={form.address} onInput={(e) => setField('address', (e.target as HTMLInputElement).value)} /></label>
+          <label class="text-[10.5px] text-[var(--color-text-faint)]">City<input class={inputClass} value={form.city} onInput={(e) => setField('city', (e.target as HTMLInputElement).value)} /></label>
+          <label class="text-[10.5px] text-[var(--color-text-faint)]">County<input class={inputClass} value={form.county} onInput={(e) => setField('county', (e.target as HTMLInputElement).value)} /></label>
+          <label class="text-[10.5px] text-[var(--color-text-faint)]">State<input class={inputClass} maxLength={2} value={form.state} onInput={(e) => setField('state', (e.target as HTMLInputElement).value)} /></label>
+          <label class="text-[10.5px] text-[var(--color-text-faint)]">APN / parcel ID<input class={inputClass} value={form.apn} onInput={(e) => setField('apn', (e.target as HTMLInputElement).value)} /></label>
+          <label class="sm:col-span-2 text-[10.5px] text-[var(--color-text-faint)]">Owner of record<input class={inputClass} value={form.owner} onInput={(e) => setField('owner', (e.target as HTMLInputElement).value)} /></label>
+          <label class="sm:col-span-2 text-[10.5px] text-[var(--color-text-faint)]">Official source URL<input class={inputClass} type="url" placeholder="https://…" value={form.sourceUrl} onInput={(e) => setField('sourceUrl', (e.target as HTMLInputElement).value)} /></label>
+          <label class="sm:col-span-2 text-[10.5px] text-[var(--color-text-faint)]">Source name<input class={inputClass} value={form.sourceLabel} onInput={(e) => setField('sourceLabel', (e.target as HTMLInputElement).value)} /></label>
+          <label class="sm:col-span-2 flex items-start gap-2 text-[11px] text-[var(--color-text-muted)]"><input type="checkbox" checked={form.confirmed} onChange={(e) => setField('confirmed', (e.target as HTMLInputElement).checked)} />I verified these values against the linked official parcel record.</label>
+          <button type="button" disabled={busy || !form.confirmed} onClick={() => void saveIdentity()} class="sm:col-span-2 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-white text-[11.5px] font-medium disabled:opacity-40">{busy ? 'Saving…' : 'Save verified property identity'}</button>
+        </div>
+      )}
+      {message && <div class="text-[11px] text-[var(--color-text-muted)] mt-2">{message}</div>}
+    </Section>
+  );
+}
+
+function AddDealContactControl({ dealId, onSaved }: { dealId: number; onSaved: () => Promise<void> | void }) {
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<'lead' | 'seller' | 'contact'>('lead');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => {
+    setName('');
+    setRole('lead');
+    setMessage(null);
+  }, [dealId]);
+  async function addContact() {
+    if (!name.trim()) return;
+    setBusy(true); setMessage(null);
+    try {
+      const response = await apiPost<{ created: boolean }>(`/api/landos/deal-cards/${dealId}/people`, { name: name.trim(), role });
+      await onSaved();
+      setMessage(response.created ? 'Contact saved separately from the owner of record.' : 'That contact is already linked to this Deal Card.');
+      setName('');
+    } catch (error: any) { setMessage(error?.message || String(error)); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div class="rounded-md border border-[var(--color-border)] p-2.5 mb-3">
+      <div class="text-[11px] font-medium text-[var(--color-text)] mb-1.5">Add lead or contact</div>
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input class="flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px]" placeholder="Full name" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
+        <select class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px]" value={role} onChange={(e) => setRole((e.target as HTMLSelectElement).value as typeof role)}><option value="lead">Lead</option><option value="seller">Seller</option><option value="contact">Contact</option></select>
+        <button type="button" disabled={busy || !name.trim()} onClick={() => void addContact()} class="px-3 py-1.5 rounded-md border border-[var(--color-accent)] text-[var(--color-accent)] text-[11.5px] font-medium disabled:opacity-40">{busy ? 'Saving…' : 'Add contact'}</button>
+      </div>
+      <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">Contact identity is separate from the parcel’s owner-of-record field. Phone, email, and authority remain blank unless known.</div>
+      {message && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{message}</div>}
+    </div>
+  );
+}
+
 interface ParcelRosterEntryView {
   apn: string;
   label: string;
@@ -3295,7 +3748,7 @@ function ParcelRosterBlock({ entry, cards, token }: { entry: ParcelRosterEntryVi
       )}
       {/* Card-scoped imagery: THIS parcel's verified visuals only. */}
       {card && entry.status === 'resolved_verified_imagery' && (
-        <VisualIntelligencePanel cardId={card.id} token={token} />
+        <VisualIntelligencePanel cardId={card.id} token={token} compact />
       )}
       {entry.status !== 'resolved_verified_imagery' && (
         <div class="text-[11.5px] text-[var(--color-text-muted)] rounded-md border border-dashed border-[var(--color-border)] p-2.5">
@@ -3327,16 +3780,107 @@ interface PublicFindingView {
   adjoiningRoads?: Array<{ name: string; status: string; approximateMappedFrontageFt?: number; apparentRightOfWayContact: boolean | null }>; approximateMappedFrontageFt?: number | null; measurementMethod?: string; geometrySource?: string; accessConcerns?: string[];
   parcelOutlineShown?: boolean; imagerySource?: string; resolution?: string; visibleFeatures?: string[];
   facts?: Array<{ field: string; value: string | number }>;
+  zoningCode?: string | null; zoningName?: string | null; overlayDistricts?: string[]; futureLandUse?: string | null; existingLandUse?: string | null; jurisdiction?: string;
+  minimumLotSize?: string | null; allowedUsesNote?: string | null; subdivisionNote?: string | null; sourceLayerUrls?: string[];
+  publicWater?: string; publicSewer?: string; electric?: string; wellLikelyRequired?: boolean | null; septicLikelyRequired?: boolean | null;
+  serviceProviders?: Array<{ service: string; provider: string; contact?: string; basis: string }>; researchAttempted?: string[];
+  /** Optional, source-labelled screening outputs. These stay absent rather than
+      guessing a buildable area from another constraint. */
+  apparentBuildableAcres?: number | null; apparentBuildablePercentage?: number | null;
+  transmissionLines?: Array<{ note: string; distanceFt?: number | null; source?: string }>;
+  waterFeatures?: Array<{ note: string; distanceFt?: number | null; source?: string }>;
+  crossChecks?: Array<{ field: string; value: string | number; agreesWithPreferredEvidence: boolean | null }>;
+  screenshotRefs?: string[]; highResolutionImageryRefs?: string[];
 }
 interface PublicScreenTaskView {
   task: string; label: string; status: string; confidence: string; failureReason?: string;
   finding?: PublicFindingView;
-  evidence?: Array<{ sourceName: string; sourceUrl?: string; datasetDate?: string; retrievedAt?: string; sourceTier?: string; verification?: string }>;
+  evidence?: Array<{ evidenceId?: string; sourceName: string; sourceUrl?: string; datasetDate?: string; retrievedAt?: string; sourceTier?: string; verification?: string; confidence?: string; captureMode?: string; decisionUsable?: boolean; limitation?: string }>;
+  completionState?: string; operatorMessage?: string; contractViolations?: string[]; attempts?: number;
+  timeoutMs?: number; durationMs?: number;
+  providerOutcomes?: Array<{ providerId: string; status: string; attemptCount: number; evidenceCount: number; note: string }>;
 }
-interface PublicScreenRunView { status: string; captureMode: string; completedAt: string; tasks: PublicScreenTaskView[]; }
-interface PublicScreenStoredView { parcelKey: string; updatedAt: string; run: PublicScreenRunView; }
+interface PublicScreenRunView {
+  status: string; captureMode: string; completedAt: string; startedAt?: string; durationMs?: number; downstreamAllowed?: boolean;
+  nonBlockingGaps?: string[]; gate?: { allowed: boolean; reasonCode: string; explanation: string }; tasks: PublicScreenTaskView[];
+}
+interface PropertyIntelligenceStageView {
+  stageId: string; label: string; role: 'required' | 'conditional' | 'optional'; completionState: string; operatorMessage: string;
+  providerOutcomes: Array<{ providerId: string; status: string; attemptCount: number; evidenceCount: number; candidateCount?: number; note: string }>;
+  evidenceCount: number; violations: string[];
+}
+interface PropertyIntelligenceOrchestrationView {
+  status: string; contractVersion: string; deadlineMs: number; startedAt: string; completedAt: string | null; durationMs: number | null;
+  firstUsefulResultMs: number | null; nonBlockingGaps: string[]; downstreamAllowed: boolean;
+  validation: { valid: boolean; violations: string[] };
+  stages: PropertyIntelligenceStageView[];
+  compReconciliation?: { rejected: Array<{ provider: string; address?: string | null; reason: string }>; duplicateMerges: unknown[]; valuationBlockers: string[] } | null;
+}
+interface PublicScreenStoredView { parcelKey: string; updatedAt: string; run: PublicScreenRunView; orchestration?: PropertyIntelligenceOrchestrationView | null; }
 
-function PublicPropertyIntelligencePanel({ dealId, onUpdated }: { dealId: number; onUpdated?: () => void }) {
+const intelligenceTone = (state?: string) => {
+  if (/^(complete|succeeded|retrieved)$/i.test(state ?? '')) return 'border-emerald-500/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  if (/^(partial|blocked|unavailable|no_result|complete_with_gaps)$/i.test(state ?? '')) return 'border-amber-500/45 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+  if (/^(failed|timed_out)$/i.test(state ?? '')) return 'border-rose-500/45 bg-rose-500/10 text-rose-700 dark:text-rose-300';
+  return 'border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)]';
+};
+const intelligenceLabel = (value?: string | null) => (value ?? 'not attempted').replace(/_/g, ' ');
+const durationLabel = (ms?: number | null) => typeof ms === 'number' && Number.isFinite(ms) ? (ms < 1_000 ? `${ms} ms` : `${Math.round(ms / 1_000)} sec`) : null;
+
+function EvidenceProvenance({ evidence }: { evidence: NonNullable<PublicScreenTaskView['evidence']>[number] }) {
+  return (
+    <div class="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] p-2 text-[10.5px] text-[var(--color-text-muted)]">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        {evidence.sourceUrl
+          ? <a class="font-medium text-[var(--color-accent)] hover:underline" href={evidence.sourceUrl} target="_blank" rel="noreferrer">{evidence.sourceName}</a>
+          : <span class="font-medium text-[var(--color-text)]">{evidence.sourceName}</span>}
+        {evidence.sourceTier && <span>tier: {intelligenceLabel(evidence.sourceTier)}</span>}
+        {evidence.verification && <span>basis: {intelligenceLabel(evidence.verification)}</span>}
+        {evidence.confidence && <span>confidence: {evidence.confidence}</span>}
+        {evidence.captureMode && <span>capture: {evidence.captureMode}</span>}
+        {evidence.decisionUsable === false && <span class="text-amber-700 dark:text-amber-300">not decision-usable</span>}
+      </div>
+      {(evidence.datasetDate || evidence.retrievedAt) && <div class="mt-0.5 text-[var(--color-text-faint)]">{evidence.datasetDate && `dataset ${evidence.datasetDate}`}{evidence.datasetDate && evidence.retrievedAt && ' · '}{evidence.retrievedAt && `retrieved ${evidence.retrievedAt}`}</div>}
+      {evidence.limitation && <div class="mt-0.5">Limit: {evidence.limitation}</div>}
+    </div>
+  );
+}
+
+function PropertyIntelligenceOrchestration({ orchestration }: { orchestration?: PropertyIntelligenceOrchestrationView | null }) {
+  const [open, setOpen] = useState<string | null>(null);
+  if (!orchestration) return null;
+  const runTiming = [durationLabel(orchestration.durationMs), `deadline ${durationLabel(orchestration.deadlineMs) ?? 'not recorded'}`, orchestration.firstUsefulResultMs != null ? `first useful result ${durationLabel(orchestration.firstUsefulResultMs)}` : null].filter(Boolean).join(' · ');
+  return (
+    <div class="rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-card)] p-3 space-y-2.5" data-testid="property-intelligence-orchestration">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-[12px] font-semibold text-[var(--color-text)]">Canonical research orchestration</span>
+        <span class={`text-[10px] border rounded-full px-1.5 py-0.5 ${intelligenceTone(orchestration.status)}`}>{intelligenceLabel(orchestration.status)}</span>
+        <span class="text-[10px] text-[var(--color-text-faint)]">Contract {orchestration.contractVersion}</span>
+      </div>
+      <div class="text-[11.5px] text-[var(--color-text-muted)]">{runTiming || 'Timing was not recorded.'} {orchestration.downstreamAllowed ? 'Parcel gate permits downstream research.' : 'Parcel gate still prevents downstream research.'}</div>
+      {orchestration.nonBlockingGaps.length > 0 && <div class="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-300">Open research gaps: {orchestration.nonBlockingGaps.map(intelligenceLabel).join(' · ')}</div>}
+      {!orchestration.validation.valid && orchestration.validation.violations.length > 0 && <div class="rounded border border-rose-500/40 bg-rose-500/10 p-2 text-[11px] text-rose-700 dark:text-rose-300">Validation blockers: {orchestration.validation.violations.join(' · ')}</div>}
+      <div class="space-y-1.5">
+        {orchestration.stages.map((stage) => {
+          const expanded = open === stage.stageId;
+          return <div key={stage.stageId} class="rounded border border-[var(--color-border)]">
+            <button type="button" class="w-full p-2 text-left" onClick={() => setOpen(expanded ? null : stage.stageId)}>
+              <div class="flex flex-wrap items-center gap-1.5"><span class="text-[12px] font-medium text-[var(--color-text)]">{stage.label}</span><span class={`text-[10px] rounded border px-1.5 py-0.5 ${intelligenceTone(stage.completionState)}`}>{intelligenceLabel(stage.completionState)}</span><span class="text-[10px] text-[var(--color-text-faint)]">{stage.role} · {stage.evidenceCount} evidence item{stage.evidenceCount === 1 ? '' : 's'}</span></div>
+              <div class="mt-1 text-[11px] text-[var(--color-text-muted)]">{stage.operatorMessage}</div>
+            </button>
+            {expanded && <div class="border-t border-[var(--color-border)] p-2 space-y-1.5">
+              {stage.providerOutcomes.length > 0 ? stage.providerOutcomes.map((provider) => <div key={provider.providerId} class="text-[10.5px] text-[var(--color-text-muted)]"><span class="font-medium text-[var(--color-text)]">{provider.providerId}</span> · {intelligenceLabel(provider.status)} · {provider.attemptCount} attempt{provider.attemptCount === 1 ? '' : 's'} · {provider.evidenceCount} evidence{provider.candidateCount != null ? ` · ${provider.candidateCount} candidate(s)` : ''}<div class="mt-0.5">{provider.note}</div></div>) : <div class="text-[10.5px] text-[var(--color-text-faint)]">No provider outcome was retained for this stage.</div>}
+              {stage.violations.length > 0 && <div class="text-[10.5px] text-rose-700 dark:text-rose-300">Evidence / contract issues: {stage.violations.join(' · ')}</div>}
+            </div>}
+          </div>;
+        })}
+      </div>
+      {orchestration.compReconciliation && <div class="rounded border border-[var(--color-border)] p-2 text-[11px] text-[var(--color-text-muted)]"><span class="font-medium text-[var(--color-text)]">Comparable reconciliation:</span> {orchestration.compReconciliation.duplicateMerges.length} duplicate merge(s), {orchestration.compReconciliation.rejected.length} rejected candidate(s). {orchestration.compReconciliation.valuationBlockers.length ? `Valuation remains blocked: ${orchestration.compReconciliation.valuationBlockers.join(' · ')}` : 'No retained valuation blocker.'}</div>}
+    </div>
+  );
+}
+
+function PublicPropertyIntelligencePanel({ dealId, ownerName, onUpdated }: { dealId: number; ownerName?: string | null; onUpdated?: () => void }) {
 function PublicFindingDetails({ task, finding }: { task: string; finding?: PublicFindingView }) {
   if (!finding) return null;
   const amount = (value: number | null | undefined, suffix = '') => value == null ? 'Not available' : `${value}${suffix}`;
@@ -3357,10 +3901,17 @@ function PublicFindingDetails({ task, finding }: { task: string; finding?: Publi
       {task === 'road_frontage' && (
         <div class="space-y-1"><div class="font-medium text-[var(--color-text)]">Road proximity and access screen</div>{finding.adjoiningRoads?.map((road) => <div key={road.name}>{road.name}: {road.apparentRightOfWayContact === true ? 'possible boundary/ROW contact - not proven' : road.apparentRightOfWayContact === false ? 'nearby, not adjoining' : 'centerline proximity only'}{road.approximateMappedFrontageFt != null ? `; ~${road.approximateMappedFrontageFt} ft of centerline falls within the screening buffer` : ''}; road class {road.status}</div>)}<div>Frontage footage is not established. {finding.measurementMethod ?? 'The screening method was not reported.'}</div><div>Parcel-road contact, public right-of-way contact, physical/driveway access, legal access, and road maintenance remain unresolved.</div></div>
       )}
+      {task === 'zoning_landuse' && <div class="space-y-1"><div class="font-medium text-[var(--color-text)]">Zoning and land-use screen</div><div>{finding.zoningCode ?? 'No zoning code retrieved'}{finding.zoningName ? ` — ${finding.zoningName}` : ''}{finding.jurisdiction ? ` · ${finding.jurisdiction}` : ''}</div>{finding.overlayDistricts?.length ? <div>Overlays: {finding.overlayDistricts.join(', ')}</div> : null}{finding.futureLandUse && <div>Future land use: {finding.futureLandUse}</div>}{finding.existingLandUse && <div>Existing land use: {finding.existingLandUse}</div>}{finding.minimumLotSize && <div>Minimum lot size: {finding.minimumLotSize}</div>}{finding.allowedUsesNote && <div>Allowed-use note: {finding.allowedUsesNote}</div>}</div>}
+      {task === 'utilities' && <div class="space-y-1"><div class="font-medium text-[var(--color-text)]">Utilities screen</div><div>Public water: {intelligenceLabel(finding.publicWater)} · Sewer: {intelligenceLabel(finding.publicSewer)} · Electric: {intelligenceLabel(finding.electric)}</div>{finding.wellLikelyRequired != null && <div>Well likely required: {finding.wellLikelyRequired ? 'yes' : 'no'}</div>}{finding.septicLikelyRequired != null && <div>Septic likely required: {finding.septicLikelyRequired ? 'yes' : 'no'}</div>}{finding.serviceProviders?.map((provider) => <div key={`${provider.service}-${provider.provider}`}>{provider.service}: {provider.provider} — {provider.basis}</div>)}</div>}
+      {(finding.apparentBuildableAcres != null || finding.apparentBuildablePercentage != null || finding.transmissionLines?.length || finding.waterFeatures?.length) && <div class="rounded border border-amber-500/30 bg-amber-500/5 p-2 space-y-1"><div class="font-medium text-[var(--color-text)]">Buildable-area and corridor screen</div>{finding.apparentBuildableAcres != null || finding.apparentBuildablePercentage != null ? <div>Apparent unconstrained area: {finding.apparentBuildableAcres != null ? `${finding.apparentBuildableAcres} ac` : 'acreage not calculated'}{finding.apparentBuildablePercentage != null ? ` (${finding.apparentBuildablePercentage}%)` : ''}. Screening only — not a surveyed or approvable buildable-acreage conclusion.</div> : null}{finding.transmissionLines?.map((line, i) => <div key={`transmission-${i}`}>Transmission: {line.note}{line.distanceFt != null ? ` · ~${line.distanceFt} ft` : ''}</div>)}{finding.waterFeatures?.map((water, i) => <div key={`water-${i}`}>Water feature: {water.note}{water.distanceFt != null ? ` · ~${water.distanceFt} ft` : ''}</div>)}</div>}
       {task === 'imagery' && (
         <div><span class="font-medium text-[var(--color-text)]">Parcel imagery: </span>{finding.parcelOutlineShown ? 'parcel boundary shown' : 'nearby/parcel-extent imagery only; parcel boundary overlay still needed'}{finding.imagerySource ? ` - ${finding.imagerySource}` : ''}{finding.acquisitionDate ? ` - ${finding.acquisitionDate}` : ''}</div>
       )}
-      {task === 'county_records' && finding.facts?.length ? <div>{finding.facts.map((fact) => <span key={fact.field} class="inline-block mr-3"><span class="text-[var(--color-text-faint)]">{fact.field}:</span> {fact.value}</span>)}</div> : null}
+      {task === 'county_records' && finding.facts?.length ? <div>{finding.facts.map((fact) => {
+        const value = ownerName && /^owner(?:\s+of\s+record)?$/i.test(fact.field.trim()) ? ownerName : fact.value;
+        return <span key={fact.field} class="inline-block mr-3"><span class="text-[var(--color-text-faint)]">{fact.field}:</span> {value}</span>;
+      })}</div> : null}
+      {task === 'land_portal' && <div class="space-y-1"><div class="font-medium text-[var(--color-text)]">LandPortal property check</div>{finding.crossChecks?.map((check) => <div key={check.field}>{check.field}: {check.value}{check.agreesWithPreferredEvidence === false ? ' · differs from the official parcel record' : ''}</div>)}</div>}
     </div>
   );
 }
@@ -3379,26 +3930,27 @@ function PublicFindingDetails({ task, finding }: { task: string; finding?: Publi
   const run = async () => {
     setRunning(true); setMessage(null);
     try { const response = await apiPost<{ publicIntelligence: PublicScreenStoredView }>(`/api/landos/deal-cards/${dealId}/public-intelligence/run`, {}); setSaved(response.publicIntelligence); onUpdated?.(); }
-    catch { setMessage('Public screening needs a confirmed official parcel first. See Resolution for attempted sources.'); }
+    catch { setMessage('Public property facts could not be refreshed. Review the property identity and try again.'); }
     finally { setRunning(false); }
   };
   const tasks = saved?.run.tasks ?? [];
+  const identityBlocked = saved?.orchestration?.status === 'blocked_identity' || saved?.run.status === 'blocked_identity';
   return <Section title="Public Property Intelligence">
     <div class="space-y-3">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[12px] text-[var(--color-text-muted)]">{saved ? `Live public screening for APN ${saved.parcelKey} · updated ${formatRelativeTime(saved.updatedAt)}` : 'No public screening is saved for this Deal Card.'}</span>
+        <span class="text-[12px] text-[var(--color-text-muted)]">{saved ? identityBlocked ? `An official parcel match is required before public property facts can refresh · updated ${formatRelativeTime(saved.updatedAt)}` : `Public property facts for APN ${saved.parcelKey} · updated ${formatRelativeTime(saved.updatedAt)}` : 'No public property facts are saved for this Deal Card.'}</span>
         <button type="button" onClick={run} disabled={running} class="ml-auto px-2.5 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white disabled:opacity-40">{running ? 'Running public sources…' : saved ? 'Refresh public screening' : 'Run public screening'}</button>
       </div>
-      <div class="text-[11px] text-[var(--color-text-faint)]">Runs only after an official parcel match. It does not open Land Portal or a county login, and no marketplace result is claimed unless retrieved.</div>
+      <div class="text-[11px] text-[var(--color-text-faint)]">Wetlands, flood, soil, terrain, road, and county-record facts use the verified parcel geometry and link to their public sources.</div>
       {message && <div class="rounded-md border border-amber-500/40 p-2 text-[12px] text-amber-700 dark:text-amber-300">{message}</div>}
       {loading && <div class="text-[12px] text-[var(--color-text-muted)]">Loading saved public screening…</div>}
       {!loading && tasks.map((task) => <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3 space-y-1.5" key={task.task}>
-        <div class="flex flex-wrap items-center gap-2"><span class="text-[13px] font-semibold text-[var(--color-text)]">{task.label}</span><span class="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)]">{task.status.replace(/_/g, ' ')}</span><span class="text-[10px] text-[var(--color-text-faint)]">Confidence: {task.confidence}</span></div>
+        <div class="text-[13px] font-semibold text-[var(--color-text)]">{task.label}</div>
         <div class="text-[12px] text-[var(--color-text)]">{task.finding?.summary ?? task.failureReason ?? 'No finding was retrieved.'}</div>
         {task.finding?.whyItMatters && <div class="text-[11.5px] text-[var(--color-text-muted)]"><span class="font-medium">Why it matters:</span> {task.finding.whyItMatters}</div>}
         {(task.finding?.datasetName || task.finding?.acquisitionDate) && <div class="text-[11px] text-[var(--color-text-faint)]">{task.finding.datasetName}{task.finding.acquisitionDate ? ` · data/imagery date ${task.finding.acquisitionDate}` : ''}</div>}
         <PublicFindingDetails task={task.task} finding={task.finding} />
-        {task.evidence?.map((evidence) => evidence.sourceUrl ? <a class="inline-block text-[11px] text-[var(--color-accent)] hover:underline" href={evidence.sourceUrl} target="_blank" rel="noreferrer" key={evidence.sourceUrl}>{evidence.sourceName}{evidence.datasetDate && !evidence.sourceName.includes(evidence.datasetDate) ? ` (${evidence.datasetDate})` : ''}</a> : <span class="text-[11px] text-[var(--color-text-faint)]" key={evidence.sourceName}>{evidence.sourceName}</span>)}
+        {!!task.evidence?.length && <div class="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px]">{task.evidence.map((source, index) => source.sourceUrl ? <a class="text-[var(--color-accent)] underline" href={source.sourceUrl} target="_blank" rel="noreferrer" key={source.evidenceId ?? `${source.sourceName}-${index}`}>{source.sourceName}</a> : <span class="text-[var(--color-text-faint)]" key={source.evidenceId ?? `${source.sourceName}-${index}`}>{source.sourceName}</span>)}</div>}
         {task.task === 'imagery' && task.finding?.evidenceRef && <img src={task.finding.evidenceRef} alt="Official public aerial imagery for the parcel extent" class="w-full max-h-64 object-cover rounded border border-[var(--color-border)]" />}
         {task.finding?.limitation && <div class="text-[11px] text-[var(--color-text-faint)]">Limit: {task.finding.limitation}</div>}
       </div>)}
@@ -3406,13 +3958,13 @@ function PublicFindingDetails({ task, finding }: { task: string; finding?: Publi
   </Section>;
 }
 function OverviewTab({
-  report, es, dcr, spine, deal, prop, seller, token, runReport, reportRunning, pursuit, orchestration, onPublicIntelligenceUpdated, record, unified,
+  report, es, dcr, spine, deal, prop, seller, token, runReport, reportRunning, pursuit, onPublicIntelligenceUpdated, record,
 }: {
   report: ReportView | null; es: ExecSummaryView | null; dcr: DiscoveryReportView | null;
   spine: BusinessSpineView | null; deal: DealCardDetail; prop?: PropertyCardLite; seller?: PersonLite;
   token: string; runReport: () => void; reportRunning: boolean;
-  pursuit?: PursuitView | null; orchestration?: OrchestrationView | null; onPublicIntelligenceUpdated?: () => void;
-  record?: OperatorRecordView | null; unified?: UnifiedReadinessView | null;
+  pursuit?: PursuitView | null; onPublicIntelligenceUpdated?: () => void;
+  record?: OperatorRecordView | null;
 }) {
   // Operator-first Overview: the 30-second read. Verdict rail, feasibility,
   // risks, value, strategy, agent work board. Detailed provider material lives
@@ -3420,41 +3972,25 @@ function OverviewTab({
   if (record) {
     return (
       <div class="space-y-3">
-        {/* Executive summary (with the shared readiness line) renders on EVERY
-            overview — record-bearing cards included, so the executive review is
-            never invisible (WS3 finding F9). */}
         <OverviewSummary es={es} report={report} />
-        <OrchestrationBanner o={orchestration} />
         <ContradictionBanner report={report} record={record} />
-        {!report?.exists && (
-          <button
-            type="button"
-            onClick={runReport}
-            disabled={reportRunning}
-            class="w-full px-3 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
-          >
-            {reportRunning ? 'Running Property Intelligence…' : 'Run Property Intelligence'}
-          </button>
-        )}
-        {/* The SAME shared readiness record Market/Strategy/Seller/Reports render. */}
-        <UnifiedReadinessStrip readiness={unified ?? null} />
-        <DecisionCardRail cards={record.decisionCards} />
+        <button
+          type="button"
+          onClick={runReport}
+          disabled={reportRunning}
+          class="w-full px-3 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
+        >
+          {reportRunning ? 'Running Property Intelligence…' : report?.exists ? 'Re-run Property Intelligence' : 'Run Property Intelligence'}
+        </button>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-2 items-start">
           <FeasibilityStrip record={record} />
           <div class="space-y-2">
             {report?.valuation?.primary && <ValuationPanel val={report.valuation} />}
-            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3">
-              <div class="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-[var(--color-text-faint)]">Offer readiness</div>
-              <div class="mt-1 text-[13px] font-semibold text-[var(--color-text)]">{record.offerReadiness.state.replace(/_/g, ' ')}</div>
-              <div class="mt-1 text-[12px] leading-relaxed text-[var(--color-text-muted)]">{record.offerReadiness.why}</div>
-              <div class="mt-1.5 text-[12px] leading-relaxed text-[var(--color-text-muted)]">{record.valueReadiness.why}</div>
-            </div>
           </div>
         </div>
         <RisksUnknownsPanel record={record} />
         <BestCompsPanel bc={report?.bestComps} />
         <StrategySnapshot dcr={dcr} es={es} />
-        <WorkStatusBoard items={record.workStatus} compact />
         <SellerSnapshot deal={deal} seller={seller} es={es} />
       </div>
     );
@@ -3463,27 +3999,25 @@ function OverviewTab({
     <div class="space-y-4">
       {/* 1. The executive summary — the first thing read before calling the seller. */}
       <OverviewSummary es={es} report={report} />
-      <OrchestrationBanner o={orchestration} />
       <ContradictionBanner report={report} />
 
-      {/* Primary CTA when no report has run — the one action that builds the report. */}
-      {!report?.exists && (
-        <button
-          type="button"
-          onClick={runReport}
-          disabled={reportRunning}
-          class="w-full px-3 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
-        >
-          {reportRunning ? 'Running Property Intelligence…' : 'Run Property Intelligence'}
-        </button>
-      )}
+      {/* Primary CTA — always available so a newly resolved parcel can refresh
+          an older research-progress report without hunting in another tab. */}
+      <button
+        type="button"
+        onClick={runReport}
+        disabled={reportRunning}
+        class="w-full px-3 py-2.5 rounded-lg text-[13px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40"
+      >
+        {reportRunning ? 'Running Property Intelligence…' : report?.exists ? 'Re-run Property Intelligence' : 'Run Property Intelligence'}
+      </button>
 
       {/* 2. What it looks like — one hero visual with links out. */}
       <HeroVisual report={report} prop={prop} discoveryReport={dcr} token={token} />
 
       {/* 3. Who owns it / what it is — source-labeled key facts. */}
       <KeyFactsGrid report={report} />
-      <PublicPropertyIntelligencePanel dealId={deal.id} onUpdated={onPublicIntelligenceUpdated} />
+      <PublicPropertyIntelligencePanel dealId={deal.id} ownerName={seller?.name ?? prop?.owner} onUpdated={onPublicIntelligenceUpdated} />
       <WhatThisMeans report={report} es={es} />
 
       {/* 4. The biggest risks. */}
@@ -3557,36 +4091,25 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   // DD + Market + Strategy operational report state. Loaded alongside the open
   // deal; produced by the backend workflow (read-only here).
   const [report, setReport] = useState<ReportView | null>(null);
-  const [readiness, setReadiness] = useState<ReadinessView | null>(null);
-  const [briefing, setBriefing] = useState<BriefingView | null>(null);
-  const [preCall, setPreCall] = useState<PreCallView | null>(null);
   const [execSummary, setExecSummary] = useState<ExecSummaryView | null>(null);
   const [discoveryReport, setDiscoveryReport] = useState<DiscoveryReportView | null>(null);
   const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
   // Pursuit decision + Executive Orchestrator review — computed server-side from
   // the same reconciled objects every tab reads.
   const [pursuit, setPursuit] = useState<PursuitView | null>(null);
-  const [orchestration, setOrchestration] = useState<OrchestrationView | null>(null);
   // Multi-parcel roster — one honest state per APN (never conflated).
   const [parcelRoster, setParcelRoster] = useState<ParcelRosterEntryView[] | null>(null);
   // Reconciled operator record — the ONE decision surface the CRM header,
   // verdict rail, work board, and seller questions render from.
   const [operatorRecord, setOperatorRecord] = useState<OperatorRecordView | null>(null);
+  const [ownerAnalysis, setOwnerAnalysis] = useState<OwnerAnalysisView | null>(null);
+  const [researchProgress, setResearchProgress] = useState<DealResearchProgress | null>(null);
+  const [researchRetrying, setResearchRetrying] = useState(false);
+  const [researchActionError, setResearchActionError] = useState('');
   // Recorded-document research rows (deed & easement evidence) for Documents.
   const [recordedEvidence, setRecordedEvidence] = useState<Array<{ fact: string; sourceUrl: string; sourceType: string; dateAccessed: string; note: string }>>([]);
   // Canonical shared records — every tab renders these; no tab re-derives them.
-  const [compRegistry, setCompRegistry] = useState<CompRegistryView | null>(null);
-  const [strategyReadiness, setStrategyReadiness] = useState<StrategyReadinessView | null>(null);
-  // ONE shared readiness record — Overview, Market, Strategy, Seller, and
-  // Reports all render THIS object, so readiness can never differ between tabs.
-  const [unifiedReadiness, setUnifiedReadiness] = useState<UnifiedReadinessView | null>(null);
   const [documentRegistry, setDocumentRegistry] = useState<DocumentRegistryView | null>(null);
-  const [mission, setMission] = useState<MissionViewT | null>(null);
-  const [modelVersion, setModelVersion] = useState<ModelVersionView | null>(null);
-  const [ddBusinessStatus, setDdBusinessStatus] = useState<DdBusinessStatusRow[] | null>(null);
-  // Honest report classification (research progress vs underwriting) — the
-  // operator label for what this report IS, not just that the generator ran.
-  const [reportReadiness, setReportReadiness] = useState<{ level: string; label: string; why: string } | null>(null);
   const [reportRunning, setReportRunning] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportWarnings, setReportWarnings] = useState<string[]>([]);
@@ -3607,42 +4130,28 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
 
   async function loadReport(id: number) {
     try {
-      const res = await apiGet<{ report: ReportView; executiveSummary?: ExecSummaryView; discoveryReport?: DiscoveryReportView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView; pursuit?: PursuitView; orchestration?: OrchestrationView; parcelRoster?: ParcelRosterEntryView[]; operatorRecord?: OperatorRecordView }>(`/api/landos/deal-cards/${id}/report`);
+      const res = await apiGet<{ report: ReportView; executiveSummary?: ExecSummaryView; discoveryReport?: DiscoveryReportView; propertyType?: PropertyTypeView; pursuit?: PursuitView; parcelRoster?: ParcelRosterEntryView[]; operatorRecord?: OperatorRecordView; ownerAnalysis?: OwnerAnalysisView }>(`/api/landos/deal-cards/${id}/report`);
       setReport(res.report);
       setOperatorRecord(res.operatorRecord ?? null);
+      setOwnerAnalysis(res.ownerAnalysis ?? null);
       setRecordedEvidence(((res as unknown as { recordedEvidence?: Array<{ fact: string; sourceUrl: string; sourceType: string; dateAccessed: string; note: string }> }).recordedEvidence) ?? []);
       {
-        const extra = res as unknown as { compRegistry?: CompRegistryView; strategyReadiness?: StrategyReadinessView; unifiedReadiness?: UnifiedReadinessView; documentRegistry?: DocumentRegistryView; mission?: MissionViewT; modelVersion?: ModelVersionView; ddBusinessStatus?: DdBusinessStatusRow[]; reportReadiness?: { level: string; label: string; why: string } };
-        setCompRegistry(extra.compRegistry ?? null);
-        setStrategyReadiness(extra.strategyReadiness ?? null);
-        setUnifiedReadiness(extra.unifiedReadiness ?? null);
+        const extra = res as unknown as { documentRegistry?: DocumentRegistryView };
         setDocumentRegistry(extra.documentRegistry ?? null);
-        setMission(extra.mission ?? null);
-        setModelVersion(extra.modelVersion ?? null);
-        setDdBusinessStatus(extra.ddBusinessStatus ?? null);
-        setReportReadiness(extra.reportReadiness ?? null);
       }
       setExecSummary(res.executiveSummary ?? null);
       setDiscoveryReport(res.discoveryReport ?? null);
-      setReadiness(res.readiness ?? null);
-      setBriefing(res.briefing ?? null);
-      setPreCall(res.preCallIntelligence ?? null);
       setPropertyType(res.propertyType ?? null);
       setPursuit(res.pursuit ?? null);
-      setOrchestration(res.orchestration ?? null);
       setParcelRoster(res.parcelRoster ?? null);
     } catch {
       setReport(null);
       setExecSummary(null);
       setDiscoveryReport(null);
-      setReadiness(null);
-      setBriefing(null);
-      setPreCall(null);
       setPropertyType(null);
       setPursuit(null);
-      setOrchestration(null);
       setOperatorRecord(null);
-      setUnifiedReadiness(null);
+      setOwnerAnalysis(null);
     }
   }
 
@@ -3655,16 +4164,13 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     setReportError(null);
     setReportWarnings([]);
     try {
-      const res = await apiPost<{ report: ReportView; warnings: string[]; executiveSummary?: ExecSummaryView; discoveryReport?: DiscoveryReportView; readiness?: ReadinessView; briefing?: BriefingView; preCallIntelligence?: PreCallView; propertyType?: PropertyTypeView; pursuit?: PursuitView; orchestration?: OrchestrationView; parcelRoster?: ParcelRosterEntryView[] }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
+      const res = await apiPost<{ report: ReportView; warnings: string[]; executiveSummary?: ExecSummaryView; ownerAnalysis?: OwnerAnalysisView; discoveryReport?: DiscoveryReportView; propertyType?: PropertyTypeView; pursuit?: PursuitView; parcelRoster?: ParcelRosterEntryView[] }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
       setReport(res.report);
       setExecSummary(res.executiveSummary ?? null);
+      setOwnerAnalysis(res.ownerAnalysis ?? null);
       setDiscoveryReport(res.discoveryReport ?? null);
-      setReadiness(res.readiness ?? null);
-      setBriefing(res.briefing ?? null);
-      setPreCall(res.preCallIntelligence ?? null);
       setPropertyType(res.propertyType ?? null);
       setPursuit(res.pursuit ?? null);
-      setOrchestration(res.orchestration ?? null);
       setParcelRoster(res.parcelRoster ?? null);
       setReportWarnings(Array.isArray(res.warnings) ? res.warnings : []);
       await loadDd(deal.id);
@@ -3686,7 +4192,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     setVisualCaptureMsg(null);
     try {
       const res = await apiPost<{ ok: boolean; reason: string; captured: string[] }>(`/api/landos/property-cards/${cardId}/visual-capture`, {});
-      setVisualCaptureMsg(res.ok ? `Captured: ${res.captured.join(', ') || 'none'}.` : `Capture failed: ${res.reason}`);
+      const labels: Record<string, string> = { maps_static: 'satellite context', street_view_static: 'Street View' };
+      setVisualCaptureMsg(res.ok ? `Captured: ${res.captured.map((item) => labels[item] ?? item).join(', ') || 'none'}.` : `Capture failed: ${res.reason}`);
       if (deal) await loadReport(deal.id);
     } catch (err: any) {
       setVisualCaptureMsg(err?.message || String(err));
@@ -3713,11 +4220,11 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     }
   }
 
-  async function load(id: number) {
+  async function load(id: number, resetTab = true) {
     try {
       setLoading(true);
       setError(null);
-      setActiveTab('overview');
+      if (resetTab) setActiveTab('overview');
       setDdEditing(false);
       setDdWarnings([]);
       setStrategyEditing(false);
@@ -3726,20 +4233,17 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setMarketWarnings([]);
       setReportError(null);
       setReportWarnings([]);
-      const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null }>(`/api/landos/deal-cards/${id}`);
+      const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null; opportunity?: DealResearchOpportunity | null; researchMission?: DealResearchMission | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       setSpine(res.businessSpine ?? null);
-      // Resolution gate: a NOT-yet-confirmed parcel shows the Resolution view; we
-      // skip the downstream department loads entirely so nothing property-specific
-      // renders before the parcel is confirmed.
+      setResearchProgress(res.opportunity ? { opportunity: res.opportunity, mission: res.researchMission ?? null } : null);
+      // Always hydrate persisted report/worksheet state. Unconfirmed parcels may
+      // have an honestly gated report plus retained provider/orchestration context;
+      // refresh/restart must not erase that owner-visible work. The backend and
+      // shared readiness record keep valuation and downstream actions blocked.
       const rres = await apiGet<ResolutionData>(`/api/landos/deal-cards/${id}/resolution`);
       setResolution(rres);
-      if (rres.confirmed) {
-        await loadDd(id);
-        await loadStrategy(id);
-        await loadMarket(id);
-        await loadReport(id);
-      }
+      await Promise.all([loadDd(id), loadStrategy(id), loadMarket(id), loadReport(id)]);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
@@ -3749,8 +4253,23 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setStrategy(null);
       setMarket(null);
       setReport(null);
+      setResearchProgress(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function retryResearch() {
+    const opportunityId = researchProgress?.opportunity.id;
+    if (!opportunityId || researchRetrying) return;
+    setResearchRetrying(true); setResearchActionError('');
+    try {
+      const result = await apiPost<{ opportunity: DealResearchOpportunity; mission: DealResearchMission }>(`/api/landos/opportunities/${opportunityId}/research`, {});
+      setResearchProgress({ opportunity: result.opportunity, mission: result.mission });
+    } catch (error) {
+      setResearchActionError((error as Error).message || 'Research could not be started.');
+    } finally {
+      setResearchRetrying(false);
     }
   }
 
@@ -4027,6 +4546,30 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     else void refreshList();
   }, [dealCardId]);
 
+  // A newly-created Lead Card opens immediately while its durable research
+  // mission continues in the background. Keep the owner on the same card and
+  // automatically replace the initial empty snapshot when evidence arrives.
+  useEffect(() => {
+    const opportunityId = researchProgress?.opportunity.id;
+    const missionStatus = researchProgress?.mission?.status;
+    if (!deal?.id || !opportunityId || !missionStatus || !ACTIVE_RESEARCH_STATUSES.has(missionStatus)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await apiGet<{ mission: DealResearchMission | null }>(`/api/landos/opportunities/${opportunityId}/research-mission`);
+        if (cancelled || !result.mission) return;
+        setResearchProgress((current) => current ? { ...current, mission: result.mission } : current);
+        if (!ACTIVE_RESEARCH_STATUSES.has(result.mission.status)) await load(deal.id, false);
+      } catch {
+        // A transient poll failure must not discard the saved lead or interrupt
+        // the research worker. The next interval retries from durable state.
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 3_000);
+    void poll();
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [deal?.id, researchProgress?.opportunity.id, researchProgress?.mission?.status]);
+
   // Load Trash lazily when the operator switches to the Trash view.
   useEffect(() => {
     if (listView === 'trash') { setConfirmPurgeId(null); void refreshTrash(); }
@@ -4112,8 +4655,12 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   }
 
   const prop = deal?.propertyCards?.[0];
-  const owner = deal?.people?.find((p) => p.role === 'owner');
-  const seller = deal?.people?.find((p) => p.role === 'seller');
+  const seller = deal?.people?.find((p) => p.role === 'seller')
+    ?? deal?.people?.find((p) => p.role === 'lead' || p.role === 'lead_contact');
+  const headerHero = preferredLandPortalHero(report);
+  const headerHeroSrc = headerHero
+    ? appendDashboardToken(headerHero.url, dashboardToken)
+    : deal ? `/api/landos/deal-cards/${deal.id}/overlay/aerial?token=${encodeURIComponent(dashboardToken)}` : null;
   // Show the dedicated Resolution view (not a half-populated Deal Card) whenever
   // the parcel is NOT confirmed and we captured a resolution snapshot for it.
   const rejectedMismatch = prop?.verification_status === 'rejected_mismatch';
@@ -4122,7 +4669,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   const showResolution = terminalParcel || (!!resolution && !resolution.confirmed && !!resolution.snapshot);
 
   return (
-    <div data-testid="deal-card-root" class="flex-1 overflow-y-auto px-6 py-4 space-y-4 dealcard-readable">
+    <div data-testid="deal-card-root" class="flex-1 overflow-y-auto px-6 pt-4 pb-40 space-y-4 dealcard-readable">
       {/* Toolbar: back-to-list (when a card is open) + create a new Deal Card. */}
       <div class="flex flex-wrap items-center gap-2">
         {mode === 'view' && deal && !dealCardId && (
@@ -4378,7 +4925,9 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               <OperatorCrmHeader
                 record={operatorRecord}
                 stage={deal.status}
-                heroSrc={`/api/landos/deal-cards/${deal.id}/overlay/aerial?token=${encodeURIComponent(dashboardToken)}`}
+                sellerLead={seller?.name ?? null}
+                heroSrc={headerHeroSrc}
+                heroHref={headerHeroSrc}
                 badges={
                   <>
                     <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
@@ -4388,7 +4937,6 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                   </>
                 }
               />
-              <ReconcileBar dealId={deal.id} modelVersion={modelVersion} onDone={() => void loadReport(deal.id)} />
             </>
           )}
           <div class="sticky top-0 z-10 -mx-6 px-6 pt-1 bg-[var(--color-bg)] border-b border-[var(--color-border)] space-y-2">
@@ -4423,8 +4971,29 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                 )}
               </div>
             )}
-            <DealTabBar active={activeTab} onSelect={setActiveTab} />
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="min-w-0 flex-1"><DealTabBar active={activeTab} onSelect={setActiveTab} /></div>
+              <button
+                type="button"
+                data-testid="open-smart-intake"
+                class="shrink-0 rounded-md border border-[var(--color-accent)] bg-[var(--color-card)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-accent)] shadow-sm"
+                onClick={() => {
+                  const panel = document.getElementById('deal-card-smart-intake');
+                  panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  window.setTimeout(() => (panel?.querySelector('[aria-label="New Deal Card information"]') as HTMLTextAreaElement | null)?.focus(), 250);
+                }}
+              >+ Smart Intake</button>
+            </div>
           </div>
+
+          {researchProgress && (
+            <DealResearchProgressPanel progress={researchProgress} retrying={researchRetrying} actionError={researchActionError} onRetry={() => void retryResearch()} />
+          )}
+
+          {/* One general living-record intake for notes, transcripts, contacts,
+              public records, documents and screenshots. The original is retained
+              and conclusions are routed to their owner-facing sections. */}
+          <SmartIntakePanel dealId={deal.id} token={dashboardToken} onChanged={() => void load(deal.id)} />
 
           {/* ══ OVERVIEW TAB ══ The Property Intelligence Report read: hero,
               executive summary, key facts, what-the-facts-mean, risks/unknowns,
@@ -4443,10 +5012,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               runReport={() => void runReport()}
               reportRunning={reportRunning}
               pursuit={pursuit}
-              orchestration={orchestration}
               onPublicIntelligenceUpdated={() => void loadReport(deal.id)}
               record={operatorRecord}
-              unified={unifiedReadiness}
             />
           )}
 
@@ -4455,13 +5022,13 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {activeTab === 'diligence' && (
             <div class="space-y-3">
               {operatorRecord && <RisksUnknownsPanel record={operatorRecord} />}
-              {/* Three separate axes per category: provider execution, business
-                  completeness, evidence strength — a green provider run is never
-                  presented as a finished business question. */}
-              <DdBusinessStatusPanel rows={ddBusinessStatus} />
-              <PublicPropertyIntelligencePanel dealId={deal.id} onUpdated={() => void loadReport(deal.id)} />
-              {operatorRecord && <WorkStatusBoard items={operatorRecord.workStatus} />}
+              <PublicRecordsPanel dealId={deal.id} />
+              <PublicPropertyIntelligencePanel dealId={deal.id} ownerName={seller?.name ?? prop?.owner} onUpdated={() => void loadReport(deal.id)} />
             </div>
+          )}
+
+          {activeTab === 'resources' && (
+            <ResourcesContactsPanel dealId={deal.id} people={deal.people ?? []} />
           )}
 
           {/* ══ VISUALS TAB ══ Every parcel-tied evidence image: official overlay
@@ -4469,9 +5036,27 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               LandPortal). */}
           {activeTab === 'visuals' && (
             <div class="space-y-4">
-              <EvidenceGallery dealId={deal.id} token={dashboardToken} />
-              {prop?.id && <VisualIntelligencePanel cardId={prop.id} token={dashboardToken} />}
-              {report?.visualContext && <VisualContextSection ctx={report.visualContext} token={dashboardToken} />}
+              <RetainedLandPortalPanel inspection={report?.landportalInspection} token={dashboardToken} ownerName={seller?.name ?? prop?.owner} />
+              {!report?.landportalInspection && <Placeholder text="No retained parcel visuals are available yet." />}
+              {prop?.id && (
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Google satellite & Street View</div>
+                    <button
+                      type="button"
+                      data-testid="capture-google-visuals"
+                      disabled={visualCapturing}
+                      onClick={() => captureVisuals(prop.id)}
+                      class="px-2.5 py-1.5 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
+                    >
+                      {visualCapturing ? 'Capturing…' : 'Capture / refresh Street View'}
+                    </button>
+                  </div>
+                  {report?.visualContext ? <VisualContextSection ctx={report.visualContext} token={dashboardToken} /> : <Placeholder text="Capture Google imagery to add verified-coordinate satellite and nearest-road Street View context." />}
+                  {visualCaptureMsg && <div class="text-[11px] text-[var(--color-text-muted)]">{visualCaptureMsg}</div>}
+                  <VisualIntelligencePanel cardId={prop.id} token={dashboardToken} />
+                </div>
+              )}
             </div>
           )}
 
@@ -4480,23 +5065,10 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {activeTab === 'market' && (
             <div class="space-y-3">
               <div class="text-[14px] font-bold text-[var(--color-text)] px-1">Should I want land here?</div>
-              <MarketPulseReadSection dealId={deal.id} />
-              <MarketScanSection dealId={deal.id} />
-              {/* The SAME shared readiness record every other tab renders. */}
-              <UnifiedReadinessStrip readiness={unifiedReadiness} context="Market view of the shared record" />
-              {/* The unique comparable registry — validated/rejected/merged with
-                  provider coverage; the ONLY comp truth every tab counts from.
-                  Its headline chip renders the SHARED value readiness, never the
-                  raw count gate. */}
-              <CompRegistryPanel
-                registry={compRegistry}
-                sharedValue={(() => {
-                  const v = unifiedReadiness?.dimensions.find((d) => d.key === 'value');
-                  return v ? { state: v.state, stateLabel: v.stateLabel, why: v.why } : null;
-                })()}
-              />
-              {report?.valuation?.primary && <ValuationPanel val={report.valuation} />}
-              {report?.compState && <CompStatePanel cs={report.compState} />}
+              <MarketResearchStrip analysis={ownerAnalysis} />
+              <CompMap dealCardId={deal.id} />
+              <LandPortalComparableTable inspection={report?.landportalInspection} />
+              <SoldCompValuationPanel analysis={ownerAnalysis} />
             </div>
           )}
 
@@ -4520,48 +5092,27 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               Preserves the Run / Re-run / Download Property Intelligence actions. */}
 
           {/* Visuals before any report/capture — honest placeholder, not a blank tab. */}
-          {activeTab === 'property' && !(report?.exists && prop?.id) && (
-            <Section title="Visuals">
-              <Placeholder text="Run Property Intelligence (Overview tab), then Capture visuals, to see satellite / Street View / Google Maps + Earth here." />
-            </Section>
-          )}
-
           {/* Report-derived sections, routed to their tabs (unchanged data/props). */}
           {report?.exists && (
               <div class="space-y-3">
                 {/* PROPERTY TAB — VISUALS: large satellite + parcel marker/boundary +
                     Street View + Maps/Earth + source/date, and the Capture action. */}
-                {activeTab === 'property' && prop?.id && (
-                  <div>
-                    <div class="flex items-center justify-end mb-1">
-                      <button
-                        type="button"
-                        disabled={visualCapturing}
-                        onClick={() => captureVisuals(prop.id)}
-                        class="px-2 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
-                      >
-                        {visualCapturing ? 'Capturing…' : 'Capture visuals'}
-                      </button>
-                    </div>
-                    <VisualContextSection ctx={report.visualContext} token={dashboardToken} />
-                    {visualCaptureMsg && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{visualCaptureMsg}</div>}
-                    <div class="mt-3"><VisualIntelligencePanel cardId={prop.id} token={dashboardToken} /></div>
-                  </div>
-                )}
-
                 {/* PROPERTY TAB — parcel details, reconciled facts, at-a-glance, land score. */}
                 {activeTab === 'property' && (
                 <>
+                {prop && <PropertyIdentityControl report={report} prop={prop} onSaved={() => load(deal.id)} />}
                 {/* RECONCILED PARCEL FACTS — one authoritative value per field, with
                     source confidence; disagreements shown, never dropped. (The
                     duplicate property header was removed — the CRM header above
                     is the one identity block.) */}
                 {report.reconciliation && <ReconciledFactsPanel rec={report.reconciliation} />}
+                <KeyFactsGrid report={report} />
                 {/* OFFICIAL RECORDS — labeled assessor/recorder fields, deed
                     description separate, nominal transfers flagged. */}
                 {operatorRecord && <OfficialRecordsPanel record={operatorRecord} documents={documentRegistry} />}
                 {/* AT-A-GLANCE LAND FACTS — flood/wetlands/slope/type. */}
                 <AtAGlanceStrip report={report} propertyType={propertyType} />
+                <PropertyGradesPanel analysis={ownerAnalysis} />
                 {/* LAND SCORE — screening rubric from current accepted evidence; a
                     screening profile, never a pursue/pass verdict. */}
                 {operatorRecord
@@ -4575,14 +5126,6 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                     valuation panels — Strategy consumes the same reconciled objects. */}
                 {activeTab === 'strategy' && (
                 <>
-                {/* The SAME shared readiness record every other tab renders —
-                    screening availability, scoreability, and actionability are
-                    distinct states here, never one collapsed "OK". */}
-                <UnifiedReadinessStrip readiness={unifiedReadiness} context="Strategy view of the shared record" />
-                {/* The shared five-strategy readiness record + pricing gate. All
-                    tabs read the same statuses; pricing shows nothing until the
-                    evidence supports it. */}
-                <StrategyReadinessPanel readiness={strategyReadiness} />
                 <PursuitPanel pursuit={pursuit} />
                 {/* Same reconciled comp state Market/Activity show — never a
                     contradictory "comps missing" here. */}
@@ -4592,13 +5135,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                     <div class="text-[11px] text-[var(--color-text-muted)]">{report.compState.strategyLine}</div>
                   </div>
                 )}
-                {report?.valuation?.conflict && report.valuation.conflictNote && (
-                  <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] text-amber-600 dark:text-amber-400">{report.valuation.conflictNote}</div>
-                )}
-                <StrategyExitsPanel pursuit={pursuit} dcr={discoveryReport} />
-                {/* CONFIRM BEFORE OFFER — merged with Remaining Verification into ONE
-                    section of SPECIFIC blockers (no stale generic tasks). */}
-                <RemainingBlockersPanel readiness={strategyReadiness} unknowns={operatorRecord?.unknowns} />
+                <OwnerStrategiesPanel analysis={ownerAnalysis} />
                 </>
                 )}
 
@@ -4606,58 +5143,29 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                     Strategy/Market read. The legacy call brief (stale pricing,
                     formulas, maybe-verdicts, provider diagnostics) is gone. */}
                 {activeTab === 'seller' && (
-                <>
-                {/* The SAME shared readiness record every other tab renders. */}
-                <UnifiedReadinessStrip readiness={unifiedReadiness} context="Seller view of the shared record" />
-                <SellerReadinessPanel parcelVerified={!!report?.parcelVerified} readiness={strategyReadiness} offerReadiness={operatorRecord?.offerReadiness ?? null} unified={unifiedReadiness} />
-                <CallGuardrailsPanel readiness={strategyReadiness} />
-                </>
+                <SellerSnapshot deal={deal} seller={seller} es={execSummary} />
                 )}
 
                 {/* MARKET TAB — market pulse gated by validated closed-sale counts
                     (no one-point medians/bands/sell-through) + raw rows collapsed. */}
                 {activeTab === 'market' && (
                 <>
-                <MarketPulseSection mp={execSummary?.marketPulse as unknown as MarketPulseView} mc={report.marketComps} validatedSoldCount={compRegistry?.counts.validatedSold} />
+                <LandPortalCompMapEvidence inspection={report.landportalInspection} token={dashboardToken} />
                 {/* Embedded LandOS comp map + sortable table — the FINAL deduplicated
                     registry (subject + selected top-5 + classified candidates), never
                     raw provider duplicates. Raw LandPortal map screenshots remain
                     separate provider evidence in the visual gallery. */}
-                <CompMap dealCardId={deal.id} />
-                <Collapsible title="Raw provider rows (technical audit)">
-                  <MarketCompsSection mc={report.marketComps} />
-                </Collapsible>
                 </>
                 )}
 
                 {/* PROPERTY TAB — LandPortal HD imagery / terrain shots + observations. */}
-                {activeTab === 'property' && (
-                <LandPortalImageryPanel inspection={report.landportalInspection} token={dashboardToken} />
-                )}
-
-                {/* PROPERTY TAB — research tools collapsed: provider/browser detail
-                    is technical workflow, not the canonical facts page. */}
-                {activeTab === 'property' && (
-                <Collapsible title="Research tools & provider detail (technical)">
-                  <div class="space-y-3">
-                    <BrowserIntelligenceSection dealId={deal?.id} />
-                    <PublicRecordsResearchSection dealId={deal.id} />
-                  </div>
-                </Collapsible>
-                )}
-
                 {/* PROPERTY TAB — source-labeled facts + full business intelligence
                     (moved off Overview; the memo stays clean, the depth stays here). */}
                 {activeTab === 'property' && (
                 <>
                 <Collapsible title="Source-labeled property facts">
-                  <DdFactChecklist rows={report.ddFactChecklist} completeness={report.ddCompleteness} />
+                  <DdFactChecklist rows={report.ddFactChecklist} />
                 </Collapsible>
-                {spine && (
-                  <Collapsible title="Full business intelligence">
-                    <BusinessSpineSection spine={spine} dealId={deal.id} />
-                  </Collapsible>
-                )}
                 </>
                 )}
 
@@ -4681,6 +5189,23 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) → Seller */}
           {activeTab === 'seller' && (
           <Section title="Contacts">
+            {(() => {
+              const ownerName = factOf(report, 'owner').value ?? report?.landportalInspection?.factSheet?.owner ?? prop?.owner ?? '';
+              const samePerson = !!seller?.name && !!ownerName && seller.name.trim().toLowerCase() === String(ownerName).trim().toLowerCase();
+              return samePerson ? (
+                <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 mb-3">
+                  <div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">Lead / contact and owner of record</div>
+                  <div class="text-[12.5px] font-semibold text-[var(--color-text)] mt-0.5">{seller?.name}</div>
+                  <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">One person record. Original official-record formatting remains available in Public Records and Activity.</div>
+                </div>
+              ) : (
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+                  <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5"><div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">Owner of record</div><div class="text-[12.5px] font-semibold text-[var(--color-text)] mt-0.5">{ownerName || 'Not recorded'}</div></div>
+                  <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5"><div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">Lead / contact</div><div class="text-[12.5px] font-semibold text-[var(--color-text)] mt-0.5">{seller?.name ?? 'Not recorded'}</div></div>
+                </div>
+              );
+            })()}
+            <AddDealContactControl dealId={deal.id} onSaved={() => load(deal.id)} />
             {(!deal.people || deal.people.length === 0) ? (
               <Placeholder text="No contacts captured yet" />
             ) : (
@@ -4701,14 +5226,11 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                 ))}
               </div>
             )}
-            {owner && seller && owner.name && seller.name && owner.name.trim().toLowerCase() !== seller.name.trim().toLowerCase() && (
+            {seller?.name && (factOf(report, 'owner').value ?? report?.landportalInspection?.factSheet?.owner ?? prop?.owner) && seller.name.trim().toLowerCase() !== String(factOf(report, 'owner').value ?? report?.landportalInspection?.factSheet?.owner ?? prop?.owner).trim().toLowerCase() && (
               <div class="text-[11px] text-[var(--color-text-muted)] mt-2 border-t border-[var(--color-border)] pt-2">
-                Owner on record: {owner.name} / Lead: {seller.name} — do not match (possible inherited/pre-transfer).
+                Lead/contact and owner-of-record names do not currently reconcile; confirm the relationship before contracting.
               </div>
             )}
-            <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
-              Multiple names/roles per property are supported (e.g. inherited leads with several heirs). Contact data is local; CRM/GHL is not connected — No external CRM read or write happens in this view.
-            </div>
           </Section>
           )}
 
@@ -4721,9 +5243,6 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {/* 8. Documents & quick actions → Documents (report controls above) */}
           {activeTab === 'documents' && (
           <Section title="Reports & Files">
-            {/* The SAME shared readiness record every other tab renders — a
-                generated report never implies more readiness than this. */}
-            <div class="mb-3"><UnifiedReadinessStrip readiness={unifiedReadiness} context="Reports view of the shared record" /></div>
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Generated reports</div>
             {report?.exists ? (
               <div class="rounded-md border border-[var(--color-border)] p-2 space-y-1.5">
@@ -4768,22 +5287,9 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           </Section>
           )}
 
-          {/* Report model controls + run/download — intentionally BELOW the
-              document workspace: documents first, technical controls last. */}
           {activeTab === 'documents' && (
           <Section title="Property Intelligence Report">
-            <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
-              <div class="flex items-center gap-2 flex-wrap">
-                <ReportStatusBadge status={report?.reportStatus} readiness={reportReadiness} />
-                {report?.exists && (
-                  <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">
-                    {report.parcelVerificationStatus}
-                  </span>
-                )}
-              </div>
-              <div class="flex items-center gap-2 flex-wrap">
-                {/* Point-of-action model picker: the report run is a model-backed action. */}
-                <ModelControl entity={entity} scopeKind="department" scopeKey="research_due_diligence" taskType="strategy_reasoning" orientation="reasoning_oriented" label="Report model" />
+            <div class="flex items-center justify-end gap-2 mb-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => void runReport()}
@@ -4800,51 +5306,21 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                     Download Report
                   </a>
                 )}
-              </div>
             </div>
 
             {reportError && <div class="text-[11px] text-[var(--color-status-failed)] mb-2">{reportError}</div>}
-            {reportWarnings.length > 0 && (
-              <div class="mb-2 rounded-md border border-[var(--color-status-failed)] p-2 space-y-0.5">
-                {reportWarnings.map((w) => (
-                  <div key={w} class="text-[11px] text-[var(--color-status-failed)]">{w}</div>
-                ))}
-              </div>
-            )}
-
             {!report?.exists && (
               <div class="text-[12px] text-[var(--color-text-muted)] border border-dashed border-[var(--color-border)] rounded-lg p-3">
                 No report run yet. Click <span class="text-[var(--color-accent)]">Run Property Intelligence</span> to run the safe browser/property due diligence workflow, capture visuals, include Market Pulse and Strategy, and update the Deal Card. It never spends a comp credit and never fabricates parcel facts, comps, demand, pricing, or offers.
               </div>
             )}
 
-            {report?.exists && (
-              <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
-                Operational report. Departments stay separate (DD property-level, Market market-level, Strategy decision-level). No parcel fact is Verified without a named source; no comps, demand, pricing, EVs, or offers are fabricated.
-                {report.generatedAt ? <> Last run {formatRelativeTime(report.generatedAt)}{report.updatedBy ? ` by ${report.updatedBy}` : ''}.</> : null}
-              </div>
-            )}
+            {report?.generatedAt && <div class="text-[10px] text-[var(--color-text-faint)] mt-2">Last updated {formatRelativeTime(report.generatedAt)}.</div>}
           </Section>
           )}
 
-          {/* ══ ACTIVITY TAB ══ Current research mission (classified accepted /
-              rejected / superseded / failed / pending, repeats grouped) + history. */}
-          {activeTab === 'activity' && <MissionPanel mission={mission} />}
           {activeTab === 'activity' && (
           <Section title="Activity">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-x-4 gap-y-1 mb-2">
-              <Field label="Report status" value={reportStatusText(report?.reportStatus)} />
-              <Field label="Last run" value={report?.generatedAt ? formatRelativeTime(report.generatedAt) : undefined} />
-              <Field label="Updated by" value={report?.updatedBy || undefined} />
-            </div>
-            {report?.exists && (
-              <div class="rounded-md border border-[var(--color-border)] p-2 mb-2">
-                <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Credit usage</div>
-                <div class="text-[12px] text-[var(--color-text)]">
-                  LandPortal non-credit tools: {report.creditUsage.landportalNonCreditUsed ? 'used' : 'not used'}. Comp-credit tools: not used.
-                </div>
-              </div>
-            )}
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Activity log</div>
             <ActivityTimeline dealId={deal.id} />
           </Section>

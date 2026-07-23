@@ -21,10 +21,12 @@ const fakeOfficialParcel: OfficialParcel = {
 
 const lookupMatched: () => Promise<OfficialParcelLookupResult> = async () => ({
   parcel: fakeOfficialParcel,
+  status: 'matched',
   attempted: [{ source: 'Tennessee Comptroller public parcel layer', status: 'matched', note: 'Exact match.' }],
 });
 const lookupNoAdapter: () => Promise<OfficialParcelLookupResult> = async () => ({
   parcel: null,
+  status: 'unavailable',
   attempted: [{ source: 'Official public parcel lookup', status: 'unavailable', note: 'No tested public parcel adapter is available for this jurisdiction.' }],
 });
 

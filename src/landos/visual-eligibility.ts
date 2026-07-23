@@ -53,8 +53,11 @@ export const ELIGIBLE_BASES: ReadonlySet<VisualAssociationBasis> = new Set([
   'apn_visible_in_screenshot',
 ]);
 
-/** Street View is nearby context only and must be close to the verified parcel location. */
-export const MAX_PARCEL_CONTEXT_DISTANCE_M = 120;
+/** Street View is nearby road context only. Rural parcel centroids can sit well
+ * inside the tract, so search far enough to reach the adjoining road while still
+ * rejecting unrelated panoramas. The UI always discloses the measured distance
+ * and never calls this frontage or access proof. */
+export const MAX_PARCEL_CONTEXT_DISTANCE_M = 300;
 
 export interface VisualAssociation {
   targetKind: VisualTargetKind;

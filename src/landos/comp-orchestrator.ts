@@ -17,7 +17,7 @@
 //   • classifyNonSelected — every candidate that is NOT a selected primary comp
 //     keeps a visible classification + reason (nothing silently discarded).
 
-import type { CompRegistry, UniqueComp } from './comp-registry.js';
+import type { CompRegistry, CompRegistryCandidate, UniqueComp } from './comp-registry.js';
 import { haversineMeters } from './parallel-resolution.js';
 
 // ── Parallel provider execution ──────────────────────────────────────────────
@@ -26,16 +26,22 @@ export interface CompProviderJob {
   /** Operator-facing provider name ('Zillow', 'Redfin', 'LandPortal visible', …). */
   provider: string;
   /** Fetch-only work. MUST NOT persist — the caller persists in stable order. */
-  run: () => Promise<unknown>;
+  run: (context: { signal: AbortSignal; timeoutMs: number }) => Promise<unknown>;
+  normalize?: (result: unknown) => {
+    status: 'succeeded' | 'no_result' | 'unavailable' | 'blocked';
+    candidates: CompRegistryCandidate[];
+    note?: string;
+  };
 }
 
 export interface CompProviderRun {
   provider: string;
-  status: 'succeeded' | 'failed' | 'timeout';
+  status: 'succeeded' | 'no_result' | 'unavailable' | 'blocked' | 'failed' | 'timeout';
   /** The provider's raw result when it succeeded (caller knows its own type). */
   result: unknown;
   elapsedMs: number;
   note: string;
+  candidates: CompRegistryCandidate[];
 }
 
 const DEFAULT_PROVIDER_BUDGET_MS = 180_000;
@@ -53,26 +59,39 @@ export async function runCompProvidersParallel(
   const now = opts.now ?? (() => Date.now());
   return Promise.all(jobs.map(async (job): Promise<CompProviderRun> => {
     const start = now();
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<CompProviderRun>((resolve) => {
-      timer = setTimeout(() => resolve({
-        provider: job.provider, status: 'timeout', result: null,
-        elapsedMs: budget,
-        note: `${job.provider} exceeded its ${Math.round(budget / 1000)}s budget; other providers were not affected.`,
-      }), budget);
+      timer = setTimeout(() => {
+        controller.abort();
+        resolve({
+          provider: job.provider, status: 'timeout', result: null,
+          elapsedMs: budget,
+          note: `${job.provider} exceeded its ${Math.round(budget / 1000)}s budget; other providers were not affected.`,
+          candidates: [],
+        });
+      }, budget);
     });
     try {
       const result = await Promise.race([
-        job.run().then((r): CompProviderRun => ({
-          provider: job.provider, status: 'succeeded', result: r, elapsedMs: now() - start,
-          note: `${job.provider} completed.`,
-        })),
+        job.run({ signal: controller.signal, timeoutMs: budget }).then((r): CompProviderRun => {
+          const normalized = job.normalize?.(r);
+          return {
+            provider: job.provider,
+            status: normalized?.status ?? 'succeeded',
+            result: r,
+            elapsedMs: now() - start,
+            note: normalized?.note ?? `${job.provider} completed.`,
+            candidates: normalized?.candidates ?? (Array.isArray(r) ? r as CompRegistryCandidate[] : []),
+          };
+        }),
         timeout,
       ]);
       return result;
     } catch (err) {
       return {
         provider: job.provider, status: 'failed', result: null, elapsedMs: now() - start,
+        candidates: [],
         note: `${job.provider} failed: ${err instanceof Error ? err.message : String(err)} — other providers were not affected.`,
       };
     } finally {

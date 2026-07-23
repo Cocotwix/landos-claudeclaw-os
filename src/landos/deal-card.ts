@@ -53,6 +53,7 @@ import {
 } from './property-card.js';
 import { REPORT_STATUSES, type DukeReportStatus } from './duke-persist.js';
 import { buildDukePartialContract, type DukePartialContract } from './duke-partial.js';
+import { ownerFacingPersonName } from './lead-card-intake.js';
 
 /** Reverse lookup so a persisted report-status string can be validated on read. */
 const REPORT_STATUS_SET = new Set<string>(REPORT_STATUSES as readonly string[]);
@@ -530,13 +531,34 @@ export function getDealCard(id: number): DealCardDetail | undefined {
      WHERE dcp.deal_card_id = ?
      ORDER BY dcp.created_at ASC, dcp.id ASC`,
   ).all(id) as Array<Record<string, unknown>>;
-  const people = db.prepare(
+  const rawPeople = db.prepare(
     `SELECT pl.role, pl.authority_status, pl.authority_source, pl.note AS link_note, p.*
      FROM landos_person_link pl
      JOIN landos_person p ON p.id = pl.person_id
      WHERE pl.deal_card_id = ?
      ORDER BY pl.created_at ASC, pl.id ASC`,
   ).all(id) as Array<Record<string, unknown>>;
+  const peopleById = new Map<number, Record<string, unknown>>();
+  for (const row of rawPeople) {
+    const personId = Number(row.id);
+    const existing = peopleById.get(personId);
+    const roles = existing ? existing.roles as string[] : [];
+    const role = String(row.role ?? '');
+    if (role && !roles.includes(role)) roles.push(role);
+    const preferredRole = roles.find((candidate) => candidate === 'seller')
+      ?? roles.find((candidate) => candidate === 'lead_contact')
+      ?? roles.find((candidate) => candidate === 'record_owner')
+      ?? roles[0]
+      ?? role;
+    peopleById.set(personId, {
+      ...(existing ?? row),
+      ...row,
+      name: ownerFacingPersonName(String(row.name ?? ''), id),
+      role: preferredRole,
+      roles,
+    });
+  }
+  const people = [...peopleById.values()];
 
   let acres = 0;
   let allVerified = links.length > 0;

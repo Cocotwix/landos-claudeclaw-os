@@ -1025,6 +1025,110 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_landos_market_scan ON landos_market_scan(deal_card_id, kind);
 
+    -- Phase 1E living lead-card intake. The original submission is immutable;
+    -- routed conclusions live in child rows so conflicts are retained instead
+    -- of overwriting an earlier accepted fact.
+    CREATE TABLE IF NOT EXISTS landos_intake_submission (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      submission_type       TEXT NOT NULL DEFAULT 'general',
+      source                TEXT NOT NULL DEFAULT 'operator',
+      original_text         TEXT NOT NULL DEFAULT '',
+      original_file_name    TEXT NOT NULL DEFAULT '',
+      original_file_url     TEXT NOT NULL DEFAULT '',
+      mime_type             TEXT NOT NULL DEFAULT '',
+      summary               TEXT NOT NULL DEFAULT '',
+      routed_sections_json  TEXT NOT NULL DEFAULT '[]',
+      extracted_json        TEXT NOT NULL DEFAULT '{}',
+      status                TEXT NOT NULL DEFAULT 'received',
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_submission
+      ON landos_intake_submission(deal_card_id, created_at DESC, id DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_intake_fact (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id  INTEGER NOT NULL REFERENCES landos_intake_submission(id),
+      deal_card_id   INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      section        TEXT NOT NULL DEFAULT 'activity',
+      fact_key       TEXT NOT NULL DEFAULT '',
+      value          TEXT NOT NULL DEFAULT '',
+      fact_status    TEXT NOT NULL DEFAULT 'stated',
+      conflict_note  TEXT NOT NULL DEFAULT '',
+      source         TEXT NOT NULL DEFAULT 'operator submission',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_fact
+      ON landos_intake_fact(deal_card_id, section, fact_key, created_at DESC);
+
+    -- Government, utility, and vendor resources are separate from seller
+    -- people. Representatives are part of the dedupe key, allowing multiple
+    -- people at one department without duplicate cards for the same person.
+    CREATE TABLE IF NOT EXISTS landos_resource_contact (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      category              TEXT NOT NULL DEFAULT 'other',
+      organization          TEXT NOT NULL DEFAULT '',
+      department            TEXT NOT NULL DEFAULT '',
+      representative        TEXT NOT NULL DEFAULT '',
+      role                  TEXT NOT NULL DEFAULT '',
+      phone                 TEXT NOT NULL DEFAULT '',
+      email                 TEXT NOT NULL DEFAULT '',
+      website               TEXT NOT NULL DEFAULT '',
+      address               TEXT NOT NULL DEFAULT '',
+      jurisdiction          TEXT NOT NULL DEFAULT '',
+      notes                 TEXT NOT NULL DEFAULT '',
+      source                TEXT NOT NULL DEFAULT '',
+      last_contacted_date   TEXT NOT NULL DEFAULT '',
+      linked_items_json     TEXT NOT NULL DEFAULT '[]',
+      next_follow_up        TEXT NOT NULL DEFAULT '',
+      dedupe_key            TEXT NOT NULL DEFAULT '',
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, dedupe_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_resource_contact
+      ON landos_resource_contact(deal_card_id, category, organization);
+
+    -- Owner-readable outcomes from the jurisdiction-aware public-record lane.
+    -- An inaccessible index is recorded as retrieved_no with the exact reason;
+    -- it is never translated into a claim that no lien/deed/restriction exists.
+    CREATE TABLE IF NOT EXISTS landos_public_record_outcome (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id      INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      category          TEXT NOT NULL,
+      title             TEXT NOT NULL DEFAULT '',
+      jurisdiction      TEXT NOT NULL DEFAULT '',
+      authority         TEXT NOT NULL DEFAULT '',
+      retrieval_status  TEXT NOT NULL DEFAULT 'retrieved_no',
+      summary           TEXT NOT NULL DEFAULT '',
+      facts_json        TEXT NOT NULL DEFAULT '{}',
+      source_url        TEXT NOT NULL DEFAULT '',
+      screenshot_url    TEXT NOT NULL DEFAULT '',
+      document_url      TEXT NOT NULL DEFAULT '',
+      searched_at       TEXT NOT NULL DEFAULT '',
+      next_follow_up    TEXT NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, category, authority)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_public_record_outcome
+      ON landos_public_record_outcome(deal_card_id, category, updated_at DESC);
+
+    -- Explicit aliases reconcile official last-name-first formatting and known
+    -- intake corrections to one canonical person while retaining provenance.
+    CREATE TABLE IF NOT EXISTS landos_person_alias (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      person_id    INTEGER NOT NULL REFERENCES landos_person(id),
+      alias_name   TEXT NOT NULL,
+      alias_key    TEXT NOT NULL,
+      source       TEXT NOT NULL DEFAULT '',
+      official_format INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(person_id, alias_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_person_alias_key ON landos_person_alias(alias_key);
+
     CREATE TABLE IF NOT EXISTS landos_research_item (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       kind        TEXT NOT NULL
@@ -1080,6 +1184,27 @@ function createLandosSchema(db: Database.Database): void {
   // decisions beyond the existing coordinate matcher.
   addColumn('landos_comp', 'lat', `lat REAL`);
   addColumn('landos_comp', 'lng', `lng REAL`);
+  // Phase 1D normalized comparable record. landos_comp remains the one shared
+  // registry; these additive fields carry provider-complete evidence without
+  // weakening the legacy manual-comp constraints.
+  addColumn('landos_comp', 'canonical_source', `canonical_source TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'city', `city TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'zip', `zip TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'distance_miles', `distance_miles REAL`);
+  addColumn('landos_comp', 'listing_date', `listing_date TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'days_on_market', `days_on_market INTEGER`);
+  addColumn('landos_comp', 'property_class', `property_class TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'classification', `classification TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'thumbnail_url', `thumbnail_url TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'retrieved_at', `retrieved_at TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'radius_miles', `radius_miles REAL`);
+  addColumn('landos_comp', 'date_window_months', `date_window_months INTEGER`);
+  addColumn('landos_comp', 'inclusion_reason', `inclusion_reason TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'source_attributions_json', `source_attributions_json TEXT NOT NULL DEFAULT '[]'`);
+  addColumn('landos_comp', 'canonical_key', `canonical_key TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'updated_at', `updated_at INTEGER NOT NULL DEFAULT 0`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_landos_comp_canonical
+           ON landos_comp(deal_card_id, canonical_key)`);
   // Normalize provider-echoed county names to the LandOS bare-name convention
   // ("Pickens", not "Pickens County") — the UI appends "County" itself. US
   // county proper names never end in " County", so this is a safe idempotent

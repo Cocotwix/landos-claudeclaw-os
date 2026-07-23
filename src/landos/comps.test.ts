@@ -7,11 +7,13 @@ import { createDealCard } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
 import {
   addComp,
+  upsertNormalizedComp,
   listComps,
   recommendCompSources,
   evaluateCompRecency,
   isPaidCompAllowed,
   assertPaidCompAllowed,
+  extractListingCoordinates,
   PAID_COMP_TOOLS,
 } from './comps.js';
 
@@ -123,5 +125,54 @@ describe('manual comps', () => {
     const comp = addComp({ entity: 'TY_LAND_BIZ', dealCardId: dealId, sourceLabel: 'NotAReal' as never, status: 'market_reference' });
     expect(comp.source_label).toBe('Other');
     expect(comp.status).toBe('market_reference');
+  });
+
+  it('persists normalized map/date/image fields and merges cross-provider attribution without losing richer prior evidence', () => {
+    const dealId = deal();
+    const first = upsertNormalizedComp({
+      entity: 'TY_LAND_BIZ', dealCardId: dealId, sourceLabel: 'Zillow', canonicalSource: 'Zillow',
+      sourceUrl: 'https://www.zillow.com/example', addressDesc: '123 Rural Rd, Newport, TN 37843',
+      state: 'TN', city: 'Newport', zip: '37843', price: 55000, priceKind: 'sale', acres: 5.5,
+      saleOrListDate: '2026-05-01', listingDate: '2026-02-01', daysOnMarket: 89,
+      lat: 36.03, lng: -83.1, distanceMiles: 1.25, thumbnailUrl: 'https://images.example/z.jpg',
+      radiusMiles: 5, dateWindowMonths: 12, classification: 'accepted_vacant_land_sold',
+    });
+    const merged = upsertNormalizedComp({
+      entity: 'TY_LAND_BIZ', dealCardId: dealId, sourceLabel: 'Redfin', canonicalSource: 'Redfin',
+      sourceUrl: 'https://www.redfin.com/example', addressDesc: '123 Rural Rd, Newport, TN 37843',
+      state: 'TN', price: 55000, priceKind: 'sale', acres: 5.5,
+      sourceAttributions: [{ provider: 'Redfin', url: 'https://www.redfin.com/example' }],
+    });
+    expect(merged.id).toBe(first.id);
+    expect(listComps({ dealCardId: dealId })).toHaveLength(1);
+    expect(merged.lat).toBe(36.03);
+    expect(merged.distance_miles).toBe(1.25);
+    expect(merged.sale_or_list_date).toBe('2026-05-01');
+    expect(merged.listing_date).toBe('2026-02-01');
+    expect(merged.days_on_market).toBe(89);
+    expect(merged.thumbnail_url).toContain('images.example');
+    const providers = JSON.parse(merged.source_attributions_json) as Array<{ provider: string }>;
+    expect(providers.map((row) => row.provider)).toEqual(expect.arrayContaining(['Zillow', 'Redfin']));
+  });
+});
+
+describe('listing coordinate enrichment', () => {
+  it('extracts only an explicit property coordinate from supported listing metadata', () => {
+    expect(extractListingCoordinates(
+      '<script type="application/ld+json">{"address":{"postalCode":"37821"},"geo":{"@type":"GeoCoordinates","latitude":35.963061,"longitude":-83.135348}}</script>',
+      'Rock Hill Rd Lot 24, Newport, TN 37821',
+      'https://www.coldwellbanker.com/tn/newport/rock-hill-rd-lot-24/example',
+    )).toEqual({ lat: 35.963061, lng: -83.135348, provider: 'Coldwell Banker listing' });
+    expect(extractListingCoordinates(
+      '{"postalCode":"37821","locationLat":"35.958927154541016","locationLon":"-83.17390441894531"}',
+      '47 Highway 73, Newport, TN 37821',
+      'https://www.trulia.com/home/parcel-47-highway-73-newport-tn-37821-example',
+    )).toEqual({ lat: 35.958927154541016, lng: -83.17390441894531, provider: 'Trulia listing' });
+  });
+
+  it('rejects unsupported pages, mismatched ZIPs, and Redfin pages with ambiguous nearby coordinates', () => {
+    expect(extractListingCoordinates('{"postalCode":"99999","locationLat":"35.9","locationLon":"-83.1"}', '47 Highway 73, Newport, TN 37821', 'https://www.trulia.com/example')).toBeNull();
+    expect(extractListingCoordinates('{"postalCode":"37821","latitude":35.9,"longitude":-83.1,"nearby":{"latitude":36.0,"longitude":-83.2}}', '1 Land Rd, Newport, TN 37821', 'https://www.redfin.com/example')).toBeNull();
+    expect(extractListingCoordinates('{"postalCode":"37821","latitude":35.9,"longitude":-83.1}', '1 Land Rd, Newport, TN 37821', 'https://example.com/listing')).toBeNull();
   });
 });

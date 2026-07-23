@@ -10,7 +10,8 @@ import { buildDashboardApp } from '../dashboard.js';
 import { logger } from '../logger.js';
 import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
 import { emptyLpPropertySummary } from './landportal-client.js';
-import { createOpportunity } from './opportunity.js';
+import { createOpportunity, getOpportunityByDealCardId, listOpportunityHistory } from './opportunity.js';
+import { linkPropertyToDeal } from './deal-card.js';
 
 // The live DD routes now default to the parcel-identity CAPABILITY. These route
 // tests exercise the verification BRIDGE mapping, so delegate the capability to
@@ -126,6 +127,117 @@ async function post(path: string, body?: unknown) {
   });
 }
 
+describe('LandOS routes - Phase 1B owner identity controls', () => {
+  async function identityFixture() {
+    const propertyResponse = await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: '1023 Baysinger Rd',
+      city: 'Newport', county: 'Cocke', state: 'TN',
+      apn: '015 027 04512 000 2026', owner: 'JOINES TRAVIS',
+      verified: true, verificationSource: 'Tennessee Comptroller public parcel layer',
+    });
+    expect(propertyResponse.status).toBe(201);
+    const property = ((await propertyResponse.json()) as any).card;
+    const dealResponse = await post('/api/landos/deal-cards', {
+      entity: 'TY_LAND_BIZ', title: '1023 Baysinger Rd', sellerNotes: 'Original intake: 1023 Baysinger Rd', leadType: 'manual',
+    });
+    expect(dealResponse.status).toBe(201);
+    const deal = ((await dealResponse.json()) as any).dealCard;
+    expect(linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' }).error).toBeUndefined();
+    const opportunity = getOpportunityByDealCardId(deal.id);
+    return { property, deal, opportunity };
+  }
+
+  it('synchronizes the Property Card, Deal Card, and Opportunity title while retaining prior intake history', async () => {
+    const { property, deal, opportunity } = await identityFixture();
+    const priorRawInput = opportunity.rawInput;
+    const response = await post(`/api/landos/property-cards/${property.id}/verified-parcel-reconciliation`, {
+      address: 'TALLEY RD, Newport, TN 37843', city: 'Newport', county: 'Cocke', state: 'TN',
+      apn: '015 027 04512 000 2026', owner: 'JOINES TRAVIS',
+      sourceUrl: 'https://tnmap.tn.gov/assessment/', sourceLabel: 'Tennessee Comptroller public parcel layer',
+      confirmAcceptedIdentityReplacement: true,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.card.active_input_address).toBe('TALLEY RD, Newport, TN 37843');
+    expect(body.dealCard.title).toBe('TALLEY RD, Newport, TN 37843');
+    expect(body.opportunity).toMatchObject({ id: opportunity.id, title: 'TALLEY RD, Newport, TN 37843', rawInput: priorRawInput });
+
+    const history = listOpportunityHistory(opportunity.id);
+    expect(history.some((event) => event.eventType === 'canonical_identity_updated' && /1023 Baysinger Rd/.test(event.note))).toBe(true);
+    const activity = (await (await get(`/api/landos/deal-cards/${deal.id}/activity`)).json()) as any;
+    expect(activity.events.some((event: any) => event.kind === 'verified_parcel_reconciled' && /1023 Baysinger Rd/.test(event.summary))).toBe(true);
+  });
+
+  it('adds one idempotent lead without altering the parcel owner or inventing contact details', async () => {
+    const { property, deal } = await identityFixture();
+    const first = await post(`/api/landos/deal-cards/${deal.id}/people`, { name: 'Travis Jones', role: 'lead' });
+    const second = await post(`/api/landos/deal-cards/${deal.id}/people`, { name: 'Travis Jones', role: 'lead' });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(200);
+    expect((await first.json() as any).created).toBe(true);
+    expect((await second.json() as any).created).toBe(false);
+
+    const savedDeal = ((await (await get(`/api/landos/deal-cards/${deal.id}`)).json()) as any).dealCard;
+    const leads = savedDeal.people.filter((person: any) => person.name === 'Travis Jones' && person.role === 'lead_contact');
+    expect(leads).toHaveLength(1);
+    expect(leads[0]).toMatchObject({ phone: '', email: '', mailing_address: '', authority_status: 'unknown' });
+    const savedProperty = ((await (await get(`/api/landos/property-cards/${property.id}`)).json()) as any).card;
+    expect(savedProperty.owner).toBe('JOINES TRAVIS');
+  });
+});
+
+describe('LandOS routes - Phase 1E living Deal Card', () => {
+  async function livingCardFixture() {
+    const property = ((await (await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'TALLEY RD', city: 'Newport', county: 'Cocke', state: 'TN',
+      apn: '015 027 04512 000 2026', owner: 'JOINES TRAVIS', acres: 5.82,
+      verified: true, verificationSource: 'Tennessee Comptroller public parcel layer',
+    })).json()) as any).card;
+    const deal = ((await (await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Talley Rd Phase 1E' })).json()) as any).dealCard;
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' });
+    await post(`/api/landos/deal-cards/${deal.id}/people`, { name: 'Travis Jones', role: 'lead', phone: '423-555-0100', email: 'travis@example.test' });
+    return { property, deal };
+  }
+
+  it('reconciles identity once and exposes durable intake, resources, hierarchy, and plain public-record outcomes', async () => {
+    const { deal } = await livingCardFixture();
+    const reconciled = await post(`/api/landos/deal-cards/${deal.id}/identity/reconcile`, {
+      canonicalName: 'Travis Joines', officialName: 'JOINES TRAVIS', knownIncorrectNames: ['Travis Jones'],
+    });
+    expect(reconciled.status).toBe(200);
+    const reconciledBody = (await reconciled.json()) as any;
+    expect(reconciledBody.dealCard.people).toHaveLength(1);
+    expect(reconciledBody.dealCard.people[0]).toMatchObject({ name: 'Travis Joines', phone: '423-555-0100', email: 'travis@example.test' });
+    expect(reconciledBody.dealCard.people[0].roles).toEqual(expect.arrayContaining(['lead_contact', 'record_owner']));
+
+    const intake = await post(`/api/landos/deal-cards/${deal.id}/intake`, {
+      submissionType: 'general', source: 'route test', text: 'Seller stated that power availability is unknown. Follow-up: call the utility.',
+    });
+    expect(intake.status).toBe(201);
+    const intakeBody = (await intake.json()) as any;
+    expect(intakeBody.submission).toMatchObject({ originalText: 'Seller stated that power availability is unknown. Follow-up: call the utility.', status: 'complete', transcript: null });
+    expect(intakeBody.submission.sections).toEqual(expect.arrayContaining(['seller_contact', 'utilities_septic_access', 'activity']));
+    expect((await (await get(`/api/landos/deal-cards/${deal.id}/intake`)).json()) as any).toMatchObject({ submissions: [{ originalText: intakeBody.submission.originalText }] });
+
+    const resource = await post(`/api/landos/deal-cards/${deal.id}/resources`, {
+      category: 'planning_zoning', organization: 'Cocke County', department: 'Zoning Department', representative: 'Ashley Shelton', phone: '423-237-7600',
+    });
+    expect(resource.status).toBe(201);
+    expect(((await resource.json()) as any).contacts).toHaveLength(1);
+
+    const publicRecord = await post(`/api/landos/deal-cards/${deal.id}/public-records`, {
+      category: 'deed_title_easement', title: 'Deed review', jurisdiction: 'Cocke County, TN', authority: 'Cocke County Register of Deeds',
+      retrievalStatus: 'retrieved_no', summary: 'The latest deed image was not available from the free public page.', sourceUrl: 'https://county.example/register',
+    });
+    expect(publicRecord.status).toBe(201);
+    const records = (await (await get(`/api/landos/deal-cards/${deal.id}/public-records`)).json()) as any;
+    expect(records.hierarchy).toMatchObject({ subjectReady: true, roadOnlyAccepted: true, ownerIsDiscoveryOnly: true });
+    expect(records.records[0]).toMatchObject({ retrieval_status: 'retrieved_no', source_url: 'https://county.example/register' });
+    expect(JSON.stringify(records)).not.toMatch(/no liens|clear title|provider attempt|orchestration/i);
+  });
+});
+
 describe('LandOS routes - Phase 1 transcript reconciliation', () => {
   it('supports pasted JSON and text-file multipart upload and exposes the latest durable reconciliation', async () => {
     const opportunity = createOpportunity({ entity: 'TY_LAND_BIZ', title: 'Transcript route lead' });
@@ -186,6 +298,10 @@ describe('LandOS routes - Phase 1 manual opportunity workflow', () => {
     expect(body.opportunity.rawInput).toBe(rawInput);
     expect(body.extraction).toMatchObject({ sellerName: 'Conversational QA Seller', phone: '704-555-0119', acreage: 4 });
     expect(body.researchStatus).toBe('queued');
+    const dealRead = (await (await get(`/api/landos/deal-cards/${body.dealCardId}`)).json()) as any;
+    expect(dealRead.opportunity.id).toBe(body.opportunityId);
+    expect(dealRead.researchMission.opportunityId).toBe(body.opportunityId);
+    expect(['queued', 'running', 'partial', 'complete']).toContain(dealRead.researchMission.status);
 
     const thinRaw = 'Caller inherited land but did not know the parcel number or address yet.';
     const thin = await post('/api/landos/leads/manual', { rawInput: thinRaw });
@@ -1377,5 +1493,76 @@ describe('LandOS routes — visual image serving + capture gating (no Google cal
     expect(res.status).toBe(400);
     const b = (await res.json()) as any;
     expect(String(b.error)).toMatch(/not configured/i);
+  });
+
+  it('rehydrates the latest eligible satellite and Street View captures on every report read', async () => {
+    const fsm = await import('fs');
+    const pathm = await import('path');
+    const { upsertCardFromDukeRun, saveCardVisualCapture } = await import('./property-card.js');
+    const { createDealCard, linkPropertyToDeal } = await import('./deal-card.js');
+    const { card } = upsertCardFromDukeRun({
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'TALLEY RD', county: 'Cocke', state: 'TN', city: 'Newport',
+      apn: '027 04512', owner: 'JOINES TRAVIS', acres: 5.82, lat: 36.02987, lng: -83.11121,
+      verified: true, verificationSource: 'Tennessee Comptroller parcel layer', summary: 'verified',
+    });
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Fresh visual projection fixture' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const dir = pathm.join(process.cwd(), 'store', 'visuals');
+    fsm.mkdirSync(dir, { recursive: true });
+    const satellite = pathm.join(dir, `test_${card.id}_fresh_sat.png`);
+    const street = pathm.join(dir, `test_${card.id}_fresh_street.png`);
+    fsm.writeFileSync(satellite, Buffer.from([137, 80, 78, 71]));
+    fsm.writeFileSync(street, Buffer.from([137, 80, 78, 71]));
+    const base = { targetKind: 'parcel' as const, cardId: card.id, apn: '027 04512', sourceCoords: { lat: 36.02987, lng: -83.11121 }, captureQuery: '36.02987,-83.11121' };
+    saveCardVisualCapture(card.id, {
+      maps_static: { storedPath: satellite, timestamp: 't', association: { ...base, basis: 'verified_parcel_coordinates' } },
+      street_view_static: { storedPath: street, timestamp: 't', association: { ...base, basis: 'parcel_nearby_street_view', distanceToParcelM: 124 } },
+    }, { provider: 'google' });
+
+    const response = await get(`/api/landos/deal-cards/${deal.id}/report`);
+    expect(response.status).toBe(200);
+    const body = await response.json() as any;
+    expect(body.report.visualContext.assets.find((asset: any) => asset.service === 'maps_static')).toMatchObject({ status: 'captured' });
+    expect(body.report.visualContext.assets.find((asset: any) => asset.service === 'street_view_static')).toMatchObject({ status: 'captured', association: { distanceToParcelM: 124 } });
+    expect(body.report.visualContext.links.streetView).toContain('viewpoint=36.02987%2C-83.11121');
+    fsm.unlinkSync(satellite);
+    fsm.unlinkSync(street);
+  });
+});
+
+describe('LandOS routes - canonical comp-map projection', () => {
+  it('is read-only, preserves provider coordinates, and excludes impossible sale dates from sold valuation evidence', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Comp map route fixture' });
+    const id = ((await created.json()) as any).dealCard.id as number;
+    const add = (over: Record<string, unknown>) => post(`/api/landos/deal-cards/${id}/comps`, {
+      sourceLabel: 'Zillow', sourceUrl: 'https://zillow.example/fixture', addressDesc: '101 Route Fixture Rd, Cleveland, GA',
+      county: 'White', state: 'GA', price: 60_000, priceKind: 'sale', saleOrListDate: '2026-02-01', acres: 6,
+      status: 'verified_sale', lat: 34.597, lng: -83.766, ...over,
+    });
+    expect((await add({})).status).toBe(201);
+    expect((await add({ addressDesc: '102 Route Fixture Rd, Cleveland, GA', sourceUrl: 'https://zillow.example/impossible-date', saleOrListDate: '2026-02-30', lat: 34.598, lng: -83.767 })).status).toBe(201);
+
+    const db = getLandosDb();
+    const before = {
+      comps: (db.prepare('SELECT COUNT(*) AS count FROM landos_comp WHERE deal_card_id = ?').get(id) as { count: number }).count,
+      geocodes: (db.prepare('SELECT COUNT(*) AS count FROM landos_geocode_cache').get() as { count: number }).count,
+    };
+    const fetchSpy = vi.fn(async () => { throw new Error('comp-map GET must not perform external enrichment'); });
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const response = await get(`/api/landos/deal-cards/${id}/comp-map`);
+      expect(response.status).toBe(200);
+      const map = ((await response.json()) as any).compMap;
+      expect(map.counts.sold).toBe(1);
+      expect(map.counts.context).toBe(1);
+      expect(map.counts.rejected).toBe(0);
+      expect(map.markers.find((marker: any) => marker.address === '101 Route Fixture Rd, Cleveland, GA')).toMatchObject({ lat: 34.597, lng: -83.766, status: 'sold' });
+      expect(map.markers.find((marker: any) => marker.address === '102 Route Fixture Rd, Cleveland, GA')).toMatchObject({ status: 'context', why: expect.stringMatching(/missing sale_date evidence/) });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect((db.prepare('SELECT COUNT(*) AS count FROM landos_comp WHERE deal_card_id = ?').get(id) as { count: number }).count).toBe(before.comps);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM landos_geocode_cache').get() as { count: number }).count).toBe(before.geocodes);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

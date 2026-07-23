@@ -64,7 +64,7 @@ export function PropertyBoard({ onOpenDeal, embedded = false }: { onOpenDeal?: (
 
   useEffect(() => { void load(); }, [entity]);
 
-  function open(card: OpportunityCard) {
+  function openDealCard(card: OpportunityCard) {
     if (onOpenDeal) onOpenDeal(card.dealCardId);
     else navigate(`/landos?deal=${card.dealCardId}`);
   }
@@ -94,7 +94,7 @@ export function PropertyBoard({ onOpenDeal, embedded = false }: { onOpenDeal?: (
       {!loading && columns.length === 0 && <PageState empty emptyTitle="No active opportunities" emptyDescription="Create a lead to add one card to the pipeline." />}
       {!loading && <div class="flex min-w-max gap-3">{columns.map((stage) => <div key={stage} data-testid={`opportunity-lane-${stage}`} class="w-72 shrink-0">
         <div class="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]"><span>{STAGE_LABEL[stage] ?? stage}</span><span>{board?.columns[stage]?.length ?? 0}</span></div>
-        <div class="space-y-2">{(board?.columns[stage] ?? []).map((card) => <OpportunityPipelineCard key={card.id} card={card} statuses={statuses} moving={movingCardId === card.id} onOpen={() => open(card)} onMoveStart={() => setMovingCardId(card.id)} onMoveCancel={() => setMovingCardId(null)} onMove={(next) => void move(card.id, next)} onDeleted={() => void load()} onError={setError} />)}</div>
+        <div class="space-y-2">{(board?.columns[stage] ?? []).map((card) => <OpportunityPipelineCard key={card.id} card={card} statuses={statuses} moving={movingCardId === card.id} onOpen={() => openDealCard(card)} onMoveStart={() => setMovingCardId(card.id)} onMoveCancel={() => setMovingCardId(null)} onMove={(next) => void move(card.id, next)} onDeleted={() => void load()} onError={setError} />)}</div>
       </div>)}</div>}
     </div>
   </div>;

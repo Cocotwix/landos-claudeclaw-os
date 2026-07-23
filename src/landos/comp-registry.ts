@@ -28,6 +28,12 @@ export interface CompRegistryCandidate {
   acres?: number | null;
   pricePerAcre?: number | null;
   sourceUrl?: string | null;
+  /** Optional provider-owned listing image. It is evidence decoration only. */
+  thumbnailUrl?: string | null;
+  listingDate?: string | null;
+  daysOnMarket?: number | null;
+  distanceMiles?: number | null;
+  inclusionReason?: string | null;
   /** Persisted status from landos_comp ('rejected' rows stay rejected). */
   persistedStatus?: string | null;
   compClass?: string | null;
@@ -47,9 +53,19 @@ export interface UniqueCompTransaction {
   kind: CompEventKind;
   price: number | null;
   pricePerAcre: number | null;
+  /** Acreage attached to THIS transaction, never borrowed from another event. */
+  acres: number | null;
   dateIso: string | null;
+  listingDate: string | null;
+  daysOnMarket: number | null;
   providers: string[];
   sourceUrls: string[];
+  thumbnailUrl: string | null;
+  /** Whether a closed-sale event has the minimum traceable evidence for valuation. */
+  qualification: {
+    qualifiedForValuation: boolean;
+    missing: Array<'source' | 'sale_date'>;
+  };
   mergedCandidates: number;
 }
 
@@ -74,6 +90,13 @@ export interface UniqueComp {
   acres: number | null;
   /** Acres rounded to operator precision for display (never 0.36999540863177227). */
   acresDisplay: number | null;
+  /** Provider-supplied property coordinates retained through registry dedupe. */
+  lat: number | null;
+  lng: number | null;
+  coordinateProvider: string | null;
+  distanceMiles: number | null;
+  inclusionReason: string | null;
+  propertyClass: string | null;
   transactions: UniqueCompTransaction[];
   /** Convenience: the strongest transaction (sold first, then most recent). */
   primary: UniqueCompTransaction;
@@ -115,6 +138,9 @@ export interface ClusterAnalysis {
 }
 
 export interface RejectedCandidate {
+  /** Present only for a candidate read from landos_comp. Report/provider lanes
+   *  have no persisted row to mutate during Deal Card reconciliation. */
+  persistedId?: number | string | null;
   provider: string;
   address: string | null;
   price: number | null;
@@ -150,7 +176,7 @@ export interface CompRegistry {
     rejected: number;
     duplicatesMerged: number;
   };
-  /** ≥3 validated unique SOLD comps → a defensible range can exist. */
+  /** At least one validated unique SOLD comp with acreage supports the owner FMV formula. */
   valuationReady: boolean;
   valuationBlockers: string[];
   /** Thin-market local acreage clusters over the validated sold set. */
@@ -161,11 +187,18 @@ export interface CompRegistry {
 // ── Validation ────────────────────────────────────────────────────────────────
 
 const IMPROVED_CLASS = /residential|manufactured|commercial|improved|exclude/i;
-const STATE_TAIL = /,\s*([A-Z]{2})\s*(?:\d{5}(?:-\d{4})?)?\s*$/;
+const US_STATE_TAIL = /,\s*([A-Z]{2})\s*(?:\d{5}(?:-\d{4})?)?\s*$/i;
+// Zillow can append brokerage text after a Canadian postal code, so the state /
+// province is not always at the absolute tail. Recognize a two-letter region
+// followed by either a US ZIP or Canadian postal code anywhere after a comma.
+// This lets the canonical registry reject obvious out-of-market rows instead of
+// treating an unparsed province as an unknown-but-valid subject-market comp.
+const POSTAL_REGION = /,\s*([A-Z]{2})\s+(?:\d{5}(?:-\d{4})?|[A-Z]\d[A-Z]\s*\d[A-Z]\d)\b/i;
 
 /** Extract a US state code from the tail of a one-line address. */
 export function addressStateCode(address: string | null | undefined): string | null {
-  const m = (address ?? '').trim().match(STATE_TAIL);
+  const value = (address ?? '').trim();
+  const m = value.match(US_STATE_TAIL) ?? value.match(POSTAL_REGION);
   return m ? m[1].toUpperCase() : null;
 }
 
@@ -178,9 +211,11 @@ function validate(c: CompRegistryCandidate, subject: SubjectMarket): string | nu
   if (subjState && rowState && rowState !== subjState) {
     return `Wrong market: comp is in ${rowState}, subject is in ${subjState}`;
   }
+  if (subjState && !rowState && /zillow/i.test(c.provider)) {
+    return `Missing usable market locality: Zillow row cannot be tied to subject state ${subjState}`;
+  }
   const hasPrice = (typeof c.price === 'number' && c.price > 0) || (typeof c.pricePerAcre === 'number' && c.pricePerAcre > 0);
   if (!hasPrice) return 'No usable price evidence';
-  if (c.compClass && IMPROVED_CLASS.test(c.compClass)) return `Not a vacant-land comp (${c.compClass})`;
   return null;
 }
 
@@ -226,11 +261,70 @@ function propertyKey(c: CompRegistryCandidate): { key: string; matchedBy: Unique
   return { key: `pd:${c.price ?? '?'}|${(c.saleOrListDate ?? '').slice(0, 7)}|${c.acres ?? '?'}`, matchedBy: 'price_date' };
 }
 
+/**
+ * Provider feeds sometimes describe the same closed parcel as, for example,
+ * "6 Acres Trentham Rd", "6ACRES Trentham Rd", and "6 Trentham Rd". Keep the
+ * normal property key strict, then use this stronger same-transaction alias to
+ * merge only rows whose date, price, acreage, geography, and street signature
+ * all agree. This avoids inflating a valuation without collapsing unrelated
+ * properties that merely share a road name.
+ */
+function closedTransactionAlias(c: CompRegistryCandidate): string | null {
+  if (eventKind(c) !== 'sold') return null;
+  const date = validEvidenceDate(c.saleOrListDate);
+  if (!date || typeof c.price !== 'number' || c.price <= 0 || typeof c.acres !== 'number' || c.acres <= 0) return null;
+  const normalized = normalizeCompAddress(c.addressDesc);
+  if (!normalized) return null;
+  let words = normalized.split(' ').filter(Boolean);
+  if (/^\d+(?:\.\d+)?acres?$/.test(words[0] ?? '')) words = words.slice(1);
+  const lead = Number(words[0]);
+  if (Number.isFinite(lead) && Math.abs(lead - c.acres) <= 0.02 && words.length > 2) words = words.slice(1);
+  words = words
+    .filter((word) => !['acre', 'acres', 'parcel', 'par', 'lot', 'off', 'tn'].includes(word) && word !== '00')
+    .map((word) => /^\d+$/.test(word) ? String(Number(word)) : word);
+  const hwy = words.indexOf('hwy');
+  if (hwy > 0 && hwy < words.length - 1 && /^\d+$/.test(words[hwy - 1]) && /^\d+$/.test(words[hwy + 1])) {
+    const parcelNumber = words[hwy - 1];
+    words = [...words.slice(0, hwy - 1), 'hwy', words[hwy + 1], parcelNumber, ...words.slice(hwy + 2)];
+  }
+  if (!words.length) return null;
+  const state = (c.state ?? addressStateCode(c.addressDesc) ?? '').trim().toUpperCase();
+  return `closed:${date.slice(0, 7)}|${Math.round(c.price * 100)}|${c.acres.toFixed(3)}|${state}|${words.join(' ')}`;
+}
+
 function eventKind(c: CompRegistryCandidate): CompEventKind {
   const pk = (c.priceKind ?? '').toLowerCase();
   if (pk === 'sold' || c.lane === 'sold' || c.lane === 'supplemental') return 'sold';
   if (pk === 'list' || pk === 'active' || c.lane === 'active') return 'active';
   return 'unknown';
+}
+
+function validSourceUrl(value: string | null | undefined): string | null {
+  const source = (value ?? '').trim();
+  return /^https?:\/\//i.test(source) ? source : null;
+}
+
+/** A sale date must be a real calendar date, not merely a parseable fragment. */
+function validEvidenceDate(value: string | null | undefined): string | null {
+  const date = (value ?? '').trim();
+  if (!date) return null;
+  // Date.parse accepts fragments such as "2026" and normalizes impossible
+  // dates such as 2026-02-31. Neither is evidence of a closed-sale date.
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/.exec(date);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) return null;
+  return date;
+}
+
+function validCoordinates(c: CompRegistryCandidate): { lat: number; lng: number } | null {
+  const { lat, lng } = c;
+  if (typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
 }
 
 function transactionKey(c: CompRegistryCandidate): string {
@@ -382,7 +476,7 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
     const reason = validate(c, subject);
     if (reason) {
       entry.rejected += 1;
-      rejected.push({ provider: c.provider, address: c.addressDesc, price: c.price, reason });
+      rejected.push({ persistedId: c.id ?? null, provider: c.provider, address: c.addressDesc, price: c.price, reason });
     } else {
       entry.validated += 1;
       valid.push(c);
@@ -391,11 +485,30 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
 
   // Property-level grouping.
   const groups = new Map<string, { matchedBy: UniqueComp['matchedBy']; rows: CompRegistryCandidate[] }>();
+  const propertyGroups = new Map<string, string>();
+  const transactionAliases = new Map<string, string>();
   for (const c of valid) {
     const { key, matchedBy } = propertyKey(c);
-    const g = groups.get(key);
+    const alias = closedTransactionAlias(c);
+    const propertyGroup = propertyGroups.get(key);
+    const aliasGroup = alias ? transactionAliases.get(alias) : undefined;
+    let groupKey = propertyGroup ?? aliasGroup ?? key;
+    if (propertyGroup && aliasGroup && propertyGroup !== aliasGroup) {
+      const target = groups.get(propertyGroup);
+      const source = groups.get(aliasGroup);
+      if (target && source) {
+        target.rows.push(...source.rows);
+        groups.delete(aliasGroup);
+        for (const [k, v] of propertyGroups) if (v === aliasGroup) propertyGroups.set(k, propertyGroup);
+        for (const [k, v] of transactionAliases) if (v === aliasGroup) transactionAliases.set(k, propertyGroup);
+      }
+      groupKey = propertyGroup;
+    }
+    propertyGroups.set(key, groupKey);
+    if (alias) transactionAliases.set(alias, groupKey);
+    const g = groups.get(groupKey);
     if (g) g.rows.push(c);
-    else groups.set(key, { matchedBy, rows: [c] });
+    else groups.set(groupKey, { matchedBy, rows: [c] });
   }
 
   const uniqueComps: UniqueComp[] = [];
@@ -416,22 +529,44 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
     for (const rows of txGroups.values()) {
       const providers = [...new Set(rows.map((r) => r.provider.trim()).filter(Boolean))];
       const richest = [...rows].sort((a, b) => nonNullFields(b) - nonNullFields(a))[0];
+      const kind = eventKind(richest);
+      const sourceUrls = [...new Set(rows.map((r) => validSourceUrl(r.sourceUrl)).filter((u): u is string => u != null))];
+      const dateIso = rows.map((r) => validEvidenceDate(r.saleOrListDate)).find((d): d is string => d != null) ?? null;
+      const missing: Array<'source' | 'sale_date'> = [];
+      if (kind === 'sold') {
+        if (!sourceUrls.length) missing.push('source');
+        if (!dateIso) missing.push('sale_date');
+      }
       transactions.push({
-        kind: eventKind(richest),
+        kind,
         price: firstNumber(rows.map((r) => r.price)),
         pricePerAcre: firstNumber(rows.map((r) => r.pricePerAcre)),
-        dateIso: rows.map((r) => r.saleOrListDate).find((d) => d && d.trim()) ?? null,
+        acres: firstNumber(rows.map((r) => r.acres)),
+        dateIso,
+        listingDate: rows.map((r) => validEvidenceDate(r.listingDate)).find((d): d is string => d != null) ?? null,
+        daysOnMarket: firstNumber(rows.map((r) => r.daysOnMarket)),
         providers,
-        sourceUrls: [...new Set(rows.map((r) => (r.sourceUrl ?? '').trim()).filter(Boolean))],
+        sourceUrls,
+        thumbnailUrl: rows.map((r) => validSourceUrl(r.thumbnailUrl)).find((u): u is string => u != null) ?? null,
+        qualification: { qualifiedForValuation: kind === 'sold' && missing.length === 0, missing },
         mergedCandidates: rows.length,
       });
       if (rows.length > 1) duplicatesMerged += rows.length - 1;
     }
-    transactions.sort((a, b) => (a.kind === 'sold' ? -1 : 1) - (b.kind === 'sold' ? -1 : 1) || String(b.dateIso ?? '').localeCompare(String(a.dateIso ?? '')));
+    // A traceable closed sale is canonical for a property. An untraceable
+    // claimed sale remains visible as context, but cannot displace an evidenced
+    // sale or flow into the valuation count.
+    const transactionRank = (t: UniqueCompTransaction): number => t.kind === 'sold' && t.qualification.qualifiedForValuation ? 0 : t.kind === 'sold' ? 1 : t.kind === 'active' ? 2 : 3;
+    transactions.sort((a, b) => transactionRank(a) - transactionRank(b) || String(b.dateIso ?? '').localeCompare(String(a.dateIso ?? '')));
 
     const allProviders = [...new Set(group.rows.map((r) => r.provider.trim()).filter(Boolean))];
     const richest = [...group.rows].sort((a, b) => nonNullFields(b) - nonNullFields(a))[0];
-    const acres = firstNumber(group.rows.map((r) => r.acres));
+    const primary = transactions[0];
+    // Acreage is transaction-bound. Prefer the primary sale/list event's
+    // acreage so its price-per-acre never uses a different event's acreage.
+    const acres = primary.acres ?? firstNumber(group.rows.map((r) => r.acres));
+    const coordinateRow = group.rows.find((row) => validCoordinates(row) != null) ?? null;
+    const coordinate = coordinateRow ? validCoordinates(coordinateRow) : null;
     const cmp = classifyComparability(subject.acres, acres);
     const comp: UniqueComp = {
       key,
@@ -441,8 +576,14 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
       state: (richest.state ?? addressStateCode(richest.addressDesc)) ?? null,
       acres,
       acresDisplay: acres == null ? null : round2(acres),
+      lat: coordinate?.lat ?? null,
+      lng: coordinate?.lng ?? null,
+      coordinateProvider: coordinateRow?.provider?.trim() || null,
+      distanceMiles: firstNumber(group.rows.map((r) => r.distanceMiles)),
+      inclusionReason: group.rows.map((r) => r.inclusionReason).find((value) => value?.trim()) ?? null,
+      propertyClass: group.rows.map((r) => r.compClass).find((value) => value?.trim()) ?? null,
       transactions,
-      primary: transactions[0],
+      primary,
       providers: allProviders,
       providersDisplay: [...new Set(allProviders.map((prov) => providerDisplayName(prov)))],
       // Multiple independent providers or an APN match = higher source confidence.
@@ -459,16 +600,18 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
   }
 
   uniqueComps.sort((a, b) => String(b.primary.dateIso ?? '').localeCompare(String(a.primary.dateIso ?? '')));
-  const validatedSold = uniqueComps.filter((c) => c.transactions.some((t) => t.kind === 'sold'));
-  const validatedActive = uniqueComps.filter((c) => c.transactions.some((t) => t.kind === 'active'));
+  // A provider label alone is not sale evidence. A claimed sale must carry a
+  // traceable source and a parseable sale date before it can count toward value.
+  const validatedSold = uniqueComps.filter((c) => !IMPROVED_CLASS.test(c.propertyClass ?? '') && c.transactions.some((t) => t.kind === 'sold' && t.qualification.qualifiedForValuation));
+  const validatedActive = uniqueComps.filter((c) => !IMPROVED_CLASS.test(c.propertyClass ?? '') && c.transactions.some((t) => t.kind === 'active'));
 
   const valuationBlockers: string[] = [];
-  if (validatedSold.length < 3) {
-    valuationBlockers.push(`Only ${validatedSold.length} validated unique sold comp${validatedSold.length === 1 ? '' : 's'} — at least 3 are needed for a defensible range.`);
+  if (validatedSold.length < 1) {
+    valuationBlockers.push('No validated unique sold comps are available for the FMV calculation.');
   }
   const soldWithAcres = validatedSold.filter((c) => c.acres != null && c.acres > 0);
-  if (validatedSold.length >= 3 && soldWithAcres.length < 3) {
-    valuationBlockers.push('Sold comps lack acreage on enough rows to build a $/acre band.');
+  if (validatedSold.length >= 1 && soldWithAcres.length < 1) {
+    valuationBlockers.push('Validated sold comps lack acreage needed to calculate sold price per acre.');
   }
 
   const counts = {
@@ -502,7 +645,7 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
 }
 
 function nonNullFields(c: CompRegistryCandidate): number {
-  return [c.addressDesc, c.apn, c.price, c.acres, c.pricePerAcre, c.saleOrListDate, c.sourceUrl, c.lat, c.lng]
+  return [c.addressDesc, c.apn, c.price, c.acres, c.pricePerAcre, c.saleOrListDate, c.listingDate, c.sourceUrl, c.lat, c.lng, c.thumbnailUrl]
     .filter((v) => v != null && v !== '').length;
 }
 

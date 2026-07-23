@@ -204,6 +204,12 @@ describe('operator property record reconciliation', () => {
     expect(record.identity.zip).toBe('29920');
   });
 
+  it('keeps an accepted property city ahead of a broader Census county subdivision', () => {
+    const withAcceptedCity = buildOperatorPropertyRecord(run, { ...baseContext, city: 'Homosassa' });
+    expect(withAcceptedCity.identity.locality).toBe('Homosassa');
+    expect(withAcceptedCity.description).not.toMatch(/on St\. Helena Island/i);
+  });
+
   it('computes usable acreage as mapped minus wetlands', () => {
     expect(record.usableAcreage.estimateAcres).toBeCloseTo(2.51, 2);
   });
@@ -279,6 +285,39 @@ describe('operator property record reconciliation', () => {
     const unverified = buildOperatorPropertyRecord(null, { ...baseContext, parcelVerified: false });
     expect(unverified.landScore.available).toBe(false);
     expect(unverified.landScore.unavailableReason).toMatch(/not confirmed/i);
+  });
+
+  it('reuses reconciled wetland coverage across the decision card, usable acreage, and Land Score', () => {
+    const retained = buildOperatorPropertyRecord(null, {
+      ...baseContext,
+      reconciledWetlandPct: 2.79,
+      reconciledWetlandSource: 'LandPortal parcel research',
+    });
+    const wetlandsCard = retained.decisionCards.find((card) => card.key === 'wetlands')!;
+    const wetlandsFactor = retained.landScore.factors.find((factor) => factor.id === 'wetlands')!;
+
+    expect(wetlandsCard.headline).toMatch(/2\.79%/);
+    expect(wetlandsCard.basis).toMatch(/LandPortal parcel research/);
+    expect(wetlandsCard.detail).not.toMatch(/not screened/i);
+    expect(retained.usableAcreage.note).toMatch(/0\.21 ac mapped wetland deducted/);
+    expect(retained.usableAcreage.estimateAcres).toBeCloseTo(7.29, 2);
+    expect(wetlandsFactor).toMatchObject({ points: 20, dataGap: false });
+    expect(wetlandsFactor.basis).toMatch(/LandPortal parcel research/);
+    expect(retained.workStatus.find((item) => item.title === 'Wetland coverage screen')?.state).toBe('completed');
+  });
+
+  it('scores an accepted no-wetlands-mapped finding as zero coverage, not an unscreened gap', () => {
+    const noneMapped = buildOperatorPropertyRecord(makeRun([
+      taskRecord('wetlands', {
+        kind: 'wetlands', intersects: false, areas: [], approximateTotalAcres: null,
+        approximateParcelPercentage: null, overlapState: 'no_feature', datasetName: 'USFWS NWI',
+        summary: 'No mapped wetland polygons intersect the parcel.', whyItMatters: 'w', limitation: 'l', classification: 'screening',
+      }),
+    ]), baseContext);
+    const factor = noneMapped.landScore.factors.find((item) => item.id === 'wetlands')!;
+    expect(noneMapped.decisionCards.find((card) => card.key === 'wetlands')?.headline).toBe('None mapped');
+    expect(factor).toMatchObject({ points: 20, dataGap: false });
+    expect(noneMapped.usableAcreage.estimateAcres).toBe(7.5);
   });
 });
 

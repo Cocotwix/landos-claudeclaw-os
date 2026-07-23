@@ -7,11 +7,23 @@ function cand(over: Partial<CompRegistryCandidate>): CompRegistryCandidate {
   return {
     provider: 'Zillow', lane: 'active', addressDesc: '1 Test Rd, Town, SC 29920',
     price: 50000, priceKind: 'list', saleOrListDate: '', acres: 1, pricePerAcre: 50000,
+    sourceUrl: 'https://zillow.example/comp',
     ...over,
   };
 }
 
 describe('comp registry — validation', () => {
+  it('parses a Canadian province before the postal code so it cannot pass as unknown locality', () => {
+    expect(addressStateCode('327 S 3rd St E, Magrath, AB T0K 1J0 ROYAL')).toBe('AB');
+    const r = buildCompRegistry(SUBJECT, [cand({ addressDesc: '327 S 3rd St E, Magrath, AB T0K 1J0 ROYAL' })]);
+    expect(r.rejected[0]?.reason).toMatch(/wrong market.*AB.*SC/i);
+  });
+
+  it('rejects Zillow rows without enough locality evidence to tie them to the subject state', () => {
+    const r = buildCompRegistry(SUBJECT, [cand({ addressDesc: '4500 64th Ave' })]);
+    expect(r.rejected[0]?.reason).toMatch(/missing usable market locality/i);
+  });
+
   it('rejects wrong-market candidates by address state', () => {
     const r = buildCompRegistry(SUBJECT, [
       cand({ addressDesc: '3710 Rocky Tract 3 Ln, Little Rock, AR 72210', provider: 'Redfin' }),
@@ -29,14 +41,14 @@ describe('comp registry — validation', () => {
     expect(r.rejected[0].reason).toMatch(/previously rejected/i);
   });
 
-  it('rejects rows with no price evidence and improved classes', () => {
+  it('rejects rows with no price evidence and retains improved classes as non-valuation context', () => {
     const r = buildCompRegistry(SUBJECT, [
       cand({ price: null, pricePerAcre: null }),
       cand({ compClass: 'residential' }),
     ]);
-    expect(r.uniqueComps).toHaveLength(0);
+    expect(r.uniqueComps).toHaveLength(1);
+    expect(r.validatedSold).toHaveLength(0);
     expect(r.rejected.map((x) => x.reason).join(' ')).toMatch(/no usable price/i);
-    expect(r.rejected.map((x) => x.reason).join(' ')).toMatch(/vacant-land/i);
   });
 });
 
@@ -53,6 +65,27 @@ describe('comp registry — dedup', () => {
     expect(r.uniqueComps[0].providers.sort()).toEqual(['LandPortal visible', 'Realie', 'Zillow']);
     expect(r.uniqueComps[0].sourceConfidence).toBe('high');
     expect(r.duplicateMerges).toHaveLength(1);
+  });
+
+  it('merges same-event acreage and parcel-label address variants without inflating sold count', () => {
+    const subject = { state: 'TN', county: 'Cocke', acres: 5.82 };
+    const sold = (addressDesc: string, price: number, acres: number, saleOrListDate: string, n: number): CompRegistryCandidate => cand({
+      provider: 'homeharvest', lane: 'sold', priceKind: 'sold', addressDesc, state: 'TN',
+      price, acres, pricePerAcre: price / acres, saleOrListDate, sourceUrl: `https://realtor.example/${n}`,
+    });
+    const r = buildCompRegistry(subject, [
+      sold('6 Trentham Rd # Off, Newport, TN 37821', 70_000, 6, '2026-05-15', 1),
+      sold('6ACRES Trentham Rd # Off, Newport, TN 37821', 70_000, 6, '2026-05-20', 2),
+      sold('6 Acres Trentham Rd # Off, Newport, TN 37821', 70_000, 6, '2026-05-15', 3),
+      sold('5 Red Hill Rd, Newport, TN 37821', 44_000, 5, '2025-12-19', 4),
+      sold('5 Acres Red Hill Rd, Newport, TN 37821', 44_000, 5, '2025-12-19', 5),
+      sold('47 Highway 73, Newport, TN 37821', 91_000, 1.82, '2026-04-10', 6),
+      sold('Highway 73 Parcel 47, Newport, TN 37821', 91_000, 1.82, '2026-04-10', 7),
+      sold('Par 047 00 Highway 73, Newport, TN 37821', 91_000, 1.82, '2026-04-10', 8),
+    ]);
+    expect(r.counts.validatedSold).toBe(3);
+    expect(r.counts.uniqueProperties).toBe(3);
+    expect(r.counts.duplicatesMerged).toBe(5);
   });
 
   it('prefers APN matching over address matching', () => {
@@ -86,12 +119,24 @@ describe('comp registry — dedup', () => {
 });
 
 describe('comp registry — valuation gate', () => {
-  it('is not valuation-ready with fewer than 3 validated sold comps', () => {
+  it('keeps unsourced or undated claimed sales as context and never opens valuation', () => {
+    const r = buildCompRegistry(SUBJECT, [
+      cand({ lane: 'sold', priceKind: 'sold', addressDesc: '1 A Rd, Town, SC', sourceUrl: null, saleOrListDate: '2026-01-01' }),
+      cand({ lane: 'sold', priceKind: 'sold', addressDesc: '2 B Rd, Town, SC', saleOrListDate: null }),
+      cand({ lane: 'sold', priceKind: 'sold', addressDesc: '3 C Rd, Town, SC', sourceUrl: 'not-a-source', saleOrListDate: 'not-a-date' }),
+    ]);
+    expect(r.uniqueComps).toHaveLength(3);
+    expect(r.counts.validatedSold).toBe(0);
+    expect(r.valuationReady).toBe(false);
+    expect(r.uniqueComps.every((c) => c.primary.qualification.qualifiedForValuation === false)).toBe(true);
+    expect(r.uniqueComps.flatMap((c) => c.primary.qualification.missing)).toEqual(expect.arrayContaining(['source', 'sale_date']));
+  });
+  it('is valuation-ready with one validated sold comp carrying price and acreage', () => {
     const r = buildCompRegistry(SUBJECT, [
       cand({ lane: 'sold', priceKind: 'sold', addressDesc: '93 Seaside Rd, Town, SC', price: 207500, acres: 10.3, saleOrListDate: '2026-02-01' }),
     ]);
-    expect(r.valuationReady).toBe(false);
-    expect(r.valuationBlockers[0]).toMatch(/only 1 validated unique sold comp/i);
+    expect(r.valuationReady).toBe(true);
+    expect(r.valuationBlockers).toHaveLength(0);
   });
 
   it('is valuation-ready with 3 distinct sold comps carrying acreage', () => {
@@ -114,6 +159,18 @@ describe('comp registry — valuation gate', () => {
     expect(r.counts.validatedActive).toBe(4);
     expect(r.valuationReady).toBe(false);
   });
+
+  it('preserves provider coordinates and transaction acreage through dedupe', () => {
+    const r = buildCompRegistry(SUBJECT, [
+      cand({ lane: 'sold', priceKind: 'sold', addressDesc: '1 Coordinate Rd, Town, SC', acres: 4, saleOrListDate: '2026-01-01', lat: 32.1, lng: -80.8 }),
+      cand({ provider: 'Redfin', lane: 'sold', priceKind: 'sold', addressDesc: '1 Coordinate Road, Town, SC', acres: 4, saleOrListDate: '2026-01-01', sourceUrl: 'https://redfin.example/coordinate' }),
+    ]);
+    const comp = r.validatedSold[0]!;
+    expect(comp.lat).toBe(32.1);
+    expect(comp.lng).toBe(-80.8);
+    expect(comp.coordinateProvider).toBe('Zillow');
+    expect(comp.primary.acres).toBe(4);
+  });
 });
 
 describe('helpers', () => {
@@ -134,7 +191,7 @@ describe('thin-market cluster analysis + comparability', () => {
 
   it('classifies comparability separately from source confidence', () => {
     const reg = buildCompRegistry(subject, [
-      { provider: 'County', lane: 'sold', addressDesc: '93 Seaside Rd, Saint Helena Island, SC 29920', price: 207500, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 10.3 },
+      { provider: 'County', lane: 'sold', addressDesc: '93 Seaside Rd, Saint Helena Island, SC 29920', price: 207500, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 10.3, sourceUrl: 'https://county.example/93' },
       { provider: 'Zillow', lane: 'active', addressDesc: '12 Island Ln, Saint Helena Island, SC 29920', price: 45000, priceKind: 'list', acres: 0.37 },
     ]);
     const sold = reg.validatedSold[0];
@@ -145,21 +202,21 @@ describe('thin-market cluster analysis + comparability', () => {
     expect(active.acresDisplay).toBe(0.37);
   });
 
-  it('one closed sale never becomes a supported cluster (no one-point medians)', () => {
+  it('one closed sale can support the owner FMV formula without becoming a statistical cluster', () => {
     const reg = buildCompRegistry(subject, [
-      { provider: 'County', lane: 'sold', addressDesc: '93 Seaside Rd, Saint Helena Island, SC 29920', price: 207500, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 10.3 },
+      { provider: 'County', lane: 'sold', addressDesc: '93 Seaside Rd, Saint Helena Island, SC 29920', price: 207500, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 10.3, sourceUrl: 'https://county.example/93' },
     ]);
     expect(reg.clusterAnalysis.thinMarketSupported).toBe(false);
     expect(reg.clusterAnalysis.clusters[0].confidence).toBe('insufficient');
-    expect(reg.valuationReady).toBe(false);
+    expect(reg.valuationReady).toBe(true);
   });
 
   it('keeps a sub-acre cluster separate from a 10-acre sale instead of blending', () => {
     const reg = buildCompRegistry(subject, [
-      { provider: 'County', lane: 'sold', addressDesc: '1 A St, Saint Helena Island, SC', price: 40000, priceKind: 'sold', saleOrListDate: '2026-01-01', acres: 0.4 },
-      { provider: 'County', lane: 'sold', addressDesc: '2 B St, Saint Helena Island, SC', price: 52000, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 0.5 },
-      { provider: 'County', lane: 'sold', addressDesc: '3 C St, Saint Helena Island, SC', price: 61000, priceKind: 'sold', saleOrListDate: '2026-03-01', acres: 0.6 },
-      { provider: 'County', lane: 'sold', addressDesc: '93 Seaside Rd, Saint Helena Island, SC', price: 207500, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 10.3 },
+      { provider: 'County', lane: 'sold', addressDesc: '1 A St, Saint Helena Island, SC', price: 40000, priceKind: 'sold', saleOrListDate: '2026-01-01', acres: 0.4, sourceUrl: 'https://county.example/1' },
+      { provider: 'County', lane: 'sold', addressDesc: '2 B St, Saint Helena Island, SC', price: 52000, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 0.5, sourceUrl: 'https://county.example/2' },
+      { provider: 'County', lane: 'sold', addressDesc: '3 C St, Saint Helena Island, SC', price: 61000, priceKind: 'sold', saleOrListDate: '2026-03-01', acres: 0.6, sourceUrl: 'https://county.example/3' },
+      { provider: 'County', lane: 'sold', addressDesc: '93 Seaside Rd, Saint Helena Island, SC', price: 207500, priceKind: 'sold', saleOrListDate: '2026-02-01', acres: 10.3, sourceUrl: 'https://county.example/93' },
     ]);
     const ca = reg.clusterAnalysis;
     expect(ca.clusters.length).toBe(2);

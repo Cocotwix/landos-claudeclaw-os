@@ -42,6 +42,7 @@ export interface VisionSourceImage {
 export type VisionCategory =
   | 'access'
   | 'road_frontage'
+  | 'road_context'
   | 'landlocked_risk'
   | 'easement'
   | 'clearing'
@@ -214,7 +215,7 @@ function normalizeObservations(raw: unknown, kept: VisionSourceImage[]): VisualO
 }
 
 const CATEGORY_LABEL: Record<VisionCategory, string> = {
-  access: 'Access', road_frontage: 'Road frontage', landlocked_risk: 'Landlocked risk',
+  access: 'Access', road_frontage: 'Road frontage', road_context: 'Road context', landlocked_risk: 'Landlocked risk',
   easement: 'Easement', clearing: 'Clearing', wetlands_water: 'Wetlands / water',
   terrain_slope: 'Terrain / slope', neighboring_development: 'Neighboring development',
   improvements: 'Improvements', other: 'Visual note',

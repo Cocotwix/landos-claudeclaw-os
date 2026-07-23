@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { _initTestLandosDb } from './db.js';
+import { _initTestLandosDb, getLandosDb } from './db.js';
 import { makeFixtureMarketProvider, fixtureToPayloads } from './market-browser-provider.js';
 import { MARKET_SNAPSHOT_FIXTURE } from './fixtures/market-snapshot-fixture.js';
 import {
   ingestMarketSnapshots, runMarketQuery, runMarketQueryWithExplanation, getMatrixCoverage,
   saveMarketQuery, listMarketQueries, getMarketQueryById, deleteMarketQuery,
   getHeatmapData, getCountyDrilldown, listReviewQueue,
+  resolveCountyRefByZip,
 } from './market-matrix-store.js';
 import { defaultMarketQuery } from './market-matrix.js';
 
@@ -16,6 +17,18 @@ async function ingestFixture() {
 
 describe('Market Matrix store', () => {
   beforeEach(() => { _initTestLandosDb(); });
+
+  it('resolves a retained ZIP membership only when it identifies one county', () => {
+    const db = getLandosDb();
+    db.prepare('INSERT INTO landos_mr_geography (geo_key, level, state, fips, zip, name, parent_key) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run('county:12017', 'county', 'FL', '12017', '', 'Citrus County', 'state:FL');
+    db.prepare('INSERT INTO landos_mr_zip_county (zip, fips, source) VALUES (?, ?, ?)').run('34448', '12017', 'test');
+    expect(resolveCountyRefByZip('34448', 'FL')).toMatchObject({ fips: '12017', state: 'FL', countyName: 'Citrus' });
+    db.prepare('INSERT INTO landos_mr_geography (geo_key, level, state, fips, zip, name, parent_key) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run('county:12053', 'county', 'FL', '12053', '', 'Hernando County', 'state:FL');
+    db.prepare('INSERT INTO landos_mr_zip_county (zip, fips, source) VALUES (?, ?, ?)').run('34448', '12053', 'test');
+    expect(resolveCountyRefByZip('34448', 'FL')).toBeNull();
+  });
 
   it('ingests the fixture through the pipeline (all accepted) and reports coverage', async () => {
     const res = await ingestFixture();

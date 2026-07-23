@@ -177,16 +177,23 @@ export interface OperatorPropertyRecord {
 
 export interface OperatorRecordContext {
   situsAddress: string;
+  /** Accepted property city/locality from intake or a parcel source. */
+  city?: string | null;
   county?: string | null;
   state?: string | null;
   apn?: string | null;
   owner?: string | null;
   assessedAcres?: number | null;
   coordinates?: { lat: number; lng: number } | null;
+  /** Reconciled parcel wetland evidence retained outside the current public run. */
+  reconciledWetlandPct?: number | null;
+  reconciledWetlandSource?: string | null;
   parcelVerified: boolean;
   verificationSource?: string | null;
   /** Usable (validated) comparable count and whether a defensible range exists. */
   compCount: number;
+  /** Usable rows in the governing LandPortal FMV set. */
+  valuationCompCount?: number;
   valuationReady: boolean;
   /** Material sold-vs-asking (or other basis) valuation conflict — closes pricing. */
   valuationConflict?: boolean;
@@ -459,7 +466,7 @@ function buildReconciledLandScore(input: {
     const p = input.valuationReady ? 10 : input.compCount > 0 ? 4 : 0;
     factors.push({
       id: 'value_evidence', label: 'Value evidence', maxPoints: 10, points: p, lowestTier: p === 0, dataGap: false,
-      basis: input.valuationReady ? 'Validated multi-comp value basis exists.' : input.compCount > 0 ? `${input.compCount} usable comp(s) — not yet a defensible band.` : 'No usable comps yet.',
+      basis: input.valuationReady ? 'Usable LandPortal comp value basis exists.' : input.compCount > 0 ? `${input.compCount} other-provider comp(s) are visible, but no usable LandPortal FMV row exists.` : 'No usable comps yet.',
     });
   }
 
@@ -569,9 +576,10 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   // contact/legal access; a county FLOOD layer without FIRM panel/BFE) counts as
   // partial, not resolved, so the card can never present it as completed research.
   const floodHasPanel = !!(flood && flood.panelNumber);
+  const hasWetlandEvidence = !!wetlands || context.reconciledWetlandPct != null;
   const laneSignals: LaneSignal[] = [
     { key: 'county', label: 'Official county records', attempted: !!county, dataRetrieved: !!county, businessResolved: !!county, externalConfirmationRequired: false },
-    { key: 'wetlands', label: 'Wetlands', attempted: !!wetlands, dataRetrieved: !!wetlands, businessResolved: !!wetlands, externalConfirmationRequired: true, externalConfirmed: false, remaining: wetlands ? null : 'Wetland overlay screening not run' },
+    { key: 'wetlands', label: 'Wetlands', attempted: hasWetlandEvidence, dataRetrieved: hasWetlandEvidence, businessResolved: hasWetlandEvidence, externalConfirmationRequired: true, externalConfirmed: false, remaining: hasWetlandEvidence ? null : 'Wetland overlay screening not run' },
     { key: 'flood', label: 'FEMA flood', attempted: !!flood, dataRetrieved: !!flood, businessResolved: floodHasPanel, externalConfirmationRequired: true, externalConfirmed: floodHasPanel && !!flood?.effectiveDate, remaining: floodHasPanel ? null : 'FIRM panel/effective date and BFE availability pending (county-layer screen only)' },
     { key: 'soils', label: 'Soils & septic', attempted: !!soils, dataRetrieved: !!soils, businessResolved: !!soils, externalConfirmationRequired: true, externalConfirmed: false, remaining: soils ? 'SSURGO map-unit screen only; site perc/septic feasibility unconfirmed' : 'Soils screening not run' },
     { key: 'slope', label: 'Slope & terrain', attempted: !!slope, dataRetrieved: !!slope, businessResolved: !!slope, externalConfirmationRequired: false },
@@ -585,14 +593,24 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   const pricingGate = computePricingGate({
     parcelVerified: context.parcelVerified,
     validatedSoldComps: context.compCount,
+    valuationCompCount: context.valuationCompCount,
     valuationReady: context.valuationReady,
     valuationConflict: context.valuationConflict ?? false,
     acreageConflict: acreageConflict || (context.acreageDisputed ?? false),
     thinMarketClusterSupported: context.thinMarketClusterSupported ?? false,
   });
 
-  const wetlandPct = wetlands?.approximateParcelPercentage ?? null;
-  const wetlandAcres = wetlands?.approximateTotalAcres ?? null;
+  const wetlandPct = context.reconciledWetlandPct
+    ?? wetlands?.approximateParcelPercentage
+    ?? (wetlands?.intersects === false ? 0 : null)
+    ?? null;
+  const wetlandAcres = wetlands?.approximateTotalAcres
+    ?? (baseAcres != null && wetlandPct != null ? Math.round(baseAcres * wetlandPct) / 100 : null);
+  const wetlandBasis = context.reconciledWetlandSource
+    ? `${context.reconciledWetlandSource} (screening, not a jurisdictional determination).`
+    : wetlands
+      ? `${wetlands.datasetName} (screening, not a jurisdictional determination).`
+      : 'Reconciled parcel wetland evidence (screening, not a jurisdictional determination).';
   const usableEstimate = baseAcres != null && wetlandAcres != null ? Math.max(0, Math.round((baseAcres - wetlandAcres) * 100) / 100) : baseAcres;
   const sfhaPct = flood ? flood.zones.filter((zone) => zone.specialFloodHazardArea).reduce((sum, zone) => sum + zone.parcelPercentage, 0) : null;
 
@@ -662,9 +680,9 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   decisionCards.push({
     key: 'wetlands', label: 'Wetlands',
     verdict: wetlandPct == null ? 'unknown' : wetlandPct >= 20 ? 'risk' : wetlandPct > 1 ? 'caution' : 'good',
-    headline: wetlands ? (wetlands.intersects ? `${wetlandPct ?? '?'}% mapped (${wetlandAcres ?? '?'} ac)` : 'None mapped') : 'Not screened',
-    detail: wetlands?.summary ?? 'Wetland screening has not run.',
-    basis: wetlands ? `${wetlands.datasetName} (screening, not a jurisdictional determination).` : '',
+    headline: hasWetlandEvidence ? (wetlandPct === 0 ? 'None mapped' : `${wetlandPct ?? '?'}% mapped (${wetlandAcres ?? '?'} ac)`) : 'Not screened',
+    detail: wetlands?.summary ?? (hasWetlandEvidence ? `${wetlandPct}% mapped wetland coverage is retained in the reconciled parcel record.` : 'Wetland screening has not run.'),
+    basis: hasWetlandEvidence ? wetlandBasis : '',
   });
   decisionCards.push(floodCard(flood, slope));
   decisionCards.push({
@@ -720,7 +738,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
     detail: pricingGate.pricingAllowed
       ? 'A defensible range exists on the Market tab.'
       : pricingGate.pricingBlockers.join(' '),
-    basis: 'Shared pricing gate over the unique comparable registry (count, conflict, and acreage integrity together). Source confidence and subject comparability are tracked separately per comp.',
+    basis: 'Shared pricing gate over the LandPortal FMV set (usable price and acreage, plus acreage integrity). Other provider comps remain visible as context.',
   });
   {
     // The Overview strategy card must match the shared strategy record: while
@@ -728,7 +746,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
     // BLOCKED — never "scoreable". The gate here is byte-for-byte the same
     // computation buildStrategyReadiness runs, so the two can never diverge.
     const screened: string[] = [];
-    if (wetlands) screened.push('wetlands');
+    if (hasWetlandEvidence) screened.push('wetlands');
     if (flood) screened.push('flood');
     if (soils) screened.push('soils/septic');
     if (slope) screened.push('slope sample');
@@ -747,7 +765,10 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   }
 
   // -------------------------------------------------------------- narrative
-  const locality = factValue(county, 'Situs locality (Census county subdivision)');
+  // A Census county subdivision is supporting geography, not necessarily the
+  // parcel's mailing city/CDP (for example Homosassa lies in Crystal River
+  // CCD). Never let it replace an accepted property city in the card header.
+  const locality = context.city?.trim() || factValue(county, 'Situs locality (Census county subdivision)');
   const zip = factValue(county, 'Situs ZIP (Census ZCTA)');
   const landUseClass = factValue(county, 'Land use class');
   const descriptionParts: string[] = [];
@@ -787,7 +808,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   // flood finding actually exists — never alongside "flood not screened".
   if (flood && !flood.panelNumber) unknowns.push(`FEMA FIRM panel number/effective date not yet retrieved (zones are from the county flood layer${flood.baseFloodElevation ? '; BFE from the county layer' : '; no BFE applies to Zone X / no BFE retrieved'}).`);
   if (!flood) unknowns.push('Flood screening has not run yet — no zone, BFE, or panel information exists for this parcel.');
-  if (!context.valuationReady) unknowns.push('Defensible value range pending a validated multi-source comp set.');
+  if (!context.valuationReady) unknowns.push('Defensible value range pending at least one usable LandPortal comp with price and acreage.');
   if (zoning && !zoning.minimumLotSize) unknowns.push(`Minimum lot size and subdivision rules for ${zoning.zoningCode ?? 'the zoning district'} require the ordinance text (county planning).`);
   if (utilities?.publicWater === 'unknown') unknowns.push('Water service availability must be confirmed with the utility authority.');
 
@@ -819,6 +840,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
 
   if (county) done('Official county record', county.summary.split(' NOTE:')[0]);
   if (wetlands) done('Wetland overlay (exact acreage)', wetlands.summary);
+  else if (hasWetlandEvidence) done('Wetland coverage screen', `${wetlandPct}% mapped coverage retained from ${context.reconciledWetlandSource ?? 'the reconciled parcel record'}.`);
   if (flood) done(`Flood overlay screened${flood.baseFloodElevation ? ' (with BFE)' : ' (Zone X / no BFE)'}`, flood.summary);
   if (soils) done('Soils & septic screen', soils.summary);
   if (slope) done('Terrain point sample', slope.summary);
@@ -885,7 +907,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
     sellerQuestions.push('Are you aware of any flooding or standing water on the property? (Flood screening has not run yet.)');
   }
   if (wetlands?.intersects) sellerQuestions.push('Has a wetland delineation ever been performed, or any Corps/DHEC determination requested?');
-  else if (!wetlands) sellerQuestions.push('Are there any wet areas, creeks, or drainage paths on the land? (Wetland screening has not run yet.)');
+  else if (!hasWetlandEvidence) sellerQuestions.push('Are there any wet areas, creeks, or drainage paths on the land? (Wetland screening has not run yet.)');
   if (septicOutlook.outlook !== 'favorable') sellerQuestions.push(`Has a perc/soil test ever been done, or a septic permit applied for (approved or denied)?${soils ? '' : ' (Soil screening has not run yet.)'}`);
   if (utilities) sellerQuestions.push('Is there any well, water meter, sewer, or electric service at or near the property today?');
   else sellerQuestions.push('What utilities, if any, are at or near the property today — power, water, sewer, or a well/septic? (Utility screening has not run yet.)');
@@ -959,7 +981,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
     landScore: buildReconciledLandScore({
       parcelVerified: context.parcelVerified,
       wetlandPct,
-      wetlandBasis: wetlands ? `${wetlands.datasetName}: ${wetlandAcres ?? '?'} ac (${wetlandPct ?? '?'}%) of the mapped geometry (screening).` : '',
+      wetlandBasis: hasWetlandEvidence ? `${context.reconciledWetlandSource ?? wetlands?.datasetName ?? 'Reconciled parcel evidence'}: ${wetlandAcres ?? '?'} ac (${wetlandPct ?? '?'}%) of the parcel screen.` : '',
       sfhaPct,
       floodBasis: flood ? `County/FEMA flood overlay: ${flood.zones.map((z) => `${z.zone} ${z.parcelPercentage}%`).join(', ')}${flood.baseFloodElevation ? `; BFE ${flood.baseFloodElevation}` : ''} (screening).` : '',
       septicOutlook: septicOutlook.outlook,
@@ -971,7 +993,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
       mappedAcres,
       valuationReady: context.valuationReady,
       compCount: context.compCount,
-      anyScreenRan: !!(wetlands || flood || soils || slope || frontage || county),
+      anyScreenRan: !!(hasWetlandEvidence || flood || soils || slope || frontage || county),
       ownerWarnings: ownerAnalysis.warnings,
     }),
     runCompletedAt: run?.completedAt ?? null,

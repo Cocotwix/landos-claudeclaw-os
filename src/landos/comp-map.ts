@@ -22,6 +22,8 @@ export interface CompMapSubject {
   acres: number | null;
   lat: number | null;
   lng: number | null;
+  /** Optional official GIS parcel ring; absent is an honest map state. */
+  polygon?: Array<{ lat: number; lng: number }> | null;
 }
 
 export type CompMarkerStatus = 'sold' | 'active' | 'context' | 'duplicate' | 'rejected';
@@ -42,9 +44,12 @@ export interface CompMapMarker {
   price: number | null;
   ppa: LabeledPpa | null;
   dateIso: string | null;
+  listingDate: string | null;
+  daysOnMarket: number | null;
   providers: string[];
   /** Direct links to the original provider pages. */
   providerLinks: string[];
+  thumbnailUrl: string | null;
   sourceConfidence: 'high' | 'medium' | 'low' | null;
   comparability: string | null;
   lat: number | null;
@@ -89,7 +94,7 @@ function uniqueToCandidate(c: UniqueComp, sold: boolean, subject: CompMapSubject
     sourceUrl: c.primary.sourceUrls[0] ?? null,
     sourceLabel: c.providers[0] ?? null,
     addressDesc: c.address,
-    distanceMiles: point ? distanceMilesFromSubject(subject, point) : null,
+    distanceMiles: point ? distanceMilesFromSubject(subject, point) : c.distanceMiles,
     lane: sold ? 'sold' : 'active',
   };
 }
@@ -101,14 +106,13 @@ function markerFromUnique(
   coords: CoordsLookup,
   selectedByAddress: Map<string, SelectedComp>,
   nonSelectedByKey: Map<string, NonSelectedCandidate>,
+  forceContext = false,
 ): CompMapMarker {
   const point = coords.get(c.address);
   const addrKey = (c.address ?? '').trim().toLowerCase();
   const sel = addrKey ? selectedByAddress.get(addrKey) : undefined;
   const non = nonSelectedByKey.get(c.key);
-  const status: CompMarkerStatus = sold
-    ? (sel || c.comparability === 'direct_comparable' || c.comparability === 'secondary_local_comparable' ? 'sold' : 'context')
-    : 'active';
+  const status: CompMarkerStatus = forceContext ? 'context' : sold ? 'sold' : 'active';
   const acresDelta = typeof c.acres === 'number' && typeof subject.acres === 'number'
     ? Math.round((c.acres - subject.acres) * 100) / 100
     : null;
@@ -119,19 +123,24 @@ function markerFromUnique(
     status,
     selected: !!sel,
     selectionScore: sel?.score ?? null,
-    why: sel ? sel.why : (non?.reason ?? c.comparabilityWhy ?? ''),
+    why: c.inclusionReason ?? (forceContext && c.primary.qualification.missing.length
+      ? `Claimed sale retained as context only; missing ${c.primary.qualification.missing.join(' and ')} evidence.`
+      : sel ? sel.why : (non?.reason ?? c.comparabilityWhy ?? '')),
     acres: c.acresDisplay ?? c.acres,
     acresDeltaFromSubject: acresDelta,
     price: c.primary.price,
     ppa: labeledPricePerAcre(sold ? 'sold' : 'list', c.primary.price, c.acres),
     dateIso: c.primary.dateIso,
+    listingDate: c.primary.listingDate,
+    daysOnMarket: c.primary.daysOnMarket,
     providers: c.providers,
     providerLinks: c.transactions.flatMap((t) => t.sourceUrls).filter((u, i, a) => /^https?:\/\//i.test(u) && a.indexOf(u) === i),
+    thumbnailUrl: c.primary.thumbnailUrl,
     sourceConfidence: c.sourceConfidence,
     comparability: c.comparability,
     lat: point?.lat ?? null,
     lng: point?.lng ?? null,
-    distanceMiles: point ? distanceMilesFromSubject(subject, point) : null,
+    distanceMiles: point ? distanceMilesFromSubject(subject, point) : c.distanceMiles,
   };
 }
 
@@ -170,16 +179,21 @@ export function buildCompMapView(input: {
   const markers: CompMapMarker[] = [
     ...registry.validatedSold.map((c) => markerFromUnique(c, true, subject, coords, selectedByAddress, nonSelectedByKey)),
     ...registry.validatedActive.map((c) => markerFromUnique(c, false, subject, coords, selectedByAddress, nonSelectedByKey)),
+    ...registry.uniqueComps
+      .filter((c) => !registry.validatedSold.some((sold) => sold.key === c.key) && !registry.validatedActive.some((active) => active.key === c.key))
+      .map((c) => markerFromUnique(c, c.primary.kind === 'sold', subject, coords, selectedByAddress, nonSelectedByKey, true)),
     // Rejected candidates stay visible (never plotted as usable evidence).
     ...registry.rejected.map((r): CompMapMarker => ({
       key: null, address: dash(r.address), apn: null, status: 'rejected', selected: false,
       selectionScore: null, why: r.reason, acres: null, acresDeltaFromSubject: null,
-      price: r.price, ppa: null, dateIso: null, providers: [r.provider], providerLinks: [],
+      price: r.price, ppa: null, dateIso: null, listingDate: null, daysOnMarket: null, providers: [r.provider], providerLinks: [],
+      thumbnailUrl: null,
       sourceConfidence: null, comparability: null, lat: null, lng: null, distanceMiles: null,
     })),
   ];
 
-  const plottable = markers.filter((m) => m.lat != null && m.lng != null).length;
+  const mapEligible = markers.filter((m) => m.status === 'sold' || m.status === 'active');
+  const plottable = mapEligible.filter((m) => m.lat != null && m.lng != null).length;
   const sold = registry.counts.validatedSold;
   const active = registry.counts.validatedActive;
   const context = markers.filter((m) => m.status === 'context').length;
@@ -193,11 +207,11 @@ export function buildCompMapView(input: {
       rejected: registry.counts.rejected,
       duplicatesMerged: registry.counts.duplicatesMerged,
       plottable,
-      tableOnly: markers.length - plottable,
+      tableOnly: mapEligible.length - plottable,
     },
     refreshDateIso: nowIso,
     attribution: '© OpenStreetMap contributors',
     mapKind: 'landos_final_deduplicated_registry',
-    summaryLine: `${sold} unique sold, ${active} active, ${registry.counts.duplicatesMerged} duplicates merged, ${registry.counts.rejected} rejected — ${selection.comps.length} selected primary sold comp(s); ${plottable}/${markers.length} plottable.`,
+    summaryLine: `${sold} accepted sold land comp${sold === 1 ? '' : 's'} and ${active} active land listing${active === 1 ? '' : 's'}; ${plottable} shown on the map.`,
   };
 }

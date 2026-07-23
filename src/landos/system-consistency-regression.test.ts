@@ -37,7 +37,7 @@ const verifiedContext: OperatorRecordContext = {
   verificationSource: 'Persisted verified Property Card',
   compCount: 55,
   valuationReady: true,
-  valuationConflict: true, // sold vs asking disagree materially
+  valuationConflict: true, // supporting asking context disagrees; sold comps still control FMV
   thinMarketClusterSupported: false,
   marketPulseAvailable: false,
   visualsCaptured: 0,
@@ -93,10 +93,10 @@ describe('shared acreage parser', () => {
 // ── Pricing gate ──────────────────────────────────────────────────────────────
 
 describe('the ONE pricing gate', () => {
-  it('closes on a material valuation conflict even with many sold comps', () => {
+  it('does not let asking or automated-value disagreement block sold-comp pricing', () => {
     const gate = computePricingGate({ parcelVerified: true, validatedSoldComps: 55, valuationReady: true, valuationConflict: true, acreageConflict: false });
-    expect(gate.pricingAllowed).toBe(false);
-    expect(gate.pricingBlockers.join(' ')).toMatch(/disagree materially/i);
+    expect(gate.pricingAllowed).toBe(true);
+    expect(gate.pricingBlockers).toHaveLength(0);
   });
   it('closes on disputed acreage', () => {
     const gate = computePricingGate({ parcelVerified: true, validatedSoldComps: 5, valuationReady: true, valuationConflict: false, acreageConflict: true });
@@ -113,17 +113,17 @@ describe('the ONE pricing gate', () => {
 describe('operator record consumes the shared gate', () => {
   const record = buildOperatorPropertyRecord(null, verifiedContext);
 
-  it('never renders "Strategies scoreable" while the gate is closed', () => {
+  it('keeps strategies scoreable when sold comps are usable', () => {
     const strategyCard = record.decisionCards.find((c) => c.key === 'strategy')!;
-    expect(strategyCard.verdict).not.toBe('good');
-    expect(strategyCard.headline).toMatch(/blocked/i);
+    expect(strategyCard.verdict).toBe('good');
+    expect(strategyCard.headline).not.toMatch(/blocked/i);
   });
 
-  it('value readiness is conflicted (not ready) while sold vs asking disagree', () => {
-    expect(record.valueReadiness.state).toBe('conflicted');
+  it('value readiness follows the accepted sold-comp basis, not asking context', () => {
+    expect(record.valueReadiness.state).toBe('ready');
     const valueCard = record.decisionCards.find((c) => c.key === 'value')!;
-    expect(valueCard.verdict).not.toBe('good');
-    expect(valueCard.headline).toMatch(/conflicted|blocked/i);
+    expect(valueCard.verdict).toBe('good');
+    expect(valueCard.headline).toMatch(/comp-supported range available/i);
   });
 
   it('offer readiness cannot advance merely because a range exists', () => {
@@ -185,14 +185,25 @@ describe('valuation projection from the validated registry', () => {
     expect(gated.nextAction).toMatch(/pricing blocked/i);
   });
 
-  it('registry stats never mix sold and active $/acre', () => {
+  it('registry stats never mix sold and active $/acre and recompute sold PPA from price ÷ acres', () => {
     const mixed = buildCompRegistry({ state: 'SC', acres: 1 }, [
       soldCandidate(1),
       { provider: 'zillow', lane: 'active', addressDesc: '900 Ask St, Testville, SC', price: 200_000, priceKind: 'list', acres: 1, pricePerAcre: 200_000 },
     ]);
     const stats = registryValuationStats(mixed);
-    expect(stats.soldMedianPpa).toBe(38_000);
+    expect(stats.soldMedianPpa).toBe(Math.round(41_000 / 1.1));
     expect(stats.activeAvgPpa).toBe(200_000);
+  });
+
+  it('keeps traceable but non-comparable acreage segments out of subject valuation stats', () => {
+    const mixedAcreage = buildCompRegistry({ state: 'SC', acres: 5.82 }, [
+      soldCandidate(1, { acres: 5, price: 50_000 }),
+      soldCandidate(2, { acres: 6, price: 60_000 }),
+      soldCandidate(3, { acres: 7, price: 70_000 }),
+      soldCandidate(4, { acres: 1, price: 80_000 }),
+    ]);
+    expect(mixedAcreage.counts.validatedSold).toBe(4);
+    expect(registryValuationStats(mixedAcreage).soldCount).toBe(3);
   });
 });
 
@@ -263,15 +274,15 @@ describe('registry-driven best comparables', () => {
     expect(best.comps[0].source).not.toBe('homeharvest');
   });
 
-  it('computes straight-line distance when coordinates are known and excludes the unmeasured row', () => {
+  it('computes straight-line distance when known and retains the unmeasured fallback with zero location points', () => {
     const registry = buildCompRegistry({ state: 'SC', acres: 1.15 }, [soldCandidate(1), soldCandidate(2)]);
     const coords = new Map([[
       '101 comp st, testville, sc 29000'.replace(/\s+/g, ' '), { lat: 35.0, lng: -82.65 },
     ]]);
     const best = bestCompsFromRegistry(registry, 1.15, { subjectCoords: { lat: 34.99, lng: -82.65 }, coordsByAddress: coords });
-    expect(best.comps).toHaveLength(1);
+    expect(best.comps).toHaveLength(2);
     expect(best.comps[0]?.distanceMethod).toBe('straight_line');
-    expect(best.policy.exclusions.some((reason) => /distance is not established/i.test(reason))).toBe(true);
+    expect(best.comps.some((comp) => comp.distanceMiles == null && comp.scoreComponents.distance === 0)).toBe(true);
     expect(best.rationale).toMatch(/straight-line/i);
   });
 

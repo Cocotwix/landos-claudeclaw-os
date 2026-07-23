@@ -1,23 +1,23 @@
 {
   "tests": {
     "status": "PASS",
-    "timestamp": "2026-07-15T23:20:46-04:00",
-    "summary": "264 files, 3391 tests, 0 failures (vitest run, full suite)"
+    "timestamp": "2026-07-23T16:00:56-04:00",
+    "summary": "295 files, 3642 tests, 0 failures (vitest run, full suite)"
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-07-15T23:14:00-04:00",
+    "timestamp": "2026-07-23T16:01:30-04:00",
     "summary": "tsc --noEmit"
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-07-15T23:21:30-04:00",
-    "summary": "Vite production bundle and server TypeScript build; managed runtime restarted on the fresh bundle"
+    "timestamp": "2026-07-23T16:02:30-04:00",
+    "summary": "server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory"
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-07-15T23:32:00-04:00",
-    "pid": 122616,
+    "timestamp": "2026-07-23T16:04:38-04:00",
+    "pid": 60512,
     "url": "http://localhost:3141"
   }
 }

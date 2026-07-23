@@ -26,7 +26,10 @@ const HEALTH_PATH = '/api/health';
 const START_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 8_000;
 const HTTP_TIMEOUT_MS = 3_000;
-const COMMAND_TIMEOUT_MS = 5_000;
+// Windows process inspection can exceed five seconds when the machine is under
+// browser/research load. Treating that transient slowness as an unknown PID
+// strands canonical restart/start operations even after the server has exited.
+const COMMAND_TIMEOUT_MS = 15_000;
 const OPERATION_STALE_MS = 120_000;
 const MAIN_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const MAIN_LOG_KEEP_BYTES = 5 * 1024 * 1024;

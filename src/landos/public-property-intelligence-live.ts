@@ -29,6 +29,11 @@ type Arc = { features?: ArcFeature[]; error?: { message?: string } };
 const TN = 'https://services1.arcgis.com/YuVBSS7Y1of2Qud1/arcgis/rest/services/Tennessee_Property_Boundaries_Public_Use/FeatureServer/0';
 const BFT = 'https://gis.beaufortcountysc.gov/server/rest/services/ArchiveParcels/MapServer/14';
 const FAYETTE_PARCELS = 'https://gis.fayettecountyga.gov/arcgis/rest/services/Pictometry/parcelsRO/MapServer/0';
+// Florida DEP's statewide public view of the county property-appraiser parcel
+// submissions.  This is an official state-hosted geometry/identity source. The
+// current public view is labelled Cadastral 2023, so ownership is retained as a
+// dated county-record fact and must not silently replace a newer accepted owner.
+const FL_DOR_PARCELS = 'https://ca.dep.state.fl.us/arcgis/rest/services/Map_Direct/Boundaries/MapServer/16';
 // SCDOT's statewide public mirror of county parcel layers (one sublayer per SC
 // county). Official state-hosted GIS; schemas vary by county, so field mapping
 // is capability-probed per layer (see scdotParcel). A mirror can lag the county
@@ -53,111 +58,306 @@ export interface OfficialParcel {
   datasetDate: string | null;
   facts: Record<string, string | number | null>;
 }
+export type OfficialParcelAttemptStatus = 'matched' | 'no_match' | 'unavailable';
+export interface OfficialParcelAttempt {
+  source: string;
+  status: OfficialParcelAttemptStatus;
+  note: string;
+}
 export interface OfficialParcelLookupResult {
   parcel: OfficialParcel | null;
-  attempted: Array<{ source: string; status: 'matched' | 'no_match' | 'unavailable'; note: string }>;
+  /**
+   * Overall outcome of the whole lookup:
+   *   matched      — one strategy produced an exact parcel;
+   *   no_match     — every applicable strategy completed successfully and none
+   *                  matched (an authoritative "this parcel is not there");
+   *   unavailable  — at least one applicable strategy could not answer
+   *                  (provider error/timeout), or no adapter exists at all, so
+   *                  absence is NOT established.
+   */
+  status: OfficialParcelAttemptStatus;
+  /** True only when the caller's own signal cancelled the lookup. */
+  cancelled?: boolean;
+  attempted: OfficialParcelAttempt[];
 }
 
-/** Tested official paths: TN Comptroller statewide public parcels and Beaufort County SC public archive. */
+const OFFICIAL_LOOKUP_SOURCE = 'Official public parcel lookup';
+const NO_ADAPTER_NOTE = 'No tested public parcel adapter is available for this jurisdiction.';
+
+/** The caller's own AbortSignal fired. Intentional upstream cancellation: it
+ *  stops every remaining strategy immediately and is never treated as a
+ *  provider failure. */
+export class ParcelLookupCancelledError extends Error {
+  constructor(message = 'Aborted by the caller.') {
+    super(message);
+    this.name = 'ParcelLookupCancelledError';
+  }
+}
+
+/** One provider exceeded its own bounded time budget. Provider-local, so it is
+ *  isolated to that strategy and never cancels the remaining ones. */
+export class ProviderTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderTimeoutError';
+  }
+}
+
+/** One independent lookup strategy's own answer. A thrown error is a
+ *  provider-local failure; `unavailable` is a strategy that answered but could
+ *  not look (no county layer, unusable schema). Both keep the run going. */
+interface StrategyOutcome {
+  parcel: OfficialParcel | null;
+  status: OfficialParcelAttemptStatus;
+  note: string;
+}
+interface ParcelStrategy {
+  source: string;
+  run: () => Promise<StrategyOutcome>;
+}
+
+/**
+ * Tested official paths: Fayette County GA, Beaufort County SC public archive,
+ * the SCDOT statewide SC mirror, and the TN Comptroller statewide layer.
+ *
+ * Resilience contract (shared by every jurisdiction — no per-property paths):
+ * strategies are independent. A provider-local timeout, an HTTP error, or a
+ * valid no-match in one strategy records its own attempt and the run continues
+ * into every later applicable strategy. Only the caller's own signal stops the
+ * remaining work.
+ */
 export async function lookupOfficialParcel(
   input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
   timeoutMs = 25_000,
+  signal?: AbortSignal,
 ): Promise<OfficialParcelLookupResult> {
-  const state = stateCode(input.state);
-  const attempted: OfficialParcelLookupResult['attempted'] = [];
-  try {
-    if (state === 'GA' && /fayette/i.test(input.county ?? '') && input.apn) {
-      const acceptedApn = input.apn;
-      const candidates = fayetteWhereCandidates(acceptedApn);
-      for (const where of candidates) {
-        const url = query(FAYETTE_PARCELS, where, true);
-        const hits = ((await json<Arc>(url, timeoutMs)).features ?? [])
-          .map((feature) => fayette(feature, url, input.address ?? null))
-          .filter((value): value is OfficialParcel => !!value)
-          .filter((value) => normalizedParcelId(value.apn) === normalizedParcelId(acceptedApn));
-        if (hits.length === 1) {
-          attempted.push({ source: 'Fayette County official GIS tax-parcel layer', status: 'matched', note: 'Exact APN matched in the county parcel geometry.' });
-          return { parcel: hits[0], attempted };
-        }
+  const attempted: OfficialParcelAttempt[] = [];
+  const strategies = applicableParcelStrategies(input, timeoutMs, signal);
+  if (!strategies.length) {
+    attempted.push({ source: OFFICIAL_LOOKUP_SOURCE, status: 'unavailable', note: NO_ADAPTER_NOTE });
+    return { parcel: null, status: 'unavailable', attempted };
+  }
+  for (let index = 0; index < strategies.length; index += 1) {
+    const strategy = strategies[index];
+    if (signal?.aborted) return cancelledLookup(attempted, strategies.length - index);
+    try {
+      const outcome = await strategy.run();
+      attempted.push({ source: strategy.source, status: outcome.status, note: outcome.note });
+      if (outcome.status === 'matched' && outcome.parcel) {
+        return { parcel: outcome.parcel, status: 'matched', attempted };
       }
-      attempted.push({ source: 'Fayette County official GIS tax-parcel layer', status: 'no_match', note: 'No unambiguous exact APN match was returned from the county parcel geometry.' });
-      return { parcel: null, attempted };
+      // no_match / unavailable: this strategy cannot speak for the later ones.
+    } catch (error) {
+      if (isCallerCancellation(error, signal)) return cancelledLookup(attempted, strategies.length - index);
+      attempted.push({ source: strategy.source, status: 'unavailable', note: providerFailureNote(error) });
     }
-    if (state === 'SC' && /beaufort/i.test(input.county ?? '') && input.apn) {
-      const url = query(BFT, `PIN_ = '${sql(input.apn)}'`, true);
-      const feature = (await json<Arc>(url, timeoutMs)).features?.[0];
-      const parcel = feature ? beaufort(feature, url) : null;
-      attempted.push({
-        source: 'Beaufort County public archival parcel layer (2024)',
-        status: parcel ? 'matched' : 'no_match',
-        note: parcel ? 'Exact APN matched.' : 'No exact APN matched.',
-      });
-      return { parcel, attempted };
-    }
-    if (state === 'SC' && input.county && (input.apn || input.address)) {
-      // Statewide SCDOT parcel mirror — one shared adapter for every SC county
-      // (never a property- or county-specific output patch).
-      return await scdotLookup(input, timeoutMs, attempted);
-    }
-    if (state === 'TN' && (input.address || input.apn)) {
-      const county = String(input.county ?? '').replace(/\s+county$/i, '').trim();
-      // APN first (strongest identity). The statewide layer stores PARCELID as
-      // "CTY MAP   PARCEL INTERVAL YEAR" (county-code prefixed, fixed-width), so
-      // exact equality is tried first and then ONE bounded county-filtered LIKE
-      // over the map + parcel digit groups. Multiple candidates never substitute.
-      if (input.apn) {
-        const raw = input.apn.trim();
-        const wheres = [...new Set([raw, raw.replace(/-/g, ' ').replace(/\s+/g, ' ')])]
-          .map((v) => `(PARCELID = '${sql(v)}' OR PARCEL = '${sql(v)}')`);
-        const digits = raw.replace(/\D/g, '');
-        if (digits.length >= 6) {
-          const map = digits.slice(0, 3);
-          const parcelDigits = digits.slice(3);
-          wheres.push(`PARCELID LIKE '%${sql(map)}%${sql(parcelDigits.padStart(5, '0'))}%'`);
-        }
-        for (const clause of wheres) {
-          const where = `${county ? `COUNTY_NAME = '${sql(county)}' AND ` : ''}${clause}`;
-          const url = query(TN, where, true);
-          const hits = ((await json<Arc>(url, timeoutMs)).features ?? [])
-            .map((feature) => tennessee(feature, url))
-            .filter((value): value is OfficialParcel => !!value);
+  }
+  // Every applicable strategy ran. Absence is only established when they all
+  // answered; a single provider failure leaves the question open.
+  if (attempted.every((attempt) => attempt.status === 'no_match')) {
+    return { parcel: null, status: 'no_match', attempted };
+  }
+  const failed = attempted.filter((attempt) => attempt.status === 'unavailable').length;
+  attempted.push({
+    source: OFFICIAL_LOOKUP_SOURCE,
+    status: 'unavailable',
+    note: `${failed} of ${strategies.length} applicable official parcel adapter(s) could not answer; no adapter matched the parcel, so absence is not established.`,
+  });
+  return { parcel: null, status: 'unavailable', attempted };
+}
+
+function cancelledLookup(attempted: OfficialParcelAttempt[], remaining: number): OfficialParcelLookupResult {
+  attempted.push({
+    source: OFFICIAL_LOOKUP_SOURCE,
+    status: 'unavailable',
+    note: `Aborted by the caller; ${remaining} applicable official parcel strateg${remaining === 1 ? 'y was' : 'ies were'} not attempted.`,
+  });
+  return { parcel: null, status: 'unavailable', cancelled: true, attempted };
+}
+
+/** Keep the failure KIND in the operator-visible diagnostic, not just a message. */
+function providerFailureNote(error: unknown): string {
+  return error instanceof ProviderTimeoutError
+    ? `Provider-local timeout: ${safe(error)}`
+    : `Provider error: ${safe(error)}`;
+}
+
+/** Caller cancellation (stop everything) vs a provider-local failure (isolate). */
+function isCallerCancellation(error: unknown, signal?: AbortSignal): boolean {
+  if (error instanceof ParcelLookupCancelledError) return true;
+  if (error instanceof ProviderTimeoutError) return false;
+  return signal?.aborted === true && error instanceof Error && error.name === 'AbortError';
+}
+
+/** Every strategy this jurisdiction/identity actually supports, in precedence
+ *  order. Building the list up front is what proves whether a later strategy
+ *  could still produce a result. */
+function applicableParcelStrategies(
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): ParcelStrategy[] {
+  const state = stateCode(input.state);
+  const strategies: ParcelStrategy[] = [];
+
+  // Strategy 1: Fayette County (GA) official tax-parcel layer, APN identity.
+  if (state === 'GA' && /fayette/i.test(input.county ?? '') && input.apn) {
+    const acceptedApn = input.apn;
+    strategies.push({
+      source: 'Fayette County official GIS tax-parcel layer',
+      run: async () => {
+        for (const where of fayetteWhereCandidates(acceptedApn)) {
+          const url = query(FAYETTE_PARCELS, where, true);
+          const hits = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
+            .map((feature) => fayette(feature, url, input.address ?? null))
+            .filter((value): value is OfficialParcel => !!value)
+            .filter((value) => normalizedParcelId(value.apn) === normalizedParcelId(acceptedApn));
           if (hits.length === 1) {
-            attempted.push({ source: 'Tennessee Comptroller public parcel layer', status: 'matched', note: 'Exact APN/parcel-id matched (county-filtered).' });
-            return { parcel: hits[0], attempted };
+            return { parcel: hits[0], status: 'matched', note: 'Exact APN matched in the county parcel geometry.' };
           }
         }
-      }
-      if (!input.address) {
-        attempted.push({ source: 'Tennessee Comptroller public parcel layer', status: 'no_match', note: 'No official parcel matched the APN.' });
-        return { parcel: null, attempted };
-      }
-      const where = `${county ? `COUNTY_NAME = '${sql(county)}' AND ` : ''}UPPER(ADDRESS) LIKE '%${sql(tnNeedle(input.address))}%'`;
+        return { parcel: null, status: 'no_match', note: 'No unambiguous exact APN match was returned from the county parcel geometry.' };
+      },
+    });
+  }
+
+  // Strategy 2: Beaufort County (SC) public archival layer, APN identity.
+  if (state === 'SC' && /beaufort/i.test(input.county ?? '') && input.apn) {
+    const apn = input.apn;
+    strategies.push({
+      source: 'Beaufort County public archival parcel layer (2024)',
+      run: async () => {
+        const url = query(BFT, `PIN_ = '${sql(apn)}'`, true);
+        const feature = (await json<Arc>(url, timeoutMs, signal)).features?.[0];
+        const parcel = feature ? beaufort(feature, url) : null;
+        return {
+          parcel,
+          status: parcel ? 'matched' : 'no_match',
+          note: parcel ? 'Exact APN matched.' : 'No exact APN matched.',
+        };
+      },
+    });
+  }
+
+  // Strategy 3: South Carolina statewide parcel mirror (SCDOT) — one shared
+  // adapter for every SC county (never a property- or county-specific patch).
+  if (state === 'SC' && input.county && (input.apn || input.address)) {
+    strategies.push({
+      source: `South Carolina statewide parcel layer (SCDOT GIS mirror) — ${input.county}`,
+      run: () => scdotLookup(input, timeoutMs, signal),
+    });
+  }
+
+  // Strategy 4: Tennessee Comptroller statewide public parcel layer.
+  if (state === 'TN' && (input.address || input.apn)) {
+    strategies.push({
+      source: 'Tennessee Comptroller public parcel layer',
+      run: () => tennesseeLookup(input, timeoutMs, signal),
+    });
+  }
+
+  // Strategy 5: Florida DEP / Department of Revenue statewide parcel view.
+  // Require an APN because a street address alone can identify multiple tax
+  // parcels. Formatting differs by county/provider, so the candidate query is
+  // broad enough to tolerate separators but the accepted result is filtered by
+  // the full canonical APN and must be unique.
+  if (state === 'FL' && input.county && input.apn) {
+    strategies.push({
+      source: 'Florida DEP statewide property-appraiser parcel layer (Cadastral 2023)',
+      run: () => floridaDorLookup(input, timeoutMs, signal),
+    });
+  }
+
+  return strategies;
+}
+
+function floridaApnTokens(value: string): string[] {
+  return value.toUpperCase().split(/[^A-Z0-9]+/).filter((token) => token && !/^0+$/.test(token));
+}
+
+function floridaCanonicalApn(value: string): string {
+  return floridaApnTokens(value).join('');
+}
+
+async function floridaDorLookup(
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<StrategyOutcome> {
+  const tokens = floridaApnTokens(input.apn!);
+  if (!tokens.length) return { parcel: null, status: 'no_match', note: 'The supplied APN contained no usable parcel identifier.' };
+  const pattern = tokens.map(sql).join('%');
+  const where = `(PARCEL_ID LIKE '${pattern}' OR PARCELNO LIKE '${pattern}' OR STATE_PAR_ID LIKE '${pattern}')`;
+  const url = query(FL_DOR_PARCELS, where, true);
+  const target = floridaCanonicalApn(input.apn!);
+  const candidates = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
+    .map((feature) => floridaDorParcel(feature, url, input.county!))
+    .filter((value): value is OfficialParcel => !!value)
+    .filter((value) => floridaCanonicalApn(value.apn) === target);
+  return {
+    parcel: candidates.length === 1 ? candidates[0] : null,
+    status: candidates.length === 1 ? 'matched' : 'no_match',
+    note: candidates.length === 1
+      ? 'Exact normalized APN matched in the official statewide parcel geometry.'
+      : candidates.length > 1
+        ? 'Multiple official parcels matched the normalized APN; no candidate was substituted.'
+        : 'No exact normalized APN matched in the official statewide parcel geometry.',
+  };
+}
+
+async function tennesseeLookup(
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<StrategyOutcome> {
+  const county = String(input.county ?? '').replace(/\s+county$/i, '').trim();
+  // APN first (strongest identity). The statewide layer stores PARCELID as
+  // "CTY MAP   PARCEL INTERVAL YEAR" (county-code prefixed, fixed-width), so
+  // exact equality is tried first and then ONE bounded county-filtered LIKE
+  // over the map + parcel digit groups. Multiple candidates never substitute.
+  if (input.apn) {
+    const raw = input.apn.trim();
+    const wheres = [...new Set([raw, raw.replace(/-/g, ' ').replace(/\s+/g, ' ')])]
+      .map((v) => `(PARCELID = '${sql(v)}' OR PARCEL = '${sql(v)}')`);
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length >= 6) {
+      const map = digits.slice(0, 3);
+      const parcelDigits = digits.slice(3);
+      wheres.push(`PARCELID LIKE '%${sql(map)}%${sql(parcelDigits.padStart(5, '0'))}%'`);
+    }
+    for (const clause of wheres) {
+      const where = `${county ? `COUNTY_NAME = '${sql(county)}' AND ` : ''}${clause}`;
       const url = query(TN, where, true);
-      const candidates = ((await json<Arc>(url, timeoutMs)).features ?? [])
+      const hits = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
         .map((feature) => tennessee(feature, url))
         .filter((value): value is OfficialParcel => !!value);
-      const compatible = candidates.filter((candidate) => addressesMateriallyAgree(input.address!, candidate.address));
-      // A missing official street-name token is a harmless normalization only
-      // when it produces one unambiguous county candidate. Multiple compatible
-      // parcel candidates remain unresolved; no nearest/proximity substitution.
-      const parcel = compatible.length === 1 ? compatible[0] : null;
-      attempted.push({
-        source: 'Tennessee Comptroller public parcel layer',
-        status: parcel ? 'matched' : 'no_match',
-        note: parcel
-          ? 'Exact normalized street address matched.'
-          : candidates.length
-            ? 'Candidate street name materially differed; no candidate was substituted.'
-            : 'No official parcel matched.',
-      });
-      return { parcel, attempted };
+      if (hits.length === 1) {
+        return { parcel: hits[0], status: 'matched', note: 'Exact APN/parcel-id matched (county-filtered).' };
+      }
     }
-  } catch (error) {
-    attempted.push({ source: 'Official public parcel lookup', status: 'unavailable', note: safe(error) });
-    return { parcel: null, attempted };
   }
-  attempted.push({ source: 'Official public parcel lookup', status: 'unavailable', note: 'No tested public parcel adapter is available for this jurisdiction.' });
-  return { parcel: null, attempted };
+  if (!input.address) {
+    return { parcel: null, status: 'no_match', note: 'No official parcel matched the APN.' };
+  }
+  const where = `${county ? `COUNTY_NAME = '${sql(county)}' AND ` : ''}UPPER(ADDRESS) LIKE '%${sql(tnNeedle(input.address))}%'`;
+  const url = query(TN, where, true);
+  const candidates = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
+    .map((feature) => tennessee(feature, url))
+    .filter((value): value is OfficialParcel => !!value);
+  const compatible = candidates.filter((candidate) => addressesMateriallyAgree(input.address!, candidate.address));
+  // A missing official street-name token is a harmless normalization only
+  // when it produces one unambiguous county candidate. Multiple compatible
+  // parcel candidates remain unresolved; no nearest/proximity substitution.
+  const parcel = compatible.length === 1 ? compatible[0] : null;
+  return {
+    parcel,
+    status: parcel ? 'matched' : 'no_match',
+    note: parcel
+      ? 'Exact normalized street address matched.'
+      : candidates.length
+        ? 'Candidate street name materially differed; no candidate was substituted.'
+        : 'No official parcel matched.',
+  };
 }
 
 export function officialParcelPatch(p: OfficialParcel): PropertyPatch {
@@ -779,13 +979,14 @@ function utilitiesAdapter(p: OfficialParcel, capability: CountyGisCapability | n
     adapterId: 'utility_screening_v1',
     timeoutMs: 30_000,
     async run(_subject, _context) {
+      if (!capability) {
+        return unavailable(`No tested official county utility layer or authority adapter is available for ${p.county} County, ${p.state}.`);
+      }
       const attempted: string[] = [];
       let water: UtilityAvailability = 'unknown';
       let sewer: UtilityAvailability = 'unknown';
       const providers: Array<{ service: string; provider: string; contact?: string; basis: string }> = [];
-      if (capability) {
-        attempted.push(`${capability.countyLabel} GIS service catalog (no public water/sewer line layers are published)`);
-      }
+      attempted.push(`${capability.countyLabel} GIS service catalog (no public water/sewer line layers are published)`);
       if (stateCode(p.state) === 'SC' && /beaufort/i.test(p.county)) {
         // Rural St Helena Island: county GIS publishes no utility lines; BJWSA is the regional authority.
         water = 'unknown';
@@ -799,7 +1000,7 @@ function utilitiesAdapter(p: OfficialParcel, capability: CountyGisCapability | n
       const septicRequired = (sewer as UtilityAvailability) !== 'mapped_available';
       const wellRequired = (water as UtilityAvailability) !== 'mapped_available';
       const summary = `No public water or sewer line is mapped at the parcel by county GIS${providers.length ? `; ${providers[0].provider} is the regional authority to confirm service` : ''}. Development would most likely need a well and onsite septic unless the authority confirms service.`;
-      const evidenceRef = evidence('utility-screening', 'Utility availability screening (county GIS + authority identification)', capability?.layers.parcels ?? BFT, 'official_county_state', ['utilities'], undefined, 'low', 'Screening only; the utility authority controls service availability and connection cost.');
+      const evidenceRef = evidence('utility-screening', 'Utility availability screening (county GIS + authority identification)', capability.layers.parcels ?? capability.mapViewerUrl ?? capability.assessorSearchUrl ?? p.sourceUrl, 'official_county_state', ['utilities'], undefined, 'low', 'Screening only; the utility authority controls service availability and connection cost.');
       return {
         status: 'succeeded', evidence: [evidenceRef], confidence: 'low', retryEligible: true,
         finding: {
@@ -869,6 +1070,7 @@ function countyRecords(p: OfficialParcel, capability: CountyGisCapability | null
         if (value != null && String(value).trim() && String(value).trim() !== '0') facts.push({ field, value: typeof value === 'number' ? value : String(value).trim(), sourceEvidenceId: evidenceRef.evidenceId, classification });
       };
       push('Owner of record', p.owner);
+      push(p.datasetDate ? `Owner shown in ${p.datasetDate} parcel dataset` : 'Owner shown in parcel dataset', str(p.facts.ownerAtDatasetDate));
       push('Assessed acreage', p.acres);
       push('Owner mailing address', str(p.facts.mailingAddress));
       push('GIS mapped acreage', num(p.facts.gisAcres));
@@ -988,38 +1190,74 @@ function spatial(base: string, geometry: { rings: Rings }, outFields: string, re
   return `${base}/query?${params}`;
 }
 
-async function json<T>(url: string, timeout: number, signal?: AbortSignal, init?: RequestInit): Promise<T> {
+/** Every bounded provider request carries its OWN deadline. Because both a
+ *  blown deadline and a caller abort surface from fetch as the same generic
+ *  AbortError, the deadline is tracked explicitly so the caller can tell a
+ *  provider-local timeout (isolate, keep going) from an intentional upstream
+ *  cancellation (stop everything). */
+interface BoundedRequest {
+  controller: AbortController;
+  budgetMs: number;
+  timedOut: () => boolean;
+  release: () => void;
+}
+
+function boundedRequest(timeout: number, signal?: AbortSignal): BoundedRequest {
+  if (signal?.aborted) throw new ParcelLookupCancelledError();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Math.min(timeout, 60_000)));
+  const budgetMs = Math.max(1000, Math.min(timeout, 60_000));
+  let expired = false;
+  const timer = setTimeout(() => { expired = true; controller.abort(); }, budgetMs);
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
+  return {
+    controller,
+    budgetMs,
+    timedOut: () => expired,
+    release: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    },
+  };
+}
+
+/** Classify a failed provider request. Caller cancellation wins over a
+ *  coincident deadline: it is the intentional signal. */
+function requestFailure(error: unknown, bounded: BoundedRequest, signal: AbortSignal | undefined, provider: string): Error {
+  if (error instanceof ParcelLookupCancelledError) return error;
+  if (signal?.aborted) return new ParcelLookupCancelledError();
+  if (bounded.timedOut()) return new ProviderTimeoutError(`${provider} did not respond within ${bounded.budgetMs}ms.`);
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function json<T>(url: string, timeout: number, signal?: AbortSignal, init?: RequestInit): Promise<T> {
+  const bounded = boundedRequest(timeout, signal);
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal, headers: { accept: 'application/json', ...(init?.headers ?? {}) } });
+    const response = await fetch(url, { ...init, signal: bounded.controller.signal, headers: { accept: 'application/json', ...(init?.headers ?? {}) } });
     if (!response.ok) throw new Error(`Public provider HTTP ${response.status}.`);
     return await response.json() as T;
+  } catch (error) {
+    throw requestFailure(error, bounded, signal, 'The public provider');
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', abort);
+    bounded.release();
   }
 }
 
 async function sda(queryText: string, timeout: number, signal?: AbortSignal): Promise<string[][]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Math.min(timeout, 60_000)));
-  const abort = () => controller.abort();
-  signal?.addEventListener('abort', abort, { once: true });
+  const bounded = boundedRequest(timeout, signal);
   try {
     const response = await fetch(SDA, {
-      method: 'POST', signal: controller.signal,
+      method: 'POST', signal: bounded.controller.signal,
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ format: 'JSON+COLUMNNAME', query: queryText }),
     });
     if (!response.ok) throw new Error(`USDA Soil Data Access HTTP ${response.status}.`);
     const payload = await response.json() as { Table?: unknown[][] };
     return (payload.Table ?? []).map((row) => row.map((value) => String(value ?? '')));
+  } catch (error) {
+    throw requestFailure(error, bounded, signal, 'USDA Soil Data Access');
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', abort);
+    bounded.release();
   }
 }
 
@@ -1042,19 +1280,19 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 let scLayerIndex: Map<string, number> | null = null;
 const scFieldCache = new Map<number, string[]>();
 
-async function scdotCountyLayerId(county: string, timeoutMs: number): Promise<number | null> {
+async function scdotCountyLayerId(county: string, timeoutMs: number, signal?: AbortSignal): Promise<number | null> {
   if (!scLayerIndex) {
-    const root = await json<{ layers?: Array<{ id: number; name: string }> }>(`${SC_PARCELS}?f=json`, timeoutMs);
+    const root = await json<{ layers?: Array<{ id: number; name: string }> }>(`${SC_PARCELS}?f=json`, timeoutMs, signal);
     scLayerIndex = new Map((root.layers ?? []).map((layer) => [layer.name.trim().toLowerCase(), layer.id]));
   }
   const key = county.replace(/\s+county$/i, '').trim().toLowerCase();
   return scLayerIndex.get(key) ?? null;
 }
 
-async function scdotLayerFields(layerId: number, timeoutMs: number): Promise<string[]> {
+async function scdotLayerFields(layerId: number, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
   const cached = scFieldCache.get(layerId);
   if (cached) return cached;
-  const meta = await json<{ fields?: Array<{ name: string }> }>(`${SC_PARCELS}/${layerId}?f=json`, timeoutMs);
+  const meta = await json<{ fields?: Array<{ name: string }> }>(`${SC_PARCELS}/${layerId}?f=json`, timeoutMs, signal);
   const fields = (meta.fields ?? []).map((f) => f.name);
   scFieldCache.set(layerId, fields);
   return fields;
@@ -1074,24 +1312,21 @@ function scField(fields: string[], candidates: string[]): string | null {
 async function scdotLookup(
   input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
   timeoutMs: number,
-  attempted: OfficialParcelLookupResult['attempted'],
-): Promise<OfficialParcelLookupResult> {
-  const sourceName = `South Carolina statewide parcel layer (SCDOT GIS mirror) — ${input.county}`;
-  const layerId = await scdotCountyLayerId(input.county!, timeoutMs);
+  signal?: AbortSignal,
+): Promise<StrategyOutcome> {
+  const layerId = await scdotCountyLayerId(input.county!, timeoutMs, signal);
   if (layerId == null) {
-    attempted.push({ source: sourceName, status: 'unavailable', note: 'The statewide mirror publishes no layer for this county.' });
-    return { parcel: null, attempted };
+    return { parcel: null, status: 'unavailable', note: 'The statewide mirror publishes no layer for this county.' };
   }
-  const fields = await scdotLayerFields(layerId, timeoutMs);
+  const fields = await scdotLayerFields(layerId, timeoutMs, signal);
   const pinField = scField(fields, ['PIN', 'TMS', 'TMSNUMBER', 'MAPBLOLOT', 'PARCELID', 'PARCEL', 'TAXMAP']);
   const addrField = scField(fields, ['LOCADD', 'Address', 'SITEADD', 'SITUS', 'LOCATION']);
   if (!pinField && !addrField) {
-    attempted.push({ source: sourceName, status: 'unavailable', note: 'The county layer publishes no recognizable parcel-id or situs-address field.' });
-    return { parcel: null, attempted };
+    return { parcel: null, status: 'unavailable', note: 'The county layer publishes no recognizable parcel-id or situs-address field.' };
   }
   const layerUrl = `${SC_PARCELS}/${layerId}`;
   const tryWhere = async (where: string): Promise<ArcFeature[]> =>
-    (await json<Arc>(query(layerUrl, where, true), timeoutMs)).features ?? [];
+    (await json<Arc>(query(layerUrl, where, true), timeoutMs, signal)).features ?? [];
 
   let feature: ArcFeature | null = null;
   let matchedBy = '';
@@ -1106,24 +1341,21 @@ async function scdotLookup(
       const mapped = rows.map((f) => scdotParcel(f, layerUrl, input.county!, pinField, addrField, fields)).filter((p): p is OfficialParcel => !!p);
       const compatible = mapped.filter((p) => addressesMateriallyAgree(input.address!, p.address));
       if (compatible.length === 1) {
-        attempted.push({ source: sourceName, status: 'matched', note: 'Exact normalized street address matched (single unambiguous candidate).' });
-        return { parcel: compatible[0], attempted };
+        return { parcel: compatible[0], status: 'matched', note: 'Exact normalized street address matched (single unambiguous candidate).' };
       }
-      attempted.push({
-        source: sourceName,
+      return {
+        parcel: null,
         status: 'no_match',
         note: compatible.length > 1 ? 'Multiple compatible candidates; no candidate substituted.' : 'No official parcel matched the address.',
-      });
-      return { parcel: null, attempted };
+      };
     }
   }
   const parcel = feature ? scdotParcel(feature, layerUrl, input.county!, pinField, addrField, fields) : null;
-  attempted.push({
-    source: sourceName,
+  return {
+    parcel,
     status: parcel ? 'matched' : 'no_match',
     note: parcel ? matchedBy : 'No official parcel matched.',
-  });
-  return { parcel, attempted };
+  };
 }
 
 function scdotParcel(
@@ -1180,6 +1412,42 @@ function scdotParcel(
       salePrice: salePriceField ? num(attrs[salePriceField]) : null,
       landUse: zoningDescField ? str(attrs[zoningDescField]) : null,
       zoningCodeAssessor: zoningCodeField ? str(attrs[zoningCodeField]) : null,
+    },
+  };
+}
+
+function floridaDorParcel(feature: ArcFeature, url: string, county: string): OfficialParcel | null {
+  const attrs = feature.attributes ?? {};
+  const rings = feature.geometry?.rings;
+  const apn = str(attrs.PARCEL_ID) ?? str(attrs.PARCELNO) ?? str(attrs.STATE_PAR_ID);
+  const street = [str(attrs.PHY_ADDR1), str(attrs.PHY_ADDR2)].filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim();
+  if (!rings?.length || !apn || !street) return null;
+  const city = str(attrs.PHY_CITY);
+  const zip = num(attrs.PHY_ZIPCD);
+  const mailing = [str(attrs.OWN_ADDR1), str(attrs.OWN_ADDR2), str(attrs.OWN_CITY), str(attrs.OWN_STATE), num(attrs.OWN_ZIPCD)]
+    .filter((value) => value != null && String(value).trim())
+    .join(', ');
+  const mappedAcres = round(ringsAreaAcres(rings), 3);
+  return {
+    provider: 'Florida DEP statewide property-appraiser parcel layer (Cadastral 2023)',
+    sourceUrl: url,
+    address: [street, city, 'FL', zip ? String(Math.trunc(zip)).padStart(5, '0') : null].filter(Boolean).join(', '),
+    county: county.replace(/\s+county$/i, '').trim(),
+    state: 'FL',
+    apn,
+    // The public view is explicitly dated 2023. Keep its owner in the factual
+    // payload for provenance, but do not promote it as the current card owner.
+    owner: null,
+    acres: null,
+    coordinates: center(rings[0]),
+    geometry: { rings },
+    datasetDate: '2023',
+    facts: {
+      ownerAtDatasetDate: str(attrs.OWN_NAME),
+      mailingAddress: mailing || null,
+      gisAcres: mappedAcres,
+      legalDescription: str(attrs.S_LEGAL),
+      stateParcelId: str(attrs.STATE_PAR_ID),
     },
   };
 }

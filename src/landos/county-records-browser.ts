@@ -102,6 +102,14 @@ async function runCountyWorkflow(
   const ev = emptyEvidence('county_records', 'workflow');
   const key = input.searchKey;
   const mode = input.mode ?? 'parcel_fact';
+  // timeoutMs is a workflow budget, not a fresh allowance for every page,
+  // form, and fallback. Reissuing the full timeout at each step made a
+  // 45-second call-prep lane run for many minutes on counties with several
+  // official sources. Every browser operation now receives only the remaining
+  // budget and the workflow stops cleanly when that shared deadline expires.
+  const deadline = Date.now() + Math.max(1_000, timeoutMs);
+  const expired = () => Date.now() >= deadline;
+  const remaining = () => Math.max(250, deadline - Date.now());
   const cancelled = () => (hooks.isCancelled ? hooks.isCancelled() : false);
   const state = (key.state ?? '').trim();
   const county = (key.county ?? '').replace(/\s+county$/i, '').trim();
@@ -130,24 +138,25 @@ async function runCountyWorkflow(
   } else {
     try {
       const stateUrl = buildNetrStateUrl(state);
-      await driver.open(stateUrl, { timeoutMs });
-      const stateLinks = (await driver.readLinks?.({ timeoutMs })) ?? [];
+      await driver.open(stateUrl, { timeoutMs: remaining() });
+      const stateLinks = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
       const countyRx = new RegExp(`\\b${county.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
       const countyLink = stateLinks.find((l) => countyRx.test(l.text) && /netronline/i.test(l.href));
       netrUrl = countyLink?.href ?? stateUrl;
-      const countyPage = await driver.open(netrUrl, { timeoutMs });
+      const countyPage = await driver.open(netrUrl, { timeoutMs: remaining() });
       ev.sourceUrls.push(countyPage.url || netrUrl);
-      const countyLinks = (await driver.readLinks?.({ timeoutMs })) ?? [];
+      const countyLinks = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
       sources = extractCountySources(countyLinks, { origin: 'netr', county, state });
     } catch { sources = []; }
 
     if (netrIsStale(sources)) {
       usedSearchFallback = true;
       for (const type of ['assessor', 'appraiser', 'tax', 'recorder', 'gis'] as CountySourceType[]) {
+        if (expired()) break;
         if (sources.some((s) => s.type === type)) continue;
         try {
-          await driver.open(searchEngineUrl(officialSearchQuery(type, county, state)), { timeoutMs });
-          const raw = (await driver.readLinks?.({ timeoutMs })) ?? [];
+          await driver.open(searchEngineUrl(officialSearchQuery(type, county, state)), { timeoutMs: remaining() });
+          const raw = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
           const picked = pickOfficialResult(unwrapSearchResults(raw), type, county, state);
           if (picked) sources.push(picked);
         } catch { /* keep going */ }
@@ -162,9 +171,10 @@ async function runCountyWorkflow(
 
     const deepLinks = new Map<string, CountySourceLink>();
     for (const src of sources) {
+      if (expired()) break;
       try {
-        await driver.open(src.url, { timeoutMs: timeoutMs / 2 });
-        const found = await scanPageForSearchLinks(driver, src.url, timeoutMs / 2);
+        await driver.open(src.url, { timeoutMs: remaining() });
+        const found = await scanPageForSearchLinks(driver, src.url, remaining());
         for (const dl of found) {
           const k = dl.url;
           if (!deepLinks.has(k)) deepLinks.set(k, dl);
@@ -199,13 +209,13 @@ async function runCountyWorkflow(
   let stopped = false;
   let recipeRecorded = false;
   for (const src of ordered) {
-    if (cancelled()) { stopped = true; break; }
+    if (cancelled() || expired()) { stopped = true; break; }
     const ctx = { sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url, origin: src.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const };
     try {
-      let page = await driver.open(src.url, { timeoutMs });
+      let page = await driver.open(src.url, { timeoutMs: remaining() });
       let merged: Record<string, string> = { ...page.fields };
       let method = 'official source link';
-      const forms: FormInfo[] = (await driver.readForms?.({ timeoutMs })) ?? [];
+      const forms: FormInfo[] = (await driver.readForms?.({ timeoutMs: remaining() })) ?? [];
       let plan = planParcelSearch(forms, key);
       let foundRecord = false;
       let searchKey = key;
@@ -221,13 +231,13 @@ async function runCountyWorkflow(
           ? [plan.value, ...apnSearchVariants(plan.value).slice(1)].slice(0, 6)
           : [plan.value, ...plan.valueAlternates].slice(0, 4);
         for (const value of values) {
-          if (cancelled()) { stopped = true; break; }
-          const after = await driver.fillAndSubmit(plan.fieldSelector, value, plan.submitSelector, { timeoutMs });
-          const links = (await driver.readLinks?.({ timeoutMs })) ?? [];
+          if (cancelled() || expired()) { stopped = true; break; }
+          const after = await driver.fillAndSubmit(plan.fieldSelector, value, plan.submitSelector, { timeoutMs: remaining() });
+          const links = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
           const record = pickParcelRecordLink(links, fallbackKey);
           if (record) {
-            const rp = await driver.open(record.href, { timeoutMs });
-            merged = { ...merged, ...rp.fields, ...(await driver.readFields({ timeoutMs })).fields };
+            const rp = await driver.open(record.href, { timeoutMs: remaining() });
+            merged = { ...merged, ...rp.fields, ...(await driver.readFields({ timeoutMs: remaining() })).fields };
             method = `parcel search (${plan.idKind}) → record`;
             foundRecord = true;
             break;
@@ -239,7 +249,7 @@ async function runCountyWorkflow(
         }
       }
       if (!foundRecord) {
-        merged = { ...merged, ...(await driver.readFields({ timeoutMs })).fields };
+        merged = { ...merged, ...(await driver.readFields({ timeoutMs: remaining() })).fields };
       }
       if (stopped) break;
       const pageIsRecord = parcelRecordSignal(merged) >= 2;
@@ -260,7 +270,7 @@ async function runCountyWorkflow(
             recipeRecorded = true;
           } catch { /* real facts remain usable even if reusable memory cannot update */ }
         }
-        if (!screenshotTaken) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs })); } catch { /* optional */ } screenshotTaken = true; }
+        if (!screenshotTaken && !expired()) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs: remaining() })); } catch { /* optional */ } screenshotTaken = true; }
       } else {
         emit(linkFact);
         for (const a of extractAgencyContact(merged, ctx)) emit({ ...a, extractionMethod: 'agency contact page (not a parcel record)' });
@@ -268,7 +278,7 @@ async function runCountyWorkflow(
     } catch { /* try the next source; never stop on one */ }
   }
 
-  const statewideFacts = facts.filter((f) => f.status === 'extracted').length === 0
+  const statewideFacts = !expired() && facts.filter((f) => f.status === 'extracted').length === 0
     ? await (async (): Promise<BrowserFact[] | null> => {
         const portal = statewidePortalFor(state);
         if (!portal || !driver.evaluate) return null;
@@ -278,7 +288,7 @@ async function runCountyWorkflow(
           sourceUrl: portal.url,
           origin: 'search_fallback',
         };
-        return tryStatewidePortalFallback(driver, portal, key, portalCtx, timeoutMs, now, countyCapability, runReference);
+        return tryStatewidePortalFallback(driver, portal, key, portalCtx, remaining(), now, countyCapability, runReference);
       })()
     : null;
   if (statewideFacts) {

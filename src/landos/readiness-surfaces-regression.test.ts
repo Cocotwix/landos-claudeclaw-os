@@ -101,7 +101,7 @@ describe('F8 — downloadable report consumes the shared strategy/readiness reco
 
 // ── F9: the executive summary renders on record-bearing Overviews ─────────────
 
-describe('F9 — executive summary (shared readiness line) is visible on every Overview', () => {
+describe('F9 — executive summary is visible without internal readiness surfaces', () => {
   it('the record branch of OverviewTab renders OverviewSummary', () => {
     const branchStart = DEAL_CARD_SRC.indexOf('if (record) {');
     expect(branchStart).toBeGreaterThan(-1);
@@ -109,14 +109,14 @@ describe('F9 — executive summary (shared readiness line) is visible on every O
     expect(branch).toContain('<OverviewSummary es={es} report={report} />');
   });
 
-  it('OverviewSummary renders the shared readiness summary line when present', () => {
-    expect(DEAL_CARD_SRC).toMatch(/es\.readiness\s*&&/);
-    expect(DEAL_CARD_SRC).toMatch(/\{es\.readiness\.summaryLine\}/);
+  it('OverviewSummary does not expose the shared readiness summary line', () => {
+    expect(DEAL_CARD_SRC).not.toMatch(/es\.readiness\s*&&/);
+    expect(DEAL_CARD_SRC).not.toMatch(/\{es\.readiness\.summaryLine\}/);
   });
 
-  it('the unified readiness strip renders on all five readiness surfaces', () => {
+  it('the unified readiness strip is absent from owner-facing surfaces', () => {
     const strips = DEAL_CARD_SRC.match(/<UnifiedReadinessStrip/g) ?? [];
-    expect(strips.length).toBeGreaterThanOrEqual(5);
+    expect(strips).toHaveLength(0);
   });
 });
 
@@ -128,6 +128,12 @@ describe('F10 — market-pulse language never presents a computable median as a 
     expect(ROUTES_SRC).not.toContain('the same basis as the preliminary valuation');
     expect(ROUTES_SRC).toContain('market context only');
     expect(ROUTES_SRC).toContain('never by a computable median alone');
+  });
+
+  it('feeds the pulse only canonical validated sold observations, never raw report context rows', () => {
+    expect(ROUTES_SRC).toContain('pulseRegistry.validatedSold.map');
+    expect(ROUTES_SRC).toContain('bandCount = pulseRegistry.counts.validatedSold');
+    expect(ROUTES_SRC).not.toContain('bandCount = persistedReport.marketComps?.soldCount');
   });
 });
 

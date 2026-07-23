@@ -8,8 +8,8 @@
 //
 // The pricing gate lives here: no winner, runner-up, pursue recommendation,
 // offer range, preliminary value, or strategy economics may be shown until
-// pricingAllowed is true (validated multi-comp value basis + confirmed parcel
-// + no unresolved valuation conflict).
+// pricingAllowed is true (at least one usable validated sold comp + confirmed
+// parcel + a stable acreage basis). Asking listings never gate sold-comp FMV.
 //
 // Pure + deterministic. No I/O.
 
@@ -49,6 +49,8 @@ export interface StrategyReadinessInputs {
   parcelVerified: boolean;
   /** From the unique comp registry — the ONLY comp counts that matter. */
   validatedSoldComps: number;
+  /** Count in the governing LandPortal FMV set. */
+  valuationCompCount?: number;
   valuationReady: boolean;
   valuationConflict: boolean;
   acres: number | null;
@@ -92,7 +94,9 @@ function entry(strategy: ApprovedStrategy, status: StrategyStatus, why: string, 
 export interface PricingGateInputs {
   parcelVerified: boolean;
   validatedSoldComps: number;
-  /** Registry count gate (≥3 validated unique sold comps). */
+  /** Usable comps in the governing valuation source (LandPortal in LandOS). */
+  valuationCompCount?: number;
+  /** Registry confirms at least one validated sold comp has usable $/acre. */
   valuationReady: boolean;
   valuationConflict: boolean;
   acreageConflict: boolean;
@@ -106,17 +110,15 @@ export interface PricingGate {
 
 export function computePricingGate(i: PricingGateInputs): PricingGate {
   const pricingBlockers: string[] = [];
+  const valuationCompCount = i.valuationCompCount ?? i.validatedSoldComps;
   if (!i.parcelVerified) pricingBlockers.push('Parcel identity is not confirmed.');
-  if (!i.valuationReady && !i.thinMarketClusterSupported) {
+  if (valuationCompCount < 1 || (!i.valuationReady && !i.thinMarketClusterSupported)) {
     pricingBlockers.push(
-      i.validatedSoldComps === 1
-        ? 'One validated sold observation exists, but it is insufficient to establish a defensible value basis. Pricing remains blocked until LandOS has either a defensible sufficiently comparable sold set or a supported thin-market local acreage cluster with adequate closed observations and clearly documented limitations.'
-        : i.validatedSoldComps > 1
-          ? `Only ${i.validatedSoldComps} validated unique sold comps. Pricing remains blocked until LandOS has either a defensible sufficiently comparable sold set or a supported thin-market local acreage cluster with adequate closed observations and clearly documented limitations.`
-          : 'No validated sold comps yet. Pricing remains blocked until LandOS has either a defensible sufficiently comparable sold set or a supported thin-market local acreage cluster with adequate closed observations. Active listings alone never open pricing.',
+      valuationCompCount > 0
+        ? `${valuationCompCount} LandPortal comp${valuationCompCount === 1 ? '' : 's'} exist, but none has the complete price-and-acreage evidence required for the FMV calculation.`
+        : 'No usable LandPortal comps yet. At least one LandPortal comp with price and acreage is required for FMV; when fewer than five exist, LandOS uses every usable row.',
     );
   }
-  if (i.valuationConflict) pricingBlockers.push('Valuation sources disagree materially — tighten comps first.');
   if (i.acreageConflict) pricingBlockers.push('Acreage is conflicted (assessed vs mapped) — the value basis is unstable until a survey or recorded plat resolves it.');
   return { pricingAllowed: pricingBlockers.length === 0, pricingBlockers };
 }
@@ -125,6 +127,7 @@ export function buildStrategyReadiness(i: StrategyReadinessInputs): StrategyRead
   const { pricingAllowed, pricingBlockers } = i.prebuiltGate ?? computePricingGate({
     parcelVerified: i.parcelVerified,
     validatedSoldComps: i.validatedSoldComps,
+    valuationCompCount: i.valuationCompCount ?? i.validatedSoldComps,
     valuationReady: i.valuationReady,
     valuationConflict: i.valuationConflict,
     acreageConflict: i.acreageConflict,
@@ -138,7 +141,7 @@ export function buildStrategyReadiness(i: StrategyReadinessInputs): StrategyRead
   if (i.legalAcreageUnresolved ?? i.acreageConflict) shared.push('Legal acreage unresolved (survey or recorded plat required)');
   if (!i.legalAccessConfirmed) shared.push('Parcel–road contact and legal access unresolved (recorded instruments control)');
   if (i.trustAuthorityUnresolved) shared.push('Trust authority to sell unresolved (trust instruments + title chain required)');
-  if (!pricingAllowed) shared.push('No defensible value basis yet (sold set or supported local cluster required)');
+  if (!pricingAllowed) shared.push('No defensible LandPortal comp value basis yet');
 
   const wetHeavy = (i.wetlandsPct ?? 0) >= 20;
   const floodHeavy = (i.floodSfhaPct ?? 0) >= 50;
@@ -166,7 +169,7 @@ export function buildStrategyReadiness(i: StrategyReadinessInputs): StrategyRead
     pricingAllowed ? (wetHeavy || floodHeavy ? 'weak' : 'viable') : 'blocked',
     pricingAllowed
       ? (wetHeavy || floodHeavy ? 'A value basis exists, but heavy wetland/flood coverage narrows the resale buyer pool.' : 'A validated sold-comp basis exists — buy-low resale spread can be evaluated.')
-      : 'Blocked until a validated multi-comp value basis exists; a flip cannot be priced from one observation.',
+      : 'Blocked until at least one usable LandPortal comp has price and acreage.',
     pricingAllowed ? shared.filter((b) => !/value basis/.test(b)) : [...shared],
     ['Validated sold-comp band (≥3 unique)', 'Title path', 'Legal access', 'Marketable usable acreage'],
   ));

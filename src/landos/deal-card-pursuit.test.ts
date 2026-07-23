@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { buildPursuitDecision } from './deal-card-pursuit.js';
 
 const soldValuation = {
-  primary: { value: 100_000, ppa: 5_000, label: 'Sold land comps (4)', kind: 'comp_sold' },
+  primary: { value: 100_000, ppa: 5_000, label: 'LandPortal comps (4)', kind: 'landportal_comps' },
   confidence: 'high' as const,
   conflict: false,
   conflictNote: null,
 };
 
 describe('buildPursuitDecision — the one Strategy question', () => {
-  it('answers PURSUE with a 40-60% attractive band on a sold-comp-backed value', () => {
+  it('answers PURSUE with a 40-60% attractive band on a LandPortal-comp value', () => {
     const d = buildPursuitDecision({
       parcelVerified: true,
       valuation: soldValuation,

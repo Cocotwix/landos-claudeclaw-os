@@ -148,7 +148,7 @@ export function buildUnifiedReadiness(i: UnifiedReadinessInputs): UnifiedReadine
   // ── 2. Preliminary vs defensible valuation context ─────────────────────────
   const valuationContext = (() => {
     if (gateOpen) {
-      return dim('valuation_context', 'Valuation context', 'defensible', 'good', 'A defensible value basis exists: the shared pricing gate is open over the validated unique sold set.');
+      return dim('valuation_context', 'Valuation context', 'defensible', 'good', 'A defensible value basis exists: the shared pricing gate is open over the usable LandPortal comp set. Other provider comps remain visible as context.');
     }
     if (i.validatedSoldComps > 0 || i.registryValuationReady) {
       const median = i.registryValuationReady

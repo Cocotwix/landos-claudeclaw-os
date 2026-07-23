@@ -57,16 +57,17 @@ import { SOURCE_ADAPTERS, extractAreaSignals, marketPulseEligibility } from './s
 import { emptyLpPropertySummary, type LpResolveArgs, type LpResolveResult } from './landportal-client.js';
 import type { DukePropertyData, DukeLandFacts, DukeValuation, DukeSimilars } from './duke-property-data.js';
 import { buildVisualPropertyContext, type VisualPropertyContext, type VisualService } from './providers/google-visual.js';
-import { loadCardVisualCapture, loadEligibleCardVisualCapture, loadPropertyInspection, saveCardVisualCapture, supersedeCardVisualCaptures, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
+import { getPropertyCard, loadCardVisualCapture, loadEligibleCardVisualCapture, loadPropertyInspection, saveCardVisualCapture, supersedeCardVisualCaptures, upsertCardFromDukeRun, type CardVisualAsset } from './property-card.js';
 import { isMultiApnString, looksLikeApnIntakeText, assessVisualAssociation, UNVERIFIED_IMAGERY_MESSAGE } from './visual-eligibility.js';
 import { buildParcelFactSheet, type ParcelFactSheet } from './landportal-facts.js';
 import { sanitizeVisualObservation } from './evidence-language.js';
-import { addComp, listComps } from './comps.js';
+import { enrichCompCoordinates, listComps, upsertNormalizedComp } from './comps.js';
 import { attachCardActivity } from './property-card.js';
 import type { ZillowFetchInput, ZillowCompsResult } from './zillow-land-comps.js';
 import type { RedfinFetchInput, RedfinCompsResult } from './redfin-land-comps.js';
 import { runCompProvidersParallel, type CompProviderJob } from './comp-orchestrator.js';
 import { distanceMilesFromSubject } from './comp-orchestrator.js';
+import { buildCanonicalCompSubject, COMP_RADIUS_LADDER_MILES, COMP_SOLD_WINDOW_MONTHS, daysOnMarket } from './comp-subject.js';
 import { researchBrowserComps, type CompResearchResult } from './browser-comp-research.js';
 import { parseLandPortalCompRows } from './comp-extraction.js';
 import type { BrowserDriver } from './browser-intelligence.js';
@@ -79,6 +80,8 @@ import { buildLandPpaBand } from './comp-valuation-band.js';
 import type { CompClass } from './comp-classification.js';
 import { computeLandScore, type LandScoreResult } from './land-score.js';
 import { formatCountyLabel, sanitizeGeographySuffixes } from './fact-format.js';
+import { landPortalValuationStats } from './landportal-valuation.js';
+import { ownerFacingPersonName } from './lead-card-intake.js';
 import {
   reconcileFacts,
   buildValuationHierarchy,
@@ -112,6 +115,9 @@ export interface MarketCompView {
   compClass?: CompClass;
   /** Plain reason for the class (shown in the UI; loud when excluded). */
   classReason?: string;
+  listingDate?: string | null;
+  daysOnMarket?: number | null;
+  classification?: string;
 }
 export interface MarketCompsView {
   status: 'collected' | 'no_comps' | 'not_configured' | 'no_area' | 'error' | 'not_run';
@@ -128,6 +134,8 @@ export interface MarketCompsView {
   supplementalSold: MarketCompView[];
   /** Realie valuation-only rows (market value, no usable sale) — kept separate. */
   valuation: MarketCompView[];
+  /** Raw normalized API rows persisted before downstream acceptance/rejection. */
+  providerCandidates?: MarketCompView[];
   metrics: { soldAvgPrice: number | null; soldAvgPpa: number | null; soldMedianPpa: number | null; ppaMin: number | null; ppaMax: number | null; activeAvgPrice: number | null; domMedian: number | null };
   /** Sparse-market explanation when sold comps are thin/absent. */
   sparseExplanation: string | null;
@@ -198,7 +206,82 @@ export function operatorizePersistedGap(gap: string): string {
 }
 
 function emptyMarketComps(): MarketCompsView {
-  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.', research: null, landportalComps: { status: 'not_run', count: 0, note: 'LandPortal visible comps not attempted yet.', rows: [] } };
+  return { status: 'not_run', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0, sold: [], active: [], supplementalSold: [], valuation: [], providerCandidates: [], metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null }, sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'Not run.', research: null, landportalComps: { status: 'not_run', count: 0, note: 'LandPortal visible comps not attempted yet.', rows: [] } };
+}
+
+function mergeProviderCandidateRows(fresh: MarketCompView[], prior: MarketCompView[]): MarketCompView[] {
+  const out: MarketCompView[] = [];
+  const seen = new Set<string>();
+  for (const row of [...fresh, ...prior]) {
+    const key = `${row.sourceLabel}|${(row.addressDesc ?? '').toLowerCase()}|${row.price}|${row.saleDateIso}`;
+    if (seen.has(key)) continue;
+    seen.add(key); out.push(row);
+  }
+  return out;
+}
+
+/** A provider refresh may legitimately return no-result/blocked/timeout. Those
+ * outcomes are audit evidence, but they must not erase previously persisted,
+ * source-backed comp rows. Retain each prior lane only when the fresh lane is
+ * empty, while keeping the fresh attempt in providerChain/note. */
+export function retainPriorMarketCompEvidence(fresh: MarketCompsView, prior: MarketCompsView | null | undefined): MarketCompsView {
+  if (!prior) return fresh;
+  const retained: string[] = [];
+  const lane = (name: string, current: MarketCompView[], previous: MarketCompView[]) => {
+    if (current.length || !previous.length) return current;
+    retained.push(name);
+    return previous;
+  };
+  const sold = lane('sold', fresh.sold, prior.sold);
+  const active = lane('active', fresh.active, prior.active);
+  const supplementalSold = lane('supplemental sold', fresh.supplementalSold, prior.supplementalSold);
+  const valuation = lane('valuation', fresh.valuation, prior.valuation);
+  const freshLp = fresh.landportalComps;
+  const priorLp = prior.landportalComps;
+  const landportalComps = freshLp?.rows?.length || !priorLp?.rows?.length
+    ? freshLp
+    : (retained.push('LandPortal visible'), priorLp);
+  if (!retained.length) return fresh;
+
+  const providers = [...prior.providers];
+  for (const provider of fresh.providers) {
+    const index = providers.findIndex((row) => row.providerId === provider.providerId);
+    if (index < 0) providers.push(provider);
+    else if (provider.kept > 0 || providers[index].kept === 0) providers[index] = provider;
+  }
+  const providerChain = union(prior.providerChain, fresh.providerChain);
+  const anyRows = sold.length + active.length + supplementalSold.length + valuation.length + (landportalComps?.rows.length ?? 0) > 0;
+  return {
+    ...fresh,
+    status: anyRows ? 'collected' : fresh.status,
+    primaryProvider: fresh.sold.length + fresh.active.length + fresh.supplementalSold.length + fresh.valuation.length > 0
+      ? fresh.primaryProvider
+      : prior.primaryProvider,
+    providerChain,
+    soldCount: sold.length,
+    activeCount: active.length,
+    sold,
+    active,
+    supplementalSold,
+    valuation,
+    providerCandidates: mergeProviderCandidateRows(fresh.providerCandidates ?? [], prior.providerCandidates ?? []),
+    metrics: {
+      soldAvgPrice: fresh.sold.length ? fresh.metrics.soldAvgPrice : prior.metrics.soldAvgPrice,
+      soldAvgPpa: fresh.sold.length ? fresh.metrics.soldAvgPpa : prior.metrics.soldAvgPpa,
+      soldMedianPpa: fresh.sold.length ? fresh.metrics.soldMedianPpa : prior.metrics.soldMedianPpa,
+      ppaMin: fresh.sold.length ? fresh.metrics.ppaMin : prior.metrics.ppaMin,
+      ppaMax: fresh.sold.length ? fresh.metrics.ppaMax : prior.metrics.ppaMax,
+      activeAvgPrice: fresh.active.length ? fresh.metrics.activeAvgPrice : prior.metrics.activeAvgPrice,
+      domMedian: fresh.active.length ? fresh.metrics.domMedian : prior.metrics.domMedian,
+    },
+    sparseExplanation: fresh.sparseExplanation ?? prior.sparseExplanation,
+    providers,
+    source: fresh.sold.length + fresh.active.length + fresh.supplementalSold.length + fresh.valuation.length > 0 ? fresh.source : prior.source,
+    timestamp: fresh.timestamp ?? prior.timestamp,
+    note: `${fresh.note} Retained prior source-backed ${retained.join(', ')} comp evidence because this refresh returned no replacement rows.`,
+    research: fresh.research?.attempts?.length ? fresh.research : prior.research,
+    landportalComps,
+  };
 }
 const median = (ns: number[]): number | null => { if (!ns.length) return null; const s = [...ns].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
 // Provider gating rule: general read-only comp enrichment is ALLOWED. Realie
@@ -250,14 +333,18 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
         const hh = await fetchHomeHarvestComps({ address: q.address, city: q.city, zip: q.zip, county: q.county, state: q.state, acres: q.acres }, {});
         chain.push(`homeharvest:${hh.status}`);
         if (hh.status === 'collected') {
-          const toView = (c: { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; addressDesc?: string; lat: number | null; lng: number | null; yearBuilt: number | null; buildingAreaSqft: number | null; propertyTypeText: string | null; descriptionText: string | null }): MarketCompView => ({
+          const toView = (c: { price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; addressDesc?: string; lat: number | null; lng: number | null; daysOnMarket?: number | null; listingDate?: string | null; yearBuilt: number | null; buildingAreaSqft: number | null; propertyTypeText: string | null; descriptionText: string | null; compClass?: CompClass; classReason?: string; eventKind?: 'sold' | 'active' }): MarketCompView => ({
             price: c.price, saleDateIso: c.saleDateIso, acres: c.acres, pricePerAcre: c.pricePerAcre,
             sourceUrl: c.sourceUrl, sourceLabel: 'homeharvest', addressDesc: c.addressDesc,
             lat: c.lat, lng: c.lng,
             distanceMiles: distanceMilesFromSubject(q, c),
             yearBuilt: c.yearBuilt, buildingAreaSqft: c.buildingAreaSqft,
             propertyTypeText: c.propertyTypeText, descriptionText: c.descriptionText,
+            daysOnMarket: c.daysOnMarket ?? null, compClass: c.compClass, classReason: c.classReason,
+            listingDate: c.listingDate ?? null,
+            classification: c.eventKind === 'active' ? 'active_vacant_land_listing' : c.compClass === 'manufactured' ? 'manufactured_home_sale' : c.compClass === 'vacant_land' || c.compClass === 'farm' ? 'provider_sale_candidate' : 'improved_property_sale',
           });
+          v.providerCandidates = [...(v.providerCandidates ?? []), ...hh.candidates.map(toView)];
           // Sold land comps join the band set (classified raw-land already);
           // actives augment the active-listing context.
           v.sold = [...v.sold, ...hh.sold.map(toView)];
@@ -333,9 +420,20 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
     v.metrics.soldMedianPpa = band.metrics.soldMedianPpa;
     v.metrics.ppaMin = band.metrics.ppaMin;
     v.metrics.ppaMax = band.metrics.ppaMax;
+    const compKey = (c: MarketCompView) => `${c.sourceLabel}|${(c.addressDesc ?? '').toLowerCase()}|${c.price}|${c.saleDateIso}`;
+    const acceptedKeys = new Set(band.bandComps.map(({ comp }) => compKey(comp)));
+    v.providerCandidates = (v.providerCandidates ?? []).map((candidate) => {
+      if (candidate.classification !== 'provider_sale_candidate') return candidate;
+      return acceptedKeys.has(compKey(candidate))
+        ? { ...candidate, classification: 'accepted_vacant_land_sold' }
+        : { ...candidate, classification: 'rejected_unusable_candidate' };
+    });
+    // The report's sold lane is the accepted vacant-land set. All other API rows
+    // remain durable in providerCandidates for context/rejection rendering.
+    v.sold = band.bandComps.map(({ comp }) => comp);
     // soldCount reflects the comps that actually drive the band (raw land, plus
     // unknowns only when the fallback was needed) — not contaminating rows.
-    v.soldCount = band.bandComps.length;
+    v.soldCount = v.sold.length;
     const excludedNote = band.excluded.length > 0 ? ` ${band.note}` : '';
     if (band.bandComps.length > 0 && band.bandComps.length < 3) v.sparseExplanation = `Sparse market: only ${band.bandComps.length} land comp(s) in the band. Lean on the median price-per-acre ($${v.metrics.soldMedianPpa}/ac) + valuation/area context; widen radius/timeframe before pricing.${excludedNote}`;
     else if (band.bandComps.length === 0 && v.valuation.length > 0) v.sparseExplanation = `No raw-land sold comps; using Realie valuation-only rows + area context. Confirm with a wider comp search before pricing.${excludedNote}`;
@@ -353,17 +451,27 @@ async function liveMarketComps(q: CompQueryLite, confirmed?: ConfirmedParcel | n
     const { withEnvFileSecrets } = await import('../env.js');
     const rc = await fetchRealieComps(q.lat, q.lng, { env: withEnvFileSecrets(['REALIE_API_KEY', 'REALIE_API_BASE']), radiusMiles: 10, maxResults: 30, subjectAcres: q.acres ?? null, subjectImproved: q.improved === true });
     chain.push(`realie:${rc.status}`);
+    const realieView = (c: { soldPrice: number | null; marketValue: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null; yearBuilt?: number | null; useCode?: string | null; buildingAreaSqft?: number | null; lat?: number | null; lng?: number | null }): MarketCompView => {
+      const improved = !!(c.yearBuilt && c.yearBuilt > 1900) || !!(c.buildingAreaSqft && c.buildingAreaSqft > 0);
+      const manufactured = /mobile|manufactured/i.test(c.useCode ?? '');
+      return { price: c.soldPrice ?? c.marketValue ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null, lat: c.lat ?? null, lng: c.lng ?? null, distanceMiles: distanceMilesFromSubject(q, c), compClass: manufactured ? 'manufactured' : improved ? 'residential' : 'vacant_land', classification: c.soldPrice && c.soldDateIso ? manufactured ? 'manufactured_home_sale' : improved ? 'improved_property_sale' : 'provider_sale_candidate' : 'valuation_only_context' };
+    };
     if (rc.status === 'collected' && rc.sold.length > 0) {
       const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null; parcelId: string | null; yearBuilt?: number | null; useCode?: string | null; buildingAreaSqft?: number | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? c.parcelId ?? undefined, yearBuilt: c.yearBuilt ?? null, useCode: c.useCode ?? null, buildingAreaSqft: c.buildingAreaSqft ?? null });
-      return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: rc.sold.map(toView), valuation: rc.valuation.map(toView), providers: [{ providerId: 'realie', status: 'connected', kept: rc.sold.length }], source: 'Realie premium comparables', timestamp: new Date().toISOString(), note: rc.note });
+      return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: rc.sold.map(toView), valuation: rc.valuation.map(toView), providerCandidates: rc.candidates.map(realieView), providers: [{ providerId: 'realie', status: 'connected', kept: rc.sold.length }], source: 'Realie premium comparables', timestamp: new Date().toISOString(), note: rc.note });
     }
     // Realie valuation-only (no sold) — keep for context but still try Apify for sold.
     if (rc.status === 'collected' && rc.valuation.length > 0) {
       const toView = (c: { soldPrice: number | null; soldDateIso: string | null; acres: number | null; pricePerAcre: number | null; address: string | null }): MarketCompView => ({ price: c.soldPrice ?? 0, saleDateIso: c.soldDateIso ?? '', acres: c.acres, pricePerAcre: c.pricePerAcre, sourceUrl: '', sourceLabel: 'realie', addressDesc: c.address ?? undefined });
       const valuationView = rc.valuation.map(toView);
       const apify = await apifyComps(q, chain, confirmed);
-      if (apify.status === 'collected') { apify.valuation = valuationView; return await finalize(apify); }
-      return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: [], valuation: valuationView, providers: [{ providerId: 'realie', status: 'connected', kept: 0 }], source: 'Realie premium comparables (valuation-only)', timestamp: new Date().toISOString(), note: rc.note });
+      if (apify.status === 'collected') { apify.valuation = valuationView; apify.providerCandidates = rc.candidates.map(realieView); return await finalize(apify); }
+      return await finalize({ ...emptyMarketComps(), status: 'collected', primaryProvider: 'realie', sold: [], valuation: valuationView, providerCandidates: rc.candidates.map(realieView), providers: [{ providerId: 'realie', status: 'connected', kept: 0 }], source: 'Realie premium comparables (valuation-only)', timestamp: new Date().toISOString(), note: rc.note });
+    }
+    if (rc.candidates.length > 0) {
+      const fallback = await apifyComps(q, chain, confirmed);
+      fallback.providerCandidates = rc.candidates.map(realieView);
+      return await finalize(fallback);
     }
   } else {
     chain.push('realie:no_coords');
@@ -883,6 +991,46 @@ export function supportingCoordinatesForVerifiedParcel(
   const { lat, lng } = inspectionFacts.centroid;
   if (!verifiedApn || verifiedApn !== inspectionApn || lat == null || lng == null) return providerCoords;
   return { lat, lng };
+}
+
+/** Project the cumulative property inspection for both fresh runs and reads. */
+export function projectPropertyInspectionForReport(
+  cardId: number,
+  inspection = loadPropertyInspection(cardId),
+): DealCardReportView['landportalInspection'] {
+  if (!inspection) return null;
+  return {
+    parcelUrl: inspection.parcelUrl,
+    comparablesUrl: inspection.comparablesUrl,
+    parcelFacts: inspection.parcelFacts,
+    assets: [
+      ...inspection.assets.map((asset) => ({
+        key: asset.key, label: asset.label, kind: asset.kind,
+        url: `/api/landos/inspection/image?cardId=${cardId}&key=${encodeURIComponent(asset.key)}`,
+        timestamp: asset.timestamp, overlay: asset.overlay, note: asset.note,
+      })),
+      ...Object.entries(loadEligibleCardVisualCapture(cardId)).map(([service, asset]) => ({
+        key: `google_${service}`,
+        label: service === 'maps_static' ? 'Google Aerial' : service === 'street_view_static' ? 'Google Street View' : `Google ${service}`,
+        kind: 'google',
+        url: `/api/landos/visual/image?cardId=${cardId}&service=${encodeURIComponent(service)}`,
+        timestamp: asset.timestamp,
+        overlay: undefined,
+        note: 'Verified parcel image (Google, from verified parcel coordinates).',
+      })),
+    ],
+    overlays: inspection.overlays.map((overlay) => ({
+      overlay: overlay.overlay, status: overlay.status, note: overlay.note, confidence: overlay.confidence,
+      screenshotUrl: overlay.screenshotKey ? `/api/landos/inspection/image?cardId=${cardId}&key=${encodeURIComponent(overlay.screenshotKey)}` : null,
+    })),
+    visualObservations: inspection.visualObservations.map((observation) => sanitizeVisualObservation(observation)),
+    comparables: inspection.comparables,
+    sources: inspection.sources,
+    evidence: inspection.evidence,
+    discoveryQuestions: inspection.discoveryQuestions,
+    missingInformation: inspection.missingInformation,
+    factSheet: buildParcelFactSheet(inspection.parcelFacts),
+  };
 }
 
 /** Loose LandPortal comparables row (from the inspection) the selector reads. */
@@ -1534,7 +1682,22 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
   const rehydratedChecklist = harmonizeChecklistWithReconciliation(
     (parsed.ddFactChecklist as DdChecklistRow[] | undefined) ?? base.ddFactChecklist,
     parsed.reconciliation as ReconciledFacts | undefined,
-  );
+  ).map((fact) => fact.key === 'owner' && fact.value
+    ? { ...fact, value: ownerFacingPersonName(fact.value, row.deal_card_id) }
+    : fact);
+  const rawLandPortalInspection = parsed.landportalInspection;
+  const rehydratedLandPortalInspection = rawLandPortalInspection?.factSheet
+    ? {
+        ...rawLandPortalInspection,
+        factSheet: {
+          ...rawLandPortalInspection.factSheet,
+          owner: ownerFacingPersonName(rawLandPortalInspection.factSheet.owner, row.deal_card_id),
+          snapshot: rawLandPortalInspection.factSheet.snapshot.map((fact) => fact.key === 'owner'
+            ? { ...fact, value: ownerFacingPersonName(fact.value, row.deal_card_id) }
+            : fact),
+        },
+      }
+    : rawLandPortalInspection;
   return {
     ...base,
     ...parsed,
@@ -1542,6 +1705,7 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
     marketComps: rehydratedMarketComps,
     valuation: rehydratedValuation,
     bestComps: rehydratedBestComps,
+    landportalInspection: rehydratedLandPortalInspection,
     ddFactChecklist: rehydratedChecklist,
     ddCompleteness: summarizeDdCompleteness(rehydratedChecklist),
     exists: true,
@@ -1693,36 +1857,86 @@ function persistReport(dealCardId: number, view: DealCardReportView, updatedBy: 
  *  source order so a later source dedupes against earlier ones. Returns # added. */
 function persistExternalLandComps(opts: {
   dealCardId: number; cardId: number; entity: LandosEntity; sourceLabel: 'Zillow' | 'Redfin';
-  comps: Array<{ address: string; price: number; acres: number | null; url: string | null; status?: 'active' | 'sold' | 'pending' | 'unknown' }>;
-  lpComparables: Array<{ price?: number | null; acres?: number | null }>;
+  comps: Array<{ address: string; price: number; acres: number | null; url: string | null; status?: 'active' | 'sold' | 'pending' | 'unknown'; soldDate?: string | null; listingDate?: string | null; daysOnMarket?: number | null; lat?: number | null; lng?: number | null; thumbnailUrl?: string | null; radiusMiles?: number | null; dateWindowMonths?: number | null }>;
+  subject: ReturnType<typeof buildCanonicalCompSubject>;
   /** Subject state code (e.g. "SC"): a marketplace geocoder can silently resolve
    *  the search to a same-named place in another state, so out-of-state rows are
    *  wrong-market data and must never persist as comps for this card. */
   subjectState?: string | null;
+  subjectCounty?: string | null;
 }): number {
-  const norm = (v: string | null | undefined): string => (v || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const existing = listComps({ dealCardId: opts.dealCardId });
-  const seenAddr = new Set(existing.map((c) => norm(c.address_desc)));
-  const priceAcre = new Set<string>([
-    ...opts.lpComparables.filter((c) => c.price != null && c.acres != null).map((c) => `${c.price}:${c.acres}`),
-    ...existing.filter((c) => c.price != null && c.acres != null).map((c) => `${c.price}:${c.acres}`),
-  ]);
   const state = (opts.subjectState || '').trim().toUpperCase();
-  let added = 0;
+  let retained = 0;
   for (const z of opts.comps) {
-    const akey = norm(z.address);
-    if (!akey || seenAddr.has(akey)) continue;                                  // dedup by address (LP has none; Zillow/Redfin do)
-    if (z.acres != null && priceAcre.has(`${z.price}:${z.acres}`)) continue;    // dedup by price+acres (vs LP + prior sources)
+    if (!z.address?.trim()) continue;
     if (state && !new RegExp(`[,\\s]${state}[\\s,]|[,\\s]${state}$`, 'i').test(z.address)) continue; // wrong-market guard
-    seenAddr.add(akey);
-    if (z.acres != null) priceAcre.add(`${z.price}:${z.acres}`);
-    // Preserve the source's observed sale/list classification without promoting an
-    // automated row to a verified sale.  The shared reconciliation gate still
-    // requires source, date, distance, acreage, and type before valuation use.
-    addComp({ entity: opts.entity, dealCardId: opts.dealCardId, cardId: opts.cardId, sourceLabel: opts.sourceLabel, sourceUrl: z.url ?? '', addressDesc: z.address, price: z.price, priceKind: z.status === 'sold' ? 'sale' : 'list', acres: z.acres ?? undefined, status: 'market_reference', notes: z.status === 'sold' ? 'Public source showed this as sold; pending full valuation validation.' : 'Public market listing; not selected for valuation.', addedBy: `${opts.sourceLabel.toLowerCase()}/browser` });
-    added++;
+    const sold = z.status === 'sold';
+    const distance = distanceMilesFromSubject(opts.subject, z);
+    const saleDate = z.soldDate ?? '';
+    const dom = z.daysOnMarket ?? daysOnMarket(z.listingDate, z.soldDate);
+    const traceableSale = sold && !!z.url && !!saleDate && z.acres != null && z.acres > 0;
+    upsertNormalizedComp({
+      entity: opts.entity, dealCardId: opts.dealCardId, cardId: opts.cardId,
+      sourceLabel: opts.sourceLabel, canonicalSource: opts.sourceLabel, sourceUrl: z.url ?? '',
+      addressDesc: z.address, county: opts.subjectCounty ?? '', state, price: z.price,
+      priceKind: sold ? 'sale' : 'list', saleOrListDate: sold ? saleDate : (z.listingDate ?? ''),
+      listingDate: z.listingDate ?? '', daysOnMarket: dom, acres: z.acres ?? undefined,
+      status: traceableSale ? 'verified_sale' : 'market_reference', lat: z.lat, lng: z.lng,
+      distanceMiles: distance, propertyClass: 'vacant_land',
+      classification: sold ? (traceableSale ? 'accepted_vacant_land_sold' : 'rejected_unusable_candidate') : 'active_vacant_land_listing',
+      thumbnailUrl: z.thumbnailUrl ?? '', retrievedAt: new Date().toISOString(), radiusMiles: z.radiusMiles,
+      dateWindowMonths: sold ? (z.dateWindowMonths ?? 12) : null,
+      inclusionReason: sold
+        ? traceableSale ? `Vacant-land closed sale with source and sold date${z.dateWindowMonths === 24 ? '; older two-year sparse-market fallback' : ' in the trailing one-year window'}.` : 'Claimed sold result retained but excluded from valuation because a source link or sold date is missing.'
+        : 'Current vacant-land asking reference retained separately from sold valuation.',
+      notes: sold ? 'Public sold-land result; downstream valuation requires complete closed-sale evidence.' : 'Public active land listing; asking context only.',
+      sourceAttributions: [{ provider: opts.sourceLabel, url: z.url }], addedBy: `${opts.sourceLabel.toLowerCase()}/browser`,
+    });
+    retained++;
   }
-  return added;
+  return retained;
+}
+
+function persistApiProviderCandidates(opts: {
+  dealCardId: number; cardId: number; entity: LandosEntity;
+  subject: ReturnType<typeof buildCanonicalCompSubject>; rows: MarketCompView[];
+}): number {
+  let retained = 0;
+  for (const row of opts.rows) {
+    if (!row.addressDesc?.trim() || !(row.price > 0)) continue;
+    const active = row.classification === 'active_vacant_land_listing';
+    const valuationOnly = row.classification === 'valuation_only_context';
+    const improved = row.classification === 'improved_property_sale';
+    const manufactured = row.classification === 'manufactured_home_sale';
+    const rejected = row.classification === 'rejected_unusable_candidate';
+    const vacantSale = row.classification === 'accepted_vacant_land_sold' || row.classification === 'provider_sale_candidate';
+    const source = row.sourceLabel || 'Other';
+    const sourceLabel = /^zillow$/i.test(source) ? 'Zillow' : /^redfin$/i.test(source) ? 'Redfin' : 'Other';
+    const traceable = vacantSale && !!row.sourceUrl && !!row.saleDateIso && row.acres != null && row.acres > 0;
+    const addressState = row.addressDesc.match(/\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/)?.[1] ?? opts.subject.state ?? '';
+    const zip = row.addressDesc.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1] ?? '';
+    upsertNormalizedComp({
+      entity: opts.entity, dealCardId: opts.dealCardId, cardId: opts.cardId,
+      sourceLabel, canonicalSource: source, sourceUrl: row.sourceUrl,
+      addressDesc: row.addressDesc, county: '', state: addressState, zip,
+      price: row.price, priceKind: active ? 'list' : valuationOnly ? 'unknown' : 'sale',
+      saleOrListDate: row.saleDateIso, listingDate: row.listingDate ?? '', daysOnMarket: row.daysOnMarket,
+      acres: row.acres ?? undefined, pricePerAcre: row.pricePerAcre ?? undefined,
+      status: rejected ? 'rejected' : traceable ? 'verified_sale' : 'market_reference', lat: row.lat, lng: row.lng,
+      distanceMiles: row.distanceMiles ?? distanceMilesFromSubject(opts.subject, row),
+      propertyClass: manufactured ? 'manufactured' : improved ? 'improved' : valuationOnly ? 'unknown' : 'vacant_land',
+      classification: row.classification ?? (active ? 'active_vacant_land_listing' : 'rejected_unusable_candidate'),
+      retrievedAt: new Date().toISOString(), radiusMiles: /^realie$/i.test(source) ? 10 : /^homeharvest$/i.test(source) ? 10 : null,
+      dateWindowMonths: active || valuationOnly ? null : 12,
+      inclusionReason: active ? 'Active vacant-land asking reference; excluded from sold valuation.'
+        : valuationOnly ? 'Provider valuation retained as context only; not a closed sale.'
+          : improved || manufactured ? `${manufactured ? 'Manufactured-home' : 'Improved-property'} sale retained for strategy evidence only.`
+            : traceable ? 'Vacant-land closed sale with source, date, price, and acreage.' : 'Sale candidate retained but excluded from valuation until source/date evidence is complete.',
+      sourceAttributions: [{ provider: source, url: row.sourceUrl || null }], addedBy: `${source}/provider`,
+    });
+    retained++;
+  }
+  return retained;
 }
 
 export async function runDealCardReport(
@@ -1731,6 +1945,7 @@ export async function runDealCardReport(
 ): Promise<DealCardReportResult | null> {
   const deal = getDealCard(dealCardId);
   if (!deal) return null;
+  const priorReport = getDealCardReport(dealCardId);
   const actor = (deps.actor ?? 'tyler/report').trim() || 'tyler/report';
   const warnings: string[] = [];
 
@@ -2060,6 +2275,18 @@ export async function runDealCardReport(
         factSheet: buildParcelFactSheet(rawInspection.parcelFacts),
       }
     : null;
+  const canonicalProperty = visualCardId ? getPropertyCard(visualCardId) : undefined;
+  const canonicalCompSubject = buildCanonicalCompSubject({
+    active_input_address: canonicalProperty?.active_input_address, city: canonicalProperty?.city, county: canonicalProperty?.county,
+    state: canonicalProperty?.state, apn: canonicalProperty?.apn, acres: canonicalProperty?.acres,
+    lat: canonicalProperty?.lat, lng: canonicalProperty?.lng,
+    zip: canonicalProperty?.active_input_address?.match(/\b\d{5}(?:-\d{4})?\b/)?.[0],
+  }, {
+    address: landportalInspection?.factSheet?.parcelAddress, city: landportalInspection?.factSheet?.city,
+    county: landportalInspection?.factSheet?.county, state: landportalInspection?.factSheet?.stateCode,
+    zip: landportalInspection?.factSheet?.zip, acres: landportalInspection?.factSheet?.acres,
+    lat: landportalInspection?.factSheet?.centroid.lat, lng: landportalInspection?.factSheet?.centroid.lng,
+  });
 
   // ITEM: Zillow + Redfin PUBLIC land comps via ISOLATED disposable browser
   // profiles — each its OWN throwaway profile + debug port, NEVER the LandPortal
@@ -2082,13 +2309,51 @@ export async function runDealCardReport(
   const externalCompCounts: Array<{ provider: string; count: number; status: string }> = [];
   if (visualCardId && landportalInspection?.factSheet && (deps.captureZillowComps || deps.captureRedfinComps)) {
     const fsheet = landportalInspection.factSheet;
-    const loc = { city: fsheet.city ?? undefined, state: fsheet.stateCode ?? undefined, county: fsheet.county ?? undefined, subjectAcres: fsheet.acres ?? null };
-    const lpComparables = rawInspection?.comparables ?? [];
+    const subject = canonicalCompSubject;
+    const loc = {
+      address: subject.address ?? undefined, city: subject.city ?? undefined, state: subject.state ?? undefined,
+      zip: subject.zip ?? undefined, county: subject.county ?? undefined, lat: subject.lat ?? undefined,
+      lng: subject.lng ?? undefined, subjectAcres: subject.acres, apn: subject.apn ?? undefined,
+      owner: canonicalProperty?.owner || undefined,
+    };
     const entity = s(deal.entity) as LandosEntity;
+    type BrowserComp = (ZillowCompsResult | RedfinCompsResult)['comps'][number] & { radiusMiles?: number; dateWindowMonths?: number };
+    type BrowserCollection = { status: ZillowCompsResult['status']; comps: BrowserComp[]; note: string; routeTried: string };
+    const collect = async (
+      capture: (input: ZillowFetchInput & RedfinFetchInput) => Promise<ZillowCompsResult | RedfinCompsResult>,
+    ): Promise<BrowserCollection> => {
+      const notes: string[] = [];
+      let routeTried = '';
+      const soldComps: BrowserComp[] = [];
+      const activeComps: BrowserComp[] = [];
+      let terminalStatus: BrowserCollection['status'] = 'none';
+      soldSearch: for (const dateWindowMonths of COMP_SOLD_WINDOW_MONTHS) {
+        for (const radiusMiles of COMP_RADIUS_LADDER_MILES) {
+          const result = await capture({ ...loc, mode: 'sold', radiusMiles, dateWindowMonths });
+          terminalStatus = result.status; routeTried = result.routeTried; notes.push(result.note);
+          if (result.status === 'blocked' || result.status === 'disabled') break soldSearch;
+          if (result.status === 'retrieved' && result.comps.length) {
+            soldComps.push(...result.comps.map((comp) => ({ ...comp, radiusMiles, dateWindowMonths })));
+            break soldSearch;
+          }
+        }
+      }
+      for (const radiusMiles of COMP_RADIUS_LADDER_MILES) {
+        const result = await capture({ ...loc, mode: 'active', radiusMiles });
+        terminalStatus = result.status; routeTried = result.routeTried; notes.push(result.note);
+        if (result.status === 'blocked' || result.status === 'disabled') break;
+        if (result.status === 'retrieved' && result.comps.length) {
+          activeComps.push(...result.comps.map((comp) => ({ ...comp, status: 'active' as const, radiusMiles, dateWindowMonths: undefined })));
+          break;
+        }
+      }
+      const comps = [...soldComps, ...activeComps];
+      return { status: comps.length ? 'retrieved' : terminalStatus, comps, note: notes.join(' '), routeTried };
+    };
     const jobs: CompProviderJob[] = [];
-    if (deps.captureZillowComps) jobs.push({ provider: 'Zillow', run: () => deps.captureZillowComps!(loc) });
-    if (deps.captureRedfinComps) jobs.push({ provider: 'Redfin', run: () => deps.captureRedfinComps!(loc) });
-    const runs = await runCompProvidersParallel(jobs);
+    if (deps.captureZillowComps) jobs.push({ provider: 'Zillow', run: () => collect(deps.captureZillowComps! as never) });
+    if (deps.captureRedfinComps) jobs.push({ provider: 'Redfin', run: () => collect(deps.captureRedfinComps! as never) });
+    const runs = await runCompProvidersParallel(jobs, { perProviderTimeoutMs: 600_000 });
     for (const run of runs) {
       const agent = run.provider === 'Zillow' ? 'zillow/browser' : 'redfin/browser';
       const kind = run.provider === 'Zillow' ? 'zillow_comp_status' : 'redfin_comp_status';
@@ -2098,12 +2363,13 @@ export async function runDealCardReport(
           externalCompCounts.push({ provider: run.provider.toLowerCase(), count: 0, status: run.status === 'succeeded' ? 'none' : run.status });
           continue;
         }
-        const r = run.result as ZillowCompsResult | RedfinCompsResult;
+        const r = run.result as BrowserCollection;
         attachCardActivity({ cardId: visualCardId, agentId: agent, kind, summary: `${run.provider} land comps: ${r.status} — ${r.comps.length} comp(s). ${r.note}` });
         externalCompCounts.push({ provider: run.provider.toLowerCase(), count: r.comps.length, status: r.status });
-        if (r.status === 'retrieved' && r.comps.length > 0) persistExternalLandComps({ dealCardId, cardId: visualCardId, entity, sourceLabel: run.provider as 'Zillow' | 'Redfin', comps: r.comps, lpComparables, subjectState: loc.state ?? null });
+        if (r.status === 'retrieved' && r.comps.length > 0) persistExternalLandComps({ dealCardId, cardId: visualCardId, entity, sourceLabel: run.provider as 'Zillow' | 'Redfin', comps: r.comps, subject, subjectState: loc.state ?? null, subjectCounty: loc.county ?? null });
       } catch { /* one provider's bookkeeping never blocks the other or the report */ }
     }
+    try { await enrichCompCoordinates(dealCardId); } catch { /* map coordinates are best-effort enrichment */ }
   }
 
   // ITEM 2: Apify Redfin sold comps + market metrics for the verified parcel's
@@ -2117,15 +2383,15 @@ export async function runDealCardReport(
     const subjectImproved = bArea > 0 || (!!lf?.yearBuilt && Number(lf.yearBuilt) > 1900) || /home|house|dwelling|residence|mobile|improv|structure/i.test(lf?.landUse ?? '');
     compQuery = {
       improved: subjectImproved,
-      address: vid?.situsAddress ?? undefined,
-      city: vid?.city ?? undefined,
-      county: vid?.county ?? undefined,
-      state: vid?.state ?? undefined,
+      address: canonicalCompSubject.address ?? vid?.situsAddress ?? undefined,
+      city: canonicalCompSubject.city ?? vid?.city ?? undefined,
+      county: canonicalCompSubject.county ?? vid?.county ?? undefined,
+      state: canonicalCompSubject.state ?? vid?.state ?? undefined,
       // ZIP for the Zillow supplemental lane — from the situs address tail.
-      zip: vid?.situsAddress?.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1],
-      acres: typeof lf?.acres === 'number' ? lf.acres : undefined,
-      lat: supportingCoordinates?.lat,
-      lng: supportingCoordinates?.lng,
+      zip: canonicalCompSubject.zip ?? vid?.situsAddress?.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1],
+      acres: canonicalCompSubject.acres ?? (typeof lf?.acres === 'number' ? lf.acres : undefined),
+      lat: canonicalCompSubject.lat ?? supportingCoordinates?.lat,
+      lng: canonicalCompSubject.lng ?? supportingCoordinates?.lng,
     };
   } else if (areaContext && (areaCoords || (areaContext.state && (areaContext.city || areaContext.zip || areaContext.county)))) {
     // Local Area Context comps: countywide / nearby $/acre from the geocoded
@@ -2161,8 +2427,15 @@ export async function runDealCardReport(
     const lpUrl = landportalInspection?.parcelUrl ?? rawInspection?.parcelUrl ?? null;
     const subjectAcres = landportalInspection?.factSheet?.acres ?? compQuery?.acres ?? null;
     const rowTexts = (rawInspection?.comparables ?? []).map((c) => c.rawText).filter((t): t is string => !!t);
+    const parsedPersistedRows = parseLandPortalCompRows(rowTexts, subjectAcres);
     let lpc: LandPortalCompsView;
-    if (!lpUrl) {
+    if (parsedPersistedRows.length) {
+      const rows: MarketCompView[] = parsedPersistedRows.map((p) => ({
+        price: p.price, saleDateIso: p.date ?? '', acres: p.acres, pricePerAcre: p.pricePerAcre,
+        sourceUrl: p.url ?? lpUrl ?? '', sourceLabel: 'LandPortal', addressDesc: p.address ?? undefined,
+      }));
+      lpc = { status: 'retrieved', count: rows.length, note: `${rows.length} persisted visible LandPortal comp(s) from the authenticated parcel page; the paid comp report was not run.`, rows };
+    } else if (!lpUrl) {
       lpc = { status: 'no_url', count: 0, note: 'No LandPortal URL on this card — cannot read visible comps.', rows: [] };
     } else if (!landportalAttempted) {
       lpc = { status: 'not_run', count: 0, note: 'LandPortal parcel page was not read this run.', rows: [] };
@@ -2179,6 +2452,16 @@ export async function runDealCardReport(
         : { status: 'none', count: 0, note: 'No visible comps on the LandPortal parcel page (free rows only; the paid comp report was not run).', rows: [] };
     }
     marketComps = { ...marketComps, landportalComps: lpc };
+  }
+  marketComps = retainPriorMarketCompEvidence(
+    marketComps,
+    priorReport.exists && priorReport.parcelVerified && verification.parcelVerified ? priorReport.marketComps : null,
+  );
+  if (visualCardId && marketComps.providerCandidates?.length) {
+    persistApiProviderCandidates({
+      dealCardId, cardId: visualCardId, entity: s(deal.entity) as LandosEntity,
+      subject: canonicalCompSubject, rows: marketComps.providerCandidates,
+    });
   }
 
   // Census demographics (supporting market context). Verified parcel uses its
@@ -2235,8 +2518,12 @@ export async function runDealCardReport(
   const valuationAcres = fsheet?.acres ?? compQuery?.acres ?? null;
   const activePpaVals = marketComps.active.map((c) => c.pricePerAcre).filter((x): x is number => typeof x === 'number' && x > 0);
   const activeAvgPpa = activePpaVals.length ? Math.round(activePpaVals.reduce((a, b) => a + b, 0) / activePpaVals.length) : null;
+  const landPortalValue = landPortalValuationStats(landportalInspection?.comparables, valuationAcres);
   const valuation = buildValuationHierarchy({
     acres: valuationAcres,
+    landPortalComps: landPortalValue.count > 0
+      ? { count: landPortalValue.count, averagePpa: landPortalValue.averagePricePerAcre }
+      : null,
     // Parcel-verified → the sold band is parcel-specific. Area-only leads pass the
     // same median as county context (weaker), never as parcel-specific sold comps.
     soldComps: verification.parcelVerified && marketComps.soldCount > 0

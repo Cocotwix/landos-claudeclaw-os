@@ -164,7 +164,7 @@ describe('Mission Control is the executive dashboard', () => {
 describe('Property Board stays acquisitions pipeline and opens the Deal Card', () => {
   it('still opens the canonical Deal Card via /landos?deal=', () => {
     expect(BOARD).toMatch(/\/landos\?deal=\$\{[^}]+\}/);
-    expect(BOARD).toMatch(/function open\(/);
+    expect(BOARD).toMatch(/function openDealCard\(/);
   });
 
   it('does not rebuild a competing property intelligence surface', () => {

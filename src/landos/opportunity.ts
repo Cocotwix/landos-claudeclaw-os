@@ -402,6 +402,29 @@ export function setOpportunityPipelineStage(
   return getOpportunity(opportunityId)!;
 }
 
+/** Keep the owner-facing opportunity title aligned with an accepted canonical
+ * property identity while preserving raw_input as the original intake record. */
+export function updateOpportunityTitle(
+  opportunityId: number,
+  title: string,
+  input: { actor: string; note?: string },
+): OpportunityRecord {
+  const current = getOpportunity(opportunityId);
+  if (!current) throw new Error(`opportunity ${opportunityId} not found`);
+  const nextTitle = assertNonEmpty(title, 'title');
+  if (current.title === nextTitle) return current;
+  const now = nowSeconds();
+  getLandosDb().prepare('UPDATE landos_opportunity SET title = ?, updated_at = ? WHERE id = ?').run(nextTitle, now, opportunityId);
+  insertHistory({
+    opportunityId,
+    eventType: 'canonical_identity_updated',
+    actor: assertNonEmpty(input.actor, 'actor'),
+    note: input.note ?? `Canonical property identity updated from "${current.title}" to "${nextTitle}"; original intake retained in raw_input.`,
+    occurredAt: now,
+  });
+  return getOpportunity(opportunityId)!;
+}
+
 function updateStatus(
   opportunityId: number,
   column: 'research_status' | 'discovery_status',

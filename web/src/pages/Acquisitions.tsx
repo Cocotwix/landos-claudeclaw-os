@@ -4,7 +4,6 @@ import { PageHeader, Tab } from '@/components/PageHeader';
 import { PropertyBoard } from '@/pages/PropertyBoard';
 import { Acquire } from '@/components/Acquire';
 import { DealCard } from '@/components/DealCard';
-import { LeadWorkspace } from '@/components/LeadWorkspace';
 
 // The Acquisitions department workspace (LandOS Vision & Architecture). One
 // cohesive department — pipeline, new lead, the deal library, and the Property
@@ -42,9 +41,9 @@ export function Acquisitions() {
     if (s && SECTIONS.some((x) => x.id === s)) setSection(s as AcqSection);
   }, []);
 
-  // Opening a lead ALWAYS lands on the Lead Workspace and records the deep link
-  // in the URL, so a browser refresh restores the same workspace (never a silent
-  // fallback to the legacy Deal Card, whatever the entry path).
+  // Opening a lead lands on the canonical Deal Card and records the deep link in
+  // the URL, so every Acquisitions entry path renders the same full Property
+  // Intelligence workflow and a refresh restores that exact card.
   function openDeal(id: number) {
     setDealId(id);
     setSection('library');
@@ -102,12 +101,11 @@ export function Acquisitions() {
                 ← Deal Library
               </button>
             </div>
-            <LeadWorkspace dealCardId={dealId} key={dealId} />
+            <DealCard dealCardId={dealId} entity="all" key={dealId} />
           </div>
         ) : (
-          // The library list quarantines the legacy Deal Card detail: clicking a
-          // row routes to the Lead Workspace via onOpenDeal instead of the
-          // legacy in-place card open.
+          // The list delegates its selected row back to this page so pipeline,
+          // library, and deep-link entry all open the same canonical card.
           <DealCard entity="all" key="library-list" onOpenDeal={openDeal} />
         )
       )}
@@ -126,7 +124,7 @@ export function Acquisitions() {
                 ← Deal Library
               </button>
             </div>
-            <LeadWorkspace dealCardId={dealId} key={`intel-${dealId}`} />
+            <DealCard dealCardId={dealId} entity="all" key={`intel-${dealId}`} />
           </div>
         ) : (
           <IntelIntro onOpenLibrary={() => setSection('library')} />

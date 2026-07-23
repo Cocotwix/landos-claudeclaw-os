@@ -11,6 +11,7 @@ import {
   latestResearchMission,
   listQuarantinedResearchEvidence,
   quarantineMismatchedPropertyInspections,
+  restoreMatchingPropertyInspections,
   recoverableResearchMissionIds,
   researchConstraintsFor,
   verifyInspectionIdentity,
@@ -224,6 +225,43 @@ describe('durable opportunity research mission', () => {
     expect(verification.verdict).toBe('address_mismatch');
     expect(verification.reasons).toEqual([]);
     expect(verification.warnings.join(' ')).toMatch(/address mismatch.*APN \+ county \+ state match exactly/i);
+  });
+
+  it('restores a retained county-ID inspection when the official statewide APN and street corroborate it', () => {
+    const property = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '1023 Baysinger Rd', city: 'Newport',
+      county: 'Cocke', state: 'TN', verified: false,
+    }).card;
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: '1023 Baysinger Rd, Newport TN' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' });
+    const opportunity = ensureOpportunityForLegacyDealCard(deal.id);
+    savePropertyInspection(property.id, {
+      ...emptyInspection,
+      parcelFacts: {
+        'Parcel Address': 'TALLEY RD', 'Parcel Address City': '',
+        'Parcel Address County': 'Cocke', 'Parcel Address State': 'TN', 'Parcel ID': '027 04512',
+      },
+    });
+    expect(quarantineMismatchedPropertyInspections(opportunity.id, property.id, {
+      address: '1023 Baysinger Rd', city: 'Newport', county: 'Cocke', state: 'TN', apn: 'wrong-apn',
+      source: 'manual_input',
+    })).toHaveLength(1);
+    expect(loadPropertyInspection(property.id)).toBeNull();
+
+    const constraints = {
+      address: 'TALLEY RD, Newport, TN 37843', city: 'Newport', county: 'Cocke', state: 'TN',
+      apn: '015 027 04512 000 2026', source: 'property_fallback' as const,
+    };
+    expect(verifyInspectionIdentity(constraints, {
+      ...emptyInspection,
+      parcelFacts: {
+        'Parcel Address': 'TALLEY RD', 'Parcel Address City': '',
+        'Parcel Address County': 'Cocke', 'Parcel Address State': 'TN', 'Parcel ID': '027 04512',
+      },
+    })).toMatchObject({ accepted: true, identityState: 'confirmed', verdict: 'matched' });
+    expect(restoreMatchingPropertyInspections(opportunity.id, property.id, constraints)).toHaveLength(1);
+    expect(loadPropertyInspection(property.id)?.parcelFacts['Parcel ID']).toBe('027 04512');
+    expect(listQuarantinedResearchEvidence(opportunity.id)).toHaveLength(0);
   });
 
   it('keeps a conflicting APN fatal even when the rest of the parcel matches', () => {

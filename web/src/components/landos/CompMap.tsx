@@ -10,7 +10,7 @@
 // "Show on Map" screenshot remains separate provider evidence elsewhere.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { apiGet } from '../../lib/api';
+import { apiGet, apiPost } from '../../lib/api';
 import {
   fitView, tilesForView, pointToScreen, osmTileUrl, worldXToLng, worldYToLat,
   project, clusterByScreenDistance, type LatLng,
@@ -29,8 +29,11 @@ export interface CompMapMarkerView {
   price: number | null;
   ppa: { label: string; value: number; display: string } | null;
   dateIso: string | null;
+  listingDate: string | null;
+  daysOnMarket: number | null;
   providers: string[];
   providerLinks: string[];
+  thumbnailUrl: string | null;
   sourceConfidence: 'high' | 'medium' | 'low' | null;
   comparability: string | null;
   lat: number | null;
@@ -39,7 +42,7 @@ export interface CompMapMarkerView {
 }
 
 export interface CompMapViewData {
-  subject: { address: string | null; apn: string | null; acres: number | null; lat: number | null; lng: number | null };
+  subject: { address: string | null; apn: string | null; acres: number | null; lat: number | null; lng: number | null; polygon?: Array<{ lat: number; lng: number }> | null };
   markers: CompMapMarkerView[];
   selection: { rationale: string; selectedCount: number; consideredCount: number };
   counts: { sold: number; active: number; context: number; rejected: number; duplicatesMerged: number; plottable: number; tableOnly: number };
@@ -64,8 +67,8 @@ const COMPARABILITY_RANK: Record<string, number> = {
 };
 
 /** Sortable table over the SAME final deduplicated registry the map renders. */
-export function CompTable({ markers }: { markers: CompMapMarkerView[] }) {
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'score', dir: -1 });
+export function CompTable({ markers, onSelect, selectedKey }: { markers: CompMapMarkerView[]; onSelect?: (marker: CompMapMarkerView) => void; selectedKey?: string | null }) {
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'distance', dir: 1 });
   const val = (m: CompMapMarkerView, key: SortKey): number => {
     switch (key) {
       case 'distance': return m.distanceMiles ?? Number.POSITIVE_INFINITY;
@@ -89,6 +92,7 @@ export function CompTable({ markers }: { markers: CompMapMarkerView[] }) {
         <thead>
           <tr class="border-b border-slate-700">
             <th class="px-2 py-1 text-left text-[11px] text-slate-400">Address</th>
+            <th class="px-2 py-1 text-left text-[11px] text-slate-400">Preview</th>
             <th class="px-2 py-1 text-left text-[11px] text-slate-400">Status</th>
             {header('distance', 'Distance')}
             <th class="px-2 py-1 text-left text-[11px] text-slate-400">Acres</th>
@@ -97,17 +101,15 @@ export function CompTable({ markers }: { markers: CompMapMarkerView[] }) {
             {header('ppa', 'PPA')}
             {header('date', 'Date')}
             <th class="px-2 py-1 text-left text-[11px] text-slate-400">Providers</th>
-            <th class="px-2 py-1 text-left text-[11px] text-slate-400">Conf.</th>
-            {header('comparability', 'Comparability')}
-            {header('score', 'Score')}
-            <th class="px-2 py-1 text-left text-[11px] text-slate-400">Class</th>
+            <th class="px-2 py-1 text-left text-[11px] text-slate-400">DOM</th>
             <th class="px-2 py-1 text-left text-[11px] text-slate-400">Links</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((m) => (
-            <tr key={`${m.key}-${m.address}`} class={`border-b border-slate-800 ${m.selected ? 'bg-amber-500/5' : ''}`}>
+            <tr key={`${m.key}-${m.address}`} onClick={() => onSelect?.(m)} class={`border-b border-slate-800 ${selectedKey === m.key ? 'bg-sky-500/10 ring-1 ring-inset ring-sky-500/30' : m.selected ? 'bg-amber-500/5' : ''} ${onSelect ? 'cursor-pointer' : ''}`}>
               <td class="px-2 py-1 text-slate-200 whitespace-nowrap max-w-[220px] overflow-hidden text-ellipsis" title={m.why}>{m.address ?? '—'}</td>
+              <td class="px-2 py-1">{m.thumbnailUrl ? <img src={m.thumbnailUrl} alt="" class="w-8 h-8 rounded object-cover border border-slate-700" loading="lazy" /> : <span class="text-[10px] text-slate-600">none</span>}</td>
               <td class="px-2 py-1 text-slate-300">{m.status}</td>
               <td class="px-2 py-1 text-slate-300">{m.distanceMiles != null ? `${m.distanceMiles} mi` : '—'}</td>
               <td class="px-2 py-1 text-slate-300">{m.acres ?? '—'}</td>
@@ -116,10 +118,7 @@ export function CompTable({ markers }: { markers: CompMapMarkerView[] }) {
               <td class="px-2 py-1 text-slate-300" title={m.ppa?.label}>{m.ppa ? `${m.ppa.display} (${m.ppa.label})` : '—'}</td>
               <td class="px-2 py-1 text-slate-300">{dateShort(m.dateIso)}</td>
               <td class="px-2 py-1 text-slate-400 whitespace-nowrap">{m.providers.join(', ') || '—'}</td>
-              <td class="px-2 py-1 text-slate-300">{m.sourceConfidence ?? '—'}</td>
-              <td class="px-2 py-1 text-slate-300">{m.comparability?.replace(/_/g, ' ') ?? '—'}</td>
-              <td class="px-2 py-1 text-slate-300">{m.selectionScore ?? '—'}</td>
-              <td class="px-2 py-1 text-slate-300">{m.selected ? 'selected' : m.status === 'rejected' ? 'rejected' : 'not selected'}</td>
+              <td class="px-2 py-1 text-slate-300">{m.daysOnMarket != null ? `${m.daysOnMarket} days` : '—'}</td>
               <td class="px-2 py-1">{m.providerLinks.slice(0, 3).map((u) => (
                 <a key={u} href={u} target="_blank" rel="noopener noreferrer" class="text-sky-400 underline mr-1.5">↗</a>
               ))}</td>
@@ -139,16 +138,48 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
   const [filters, setFilters] = useState<Record<FilterKey, boolean>>({ selected: true, sold: true, active: true, context: false, rejected: false });
   const [detail, setDetail] = useState<CompMapMarkerView | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichmentMessage, setEnrichmentMessage] = useState('');
+  const [enrichmentRetry, setEnrichmentRetry] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; center: LatLng } | null>(null);
+  const enrichmentAttempted = useRef(false);
+
+  const loadMap = () => {
+    let alive = true;
+    const request = apiGet<{ compMap: CompMapViewData }>(`/api/landos/deal-cards/${dealCardId}/comp-map`)
+      .then((r) => { if (alive) { setData(r.compMap); setView(null); } })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
+    return { request, cancel: () => { alive = false; } };
+  };
 
   useEffect(() => {
-    let alive = true;
-    apiGet<{ compMap: CompMapViewData }>(`/api/landos/deal-cards/${dealCardId}/comp-map`)
-      .then((r) => { if (alive) setData(r.compMap); })
-      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
-    return () => { alive = false; };
+    enrichmentAttempted.current = false;
+    const active = loadMap();
+    return active.cancel;
   }, [dealCardId]);
+
+  useEffect(() => {
+    if (!data?.counts.tableOnly || enrichmentAttempted.current) return;
+    enrichmentAttempted.current = true;
+    setEnriching(true);
+    setEnrichmentMessage(`Checking ${data.counts.tableOnly} source listing location${data.counts.tableOnly === 1 ? '' : 's'}…`);
+    apiPost<{ enrichment: { enriched: number; unresolved: number } }>(`/api/landos/deal-cards/${dealCardId}/comp-map/enrich`)
+      .then(async (result) => {
+        await loadMap().request;
+        setEnrichmentMessage(result.enrichment.enriched > 0
+          ? `${result.enrichment.enriched} additional listing location${result.enrichment.enriched === 1 ? '' : 's'} recovered.`
+          : 'All currently published listing locations have been checked.');
+      })
+      .catch(() => setEnrichmentMessage('Location check could not finish. Use Retry locations to run it again.'))
+      .finally(() => setEnriching(false));
+  }, [data?.counts.tableOnly, dealCardId, enrichmentRetry]);
+
+  const retryLocations = () => {
+    enrichmentAttempted.current = false;
+    setEnrichmentMessage('');
+    setEnrichmentRetry((value) => value + 1);
+  };
 
   useEffect(() => {
     const el = boxRef.current;
@@ -161,6 +192,7 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
   }, [expanded, data]);
 
   const plottable = useMemo(() => (data?.markers ?? []).filter((m) => m.lat != null && m.lng != null), [data]);
+  const tableOnlyMarkers = useMemo(() => (data?.markers ?? []).filter((m) => (m.status === 'sold' || m.status === 'active') && (m.lat == null || m.lng == null)), [data]);
 
   const visible = useMemo(() => plottable.filter((m) => {
     if (m.selected) return filters.selected || filters.sold;
@@ -173,7 +205,7 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
 
   const fitAll = () => {
     if (!data) return;
-    const pts: LatLng[] = [];
+    const pts: LatLng[] = [...(data.subject.polygon ?? [])];
     if (data.subject.lat != null && data.subject.lng != null) pts.push({ lat: data.subject.lat, lng: data.subject.lng });
     for (const m of visible) pts.push({ lat: m.lat!, lng: m.lng! });
     setView(fitView(pts, size.w, size.h));
@@ -205,7 +237,9 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
       <button
         key={`${m.key}-${m.address}`}
         title={m.address ?? undefined}
+        aria-label={`${m.selected ? 'Accepted sold comparable' : m.status === 'sold' ? 'Sold comparable' : 'Active comparable'}: ${m.address ?? 'address unavailable'}`}
         onClick={(e) => { e.stopPropagation(); setDetail(m); }}
+        onMouseEnter={() => setDetail(m)}
         class="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 shadow"
         style={{
           left: pos.left, top: pos.top,
@@ -220,6 +254,10 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
   const subjectPin = data.subject.lat != null && data.subject.lng != null
     ? pointToScreen({ lat: data.subject.lat, lng: data.subject.lng }, v.center, v.zoom, size.w, size.h)
     : null;
+  const subjectPolygonPoints = (data.subject.polygon ?? [])
+    .map((point) => pointToScreen(point, v.center, v.zoom, size.w, size.h))
+    .map((point) => `${point.left},${point.top}`)
+    .join(' ');
 
   const toggle = (k: FilterKey, label: string, count: number) => (
     <button
@@ -231,17 +269,14 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
   return (
     <div class={expanded ? 'fixed inset-4 z-50 bg-slate-900 border border-slate-600 rounded-xl p-3 flex flex-col shadow-2xl' : 'relative'}>
       <div class="flex flex-wrap items-center gap-2 mb-2">
-        <span class="text-xs font-semibold text-slate-200">LandOS comp map — final deduplicated registry</span>
-        {toggle('selected', 'Selected', data.selection.selectedCount)}
-        {toggle('sold', 'Sold', data.counts.sold)}
-        {toggle('active', 'Active', data.counts.active)}
-        {toggle('context', 'Context', data.counts.context + data.counts.duplicatesMerged)}
-        {toggle('rejected', 'Rejected', data.counts.rejected)}
+        <span class="text-xs font-semibold text-slate-200">Comparable property map</span>
+        {toggle('sold', 'Accepted sold land', data.counts.sold)}
+        {toggle('active', 'Active land', data.counts.active)}
         <span class="ml-auto flex gap-1">
-          <button class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={() => zoomBy(1)}>+</button>
-          <button class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={() => zoomBy(-1)}>−</button>
-          <button class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={fitAll}>Fit</button>
-          <button class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={() => setExpanded(!expanded)}>{expanded ? 'Close' : 'Expand'}</button>
+          <button aria-label="Zoom in" class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={() => zoomBy(1)}>+</button>
+          <button aria-label="Zoom out" class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={() => zoomBy(-1)}>−</button>
+          <button aria-label="Fit all comparable locations" class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={fitAll}>Fit</button>
+          <button aria-label={expanded ? 'Close expanded comparable map' : 'Expand comparable map'} class="px-2 py-0.5 rounded text-xs border border-slate-600 text-slate-200" onClick={() => setExpanded(!expanded)}>{expanded ? 'Close' : 'Expand'}</button>
         </span>
       </div>
       <div
@@ -261,9 +296,12 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
             loading="lazy"
           />
         ))}
+        {subjectPolygonPoints && <svg class="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 15 }} aria-label="Official subject parcel outline"><polygon points={subjectPolygonPoints} fill="rgba(37,99,235,0.16)" stroke="#60a5fa" stroke-width="2" /></svg>}
         {clusters.map((c) => c.items.length > 1 ? (
           <button
             key={`c-${c.lat}-${c.lng}`}
+            aria-label={`${c.items.length} comparables in this area. Zoom in to separate them.`}
+            title={`${c.items.length} comparables in this area — click to zoom in`}
             onClick={(e) => { e.stopPropagation(); setView({ center: { lat: c.lat, lng: c.lng }, zoom: Math.min(19, Math.round(v.zoom + 2)) }); }}
             class="absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-200 text-slate-900 text-xs font-bold border-2 border-slate-900 shadow"
             style={{ ...(() => { const p = pointToScreen({ lat: c.lat, lng: c.lng }, v.center, v.zoom, size.w, size.h); return { left: p.left, top: p.top }; })(), width: 26, height: 26, zIndex: 25 }}
@@ -274,22 +312,39 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
             <div class="w-5 h-5 rotate-45 border-2 shadow-lg" style={{ background: MARKER_COLOR.subject, borderColor: '#fff' }} />
           </div>
         )}
+        {!subjectPin && !subjectPolygonPoints && visible.length === 0 && <div class="absolute inset-0 grid place-items-center p-6 text-center text-xs text-slate-300 bg-slate-900/35">No subject geometry or comp coordinates are retained yet. Records remain available in the table; nothing is fabricated onto the map.</div>}
         <div class="absolute bottom-0 right-0 bg-slate-900/80 text-[10px] text-slate-300 px-1.5 py-0.5 rounded-tl">
           {data.attribution} · refreshed {dateShort(data.refreshDateIso)}
         </div>
-        {data.counts.tableOnly > 0 && (
+        {enriching && (
           <div class="absolute top-0 left-0 bg-slate-900/80 text-[10px] text-amber-300 px-1.5 py-0.5 rounded-br">
-            {data.counts.tableOnly} record(s) lack coordinates — table only, never fabricated onto the map
+            Completing source listing locations…
           </div>
         )}
       </div>
-      <div class="text-[11px] text-slate-400 mt-1">{data.summaryLine}</div>
+      <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+        <span>{data.summaryLine}</span>
+        <span class="inline-flex items-center gap-1"><span class="inline-block h-2.5 w-2.5 rotate-45 border border-white bg-blue-600" /> Subject</span>
+        <span class="inline-flex items-center gap-1"><span class="inline-block h-2.5 w-2.5 rounded-full bg-green-600" /> Sold</span>
+        <span class="inline-flex items-center gap-1"><span class="inline-block h-2.5 w-2.5 rounded-full bg-amber-500" /> Active</span>
+        <span>Numbered circles group nearby comparables.</span>
+      </div>
+      {enrichmentMessage && <div class="mt-1 text-[11px] text-slate-400" role="status">{enrichmentMessage}</div>}
+      {tableOnlyMarkers.length > 0 && !enriching && (
+        <details class="mt-2 rounded-md border border-slate-700 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-300">
+          <summary class="cursor-pointer font-medium">{tableOnlyMarkers.length} source listing{tableOnlyMarkers.length === 1 ? '' : 's'} do not publish a reliable map point</summary>
+          <div class="mt-1 text-slate-400">They remain usable in the comp table and valuation where qualified. LandOS will not turn a road name or a bad geocoder match into a fake parcel pin.</div>
+          <ul class="mt-1 list-disc pl-5 text-slate-400">{tableOnlyMarkers.map((marker) => <li key={`${marker.key}-${marker.address}`}>{marker.address ?? 'Address unavailable'} ({marker.status})</li>)}</ul>
+          <button type="button" class="mt-2 rounded border border-slate-600 px-2 py-1 text-[11px] text-slate-200" onClick={retryLocations}>Retry source locations</button>
+        </details>
+      )}
 
       {detail && (
         <div class="mt-2 border border-slate-600 rounded-lg p-3 bg-slate-800/80 text-sm relative">
+          <div class="mb-2">{detail.thumbnailUrl ? <img src={detail.thumbnailUrl} alt={`Provider thumbnail for ${detail.address ?? 'comparable'}`} class="w-24 h-20 rounded object-cover border border-slate-600" /> : <div class="w-24 h-20 rounded border border-dashed border-slate-600 grid place-items-center text-[10px] text-slate-500 text-center">No provider thumbnail retained</div>}</div>
           <button class="absolute top-1.5 right-2 text-slate-400 hover:text-slate-200" onClick={() => setDetail(null)}>✕</button>
           <div class="font-semibold text-slate-100">{detail.address ?? '(no address)'}
-            {detail.selected && <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">SELECTED{detail.selectionScore != null ? ` · score ${detail.selectionScore}` : ''}</span>}
+            {detail.selected && <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">Accepted sold comp</span>}
           </div>
           <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 mt-1.5 text-slate-300">
             <div><span class="text-slate-500">APN</span> {detail.apn ?? '—'}</div>
@@ -299,9 +354,10 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
             <div><span class="text-slate-500">Price</span> {money(detail.price)}</div>
             <div><span class="text-slate-500">{detail.ppa?.label ?? 'PPA'}</span> {detail.ppa?.display ?? '—'}</div>
             <div><span class="text-slate-500">Date</span> {dateShort(detail.dateIso)}</div>
-            <div><span class="text-slate-500">Confidence</span> {detail.sourceConfidence ?? '—'} / {detail.comparability ?? '—'}</div>
+            <div><span class="text-slate-500">Listed</span> {dateShort(detail.listingDate)}</div>
+            <div><span class="text-slate-500">Days on market</span> {detail.daysOnMarket ?? '—'}</div>
           </div>
-          <div class="mt-1.5 text-slate-300"><span class="text-slate-500">{detail.selected ? 'Why selected' : 'Why not selected'}:</span> {detail.why || '—'}</div>
+          <div class="mt-1.5 text-slate-300"><span class="text-slate-500">Basis:</span> {detail.why || '—'}</div>
           <div class="mt-1.5 flex flex-wrap gap-2 items-center">
             <span class="text-slate-500 text-xs">Providers: {detail.providers.join(', ') || '—'}</span>
             {detail.providerLinks.map((u) => (
@@ -313,7 +369,28 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
         </div>
       )}
 
-      {!expanded && <CompTable markers={data.markers} />}
+      {!expanded && (
+        <div class="space-y-4 mt-3">
+          <section>
+            <div class="text-xs font-semibold text-slate-200">Accepted sold land comps</div>
+            <CompTable markers={data.markers.filter((marker) => marker.status === 'sold')} onSelect={setDetail} selectedKey={detail?.key ?? null} />
+          </section>
+          <section>
+            <div class="text-xs font-semibold text-slate-200">Active land listings</div>
+            <CompTable markers={data.markers.filter((marker) => marker.status === 'active')} onSelect={setDetail} selectedKey={detail?.key ?? null} />
+          </section>
+          {data.markers.some((marker) => marker.status === 'context') && (
+            <section>
+              <div class="text-xs font-semibold text-slate-200">Improved/manufactured-home strategy evidence</div>
+              <CompTable markers={data.markers.filter((marker) => marker.status === 'context')} onSelect={setDetail} selectedKey={detail?.key ?? null} />
+            </section>
+          )}
+          <details class="rounded border border-slate-700 p-2">
+            <summary class="text-xs text-slate-400 cursor-pointer">Rejected or unusable candidates ({data.markers.filter((marker) => marker.status === 'rejected').length})</summary>
+            <CompTable markers={data.markers.filter((marker) => marker.status === 'rejected')} onSelect={setDetail} selectedKey={detail?.key ?? null} />
+          </details>
+        </div>
+      )}
     </div>
   );
 }

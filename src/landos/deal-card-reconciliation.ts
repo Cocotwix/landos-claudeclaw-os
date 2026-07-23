@@ -91,6 +91,35 @@ function normalizeCat(v: string): string {
   return v.trim().toLowerCase().replace(/[.\s]+$/g, '');
 }
 
+function normalizedFloodMeaning(value: string): string {
+  const v = normalizeCat(value).replace(/[_-]+/g, ' ');
+  if (/^(?:fema\s+)?(?:zone\s+)?x\b/.test(v)
+    || /not\s+in\s+(?:a\s+)?(?:special\s+)?flood\s+hazard\s+area/.test(v)
+    || /outside\s+(?:the\s+)?(?:special\s+)?flood\s+hazard\s+area/.test(v)
+    || /(?:minimal|low)\s+flood\s+(?:risk|hazard)/.test(v)) return 'outside_sfha';
+  return v;
+}
+
+function reconcileFlood(candidates: FactCandidate[]): ReconciledFactValue {
+  const result = reconcileField('flood', candidates);
+  const trusted = candidates.filter((c) => c.tier === 'official' || c.tier === 'provider');
+  if (trusted.length >= 2 && trusted.every((c) => normalizedFloodMeaning(c.value) === normalizedFloodMeaning(trusted[0].value))) {
+    return { ...result, conflict: false, conflictNote: null, status: 'reconciled' };
+  }
+  return result;
+}
+
+function reconcileWetlands(candidates: FactCandidate[]): ReconciledFactValue {
+  const landPortal = candidates.find((c) => c.source === 'LandPortal parcel');
+  if (!landPortal) return reconcileField('wetlands', candidates);
+  return {
+    field: 'wetlands', label: LABEL.wetlands,
+    primary: landPortal.value, primarySource: landPortal.source, primaryTier: landPortal.tier,
+    alternates: candidates.filter((c) => c !== landPortal),
+    conflict: false, conflictNote: null, status: 'reconciled',
+  };
+}
+
 function compact(xs: Array<FactCandidate | null>): FactCandidate[] {
   return xs.filter((x): x is FactCandidate => x != null);
 }
@@ -203,13 +232,13 @@ export function reconcileFacts(inputs: FactReconciliationInputs): ReconciledFact
 
   // Flood: USGS/FEMA gov (official) outranks the LandPortal snapshot zone.
   const floodGov = gov?.flood && (gov.flood.status === 'live' || gov.flood.status === 'verified') && gov.flood.zone;
-  const flood = reconcileField('flood', compact([
+  const flood = reconcileFlood(compact([
     floodGov ? { value: String(gov!.flood!.zone), num: null, source: 'FEMA (live)', tier: 'official' as SourceTier } : null,
     fs?.environment?.femaFloodZone ? { value: String(fs.environment.femaFloodZone), num: null, source: 'LandPortal parcel', tier: 'provider' as SourceTier } : null,
   ]));
 
   const wetGov = gov?.wetlands && (gov.wetlands.status === 'live' || gov.wetlands.status === 'verified') && gov.wetlands.type;
-  const wetlands = reconcileField('wetlands', compact([
+  const wetlands = reconcileWetlands(compact([
     wetGov ? { value: String(gov!.wetlands!.type), num: null, source: 'NWI (live)', tier: 'official' as SourceTier } : null,
     fs?.environment?.wetlandsPct ? { value: `${fs.environment.wetlandsPct} coverage`, num: null, source: 'LandPortal parcel', tier: 'provider' as SourceTier } : null,
   ]));
@@ -264,7 +293,7 @@ export function acreageFactFromBasis(basis: AcreageReconciliation | null | undef
 }
 
 // ── Valuation hierarchy ──────────────────────────────────────────────────────
-export type ValuationKind = 'comp_sold' | 'comp_active_asking' | 'lp_estimate' | 'assessed' | 'county_context';
+export type ValuationKind = 'landportal_comps' | 'comp_sold' | 'comp_active_asking' | 'lp_estimate' | 'assessed' | 'county_context';
 
 export interface ValuationBasis {
   id: string;
@@ -289,18 +318,21 @@ export interface ValuationHierarchy {
 }
 
 const KIND_RANK: Record<ValuationKind, number> = {
-  comp_sold: 1,
-  comp_active_asking: 2,
-  lp_estimate: 3,
-  assessed: 4,
-  county_context: 5,
+  landportal_comps: 1,
+  comp_sold: 2,
+  comp_active_asking: 3,
+  lp_estimate: 4,
+  assessed: 5,
+  county_context: 6,
 };
 
 export interface ValuationInputs {
   /** Subject acreage (for ppa ↔ total conversions). */
   acres?: number | null;
+  /** Selected LandPortal comparable rows — the system-wide FMV basis. */
+  landPortalComps?: { count: number; averagePpa: number | null } | null;
   /** Sold-comp market metrics (parcel-specific, strongest). */
-  soldComps?: { count: number; medianPpa: number | null; ppaMin: number | null; ppaMax: number | null } | null;
+  soldComps?: { count: number; averagePpa?: number | null; medianPpa?: number | null; ppaMin: number | null; ppaMax: number | null } | null;
   /** Active / asking listings — never treated the same as sold. */
   activeComps?: { count: number; avgPpa: number | null } | null;
   /** LandPortal estimate (lpEstimatePrice / lpEstimatePpa). */
@@ -323,13 +355,23 @@ export function buildValuationHierarchy(inputs: ValuationInputs): ValuationHiera
   const acres = usd(inputs.acres);
   const bases: ValuationBasis[] = [];
 
+  if (inputs.landPortalComps && inputs.landPortalComps.count > 0 && inputs.landPortalComps.averagePpa != null) {
+    const ppa = usd(inputs.landPortalComps.averagePpa);
+    bases.push({
+      id: 'landportal_comps', label: `LandPortal comps (${inputs.landPortalComps.count})`, kind: 'landportal_comps',
+      value: totalFrom(ppa, acres), ppa, rank: KIND_RANK.landportal_comps,
+      note: `Average $${ppa?.toLocaleString('en-US')}/ac across the ${inputs.landPortalComps.count} closest usable LandPortal comp${inputs.landPortalComps.count === 1 ? '' : 's'}. Other providers remain visible as context but do not influence FMV.`,
+    });
+  }
+
   // Sold comps (parcel-specific) — strongest.
-  if (inputs.soldComps && inputs.soldComps.count > 0 && inputs.soldComps.medianPpa != null) {
-    const ppa = usd(inputs.soldComps.medianPpa);
+  const soldPpa = inputs.soldComps?.averagePpa ?? inputs.soldComps?.medianPpa ?? null;
+  if (inputs.soldComps && inputs.soldComps.count > 0 && soldPpa != null) {
+    const ppa = usd(soldPpa);
     bases.push({
       id: 'comp_sold', label: `Sold land comps (${inputs.soldComps.count})`, kind: 'comp_sold',
       value: totalFrom(ppa, acres), ppa, rank: KIND_RANK.comp_sold,
-      note: `Median $${ppa?.toLocaleString('en-US')}/ac across ${inputs.soldComps.count} sold comp(s).`,
+      note: `${inputs.soldComps.averagePpa != null ? 'Average' : 'Median'} $${ppa?.toLocaleString('en-US')}/ac across ${inputs.soldComps.count} selected sold comp(s).`,
     });
   }
   // Active / asking listings — supporting, explicitly not sold.
@@ -378,13 +420,13 @@ export function buildValuationHierarchy(inputs: ValuationInputs): ValuationHiera
   const primary = bases[0];
   const supporting = bases.slice(1);
 
-  // Conflict: primary vs the next basis of a DIFFERENT kind that both have a value,
-  // diverging by more than 35% of the smaller. County context can never be treated
-  // as overriding parcel comps, but a large divergence is still surfaced.
+  // LandPortal comps are the owner-selected valuation basis. Other provider
+  // rows and estimates stay visible as context and never create a conflict or
+  // override that FMV calculation.
   let conflict = false;
   let conflictNote: string | null = null;
   const primaryVal = primary.value ?? (primary.ppa != null && acres ? totalFrom(primary.ppa, acres) : null);
-  for (const b of supporting) {
+  for (const b of primary.kind === 'landportal_comps' || primary.kind === 'comp_sold' ? [] : supporting) {
     const bVal = b.value ?? (b.ppa != null && acres ? totalFrom(b.ppa, acres) : null);
     if (primaryVal != null && bVal != null && primaryVal > 0 && bVal > 0) {
       const ratio = Math.max(primaryVal, bVal) / Math.min(primaryVal, bVal);
@@ -396,22 +438,20 @@ export function buildValuationHierarchy(inputs: ValuationInputs): ValuationHiera
     }
   }
 
-  // A single sale is a preliminary indication, never a defensible range or offer basis.
+  // The owner FMV rule uses the closest available 1–5 accepted sold comps.
   const soldRangeReady = primary.kind === 'comp_sold'
-    && (inputs.soldComps?.count ?? 0) >= 3
-    && inputs.soldComps?.ppaMin != null
-    && inputs.soldComps?.ppaMax != null
-    && (inputs.soldComps?.ppaMax ?? 0) > (inputs.soldComps?.ppaMin ?? 0);
+    && (inputs.soldComps?.count ?? 0) >= 1;
 
-  // Confidence: high only with a non-point sold band; one or two sales remain low.
+  // Sample size affects confidence, never whether the owner formula is computed.
   let confidence: ValuationHierarchy['confidence'] = 'low';
-  if (primary.kind === 'comp_sold') confidence = soldRangeReady ? 'high' : 'low';
+  if (primary.kind === 'landportal_comps') confidence = (inputs.landPortalComps?.count ?? 0) >= 3 ? 'high' : 'low';
+  else if (primary.kind === 'comp_sold') confidence = (inputs.soldComps?.count ?? 0) >= 3 ? 'high' : 'low';
   else if (primary.kind === 'lp_estimate' || primary.kind === 'assessed') confidence = 'medium';
   if (conflict && confidence === 'high') confidence = 'medium';
 
   // Value range from the chosen basis only.
   let valueRange: ValuationHierarchy['valueRange'] = null;
-  if (soldRangeReady && inputs.soldComps?.ppaMin != null && inputs.soldComps?.ppaMax != null && acres) {
+  if (soldRangeReady && inputs.soldComps?.ppaMin != null && inputs.soldComps?.ppaMax != null && inputs.soldComps.ppaMax > inputs.soldComps.ppaMin && acres) {
     valueRange = { low: Math.round(inputs.soldComps.ppaMin * acres), high: Math.round(inputs.soldComps.ppaMax * acres), basisId: primary.id };
   } else if (primaryVal != null) {
     valueRange = { low: Math.round(primaryVal * 0.9), high: Math.round(primaryVal * 1.1), basisId: primary.id };
@@ -419,11 +459,7 @@ export function buildValuationHierarchy(inputs: ValuationInputs): ValuationHiera
 
   const nextAction = conflict ? 'Tighten comps / valuation — divergent value inputs.' : null;
 
-  const offerRangeBlocked = primary.kind === 'comp_sold' && !soldRangeReady;
-  const offerGateAction = offerRangeBlocked && !conflict
-    ? `Preliminary comp indication only: ${inputs.soldComps?.count ?? 0} sold comp(s) is insufficient for a reliable value or offer range. Expand and validate comparable sales before pricing an offer.`
-    : null;
-  return { primary, supporting, confidence, conflict, conflictNote, valueRange: offerRangeBlocked ? null : valueRange, nextAction: offerGateAction ?? nextAction };
+  return { primary, supporting, confidence, conflict, conflictNote, valueRange, nextAction };
 }
 
 // ── Comp state (single object feeding every tab) ─────────────────────────────
@@ -664,13 +700,9 @@ export function selectBestComps(subjectAcres: number | null, candidates: CompCan
     const age = saleAgeMonths(c.saleDateIso, asOfMs);
     if (age == null) { exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: missing or invalid sale date.`); return false; }
     if (age > 24) { exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: sale is older than 24 months.`); return false; }
-    // A closed-sale row cannot become a valuation shortlist comp until its
-    // relationship to this subject is actually measured.  Leaving a missing
-    // distance in the candidate set used to make it look eligible simply
-    // because it earned zero distance points; that is not a distance check.
-    if (typeof c.distanceMiles !== 'number' || !Number.isFinite(c.distanceMiles) || c.distanceMiles < 0) {
-      exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: distance is not established.`); return false;
-    }
+    // Distance improves ranking when available. In thin-data situations an
+    // otherwise usable closed sale remains eligible with zero distance points
+    // so LandOS can use the closest available 1–5 rather than suppress FMV.
     if (typeof c.distanceMiles === 'number' && c.distanceMiles > 10 && c.geographyScope !== 'county_wide') {
       exclusions.push(`${c.addressDesc ?? c.sourceLabel ?? 'Sold row'}: outside the 10-mile local ceiling.`); return false;
     }
@@ -683,7 +715,7 @@ export function selectBestComps(subjectAcres: number | null, candidates: CompCan
   const recencyEligible = datedSold.filter((c) => (saleAgeMonths(c.saleDateIso, asOfMs) ?? Infinity) <= recencyMonths);
   const localKnown = recencyEligible.filter((c) => typeof c.distanceMiles === 'number' && c.geographyScope !== 'county_wide');
   const radiusMiles = ([3, 5, 10] as const).find((radius) => localKnown.filter((c) => c.distanceMiles! <= radius).length >= 3) ?? 10;
-  const usable = recencyEligible.filter((c) => (c.distanceMiles ?? Number.POSITIVE_INFINITY) <= radiusMiles || c.geographyScope === 'county_wide');
+  const usable = recencyEligible.filter((c) => c.distanceMiles == null || c.distanceMiles <= radiusMiles || c.geographyScope === 'county_wide');
   const countyWideRows = usable.filter((c) => c.geographyScope === 'county_wide');
 
   const scored = usable.map((c) => {

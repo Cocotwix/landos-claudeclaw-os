@@ -65,6 +65,29 @@ export function listCountyRef(state?: string): CountyRef[] {
   return rows.map((r) => ({ fips: r.fips, state: r.state, countyName: r.county_name }));
 }
 
+/** Resolve a retained provider ZIP membership to exactly one county. ZIPs can
+ * cross county lines, so an ambiguous membership deliberately returns null.
+ * This is locality scoping only; it never establishes parcel identity. */
+export function resolveCountyRefByZip(zip: string | null | undefined, state?: string | null): CountyRef | null {
+  const normalizedZip = (zip ?? '').trim();
+  const normalizedState = (state ?? '').trim().toUpperCase();
+  if (!/^\d{5}$/.test(normalizedZip)) return null;
+  ensureCountyRefSeeded();
+  const rows = getLandosDb().prepare(`
+    SELECT DISTINCT z.fips,
+      COALESCE(g.state, r.state, '') AS state,
+      COALESCE(g.name, r.county_name, '') AS county_name
+    FROM landos_mr_zip_county z
+    LEFT JOIN landos_mr_geography g ON g.fips = z.fips AND g.level = 'county'
+    LEFT JOIN landos_market_county_ref r ON r.fips = z.fips
+    WHERE z.zip = ? AND (? = '' OR COALESCE(g.state, r.state, '') = ?)
+      AND COALESCE(g.name, r.county_name, '') <> ''
+    ORDER BY z.fips
+  `).all(normalizedZip, normalizedState, normalizedState) as Array<{ fips: string; state: string; county_name: string }>;
+  if (rows.length !== 1) return null;
+  return { fips: rows[0].fips, state: rows[0].state, countyName: rows[0].county_name.replace(/\s+County$/i, '') };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Ingestion
 // ─────────────────────────────────────────────────────────────────────────

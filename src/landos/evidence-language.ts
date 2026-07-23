@@ -23,6 +23,8 @@ export function sanitizeAccessLanguage(text: string): string {
     .replace(/\bis mapped as a private road\b/gi, 'carries a non-public/private tag in the road layer, but ownership is unverified')
     .replace(/\brecorded access rights over it are required( and are not confirmed by GIS)?/gi, 'recorded access rights would be required only if it is confirmed private (unconfirmed by GIS)')
     .replace(/~?(\d[\d,]*)\s*ft\s+mapped\s+frontage/gi, '~$1 ft of road centerline within 25 m of the mapped boundary')
+    .replace(/\bconfirmed\s+road\s+(?:frontage|proximity)\b/gi, 'road visible nearby; parcel–road contact and access unresolved')
+    .replace(/\baccess\s+is\s+not\s+an\s+issue\b/gi, 'physical and legal access remain unresolved')
     .replace(/mapped\s+(?:public-road\s+)?frontage/gi, 'mapped road proximity')
     .replace(/apparent\s+public\s+frontage/gi, 'public-road proximity (contact unresolved)')
     .replace(/parcel fronts a paved road/gi, 'a paved road is mapped nearby; direct parcel–road contact unresolved')
@@ -86,6 +88,11 @@ function sanitizeSlopeFinding(finding: SlopeFinding): SlopeFinding {
 // attribution, underwriting significance.
 
 const VISUAL_REWRITES: Array<{ re: RegExp; safe: string }> = [
+  { re: /the\s+(parcel|property|lot)\s+has\s+direct\s+physical\s+access\s+to\s+(?:a\s+)?([^.]+)/i, safe: '$2 is visible near the mapped parcel; direct parcel–road contact and physical or legal access remain unresolved' },
+  { re: /the\s+(parcel|property|lot)\s+(?:has|features)\s+approximately\s+([\d,.]+)\s*(?:feet|ft)\s+of\s+direct\s+(?:road\s+)?frontage\s+along\s+(?:the\s+)?([^.]+)/i, safe: 'Approximately $2 ft of $3 centerline is visible near the mapped parcel; direct parcel–road contact and access remain unresolved' },
+  { re: /while\s+the\s+(parcel|property|lot)\s+fronts\s+(?:a\s+)?paved\s+road,?\s*/i, safe: 'A paved road is visible nearby, but direct parcel–road contact and access remain unresolved; ' },
+  { re: /the\s+(parcel|property|lot)\s+has\s+approximately\s+([\d,.]+)\s*(?:feet|ft)\s+of\s+direct\s+frontage\s+along\s+(?:the\s+)?([^.]+)/i, safe: 'Approximately $2 ft of $3 centerline is visible near the mapped parcel; direct parcel–road contact and access remain unresolved' },
+  { re: /the\s+(parcel|property|lot)\s+features\s+approximately\s+([\d,.]+)\s*(?:feet|ft)\s+of\s+direct\s+road\s+proximity\s+along\s+([^.]+)/i, safe: 'Approximately $2 ft of $3 centerline is visible near the mapped parcel; direct parcel–road contact and access remain unresolved' },
   { re: /(parcel|property|lot)\s+fronts\s+(a\s+)?paved\s+road/i, safe: 'Paved road visible nearby; direct parcel–road contact unresolved' },
   { re: /power\s*lines?\s+(run|running)\s+along\s+the\s+(property\s+)?(frontage|road proximity|boundary)/i, safe: 'Overhead lines visible near the roadway; parcel service unconfirmed' },
   { re: /power\s*lines?[^.]*serv(?:e|ing)\s+the\s+(parcel|property)/i, safe: 'Overhead lines visible near the roadway; parcel service unconfirmed' },
@@ -104,10 +111,10 @@ export interface VisualConfidenceTriple {
 
 /** Rewrite an unsafe visual claim into its safe, attribution-honest form. */
 export function sanitizeVisualConclusion(text: string): { text: string; rewritten: boolean } {
-  for (const { re, safe } of VISUAL_REWRITES) {
-    if (re.test(text)) return { text: text.replace(re, safe), rewritten: true };
-  }
-  return { text: sanitizeAccessLanguage(text), rewritten: false };
+  let safeText = text;
+  for (const { re, safe } of VISUAL_REWRITES) safeText = safeText.replace(re, safe);
+  safeText = sanitizeAccessLanguage(safeText);
+  return { text: safeText, rewritten: safeText !== text };
 }
 
 /**

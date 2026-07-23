@@ -17,6 +17,9 @@ function verifiedReport(over: Partial<DealCardReportView> = {}): DealCardReportV
     ] as never,
     ddCompleteness: { total: 15, verified: 7, needsVerification: 8, percentComplete: 47, label: '7 of 15 DD fields verified (47%)' } as never,
     visualContext: undefined as never,
+    landportalInspection: {
+      comparables: Array.from({ length: 5 }, (_, index) => ({ rawText: `LP ${index + 1}`, sourceUrl: 'https://example.com/lp', acres: 5, price: 50000, status: 'listed', improvement: 'vacant', confidence: 'high' })),
+    } as never,
     marketComps: { status: 'collected', primaryProvider: 'realie', providerChain: ['realie:collected'], soldCount: 6, activeCount: 80, sold: [], active: new Array(80).fill({}), supplementalSold: [], valuation: [], metrics: { soldAvgPrice: 50000, soldAvgPpa: 10000, soldMedianPpa: 10000, ppaMin: 8000, ppaMax: 13000, activeAvgPrice: null, domMedian: 45 }, sparseExplanation: null, providers: [{ providerId: 'realie', status: 'connected', kept: 6 }], source: 'Realie', timestamp: 't', note: '' } as never,
     govDd: { flood: { status: 'verified', zone: 'X', source: 'u', timestamp: 't' }, wetlands: { status: 'verified', type: null, source: 'u', timestamp: 't' }, slope: { status: 'verified', slopeDeg: 4, source: 'u', timestamp: 't' } } as never,
     generatedAt: 1, updatedBy: 'test',
@@ -53,6 +56,18 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(es.sellerQuestions.length).toBeGreaterThanOrEqual(4);
     expect(es.confidence).toBe('high');
   });
+  it('attributes verified identity to the actual parcel source instead of hard-coding Realie', () => {
+    const landPortalFacts = verifiedReport().ddFactChecklist.map((row) => ({
+      ...row,
+      source: 'Persisted verified Property Card (orig: LandPortal authenticated browser)',
+    }));
+    const es = buildExecutiveSummary(verifiedReport({
+      parcelVerificationStatus: 'Parcel verified (Persisted verified Property Card (orig: LandPortal authenticated browser), non-credit)',
+      ddFactChecklist: landPortalFacts,
+    }));
+    expect(es.whatItIs).toMatch(/verified via LandPortal authenticated browser/i);
+    expect(es.whatItIs).not.toMatch(/verified via Realie/i);
+  });
   it('ranks only the five approved LandOS strategies with reasons', () => {
     const es = buildExecutiveSummary(verifiedReport());
     expect(es.strategyRanking.length).toBe(5);
@@ -71,11 +86,12 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
         active: [],
         metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null },
       } as never,
+      landportalInspection: null,
       mostViableStrategy: 'Quick flip (preliminary — confirm access/title/valuation).',
     }));
     expect(es.strongestStrategy.strategy).toBe('No acquisition strategy is ready');
     expect(es.strategyRanking.every((strategy) => strategy.viability === 'not_viable')).toBe(true);
-    expect(es.preliminaryAcquisitionRange.note).toMatch(/insufficient for a reliable value or offer range/i);
+    expect(es.preliminaryAcquisitionRange.note).toMatch(/no usable LandPortal comp with both price and acreage/i);
   });
   it('populates preliminary Deal Economics (value low/mid/high + gross spread) when comps exist', () => {
     const de = buildExecutiveSummary(verifiedReport()).dealEconomics;
@@ -89,7 +105,7 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
   it('Deal Economics is honestly unavailable when no comps', () => {
     // No sold-comp band at all (verified or not) -> no economics, never fabricated.
     const noComps = { ...verifiedReport().marketComps, soldCount: 0, sold: [], metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null } } as never;
-    const de = buildExecutiveSummary(verifiedReport({ parcelVerified: false, marketComps: noComps })).dealEconomics;
+    const de = buildExecutiveSummary(verifiedReport({ parcelVerified: false, marketComps: noComps, landportalInspection: null })).dealEconomics;
     expect(de.available).toBe(false);
   });
 
@@ -105,7 +121,7 @@ describe('Executive Summary synthesis (operator-ready pre-call brief)', () => {
     expect(r.note.toLowerCase()).toMatch(/not verified|local.area/);
   });
   it('withholds the range when verified but no sold comps (estimate only on evidence)', () => {
-    const es = buildExecutiveSummary(verifiedReport({ marketComps: { ...verifiedReport().marketComps, soldCount: 0, metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null } } as never }));
+    const es = buildExecutiveSummary(verifiedReport({ landportalInspection: null, marketComps: { ...verifiedReport().marketComps, soldCount: 0, metrics: { soldMedianPpa: null, ppaMin: null, ppaMax: null, soldAvgPrice: null, soldAvgPpa: null, activeAvgPrice: null, domMedian: null } } as never }));
     expect(es.preliminaryAcquisitionRange.available).toBe(false);
     expect(es.marketPulse.confidence).toBe('none');
   });

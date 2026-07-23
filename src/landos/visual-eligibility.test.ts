@@ -182,6 +182,8 @@ describe('capturePropertyVisuals — parcel-association gate', () => {
     const sv = res.assets.street_view_static!;
     expect(sv.association?.basis).toBe('parcel_nearby_street_view');
     expect(sv.association?.distanceToParcelM).toBeLessThanOrEqual(MAX_PARCEL_CONTEXT_DISTANCE_M);
+    expect(urls.find((url) => /streetview\/metadata/.test(url))).toContain(`radius=${MAX_PARCEL_CONTEXT_DISTANCE_M}`);
+    expect(urls.find((url) => /maps\/api\/streetview\?/.test(url))).toContain(`location=${encodeURIComponent(`${COORDS.lat + 0.0002},${COORDS.lng}`)}`);
   });
 
   it('skips Street View when the nearest pano is beyond the frontage distance', async () => {

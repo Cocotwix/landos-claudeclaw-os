@@ -178,9 +178,10 @@ export function bearingDegrees(from: Coords, to: Coords): number {
 
 /** Street View metadata endpoint (free, no image quota): returns the actual pano
  *  location so the camera heading can be aimed at the parcel. */
-export function buildStreetViewMetadataUrl(o: StaticImageOpts): string {
+export function buildStreetViewMetadataUrl(o: StaticImageOpts & { radius?: number }): string {
   const location = o.coords ? coordStr(o.coords) : (o.address ?? '');
   const p = new URLSearchParams({ location, key: o.key });
+  if (typeof o.radius === 'number' && Number.isFinite(o.radius) && o.radius > 0) p.set('radius', String(Math.round(o.radius)));
   return `https://maps.googleapis.com/maps/api/streetview/metadata?${p.toString()}`;
 }
 

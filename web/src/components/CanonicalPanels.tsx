@@ -98,6 +98,8 @@ export interface DocumentRegistryView {
     findings: Array<{ label: string; detail: string; sourceUrl: string | null; pageNumber?: number | null; pageNumbers?: number[] }>;
     legalLimitation: string; superseded: boolean;
     uploaded?: boolean;
+    uploadedFileName?: string;
+    mimeType?: string;
   }>;
   researchTasks: Array<{ title: string; why: string; owner: string; state: string }>;
   summaryLine: string;
@@ -435,6 +437,7 @@ export function DocumentRegistryPanel({ registry, dealId, token }: { registry: D
   useEffect(() => { setZoom(1); }, [viewer?.docId, viewer?.page]);
   if (!registry) return null;
   const pageSrc = (file: string) => `/api/landos/deal-cards/${dealId}/document-page/${encodeURIComponent(file)}?token=${encodeURIComponent(token)}`;
+  const uploadSrc = (file: string) => `/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(file)}?token=${encodeURIComponent(token)}`;
   const viewerDoc = viewer ? registry.documents.find((d) => d.id === viewer.docId) ?? null : null;
   const viewerPage = viewerDoc?.pages.find((p) => p.pageNumber === viewer!.page) ?? null;
 
@@ -460,6 +463,24 @@ export function DocumentRegistryPanel({ registry, dealId, token }: { registry: D
               <a href={doc.officialUrl} target="_blank" rel="noreferrer" class="text-[12px] text-[var(--color-accent)] hover:underline">Open official source ↗</a>
             )}
           </div>
+
+          {doc.uploaded && doc.uploadedFileName && (
+            <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+              {/^image\//i.test(doc.mimeType ?? '') && (
+                <a href={uploadSrc(doc.uploadedFileName)} target="_blank" rel="noreferrer" class="block w-fit">
+                  <img
+                    src={uploadSrc(doc.uploadedFileName)}
+                    alt={`Uploaded image: ${doc.title}`}
+                    class="max-h-64 max-w-full rounded border border-[var(--color-border)] object-contain"
+                    loading="lazy"
+                  />
+                </a>
+              )}
+              <a href={uploadSrc(doc.uploadedFileName)} target="_blank" rel="noreferrer" class="mt-2 inline-block text-[12px] font-medium text-[var(--color-accent)] underline">
+                Open uploaded {/^image\//i.test(doc.mimeType ?? '') ? 'image' : 'file'} full size ↗
+              </a>
+            </div>
+          )}
 
           {/* Page previews */}
           {doc.pages.length > 0 && (

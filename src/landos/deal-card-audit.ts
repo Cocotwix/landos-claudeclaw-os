@@ -171,7 +171,7 @@ function norm(s: string | null | undefined): string {
 
 function normStrategy(s: string | null | undefined): string {
   const n = norm(s).replace(/[^a-z0-9]+/g, ' ').trim();
-  if (/\bquick\b.*\bflip\b/.test(n)) return 'quick flip';
+  if (/\b(?:quick|cash)\b.*\bflip\b/.test(n)) return 'quick flip';
   if (/\bsubdivide\b/.test(n)) return 'subdivide';
   if (/\bland\b.*\bhome\b/.test(n)) return 'land home package';
   if (/\bdouble\b.*\bclose\b|\bnovation\b/.test(n)) return 'double close novation';
@@ -381,22 +381,22 @@ export function auditDealCardCoherence(inputs: AuditInputs): DealCardAudit {
   }
 
   // 8. One-comp pricing gate — no attractive band, value range, or offer number
-  //    may exist while fewer than 3 validated unique sold comps exist.
+  //    may exist without at least one validated unique sold comp.
   {
     const validatedSold = inputs.compRegistry?.counts?.validatedSold;
     let pass = true;
     let detail = 'Pricing outputs respect the validated-comp gate.';
-    if (validatedSold != null && validatedSold < 3) {
+    if (validatedSold != null && validatedSold < 1) {
       const attractive = inputs.pursuit?.attractiveAcquisition;
       if (attractive && (attractive.low != null || attractive.high != null)) {
         pass = false;
-        detail = `An acquisition band is shown from only ${validatedSold} validated sold comp(s) — one observation is not a market.`;
+        detail = 'An acquisition band is shown without a validated sold comp.';
       } else if (r.valuation?.primary) {
         pass = false;
-        detail = `A valuation primary is shown from only ${validatedSold} validated sold comp(s).`;
+        detail = 'A valuation primary is shown without a validated sold comp.';
       }
     }
-    checks.push({ id: 'one_comp_pricing_gate', label: 'One comp never prices', pass, detail, repairable: true });
+    checks.push({ id: 'one_comp_pricing_gate', label: 'Sold comp required for FMV', pass, detail, repairable: true });
   }
 
   // 9. Comp counts are validated-registry counts — provider attempts and raw

@@ -44,6 +44,9 @@ export interface RegisteredDocument {
   superseded: boolean;
   /** True for operator-uploaded local artifacts (vs county-sourced captures). */
   uploaded?: boolean;
+  /** Stored basename for the card-scoped upload route. Never a filesystem path. */
+  uploadedFileName?: string;
+  mimeType?: string;
 }
 
 export interface UploadedDocumentRow {
@@ -239,6 +242,8 @@ export function buildDocumentRegistry(input: {
       legalLimitation: 'Operator-provided local artifact — provenance is the operator, not an official source, until verified.',
       superseded: false,
       uploaded: true,
+      uploadedFileName: up.fileName,
+      mimeType: up.mimeType,
     });
   }
 
@@ -276,7 +281,9 @@ export function buildDocumentRegistry(input: {
   }
   researchTasks.push({
     title: 'Search later recorded instruments for easements/encumbrances',
-    why: 'Only one deed has been read; easements, rights-of-way, or utility grants recorded after it would not appear in it.',
+    why: docs.some((document) => document.category === 'deed')
+      ? 'The retrieved deed does not establish whether later easements, rights-of-way, utility grants, or other encumbrances were recorded.'
+      : 'No deed or later easement/encumbrance instrument has been retrieved for this Deal Card yet.',
     owner: 'landos',
     state: 'open',
   });
