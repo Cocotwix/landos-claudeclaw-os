@@ -197,6 +197,7 @@ import {
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, linkPropertyToDeal, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard, addPerson, linkPerson } from './deal-card.js';
+import { readPropertySummaryForDeal, synchronizePropertySummaryForDeal } from './property-summary-legacy-adapter.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
 import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
 import { resolveParcelParallel, type ParallelResolution } from './parallel-resolution.js';
@@ -5924,6 +5925,34 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({ publicIntelligence });
   });
 
+  // Versioned Property Summary read model. GET is intentionally SELECT-only:
+  // it performs no provider work, legacy reconciliation, valuation, or write.
+  app.get('/api/landos/deal-cards/:id/property-summary', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ propertySummary: readPropertySummaryForDeal(id) });
+  });
+
+  // Explicit command boundary for adapting already-persisted legacy identity
+  // and public assessor/GIS evidence into the versioned vertical slice.
+  app.post('/api/landos/deal-cards/:id/property-summary/rebuild', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      const propertySummary = synchronizePropertySummaryForDeal({
+        dealCardId: id,
+        actor: 'property-summary-command',
+        changeReason: 'Operator requested a Property Summary rebuild from persisted evidence.',
+      });
+      return c.json({ propertySummary });
+    } catch (error) {
+      logger.warn({ err: error, dealCardId: id }, 'property_summary_rebuild_failed');
+      return c.json({ error: (error as Error)?.message ?? 'Property Summary rebuild failed.' }, 409);
+    }
+  });
+
   // Shared public-intelligence mission runner — the SAME path whether the
   // operator clicks "run" or parcel confirmation auto-continues downstream.
   const runPublicIntelligenceForDealCard = async (id: number, suppliedReportLanes?: ReportCompLanes | null): Promise<
@@ -5959,6 +5988,15 @@ export function registerLandosRoutes(app: Hono): void {
         const retainedEvidence = retainedResolved.run.tasks
           .find((task) => task.task === 'county_records')?.evidence
           .find((item) => item.sourceTier === 'official_county_state');
+        try {
+          synchronizePropertySummaryForDeal({
+            dealCardId: id,
+            actor: 'public-property-intelligence',
+            changeReason: 'Retained the last accepted official parcel and rebuilt its Property Summary from persisted evidence.',
+          });
+        } catch (error) {
+          logger.warn({ err: error, dealCardId: id }, 'property_summary_retained_sync_failed');
+        }
         return {
           ok: true,
           saved: retainedResolved,
@@ -6006,6 +6044,15 @@ export function registerLandosRoutes(app: Hono): void {
       if (!run) return { ok: false, error: 'Property intelligence orchestrator returned no blocked run', attempted: lookup.attempted };
       const unresolvedKey = `unresolved:${normalizeParcelIdentifier(requestedApn) || `deal-${id}`}`;
       const saved = new PublicIntelligenceStore().save(id, unresolvedKey, run, orchestratorRun);
+      try {
+        synchronizePropertySummaryForDeal({
+          dealCardId: id,
+          actor: 'public-property-intelligence',
+          changeReason: 'Recorded a blocked Property Summary because official parcel identity remains unresolved.',
+        });
+      } catch (error) {
+        logger.warn({ err: error, dealCardId: id }, 'property_summary_blocked_sync_failed');
+      }
       const cardId = subjectCardId(deal);
       if (cardId) {
         try {
@@ -6097,6 +6144,15 @@ export function registerLandosRoutes(app: Hono): void {
           }
         }
       } catch { /* evidence attachment is best-effort; the saved run remains authoritative */ }
+    }
+    try {
+      synchronizePropertySummaryForDeal({
+        dealCardId: id,
+        actor: 'public-property-intelligence',
+        changeReason: 'Updated the Property Summary after a persisted official assessor/GIS collection.',
+      });
+    } catch (error) {
+      logger.warn({ err: error, dealCardId: id }, 'property_summary_public_sync_failed');
     }
     try {
       attachCardActivity({

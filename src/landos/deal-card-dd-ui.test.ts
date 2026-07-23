@@ -60,7 +60,7 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
   });
 
   it('hydrates persisted reports and orchestration after refresh even while parcel identity is blocked', () => {
-    expect(SRC).toMatch(/await Promise\.all\(\[loadDd\(id\), loadStrategy\(id\), loadMarket\(id\), loadReport\(id\)\]\)/);
+    expect(SRC).toMatch(/await Promise\.all\(\[loadDd\(id\), loadStrategy\(id\), loadMarket\(id\), loadReport\(id\), loadPropertySummary\(id\)\]\)/);
     expect(SRC).not.toMatch(/if \(rres\.confirmed\) \{\s*await loadDd/);
     expect(SRC).toMatch(/identityBlocked/);
     expect(SRC).toMatch(/saved\?\.orchestration\?\.status === 'blocked_identity'/);

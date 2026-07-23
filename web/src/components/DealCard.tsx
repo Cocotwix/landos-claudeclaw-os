@@ -18,6 +18,10 @@ import {
 import { TrashCardButton } from '@/components/TrashCardButton';
 import { CompMap } from '@/components/landos/CompMap';
 import { PublicRecordsPanel, ResourcesContactsPanel, SmartIntakePanel } from '@/components/LeadCardIntake';
+import {
+  PropertySummarySnapshotPanel,
+  type PropertySummaryReadModelView,
+} from '@/components/PropertySummarySnapshotPanel';
 
 // The Resolution view payload — shown instead of a half-populated Deal Card until
 // the parcel is confirmed.
@@ -4091,6 +4095,12 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   // DD + Market + Strategy operational report state. Loaded alongside the open
   // deal; produced by the backend workflow (read-only here).
   const [report, setReport] = useState<ReportView | null>(null);
+  // First architecture-recovery slice: an immutable, versioned summary read
+  // model. Loading it never starts research or rebuilds legacy projections.
+  const [propertySummary, setPropertySummary] = useState<PropertySummaryReadModelView | null>(null);
+  const [propertySummaryLoading, setPropertySummaryLoading] = useState(false);
+  const [propertySummaryRebuilding, setPropertySummaryRebuilding] = useState(false);
+  const [propertySummaryError, setPropertySummaryError] = useState<string | null>(null);
   const [execSummary, setExecSummary] = useState<ExecSummaryView | null>(null);
   const [discoveryReport, setDiscoveryReport] = useState<DiscoveryReportView | null>(null);
   const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
@@ -4177,7 +4187,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       await loadStrategy(deal.id);
       await loadMarket(deal.id);
       // The run response has no operator record; the GET projection builds it.
-      await loadReport(deal.id);
+      await Promise.all([loadReport(deal.id), loadPropertySummary(deal.id)]);
     } catch (err: any) {
       setReportError(err?.message || String(err));
     } finally {
@@ -4233,6 +4243,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setMarketWarnings([]);
       setReportError(null);
       setReportWarnings([]);
+      setPropertySummary(null);
+      setPropertySummaryError(null);
       const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null; opportunity?: DealResearchOpportunity | null; researchMission?: DealResearchMission | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       setSpine(res.businessSpine ?? null);
@@ -4243,7 +4255,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       // shared readiness record keep valuation and downstream actions blocked.
       const rres = await apiGet<ResolutionData>(`/api/landos/deal-cards/${id}/resolution`);
       setResolution(rres);
-      await Promise.all([loadDd(id), loadStrategy(id), loadMarket(id), loadReport(id)]);
+      await Promise.all([loadDd(id), loadStrategy(id), loadMarket(id), loadReport(id), loadPropertySummary(id)]);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
@@ -4253,6 +4265,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setStrategy(null);
       setMarket(null);
       setReport(null);
+      setPropertySummary(null);
       setResearchProgress(null);
     } finally {
       setLoading(false);
@@ -4270,6 +4283,43 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setResearchActionError((error as Error).message || 'Research could not be started.');
     } finally {
       setResearchRetrying(false);
+    }
+  }
+
+  async function loadPropertySummary(id: number) {
+    setPropertySummaryLoading(true);
+    try {
+      const res = await apiGet<{ propertySummary: PropertySummaryReadModelView | null }>(
+        `/api/landos/deal-cards/${id}/property-summary`,
+      );
+      setPropertySummary(res.propertySummary);
+      setPropertySummaryError(null);
+    } catch (error) {
+      setPropertySummary(null);
+      setPropertySummaryError((error as Error)?.message ?? 'The saved Property Summary could not be loaded.');
+    } finally {
+      setPropertySummaryLoading(false);
+    }
+  }
+
+  async function rebuildPropertySummary() {
+    if (!deal || propertySummaryRebuilding) return;
+    setPropertySummaryRebuilding(true);
+    setPropertySummaryError(null);
+    try {
+      const res = await apiPost<{ propertySummary: PropertySummaryReadModelView }>(
+        `/api/landos/deal-cards/${deal.id}/property-summary/rebuild`,
+        {},
+      );
+      setPropertySummary(res.propertySummary);
+      // The versioned identity can move the card into or out of Resolution, so
+      // refresh the stored resolution view after the explicit command.
+      const resolutionResult = await apiGet<ResolutionData>(`/api/landos/deal-cards/${deal.id}/resolution`);
+      setResolution(resolutionResult);
+    } catch (error) {
+      setPropertySummaryError((error as Error)?.message ?? 'The Property Summary could not be rebuilt.');
+    } finally {
+      setPropertySummaryRebuilding(false);
     }
   }
 
@@ -4658,15 +4708,21 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   const seller = deal?.people?.find((p) => p.role === 'seller')
     ?? deal?.people?.find((p) => p.role === 'lead' || p.role === 'lead_contact');
   const headerHero = preferredLandPortalHero(report);
-  const headerHeroSrc = headerHero
-    ? appendDashboardToken(headerHero.url, dashboardToken)
-    : deal ? `/api/landos/deal-cards/${deal.id}/overlay/aerial?token=${encodeURIComponent(dashboardToken)}` : null;
+  const versionedParcelSpecificAllowed = propertySummary?.snapshot?.summary.parcelSpecificAllowed;
+  const headerHeroSrc = versionedParcelSpecificAllowed === false
+    ? null
+    : headerHero
+      ? appendDashboardToken(headerHero.url, dashboardToken)
+      : deal ? `/api/landos/deal-cards/${deal.id}/overlay/aerial?token=${encodeURIComponent(dashboardToken)}` : null;
   // Show the dedicated Resolution view (not a half-populated Deal Card) whenever
   // the parcel is NOT confirmed and we captured a resolution snapshot for it.
   const rejectedMismatch = prop?.verification_status === 'rejected_mismatch';
   const archivedParcel = prop?.verification_status === 'archived';
   const terminalParcel = rejectedMismatch || archivedParcel;
-  const showResolution = terminalParcel || (!!resolution && !resolution.confirmed && !!resolution.snapshot);
+  const versionedResolutionRequired = !!propertySummary && propertySummary.identity.status !== 'confirmed';
+  const showResolution = terminalParcel
+    || versionedResolutionRequired
+    || (!!resolution && !resolution.confirmed && !!resolution.snapshot);
 
   return (
     <div data-testid="deal-card-root" class="flex-1 overflow-y-auto px-6 pt-4 pb-40 space-y-4 dealcard-readable">
@@ -4877,6 +4933,16 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       {mode === 'view' && error && <PageState error={error} />}
       {mode === 'view' && loading && !deal && <PageState loading />}
 
+      {mode === 'view' && deal && (
+        <PropertySummarySnapshotPanel
+          value={propertySummary}
+          loading={propertySummaryLoading}
+          rebuilding={propertySummaryRebuilding}
+          error={propertySummaryError}
+          onRebuild={() => void rebuildPropertySummary()}
+        />
+      )}
+
       {/* Resolution view — parcel not yet confirmed. Shown INSTEAD of the Deal Card
           so no property-specific intelligence renders before confirmation. */}
       {mode === 'view' && deal && showResolution && (
@@ -4906,9 +4972,18 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                 </div>
               </div>
             </Section>
-          ) : (
-            <ResolutionView snapshot={resolution!.snapshot!} identity={resolution!.parcelIdentity}
+          ) : resolution?.snapshot ? (
+            <ResolutionView snapshot={resolution.snapshot} identity={resolution.parcelIdentity}
               entity={entity} dealCardId={deal.id} onConfirmed={() => void load(deal.id)} />
+          ) : (
+            <Section title="Property resolution">
+              <div class="rounded-lg border border-[var(--color-status-warn,var(--color-border))] bg-[var(--color-card)] p-4 space-y-2">
+                <div class="text-[13px] font-semibold">Exact parcel identity is required</div>
+                <div class="text-[12px] leading-relaxed text-[var(--color-text-muted)]">
+                  The versioned Property Summary has withheld parcel-specific imagery, ranked comparables, value, and strategy until the identity conflict is resolved.
+                </div>
+              </div>
+            </Section>
           )}
         </>
       )}
@@ -5012,7 +5087,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               runReport={() => void runReport()}
               reportRunning={reportRunning}
               pursuit={pursuit}
-              onPublicIntelligenceUpdated={() => void loadReport(deal.id)}
+              onPublicIntelligenceUpdated={() => void Promise.all([loadReport(deal.id), loadPropertySummary(deal.id)])}
               record={operatorRecord}
             />
           )}
@@ -5023,7 +5098,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
             <div class="space-y-3">
               {operatorRecord && <RisksUnknownsPanel record={operatorRecord} />}
               <PublicRecordsPanel dealId={deal.id} />
-              <PublicPropertyIntelligencePanel dealId={deal.id} ownerName={seller?.name ?? prop?.owner} onUpdated={() => void loadReport(deal.id)} />
+              <PublicPropertyIntelligencePanel dealId={deal.id} ownerName={seller?.name ?? prop?.owner} onUpdated={() => void Promise.all([loadReport(deal.id), loadPropertySummary(deal.id)])} />
             </div>
           )}
 

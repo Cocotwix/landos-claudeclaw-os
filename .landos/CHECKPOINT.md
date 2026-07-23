@@ -1,13 +1,13 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-23T20:05:36.620Z
-- **HEAD at generation:** `83e2c00`
-- **Worktree:** DIRTY; 152 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-23T16:00:56-04:00; 295 files, 3642 tests, 0 failures (vitest run, full suite).
-- **Latest typecheck:** PASS at 2026-07-23T16:01:30-04:00; tsc --noEmit.
-- **Latest production build:** PASS at 2026-07-23T16:02:30-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy at 2026-07-23T16:04:38-04:00; PID 60512; http://localhost:3141.
+- **Generated:** 2026-07-23T20:47:09.7738683Z
+- **HEAD at generation:** `1755c8f`
+- **Worktree:** DIRTY; 60 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-07-23T16:44:11-04:00; 299 files, 3661 tests, 0 failures (vitest run, full suite).
+- **Latest typecheck:** PASS at 2026-07-23T16:42:00-04:00; tsc --noEmit.
+- **Latest production build:** PASS at 2026-07-23T16:42:00-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy at 2026-07-23T16:47:09-04:00; PID 85400; http://localhost:3141.
 - **Active sprint:** sprint-2026-07-17-operator-useful-leads (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
 - **Sprint ledger:** .landos/sprints/sprint-2026-07-17-operator-useful-leads/ledger.json; proof report .landos/sprints/sprint-2026-07-17-operator-useful-leads/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
@@ -18,17 +18,35 @@ or data.
 
 ## Current objective
 
-Tyler approved the July 23 architecture-recovery inspection and preservation
-checkpoint. Preserve yesterday's product work on a dedicated recovery branch,
-exclude machine-local/debug artifacts, restore deterministic verification, and
-do not push. The next implementation step is the first versioned vertical slice:
+Tyler approved and the recovery branch now contains the first versioned
+architecture slice as uncommitted work:
 
 `Property Resolution -> Canonical Property Version -> Assessor/GIS Evidence ->
 Property Summary Snapshot -> Deal Card Summary`
 
-The full Property Intelligence operating contract is under
-`docs/landos/property-intelligence-sop.md`. Keep detailed reports under
-`docs/landos/`; do not expand automatic memory with session history.
+It adds versioned accepted identity, append-only evidence, durable/resumable
+assessor-GIS jobs and attempts, immutable versioned Property Summary snapshots,
+a SELECT-only GET, an explicit rebuild command, automatic public-intelligence
+synchronization, and a minimal owner-facing summary panel. No UI redesign was
+performed. Do not commit or push until Tyler reviews the findings and explicitly
+approves the implementation commit.
+The broader operating contract remains in
+`docs/landos/property-intelligence-sop.md`.
+
+## First-slice verification
+
+- Full suite: PASS; 299 files, 3661 tests, 0 failures.
+- TypeScript typecheck: PASS.
+- Production web/server build: PASS; only the existing large-chunk advisory.
+- Managed runtime: RUNNING healthy, PID 85400, `http://localhost:3141`.
+- Live Deal 31: snapshot v1, identity v1, 100% complete, 9 immutable evidence
+  items, accepted APN/owner/acreage, persisted through refresh and restart.
+- Live Deal 10: snapshot v1, identity v1, Resolution required; parcel-specific
+  aerial, ranked comparables, preliminary valuation and strategy are withheld,
+  including after refresh and restart.
+- Live Refresh summary on Deal 31 is idempotent: versions, evidence count and
+  collector-attempt count remain unchanged.
+- Browser console: no errors during the changed workflow.
 
 ## Preserved work under review
 
@@ -96,7 +114,9 @@ must not enter the preservation commit.
 
 ## Continuation boundary
 
-Finish the approved preservation checkpoint first: deterministic tests, full
-typecheck/build/test verification, managed restart/health, reviewed staging and
-one local recovery-branch commit. Do not push. After that, begin the first
-versioned architecture slice only with Tyler's confirmed scope.
+Review the uncommitted first-slice diff on
+`recovery/deal-card-preservation-2026-07-23`. Keep `.claude`, `.kilo`, root
+debug scripts, `tmp_query*`, `verify-deal30.mjs`, and `scripts/tmp-*` excluded.
+If Tyler explicitly approves the implementation commit, stage only the intended
+slice files plus this checkpoint, review the staged diff, commit locally, and do
+not push unless Tyler separately authorizes a push.

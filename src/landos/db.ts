@@ -1727,6 +1727,139 @@ function createLandosSchema(db: Database.Database): void {
       updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
 
+    -- Property Summary vertical slice. These tables are additive read-model
+    -- infrastructure beneath the legacy Deal Card. They deliberately separate
+    -- accepted identity, immutable evidence, durable collector execution, and
+    -- immutable operator snapshots so a GET never has to research or reconcile.
+    CREATE TABLE IF NOT EXISTS landos_property_identity_version (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_card_id      INTEGER REFERENCES landos_property_card(id) ON DELETE SET NULL,
+      version               INTEGER NOT NULL,
+      status                TEXT NOT NULL
+                            CHECK (status IN ('unresolved','candidate','confirmed','disputed','rejected','archived')),
+      address               TEXT,
+      city                  TEXT,
+      county                TEXT,
+      state                 TEXT,
+      zip                   TEXT,
+      apn                   TEXT,
+      owner                 TEXT,
+      acreage               REAL,
+      geometry_json         TEXT,
+      basis                 TEXT NOT NULL DEFAULT '',
+      confidence            REAL NOT NULL DEFAULT 0,
+      source_refs_json      TEXT NOT NULL DEFAULT '[]',
+      change_reason         TEXT NOT NULL,
+      created_by            TEXT NOT NULL,
+      is_current            INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0,1)),
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, version)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_property_identity_one_current
+      ON landos_property_identity_version(deal_card_id) WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_property_identity_version_deal
+      ON landos_property_identity_version(deal_card_id, version DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_property_evidence_item (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      domain                TEXT NOT NULL,
+      evidence_kind         TEXT NOT NULL,
+      fact_key              TEXT,
+      raw_value_json        TEXT NOT NULL DEFAULT 'null',
+      normalized_value_json TEXT NOT NULL DEFAULT 'null',
+      source_name           TEXT NOT NULL,
+      source_url            TEXT,
+      source_tier           TEXT NOT NULL,
+      verification_status   TEXT NOT NULL,
+      confidence            TEXT NOT NULL,
+      collector_key         TEXT NOT NULL,
+      retrieved_at          TEXT NOT NULL,
+      effective_at          TEXT,
+      fresh_until           TEXT,
+      artifact_ref          TEXT,
+      supersedes_evidence_id INTEGER REFERENCES landos_property_evidence_item(id) ON DELETE SET NULL,
+      dispute_group         TEXT,
+      idempotency_key       TEXT NOT NULL UNIQUE,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_evidence_deal_domain
+      ON landos_property_evidence_item(deal_card_id, domain, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_property_evidence_identity
+      ON landos_property_evidence_item(property_identity_version_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_property_evidence_immutable_update
+      BEFORE UPDATE ON landos_property_evidence_item
+      BEGIN
+        SELECT RAISE(ABORT, 'property evidence is append-only');
+      END;
+    CREATE TRIGGER IF NOT EXISTS trg_property_evidence_immutable_delete
+      BEFORE DELETE ON landos_property_evidence_item
+      WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id=OLD.deal_card_id), 0) = 0
+      BEGIN
+        SELECT RAISE(ABORT, 'property evidence is append-only');
+      END;
+
+    CREATE TABLE IF NOT EXISTS landos_property_collector_job (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      collector_key         TEXT NOT NULL,
+      status                TEXT NOT NULL
+                            CHECK (status IN ('queued','running','succeeded','partial','blocked','failed')),
+      input_hash            TEXT NOT NULL,
+      idempotency_key       TEXT NOT NULL UNIQUE,
+      dependency_json       TEXT NOT NULL DEFAULT '[]',
+      attempt_count         INTEGER NOT NULL DEFAULT 0,
+      last_error            TEXT,
+      queued_at             INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      started_at            INTEGER,
+      finished_at           INTEGER,
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_collector_job_deal
+      ON landos_property_collector_job(deal_card_id, collector_key, id DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_property_collector_attempt (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id                INTEGER NOT NULL REFERENCES landos_property_collector_job(id) ON DELETE CASCADE,
+      attempt_number        INTEGER NOT NULL,
+      status                TEXT NOT NULL
+                            CHECK (status IN ('running','succeeded','partial','blocked','failed')),
+      started_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      finished_at           INTEGER,
+      error                 TEXT,
+      output_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      UNIQUE(job_id, attempt_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_collector_attempt_job
+      ON landos_property_collector_attempt(job_id, attempt_number DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_deal_intelligence_snapshot (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      version               INTEGER NOT NULL,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      prior_snapshot_id     INTEGER REFERENCES landos_deal_intelligence_snapshot(id) ON DELETE SET NULL,
+      snapshot_type         TEXT NOT NULL DEFAULT 'property_summary_v1',
+      status                TEXT NOT NULL CHECK (status IN ('current','superseded')),
+      input_hash            TEXT NOT NULL,
+      evidence_max_id       INTEGER,
+      completeness_json     TEXT NOT NULL,
+      summary_json          TEXT NOT NULL,
+      change_reason         TEXT NOT NULL,
+      generated_by          TEXT NOT NULL,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, version),
+      UNIQUE(deal_card_id, input_hash)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_deal_intelligence_one_current
+      ON landos_deal_intelligence_snapshot(deal_card_id, snapshot_type)
+      WHERE status = 'current';
+    CREATE INDEX IF NOT EXISTS idx_deal_intelligence_snapshot_deal
+      ON landos_deal_intelligence_snapshot(deal_card_id, version DESC);
+
     -- Auditable guard against prompt/instruction overrides of accepted parcel
     -- evidence, plus a non-destructive correction link for erroneous intakes.
     CREATE TABLE IF NOT EXISTS landos_instruction_contradiction (
