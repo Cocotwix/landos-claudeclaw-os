@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 import { getLandosDb, landosAudit, type LandosEntity } from './db.js';
+import type {
+  SmartIntakeImageExtraction,
+  SmartIntakeImageMimeType,
+  SmartIntakeImageSourceMethod,
+} from './smart-intake-image.js';
 
 export const INTAKE_SECTIONS = [
   'seller_contact', 'motivation_timeline', 'property', 'due_diligence',
@@ -21,7 +26,18 @@ export interface RoutedFact {
   section: IntakeSection;
   key: string;
   value: string;
-  status: 'stated' | 'observed' | 'verified';
+  status: 'candidate' | 'stated' | 'observed' | 'verified';
+}
+
+export interface IntakeImageArtifactInput {
+  documentUploadId: number;
+  originalFileName: string;
+  fileUrl: string;
+  mimeType: SmartIntakeImageMimeType;
+  byteSize: number;
+  sha256: string;
+  sourceMethod: SmartIntakeImageSourceMethod;
+  extraction: SmartIntakeImageExtraction;
 }
 
 export interface TranscriptExtraction {
@@ -530,24 +546,104 @@ export async function persistLeadCardIntake(input: {
   fileName?: string;
   fileUrl?: string;
   mimeType?: string;
+  idempotencyKey?: string;
+  imageArtifacts?: IntakeImageArtifactInput[];
   modelAnalyzer?: IntakeModelAnalyzer;
 }): Promise<Record<string, unknown>> {
   const db = getLandosDb();
   const deal = db.prepare('SELECT id,entity FROM landos_deal_card WHERE id=?').get(input.dealCardId) as { id: number; entity: LandosEntity } | undefined;
   if (!deal) throw new Error('deal card not found');
-  const original = input.text.trim();
-  if (!original && !input.fileName) throw new Error('submission is empty');
-  const submissionId = Number(db.prepare(`INSERT INTO landos_intake_submission (deal_card_id,submission_type,source,original_text,original_file_name,original_file_url,mime_type,status) VALUES (?,?,?,?,?,?,?,'received')`).run(input.dealCardId, input.submissionType ?? 'general', clean(input.source) || 'operator', original, clean(input.fileName), clean(input.fileUrl, 2000), clean(input.mimeType)).lastInsertRowid);
+  const idempotencyKey = clean(input.idempotencyKey, 200);
+  if (idempotencyKey) {
+    const existing = db.prepare(`SELECT id FROM landos_intake_submission WHERE deal_card_id=? AND idempotency_key=?`).get(input.dealCardId, idempotencyKey) as { id: number } | undefined;
+    if (existing) return listLeadCardIntake(input.dealCardId).find((row) => row.id === existing.id)!;
+  }
+  // Store the operator's text byte-for-byte. Normalization is analysis-only.
+  const original = input.text;
+  const imageArtifacts = input.imageArtifacts ?? [];
+  if (!original.trim() && !input.fileName && imageArtifacts.length === 0) throw new Error('submission is empty');
+  const source = clean(input.source) || 'operator';
+  const submissionId = Number(db.prepare(`INSERT INTO landos_intake_submission
+    (deal_card_id,submission_type,source,original_text,original_file_name,original_file_url,mime_type,idempotency_key,status)
+    VALUES (?,?,?,?,?,?,?,?, 'received')`).run(
+    input.dealCardId,
+    input.submissionType ?? 'general',
+    source,
+    original,
+    clean(input.fileName),
+    clean(input.fileUrl, 2000),
+    clean(input.mimeType),
+    idempotencyKey,
+  ).lastInsertRowid);
   try {
-    const analysis = await analyzeLeadCardIntake({ text: original || `Uploaded document: ${input.fileName}`, submissionType: input.submissionType, modelAnalyzer: input.modelAnalyzer });
+    const extractedImageText = imageArtifacts.map((artifact) => artifact.extraction.exactText).filter(Boolean).join('\n\n');
+    const analysisText = [original, extractedImageText].filter((part) => part.length > 0).join('\n\n');
+    const analysis = await analyzeLeadCardIntake({
+      text: analysisText || `Uploaded document: ${input.fileName}`,
+      submissionType: input.submissionType,
+      modelAnalyzer: input.modelAnalyzer,
+    });
+    const imageFacts: RoutedFact[] = imageArtifacts.flatMap((artifact) => Object.entries(artifact.extraction.candidates)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0)
+      .map(([key, value]) => ({
+        section: 'property' as const,
+        key,
+        value,
+        status: 'candidate' as const,
+      })));
     const factRows: Array<Record<string, unknown>> = [];
-    for (const fact of analysis.facts) {
+    for (const fact of [...analysis.facts, ...imageFacts]) {
       const accepted = existingCanonicalFact(input.dealCardId, fact.key);
-      const conflict = accepted && personAliasKey(accepted) !== personAliasKey(fact.value)
-        ? `Kept existing accepted value "${accepted}"; new ${fact.status} value "${fact.value}" is retained for operator review.` : '';
-      const status = conflict ? 'conflict' : fact.status;
-      const id = Number(db.prepare(`INSERT INTO landos_intake_fact (submission_id,deal_card_id,section,fact_key,value,fact_status,conflict_note,source) VALUES (?,?,?,?,?,?,?,?)`).run(submissionId, input.dealCardId, fact.section, fact.key, fact.value, status, conflict, clean(input.source) || 'operator submission').lastInsertRowid);
+      const differs = accepted && personAliasKey(accepted) !== personAliasKey(fact.value);
+      const conflict = differs
+        ? fact.status === 'candidate'
+          ? `Existing accepted value "${accepted}" was not changed; screenshot candidate "${fact.value}" remains available for resolution.`
+          : `Kept existing accepted value "${accepted}"; new ${fact.status} value "${fact.value}" is retained for operator review.`
+        : '';
+      const status = fact.status === 'candidate' ? 'candidate' : conflict ? 'conflict' : fact.status;
+      const factSource = fact.status === 'candidate' ? 'smart intake image candidate' : `${source} submission`;
+      const id = Number(db.prepare(`INSERT INTO landos_intake_fact (submission_id,deal_card_id,section,fact_key,value,fact_status,conflict_note,source) VALUES (?,?,?,?,?,?,?,?)`).run(submissionId, input.dealCardId, fact.section, fact.key, fact.value, status, conflict, factSource).lastInsertRowid);
       factRows.push({ id, ...fact, status, conflictNote: conflict });
+    }
+    const artifactRows: Array<Record<string, unknown>> = [];
+    for (const artifact of imageArtifacts) {
+      const artifactId = Number(db.prepare(`INSERT INTO landos_intake_artifact
+        (submission_id,deal_card_id,document_upload_id,original_file_name,file_url,mime_type,byte_size,sha256,source_method,exact_extracted_text,extraction_json,extraction_status,extraction_model)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        submissionId,
+        input.dealCardId,
+        artifact.documentUploadId,
+        artifact.originalFileName,
+        artifact.fileUrl,
+        artifact.mimeType,
+        artifact.byteSize,
+        artifact.sha256,
+        artifact.sourceMethod,
+        artifact.extraction.exactText,
+        JSON.stringify(artifact.extraction),
+        artifact.extraction.status,
+        artifact.extraction.model,
+      ).lastInsertRowid);
+      for (const [key, value] of Object.entries(artifact.extraction.candidates)) {
+        if (typeof value !== 'string' || !value) continue;
+        db.prepare(`INSERT INTO landos_intake_candidate
+          (submission_id,artifact_id,deal_card_id,candidate_key,value,confidence,uncertain,source)
+          VALUES (?,?,?,?,?,'candidate',?,'image extraction')`).run(
+          submissionId,
+          artifactId,
+          input.dealCardId,
+          key,
+          value,
+          artifact.extraction.uncertainFields.includes(key) ? 1 : 0,
+        );
+      }
+      artifactRows.push({
+        id: artifactId,
+        ...artifact,
+        candidates: artifact.extraction.candidates,
+        exactExtractedText: artifact.extraction.exactText,
+        extractionStatus: artifact.extraction.status,
+      });
     }
     const resources = analysis.resourceContacts.map((resource) => upsertResourceContact({ ...resource, dealCardId: input.dealCardId, linkedItems: [`intake:${submissionId}`] }));
     const card = db.prepare(`SELECT card_id FROM landos_deal_card_property WHERE deal_card_id=? ORDER BY CASE role WHEN 'subject' THEN 0 ELSE 1 END,id LIMIT 1`).get(input.dealCardId) as { card_id: number } | undefined;
@@ -555,9 +651,32 @@ export async function persistLeadCardIntake(input: {
       db.prepare(`INSERT INTO landos_card_activity (card_id,agent_id,kind,summary,ref) VALUES (?,'landos/intake',?,?,?)`).run(card.card_id, input.submissionType === 'transcript' ? 'transcript_intake' : 'smart_intake', analysis.summary, `intake:${submissionId}`);
       for (const action of analysis.followUps) db.prepare(`INSERT INTO landos_card_next_action (card_id,action,status,created_by) VALUES (?,?,'open','landos/intake')`).run(card.card_id, action);
     }
-    db.prepare(`UPDATE landos_intake_submission SET summary=?,routed_sections_json=?,extracted_json=?,status='complete' WHERE id=?`).run(analysis.summary, JSON.stringify(analysis.sections), JSON.stringify({ transcript: analysis.transcript, followUps: analysis.followUps }), submissionId);
+    const routedSections = imageArtifacts.length > 0 ? unique([...analysis.sections, 'document', 'property'] as IntakeSection[]) : analysis.sections;
+    db.prepare(`UPDATE landos_intake_submission SET summary=?,routed_sections_json=?,extracted_json=?,status='complete' WHERE id=?`).run(
+      analysis.summary,
+      JSON.stringify(routedSections),
+      JSON.stringify({ transcript: analysis.transcript, followUps: analysis.followUps }),
+      submissionId,
+    );
     landosAudit('landos/intake', 'lead_card_intake_saved', `deal ${input.dealCardId}: submission ${submissionId}`, { entity: deal.entity, refTable: 'landos_intake_submission', refId: submissionId });
-    return { id: submissionId, submissionType: input.submissionType ?? 'general', source: clean(input.source) || 'operator', originalText: original, originalFileName: clean(input.fileName), originalFileUrl: clean(input.fileUrl, 2000), mimeType: clean(input.mimeType), summary: analysis.summary, sections: analysis.sections, transcript: analysis.transcript, followUps: analysis.followUps, facts: factRows, resources, status: 'complete' };
+    return {
+      id: submissionId,
+      submissionType: input.submissionType ?? 'general',
+      source,
+      originalText: original,
+      originalFileName: clean(input.fileName),
+      originalFileUrl: clean(input.fileUrl, 2000),
+      mimeType: clean(input.mimeType),
+      summary: analysis.summary,
+      sections: routedSections,
+      transcript: analysis.transcript,
+      followUps: analysis.followUps,
+      facts: factRows,
+      artifacts: artifactRows,
+      resources,
+      resolutionHandoff: null,
+      status: 'complete',
+    };
   } catch (error) {
     db.prepare(`UPDATE landos_intake_submission SET status='needs_review',summary=? WHERE id=?`).run(`Submission retained; organization needs review: ${(error as Error).message}`, submissionId);
     throw error;
@@ -568,6 +687,8 @@ export function listLeadCardIntake(dealCardId: number): Array<Record<string, unk
   const db = getLandosDb();
   const rows = db.prepare(`SELECT * FROM landos_intake_submission WHERE deal_card_id=? ORDER BY created_at DESC,id DESC`).all(dealCardId) as Array<Record<string, unknown>>;
   const facts = db.prepare(`SELECT * FROM landos_intake_fact WHERE deal_card_id=? ORDER BY created_at DESC,id DESC`).all(dealCardId) as Array<Record<string, unknown>>;
+  const artifacts = db.prepare(`SELECT * FROM landos_intake_artifact WHERE deal_card_id=? ORDER BY captured_at DESC,id DESC`).all(dealCardId) as Array<Record<string, unknown>>;
+  const candidates = db.prepare(`SELECT * FROM landos_intake_candidate WHERE deal_card_id=? ORDER BY artifact_id,id`).all(dealCardId) as Array<Record<string, unknown>>;
   return rows.map((row) => {
     const extracted = JSON.parse(String(row.extracted_json ?? '{}')) as { transcript?: TranscriptExtraction; [key: string]: unknown };
     if (extracted.transcript?.unresolvedQuestions?.length) {
@@ -580,8 +701,84 @@ export function listLeadCardIntake(dealCardId: number): Array<Record<string, unk
       id: row.id, dealCardId: row.deal_card_id, submissionType: row.submission_type, source: row.source,
       originalText: row.original_text, originalFileName: row.original_file_name, originalFileUrl: row.original_file_url,
       mimeType: row.mime_type, summary: row.summary, sections: JSON.parse(String(row.routed_sections_json ?? '[]')),
-      extracted, status: row.status, createdAt: row.created_at,
+      extracted, resolutionHandoff: JSON.parse(String(row.resolution_json ?? '{}')), status: row.status, createdAt: row.created_at,
       facts: facts.filter((fact) => fact.submission_id === row.id).map((fact) => ({ ...fact, conflictNote: fact.conflict_note })),
+      artifacts: artifacts.filter((artifact) => artifact.submission_id === row.id).map((artifact) => {
+        const extraction = JSON.parse(String(artifact.extraction_json ?? '{}')) as SmartIntakeImageExtraction;
+        return {
+          id: artifact.id,
+          originalFileName: artifact.original_file_name,
+          fileUrl: artifact.file_url,
+          mimeType: artifact.mime_type,
+          byteSize: artifact.byte_size,
+          sha256: artifact.sha256,
+          sourceMethod: artifact.source_method,
+          exactExtractedText: artifact.exact_extracted_text,
+          extractionStatus: artifact.extraction_status,
+          extractionModel: artifact.extraction_model,
+          uncertainFields: extraction.uncertainFields ?? [],
+          missingFields: extraction.missingFields ?? [],
+          notes: extraction.notes ?? [],
+          otherFacts: extraction.otherFacts ?? [],
+          capturedAt: artifact.captured_at,
+          candidates: candidates.filter((candidate) => candidate.artifact_id === artifact.id).map((candidate) => ({
+            id: candidate.id,
+            key: candidate.candidate_key,
+            value: candidate.value,
+            confidence: candidate.confidence,
+            uncertain: candidate.uncertain === 1,
+            source: candidate.source,
+          })),
+        };
+      }),
     };
   });
+}
+
+export function findLeadCardIntakeBySubmissionKey(
+  dealCardId: number,
+  idempotencyKey: string,
+): Record<string, unknown> | null {
+  const key = clean(idempotencyKey, 200);
+  if (!key) return null;
+  const row = getLandosDb().prepare(`SELECT id FROM landos_intake_submission WHERE deal_card_id=? AND idempotency_key=?`).get(dealCardId, key) as { id: number } | undefined;
+  return row ? listLeadCardIntake(dealCardId).find((submission) => submission.id === row.id) ?? null : null;
+}
+
+export function updateLeadCardIntakeResolution(
+  dealCardId: number,
+  submissionId: number,
+  resolution: Record<string, unknown>,
+): void {
+  const result = getLandosDb().prepare(`UPDATE landos_intake_submission SET resolution_json=? WHERE id=? AND deal_card_id=?`).run(JSON.stringify(resolution), submissionId, dealCardId);
+  if (result.changes !== 1) throw new Error('intake submission not found');
+}
+
+export function updateLeadCardIntakeCandidates(input: {
+  dealCardId: number;
+  submissionId: number;
+  values: Record<string, string>;
+}): Array<Record<string, unknown>> {
+  const db = getLandosDb();
+  const artifacts = db.prepare(`SELECT id FROM landos_intake_artifact WHERE deal_card_id=? AND submission_id=?`).all(input.dealCardId, input.submissionId) as Array<{ id: number }>;
+  if (artifacts.length === 0) throw new Error('image intake submission not found');
+  const allowed = new Set(['owner', 'address', 'road', 'city', 'state', 'zip', 'county', 'apn', 'acreage', 'latitude', 'longitude', 'sourcePlatform']);
+  for (const [key, rawValue] of Object.entries(input.values)) {
+    if (!allowed.has(key)) continue;
+    const value = clean(rawValue, 1_000);
+    const existing = db.prepare(`SELECT id FROM landos_intake_candidate WHERE submission_id=? AND candidate_key=? ORDER BY id LIMIT 1`).get(input.submissionId, key) as { id: number } | undefined;
+    if (existing) {
+      db.prepare(`UPDATE landos_intake_candidate SET value=?,uncertain=0,source='operator corrected image candidate',updated_at=strftime('%s','now') WHERE id=?`).run(value, existing.id);
+    } else if (value) {
+      db.prepare(`INSERT INTO landos_intake_candidate (submission_id,artifact_id,deal_card_id,candidate_key,value,confidence,uncertain,source) VALUES (?,?,?,?,?,'candidate',0,'operator added image candidate')`).run(
+        input.submissionId,
+        artifacts[0].id,
+        input.dealCardId,
+        key,
+        value,
+      );
+    }
+  }
+  landosAudit('landos/intake', 'image_candidates_edited', `deal ${input.dealCardId}: submission ${input.submissionId}`, { refTable: 'landos_intake_submission', refId: input.submissionId });
+  return listLeadCardIntake(input.dealCardId);
 }

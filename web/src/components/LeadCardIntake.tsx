@@ -1,5 +1,11 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, apiPost, apiPostForm } from '@/lib/api';
+import {
+  insertClipboardPlainText,
+  pendingImageIdentity,
+  validatePendingIntakeImage,
+  type PendingImageSourceMethod,
+} from '@/lib/smart-intake-clipboard';
 
 type RoutedFact = { id: number; section: string; fact_key?: string; key?: string; value: string; fact_status?: string; status?: string; conflictNote?: string };
 type Transcript = {
@@ -13,7 +19,20 @@ type Submission = {
   mimeType?: string;
   summary: string; sections: string[]; extracted?: { transcript?: Transcript | null; followUps?: string[] }; transcript?: Transcript | null;
   facts: RoutedFact[]; status: string; createdAt?: number;
+  resolutionHandoff?: {
+    state?: string; attempted?: boolean; resolutionStatus?: string; identityEstablishedByApprovedSource?: boolean;
+    canonicalPromotionApplied?: boolean; ownerContactMatchRequired?: boolean; message?: string;
+  };
+  artifacts?: IntakeArtifact[];
 };
+type IntakeCandidate = { id: number; key: string; value: string; confidence: string; uncertain: boolean; source: string };
+type IntakeArtifact = {
+  id: number; originalFileName: string; fileUrl: string; mimeType: string; byteSize: number; sha256: string;
+  sourceMethod: PendingImageSourceMethod; exactExtractedText: string; extractionStatus: string; extractionModel: string;
+  uncertainFields: string[]; missingFields: string[]; notes: string[]; otherFacts: Array<{ label: string; value: string }>;
+  capturedAt: number; candidates: IntakeCandidate[];
+};
+type PendingImage = { id: string; file: File; sourceMethod: PendingImageSourceMethod };
 type ResourceContact = {
   id: number; category: string; organization: string; department: string; representative: string; role: string; phone: string; email: string;
   website: string; address: string; jurisdiction: string; notes: string; source: string; last_contacted_date: string; next_follow_up: string;
@@ -38,6 +57,9 @@ const resourceLabel = (value: string) => ({
   septic_professional: 'Septic professional', excavation_site_work: 'Excavation / site work', manufactured_home: 'Manufactured-home resource', other: 'Other',
 }[value] ?? value.replace(/_/g, ' '));
 const statusLabel = (value: string) => value === 'retrieved_yes' ? 'Retrieved - Yes' : value === 'no_matching_record' ? 'No matching record in searched public index' : 'Retrieved - No';
+const formatArtifactTimestamp = (value: number) => Number.isFinite(value)
+  ? new Date(value * 1000).toLocaleString()
+  : 'Unknown';
 
 function TranscriptResult({ transcript }: { transcript?: Transcript | null }) {
   if (!transcript) return null;
@@ -59,91 +81,218 @@ function TranscriptResult({ transcript }: { transcript?: Transcript | null }) {
   );
 }
 
+function PendingImagePreview({ pending, onRemove }: { pending: PendingImage; onRemove: () => void }) {
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    const next = URL.createObjectURL(pending.file);
+    setUrl(next);
+    return () => URL.revokeObjectURL(next);
+  }, [pending.file]);
+  return (
+    <div data-testid="smart-intake-file-preview" class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 flex items-start gap-3">
+      {url && <img src={url} alt="Pasted property image preview" class="h-24 w-36 rounded border border-[var(--color-border)] object-cover" />}
+      <div class="min-w-0 text-[11.5px] text-[var(--color-text-muted)]">
+        <div class="font-medium text-[var(--color-text)] break-all">{pending.file.name}</div>
+        <div>Image ready · {(pending.file.size / 1024).toFixed(1)} KB · {pending.sourceMethod}</div>
+        <button type="button" data-testid="smart-intake-remove-image" class="mt-1 text-[var(--color-accent)] underline" onClick={onRemove}>Remove</button>
+      </div>
+    </div>
+  );
+}
+
 export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: number; token?: string; onChanged?: () => void }) {
   const [text, setText] = useState('');
   const [type, setType] = useState<'general' | 'transcript'>('general');
-  const [file, setFile] = useState<File | null>(null);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [candidateDraft, setCandidateDraft] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [filePreviewUrl, setFilePreviewUrl] = useState('');
-  useEffect(() => {
-    if (!file || !/^image\//i.test(file.type)) { setFilePreviewUrl(''); return; }
-    const url = URL.createObjectURL(file);
-    setFilePreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+  const [submissionKey, setSubmissionKey] = useState(() => globalThis.crypto?.randomUUID?.() ?? `intake-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const [viewerArtifact, setViewerArtifact] = useState<IntakeArtifact | null>(null);
+  const [viewerActualSize, setViewerActualSize] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const withToken = (url: string) => token && url.startsWith('/api/')
     ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
     : url;
   const load = () => apiGet<{ submissions: Submission[] }>(`/api/landos/deal-cards/${dealId}/intake`).then((result) => setSubmissions(result.submissions)).catch(() => setSubmissions([]));
   useEffect(() => { void load(); }, [dealId]);
-  const acceptPastedImage = (event: ClipboardEvent) => {
-    const imageItem = Array.from(event.clipboardData?.items ?? []).find((item) => item.kind === 'file' && /^image\//i.test(item.type));
-    const pasted = imageItem?.getAsFile();
-    if (!pasted) return;
+  useEffect(() => {
+    setViewerArtifact(null);
+    setViewerActualSize(false);
+  }, [dealId]);
+  useEffect(() => {
+    if (!viewerArtifact) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setViewerArtifact(null);
+        setViewerActualSize(false);
+      }
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [viewerArtifact]);
+  useEffect(() => {
+    const values: Record<string, string> = {};
+    for (const artifact of submissions[0]?.artifacts ?? []) {
+      for (const candidate of artifact.candidates ?? []) if (!(candidate.key in values)) values[candidate.key] = candidate.value;
+    }
+    setCandidateDraft(values);
+  }, [submissions]);
+  const appendImages = (files: File[], sourceMethod: PendingImageSourceMethod) => {
+    const accepted: PendingImage[] = [];
+    const errors: string[] = [];
+    const seen = new Set(pendingImages.map((pending) => pendingImageIdentity(pending.file)));
+    files.forEach((file, index) => {
+      const error = validatePendingIntakeImage(file);
+      if (error) { errors.push(`${file.name || `Image ${index + 1}`}: ${error}`); return; }
+      const identity = pendingImageIdentity(file);
+      if (seen.has(identity)) return;
+      seen.add(identity);
+      const extension = file.type.toLowerCase().includes('jpeg') ? 'jpg' : file.type.split('/')[1] || 'png';
+      const normalized = file.name ? file : new File([file], `clipboard-property-image-${Date.now()}-${index + 1}.${extension}`, { type: file.type });
+      accepted.push({ id: `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`, file: normalized, sourceMethod });
+    });
+    if (accepted.length) setPendingImages((current) => [...current, ...accepted]);
+    setMessage(errors.length ? errors.join(' ') : `${accepted.length} image${accepted.length === 1 ? '' : 's'} ready. Add text if useful, then Save and organize.`);
+  };
+  const handlePaste = (event: ClipboardEvent) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const images = Array.from(clipboard.items)
+      .filter((item) => item.kind === 'file' && /^image\/(?:png|jpeg|jpg|webp)$/i.test(item.type))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file instanceof File);
+    // Leave text-only paste native so Ctrl+V, right-click Paste, selection
+    // replacement, undo, line breaks, and large values keep browser semantics.
+    if (images.length === 0) return;
     event.preventDefault();
-    const extension = pasted.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    setFile(new File([pasted], `clipboard-property-image-${stamp}.${extension}`, { type: pasted.type }));
-    setMessage('Pasted image is ready. Add an optional note, then Save and organize.');
+    appendImages(images, 'clipboard');
+    const plainText = clipboard.getData('text/plain');
+    if (plainText) {
+      const textarea = textareaRef.current;
+      const insertion = insertClipboardPlainText(text, plainText, textarea?.selectionStart ?? text.length, textarea?.selectionEnd ?? text.length);
+      setText(insertion.value);
+      queueMicrotask(() => {
+        textarea?.focus();
+        textarea?.setSelectionRange(insertion.caret, insertion.caret);
+      });
+    }
   };
   const submit = async () => {
-    if (!text.trim() && !file) { setMessage('Paste information or choose a file.'); return; }
+    if (!text.trim() && pendingImages.length === 0) { setMessage('Paste information or add an image.'); return; }
     setBusy(true); setMessage('');
     try {
-      let result: { submission: Submission; submissions: Submission[] };
-      if (file) {
-        const body = new FormData(); body.append('file', file); body.append('submissionType', type); body.append('note', text); body.append('source', 'Deal Card smart intake');
+      let result: { submission: Submission; submissions: Submission[]; duplicatePrevented?: boolean };
+      if (pendingImages.length > 0) {
+        const body = new FormData();
+        pendingImages.forEach((pending) => body.append('files', pending.file));
+        body.append('sourceMethods', JSON.stringify(pendingImages.map((pending) => pending.sourceMethod)));
+        body.append('submissionType', type);
+        body.append('note', text);
+        body.append('source', 'Deal Card smart intake');
+        body.append('submissionKey', submissionKey);
         result = await apiPostForm(`/api/landos/deal-cards/${dealId}/intake/upload`, body);
       } else {
-        result = await apiPost(`/api/landos/deal-cards/${dealId}/intake`, { text, submissionType: type, source: 'Deal Card smart intake' });
+        result = await apiPost(`/api/landos/deal-cards/${dealId}/intake`, { text, submissionType: type, source: 'Deal Card smart intake', submissionKey });
       }
-      setSubmissions(result.submissions); setText(''); setFile(null);
-      setMessage(file
-        ? `${/^image\//i.test(file.type) ? 'Image' : 'File'} saved to this Deal Card. It is visible below and on the Documents tab.`
-        : `${type === 'transcript' ? 'Transcript' : 'Information'} saved and routed to ${result.submission.sections.map(sectionLabel).join(', ')}.`);
+      setSubmissions(result.submissions);
+      setText('');
+      setPendingImages([]);
+      setSubmissionKey(globalThis.crypto?.randomUUID?.() ?? `intake-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      setMessage(result.duplicatePrevented
+        ? 'This intake was already saved; LandOS prevented a duplicate submission.'
+        : pendingImages.length
+          ? `${pendingImages.length} original image${pendingImages.length === 1 ? '' : 's'} saved with candidate extraction and Documents-tab access.`
+          : `${type === 'transcript' ? 'Transcript' : 'Information'} saved and routed to ${result.submission.sections.map(sectionLabel).join(', ')}.`);
+      onChanged?.();
+    } catch (error) { setMessage((error as Error).message); }
+    finally { setBusy(false); }
+  };
+  const saveCandidateEdits = async (submissionId: number) => {
+    setBusy(true); setMessage('');
+    try {
+      const result = await apiPost<{ submissions: Submission[]; resolutionHandoff: { message?: string } }>(`/api/landos/deal-cards/${dealId}/intake/${submissionId}/candidates`, { values: candidateDraft });
+      setSubmissions(result.submissions);
+      setMessage(result.resolutionHandoff.message ?? 'Candidate corrections saved and resolution retried.');
       onChanged?.();
     } catch (error) { setMessage((error as Error).message); }
     finally { setBusy(false); }
   };
   return (
-    <section id="deal-card-smart-intake" data-testid="smart-intake" onPaste={acceptPastedImage} class="scroll-mt-24 rounded-lg border-2 border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-3 shadow-sm">
+    <section id="deal-card-smart-intake" data-testid="smart-intake" onPaste={handlePaste} class="scroll-mt-24 rounded-lg border-2 border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-3 shadow-sm">
       <div>
         <h3 class="text-[14px] font-semibold text-[var(--color-text)]">Smart Intake — update this Deal Card</h3>
-        <div class="text-[11.5px] text-[var(--color-text-muted)]">Add any new information here: a note, seller statement, call transcript, contact, property fact, public-record finding, or file. Paste a screenshot or property image directly with Ctrl+V, or choose a file. LandOS keeps the original and organizes the useful facts into the right Deal Card sections.</div>
+        <div class="text-[11.5px] text-[var(--color-text-muted)]">Paste or type addresses, parcel IDs, seller or wholesaler details, notes, emails, and call transcripts. Paste screenshots with Ctrl+V, choose images, or drop PNG, JPG/JPEG, and WEBP files below. Text remains editable and nothing submits until you choose Save and organize.</div>
       </div>
       <div class="flex gap-2 items-start flex-wrap">
         <select aria-label="Information type" class={`${inputClass} sm:w-44`} value={type} onChange={(event) => setType((event.target as HTMLSelectElement).value as 'general' | 'transcript')}>
           <option value="general">General information</option><option value="transcript">Call transcript</option>
         </select>
-        <input aria-label="Upload information" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.srt,.vtt,.csv,.json,.doc,.docx,.xls,.xlsx" class="text-[12px] text-[var(--color-text-muted)]" onChange={(event) => setFile((event.target as HTMLInputElement).files?.[0] ?? null)} />
+        <label class="cursor-pointer rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12px] text-[var(--color-text)]">Choose images<input aria-label="Choose Smart Intake images" type="file" multiple accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" class="sr-only" onChange={(event) => {
+          const input = event.target as HTMLInputElement;
+          appendImages(Array.from(input.files ?? []), 'upload');
+          input.value = '';
+        }} /></label>
       </div>
-      {file && (
-        <div data-testid="smart-intake-file-preview" class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 flex items-start gap-3">
-          {filePreviewUrl && <img src={filePreviewUrl} alt="Pasted property image preview" class="h-24 w-36 rounded border border-[var(--color-border)] object-cover" />}
-          <div class="min-w-0 text-[11.5px] text-[var(--color-text-muted)]">
-            <div class="font-medium text-[var(--color-text)] break-all">{file.name}</div>
-            <div>{/^image\//i.test(file.type) ? 'Property image ready to save' : 'File ready to save'} · {(file.size / 1024).toFixed(1)} KB</div>
-            <button type="button" class="mt-1 text-[var(--color-accent)] underline" onClick={() => setFile(null)}>Remove</button>
-          </div>
-        </div>
-      )}
-      <textarea aria-label="New Deal Card information" rows={4} class={inputClass} placeholder={type === 'transcript' ? 'Paste the call transcript here…' : 'Paste anything new about this lead or property…'} value={text} onInput={(event) => setText((event.target as HTMLTextAreaElement).value)} />
+      <div data-testid="smart-intake-drop-zone" class="rounded-md border border-dashed border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[11.5px] text-[var(--color-text-muted)]" onDragOver={(event) => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; }} onDrop={(event) => {
+        event.preventDefault();
+        appendImages(Array.from(event.dataTransfer?.files ?? []), 'drop');
+      }}>Drop PNG, JPG/JPEG, or WEBP screenshots here. Up to 10 images, 10 MB each.</div>
+      {pendingImages.length > 0 && <div data-testid="smart-intake-image-previews" class="grid gap-2 md:grid-cols-2">{pendingImages.map((pending) => <PendingImagePreview key={pending.id} pending={pending} onRemove={() => setPendingImages((current) => current.filter((item) => item.id !== pending.id))} />)}</div>}
+      <textarea ref={textareaRef} aria-label="New Deal Card information" rows={6} class={inputClass} placeholder={type === 'transcript' ? 'Paste the call transcript here…' : 'Paste anything new about this lead or property…'} value={text} onInput={(event) => setText((event.target as HTMLTextAreaElement).value)} />
       <div class="flex items-center gap-3">
-        <button type="button" data-testid="smart-intake-submit" disabled={busy || (!text.trim() && !file)} onClick={() => void submit()} class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-accent)] disabled:opacity-40">{busy ? 'Organizing…' : 'Save and organize'}</button>
-        {message && <div class="text-[11.5px] text-[var(--color-text-muted)]">{message}</div>}
+        <button type="button" data-testid="smart-intake-submit" disabled={busy || (!text.trim() && pendingImages.length === 0)} onClick={() => void submit()} class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-accent)] disabled:opacity-40">{busy ? 'Organizing…' : 'Save and organize'}</button>
+        {message && <div data-testid="smart-intake-message" class="text-[11.5px] text-[var(--color-text-muted)]">{message}</div>}
       </div>
       {submissions.length > 0 && (() => {
         const latest = submissions[0];
         const transcript = latest.transcript ?? latest.extracted?.transcript;
         return <div data-testid="latest-saved-intake" class="rounded-md border border-[var(--color-accent)] bg-[var(--color-bg)] p-3">
           <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">Latest saved intake</div>
-          <div class="mt-1 flex flex-wrap items-center gap-2"><span class="text-[12px] font-medium">{latest.originalFileName || (latest.submissionType === 'transcript' ? 'Transcript' : 'Information')}</span><span class="text-[10px] text-[var(--color-text-faint)]">{latest.sections.map(sectionLabel).join(' - ')}</span></div>
-          {latest.originalFileUrl && /^image\//i.test(latest.mimeType ?? '') && <a href={withToken(latest.originalFileUrl)} target="_blank" rel="noreferrer" class="mt-2 block w-fit"><img src={withToken(latest.originalFileUrl)} alt={latest.originalFileName || 'Latest uploaded property image'} class="max-h-56 max-w-full rounded border border-[var(--color-border)] object-contain" /></a>}
+          <div class="mt-1 flex flex-wrap items-center gap-2"><span class="text-[12px] font-medium">{latest.originalFileName || (latest.submissionType === 'transcript' ? 'Transcript' : 'Information')}</span><span class="text-[10px] text-[var(--color-text-faint)]">{latest.sections.map(sectionLabel).join(' · ')}</span></div>
           <div class="mt-1 text-[11.5px] text-[var(--color-text-muted)]">{latest.summary}</div>
+          {latest.originalText && <details class="mt-2"><summary class="cursor-pointer text-[10.5px] text-[var(--color-accent)]">Open exact original text</summary><pre class="mt-1 max-h-52 overflow-auto whitespace-pre-wrap rounded border border-[var(--color-border)] p-2 text-[11px]">{latest.originalText}</pre></details>}
           <TranscriptResult transcript={transcript} />
-          {latest.originalFileUrl && <a href={withToken(latest.originalFileUrl)} target="_blank" rel="noreferrer" class="mt-1 inline-block text-[10.5px] text-[var(--color-accent)] underline">Open saved {/^image\//i.test(latest.mimeType ?? '') ? 'image' : 'file'} full size ↗</a>}
+          {(latest.artifacts ?? []).map((artifact) => <article key={artifact.id} data-testid="saved-intake-artifact" class="mt-3 rounded-md border border-[var(--color-border)] p-3">
+            <div class="grid gap-3 lg:grid-cols-[minmax(180px,320px)_1fr]">
+              <button
+                type="button"
+                data-testid="smart-intake-artifact-preview"
+                aria-label={`Open full-resolution original image ${artifact.originalFileName}`}
+                class="group rounded border border-[var(--color-border)] bg-[var(--color-card)] p-1 text-left focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+                onClick={() => {
+                  setViewerActualSize(false);
+                  setViewerArtifact(artifact);
+                }}
+              >
+                <img src={withToken(artifact.fileUrl)} alt={artifact.originalFileName || 'Saved Smart Intake image'} class="max-h-64 w-full rounded object-contain" />
+                <span class="mt-1 block text-center text-[10.5px] font-medium text-[var(--color-accent)] underline group-hover:no-underline">Open full-resolution original image</span>
+              </button>
+              <div data-testid="smart-intake-artifact-provenance" class="min-w-0 text-[11px] text-[var(--color-text-muted)]">
+                <div class="font-semibold text-[var(--color-text)] break-all">{artifact.originalFileName}</div>
+                <div class="mt-1 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-0.5">
+                  <span>Type</span><span class="text-[var(--color-text)]">{artifact.mimeType}</span>
+                  <span>Size</span><span class="text-[var(--color-text)]">{artifact.byteSize.toLocaleString()} bytes ({(artifact.byteSize / 1024).toFixed(1)} KB)</span>
+                  <span>Source</span><span class="text-[var(--color-text)]">{artifact.sourceMethod}</span>
+                  <span>Intake time</span><span class="text-[var(--color-text)]">{formatArtifactTimestamp(artifact.capturedAt)}</span>
+                  <span>Association</span><span class="text-[var(--color-text)]">Deal Card #{dealId} · Smart Intake submission #{latest.id}</span>
+                  <span>SHA-256</span><span class="break-all font-mono text-[10px] text-[var(--color-text)]">{artifact.sha256}</span>
+                </div>
+                <div class="mt-1">Extraction: <span class="font-medium text-[var(--color-text)]">{artifact.extractionStatus}</span>. These are editable intake candidates, not confirmed property facts or geometry.</div>
+                {artifact.uncertainFields.length > 0 && <div class="mt-1 text-amber-700 dark:text-amber-300">Uncertain: {artifact.uncertainFields.join(', ')}</div>}
+                {artifact.missingFields.length > 0 && <div class="mt-1">Not read: {artifact.missingFields.join(', ')}</div>}
+                {artifact.notes.map((note) => <div key={note} class="mt-1">{note}</div>)}
+              </div>
+            </div>
+            {artifact.exactExtractedText && <details class="mt-2"><summary class="cursor-pointer text-[10.5px] text-[var(--color-accent)]">Exact visible text extracted</summary><pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-[var(--color-border)] p-2 text-[11px]">{artifact.exactExtractedText}</pre></details>}
+          </article>)}
+          {(latest.artifacts ?? []).some((artifact) => artifact.candidates.length > 0) && <div data-testid="smart-intake-candidates" class="mt-3 rounded-md border border-[var(--color-border)] p-3">
+            <div class="text-[11px] font-semibold text-[var(--color-text)]">Editable screenshot candidates</div>
+            <div class="mt-2 grid gap-2 md:grid-cols-2">{Object.entries(candidateDraft).map(([key, value]) => <label key={key} class="text-[10.5px] text-[var(--color-text-muted)]"><span>{key.replace(/([A-Z])/g, ' $1')}</span><input class={inputClass} value={value} onInput={(event) => setCandidateDraft((current) => ({ ...current, [key]: (event.target as HTMLInputElement).value }))} /></label>)}</div>
+            <button type="button" data-testid="smart-intake-save-candidates" disabled={busy} onClick={() => void saveCandidateEdits(latest.id)} class="mt-2 rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-medium text-[var(--color-accent)] disabled:opacity-40">Save candidate corrections and retry resolution</button>
+          </div>}
+          {latest.resolutionHandoff?.message && <div data-testid="smart-intake-resolution-handoff" class="mt-2 rounded-md border border-[var(--color-border)] p-2 text-[11px] text-[var(--color-text-muted)]">{latest.resolutionHandoff.message}<div class="mt-1 font-medium text-[var(--color-text)]">Canonical promotion: none · Owner/contact match required: no</div></div>}
         </div>;
       })()}
       {submissions.length > 1 && (
@@ -162,6 +311,52 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
             })}
           </div>
         </details>
+      )}
+      {viewerArtifact && (
+        <div
+          data-testid="smart-intake-artifact-viewer-backdrop"
+          class="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-3 sm:p-6"
+          onClick={() => {
+            setViewerArtifact(null);
+            setViewerActualSize(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Full-resolution original image ${viewerArtifact.originalFileName}`}
+            data-testid="smart-intake-artifact-viewer"
+            class="flex max-h-full w-full max-w-[min(96vw,1600px)] flex-col overflow-hidden rounded-lg border border-white/20 bg-[var(--color-card)] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2">
+              <div class="min-w-0">
+                <div class="text-[12px] font-semibold text-[var(--color-text)]">Immutable Smart Intake original</div>
+                <div class="truncate text-[10.5px] text-[var(--color-text-muted)]">{viewerArtifact.originalFileName} · {viewerArtifact.mimeType} · {viewerArtifact.byteSize.toLocaleString()} bytes</div>
+              </div>
+              <div class="flex items-center gap-2">
+                <button type="button" data-testid="smart-intake-artifact-viewer-zoom" class="rounded border border-[var(--color-border)] px-2.5 py-1 text-[11px] text-[var(--color-text)]" onClick={() => setViewerActualSize((current) => !current)}>
+                  {viewerActualSize ? 'Fit to viewer' : 'View at 100%'}
+                </button>
+                <button type="button" data-testid="smart-intake-artifact-viewer-close" aria-label="Close original image viewer" class="rounded border border-[var(--color-border)] px-2.5 py-1 text-[11px] text-[var(--color-text)]" onClick={() => {
+                  setViewerArtifact(null);
+                  setViewerActualSize(false);
+                }}>Close</button>
+              </div>
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto bg-black p-2 text-center">
+              <img
+                data-testid="smart-intake-artifact-full-image"
+                src={withToken(viewerArtifact.fileUrl)}
+                alt={`Full-resolution original ${viewerArtifact.originalFileName}`}
+                class={viewerActualSize ? 'mx-auto h-auto max-w-none' : 'mx-auto max-h-[calc(100vh-10rem)] max-w-full object-contain'}
+              />
+            </div>
+            <div class="border-t border-[var(--color-border)] px-3 py-2 text-[10px] text-[var(--color-text-muted)]">
+              Deal Card #{dealId} · SHA-256 <span class="break-all font-mono">{viewerArtifact.sha256}</span>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

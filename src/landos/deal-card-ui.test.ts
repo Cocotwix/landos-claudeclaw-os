@@ -371,6 +371,20 @@ describe('Deal Card — non-regression: APN conflict hard stop', () => {
     expect(SRC).toMatch(/<ResolutionView/);
     expect(SRC).toMatch(/mode === 'view' && deal && !showResolution/);
   });
+
+  it('keeps retained Smart Intake evidence and editable candidates reachable while resolution gates property intelligence', () => {
+    const resolutionBranch = SRC.slice(
+      SRC.indexOf('{/* Resolution view'),
+      SRC.indexOf("{mode === 'view' && deal && !showResolution"),
+    );
+    const confirmedBranch = SRC.slice(
+      SRC.indexOf("{mode === 'view' && deal && !showResolution"),
+      SRC.indexOf('{/* ══ OVERVIEW TAB'),
+    );
+    expect(resolutionBranch).toMatch(/!terminalParcel[\s\S]*<SmartIntakePanel/);
+    expect(resolutionBranch).toMatch(/Smart Intake evidence and editable candidates remain available/);
+    expect(confirmedBranch).toMatch(/<SmartIntakePanel/);
+  });
 });
 
 describe('Deal Card panel — safety', () => {

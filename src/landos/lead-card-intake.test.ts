@@ -144,13 +144,13 @@ describe('Resources and public-record outcomes', () => {
     expect(source).not.toMatch(/routing JSON|raw model output|provider attempts|orchestration|evidence classifications|backend contracts|debug wording/i);
     expect(source).toMatch(/Smart Intake — update this Deal Card/);
     expect(source).toMatch(/id="deal-card-smart-intake"/);
-    expect(source).toMatch(/onPaste=\{acceptPastedImage\}/);
-    expect(source).toMatch(/clipboardData\?\.items/);
+    expect(source).toMatch(/onPaste=\{handlePaste\}/);
+    expect(source).toMatch(/clipboard\.items/);
     expect(source).toMatch(/smart-intake-file-preview/);
     expect(source).toMatch(/Pasted property image preview/);
-    expect(source).toMatch(/Paste a screenshot or property image directly with Ctrl\+V/);
+    expect(source).toMatch(/Paste screenshots with Ctrl\+V/);
     expect(source).toMatch(/latest-saved-intake/);
-    expect(source).toMatch(/Image.*saved to this Deal Card/);
-    expect(source).toMatch(/Documents tab/);
+    expect(source).toMatch(/original image/);
+    expect(source).toMatch(/Documents-tab access/);
   });
 });

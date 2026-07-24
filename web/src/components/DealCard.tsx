@@ -22,6 +22,10 @@ import {
   PropertySummarySnapshotPanel,
   type PropertySummaryReadModelView,
 } from '@/components/PropertySummarySnapshotPanel';
+import {
+  GovernmentRecordsSnapshotPanel,
+  type GovernmentRecordReadModelView,
+} from '@/components/GovernmentRecordsSnapshotPanel';
 
 // The Resolution view payload — shown instead of a half-populated Deal Card until
 // the parcel is confirmed.
@@ -4101,6 +4105,13 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   const [propertySummaryLoading, setPropertySummaryLoading] = useState(false);
   const [propertySummaryRebuilding, setPropertySummaryRebuilding] = useState(false);
   const [propertySummaryError, setPropertySummaryError] = useState<string | null>(null);
+  // Second architecture-recovery slice: persisted, versioned government-record
+  // screening. Its GET is read-only; research/normalization only runs from the
+  // explicit Documents-tab command.
+  const [governmentRecords, setGovernmentRecords] = useState<GovernmentRecordReadModelView | null>(null);
+  const [governmentRecordsLoading, setGovernmentRecordsLoading] = useState(false);
+  const [governmentRecordsRebuilding, setGovernmentRecordsRebuilding] = useState(false);
+  const [governmentRecordsError, setGovernmentRecordsError] = useState<string | null>(null);
   const [execSummary, setExecSummary] = useState<ExecSummaryView | null>(null);
   const [discoveryReport, setDiscoveryReport] = useState<DiscoveryReportView | null>(null);
   const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
@@ -4187,7 +4198,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       await loadStrategy(deal.id);
       await loadMarket(deal.id);
       // The run response has no operator record; the GET projection builds it.
-      await Promise.all([loadReport(deal.id), loadPropertySummary(deal.id)]);
+      await Promise.all([loadReport(deal.id), loadPropertySummary(deal.id), loadGovernmentRecords(deal.id)]);
     } catch (err: any) {
       setReportError(err?.message || String(err));
     } finally {
@@ -4245,6 +4256,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setReportWarnings([]);
       setPropertySummary(null);
       setPropertySummaryError(null);
+      setGovernmentRecords(null);
+      setGovernmentRecordsError(null);
       const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null; opportunity?: DealResearchOpportunity | null; researchMission?: DealResearchMission | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       setSpine(res.businessSpine ?? null);
@@ -4256,6 +4269,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       const rres = await apiGet<ResolutionData>(`/api/landos/deal-cards/${id}/resolution`);
       setResolution(rres);
       await Promise.all([loadDd(id), loadStrategy(id), loadMarket(id), loadReport(id), loadPropertySummary(id)]);
+      await loadGovernmentRecords(id);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
@@ -4266,6 +4280,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setMarket(null);
       setReport(null);
       setPropertySummary(null);
+      setGovernmentRecords(null);
       setResearchProgress(null);
     } finally {
       setLoading(false);
@@ -4302,6 +4317,22 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     }
   }
 
+  async function loadGovernmentRecords(id: number) {
+    setGovernmentRecordsLoading(true);
+    try {
+      const res = await apiGet<{ governmentRecords: GovernmentRecordReadModelView | null }>(
+        `/api/landos/deal-cards/${id}/government-records`,
+      );
+      setGovernmentRecords(res.governmentRecords);
+      setGovernmentRecordsError(null);
+    } catch (error) {
+      setGovernmentRecords(null);
+      setGovernmentRecordsError((error as Error)?.message ?? 'The saved government-record screening could not be loaded.');
+    } finally {
+      setGovernmentRecordsLoading(false);
+    }
+  }
+
   async function rebuildPropertySummary() {
     if (!deal || propertySummaryRebuilding) return;
     setPropertySummaryRebuilding(true);
@@ -4320,6 +4351,26 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setPropertySummaryError((error as Error)?.message ?? 'The Property Summary could not be rebuilt.');
     } finally {
       setPropertySummaryRebuilding(false);
+    }
+  }
+
+  async function rebuildGovernmentRecords() {
+    if (!deal || governmentRecordsRebuilding) return;
+    setGovernmentRecordsRebuilding(true);
+    setGovernmentRecordsError(null);
+    try {
+      const res = await apiPost<{ governmentRecords: GovernmentRecordReadModelView }>(
+        `/api/landos/deal-cards/${deal.id}/government-records/rebuild`,
+        {},
+      );
+      setGovernmentRecords(res.governmentRecords);
+      // The existing registry and report reuse the same retained document
+      // captures. Reload their saved projection after an explicit rebuild.
+      await loadReport(deal.id);
+    } catch (error) {
+      setGovernmentRecordsError((error as Error)?.message ?? 'Government-record screening could not be rebuilt.');
+    } finally {
+      setGovernmentRecordsRebuilding(false);
     }
   }
 
@@ -4985,6 +5036,14 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               </div>
             </Section>
           )}
+          {!terminalParcel && (
+            <>
+              <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
+                Smart Intake evidence and editable candidates remain available while parcel-specific intelligence stays withheld.
+              </div>
+              <SmartIntakePanel dealId={deal.id} token={dashboardToken} onChanged={() => void load(deal.id)} />
+            </>
+          )}
         </>
       )}
 
@@ -5316,6 +5375,18 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               comp registry + cluster analysis above. */}
 
           {/* 8. Documents & quick actions → Documents (report controls above) */}
+          {activeTab === 'documents' && (
+            <GovernmentRecordsSnapshotPanel
+              dealId={deal.id}
+              token={dashboardToken}
+              value={governmentRecords}
+              loading={governmentRecordsLoading}
+              rebuilding={governmentRecordsRebuilding}
+              error={governmentRecordsError}
+              onRebuild={() => void rebuildGovernmentRecords()}
+            />
+          )}
+
           {activeTab === 'documents' && (
           <Section title="Reports & Files">
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Generated reports</div>

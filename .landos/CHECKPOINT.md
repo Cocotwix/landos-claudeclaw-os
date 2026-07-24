@@ -1,122 +1,132 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-23T20:47:09.7738683Z
-- **HEAD at generation:** `1755c8f`
-- **Worktree:** DIRTY; 60 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-23T16:44:11-04:00; 299 files, 3661 tests, 0 failures (vitest run, full suite).
-- **Latest typecheck:** PASS at 2026-07-23T16:42:00-04:00; tsc --noEmit.
-- **Latest production build:** PASS at 2026-07-23T16:42:00-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy at 2026-07-23T16:47:09-04:00; PID 85400; http://localhost:3141.
-- **Active sprint:** sprint-2026-07-17-operator-useful-leads (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
-- **Sprint ledger:** .landos/sprints/sprint-2026-07-17-operator-useful-leads/ledger.json; proof report .landos/sprints/sprint-2026-07-17-operator-useful-leads/report.md; frozen capabilities: 3 (.landos/capabilities.json).
+- **Generated:** 2026-07-24T02:59:40Z
+- **HEAD:** `31956f3`
+- **Worktree:** DIRTY. Preserve unrelated work and investigation artifacts.
+- **Latest full repository suite:** PASS; 304/304 files, 3718/3718 tests, 0 skipped, 0 failures.
+- **Focused Smart Intake:** PASS; 75/75 tests across the Smart Intake and Deal Card visibility suites.
+- **Typecheck/build:** PASS; server `tsc --noEmit`, server build, and Vite production build. Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy; PID 18580; `http://localhost:3141`.
+- **Branch:** `recovery/deal-card-preservation-2026-07-23`.
 <!-- DERIVED:END -->
 
-Live repository, database, runtime, and owner-visible behavior override anything written here.
-This file is a compact continuation boundary, not an authority over current code
-or data.
+Live repository state, database state, runtime, and owner-visible behavior override anything written here.
+Detailed reports remain under `docs/landos/`. Do not
+commit or push until Tyler explicitly authorizes it.
 
-## Current objective
+## Current objective and state
 
-Tyler approved and the recovery branch now contains the first versioned
-architecture slice as uncommitted work:
+Three uncommitted vertical slices coexist and must be preserved:
 
-`Property Resolution -> Canonical Property Version -> Assessor/GIS Evidence ->
-Property Summary Snapshot -> Deal Card Summary`
+1. Canonical Property Version -> evidence -> versioned Property Summary.
+2. Durable government-record collectors -> immutable pages/claims -> versioned
+   Government Record Risk snapshot -> owner Documents panel.
+3. Smart Intake native text paste + multi-image clipboard/upload/drop ->
+   immutable artifact + exact multimodal transcription -> editable unconfirmed
+   candidates -> approved-source resolution attempt with no screenshot promotion.
 
-It adds versioned accepted identity, append-only evidence, durable/resumable
-assessor-GIS jobs and attempts, immutable versioned Property Summary snapshots,
-a SELECT-only GET, an explicit rebuild command, automatic public-intelligence
-synchronization, and a minimal owner-facing summary panel. No UI redesign was
-performed. Do not commit or push until Tyler reviews the findings and explicitly
-approves the implementation commit.
-The broader operating contract remains in
-`docs/landos/property-intelligence-sop.md`.
+Final Roane County acceptance was reopened after the operator reported that the
+retained original could not be opened from Deal 32. The image itself—not
+production constants—supplied every candidate below.
 
-## First-slice verification
+## Smart Intake implementation and proof
 
-- Full suite: PASS; 299 files, 3661 tests, 0 failures.
-- TypeScript typecheck: PASS.
-- Production web/server build: PASS; only the existing large-chunk advisory.
-- Managed runtime: RUNNING healthy, PID 85400, `http://localhost:3141`.
-- Live Deal 31: snapshot v1, identity v1, 100% complete, 9 immutable evidence
-  items, accepted APN/owner/acreage, persisted through refresh and restart.
-- Live Deal 10: snapshot v1, identity v1, Resolution required; parcel-specific
-  aerial, ranked comparables, preliminary valuation and strategy are withheld,
-  including after refresh and restart.
-- Live Refresh summary on Deal 31 is idempotent: versions, evidence count and
-  collector-attempt count remain unchanged.
-- Browser console: no errors during the changed workflow.
+- `LeadCardIntake.tsx` leaves text-only paste native, preserving Ctrl+V,
+  right-click Paste, selections, undo, line breaks, large text, and editing.
+  Image-bearing clipboard events insert `text/plain` once and append every
+  supported image. File selection is multi-select; drag/drop and remove work.
+- Client/server validation accepts PNG, JPEG/JPG, and WEBP up to 10 MB. Server
+  verifies MIME, extension, and magic bytes. Rich HTML is never rendered.
+- `landos_intake_submission` now has an idempotency key and resolution result.
+  `landos_intake_artifact` retains Deal/submission association, original name,
+  card-scoped URL, MIME, size, SHA-256, clipboard/upload/drop method, exact
+  extracted text, full extraction JSON/status/model, and timestamp. UPDATE and
+  DELETE triggers make artifact rows immutable.
+- `landos_intake_candidate` stores editable candidate fields separately, so
+  operator correction cannot change the original image or extraction.
+- Original operator text is stored exactly; normalization is analysis-only.
+- Screenshot candidates are saved with `candidate` status. They do not update
+  canonical identity or geometry. Owner/contact mismatch is explicitly
+  non-gating. Address/APN/county/state candidates begin the existing resolver;
+  the handoff records that no canonical promotion occurred.
+- One multimodal image call returns exact text, normalized candidates, other
+  labels, uncertainty, missing fields, and notes. Failure preserves the image
+  with honest `unavailable` status.
 
-## Preserved work under review
+Live Deal 32 Roane proof:
 
-- Automatic Opportunity research missions, progress/retry UI, quarantine and
-  public-source parcel research.
-- Property Intelligence contract/orchestrator, official parcel adapters,
-  normalized comps, comp map and shared readiness/projection logic.
-- Smart Intake, retained originals, resources, contacts, public-record outcomes,
-  person aliases and Deal Card tab changes.
-- Browser/session, LandPortal, Google visual, evidence-language and runtime
-  hardening.
+- A blank card began with no accepted address, APN, owner, acreage, coordinates,
+  or canonical identity. File selection visibly previewed the supplied PNG,
+  original filename, 2,949,777-byte size, upload source, and Remove control.
+- The configured multimodal path extracted exact visible text and nine editable
+  candidates: owner `SACHAN DILEEP S`; address `OLD RIDGE RD, KINGSTON, TN
+  37763`; road `OLD RIDGE RD`; city `KINGSTON`; state `TN`; ZIP `37763`; county
+  `Roane County`; APN `073090 04200`; source platform `Regrid`. Acreage and
+  coordinates stayed explicitly unread.
+- The retained SHA-256 is
+  `df2e1d2c898c9726daca94fbdb0db600ced3a59339a4ca9d012fdbb850ea09f3`.
+- Resolution remained Candidate / pending; the UI explicitly said canonical
+  promotion none, owner/contact match not required, and withheld all downstream
+  property intelligence.
+- Live testing found and fixed a resolution-only UI defect that hid Smart Intake.
+  Candidate-resolution cards now retain the evidence/candidate panel without
+  exposing gated property intelligence.
+- Refresh and managed restart preserved one latest submission, one artifact,
+  one candidate panel, and nine candidate inputs. No Earlier Intake appeared;
+  reopening/reloading created no duplicate. Console errors: zero.
 
-New product modules and their tests are currently untracked and must be staged
-deliberately. Local `.claude`, `.kilo`, root debug scripts, `tmp_query*`,
-`verify-deal30.mjs`, and `scripts/tmp-*` files are investigation artifacts and
-must not enter the preservation commit.
+Final Deal 32 artifact acceptance:
 
-## Architecture findings
+- The original bytes were always durable; the defect was an unlabeled
+  `target="_blank"` thumbnail link that did not open a viewer in the operator
+  browser. The earlier accessibility claim was too broad.
+- `LeadCardIntake.tsx` now provides a labeled thumbnail button, in-card
+  full-resolution viewer with fit/100% controls, and full provenance. The
+  viewer remains available in both pending-resolution and confirmed-card paths.
+- After ordinary refresh and managed restart, Deal 32 retained exactly one
+  submission, one artifact, nine editable candidates, the same artifact ID,
+  capture timestamp, SHA-256, and complete extraction; no canonical promotion
+  or console error occurred. The original loaded at 2045x1335 in the viewer.
 
-- Deal Card report reads currently rehydrate and reconcile several stores,
-  rebuild comps/valuation/readiness/strategy, and synthesize market context.
-  Opening a card therefore computes a current projection instead of reading one
-  immutable Deal Intelligence Snapshot.
-- Property card, Opportunity mission, report verification, ConfirmedParcel and
-  public-intelligence identity can disagree.
-- Raw evidence, normalized facts, operator overrides and conclusions are spread
-  across source evidence, property inspection, public-run JSON, browser facts,
-  intake facts, public records, report JSON, worksheets and Activity refs.
-- Opportunity missions, the report runner and the new Property Intelligence
-  orchestrator overlap; some scheduling/deduplication remains in memory.
+## Prior slice proof to preserve
 
-## Live acceptance examples
+- Deal 31 verified control: identity/snapshot v1, 100% complete, nine immutable
+  evidence items; accepted APN/owner/acreage persisted through restart.
+- Deal 10 unresolved control: parcel-specific imagery, ranked comps, valuation,
+  and actionable strategy remain withheld through restart.
+- Deal 14 government record snapshot v5: identity v1, 60% screened, medium
+  confidence; deed/ownership complete and other lanes honestly partial. Seven
+  retained pages for instrument 1997O31519 remain visible with SHA-256 and
+  official source. Refresh/restart were idempotent and console-clean.
 
-- Deal 31 is the verified control: official Florida APN, owner, acreage,
-  environmental evidence, comps, market reads, preliminary value, visuals,
-  documents and all ten tabs persisted through restart.
-- Deal 10 is the unresolved control and exposes a defect: it retains area comps
-  and a report, ranks five "Best comparables," and creates a blank
-  parcel-boundary hero slot even though identity and acreage are unresolved.
-- Deal 30 preserves yesterday's accepted Tennessee facts, comps, preliminary
-  value, acquisition range, intake, resources, public records and visuals, but
-  its mission can say candidate/address discrepancy while the report says the
-  parcel is confirmed.
+## Preserved work and exclusions
 
-## Required first-slice invariants
+Intended modified files include `.landos/CHECKPOINT.md`, `src/landos/db.ts`,
+`src/landos/routes.ts`, `src/landos/lead-card-intake.ts` and tests,
+`web/src/components/LeadCardIntake.tsx`, plus the untracked government-record
+and Smart Intake modules/tests/panels. Review the diff carefully.
+
+Never stage local `.claude`, `.kilo`, root debug scripts, `tmp_query*`,
+`verify-deal30.mjs`, or `scripts/tmp-*`; they are unrelated investigation
+artifacts.
+
+## Required invariants
 
 1. One accepted property identity version is current.
 2. Candidate and confirmed states cannot coexist in the owner read model.
-3. Every accepted fact links to evidence and the identity version researched.
-4. Operator corrections cannot be overwritten by weaker automation.
-5. GET requests perform no provider work, reconciliation write, or valuation.
-6. Collector failures are isolated and resumable after managed restart.
+3. Accepted facts link to evidence and the researched identity version.
+4. Operator corrections beat weaker automation.
+5. GET requests perform no provider work or reconciliation writes.
+6. Collector failures are isolated and restart-resumable.
 7. Unresolved identity cannot show parcel-specific imagery, ranked best comps,
-   FMV or actionable strategy.
-8. Snapshot changes cite input versions and a reason.
+   FMV, or actionable strategy.
+8. Screenshot text/geometry never establishes official identity or boundaries.
+9. Lead/seller/wholesaler identity never must match screenshot owner.
 
-## Open external diligence
+## External diligence and next action
 
-- Deal 30 still needs a valid authenticated LandPortal 2D replacement image; do
-  not promote an account shell, logged-out page, gray frame or fabricated image.
-- Obtain the cited deed and professional title/lien work before relying on title,
-  easements, restrictions, liens or clear ownership.
-- Confirm current taxes, exact zoning, legal access/frontage, septic, utilities
-  and any split concept with the appropriate county professionals.
-
-## Continuation boundary
-
-Review the uncommitted first-slice diff on
-`recovery/deal-card-preservation-2026-07-23`. Keep `.claude`, `.kilo`, root
-debug scripts, `tmp_query*`, `verify-deal30.mjs`, and `scripts/tmp-*` excluded.
-If Tyler explicitly approves the implementation commit, stage only the intended
-slice files plus this checkpoint, review the staged diff, commit locally, and do
-not push unless Tyler separately authorizes a push.
+- Deal 30 still needs a valid authenticated LandPortal 2D replacement image.
+- Obtain professional deed/title/lien, tax, zoning, access, septic, utility, and
+  split verification before relying on those business conclusions.
+- Do not commit or push without separate explicit authorization.

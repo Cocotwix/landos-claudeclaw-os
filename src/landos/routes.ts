@@ -198,6 +198,8 @@ import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type Respon
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, linkPropertyToDeal, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard, addPerson, linkPerson } from './deal-card.js';
 import { readPropertySummaryForDeal, synchronizePropertySummaryForDeal } from './property-summary-legacy-adapter.js';
+import { readGovernmentRecordsForDeal, synchronizeGovernmentRecordsForDeal } from './government-records-legacy-adapter.js';
+import { resolveGovernmentRecordArtifactPage } from './government-records-operator.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
 import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
 import { resolveParcelParallel, type ParallelResolution } from './parallel-resolution.js';
@@ -278,17 +280,27 @@ import { saveDocumentUpload, listDocumentUploads, servableUploadPath, UPLOAD_CAT
 import {
   RESOURCE_CATEGORIES,
   analyzeLeadCardIntake,
+  findLeadCardIntakeBySubmissionKey,
   listLeadCardIntake,
   listPublicRecordOutcomes,
   listResourceContacts,
   persistLeadCardIntake,
   publicRecordSearchHierarchy,
   reconcileDealPersonIdentity,
+  updateLeadCardIntakeCandidates,
+  updateLeadCardIntakeResolution,
   upsertPublicRecordOutcome,
   upsertResourceContact,
   type PublicRecordOutcomeInput,
   type ResourceContactInput,
 } from './lead-card-intake.js';
+import {
+  extractSmartIntakeImage,
+  smartIntakeImageSha256,
+  unavailableSmartIntakeImageExtraction,
+  validateSmartIntakeImage,
+  type SmartIntakeImageSourceMethod,
+} from './smart-intake-image.js';
 import { retrieveRagChunks, buildAgentRagContext, ingestRagDocument, ragIndexStats, htmlToText, RAG_DOC_TYPES, type RagAgentKind, type RagDocType } from './rag-knowledge.js';
 import { ingestCanonicalDealKnowledge, ingestCardEvidence, ingestRepoPlaybooks } from './rag-ingest.js';
 import type { CompRegistry } from './comp-registry.js';
@@ -2759,15 +2771,96 @@ export function registerLandosRoutes(app: Hono): void {
     return parseJsonResponse<Record<string, unknown>>(response) ?? {};
   };
 
+  const beginIntakeCandidateResolution = async (
+    dealCardId: number,
+    submissionId: number,
+    candidateSets: Array<Record<string, string>>,
+  ): Promise<Record<string, unknown>> => {
+    const candidate = candidateSets.reduce<Record<string, string>>((merged, fields) => {
+      for (const [key, value] of Object.entries(fields)) if (value && !merged[key]) merged[key] = value;
+      return merged;
+    }, {});
+    const fields: ParsedIntakeFields = {
+      address: candidate.address || candidate.road || undefined,
+      apn: candidate.apn || undefined,
+      county: candidate.county || undefined,
+      state: candidate.state || undefined,
+      city: candidate.city || undefined,
+      zip: candidate.zip || undefined,
+      owner: candidate.owner || undefined,
+    };
+    const usable = [fields.address, fields.apn, fields.county, fields.state].filter(Boolean);
+    if (usable.length === 0) {
+      const handoff = {
+        state: 'awaiting_edit',
+        attempted: false,
+        candidateFields: fields,
+        canonicalPromotionApplied: false,
+        ownerContactMatchRequired: false,
+        message: 'No address, APN, county, or state was readable enough to start property resolution.',
+      };
+      updateLeadCardIntakeResolution(dealCardId, submissionId, handoff);
+      return handoff;
+    }
+    const resolutionText = [
+      fields.address ? `Address: ${fields.address}` : '',
+      fields.city ? `City: ${fields.city}` : '',
+      fields.state ? `State: ${fields.state}` : '',
+      fields.zip ? `ZIP: ${fields.zip}` : '',
+      fields.county ? `County: ${fields.county}` : '',
+      fields.apn ? `APN: ${fields.apn}` : '',
+      fields.owner ? `Screenshot owner candidate: ${fields.owner}` : '',
+    ].filter(Boolean).join('\n');
+    try {
+      await ensureBrowserSession();
+      const resolution = await resolveProperty(
+        { rawText: resolutionText, fields },
+        liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
+      );
+      writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(resolutionText, fields, resolution));
+      const handoff = {
+        state: 'attempted',
+        attempted: true,
+        candidateFields: fields,
+        resolutionStatus: resolution.resolutionStatus,
+        confidence: resolution.confidence,
+        matchedReason: resolution.matchedReason,
+        identityEstablishedByApprovedSource: resolution.identityEstablished,
+        missing: resolution.missing,
+        lanesAttempted: resolution.lanesAttempted,
+        canonicalPromotionApplied: false,
+        ownerContactMatchRequired: false,
+        message: 'Screenshot candidates were sent through property resolution. No screenshot field was promoted to canonical identity.',
+      };
+      updateLeadCardIntakeResolution(dealCardId, submissionId, handoff);
+      return handoff;
+    } catch (error) {
+      const handoff = {
+        state: 'needs_retry',
+        attempted: true,
+        candidateFields: fields,
+        canonicalPromotionApplied: false,
+        ownerContactMatchRequired: false,
+        message: `Candidates were retained, but the approved-source resolution attempt needs retry: ${(error as Error).message}`,
+      };
+      updateLeadCardIntakeResolution(dealCardId, submissionId, handoff);
+      return handoff;
+    }
+  };
+
   app.post('/api/landos/deal-cards/:id/intake', async (c) => {
     const id = Number(c.req.param('id'));
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     try {
+      const idempotencyKey = str(body.submissionKey) ?? '';
+      const existing = findLeadCardIntakeBySubmissionKey(id, idempotencyKey);
+      if (existing) return c.json({ submission: existing, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id), duplicatePrevented: true });
       const submission = await persistLeadCardIntake({
         dealCardId: id,
         text: str(body.text) ?? '',
         submissionType: body.submissionType === 'transcript' ? 'transcript' : 'general',
         source: str(body.source) ?? 'operator paste',
+        idempotencyKey,
         modelAnalyzer: process.env.NODE_ENV === 'test' ? undefined : configuredIntakeAnalyzer,
       });
       return c.json({ submission, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id) }, 201);
@@ -2780,42 +2873,143 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    const body = await c.req.parseBody();
-    const file = body.file;
-    if (!(file instanceof File)) return c.json({ error: 'Choose a file to upload.' }, 400);
-    const bytes = Buffer.from(await file.arrayBuffer());
-    if (bytes.length > 10 * 1024 * 1024) return c.json({ error: 'File is larger than the 10 MB intake limit.' }, 400);
-    const ext = path.extname(file.name).toLowerCase();
-    const textReadable = ['.txt', '.md', '.srt', '.vtt', '.csv', '.json'].includes(ext) || /^text\//i.test(file.type);
-    const transcript = String(body.submissionType ?? '') === 'transcript' || ['.srt', '.vtt'].includes(ext);
-    if (transcript && !textReadable) return c.json({ error: 'Transcript uploads support TXT, MD, SRT, and VTT files.' }, 400);
+    const body = await c.req.parseBody({ all: true });
+    const asFiles = (value: unknown): File[] => Array.isArray(value)
+      ? value.filter((item): item is File => item instanceof File)
+      : value instanceof File ? [value] : [];
+    const files = [...asFiles(body.files), ...asFiles(body.file)];
+    if (files.length === 0) return c.json({ error: 'Choose one or more images to upload.' }, 400);
+    if (files.length > 10) return c.json({ error: 'Smart Intake accepts up to 10 images in one submission.' }, 400);
+    const idempotencyKey = String(Array.isArray(body.submissionKey) ? body.submissionKey[0] ?? '' : body.submissionKey ?? '');
+    const existing = findLeadCardIntakeBySubmissionKey(id, idempotencyKey);
+    if (existing) return c.json({ submission: existing, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id), duplicatePrevented: true });
+    const sourceMethodsRaw = String(Array.isArray(body.sourceMethods) ? body.sourceMethods[0] ?? '[]' : body.sourceMethods ?? '[]');
+    const parsedSourceMethods = (() => {
+      try { return JSON.parse(sourceMethodsRaw) as unknown; } catch { return []; }
+    })();
+    const sourceMethods = Array.isArray(parsedSourceMethods) ? parsedSourceMethods : [];
+    const prepared = await Promise.all(files.map(async (file, index) => {
+      const bytes = Buffer.from(await file.arrayBuffer());
+      const ext = path.extname(file.name).toLowerCase();
+      const inferredMime = file.type || (ext === '.png' ? 'image/png' : ['.jpg', '.jpeg'].includes(ext) ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : '');
+      const isImage = /^image\//i.test(inferredMime);
+      const sourceMethod = ['clipboard', 'upload', 'drop'].includes(String(sourceMethods[index]))
+        ? String(sourceMethods[index]) as SmartIntakeImageSourceMethod
+        : 'upload';
+      return { file, bytes, ext, inferredMime, isImage, sourceMethod };
+    }));
+    const allImages = prepared.every((item) => item.isImage);
+    if (!allImages && prepared.length > 1) return c.json({ error: 'Multiple-file Smart Intake submissions support PNG, JPG/JPEG, and WEBP images only.' }, 400);
+    const first = prepared[0];
+    const textReadable = ['.txt', '.md', '.srt', '.vtt', '.csv', '.json'].includes(first.ext) || /^text\//i.test(first.inferredMime);
+    const transcript = String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? '') === 'transcript' || ['.srt', '.vtt'].includes(first.ext);
+    if (!allImages && transcript && !textReadable) return c.json({ error: 'Transcript uploads support TXT, MD, SRT, and VTT files.' }, 400);
     try {
-      const uploaded = saveDocumentUpload({
-        dealCardId: id,
-        category: 'other',
-        title: String(body.title ?? '') || file.name,
-        docType: transcript ? 'transcript' : 'smart_intake_original',
-        fileName: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        bytes,
-        note: 'Original smart-intake submission retained on the Deal Card.',
+      if (!allImages) {
+        if (first.bytes.length > 10 * 1024 * 1024) return c.json({ error: 'File is larger than the 10 MB intake limit.' }, 400);
+        const uploaded = saveDocumentUpload({
+          dealCardId: id,
+          category: 'other',
+          title: String(Array.isArray(body.title) ? body.title[0] ?? '' : body.title ?? '') || first.file.name,
+          docType: transcript ? 'transcript' : 'smart_intake_original',
+          fileName: first.file.name,
+          mimeType: first.inferredMime || 'application/octet-stream',
+          bytes: first.bytes,
+          note: 'Original smart-intake submission retained on the Deal Card.',
+        });
+        const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
+        const operatorNote = String(Array.isArray(body.note) ? body.note[0] ?? '' : body.note ?? '');
+        const text = textReadable ? first.bytes.toString('utf8') : `Uploaded ${first.file.name}.${operatorNote ? ` Operator note: ${operatorNote}` : ''}`;
+        const submission = await persistLeadCardIntake({
+          dealCardId: id,
+          text,
+          submissionType: transcript ? 'transcript' : 'general',
+          source: str(Array.isArray(body.source) ? body.source[0] : body.source) ?? 'operator upload',
+          fileName: first.file.name,
+          fileUrl: uploadUrl,
+          mimeType: first.inferredMime || 'application/octet-stream',
+          idempotencyKey,
+          modelAnalyzer: process.env.NODE_ENV === 'test' ? undefined : configuredIntakeAnalyzer,
+        });
+        return c.json({ submission, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id) }, 201);
+      }
+      const validated = prepared.map((item) => ({
+        ...item,
+        mimeType: validateSmartIntakeImage(item.bytes, item.inferredMime, item.file.name),
+      }));
+      const extracted = await Promise.all(validated.map(async (item) => {
+        try {
+          return process.env.NODE_ENV === 'test'
+            ? unavailableSmartIntakeImageExtraction('Vision extraction is disabled in route tests.', 'test')
+            : await extractSmartIntakeImage(item.bytes, item.mimeType);
+        } catch (error) {
+          return unavailableSmartIntakeImageExtraction((error as Error).message, process.env.SMART_INTAKE_VISION_MODEL || 'gemini-3-flash-preview');
+        }
+      }));
+      const imageArtifacts = validated.map((item, index) => {
+        const uploaded = saveDocumentUpload({
+          dealCardId: id,
+          category: 'other',
+          title: item.file.name,
+          docType: 'smart_intake_image_original',
+          fileName: item.file.name,
+          mimeType: item.mimeType,
+          bytes: item.bytes,
+          note: `Immutable Smart Intake image evidence (${item.sourceMethod}).`,
+        });
+        const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
+        return {
+          documentUploadId: uploaded.id,
+          originalFileName: item.file.name,
+          fileUrl: uploadUrl,
+          mimeType: item.mimeType,
+          byteSize: item.bytes.length,
+          sha256: smartIntakeImageSha256(item.bytes),
+          sourceMethod: item.sourceMethod,
+          extraction: extracted[index],
+        };
       });
-      const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
-      const operatorNote = String(body.note ?? '').trim();
-      const text = textReadable ? bytes.toString('utf8') : `Uploaded ${file.name}.${operatorNote ? ` Operator note: ${operatorNote}` : ''}`;
+      const operatorNote = String(Array.isArray(body.note) ? body.note[0] ?? '' : body.note ?? '');
       const submission = await persistLeadCardIntake({
         dealCardId: id,
-        text,
-        submissionType: transcript ? 'transcript' : 'general',
-        source: str(body.source) ?? 'operator upload',
-        fileName: file.name,
-        fileUrl: uploadUrl,
-        mimeType: file.type || 'application/octet-stream',
+        text: operatorNote,
+        submissionType: String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? '') === 'transcript' ? 'transcript' : 'general',
+        source: str(Array.isArray(body.source) ? body.source[0] : body.source) ?? 'Deal Card smart intake',
+        fileName: imageArtifacts[0].originalFileName,
+        fileUrl: imageArtifacts[0].fileUrl,
+        mimeType: imageArtifacts[0].mimeType,
+        idempotencyKey,
+        imageArtifacts,
         modelAnalyzer: process.env.NODE_ENV === 'test' ? undefined : configuredIntakeAnalyzer,
       });
-      return c.json({ submission, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id) }, 201);
+      const handoff = await beginIntakeCandidateResolution(
+        id,
+        Number(submission.id),
+        imageArtifacts.map((artifact) => artifact.extraction.candidates as Record<string, string>),
+      );
+      return c.json({ submission: { ...submission, resolutionHandoff: handoff }, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id) }, 201);
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  app.post('/api/landos/deal-cards/:id/intake/:submissionId/candidates', async (c) => {
+    const id = Number(c.req.param('id'));
+    const submissionId = Number(c.req.param('submissionId'));
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    try {
+      const values = body.values && typeof body.values === 'object'
+        ? Object.fromEntries(Object.entries(body.values as Record<string, unknown>).map(([key, value]) => [key, String(value ?? '')]))
+        : {};
+      const submissions = updateLeadCardIntakeCandidates({ dealCardId: id, submissionId, values });
+      const saved = submissions.find((submission) => submission.id === submissionId);
+      const candidateSets = ((saved?.artifacts ?? []) as Array<{ candidates?: Array<{ key: string; value: string }> }>).map((artifact) =>
+        Object.fromEntries((artifact.candidates ?? []).map((candidate) => [candidate.key, candidate.value])),
+      );
+      const handoff = await beginIntakeCandidateResolution(id, submissionId, candidateSets);
+      return c.json({ submissions: listLeadCardIntake(id), resolutionHandoff: handoff });
+    } catch (error) {
+      return c.json({ error: (error as Error).message }, 400);
     }
   });
 
@@ -5955,6 +6149,53 @@ export function registerLandosRoutes(app: Hono): void {
 
   // Shared public-intelligence mission runner — the SAME path whether the
   // operator clicks "run" or parcel confirmation auto-continues downstream.
+  // Versioned Deed / Ownership / Survey / Encumbrance / Tax / Lien read model.
+  // GET remains SELECT-only so opening a Deal Card cannot start research,
+  // reconcile evidence, invoke the Analyst, scan files, or write snapshots.
+  app.get('/api/landos/deal-cards/:id/government-records', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ governmentRecords: readGovernmentRecordsForDeal(id) });
+  });
+
+  // Explicit Operator command: adapt already-persisted official outcomes and
+  // retained documents into append-only claims and a pure Analyst snapshot.
+  app.post('/api/landos/deal-cards/:id/government-records/rebuild', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      const governmentRecords = synchronizeGovernmentRecordsForDeal({
+        dealCardId: id,
+        actor: 'government-records-command',
+        changeReason: 'Operator rebuilt the recorded-government screening snapshot from persisted official evidence and retained artifacts.',
+      });
+      return c.json({ governmentRecords });
+    } catch (error) {
+      logger.warn({ err: error, dealCardId: id }, 'government_records_rebuild_failed');
+      return c.json({ error: (error as Error)?.message ?? 'Government-record screening rebuild failed.' }, 409);
+    }
+  });
+
+  app.get('/api/landos/deal-cards/:id/government-records/artifacts/:artifactId/page/:page', (c) => {
+    const id = Number(c.req.param('id'));
+    const artifactId = Number(c.req.param('artifactId'));
+    const pageNumber = Number(c.req.param('page'));
+    if (!Number.isInteger(id) || !Number.isInteger(artifactId) || !Number.isInteger(pageNumber) || pageNumber < 1) {
+      return c.json({ error: 'invalid artifact page' }, 400);
+    }
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const artifact = resolveGovernmentRecordArtifactPage({ dealCardId: id, artifactId, pageNumber });
+    if (!artifact) return c.json({ error: 'artifact page not found' }, 404);
+    const bytes = fs.readFileSync(artifact.path);
+    return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
+      'Content-Type': artifact.mimeType,
+      'Content-Disposition': `inline; filename="${artifact.displayName.replace(/"/g, '')}"`,
+      'Cache-Control': 'private, max-age=3600',
+    });
+  });
+
   const runPublicIntelligenceForDealCard = async (id: number, suppliedReportLanes?: ReportCompLanes | null): Promise<
     | { ok: true; saved: unknown; parcel: { address: string | null; county: string | null; state: string | null; apn: string | null; acres: number | null; sourceUrl: string | null } }
     | { ok: false; error: string; attempted?: unknown }
