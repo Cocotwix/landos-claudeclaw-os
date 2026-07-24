@@ -26,6 +26,10 @@ import {
   GovernmentRecordsSnapshotPanel,
   type GovernmentRecordReadModelView,
 } from '@/components/GovernmentRecordsSnapshotPanel';
+import {
+  ZoningLandUsePanel,
+  type ZoningLandUseReadModelView,
+} from '@/components/ZoningLandUsePanel';
 
 // The Resolution view payload — shown instead of a half-populated Deal Card until
 // the parcel is confirmed.
@@ -4112,6 +4116,13 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   const [governmentRecordsLoading, setGovernmentRecordsLoading] = useState(false);
   const [governmentRecordsRebuilding, setGovernmentRecordsRebuilding] = useState(false);
   const [governmentRecordsError, setGovernmentRecordsError] = useState<string | null>(null);
+  // Third architecture-recovery slice: persisted, versioned jurisdiction /
+  // zoning / land-use research. Its GET is read-only; live boundary, zoning-map,
+  // and ordinance research only runs from the explicit rebuild command.
+  const [zoningLandUse, setZoningLandUse] = useState<ZoningLandUseReadModelView | null>(null);
+  const [zoningLandUseLoading, setZoningLandUseLoading] = useState(false);
+  const [zoningLandUseRebuilding, setZoningLandUseRebuilding] = useState(false);
+  const [zoningLandUseError, setZoningLandUseError] = useState<string | null>(null);
   const [execSummary, setExecSummary] = useState<ExecSummaryView | null>(null);
   const [discoveryReport, setDiscoveryReport] = useState<DiscoveryReportView | null>(null);
   const [propertyType, setPropertyType] = useState<PropertyTypeView | null>(null);
@@ -4258,6 +4269,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setPropertySummaryError(null);
       setGovernmentRecords(null);
       setGovernmentRecordsError(null);
+      setZoningLandUse(null);
+      setZoningLandUseError(null);
       const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null; opportunity?: DealResearchOpportunity | null; researchMission?: DealResearchMission | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
       setSpine(res.businessSpine ?? null);
@@ -4270,6 +4283,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setResolution(rres);
       await Promise.all([loadDd(id), loadStrategy(id), loadMarket(id), loadReport(id), loadPropertySummary(id)]);
       await loadGovernmentRecords(id);
+      await loadZoningLandUse(id);
     } catch (err: any) {
       setError(err?.message || String(err));
       setDeal(null);
@@ -4281,6 +4295,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setReport(null);
       setPropertySummary(null);
       setGovernmentRecords(null);
+      setZoningLandUse(null);
       setResearchProgress(null);
     } finally {
       setLoading(false);
@@ -4330,6 +4345,39 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setGovernmentRecordsError((error as Error)?.message ?? 'The saved government-record screening could not be loaded.');
     } finally {
       setGovernmentRecordsLoading(false);
+    }
+  }
+
+  async function loadZoningLandUse(id: number) {
+    setZoningLandUseLoading(true);
+    try {
+      const res = await apiGet<{ zoningLandUse: ZoningLandUseReadModelView | null }>(
+        `/api/landos/deal-cards/${id}/zoning-land-use`,
+      );
+      setZoningLandUse(res.zoningLandUse);
+      setZoningLandUseError(null);
+    } catch (error) {
+      setZoningLandUse(null);
+      setZoningLandUseError((error as Error)?.message ?? 'The saved zoning and land-use snapshot could not be loaded.');
+    } finally {
+      setZoningLandUseLoading(false);
+    }
+  }
+
+  async function rebuildZoningLandUse() {
+    if (!deal || zoningLandUseRebuilding) return;
+    setZoningLandUseRebuilding(true);
+    setZoningLandUseError(null);
+    try {
+      const res = await apiPost<{ zoningLandUse: ZoningLandUseReadModelView }>(
+        `/api/landos/deal-cards/${deal.id}/zoning-land-use/rebuild`,
+        {},
+      );
+      setZoningLandUse(res.zoningLandUse);
+    } catch (error) {
+      setZoningLandUseError((error as Error)?.message ?? 'Zoning and land-use research failed.');
+    } finally {
+      setZoningLandUseRebuilding(false);
     }
   }
 
@@ -5156,6 +5204,15 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {activeTab === 'diligence' && (
             <div class="space-y-3">
               {operatorRecord && <RisksUnknownsPanel record={operatorRecord} />}
+              <ZoningLandUsePanel
+                dealId={deal.id}
+                token={dashboardToken}
+                value={zoningLandUse}
+                loading={zoningLandUseLoading}
+                rebuilding={zoningLandUseRebuilding}
+                error={zoningLandUseError}
+                onRebuild={() => void rebuildZoningLandUse()}
+              />
               <PublicRecordsPanel dealId={deal.id} />
               <PublicPropertyIntelligencePanel dealId={deal.id} ownerName={seller?.name ?? prop?.owner} onUpdated={() => void Promise.all([loadReport(deal.id), loadPropertySummary(deal.id)])} />
             </div>

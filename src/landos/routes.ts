@@ -201,6 +201,8 @@ import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealC
 import { readPropertySummaryForDeal, synchronizePropertySummaryForDeal } from './property-summary-legacy-adapter.js';
 import { readGovernmentRecordsForDeal, synchronizeGovernmentRecordsForDeal } from './government-records-legacy-adapter.js';
 import { resolveGovernmentRecordArtifactPage } from './government-records-operator.js';
+import { readZoningLandUseForDeal, synchronizeZoningLandUseForDeal } from './zoning-legacy-adapter.js';
+import { resolveZoningArtifactPage } from './zoning-operator.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
 import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
 import { resolveParcelParallel, type ParallelResolution } from './parallel-resolution.js';
@@ -6318,6 +6320,54 @@ export function registerLandosRoutes(app: Hono): void {
     }
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const artifact = resolveGovernmentRecordArtifactPage({ dealCardId: id, artifactId, pageNumber });
+    if (!artifact) return c.json({ error: 'artifact page not found' }, 404);
+    const bytes = fs.readFileSync(artifact.path);
+    return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
+      'Content-Type': artifact.mimeType,
+      'Content-Disposition': `inline; filename="${artifact.displayName.replace(/"/g, '')}"`,
+      'Cache-Control': 'private, max-age=3600',
+    });
+  });
+
+  // Versioned Jurisdiction / Zoning / Land-Use read model. GET remains
+  // SELECT-only so opening a Deal Card cannot start zoning research, query a
+  // boundary or zoning layer, retrieve an ordinance, invoke the Analyst, or
+  // write snapshots.
+  app.get('/api/landos/deal-cards/:id/zoning-land-use', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ zoningLandUse: readZoningLandUseForDeal(id) });
+  });
+
+  // Explicit Operator command: live jurisdiction determination, official
+  // zoning-map and ordinance retrieval, and one versioned Analyst snapshot.
+  app.post('/api/landos/deal-cards/:id/zoning-land-use/rebuild', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      const zoningLandUse = await synchronizeZoningLandUseForDeal({
+        dealCardId: id,
+        actor: 'zoning-command',
+        changeReason: 'Operator rebuilt the jurisdiction/zoning/land-use snapshot from official sources.',
+      });
+      return c.json({ zoningLandUse });
+    } catch (error) {
+      logger.warn({ err: error, dealCardId: id }, 'zoning_land_use_rebuild_failed');
+      return c.json({ error: (error as Error)?.message ?? 'Zoning/land-use rebuild failed.' }, 409);
+    }
+  });
+
+  app.get('/api/landos/deal-cards/:id/zoning-land-use/artifacts/:artifactId/page/:page', (c) => {
+    const id = Number(c.req.param('id'));
+    const artifactId = Number(c.req.param('artifactId'));
+    const pageNumber = Number(c.req.param('page'));
+    if (!Number.isInteger(id) || !Number.isInteger(artifactId) || !Number.isInteger(pageNumber) || pageNumber < 1) {
+      return c.json({ error: 'invalid artifact page' }, 400);
+    }
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const artifact = resolveZoningArtifactPage({ dealCardId: id, artifactId, pageNumber });
     if (!artifact) return c.json({ error: 'artifact page not found' }, 404);
     const bytes = fs.readFileSync(artifact.path);
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {

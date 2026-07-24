@@ -14,6 +14,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
+import { countPdfPages } from './pdf-text.js';
 import { getLandosStorageProfile } from './storage-profile.js';
 
 export type LandosEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';
@@ -320,6 +321,46 @@ export function isProhibitedActionType(actionType: string): boolean {
 let landosDb: Database.Database | null = null;
 
 const inList = (vals: readonly string[]): string => vals.map((v) => `'${v}'`).join(',');
+
+/**
+ * One-time derived-metadata correction for retained zoning ordinance PDFs:
+ * recompute page_count from the retained bytes. The append-only triggers are
+ * dropped and recreated around the UPDATE because this is a schema-owner
+ * metadata fix, not an evidence change — bytes, hashes, provenance, and
+ * idempotency keys are untouched. Exported for direct regression testing.
+ */
+export function recomputeZoningArtifactPdfPageCounts(db: Database.Database): number {
+  const rows = db.prepare(`
+    SELECT id, storage_path, page_count FROM landos_property_zoning_artifact
+    WHERE mime_type='application/pdf' AND storage_path <> ''
+  `).all() as Array<{ id: number; storage_path: string; page_count: number }>;
+  let corrected = 0;
+  const updates: Array<{ id: number; pages: number }> = [];
+  for (const row of rows) {
+    try {
+      if (!fs.existsSync(row.storage_path)) continue;
+      const pages = countPdfPages(fs.readFileSync(row.storage_path));
+      if (pages != null && pages !== row.page_count) updates.push({ id: row.id, pages });
+    } catch {
+      // unreadable artifact file — leave the row untouched
+    }
+  }
+  if (!updates.length) return 0;
+  db.exec('DROP TRIGGER IF EXISTS trg_property_zoning_artifact_immutable_update');
+  try {
+    for (const update of updates) {
+      db.prepare('UPDATE landos_property_zoning_artifact SET page_count=? WHERE id=?').run(update.pages, update.id);
+      corrected += 1;
+    }
+  } finally {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_property_zoning_artifact_immutable_update
+      BEFORE UPDATE ON landos_property_zoning_artifact
+      BEGIN
+        SELECT RAISE(ABORT, 'zoning artifacts are append-only');
+      END`);
+  }
+  return corrected;
+}
 
 function createLandosSchema(db: Database.Database): void {
   db.exec(`
@@ -2297,6 +2338,87 @@ function createLandosSchema(db: Database.Database): void {
   addColumn('landos_property_collector_attempt', 'memory_before_bytes', `memory_before_bytes INTEGER`);
   addColumn('landos_property_collector_attempt', 'memory_after_bytes', `memory_after_bytes INTEGER`);
   addColumn('landos_opportunity', 'pipeline_stage', `pipeline_stage TEXT NOT NULL DEFAULT 'new_lead'`);
+
+  // ── Jurisdiction / Zoning / Land-Use slice ─────────────────────────────
+  db.exec(`
+    -- Zoning artifact registry (official zoning maps, ordinance captures,
+    -- boundary maps, district tables). Bytes live in the gitignored artifact
+    -- store; this append-only registry keeps provenance, hash, ordinance
+    -- references, collector lineage, and identity version.
+    CREATE TABLE IF NOT EXISTS landos_property_zoning_artifact (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      domain                TEXT NOT NULL
+                            CHECK (domain IN ('jurisdiction_authority','zoning_district','zoning_ordinance','permitted_uses','dimensional_standards')),
+      source_jurisdiction   TEXT NOT NULL,
+      authority_name        TEXT,
+      source_name           TEXT NOT NULL,
+      source_url            TEXT,
+      portal_reference      TEXT,
+      ordinance_title       TEXT,
+      ordinance_effective_date TEXT,
+      section_reference     TEXT,
+      district_reference    TEXT,
+      document_type         TEXT NOT NULL,
+      page_count            INTEGER NOT NULL DEFAULT 0,
+      capture_count         INTEGER NOT NULL DEFAULT 0,
+      artifact_hash         TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      display_name          TEXT NOT NULL,
+      storage_path          TEXT NOT NULL,
+      capture_manifest_json TEXT NOT NULL DEFAULT '[]',
+      collector_job_id      INTEGER REFERENCES landos_property_collector_job(id) ON DELETE SET NULL,
+      collector_attempt_id  INTEGER REFERENCES landos_property_collector_attempt(id) ON DELETE SET NULL,
+      retrieved_at          TEXT NOT NULL,
+      idempotency_key       TEXT NOT NULL UNIQUE,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_zoning_artifact_deal
+      ON landos_property_zoning_artifact(deal_card_id, domain, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_property_zoning_artifact_identity
+      ON landos_property_zoning_artifact(property_identity_version_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_property_zoning_artifact_immutable_update
+      BEFORE UPDATE ON landos_property_zoning_artifact
+      BEGIN
+        SELECT RAISE(ABORT, 'zoning artifacts are append-only');
+      END;
+    CREATE TRIGGER IF NOT EXISTS trg_property_zoning_artifact_immutable_delete
+      BEFORE DELETE ON landos_property_zoning_artifact
+      WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id=OLD.deal_card_id), 0) = 0
+      BEGIN
+        SELECT RAISE(ABORT, 'zoning artifacts are append-only');
+      END;
+
+    -- Zoning/jurisdiction correction ledger. Accepted zoning conclusions never
+    -- change silently: a correction records prior/replacement values, evidence,
+    -- actor, reason, optional approval, and only the declared dependent outputs
+    -- (zoning, valuation, strategy, development) that were invalidated.
+    CREATE TABLE IF NOT EXISTS landos_zoning_correction (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id),
+      prior_snapshot_id     INTEGER REFERENCES landos_deal_intelligence_snapshot(id),
+      domain                TEXT NOT NULL
+                            CHECK (domain IN ('jurisdiction_authority','zoning_district','zoning_ordinance','permitted_uses','dimensional_standards')),
+      prior_value_json      TEXT NOT NULL DEFAULT 'null',
+      replacement_value_json TEXT NOT NULL DEFAULT 'null',
+      evidence_refs_json    TEXT NOT NULL DEFAULT '[]',
+      reason                TEXT NOT NULL,
+      requested_by          TEXT NOT NULL,
+      approval_id           INTEGER REFERENCES landos_approval(id),
+      declared_invalidations_json TEXT NOT NULL DEFAULT '[]',
+      status                TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','applied','rejected')),
+      replacement_evidence_id INTEGER REFERENCES landos_property_evidence_item(id),
+      applied_by            TEXT,
+      requested_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      applied_at            INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_zoning_correction_deal
+      ON landos_zoning_correction(deal_card_id, requested_at DESC);
+  `);
+
   db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
               VALUES (?, ?, ?)`).run(
     '20260717_001_phase1_storage_profiles',
@@ -2357,6 +2479,23 @@ function createLandosSchema(db: Database.Database): void {
     'sha256:7a2916c43c18ef7622a15ec05ec5a692d2d0803e1a9ad9586fe31a58d3f2b269',
     'Add versioned deed, ownership, survey, encumbrance, tax, lien/judgment evidence, artifacts, correction approvals, and browser cleanup lineage.',
   );
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260724_007_zoning_land_use_slice',
+    'sha256:2f1c9a4e6b8d05713c2ea9f4d6b1807a5c3e9d20b4f6a8c1e3d5f7a9b1c3e5d7',
+    'Add jurisdiction/zoning/land-use collector evidence, append-only zoning artifacts, and the zoning correction ledger.',
+  );
+  // Metadata correction (browser QA finding artifact-metadata-page-count-wrong):
+  // early ordinance retentions recorded page_count=1 for multi-page PDFs. The
+  // retained bytes, hashes, and provenance are untouched; only the derived
+  // page-count metadata is recomputed, once, under this audited migration.
+  const zoningPageCountFix = db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260724_008_zoning_artifact_pdf_page_count',
+    'sha256:8d41c6f2a90b7e5d3c1f8a6b4e2d0c9f7a5b3d1e8c6a4f2b0d9e7c5a3b1f8d6e',
+    'Recompute honest page counts for retained zoning ordinance PDFs (derived metadata only; bytes and hashes untouched).',
+  );
+  if (zoningPageCountFix.changes > 0) recomputeZoningArtifactPdfPageCounts(db);
 
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead
   // opportunity, including soft-deleted/research cards. We deliberately retain

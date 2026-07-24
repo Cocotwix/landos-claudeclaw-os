@@ -6,6 +6,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { GOLDEN_JOURNEYS, getJourney, validateJourney } from './journeys.js';
 import {
@@ -215,6 +216,24 @@ describe('journey execution', () => {
     expect(result.steps.every((s) => s.status !== 'fail')).toBe(true);
     expect(result.screenshots).toHaveLength(1);
     expect(fs.existsSync(result.screenshots[0])).toBe(true);
+  });
+
+  it('expect_text matches case-insensitively while forbid_text stays exact (regression: journey-expect-text-css-transform-mismatch)', async () => {
+    const root = fixtureRoot();
+    // CSS text-transform: uppercase changes innerText casing but not what the
+    // operator reads — the journey must still pass.
+    const deps = baseDeps(root, { browserFactory: fakeBrowser(() => 'LANDOS DEAL BOARD CONTENT') });
+    const result = await runJourney(getJourney('dashboard-shell-health'), deps, { runId: 'run-css-case' });
+    expect(result.outcome).toBe('pass');
+    // forbid_text must remain case-sensitive so short prohibited tokens
+    // ("NaN") never false-match inside ordinary words ("financing").
+    const runnerSource = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'operator-qa-runner.ts'),
+      'utf8',
+    ).replace(/\r\n/g, '\n');
+    const forbidBlock = runnerSource.match(/case 'forbid_text': \{[\s\S]*?break;\n {10}\}/)?.[0] ?? '';
+    expect(forbidBlock).toContain('text.includes(t)');
+    expect(forbidBlock).not.toContain('toLowerCase');
   });
 
   it('a visible browser failure produces findings and a failing outcome', async () => {

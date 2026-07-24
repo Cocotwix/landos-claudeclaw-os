@@ -1,15 +1,15 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-24T04:55:03.816Z
-- **HEAD at generation:** `4cc64c2`
-- **Worktree:** DIRTY; 54 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Generated:** 2026-07-24T15:14:44.540Z
+- **HEAD at generation:** `cba457d`
+- **Worktree:** DIRTY; 76 modified/untracked paths at refresh time. Preserve unrelated changes.
 - **Latest tests:** PASS at 2026-07-23T23:51:25-04:00; 304 files, 3728 tests, 0 failures (vitest run, full suite).
 - **Latest typecheck:** PASS at 2026-07-24T00:07:00-04:00; tsc --noEmit.
 - **Latest production build:** PASS at 2026-07-24T00:07:45-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
 - **Managed runtime:** RUNNING healthy at 2026-07-24T00:55:00-04:00; PID 53840; http://localhost:3141.
-- **Active sprint:** sprint-2026-07-17-operator-useful-leads (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
-- **Sprint ledger:** .landos/sprints/sprint-2026-07-17-operator-useful-leads/ledger.json; proof report .landos/sprints/sprint-2026-07-17-operator-useful-leads/report.md; frozen capabilities: 3 (.landos/capabilities.json).
+- **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
+- **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
 
 Live repository state, database state, runtime, and owner-visible behavior override anything written here.

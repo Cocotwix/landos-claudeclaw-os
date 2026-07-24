@@ -731,6 +731,33 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     mutating: false,
     fixturePolicy: 'Read-only and property-independent.',
   },
+  {
+    id: 'zoning-land-use-panel',
+    name: 'Persisted Zoning & Land Use panel on the Deal Card',
+    capability: 'zoning-land-use',
+    department: 'acquisitions',
+    startingState: 'A confirmed deal card; the zoning panel reads only the persisted snapshot and never triggers research on load.',
+    operatorSteps: [
+      ...dealCardShell('verified_strong_evidence', 'zoning-deal-card'),
+      { kind: 'click_text', text: 'Due Diligence', description: 'Open the Due Diligence tab' },
+      { kind: 'expect_test_id', testId: 'zoning-land-use-panel', count: 1, description: 'The persisted Zoning & Land Use panel renders' },
+      { kind: 'expect_test_id', testId: 'zoning-rebuild', count: 1, description: 'Zoning research is an explicit operator command' },
+      { kind: 'expect_text', anyOf: ['Zoning & Land Use'], description: 'The panel heading is visible' },
+      { kind: 'api_reconcile', apiPath: '/api/landos/deal-cards/{dealId}/zoning-land-use', description: 'The zoning GET responds and matches the persisted state the panel renders' },
+      { kind: 'screenshot', name: 'zoning-land-use-panel', description: 'Capture the zoning & land-use panel' },
+      { kind: 'refresh_persistence', expectAnyOf: ['Due Diligence', 'Overview'], description: 'The Deal Card (including the zoning slice state) survives refresh; loading performs no zoning research' },
+    ],
+    expectedBackendState: 'GET /zoning-land-use is SELECT-only; the persisted snapshot (or honest null) is returned unchanged by loading.',
+    expectedFrontendState: 'The Due Diligence tab shows the Zoning & Land Use panel with either the persisted snapshot content or the honest not-researched state and an explicit rebuild control.',
+    prohibitedContradictions: ['Panel content disagrees with the zoning GET payload', 'Loading the card creates zoning jobs, evidence, or snapshots', 'Conditional uses shown as by-right'],
+    requiredScreenshots: ['zoning-deal-card', 'zoning-land-use-panel'],
+    persistence: { refresh: true, restart: false },
+    allowedExternalBlockers: [],
+    passCriteria: 'Panel renders from the persisted read model, reconciles with the API, and loading stays read-only.',
+    failureCriteria: 'Missing panel or rebuild control, API/frontend divergence, or any zoning write triggered by loading.',
+    mutating: false,
+    fixturePolicy: 'Read-only against an existing confirmed card; the rebuild command is never clicked by this journey.',
+  },
 ];
 
 export function getJourney(id: string): GoldenJourney {

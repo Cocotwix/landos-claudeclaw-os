@@ -3,10 +3,14 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-const DEAL_CARD = fs.readFileSync(path.resolve(process.cwd(), 'web/src/components/DealCard.tsx'), 'utf8');
-const PANEL = fs.readFileSync(path.resolve(process.cwd(), 'web/src/components/GovernmentRecordsSnapshotPanel.tsx'), 'utf8');
-const ROUTES = fs.readFileSync(path.resolve(process.cwd(), 'src/landos/routes.ts'), 'utf8');
-const ANALYST = fs.readFileSync(path.resolve(process.cwd(), 'src/landos/government-records-analyst.ts'), 'utf8');
+// Normalize CRLF so source scans behave identically on core.autocrlf=true
+// checkouts (Windows) and LF checkouts.
+const readSource = (relative: string): string =>
+  fs.readFileSync(path.resolve(process.cwd(), relative), 'utf8').replace(/\r\n/g, '\n');
+const DEAL_CARD = readSource('web/src/components/DealCard.tsx');
+const PANEL = readSource('web/src/components/GovernmentRecordsSnapshotPanel.tsx');
+const ROUTES = readSource('src/landos/routes.ts');
+const ANALYST = readSource('src/landos/government-records-analyst.ts');
 
 describe('Government Records Deal Card UI and architecture contract', () => {
   it('25. Deal Card loads persisted screening and never calls rebuild while opening', () => {

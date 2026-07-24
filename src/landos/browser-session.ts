@@ -171,6 +171,18 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
 
   const pup = deps.puppeteer ?? (await loadPuppeteer());
   if (!pup) { state.status = 'unreachable'; state.browser = null; return 'unreachable'; }
+  // Identity gate (real connections only; injected test doubles skip the HTTP
+  // probe): if something IS answering on the port but it is not our Google
+  // Chrome — Edge, Lenovo Vantage's embedded runtime, an Electron shell — we
+  // refuse to attach rather than drive a browser LandOS does not own.
+  if (!deps.puppeteer) {
+    const identity = await verifyChromeCdpEndpoint(cfg.cdpUrl);
+    if (identity.answering && !identity.ok) {
+      state.browser = null;
+      state.status = 'unreachable';
+      return 'unreachable';
+    }
+  }
   try {
     // protocolTimeout 60s (default 180s): a wedged target/protocol call fails
     // fast and honest instead of freezing a whole mission for three minutes.
@@ -190,6 +202,61 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
 
 function safeConnected(b: BrowserLike): boolean {
   try { return b.isConnected(); } catch { return false; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CDP endpoint identity — never attach to a foreign browser runtime
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface CdpEndpointIdentity {
+  ok: boolean;
+  answering: boolean;
+  browser: string;
+  userAgent: string;
+  reason: string | null;
+}
+
+/**
+ * Classify a CDP /json/version payload. Only genuine Google Chrome passes.
+ * Edge, Electron shells, and embedded third-party runtimes (e.g. Lenovo
+ * Vantage's browser, which squats on 127.0.0.1:9222) are rejected so LandOS
+ * never drives — or leaks token-bearing pages into — a browser it does not own.
+ */
+export function classifyCdpVersionInfo(info: Record<string, unknown> | null | undefined): CdpEndpointIdentity {
+  const browser = String(info?.Browser ?? '').trim();
+  const userAgent = String(info?.['User-Agent'] ?? '').trim();
+  const combined = `${browser} ${userAgent}`;
+  if (!browser && !userAgent) {
+    return { ok: false, answering: true, browser, userAgent, reason: 'CDP endpoint returned no browser identity.' };
+  }
+  if (/LenovoVantage|Electron|Teams|WebView2|Edg(e|A|iOS)?\//i.test(combined) || /^Edg/i.test(browser)) {
+    return { ok: false, answering: true, browser, userAgent, reason: `CDP endpoint is a foreign/Edge runtime (${browser || userAgent}); LandOS attaches only to its own Google Chrome.` };
+  }
+  if (!/^(Headless)?Chrome\//.test(browser)) {
+    return { ok: false, answering: true, browser, userAgent, reason: `CDP endpoint is not Google Chrome (${browser || 'unknown browser'}).` };
+  }
+  return { ok: true, answering: true, browser, userAgent, reason: null };
+}
+
+/** Probe a CDP endpoint's /json/version and verify it is genuine Chrome. */
+export async function verifyChromeCdpEndpoint(
+  cdpUrl: string,
+  fetchImpl: (url: string, init?: { signal?: AbortSignal }) => Promise<{ ok: boolean; json(): Promise<unknown> }> = fetch,
+): Promise<CdpEndpointIdentity> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const base = cdpUrl.replace(/\/+$/, '');
+    const response = await fetchImpl(`${base}/json/version`, { signal: controller.signal });
+    if (!response.ok) {
+      return { ok: false, answering: false, browser: '', userAgent: '', reason: 'CDP endpoint is not answering /json/version.' };
+    }
+    return classifyCdpVersionInfo(await response.json() as Record<string, unknown>);
+  } catch {
+    return { ok: false, answering: false, browser: '', userAgent: '', reason: 'CDP endpoint is not answering.' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Acquire (and cache) one dedicated LandOS working tab. Do not attach to an
@@ -353,6 +420,18 @@ export async function startBrowserSession(deps: StartSessionDeps = {}): Promise<
   const pre = await ensureBrowserSession(deps);
   if (pre === 'live' || pre === 'auth_needed') {
     return { status: pre, launched: false, reused: true, chromePath: null, profileDir: cfg.profileDir, error: null, health: await health0() };
+  }
+  // A foreign runtime squatting on the port would swallow the launch: Chrome
+  // could not bind it, and attaching would drive a browser we do not own.
+  if (!deps.puppeteer) {
+    const identity = await verifyChromeCdpEndpoint(cfg.cdpUrl);
+    if (identity.answering && !identity.ok) {
+      return {
+        status: 'unreachable', launched: false, reused: false, chromePath: null, profileDir: cfg.profileDir,
+        error: `${identity.reason} Set BROWSER_INTEL_CDP_URL to a free port (for example http://127.0.0.1:9223) and restart LandOS.`,
+        health: await health0(),
+      };
+    }
   }
   // Launch Google Chrome with the LandOS profile + remote debugging.
   const chrome = resolveChromePath(cfg.chromePath);

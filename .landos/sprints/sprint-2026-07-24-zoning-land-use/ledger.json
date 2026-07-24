@@ -1,0 +1,1616 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-07-24-zoning-land-use",
+  "title": "Jurisdiction, Zoning, and Land-Use Intelligence vertical slice",
+  "createdAt": "2026-07-24T05:23:09.199Z",
+  "originalPrompt": "Continue LandOS from current main at commit cba457dbe43323fe05e00c5e8751355e2c3425fc.\n\nImplement the next complete three-brain vertical slice:\n\nJurisdiction, Zoning, and Land-Use Intelligence.\n\nFirst inspect the repository, current checkpoint, the versioned Property Summary pattern, the government-record risk slice, parcel-resolution flow, evidence and artifact system, Operator jobs and attempts, Analyst boundaries, snapshot persistence, and existing zoning-related code.\n\nExtend the existing architecture rather than creating a parallel system.\n\nDesired operator outcome\n\nFor every confirmed subject parcel, LandOS should independently determine:\n\n1. Which government has planning and zoning authority over the exact parcel.\n2. Whether the property is incorporated, unincorporated, inside a township, municipality, county jurisdiction, extraterritorial jurisdiction, or other special planning area.\n3. The official base zoning district.\n4. Any overlay, special-purpose, historic, floodplain, airport, corridor, planned-development, or similar district.\n5. The governing zoning ordinance and effective version.\n6. Uses permitted by right.\n7. Conditional, special-exception, administrative, or discretionary uses.\n8. Prohibited or unsupported uses when the ordinance establishes them.\n9. Dimensional and development standards, including lot size, frontage, setbacks, density, height, lot coverage, parking, access, subdivision, manufactured housing, accessory uses, and other material standards.\n10. Practical development options, material limitations, unanswered questions, and the official evidence supporting each conclusion.\n\nCore rules\n\nProperty research is anchored only to the confirmed subject parcel and geometry.\n\nSeller, lead, wholesaler, or owner-name mismatches must never block zoning research.\n\nDo not infer zoning authority from the mailing city, ZIP code, nearest city, county name, or address label.\n\nDetermine the actual governing jurisdiction first.\n\nDo not interpret a zoning label such as R-1, AG, M-1, or C-2 until the exact jurisdiction and governing ordinance are confirmed. District labels are not portable between jurisdictions.\n\nDo not treat a third-party zoning label as official confirmation unless independently corroborated by an official planning, zoning, GIS, ordinance, or government source.\n\nDo not claim a use is allowed merely because it is not visibly prohibited. Distinguish:\n\npermitted by right\n\nconditional or special approval\n\naccessory use\n\nprohibited\n\nnot located in the reviewed ordinance\n\nuncertain because the controlling provision was unavailable\n\nDo not fabricate zoning, jurisdiction, overlays, permitted uses, dimensional standards, or ordinance citations.\n\nThree-brain boundaries\n\nOperator brain\n\nThe Operator owns:\n\njurisdiction resolution\n\nofficial zoning-map and ordinance retrieval\n\nbrowser and API execution\n\nfree government login or registration when required\n\ndurable jobs and attempts\n\ntimeouts, retries, blocked states, restart recovery, and idempotency\n\nraw evidence and artifact retention\n\nsource URLs, retrieval dates, ordinance dates, screenshots, PDFs, zoning maps, tables, and government documents\n\nnormalized zoning facts\n\nAnalyst invocation\n\nversioned snapshot persistence\n\nbrowser cleanup\n\nAnalyst brain\n\nThe Analyst receives only normalized, versioned inputs.\n\nIt should determine and explain:\n\nconfirmed zoning authority\n\nbase district and overlays\n\nuses by right\n\nconditional or special uses\n\nmaterial dimensional standards\n\nsubdivision and development implications\n\nlikely highest-value realistic use paths supported by the current zoning\n\nmaterial conflicts and risks\n\nmissing information and precise follow-up questions\n\nconfidence, limitations, and evidence references\n\nThe Analyst must not browse, call providers, write the database, schedule work, approve corrections, or render UI.\n\nDeal Card\n\nThe Deal Card reads the persisted zoning snapshot.\n\nOpening or refreshing the Deal Card must not trigger zoning research, ordinance retrieval, reconciliation, or analysis.\n\nRebuild must be an explicit Operator command.\n\nJurisdiction and provider architecture\n\nUse reusable platform and vendor adapters with jurisdiction-specific configuration rather than writing a separate workflow for every county, city, or township.\n\nThe intended process is:\n\nconfirmed parcel and geometry\n\ndetermine incorporated or unincorporated status\n\nidentify every potentially relevant planning authority\n\nconfirm the controlling authority using official evidence\n\nidentify the official zoning-map and ordinance platforms\n\nselect reusable adapters\n\napply jurisdiction-specific configuration\n\nretrieve evidence\n\nnormalize facts\n\ninvoke the Analyst\n\npersist a versioned zoning snapshot\n\nWhen a platform is unknown or has changed, use adaptive browser inspection where appropriate, then retain the successful navigation pattern for reuse.\n\nKnown portals should use deterministic automation.\n\nFree government account creation and login are approved.\n\nDo not purchase reports, records, subscriptions, credits, ordinance access, or government-site document access.\n\nDo not bypass payment systems, CAPTCHAs, authentication controls, or technical access restrictions.\n\nEvidence and artifact retention\n\nRetain official evidence when available, including:\n\nofficial zoning map result\n\nparcel zoning lookup result\n\nmunicipal boundary or jurisdiction map\n\nplanning department page\n\nofficial zoning ordinance PDF or HTML\n\ndistrict use table\n\ndimensional standards table\n\noverlay district map and ordinance\n\nspecial district or planned-development document\n\nrelevant board, commission, or adopted ordinance material when it directly controls the parcel\n\nRetain original PDFs, images, or readable page captures when appropriate.\n\nEvery normalized zoning fact must link to official evidence and, where possible, the exact page, section, table, or map reference.\n\nPreserve:\n\nsource jurisdiction\n\ncontrolling authority\n\nofficial source URL\n\nretrieval timestamp\n\nordinance title\n\nordinance adoption or effective date\n\nsection, article, table, and page references\n\ndistrict and overlay names\n\nartifact hashes\n\nidentity version\n\ncollector job and attempt\n\nDo not use a screenshot or map color alone as the final zoning conclusion when an official legend, parcel result, or ordinance is needed to interpret it.\n\nCorrections\n\nZoning and jurisdiction corrections must create new evidence and snapshot versions.\n\nDo not overwrite accepted facts silently.\n\nA confirmed jurisdiction or zoning district correction should record:\n\nprior value\n\nreplacement value\n\nsupporting evidence\n\nreason\n\nactor\n\ntimestamp\n\napproval reference when required\n\ndeclared downstream invalidations\n\nChanging zoning should invalidate only dependent zoning, valuation, strategy, and development conclusions, not unrelated deed, environmental, seller, or tax evidence.\n\nRequired workflow states\n\nEach zoning domain should support:\n\nqueued\n\nrunning\n\ncomplete\n\npartial\n\nblocked\n\nunavailable\n\nconflicted\n\nsuperseded\n\nmanual review needed\n\nOne failed source must not block unrelated research.\n\nRequired live proof cases\n\nImplement automated tests and live acceptance that prove:\n\n1. Confirmed parcel in an unincorporated county jurisdiction.\n2. Confirmed parcel inside an incorporated municipality.\n3. Township-controlled zoning.\n4. Mailing city differs from actual zoning authority.\n5. County and city sources disagree.\n6. Official zoning map confirms the parcel district.\n7. Third-party zoning differs from the official source.\n8. Base zoning plus an overlay district.\n9. Uses permitted by right are extracted with exact ordinance citations.\n10. Conditional or special uses remain clearly separated from by-right uses.\n11. Dimensional standards are extracted from the correct district table.\n12. District label exists but the ordinance could not be retrieved.\n13. Official source requires free registration.\n14. Official source is blocked, changed, or unavailable.\n15. Interrupted collection resumes without duplicate evidence.\n16. Identical inputs rebuild idempotently.\n17. A zoning correction creates a new version and invalidates only declared dependents.\n18. GET and Deal Card loading remain read-only.\n19. Browser pages and contexts close after success, failure, timeout, or cancellation.\n20. Repeated runs do not steadily increase open browser resources or memory.\n\nLive acceptance\n\nUse at least one real confirmed Deal Card already in LandOS where zoning jurisdiction and official zoning sources can be reached without payment.\n\nProve the complete flow:\n\nconfirmed parcel\n\njurisdiction determination\n\nofficial zoning-map retrieval\n\nofficial ordinance retrieval\n\ndistrict and overlay result\n\nuses by right\n\nconditional uses\n\nmaterial dimensional standards\n\npersisted Analyst result\n\nDeal Card presentation\n\nrefresh persistence\n\nmanaged restart persistence\n\nno duplicate evidence\n\nbrowser cleanup\n\nDo not fabricate a complete result if an official source is unavailable. Honest partial completion is acceptable when the source-specific limitation is visible.\n\nPresentation\n\nAdd a persisted zoning and land-use panel to the existing Deal Card structure.\n\nKeep this operator-focused and readable.\n\nShow:\n\ncontrolling zoning authority\n\nincorporated or unincorporated status\n\nbase district\n\noverlays\n\nofficial sources\n\nuses by right\n\nconditional or special uses\n\nkey dimensional standards\n\ndevelopment implications\n\nrisks and conflicts\n\nmissing evidence\n\nlast researched date\n\nsnapshot version\n\nDo not redesign the entire Deal Card in this sprint.\n\nBuilder verification\n\nAdd architecture-boundary and regression tests so:\n\nAnalyst modules cannot import browser, route, provider, database, filesystem, or UI modules\n\ncollectors cannot make strategy or valuation decisions\n\nGET routes cannot execute live research or write snapshots\n\nUI cannot import collectors or Analyst engines\n\nunconfirmed property identity blocks zoning analysis\n\nzoning labels cannot be interpreted without a confirmed jurisdiction and ordinance source\n\nconditional uses cannot be presented as by-right uses\n\nidentical input versions produce idempotent snapshots\n\nRun:\n\nfocused tests\n\nfull repository tests\n\nserver typecheck\n\nfrontend typecheck if available\n\nserver production build\n\nweb production build\n\ndatabase and migration verification\n\nmemory audit\n\nlive dashboard acceptance\n\nmanaged restart and HTTP 200 verification\n\nReport:\n\nroot cause and existing zoning capability found\n\narchitecture implemented\n\nfiles changed\n\nschema and migration changes\n\nOperator collectors and adapters added\n\nAnalyst inputs and outputs\n\nevidence and artifact retention\n\ntests added\n\nfull verification results\n\nlive acceptance property and official sources used\n\nbrowser cleanup proof\n\nknown limitations\n\nLandOS PID and URL\n\ngit status\n\nDo not commit or push.\n",
+  "promptSha256": "62a7a0b5f488decc099e8d97cfeff75ecdacc5a49397edeb0e4d852bf4a030f8",
+  "workstreams": [
+    {
+      "id": "zoning-ws1-core",
+      "name": "Zoning core slice: jurisdiction resolution, Operator, Analyst, snapshot, routes",
+      "operatorOutcome": "The zoning slice exists end to end behind the API: a confirmed parcel can get a jurisdiction determination, official-source zoning collection through reusable adapters, a pure Analyst result, and a versioned persisted zoning snapshot readable via GET; opening a Deal Card never triggers zoning work.",
+      "inScope": [
+        "zoning-types.ts contracts (domains, workflow states queued/running/complete/partial/blocked/unavailable/conflicted/superseded/manual_review_needed, normalized claims, analyst input/output, snapshot and read model views)",
+        "Jurisdiction resolution engine: incorporated/unincorporated/municipality/township/ETJ determination from parcel geometry and official boundary sources, never from mailing city/ZIP/county label",
+        "zoning-operator.ts: durable collector jobs and attempts on the shared landos_property_collector_job/attempt tables, idempotency keys, interrupted-run resume, evidence rows in landos_property_evidence_item, zoning artifacts with SHA-256 hashes, Analyst invocation, versioned snapshot persistence with snapshot_type zoning_land_use_v1",
+        "zoning-analyst.ts: pure deterministic analysis (authority, base district, overlays, by-right vs conditional vs prohibited vs not-located vs uncertain uses, dimensional standards, development implications, conflicts, missing info, confidence, limitations, evidence references)",
+        "zoning-adapters.ts: reusable platform adapters (ArcGIS zoning layer, ordinance library, jurisdiction boundary) with jurisdiction-specific configuration, fixture adapters for tests",
+        "Zoning corrections creating new evidence and snapshot versions with declared downstream invalidations only",
+        "DB schema additions inside createLandosSchema with a dated landos_schema_migration row",
+        "GET /api/landos/deal-cards/:id/zoning-land-use (SELECT-only) and POST /api/landos/deal-cards/:id/zoning-land-use/rebuild plus artifact page route",
+        "Architecture-boundary tests: analyst import purity, GET read-only, collectors cannot decide strategy/valuation, unconfirmed identity blocks zoning, labels not interpreted without confirmed jurisdiction and ordinance source, conditional never presented as by-right, idempotent snapshots"
+      ],
+      "backendServices": [
+        "src/landos/zoning-types.ts",
+        "src/landos/zoning-jurisdiction.ts",
+        "src/landos/zoning-operator.ts",
+        "src/landos/zoning-analyst.ts",
+        "src/landos/zoning-adapters.ts",
+        "src/landos/zoning-legacy-adapter.ts",
+        "src/landos/db.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [],
+      "requiredDataState": "Existing operating data untouched; confirmed Deal Cards 31 and 32 remain exactly as accepted; zoning tables empty until an explicit rebuild command.",
+      "browserJourney": {
+        "steps": [
+          "Open http://localhost:3141/landos and open confirmed Deal Card 32 (Roane County TN)",
+          "Confirm the card loads normally with all previously accepted sections intact",
+          "Reconcile GET /api/landos/deal-cards/32/zoning-land-use returns an honest empty/null zoning payload without creating any zoning job, evidence, or snapshot rows",
+          "Reload the card and confirm no zoning collector job rows appear (GET remains read-only)"
+        ]
+      },
+      "testRequirements": [
+        "vitest run src/landos/zoning-slice.test.ts src/landos/zoning-analyst.test.ts src/landos/zoning-jurisdiction.test.ts src/landos/zoning.routes.test.ts",
+        "vitest run (full repository suite)",
+        "tsc --noEmit",
+        "vite build && tsc (production build)"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Opening or refreshing a Deal Card triggers zoning research, reconciliation, or snapshot writes",
+        "Analyst module imports browser, route, provider, database, filesystem, or UI modules",
+        "Zoning label interpreted without a confirmed jurisdiction and ordinance-backed source",
+        "A conditional or special use is classified or presented as permitted by right",
+        "Identical inputs produce a new snapshot version instead of reusing the existing one",
+        "Unconfirmed property identity yields zoning analysis instead of blocked domains",
+        "Existing accepted deal data changes"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "db_evidence",
+        "browser_journey",
+        "screenshot",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "ws1-R1",
+          "text": "Jurisdiction (incorporated/unincorporated/municipality/township/ETJ) is determined from parcel geometry and official boundary evidence, never inferred from mailing city, ZIP, nearest city, or address label.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R2",
+          "text": "Zoning collector jobs/attempts are durable, idempotent, resumable after interruption, and one failed source does not block unrelated domains.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R3",
+          "text": "Every normalized zoning fact links to official evidence with source URL, retrieval timestamp, ordinance/section references where available, artifact hash, identity version, and collector lineage.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R4",
+          "text": "The Analyst is pure (types-only imports), distinguishes by-right/conditional/accessory/prohibited/not-located/uncertain uses, and never fabricates districts, uses, standards, or citations.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R5",
+          "text": "GET zoning routes are SELECT-only; rebuild is an explicit POST command; unconfirmed identity blocks zoning collection and analysis.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R6",
+          "text": "Zoning/jurisdiction corrections create new evidence and snapshot versions recording prior value, replacement, evidence, reason, actor, timestamp, approval reference when required, and declared invalidations limited to dependent zoning/valuation/strategy conclusions.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R7",
+          "text": "Snapshot generation is idempotent for identical inputs and versioned with supersession for changed inputs.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        },
+        {
+          "id": "ws1-R8",
+          "text": "Architecture-boundary regression tests enforce analyst purity, GET read-only, UI/collector/analyst import walls, identity gating, jurisdiction-before-label, and conditional-vs-by-right separation.",
+          "verified": true,
+          "evidenceIds": [
+            "E6",
+            "E7"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-24T06:14:12.606Z",
+        "reportPath": ".runtime/landos/qa/zoning-ws1-core-20260724/qa-report.md",
+        "evidenceIds": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-24T05:46:41.930Z",
+          "detail": "Zoning slice implemented: zoning-types.ts, zoning-jurisdiction.ts, zoning-analyst.ts (pure), zoning-operator.ts (jobs/attempts/evidence/artifacts/snapshots/corrections/cleanup), zoning-adapters.ts (boundary/ArcGIS-zoning/ordinance adapters + registry), zoning-legacy-adapter.ts (rebuild+read), db.ts zoning artifact+correction tables + migration 20260724_007, routes.ts GET/POST/artifact routes",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-24T05:46:43.097Z",
+          "detail": "vitest run zoning-jurisdiction/zoning-analyst/zoning-boundaries/zoning-slice/zoning.routes: 5 files, 50 tests, 0 failures (proof cases 1-5,7-20 at unit level)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-24T05:51:49.900Z",
+          "detail": "Full repository suite: 309 files, 3778 tests, 0 failures (includes 50 new zoning tests). One pre-existing CRLF-environment failure in government-records-ui.test.ts source-scan was root-caused (core.autocrlf=true checkout) and fixed with line-ending normalization.",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-24T05:52:01.714Z",
+          "detail": "tsc --noEmit clean",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-24T05:52:34.853Z",
+          "detail": "vite build + tsc PASS; only the pre-existing large-chunk advisory",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-24T05:55:04.395Z",
+          "detail": "Managed restart via npm run landos:restart: RUNNING healthy, PID 12400, http://localhost:3141 HTTP 200, health OK. Zoning schema migration 20260724_007 applied to operating DB (landos_property_zoning_artifact, landos_zoning_correction). Live GET /api/landos/deal-cards/32/zoning-land-use returns honest null with zero collector/evidence/snapshot writes (before/after row counts identical: jobs 17, evidence 70, snapshots 7).",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-24T06:14:12.605Z",
+          "detail": "independent browser QA (.runtime/landos/qa/zoning-ws1-core-20260724/qa-report.md)",
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E3",
+            "E4",
+            "E5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "zoning-ws2-panel",
+      "name": "Deal Card Zoning & Land Use panel",
+      "operatorOutcome": "Tyler opens a confirmed Deal Card and sees a readable persisted Zoning & Land Use panel showing controlling authority, incorporated status, base district, overlays, official sources, uses by right, conditional uses, key dimensional standards, development implications, risks, missing evidence, last researched date, and snapshot version, with an explicit rebuild control and honest empty state.",
+      "inScope": [
+        "web/src/components/ZoningLandUsePanel.tsx presentational component",
+        "DealCard.tsx wiring: state slots, GET loader on open, explicit POST rebuild handler, render placement",
+        "Honest empty and partial states (not researched yet, blocked, source unavailable)",
+        "Source-scan UI tests proving GET-only loading, explicit rebuild, and that UI does not import collectors or Analyst engines"
+      ],
+      "backendServices": [
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "/landos Deal Card zoning panel"
+      ],
+      "requiredDataState": "Existing deals unchanged; panel renders from persisted snapshot only.",
+      "browserJourney": {
+        "steps": [
+          "Open http://localhost:3141/landos and open confirmed Deal Card 32",
+          "Locate the Zoning & Land Use panel and confirm it shows an honest not-yet-researched state without triggering research",
+          "Reconcile the panel contents against GET /api/landos/deal-cards/32/zoning-land-use",
+          "Refresh the page and confirm the panel state persists and no zoning jobs were created by loading"
+        ]
+      },
+      "testRequirements": [
+        "vitest run src/landos/zoning-ui.test.ts src/landos/deal-card-ui.test.ts",
+        "vitest run (full repository suite)",
+        "tsc --noEmit",
+        "vite build && tsc (production build)"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": false
+      },
+      "failureConditions": [
+        "Panel load triggers zoning research or writes",
+        "Conditional uses displayed merged with or labeled as by-right uses",
+        "Panel fabricates values not present in the persisted snapshot",
+        "Existing Deal Card sections regress"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "screenshot",
+        "browser_journey",
+        "refresh_persistence",
+        "live_url",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [
+        "zoning-ws1-core"
+      ],
+      "requirements": [
+        {
+          "id": "ws2-R1",
+          "text": "The Deal Card shows a persisted Zoning & Land Use panel with authority, incorporation status, base district, overlays, official sources, by-right uses, conditional uses, dimensional standards, implications, risks, missing evidence, last researched date, and snapshot version.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E10",
+            "E11",
+            "E13",
+            "E15"
+          ]
+        },
+        {
+          "id": "ws2-R2",
+          "text": "Opening/refreshing the Deal Card performs no zoning research; rebuild is an explicit operator button issuing the POST command.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E10",
+            "E11",
+            "E13",
+            "E15"
+          ]
+        },
+        {
+          "id": "ws2-R3",
+          "text": "By-right and conditional/special uses are visually separated and never conflated.",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E10",
+            "E11",
+            "E13",
+            "E15"
+          ]
+        },
+        {
+          "id": "ws2-R4",
+          "text": "UI source cannot import collector or Analyst modules (source-scan regression).",
+          "verified": true,
+          "evidenceIds": [
+            "E8",
+            "E10",
+            "E11",
+            "E13",
+            "E15"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-24T07:01:24.881Z",
+        "reportPath": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/qa-report.md",
+        "evidenceIds": [
+          "E8",
+          "E9",
+          "E10",
+          "E11",
+          "E12"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-24T06:21:20.880Z",
+          "detail": "ZoningLandUsePanel.tsx presentational component (authority/incorporation/base district/overlays/ordinance/uses by right/conditional/prohibited/uncertain/dimensional table/implications/risks/missing/last researched/snapshot version/artifacts); DealCard.tsx wiring: import, 4 state slots, loadZoningLandUse GET loader in load(), explicit rebuildZoningLandUse POST command, rendered in Due Diligence tab",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-24T06:21:22.699Z",
+          "detail": "zoning-ui.test.ts 7 tests PASS (GET-only loading, explicit rebuild, section presence, by-right/conditional separation, honest empty states, UI import walls, GET route still SELECT-only); deal-card-ui + government-records-ui pass unchanged",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-24T06:21:25.081Z",
+          "detail": "Full repository suite 310 files / 3785 tests / 0 failures",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-24T06:21:26.240Z",
+          "detail": "tsc --noEmit clean",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-24T06:21:27.181Z",
+          "detail": "vite build + tsc PASS (large-chunk advisory only)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-24T06:22:50.964Z",
+          "detail": "Managed restart after rebuild: RUNNING healthy PID 67500, http://localhost:3141 HTTP 200, health OK",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-07-24T07:01:24.880Z",
+          "detail": "independent browser QA (.runtime/landos/qa/zoning-ws2-panel-2026-07-24/qa-report.md)",
+          "evidenceIds": [
+            "E8",
+            "E9",
+            "E10",
+            "E11",
+            "E12"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "zoning-ws3-live",
+      "name": "Live acceptance: real jurisdiction + official zoning research on a confirmed deal",
+      "operatorOutcome": "On at least one real confirmed Deal Card, an explicit rebuild performs genuine jurisdiction determination and official zoning-map and ordinance retrieval from free official sources, persists a versioned Analyst-backed snapshot with real district, uses, and dimensional standards (honest partials where sources are unavailable), and the Deal Card presents it with refresh and managed-restart persistence, no duplicate evidence, and clean browser resource state.",
+      "inScope": [
+        "Jurisdiction-specific adapter configuration for the live deal's county (official boundary source, official zoning map/GIS layer, official ordinance platform)",
+        "Live rebuild on confirmed Deal Card 31 (Citrus County FL) and/or 32 (Roane County TN)",
+        "Evidence and artifact retention from the official sources with hashes and citations",
+        "Refresh and managed restart persistence of the zoning snapshot",
+        "Idempotent second rebuild with no duplicate evidence",
+        "Browser resource cleanup proof across repeated runs",
+        "Operator-QA golden journey for the zoning panel"
+      ],
+      "backendServices": [
+        "src/landos/zoning-adapters.ts",
+        "src/landos/county-gis-capabilities.ts",
+        "src/landos/sprint-system/journeys.ts"
+      ],
+      "frontendScreens": [
+        "/landos Deal Card zoning panel"
+      ],
+      "requiredDataState": "Confirmed Deal Cards 31/32 with accepted identity untouched; zoning snapshot appended for the live deal only through the explicit rebuild command.",
+      "browserJourney": {
+        "steps": [
+          "Open http://localhost:3141/landos and open the live acceptance Deal Card",
+          "Trigger the explicit zoning rebuild control and wait for completion",
+          "Verify the panel shows the real controlling authority, incorporation status, base district, official source references, and honest per-domain states",
+          "Reconcile the panel against the GET API and database snapshot rows",
+          "Refresh the page and confirm identical persisted results",
+          "Restart the managed runtime (npm run landos:restart) and confirm the snapshot persists",
+          "Trigger rebuild again and confirm no duplicate evidence rows and the same snapshot version is reused for identical inputs",
+          "Confirm browser owned-resource records show closed state and no growth across runs"
+        ]
+      },
+      "testRequirements": [
+        "vitest run src/landos/zoning-slice.test.ts src/landos/zoning.routes.test.ts",
+        "vitest run (full repository suite)",
+        "tsc --noEmit",
+        "vite build && tsc (production build)",
+        "npm run landos:memory:audit"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "Zoning authority inferred from mailing city or county label instead of official boundary evidence",
+        "A fabricated district, use list, dimensional standard, or ordinance citation appears",
+        "Third-party zoning label presented as official without official corroboration",
+        "Duplicate evidence rows after repeated rebuilds",
+        "Snapshot lost after refresh or managed restart",
+        "Browser pages/contexts left open after runs",
+        "A complete result is claimed while an official source was unavailable"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "db_evidence",
+        "screenshot",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "live_url",
+        "independent_browser_qa"
+      ],
+      "dependsOn": [
+        "zoning-ws1-core",
+        "zoning-ws2-panel"
+      ],
+      "requirements": [
+        {
+          "id": "ws3-R1",
+          "text": "A real confirmed Deal Card receives a live jurisdiction determination backed by official boundary evidence distinguishing incorporated vs unincorporated authority.",
+          "verified": true,
+          "evidenceIds": [
+            "E19",
+            "E30",
+            "E31",
+            "E32"
+          ]
+        },
+        {
+          "id": "ws3-R2",
+          "text": "The official zoning map/GIS parcel result and the governing ordinance are genuinely retrieved from free official sources with retained artifacts, hashes, URLs, and dates; unavailable sources are reported honestly as partial/unavailable, never fabricated.",
+          "verified": true,
+          "evidenceIds": [
+            "E18",
+            "E19",
+            "E23"
+          ]
+        },
+        {
+          "id": "ws3-R3",
+          "text": "The persisted snapshot presents base district, overlays, by-right uses, conditional uses, and material dimensional standards with ordinance citations where the ordinance was retrievable.",
+          "verified": true,
+          "evidenceIds": [
+            "E17",
+            "E19",
+            "E30",
+            "E31"
+          ]
+        },
+        {
+          "id": "ws3-R4",
+          "text": "The Deal Card panel shows the live result and survives refresh and managed restart; repeated rebuilds create no duplicate evidence and reuse the snapshot for identical inputs.",
+          "verified": true,
+          "evidenceIds": [
+            "E20",
+            "E21",
+            "E30",
+            "E31"
+          ]
+        },
+        {
+          "id": "ws3-R5",
+          "text": "Browser pages and contexts are closed after success, failure, timeout, and cancellation, with no steady growth of open resources across repeated runs.",
+          "verified": true,
+          "evidenceIds": [
+            "E24",
+            "E25",
+            "E28",
+            "E29"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-07-24T08:36:57.255Z",
+        "reportPath": ".runtime/landos/qa/zoning-ws3-live-recheck2-2026-07-24/report.md",
+        "evidenceIds": [
+          "E28",
+          "E29",
+          "E30",
+          "E31"
+        ]
+      },
+      "repairHistory": [
+        {
+          "findingId": "F1",
+          "repairedAt": "2026-07-24T08:07:53.126Z",
+          "summary": "CDP endpoint identity gate: classifyCdpVersionInfo/verifyChromeCdpEndpoint in browser-session.ts reject Edge/Electron/WebView2/LenovoVantage runtimes; ensureBrowserSession and startBrowserSession refuse to attach or launch through a foreign endpoint; qa-browser connectCdp verifies before every connect and scans fallback ports 9223-9225, launching the dedicated Chrome on the first silent port when the default is squatted",
+          "regressionCoverage": "src/landos/browser-cdp-identity.test.ts (7 tests: classification, silent-vs-squatter probing, source contracts on qa-browser and browser-session)"
+        },
+        {
+          "findingId": "F2",
+          "repairedAt": "2026-07-24T08:07:54.471Z",
+          "summary": "QA tab hygiene: every QA localhost navigation carries the landosQa=1 marker; on connect the factory closes stale marker-carrying tabs from crashed/killed prior runs (never operator tabs); dispose is idempotent and always disconnects via finally; runner disposes on success and error paths",
+          "regressionCoverage": "src/landos/browser-cdp-identity.test.ts (marker + janitor + dispose source contracts)"
+        },
+        {
+          "findingId": "F3",
+          "repairedAt": "2026-07-24T08:07:56.004Z",
+          "summary": "Honest artifact page counts: countPdfPages in pdf-text.ts; ordinance adapter records real PDF page counts; audited migration 20260724_008 recomputes derived page_count metadata for existing retained zoning PDFs with the append-only trigger restored afterwards",
+          "regressionCoverage": "src/landos/zoning-live-config.test.ts countPdfPages test + src/landos/zoning-slice.test.ts recompute regression (trigger restoration + idempotency)"
+        },
+        {
+          "findingId": "F4",
+          "repairedAt": "2026-07-24T08:07:57.077Z",
+          "summary": "Overlay section now always renders with an affirmative honest empty state (sources-searched wording) instead of disappearing when no overlay intersects the parcel",
+          "regressionCoverage": "src/landos/zoning-ui.test.ts overlay empty-state assertions"
+        },
+        {
+          "findingId": "F5",
+          "repairedAt": "2026-07-24T08:29:59.206Z",
+          "summary": "expect_text and refresh/restart persistence text matching are now case-insensitive (CSS text-transform is presentation, not content); forbid_text deliberately stays exact so short prohibited tokens like NaN never false-match inside words. Golden journey zoning-land-use-panel now passes real_browser with 0 findings (report .runtime/landos/qa/qa-2026-07-24T08-28-37-256Z)",
+          "regressionCoverage": "src/landos/sprint-system/operator-qa-runner.test.ts case-insensitivity regression (uppercased page passes dashboard-shell-health; forbid_text source stays exact)"
+        },
+        {
+          "findingId": "F6",
+          "repairedAt": "2026-07-24T08:30:01.402Z",
+          "summary": "Residue remediated: all 6 leaked token-bearing localhost:3141 tabs inside the foreign Edge on 9222 were closed via targeted CDP HTTP close (only LandOS's own token/marker URLs; nothing else touched); 0 token-bearing tabs remain. Token rotation remains recommended to Tyler and is not performed (credential changes require his direction)",
+          "regressionCoverage": "Prevention already regression-covered: browser-cdp-identity.test.ts identity gate + QA tab marker/janitor stop any future token-bearing tab from opening in a foreign browser"
+        }
+      ],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-07-24T07:20:27.614Z",
+          "detail": "Live Citrus County FL jurisdiction config (official Corporate-limits boundary layer, official LandDevelopment zoning layer 9 + Overlay Districts layer 5, official LDC Chapter 2 PDF from county document center with verified-transcription extraction); dependency-free pdf-text.ts extractor; ordinance adapter PDF support; zoning-land-use-panel golden journey; live rebuild on Deal 31 succeeded end to end",
+          "evidenceIds": []
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-07-24T07:20:28.497Z",
+          "detail": "zoning-live-config.test.ts 9 tests + zoning-slice + zoning.routes: 25 tests PASS (anchors-only extraction, no fabrication, config reusability)",
+          "evidenceIds": []
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-07-24T07:20:29.559Z",
+          "detail": "Full repository suite 311 files / 3794 tests / 0 failures",
+          "evidenceIds": []
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-07-24T07:20:32.198Z",
+          "detail": "tsc --noEmit clean",
+          "evidenceIds": []
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-07-24T07:20:33.748Z",
+          "detail": "vite build + tsc PASS",
+          "evidenceIds": []
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-07-24T07:20:34.656Z",
+          "detail": "Managed restart: RUNNING healthy PID 27552, HTTP 200; zoning snapshot id 8 v2 for Deal 31 persisted through restart; second identical rebuild reused snapshot with zero new rows (jobs 22 / evidence 138 / snapshots 8 / artifacts 1 unchanged); 0 open browser resources",
+          "evidenceIds": []
+        },
+        {
+          "phase": "browser_qa",
+          "status": "fail",
+          "at": "2026-07-24T07:58:58.032Z",
+          "detail": "independent browser QA (.runtime/landos/qa/zoning-ws3-live-2026-07-24/qa-report.md)",
+          "evidenceIds": [
+            "E16",
+            "E17",
+            "E18",
+            "E19",
+            "E20",
+            "E21",
+            "E22"
+          ]
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "fail",
+          "at": "2026-07-24T08:23:38.515Z",
+          "detail": "independent browser QA (.runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/qa-recheck-report.md)",
+          "evidenceIds": [
+            "E23",
+            "E24",
+            "E25",
+            "E26",
+            "E27"
+          ]
+        },
+        {
+          "phase": "browser_qa_recheck",
+          "status": "pass",
+          "at": "2026-07-24T08:36:57.254Z",
+          "detail": "independent browser QA (.runtime/landos/qa/zoning-ws3-live-recheck2-2026-07-24/report.md)",
+          "evidenceIds": [
+            "E28",
+            "E29",
+            "E30",
+            "E31"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "workstreamId": "zoning-ws3-live",
+      "requirementId": "ws3-R5",
+      "liveUrl": "http://localhost:3141/landos?deal=31",
+      "steps": [
+        "Run npm run landos:operator-qa -- --journey zoning-land-use-panel on a healthy verified runtime (PID 78104).",
+        "Observe the journey FAIL with 'Navigation timeout of 45000 ms exceeded' and repeated 'Runtime.callFunctionOn timed out' protocol errors; the captured deal-card screenshot is a blank white page.",
+        "Query http://127.0.0.1:9222/json/version and observe the endpoint the QA browser layer attached to identifies as Edg/146.0.3856.109 with User-Agent LenovoVantage/3.0.0.191 (Lenovo Vantage embedded Edge WebView), not the dedicated LandOS Google Chrome profile.",
+        "Read src/landos/sprint-system/qa-browser.ts and src/landos/browser-session.ts: connectCdp()/pup.connect attach to whatever answers on BROWSER_INTEL_CDP_URL (default http://127.0.0.1:9222) with no /json/version identity verification, despite the stated convention Google Chrome ONLY never Edge; launchChrome() is only attempted when nothing answers."
+      ],
+      "expected": "The QA browser layer drives the dedicated LandOS Google Chrome profile (never Edge, never a foreign application's browser); the golden journey zoning-land-use-panel completes against a healthy runtime.",
+      "actual": "Because Lenovo Vantage's embedded Edge already answers on 127.0.0.1:9222, the QA layer silently attached to it. Journey runs qa-2026-07-24T07-33-30-505Z and qa-2026-07-24T07-42-03-181Z both FAILED with navigation/protocol timeouts and blank screenshots on a healthy runtime, and QA pages carrying the dashboard token were opened inside a third-party application's browser.",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-24T07-42-03-181Z/report.md",
+        ".runtime/landos/qa/qa-2026-07-24T07-42-03-181Z/zoning-land-use-panel/zoning-deal-card.png",
+        ".runtime/landos/qa/zoning-ws3-live-2026-07-24/cdp-endpoint-evidence.txt"
+      ],
+      "apiOrDbEvidence": "GET http://127.0.0.1:9222/json/version -> Browser Edg/146.0.3856.109, User-Agent LenovoVantage/3.0.0.191; /json lists LandOS QA pages (localhost:3141/landos?deal=32 x3) open inside that Edge instance.",
+      "severity": "high",
+      "suspectedSubsystem": "shared browser session layer (src/landos/browser-session.ts + src/landos/sprint-system/qa-browser.ts): CDP attach without endpoint identity verification",
+      "disposition": "internally_fixable",
+      "patternKey": "cdp-attach-foreign-browser-endpoint",
+      "status": "closed_retested",
+      "openedAt": "2026-07-24T07:58:58.032Z",
+      "history": [
+        {
+          "at": "2026-07-24T07:58:58.032Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-24T08:07:53.126Z",
+          "event": "repaired",
+          "detail": "CDP endpoint identity gate: classifyCdpVersionInfo/verifyChromeCdpEndpoint in browser-session.ts reject Edge/Electron/WebView2/LenovoVantage runtimes; ensureBrowserSession and startBrowserSession refuse to attach or launch through a foreign endpoint; qa-browser connectCdp verifies before every connect and scans fallback ports 9223-9225, launching the dedicated Chrome on the first silent port when the default is squatted"
+        },
+        {
+          "at": "2026-07-24T08:23:28.700Z",
+          "event": "retest_passed",
+          "detail": "E24"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "workstreamId": "zoning-ws3-live",
+      "requirementId": "ws3-R5",
+      "liveUrl": "http://127.0.0.1:9222/json",
+      "steps": [
+        "Before any new run, list pages on the CDP endpoint the QA/browser layer uses (http://127.0.0.1:9222/json).",
+        "Run the zoning-land-use-panel journey twice (07:33 and 07:42 runs) plus one run cancelled mid-flight (the 07:21 full-suite run that was terminated).",
+        "List pages again: three separate localhost:3141/landos?deal=32 pages plus dept/acquisitions?deal=31, dept/acquisitions?deal=32, landos/deal/32, and two roanecountytn.gov pages remain open.",
+        "Query landos_browser_owned_resource: 0 rows total."
+      ],
+      "expected": "Browser pages and contexts are closed after success, failure, timeout, and cancellation, with no steady growth of open resources across repeated runs; owned-resource records reflect actual open pages.",
+      "actual": "Open pages accumulate roughly one per journey run after failure/timeout/cancellation (3 duplicate deal=32 pages observed) and are never closed; the landos_browser_owned_resource ledger is empty (0 rows), so this growth is invisible to the cleanup accounting the panel and API report (browser cleaned, openResourceCountAfter 0).",
+      "evidencePaths": [
+        ".runtime/landos/qa/zoning-ws3-live-2026-07-24/cdp-endpoint-evidence.txt"
+      ],
+      "apiOrDbEvidence": "SELECT COUNT(*) FROM landos_browser_owned_resource -> 0; GET /json on the CDP endpoint -> 9 pages including 3x localhost:3141/landos?deal=32 and 2x roanecountytn.gov left open.",
+      "severity": "medium",
+      "suspectedSubsystem": "browser resource ownership/cleanup accounting (landos_browser_owned_resource) not covering QA journey pages; journey runner page lifecycle on failure/timeout/cancellation",
+      "disposition": "internally_fixable",
+      "patternKey": "browser-pages-leak-across-runs",
+      "status": "closed_retested",
+      "openedAt": "2026-07-24T07:58:58.032Z",
+      "history": [
+        {
+          "at": "2026-07-24T07:58:58.032Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-24T08:07:54.471Z",
+          "event": "repaired",
+          "detail": "QA tab hygiene: every QA localhost navigation carries the landosQa=1 marker; on connect the factory closes stale marker-carrying tabs from crashed/killed prior runs (never operator tabs); dispose is idempotent and always disconnects via finally; runner disposes on success and error paths"
+        },
+        {
+          "at": "2026-07-24T08:23:30.188Z",
+          "event": "retest_passed",
+          "detail": "E25"
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "workstreamId": "zoning-ws3-live",
+      "requirementId": "ws3-R2",
+      "liveUrl": "http://localhost:3141/api/landos/deal-cards/31/zoning-land-use",
+      "steps": [
+        "Read landos_property_zoning_artifact row id 1 for deal 31: page_count = 1.",
+        "Open the retained artifact store/zoning/deal_31/4e3a95a4....pdf and count pages (pdftotext form feeds): 51 pages.",
+        "GET /api/landos/deal-cards/31/zoning-land-use: artifacts[0].pageCount = 1."
+      ],
+      "expected": "Artifact metadata accurately describes the retained ordinance document (51-page PDF), or the field is named/valued to mean captures rather than PDF pages.",
+      "actual": "page_count is persisted and served as 1 for a 51-page ordinance PDF. The Deal Card panel does not currently display this number, so operator impact is low, but the stored metadata is inaccurate and would mislead any future consumer.",
+      "evidencePaths": [
+        ".runtime/landos/qa/zoning-ws3-live-2026-07-24/07-artifact-section.png"
+      ],
+      "apiOrDbEvidence": "DB landos_property_zoning_artifact.id=1 page_count=1 capture_count=1; actual PDF page count 51; SHA-256 4e3a95a4e0a91eb89cfae9f950e4491cd84f395def902bb3867ed108917bc003 matches DB and live official URL.",
+      "severity": "low",
+      "suspectedSubsystem": "zoning ordinance collector artifact metadata (page_count population)",
+      "disposition": "internally_fixable",
+      "patternKey": "artifact-metadata-page-count-wrong",
+      "status": "closed_retested",
+      "openedAt": "2026-07-24T07:58:58.032Z",
+      "history": [
+        {
+          "at": "2026-07-24T07:58:58.032Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-24T08:07:56.004Z",
+          "event": "repaired",
+          "detail": "Honest artifact page counts: countPdfPages in pdf-text.ts; ordinance adapter records real PDF page counts; audited migration 20260724_008 recomputes derived page_count metadata for existing retained zoning PDFs with the append-only trigger restored afterwards"
+        },
+        {
+          "at": "2026-07-24T08:23:31.541Z",
+          "event": "retest_passed",
+          "detail": "E23"
+        }
+      ]
+    },
+    {
+      "id": "F4",
+      "workstreamId": "zoning-ws3-live",
+      "requirementId": "ws3-R3",
+      "liveUrl": "http://localhost:3141/landos?deal=31 (Due Diligence tab, Zoning & Land Use panel)",
+      "steps": [
+        "Open Deal Card 31, Due Diligence tab, Zoning & Land Use panel.",
+        "Observe the Base zoning district card and the whole panel: there is no overlays statement anywhere.",
+        "Compare with Prohibited uses (No prohibited use has been extracted...) and Uncertain / provision unavailable (No use is currently in an uncertain state.), which both render explicit honest empty states.",
+        "web/src/components/ZoningLandUsePanel.tsx line 342 renders the overlay block only when overlays.length > 0."
+      ],
+      "expected": "The panel affirmatively presents the overlay result, e.g. no overlay or special district intersects the parcel per the official Citrus County Overlay Districts layer (the county layer was genuinely queried and returned no features - independently verified).",
+      "actual": "When overlays is empty the panel renders nothing about overlays; the operator only sees the District & overlays: Complete chip and cannot see the affirmative no-overlay determination or its official source, inconsistent with the explicit empty states used for prohibited and uncertain uses.",
+      "evidencePaths": [
+        ".runtime/landos/qa/zoning-ws3-live-2026-07-24/05-zoning-panel-top.png",
+        ".runtime/landos/qa/zoning-ws3-live-2026-07-24/04-zoning-panel-text.txt"
+      ],
+      "apiOrDbEvidence": "API analysis.overlays = []; independent query of https://maps.citrusbocc.com/server/rest/services/PublicData/LandDevelopment/MapServer/5/query at (-82.56334960619621, 28.696858510561608) returns features: [] (honest data; presentation-only gap).",
+      "severity": "low",
+      "suspectedSubsystem": "ZoningLandUsePanel overlay empty-state rendering",
+      "disposition": "internally_fixable",
+      "patternKey": "overlay-empty-state-not-affirmed",
+      "status": "closed_retested",
+      "openedAt": "2026-07-24T07:58:58.032Z",
+      "history": [
+        {
+          "at": "2026-07-24T07:58:58.032Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-24T08:07:57.077Z",
+          "event": "repaired",
+          "detail": "Overlay section now always renders with an affirmative honest empty state (sources-searched wording) instead of disappearing when no overlay intersects the parcel"
+        },
+        {
+          "at": "2026-07-24T08:23:32.549Z",
+          "event": "retest_passed",
+          "detail": "E26"
+        }
+      ]
+    },
+    {
+      "id": "F5",
+      "workstreamId": "zoning-ws3-live",
+      "requirementId": "ws3-R5",
+      "liveUrl": "http://localhost:3141/landos?deal=32",
+      "steps": [
+        "Run npx tsx scripts/sprint/landos-operator-qa-cli.ts --journey zoning-land-use-panel twice (runs qa-2026-07-24T08-12-38-168Z and qa-2026-07-24T08-15-40-313Z) on the healthy verified runtime PID 52792.",
+        "Observe both runs attach to the verified dedicated Chrome on 127.0.0.1:9223 (the F1 repair works), complete every navigation and testid step, then FAIL only at step 8: expect_text anyOf [Zoning & Land Use].",
+        "In the same verified Chrome, open /landos?deal=31 Due Diligence and evaluate the DOM: the panel h3 textContent is the mixed-case heading but innerText is fully uppercase because the h3 uses the Tailwind uppercase class (web/src/components/ZoningLandUsePanel.tsx lines 247-249).",
+        "qa-browser.ts pageText() (line 136) returns document.body.innerText, and operator-qa-runner.ts expect_text (line 613) does a case-sensitive includes; the assertion can never match on any deal."
+      ],
+      "expected": "The golden journey zoning-land-use-panel PASSES end to end through the verified Chrome endpoint (recheck acceptance for the workstream QA gate).",
+      "actual": "Both reruns FAIL at step 8 (The panel heading is visible) because CSS text-transform uppercases innerText while the journey asserts the mixed-case source string. The heading is visible to the operator (rendered uppercase); this is a QA-journey assertion defect that keeps the required golden journey permanently red.",
+      "evidencePaths": [
+        ".runtime/landos/qa/qa-2026-07-24T08-12-38-168Z/report.md",
+        ".runtime/landos/qa/qa-2026-07-24T08-15-40-313Z/report.md",
+        ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/deal31-zoning-panel-top.png",
+        ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/deal31-zoning-panel-text.txt"
+      ],
+      "apiOrDbEvidence": "Live DOM probe via verified Chrome ws endpoint 9223: h3.textContent mixed case; h3.innerText uppercase; document.body.innerText includes only the uppercase form of the heading.",
+      "severity": "medium",
+      "suspectedSubsystem": "operator-QA journey assertion layer (expect_text case-sensitive match against innerText) vs ZoningLandUsePanel heading CSS text-transform; fix in journeys.ts assertion or make expect_text transform-insensitive",
+      "disposition": "internally_fixable",
+      "patternKey": "journey-expect-text-css-transform-mismatch",
+      "status": "closed_retested",
+      "openedAt": "2026-07-24T08:23:38.516Z",
+      "history": [
+        {
+          "at": "2026-07-24T08:23:38.516Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-24T08:29:59.206Z",
+          "event": "repaired",
+          "detail": "expect_text and refresh/restart persistence text matching are now case-insensitive (CSS text-transform is presentation, not content); forbid_text deliberately stays exact so short prohibited tokens like NaN never false-match inside words. Golden journey zoning-land-use-panel now passes real_browser with 0 findings (report .runtime/landos/qa/qa-2026-07-24T08-28-37-256Z)"
+        },
+        {
+          "at": "2026-07-24T08:36:29.192Z",
+          "event": "retest_passed",
+          "detail": "E28"
+        }
+      ]
+    },
+    {
+      "id": "F6",
+      "workstreamId": "zoning-ws3-live",
+      "requirementId": "ws3-R5",
+      "liveUrl": "http://127.0.0.1:9222/json",
+      "steps": [
+        "List targets on the foreign Lenovo Vantage Edge CDP endpoint (127.0.0.1:9222) before and after both recheck journey runs.",
+        "Observe 9 targets, unchanged by the reruns (no new leakage; the F2 repair works), but 5 pre-repair localhost:3141 pages whose URLs carry the dashboard token remain open inside the third-party Edge instance.",
+        "The repaired system now correctly refuses to attach to non-Chrome endpoints, so it can never close these stale tabs itself."
+      ],
+      "expected": "No LandOS page carrying the dashboard token remains open inside a third-party application's browser.",
+      "actual": "5 token-bearing LandOS tabs from the pre-repair failed runs persist in the Lenovo Vantage embedded Edge. Requires manual closure (quit Lenovo Vantage or close its WebView tabs) and, prudently, dashboard-token rotation; both require Tyler.",
+      "evidencePaths": [
+        ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/edge-9222-baseline.txt"
+      ],
+      "apiOrDbEvidence": "GET http://127.0.0.1:9222/json returns 9 targets (5 localhost:3141 pages with token query params, 2 roanecountytn.gov, 1 vantage.csw.lenovo.com, 1 other); count identical before run 1 and after run 2.",
+      "severity": "medium",
+      "suspectedSubsystem": "residue of the original F1 defect inside a foreign browser process; not reachable by the repaired code by design",
+      "disposition": "internally_fixable",
+      "patternKey": "foreign-browser-token-tab-residue",
+      "status": "closed_retested",
+      "openedAt": "2026-07-24T08:23:38.516Z",
+      "history": [
+        {
+          "at": "2026-07-24T08:23:38.516Z",
+          "event": "opened"
+        },
+        {
+          "at": "2026-07-24T08:30:01.402Z",
+          "event": "repaired",
+          "detail": "Residue remediated: all 6 leaked token-bearing localhost:3141 tabs inside the foreign Edge on 9222 were closed via targeted CDP HTTP close (only LandOS's own token/marker URLs; nothing else touched); 0 token-bearing tabs remain. Token rotation remains recommended to Tyler and is not performed (credential changes require his direction)"
+        },
+        {
+          "at": "2026-07-24T08:36:31.319Z",
+          "event": "retest_passed",
+          "detail": "E29"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-07-24T06:13:45.495Z",
+      "kind": "screenshot",
+      "summary": "QA: Deal Card 32 overview renders with accepted header, acreage 12.28, coordinates; tabs Overview/Property/Due Diligence/Market/Strategy/Visuals/Seller/Resources/Documents/Activity all opened; screenshots 03-08 in run dir",
+      "path": ".runtime/landos/qa/zoning-ws1-core-20260724/03-deal32-overview.png",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-07-24T06:13:46.437Z",
+      "kind": "api_evidence",
+      "summary": "QA: GET /api/landos/deal-cards/32/zoning-land-use -> 200 {zoningLandUse:null} twice before and twice after managed restart; 999999 -> 404 deal card not found; nope -> 400 invalid id; no token -> 401",
+      "path": ".runtime/landos/qa/zoning-ws1-core-20260724/zoning32-call1.json",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-07-24T06:13:47.485Z",
+      "kind": "db_evidence",
+      "summary": "QA: row counts identical before/after full card session + 6 zoning GETs: collector_job 17, evidence_item 70, intelligence_snapshot 7, zoning_artifact 0, zoning_correction 0; zero zoning rows ever created",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-07-24T06:13:49.005Z",
+      "kind": "refresh_persistence",
+      "summary": "QA: browser reload of Deal Card 32 produced byte-identical body text (diff exit 0) and identical GET-only network profile; no zoning or write requests",
+      "path": ".runtime/landos/qa/zoning-ws1-core-20260724/deal32-after-refresh-text.txt",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-07-24T06:13:50.165Z",
+      "kind": "browser_journey",
+      "summary": "QA: golden journeys verified-property-strong-evidence and refresh-persistence PASS (real_browser, 0 findings) against PID 77240",
+      "path": ".runtime/landos/qa/qa-2026-07-24T06-11-32-425Z/report.json",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-07-24T06:16:03.200Z",
+      "kind": "test_result",
+      "summary": "Focused zoning tests: 5 files / 50 tests / 0 failures (zoning-jurisdiction, zoning-analyst, zoning-boundaries, zoning-slice, zoning.routes). Full repository suite: 309 files / 3778 tests / 0 failures. tsc --noEmit clean; vite+tsc production build PASS.",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-07-24T06:16:04.086Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent landos-browser-qa agent PASS, 0 blocking findings: Deal 32 intact across all 10 tabs, zoning GET honest null and provably read-only (identical row counts across session), refresh persistence byte-identical, id validation verified. Report .runtime/landos/qa/zoning-ws1-core-20260724/qa-report.md",
+      "path": ".runtime/landos/qa/zoning-ws1-core-20260724/qa-report.md",
+      "workstreamId": "zoning-ws1-core"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-07-24T07:01:14.851Z",
+      "kind": "screenshot",
+      "summary": "Deal 32 Due Diligence: zoning panel honest empty state, Research zoning button, no fabricated content",
+      "path": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/11-diligence-zoning-panel.png",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-07-24T07:01:15.745Z",
+      "kind": "refresh_persistence",
+      "summary": "Zoning panel identical honest empty state after full browser refresh of /landos?deal=32",
+      "path": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/14-after-refresh-zoning-panel.png",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-07-24T07:01:16.707Z",
+      "kind": "api_evidence",
+      "summary": "GET /api/landos/deal-cards/32/zoning-land-use returned 200 {\"zoningLandUse\":null}, matching the rendered empty state",
+      "path": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/qa-report.md",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-07-24T07:01:17.979Z",
+      "kind": "db_evidence",
+      "summary": "Row counts collector_job=17, evidence_item=70, intelligence_snapshot=7, zoning_artifact=0 unchanged across the whole journey; network log 50 API requests all GET, zoning traffic 2x GET only",
+      "path": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/network-log.json",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-07-24T07:01:19.019Z",
+      "kind": "browser_journey",
+      "summary": "Real-browser journey: board, Deal 32, Due Diligence, refresh, all 10 tabs render; Still unknown/Public Records/Public Property Intelligence intact; zoning-ui source-scan 7/7",
+      "path": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/qa-report.md",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-07-24T07:02:10.650Z",
+      "kind": "test_result",
+      "summary": "zoning-ui.test.ts 7/7 PASS; deal-card-ui + government-records-ui unchanged PASS; full suite 310 files / 3785 tests / 0 failures; tsc clean; production build PASS",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-07-24T07:02:11.692Z",
+      "kind": "live_url",
+      "summary": "Live panel on http://localhost:3141 Deal Card 32 Due Diligence tab (managed runtime PID 67500, HTTP 200)",
+      "url": "http://localhost:3141",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-07-24T07:02:12.808Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent landos-browser-qa PASS, 0 findings: honest empty state, no fabrication, provably read-only load (identical row counts, GET-only network log), API/panel reconciliation, refresh persistence, no regression across all 10 tabs. Report .runtime/landos/qa/zoning-ws2-panel-2026-07-24/qa-report.md",
+      "path": ".runtime/landos/qa/zoning-ws2-panel-2026-07-24/qa-report.md",
+      "workstreamId": "zoning-ws2-panel"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-07-24T07:58:26.017Z",
+      "kind": "browser_journey",
+      "summary": "Personal real-browser journey: Deal 31 Due Diligence zoning panel fully rendered and reconciled; rebuild control present but never clicked",
+      "path": ".runtime/landos/qa/zoning-ws3-live-2026-07-24/05-zoning-panel-top.png",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-07-24T07:58:42.169Z",
+      "kind": "screenshot",
+      "summary": "Zoning panel sections: authority, district, ordinance, use lists, prohibited-uses honesty, dimensional table, artifact card",
+      "path": ".runtime/landos/qa/zoning-ws3-live-2026-07-24/06-dimensional-table.png",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-07-24T07:58:43.593Z",
+      "kind": "api_evidence",
+      "summary": "GET /api/landos/deal-cards/31/zoning-land-use matches panel and DB (snapshot id 8 v2, 68 evidence, 1 artifact, overlays [], confidence high); retained-capture endpoint serves the exact 1303181-byte PDF",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-07-24T07:58:44.885Z",
+      "kind": "db_evidence",
+      "summary": "DB: snapshot id 8 v2 current; 68 zoning evidence rows (raw+normalized pairs, no duplicates); artifact SHA-256 matches file and live official URL byte-for-byte; independent ArcGIS queries confirm CLR MH, no incorporated place, no corporate limits, no overlays; Sec 2403 PDF text confirms all 9 P / 10 C uses and dimensional values",
+      "path": ".runtime/landos/qa/zoning-ws3-live-2026-07-24/cdp-endpoint-evidence.txt",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-07-24T07:58:46.355Z",
+      "kind": "refresh_persistence",
+      "summary": "Reload + reopen Due Diligence: panel innerText hash identical (9f079165ab1c668a)",
+      "path": ".runtime/landos/qa/zoning-ws3-live-2026-07-24/08-after-refresh.png",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-07-24T07:58:48.529Z",
+      "kind": "restart_persistence",
+      "summary": "npm run landos:restart (PID 72088 healthy): panel innerText hash identical to pre-restart; snapshot id 8 v2 still current; counts unchanged; Deal 32 and Deal 14 regression intact",
+      "path": ".runtime/landos/qa/zoning-ws3-live-2026-07-24/09-after-restart.png",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-07-24T07:58:49.406Z",
+      "kind": "live_url",
+      "summary": "Automated journey zoning-land-use-panel FAILED twice on healthy runtime: QA browser layer attached to Lenovo Vantage Edge on CDP 9222 (no endpoint identity check); open pages grow across runs",
+      "path": ".runtime/landos/qa/qa-2026-07-24T07-42-03-181Z/report.md",
+      "url": "http://localhost:3141/landos?deal=31",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E23",
+      "recordedAt": "2026-07-24T08:22:57.729Z",
+      "kind": "db_evidence",
+      "summary": "Recheck F3: landos_property_zoning_artifact id 1 page_count=51, artifact_hash unchanged 4e3a95a4e0a9...17bc003, capture_count 1; migration 20260724_008_zoning_artifact_pdf_page_count applied 08:09:46; live UPDATE attempt rejected with 'zoning artifacts are append-only'; API serves pageCount 51 with same hash",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/qa-recheck-report.md",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E24",
+      "recordedAt": "2026-07-24T08:23:19.191Z",
+      "kind": "browser_journey",
+      "summary": "Recheck F1: both zoning-land-use-panel reruns (qa-2026-07-24T08-12-38-168Z, qa-2026-07-24T08-15-40-313Z) refused the Lenovo Vantage Edge on 9222 and drove the dedicated verified Chrome/150 on 127.0.0.1:9223; all navigation steps completed in ~8s with real screenshots, no protocol timeouts; verifyChromeCdpEndpoint runs before every connect and browser-cdp-identity.test.ts pins the refusal",
+      "path": ".runtime/landos/qa/qa-2026-07-24T08-15-40-313Z/report.md",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E25",
+      "recordedAt": "2026-07-24T08:23:21.053Z",
+      "kind": "api_evidence",
+      "summary": "Recheck F2: dedicated Chrome endpoint 9223 /json shows exactly 3 targets (about:blank + 2 browser_ui, zero landos pages) after run 1 AND after run 2; foreign Edge 9222 target count unchanged at 9 across both runs; landosQa=1 marker present on QA navigations with stale-marker cleanup on connect",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/edge-9222-baseline.txt",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E26",
+      "recordedAt": "2026-07-24T08:23:22.171Z",
+      "kind": "screenshot",
+      "summary": "Recheck F4: Deal 31 Due Diligence zoning panel in verified Chrome shows 'Overlay & special districts' with the exact honest empty-state sentence; persisted content intact (CLR MH, Citrus County unincorporated, ordinance Retrieved, 9 by-right, 10 conditional, 68 evidence, 1 artifact, snapshot v2)",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/deal31-overlay-empty-state.png",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E27",
+      "recordedAt": "2026-07-24T08:23:23.256Z",
+      "kind": "independent_browser_qa",
+      "summary": "Recheck report: F1-F4 repairs verified individually; golden journey still FAILS at expect_text heading step due to CSS uppercase vs case-sensitive innerText match (new finding); token-bearing stale tabs remain in foreign Edge (external residue); read model unchanged (snapshot id 8 v2 current, 138 global evidence, 68 zoning evidence deal 31, 1 artifact)",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck-2026-07-24/qa-recheck-report.md",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E28",
+      "recordedAt": "2026-07-24T08:36:04.049Z",
+      "kind": "browser_journey",
+      "summary": "FINAL RECHECK F5: independent rerun of zoning-land-use-panel golden journey PASSED (real_browser, 0 findings, 12/12 steps incl. case-insensitive expect_text step 8 and refresh_persistence) on verified runtime PID 83280 via verified Chrome CDP 9223 (9222 is Edge and is refused by verifyChromeCdpEndpoint)",
+      "path": ".runtime/landos/qa/qa-2026-07-24T08-31-00-543Z/report.json",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E29",
+      "recordedAt": "2026-07-24T08:36:11.801Z",
+      "kind": "api_evidence",
+      "summary": "FINAL RECHECK F6: GET http://127.0.0.1:9222/json/list (no attach) returns 3 targets (2 roanecountytn.gov pages, 1 vantage.csw.lenovo.com); 0 targets contain any .env token value and 0 reference localhost:3141; token compared privately in-process, never printed. Dedicated Chrome 9223 also clean (1 about:blank, 0 token-bearing)",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck2-2026-07-24/edge-9222-audit.txt",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E30",
+      "recordedAt": "2026-07-24T08:36:23.399Z",
+      "kind": "screenshot",
+      "summary": "FINAL RECHECK spot-check: Deal 31 zoning panel in verified Chrome 9223 unchanged — Citrus County Confirmed (Unincorporated County, mailing city Homosassa never used), base district CLR MH Officially Confirmed with Official map confirmed badge, Governing ordinance Retrieved (LDC Chapter Two OA-2024-00002, 2024-07-23), overlay honest empty state, 5/5 domains Complete with browser cleaned",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck2-2026-07-24/deal31-zoning-panel-top.png",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E31",
+      "recordedAt": "2026-07-24T08:36:24.599Z",
+      "kind": "api_evidence",
+      "summary": "FINAL RECHECK spot-check API: GET /api/landos/deal-cards/31/zoning-land-use -> 200; snapshot v2, completeness 100% all 5 domains complete, jurisdiction confirmed Citrus County (county), baseZoning CLR MH officially_confirmed, overlays [], ordinance retrieved, 1 artifact pageCount=51, 68 evidence items; saved token-redacted",
+      "path": ".runtime/landos/qa/zoning-ws3-live-recheck2-2026-07-24/deal31-zoning-api.json",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E32",
+      "recordedAt": "2026-07-24T14:50:05.023Z",
+      "kind": "test_result",
+      "summary": "Post-repair full repository suite rerun this session: 312 files / 3804 tests / 0 failures (vitest run, 25.3s) plus tsc --noEmit clean; log at .runtime/landos/qa/zoning-full-suite-postrepair-2026-07-24.log. Matches the prior session's reported result, now persisted.",
+      "path": ".runtime/landos/qa/zoning-full-suite-postrepair-2026-07-24.log",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E33",
+      "recordedAt": "2026-07-24T15:13:57.027Z",
+      "kind": "browser_journey",
+      "summary": "FINAL REVIEW personal combined regression via verified Chrome CDP 9223 (9222 Edge refused): dashboard shell, Deal 31 zoning panel fully reconciled (Citrus County unincorporated Confirmed, CLR MH Officially Confirmed, OA-2024-00002 retrieved, overlay honest empty state, 9 by-right vs 10 conditional separated, Snapshot v2, no NaN/undefined), Deal 32 honest empty zoning + APN 073090 04200 / SACHAN DILEEP S / 12.28 ac intact incl. refresh, Deal 14 gov-records v5 60% with instrument 1997O31519, Deal 10 imagery/comps/value/strategy still withheld.",
+      "path": ".runtime/landos/qa/zoning-final-review-2026-07-24/personal-regression-log.txt",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E34",
+      "recordedAt": "2026-07-24T15:13:58.624Z",
+      "kind": "api_evidence",
+      "summary": "FINAL REVIEW API reconcile: GET /31/zoning-land-use -> snapshot id 8 v2, 100% complete 5/5 domains, jurisdiction confirmed unincorporated Citrus County (official boundary evidence, mailing city never used), CLR MH officially confirmed, overlays [], 9/10/9 uses+standards with Sec. 2403 citations, 68 evidence, artifact pageCount 51 hash 4e3a95a4e0a9...; GET /32 -> zoningLandUse null; no-token -> 401; all saved token-redacted.",
+      "path": ".runtime/landos/qa/zoning-final-review-2026-07-24/deal31-zoning-api.json",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E35",
+      "recordedAt": "2026-07-24T15:14:00.803Z",
+      "kind": "db_evidence",
+      "summary": "FINAL REVIEW read-only proof: DB counts identical before/after entire review session incl. 8 journey runs (jobs 22, attempts 22, evidence 138, snapshots 8, zoning artifact 1, corrections 0; zoning snapshot id 8 v2 sole current); current runtime PID 83280 is itself post-managed-restart with snapshot persisted.",
+      "path": ".runtime/landos/qa/zoning-final-review-2026-07-24/db-after.txt",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E36",
+      "recordedAt": "2026-07-24T15:14:02.492Z",
+      "kind": "browser_journey",
+      "summary": "FINAL REVIEW golden journeys: zoning-land-use-panel, dashboard-shell-health, refresh-persistence, phase1-shell-free-navigation all PASS real_browser 0 findings on PID 83280 via verified Chrome 9223; 9223 and 9222 clean of QA/token tabs afterward (no-attach audit of 9222).",
+      "path": ".runtime/landos/qa/qa-2026-07-24T14-54-29-081Z/report.json",
+      "workstreamId": "zoning-ws3-live"
+    },
+    {
+      "id": "E37",
+      "recordedAt": "2026-07-24T15:14:04.184Z",
+      "kind": "independent_browser_qa",
+      "summary": "FINAL REVIEW OBS-1: 4 protected lead-workspace/phase1 journeys fail from pre-sprint recovery merge PR #2 (commit 1755c8f in sprint base cba457d replaced Lead Workspace with canonical Deal Card; sprint web diff additive-only +57 lines DealCard.tsx) — capability registry re-baseline needs Tyler; not sprint-caused, non-blocking.",
+      "path": ".runtime/landos/qa/zoning-final-review-2026-07-24/report.md",
+      "workstreamId": "zoning-ws3-live"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-07-24T15:14:16.544Z",
+    "detail": "Combined operator regression PASS by independent landos-final-reviewer via verified Chrome CDP 9223: Deal 31 live zoning reconciled panel/API/DB, Deal 32 honest empty + accepted data intact, Deal 14 and Deal 10 controls intact, GETs proven read-only (identical row counts across 8 journey runs), golden journeys zoning-land-use-panel/dashboard-shell-health/refresh-persistence/phase1-shell-free-navigation all PASS, browser endpoints clean afterward. Post-repair full suite 312 files / 3804 tests / 0 failures + tsc clean (E32). OBS-1: 4 pre-existing lead-workspace/phase1 journey failures traced to pre-sprint recovery merge, not sprint-caused.",
+    "evidenceIds": [
+      "E32",
+      "E33",
+      "E34",
+      "E35",
+      "E36",
+      "E37"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-07-24T15:14:18.485Z",
+    "detail": "landos-final-reviewer: Independent final review PASS: ledger valid, 17/17 requirements evidence-linked, F1-F6 closed_retested, claims-lint clean, no fabrication, no conditional/by-right conflation, no accepted-data change, no GET writes, no browser residue. Non-blocking OBS-1 (capability registry re-baseline for retired Lead Workspace journeys) left for Tyler.",
+    "evidenceIds": [
+      "E33",
+      "E34",
+      "E35",
+      "E36",
+      "E37"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-07-24T05:23:09.200Z",
+      "event": "sprint_created",
+      "detail": "Jurisdiction, Zoning, and Land-Use Intelligence vertical slice"
+    },
+    {
+      "at": "2026-07-24T05:23:14.209Z",
+      "event": "workstream_started",
+      "detail": "zoning-ws1-core"
+    },
+    {
+      "at": "2026-07-24T05:46:41.930Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:implementation:pass"
+    },
+    {
+      "at": "2026-07-24T05:46:43.097Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-24T05:51:49.900Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-24T05:52:01.714Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:typecheck:pass"
+    },
+    {
+      "at": "2026-07-24T05:52:34.854Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:production_build:pass"
+    },
+    {
+      "at": "2026-07-24T05:55:04.395Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-24T06:14:12.606Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws1-core:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-24T06:14:12.606Z",
+      "event": "browser_qa_recorded",
+      "detail": "zoning-ws1-core:pass"
+    },
+    {
+      "at": "2026-07-24T06:16:10.715Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R1"
+    },
+    {
+      "at": "2026-07-24T06:16:12.023Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R2"
+    },
+    {
+      "at": "2026-07-24T06:16:13.786Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R3"
+    },
+    {
+      "at": "2026-07-24T06:16:14.859Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R4"
+    },
+    {
+      "at": "2026-07-24T06:16:16.236Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R5"
+    },
+    {
+      "at": "2026-07-24T06:16:18.101Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R6"
+    },
+    {
+      "at": "2026-07-24T06:16:20.095Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R7"
+    },
+    {
+      "at": "2026-07-24T06:16:21.016Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws1-core/ws1-R8"
+    },
+    {
+      "at": "2026-07-24T06:16:27.660Z",
+      "event": "workstream_passed",
+      "detail": "zoning-ws1-core"
+    },
+    {
+      "at": "2026-07-24T06:16:28.988Z",
+      "event": "workstream_started",
+      "detail": "zoning-ws2-panel"
+    },
+    {
+      "at": "2026-07-24T06:21:20.881Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:implementation:pass"
+    },
+    {
+      "at": "2026-07-24T06:21:22.700Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-24T06:21:25.082Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-24T06:21:26.240Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:typecheck:pass"
+    },
+    {
+      "at": "2026-07-24T06:21:27.182Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:production_build:pass"
+    },
+    {
+      "at": "2026-07-24T06:22:50.965Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-24T07:01:24.881Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws2-panel:browser_qa:pass"
+    },
+    {
+      "at": "2026-07-24T07:01:24.881Z",
+      "event": "browser_qa_recorded",
+      "detail": "zoning-ws2-panel:pass"
+    },
+    {
+      "at": "2026-07-24T07:02:18.677Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws2-panel/ws2-R1"
+    },
+    {
+      "at": "2026-07-24T07:02:19.738Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws2-panel/ws2-R2"
+    },
+    {
+      "at": "2026-07-24T07:02:20.713Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws2-panel/ws2-R3"
+    },
+    {
+      "at": "2026-07-24T07:02:21.831Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws2-panel/ws2-R4"
+    },
+    {
+      "at": "2026-07-24T07:02:23.377Z",
+      "event": "workstream_passed",
+      "detail": "zoning-ws2-panel"
+    },
+    {
+      "at": "2026-07-24T07:02:24.537Z",
+      "event": "workstream_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T07:20:27.615Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:implementation:pass"
+    },
+    {
+      "at": "2026-07-24T07:20:28.498Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:targeted_tests:pass"
+    },
+    {
+      "at": "2026-07-24T07:20:29.559Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:integration_tests:pass"
+    },
+    {
+      "at": "2026-07-24T07:20:32.198Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:typecheck:pass"
+    },
+    {
+      "at": "2026-07-24T07:20:33.749Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:production_build:pass"
+    },
+    {
+      "at": "2026-07-24T07:20:34.657Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:runtime_verification:pass"
+    },
+    {
+      "at": "2026-07-24T07:58:58.032Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:browser_qa:fail"
+    },
+    {
+      "at": "2026-07-24T07:58:58.032Z",
+      "event": "browser_qa_recorded",
+      "detail": "zoning-ws3-live:fail"
+    },
+    {
+      "at": "2026-07-24T08:07:53.125Z",
+      "event": "repair_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T08:07:53.126Z",
+      "event": "finding_repaired",
+      "detail": "F1"
+    },
+    {
+      "at": "2026-07-24T08:07:54.470Z",
+      "event": "repair_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T08:07:54.471Z",
+      "event": "finding_repaired",
+      "detail": "F2"
+    },
+    {
+      "at": "2026-07-24T08:07:56.003Z",
+      "event": "repair_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T08:07:56.004Z",
+      "event": "finding_repaired",
+      "detail": "F3"
+    },
+    {
+      "at": "2026-07-24T08:07:57.077Z",
+      "event": "repair_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T08:07:57.077Z",
+      "event": "finding_repaired",
+      "detail": "F4"
+    },
+    {
+      "at": "2026-07-24T08:23:28.700Z",
+      "event": "finding_retested",
+      "detail": "F1:pass"
+    },
+    {
+      "at": "2026-07-24T08:23:30.189Z",
+      "event": "finding_retested",
+      "detail": "F2:pass"
+    },
+    {
+      "at": "2026-07-24T08:23:31.541Z",
+      "event": "finding_retested",
+      "detail": "F3:pass"
+    },
+    {
+      "at": "2026-07-24T08:23:32.549Z",
+      "event": "finding_retested",
+      "detail": "F4:pass"
+    },
+    {
+      "at": "2026-07-24T08:23:38.516Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:browser_qa_recheck:fail"
+    },
+    {
+      "at": "2026-07-24T08:23:38.516Z",
+      "event": "browser_qa_recorded",
+      "detail": "zoning-ws3-live:fail"
+    },
+    {
+      "at": "2026-07-24T08:29:59.205Z",
+      "event": "repair_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T08:29:59.206Z",
+      "event": "finding_repaired",
+      "detail": "F5"
+    },
+    {
+      "at": "2026-07-24T08:30:01.402Z",
+      "event": "repair_started",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T08:30:01.402Z",
+      "event": "finding_repaired",
+      "detail": "F6"
+    },
+    {
+      "at": "2026-07-24T08:36:29.193Z",
+      "event": "finding_retested",
+      "detail": "F5:pass"
+    },
+    {
+      "at": "2026-07-24T08:36:31.319Z",
+      "event": "finding_retested",
+      "detail": "F6:pass"
+    },
+    {
+      "at": "2026-07-24T08:36:57.255Z",
+      "event": "phase_recorded",
+      "detail": "zoning-ws3-live:browser_qa_recheck:pass"
+    },
+    {
+      "at": "2026-07-24T08:36:57.255Z",
+      "event": "browser_qa_recorded",
+      "detail": "zoning-ws3-live:pass"
+    },
+    {
+      "at": "2026-07-24T14:48:11.058Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws3-live/ws3-R1"
+    },
+    {
+      "at": "2026-07-24T14:48:14.756Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws3-live/ws3-R2"
+    },
+    {
+      "at": "2026-07-24T14:48:17.971Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws3-live/ws3-R3"
+    },
+    {
+      "at": "2026-07-24T14:48:19.777Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws3-live/ws3-R4"
+    },
+    {
+      "at": "2026-07-24T14:48:21.475Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws3-live/ws3-R5"
+    },
+    {
+      "at": "2026-07-24T14:50:12.646Z",
+      "event": "requirement_verified",
+      "detail": "zoning-ws3-live/ws3-R1"
+    },
+    {
+      "at": "2026-07-24T14:50:14.761Z",
+      "event": "workstream_passed",
+      "detail": "zoning-ws3-live"
+    },
+    {
+      "at": "2026-07-24T15:14:16.545Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-24T15:14:18.486Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-07-24T15:14:20.217Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

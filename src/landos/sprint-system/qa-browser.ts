@@ -13,9 +13,15 @@ import {
   CHROME_CANDIDATE_PATHS,
   readSessionConfig,
   resolveChromePath,
+  verifyChromeCdpEndpoint,
   type BrowserSessionConfig,
 } from '../browser-session.js';
 import type { QaBrowserFactory, QaBrowserSession, QaPageDriver } from './operator-qa-runner.js';
+
+/** Marker appended to every QA-navigated localhost URL so stale tabs from a
+ * crashed/killed QA run are provably QA-owned and safe to close on the next
+ * run. Operator tabs never carry it. */
+export const QA_TAB_MARKER = 'landosQa=1';
 
 // Runs inside the browser page, not Node.
 declare const document: any;
@@ -36,11 +42,16 @@ interface PuppeteerPage {
 }
 interface PuppeteerBrowser {
   newPage(): Promise<PuppeteerPage>;
+  pages?(): Promise<PuppeteerPage[]>;
   disconnect(): Promise<void>;
   version(): Promise<string>;
 }
 
+/** Connect ONLY after the endpoint's /json/version proves it is genuine Google
+ * Chrome — never Edge or an embedded third-party runtime squatting the port. */
 async function connectCdp(cdpUrl: string): Promise<PuppeteerBrowser | null> {
+  const identity = await verifyChromeCdpEndpoint(cdpUrl);
+  if (!identity.ok) return null;
   try {
     const mod = (await import('puppeteer-core')) as unknown as {
       connect?: (opts: { browserURL: string; protocolTimeout?: number; defaultViewport?: null }) => Promise<PuppeteerBrowser>;
@@ -56,10 +67,43 @@ async function connectCdp(cdpUrl: string): Promise<PuppeteerBrowser | null> {
   }
 }
 
-function launchChrome(config: BrowserSessionConfig): string | null {
+const withPort = (cdpUrl: string, port: string): string => cdpUrl.replace(/:\d+/, `:${port}`);
+
+/** Candidate CDP endpoints: the configured port first, then fallbacks so a
+ * foreign runtime squatting the default port never blocks (or receives) QA. */
+function candidateCdpUrls(config: BrowserSessionConfig): string[] {
+  const configured = config.cdpUrl;
+  const port = configured.match(/:(\d+)/)?.[1] ?? '9222';
+  const fallbacks = ['9223', '9224', '9225'].filter((candidate) => candidate !== port);
+  return [configured, ...fallbacks.map((candidate) => withPort(configured, candidate))];
+}
+
+/** Close stale tabs left by a previously crashed/killed QA run. Only pages
+ * whose URL carries the QA marker are ever touched — never operator tabs. */
+async function closeStaleQaTabs(browser: PuppeteerBrowser): Promise<number> {
+  if (!browser.pages) return 0;
+  let closed = 0;
+  try {
+    for (const page of await browser.pages()) {
+      try {
+        if (page.url().includes(QA_TAB_MARKER)) {
+          await page.close();
+          closed += 1;
+        }
+      } catch {
+        // page already gone
+      }
+    }
+  } catch {
+    // pages() unsupported on this connection
+  }
+  return closed;
+}
+
+function launchChrome(config: BrowserSessionConfig, cdpUrl: string): string | null {
   const chrome = resolveChromePath(config.chromePath);
   if (!chrome.path) return `Google Chrome not found. Checked: ${[config.chromePath, ...CHROME_CANDIDATE_PATHS].filter(Boolean).join('; ')}`;
-  const port = config.cdpUrl.match(/:(\d+)/)?.[1] ?? '9222';
+  const port = cdpUrl.match(/:(\d+)/)?.[1] ?? '9222';
   const child = nodeSpawn(
     chrome.path,
     [
@@ -80,7 +124,12 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 function wrapPage(page: PuppeteerPage): QaPageDriver {
   return {
     async goto(url: string) {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 45_000 });
+      // Localhost QA navigations carry the QA tab marker so a tab orphaned by
+      // a killed run is identifiable — and closable — on the next run.
+      const marked = /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(url) && !url.includes(QA_TAB_MARKER)
+        ? `${url}${url.includes('?') ? '&' : '?'}${QA_TAB_MARKER}`
+        : url;
+      await page.goto(marked, { waitUntil: 'networkidle2', timeout: 45_000 });
       await sleep(500);
     },
     async pageText() {
@@ -170,33 +219,57 @@ export function realBrowserFactory(options: { headed?: boolean } = {}): QaBrowse
   void options;
   return async (): Promise<QaBrowserSession> => {
     const config = readSessionConfig();
-    let browser = await connectCdp(config.cdpUrl);
-    if (!browser) {
-      const launchError = launchChrome(config);
+    const candidates = candidateCdpUrls(config);
+    let browser: PuppeteerBrowser | null = null;
+    let connectedUrl: string | null = null;
+    const squatters: string[] = [];
+    let launchTarget: string | null = null;
+    for (const cdpUrl of candidates) {
+      const identity = await verifyChromeCdpEndpoint(cdpUrl);
+      if (identity.ok) {
+        browser = await connectCdp(cdpUrl);
+        if (browser) { connectedUrl = cdpUrl; break; }
+      } else if (identity.answering) {
+        squatters.push(`${cdpUrl}: ${identity.reason}`);
+      } else if (!launchTarget) {
+        launchTarget = cdpUrl; // first silent port — safe for our own launch
+      }
+    }
+    if (!browser && launchTarget) {
+      const launchError = launchChrome(config, launchTarget);
       if (launchError) throw new Error(launchError);
       for (let attempt = 0; attempt < 30 && !browser; attempt += 1) {
         await sleep(500);
-        browser = await connectCdp(config.cdpUrl);
+        browser = await connectCdp(launchTarget);
       }
+      if (browser) connectedUrl = launchTarget;
     }
     if (!browser) {
-      throw new Error(`no Chrome answering on ${config.cdpUrl}; launch failed or the debugging port is blocked`);
+      throw new Error([
+        `no verified Google Chrome reachable on any candidate CDP endpoint (${candidates.join(', ')}).`,
+        squatters.length ? `Foreign runtimes refused: ${squatters.join(' | ')}` : 'Launch failed or the ports are blocked.',
+      ].join(' '));
     }
+    const staleClosed = await closeStaleQaTabs(browser);
     const page = await browser.newPage();
+    let disposed = false;
     return {
       page: wrapPage(page),
       mode: 'real',
-      description: `puppeteer-core over CDP ${config.cdpUrl} (dedicated LandOS Chrome profile, headed)`,
+      description: `puppeteer-core over verified Chrome CDP ${connectedUrl} (dedicated LandOS profile, headed${staleClosed ? `; closed ${staleClosed} stale QA tab(s) from a prior run` : ''})`,
       async dispose() {
+        if (disposed) return;
+        disposed = true;
         try {
           await page.close();
         } catch {
           // tab already gone
-        }
-        try {
-          await browser!.disconnect();
-        } catch {
-          // connection already dropped
+        } finally {
+          try {
+            await browser!.disconnect();
+          } catch {
+            // connection already dropped
+          }
         }
       },
     };

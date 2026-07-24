@@ -357,6 +357,72 @@
         }
       ],
       "review": null
+    },
+    "cdp-attach-foreign-browser-endpoint": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-24-zoning-land-use",
+          "findingId": "F1",
+          "at": "2026-07-24T07:58:58.032Z",
+          "summary": "The QA browser layer drives the dedicated LandOS Google Chrome profile (never Edge, never a foreign application's browser); the golden journey zoning-land-use-panel completes against a healthy runtime."
+        }
+      ],
+      "review": null
+    },
+    "browser-pages-leak-across-runs": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-24-zoning-land-use",
+          "findingId": "F2",
+          "at": "2026-07-24T07:58:58.032Z",
+          "summary": "Browser pages and contexts are closed after success, failure, timeout, and cancellation, with no steady growth of open resources across repeated runs; owned-resource records reflect actual open pages."
+        }
+      ],
+      "review": null
+    },
+    "artifact-metadata-page-count-wrong": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-24-zoning-land-use",
+          "findingId": "F3",
+          "at": "2026-07-24T07:58:58.032Z",
+          "summary": "Artifact metadata accurately describes the retained ordinance document (51-page PDF), or the field is named/valued to mean captures rather than PDF pages."
+        }
+      ],
+      "review": null
+    },
+    "overlay-empty-state-not-affirmed": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-24-zoning-land-use",
+          "findingId": "F4",
+          "at": "2026-07-24T07:58:58.032Z",
+          "summary": "The panel affirmatively presents the overlay result, e.g. no overlay or special district intersects the parcel per the official Citrus County Overlay Districts layer (the county layer was genuinely queried and returned no features - independently verified)."
+        }
+      ],
+      "review": null
+    },
+    "journey-expect-text-css-transform-mismatch": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-24-zoning-land-use",
+          "findingId": "F5",
+          "at": "2026-07-24T08:23:38.516Z",
+          "summary": "The golden journey zoning-land-use-panel PASSES end to end through the verified Chrome endpoint (recheck acceptance for the workstream QA gate)."
+        }
+      ],
+      "review": null
+    },
+    "foreign-browser-token-tab-residue": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-07-24-zoning-land-use",
+          "findingId": "F6",
+          "at": "2026-07-24T08:23:38.516Z",
+          "summary": "No LandOS page carrying the dashboard token remains open inside a third-party application's browser."
+        }
+      ],
+      "review": null
     }
   }
 }

@@ -1,0 +1,74 @@
+# Independent Browser-QA Brief — zoning-ws1-core: Zoning core slice: jurisdiction resolution, Operator, Analyst, snapshot, routes
+
+- Sprint: sprint-2026-07-24-zoning-land-use
+- Live URL: http://localhost:3141
+- Ledger: C:\Users\tbutt\claudeclaw-os\.landos\sprints\sprint-2026-07-24-zoning-land-use\ledger.json
+- Persistence checks: refresh=true restart=false
+
+Operator outcome under test: The zoning slice exists end to end behind the API: a confirmed parcel can get a jurisdiction determination, official-source zoning collection through reusable adapters, a pure Analyst result, and a versioned persisted zoning snapshot readable via GET; opening a Deal Card never triggers zoning work.
+
+## Requirements to disprove
+- ws1-R1: Jurisdiction (incorporated/unincorporated/municipality/township/ETJ) is determined from parcel geometry and official boundary evidence, never inferred from mailing city, ZIP, nearest city, or address label.
+- ws1-R2: Zoning collector jobs/attempts are durable, idempotent, resumable after interruption, and one failed source does not block unrelated domains.
+- ws1-R3: Every normalized zoning fact links to official evidence with source URL, retrieval timestamp, ordinance/section references where available, artifact hash, identity version, and collector lineage.
+- ws1-R4: The Analyst is pure (types-only imports), distinguishes by-right/conditional/accessory/prohibited/not-located/uncertain uses, and never fabricates districts, uses, standards, or citations.
+- ws1-R5: GET zoning routes are SELECT-only; rebuild is an explicit POST command; unconfirmed identity blocks zoning collection and analysis.
+- ws1-R6: Zoning/jurisdiction corrections create new evidence and snapshot versions recording prior value, replacement, evidence, reason, actor, timestamp, approval reference when required, and declared invalidations limited to dependent zoning/valuation/strategy conclusions.
+- ws1-R7: Snapshot generation is idempotent for identical inputs and versioned with supersession for changed inputs.
+- ws1-R8: Architecture-boundary regression tests enforce analyst purity, GET read-only, UI/collector/analyst import walls, identity gating, jurisdiction-before-label, and conditional-vs-by-right separation.
+
+## Required operator journey
+1. Open http://localhost:3141/landos and open confirmed Deal Card 32 (Roane County TN)
+2. Confirm the card loads normally with all previously accepted sections intact
+3. Reconcile GET /api/landos/deal-cards/32/zoning-land-use returns an honest empty/null zoning payload without creating any zoning job, evidence, or snapshot rows
+4. Reload the card and confirm no zoning collector job rows appear (GET remains read-only)
+
+## Prohibited outcomes
+- Must NOT occur: Opening or refreshing a Deal Card triggers zoning research, reconciliation, or snapshot writes
+- Must NOT occur: Analyst module imports browser, route, provider, database, filesystem, or UI modules
+- Must NOT occur: Zoning label interpreted without a confirmed jurisdiction and ordinance-backed source
+- Must NOT occur: A conditional or special use is classified or presented as permitted by right
+- Must NOT occur: Identical inputs produce a new snapshot version instead of reusing the existing one
+- Must NOT occur: Unconfirmed property identity yields zoning analysis instead of blocked domains
+- Must NOT occur: Existing accepted deal data changes
+
+## Accepted operator facts (must not be contradicted)
+- none supplied
+
+## Known historical failure patterns
+- frontend-missing-value: 3 occurrence(s) (reviewed)
+- overlay-uses-wrong-acreage-basis: 3 occurrence(s) (reviewed)
+- reconciliation-ignores-acreage-conflict: 3 occurrence(s) (reviewed)
+- access-unknown-road-called-private: 2 occurrence(s) (reviewed)
+- report-download-bypasses-unified-readiness: 1 occurrence(s) (single occurrence)
+- market-pulse-favorable-valuation-language: 1 occurrence(s) (single occurrence)
+- operator-gap-label-empty-subject: 1 occurrence(s) (single occurrence)
+- duplicate-blocker-lines: 1 occurrence(s) (single occurrence)
+- report-comps-bypass-unique-registry: 1 occurrence(s) (single occurrence)
+- legacy-deal-card-silent-fallback: 1 occurrence(s) (single occurrence)
+- ui-text-double-encoded-utf8: 1 occurrence(s) (single occurrence)
+- resolution-state-label-not-run-after-attempt: 1 occurrence(s) (single occurrence)
+- apn-conflict-hard-stop-not-triggered: 1 occurrence(s) (single occurrence)
+- intake-dedupe-overwrites-accepted-identity: 1 occurrence(s) (single occurrence)
+- stale-resolution-provenance-contradicts-verified-chip: 1 occurrence(s) (single occurrence)
+- comps-table-hides-validated-actives: 1 occurrence(s) (single occurrence)
+- functional-role-label-mismatch: 1 occurrence(s) (single occurrence)
+- refresh-data-loss: 1 occurrence(s) (single occurrence)
+- restart-assertion-races-async-render: 1 occurrence(s) (single occurrence)
+- restart-permission-boundary: 1 occurrence(s) (single occurrence)
+- ws1-qa-card-count-contract: 1 occurrence(s) (single occurrence)
+- ws1-qa-lane-selector-contract: 1 occurrence(s) (single occurrence)
+- managed-restart-access-denied: 1 occurrence(s) (single occurrence)
+
+## Mandate
+- Actively attempt to prove the implementation wrong; never repeat the builder's conclusions.
+- Open the actual running localhost dashboard in a real browser.
+- Navigate the full affected workflow; click every relevant control and open every affected tab.
+- Exercise relevant forms, maps, filters, tables, links, and actions.
+- Compare visible frontend output with API responses and, when appropriate, database records.
+- Compare visible output with accepted operator facts.
+- Refresh the browser and verify persistence; when restart persistence is required, restart via npm run landos:restart and reopen the workflow.
+- Capture fresh screenshots and exact reproduction steps for every failure.
+- Judge business meaning and operator usability, not merely whether pages load.
+- Return a non-passing result whenever an internally fixable issue remains.
+- After repairs, run the exact same journey again.

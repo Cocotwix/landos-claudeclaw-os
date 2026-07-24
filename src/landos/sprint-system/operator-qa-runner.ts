@@ -609,8 +609,12 @@ export async function runJourney(
             break;
           }
           case 'expect_text': {
-            const text = await page.pageText();
-            const hit = step.anyOf.find((t) => text.includes(t));
+            // Case-insensitive: CSS text-transform (e.g. an uppercased panel
+            // heading) changes innerText casing but not what the operator
+            // reads. forbid_text deliberately stays case-sensitive so short
+            // prohibited tokens ("NaN") never false-match inside words.
+            const text = (await page.pageText()).toLowerCase();
+            const hit = step.anyOf.find((t) => text.includes(t.toLowerCase()));
             if (hit) record(step, index, 'pass', `found "${hit}"`);
             else {
               failed = true;
@@ -738,7 +742,8 @@ export async function runJourney(
             const before = await page.pageText();
             await page.reload();
             const after = await page.pageText();
-            const kept = step.expectAnyOf.find((t) => after.includes(t));
+            const afterLower = after.toLowerCase();
+            const kept = step.expectAnyOf.find((t) => afterLower.includes(t.toLowerCase()));
             const semanticCount = step.expectTestId ? await page.testIdCount(step.expectTestId) : 0;
             const persisted = Boolean(kept) || (step.expectTestId !== undefined && semanticCount > 0);
             if (!persisted) {
@@ -766,12 +771,12 @@ export async function runJourney(
             }
             await page.reload();
             let after = await page.pageText();
-            let kept = step.expectAnyOf.find((t) => after.includes(t));
+            let kept = step.expectAnyOf.find((t) => after.toLowerCase().includes(t.toLowerCase()));
             let semanticCount = step.expectTestId ? await page.testIdCount(step.expectTestId) : 0;
             for (let waited = 0; !kept && semanticCount === 0 && waited < 5_000; waited += 250) {
               await new Promise<void>((resolve) => setTimeout(resolve, 250));
               after = await page.pageText();
-              kept = step.expectAnyOf.find((t) => after.includes(t));
+              kept = step.expectAnyOf.find((t) => after.toLowerCase().includes(t.toLowerCase()));
               semanticCount = step.expectTestId ? await page.testIdCount(step.expectTestId) : 0;
             }
             if (kept || semanticCount > 0) record(step, index, 'pass', kept ? `data persisted across managed restart ("${kept}")` : `data persisted across managed restart (data-testid="${step.expectTestId}")`);
