@@ -1,14 +1,15 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-24T02:59:40Z
-- **HEAD:** `31956f3`
-- **Worktree:** DIRTY. Preserve unrelated work and investigation artifacts.
-- **Latest full repository suite:** PASS; 304/304 files, 3718/3718 tests, 0 skipped, 0 failures.
-- **Focused Smart Intake:** PASS; 75/75 tests across the Smart Intake and Deal Card visibility suites.
-- **Typecheck/build:** PASS; server `tsc --noEmit`, server build, and Vite production build. Vite emitted only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy; PID 18580; `http://localhost:3141`.
-- **Branch:** `recovery/deal-card-preservation-2026-07-23`.
+- **Generated:** 2026-07-24T04:20:10.830Z
+- **HEAD at generation:** `e614d51`
+- **Worktree:** DIRTY; 62 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-07-23T16:00:56-04:00; 295 files, 3642 tests, 0 failures (vitest run, full suite).
+- **Latest typecheck:** PASS at 2026-07-23T16:01:30-04:00; tsc --noEmit.
+- **Latest production build:** PASS at 2026-07-23T16:02:30-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy at 2026-07-23T16:04:38-04:00; PID 60512; http://localhost:3141.
+- **Active sprint:** sprint-2026-07-17-operator-useful-leads (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
+- **Sprint ledger:** .landos/sprints/sprint-2026-07-17-operator-useful-leads/ledger.json; proof report .landos/sprints/sprint-2026-07-17-operator-useful-leads/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
 
 Live repository state, database state, runtime, and owner-visible behavior override anything written here.
@@ -17,7 +18,13 @@ commit or push until Tyler explicitly authorizes it.
 
 ## Current objective and state
 
-Three uncommitted vertical slices coexist and must be preserved:
+The derived block above is stale where it disagrees with this session's
+verified results: full suite PASS 2026-07-24, 304 files / 3728 tests / 0
+failures; server tsc, server build, and Vite production build PASS (only the
+existing large-chunk advisory); managed runtime RUNNING healthy PID 53840 at
+http://localhost:3141.
+
+Four uncommitted vertical slices coexist and must be preserved:
 
 1. Canonical Property Version -> evidence -> versioned Property Summary.
 2. Durable government-record collectors -> immutable pages/claims -> versioned
@@ -25,85 +32,84 @@ Three uncommitted vertical slices coexist and must be preserved:
 3. Smart Intake native text paste + multi-image clipboard/upload/drop ->
    immutable artifact + exact multimodal transcription -> editable unconfirmed
    candidates -> approved-source resolution attempt with no screenshot promotion.
+4. Multi-path parcel resolution for the Smart Intake handoff: state/county +
+   APN primary (normalization variants), LandPortal parcel-level browser search
+   (property id/FIPS discovered, never required), county + owner as an
+   independent lookup key (never a seller-authority gate), address as secondary
+   corroboration with materially different roads rejected, full operator-visible
+   evidence, and standard-path canonical promotion on confirmation.
 
-Final Roane County acceptance was reopened after the operator reported that the
-retained original could not be opened from Deal 32. The image itself—not
-production constants—supplied every candidate below.
+## Multi-path resolution fix (2026-07-24)
+
+Root cause: geocoder-first `liveResolutionDeps` (LandPortal lanes off), TN
+adapter unable to decompose GISLINK-format APNs, trailing ZIP misread as house
+number (wrong-road corroboration accepted), planner falling through to
+"LandPortal property id + FIPS". Fixed in `instruction-consistency`
+(first-token street number; `roadNamesCompatible`), `resolver-planner`
+(honest next identifier), `landportal-client` (owner-variant extensions),
+`public-property-intelligence-live` (TN APN clause generation + county+owner
+path + corroboration-only address; collapsed GISLINK as APN),
+`property-resolution-engine` (materially different suggested road rejected),
+`routes` (LandPortal browser lane wired, browser-mission gate, full-evidence
+handoff, `promoteConfirmedIntakeResolution` via the standard approved path,
+accepted-parcel contradiction protection), and `LeadCardIntake.tsx`
+(`ResolutionHandoffPanel` shows every path, source, fact, rejection, promotion).
+
+Live Deal 32 acceptance via the operator button: TN Comptroller matched APN
+`073090 04200` (GISLINK ordered-group, Roane-filtered) returning owner
+`SACHAN DILEEP S`, `OLD RIDGE RD`, 12.28 ac, coordinates + source URL.
+LandPortal genuinely searched (4 APN variants + owner + address) and honestly
+refused a Davidson-county APN collision. No Ridge Trail Road in stored state;
+regression test pins the rejection. Identity `confirmed` (1.0); property card
+32 verified from the official record and linked subject; downstream follows
+the confirmed-parcel gate. Refresh + managed restart preserved one
+submission/artifact (same SHA-256) and nine candidates. Only console message:
+pre-existing honest 502 from `/overlay/aerial` (no Roane aerial capability),
+newly visible because the parcel is confirmed.
 
 ## Smart Intake implementation and proof
 
-- `LeadCardIntake.tsx` leaves text-only paste native, preserving Ctrl+V,
-  right-click Paste, selections, undo, line breaks, large text, and editing.
-  Image-bearing clipboard events insert `text/plain` once and append every
-  supported image. File selection is multi-select; drag/drop and remove work.
-- Client/server validation accepts PNG, JPEG/JPG, and WEBP up to 10 MB. Server
-  verifies MIME, extension, and magic bytes. Rich HTML is never rendered.
-- `landos_intake_submission` now has an idempotency key and resolution result.
-  `landos_intake_artifact` retains Deal/submission association, original name,
-  card-scoped URL, MIME, size, SHA-256, clipboard/upload/drop method, exact
-  extracted text, full extraction JSON/status/model, and timestamp. UPDATE and
-  DELETE triggers make artifact rows immutable.
-- `landos_intake_candidate` stores editable candidate fields separately, so
-  operator correction cannot change the original image or extraction.
-- Original operator text is stored exactly; normalization is analysis-only.
-- Screenshot candidates are saved with `candidate` status. They do not update
-  canonical identity or geometry. Owner/contact mismatch is explicitly
-  non-gating. Address/APN/county/state candidates begin the existing resolver;
-  the handoff records that no canonical promotion occurred.
-- One multimodal image call returns exact text, normalized candidates, other
-  labels, uncertainty, missing fields, and notes. Failure preserves the image
-  with honest `unavailable` status.
+- `LeadCardIntake.tsx` keeps text-only paste fully native; image-bearing
+  clipboard events insert `text/plain` once and append every supported image;
+  multi-select, drag/drop, and remove work. PNG/JPEG/WEBP ≤10 MB validated by
+  MIME + extension + magic bytes; rich HTML never rendered.
+- Submissions carry an idempotency key and resolution result; artifact rows
+  are immutable (UPDATE/DELETE triggers) with full provenance (name, URL,
+  MIME, size, SHA-256, method, exact text, extraction JSON/status/model,
+  timestamp). Candidates live in separate editable rows; operator corrections
+  never change the original image or extraction; original text stored exactly.
+- Screenshot candidates stay `candidate` status, never update canonical
+  identity/geometry; owner/contact mismatch is non-gating; extraction failure
+  preserves the image with honest `unavailable` status.
 
-Live Deal 32 Roane proof:
-
-- A blank card began with no accepted address, APN, owner, acreage, coordinates,
-  or canonical identity. File selection visibly previewed the supplied PNG,
-  original filename, 2,949,777-byte size, upload source, and Remove control.
-- The configured multimodal path extracted exact visible text and nine editable
-  candidates: owner `SACHAN DILEEP S`; address `OLD RIDGE RD, KINGSTON, TN
-  37763`; road `OLD RIDGE RD`; city `KINGSTON`; state `TN`; ZIP `37763`; county
-  `Roane County`; APN `073090 04200`; source platform `Regrid`. Acreage and
-  coordinates stayed explicitly unread.
-- The retained SHA-256 is
-  `df2e1d2c898c9726daca94fbdb0db600ced3a59339a4ca9d012fdbb850ea09f3`.
-- Resolution remained Candidate / pending; the UI explicitly said canonical
-  promotion none, owner/contact match not required, and withheld all downstream
-  property intelligence.
-- Live testing found and fixed a resolution-only UI defect that hid Smart Intake.
-  Candidate-resolution cards now retain the evidence/candidate panel without
-  exposing gated property intelligence.
-- Refresh and managed restart preserved one latest submission, one artifact,
-  one candidate panel, and nine candidate inputs. No Earlier Intake appeared;
-  reopening/reloading created no duplicate. Console errors: zero.
-
-Final Deal 32 artifact acceptance:
-
-- The original bytes were always durable; the defect was an unlabeled
-  `target="_blank"` thumbnail link that did not open a viewer in the operator
-  browser. The earlier accessibility claim was too broad.
-- `LeadCardIntake.tsx` now provides a labeled thumbnail button, in-card
-  full-resolution viewer with fit/100% controls, and full provenance. The
-  viewer remains available in both pending-resolution and confirmed-card paths.
-- After ordinary refresh and managed restart, Deal 32 retained exactly one
-  submission, one artifact, nine editable candidates, the same artifact ID,
-  capture timestamp, SHA-256, and complete extraction; no canonical promotion
-  or console error occurred. The original loaded at 2045x1335 in the viewer.
+Deal 32 Roane proof (earlier sessions, now superseded by confirmation below):
+the blank card's supplied PNG (2,949,777 bytes, SHA-256
+`df2e1d2c898c9726daca94fbdb0db600ced3a59339a4ca9d012fdbb850ea09f3`) yielded
+nine editable candidates (owner `SACHAN DILEEP S`, road `OLD RIDGE RD`,
+KINGSTON TN 37763, Roane County, APN `073090 04200`, platform Regrid; acreage/
+coordinates explicitly unread). A resolution-only UI defect hiding Smart
+Intake and an unlabeled thumbnail link were fixed; the labeled in-card
+full-resolution viewer (fit/100%) works in pending and confirmed paths.
+Refresh/restart preserved one submission, one artifact, nine candidates with
+no duplicates and no console errors.
 
 ## Prior slice proof to preserve
 
-- Deal 31 verified control: identity/snapshot v1, 100% complete, nine immutable
-  evidence items; accepted APN/owner/acreage persisted through restart.
-- Deal 10 unresolved control: parcel-specific imagery, ranked comps, valuation,
-  and actionable strategy remain withheld through restart.
+- Deal 31 verified control (identity/snapshot v1, 100%, nine immutable
+  evidence items) and Deal 10 unresolved control (imagery/comps/valuation/
+  strategy withheld) both persist through restart.
 - Deal 14 government record snapshot v5: identity v1, 60% screened, medium
-  confidence; deed/ownership complete and other lanes honestly partial. Seven
-  retained pages for instrument 1997O31519 remain visible with SHA-256 and
-  official source. Refresh/restart were idempotent and console-clean.
+  confidence; deed/ownership complete, other lanes honestly partial; seven
+  retained pages for instrument 1997O31519 with SHA-256 + official source.
 
 ## Preserved work and exclusions
 
 Intended modified files include `.landos/CHECKPOINT.md`, `src/landos/db.ts`,
 `src/landos/routes.ts`, `src/landos/lead-card-intake.ts` and tests,
+`src/landos/instruction-consistency.ts` (+test), `src/landos/resolver-planner.ts`
+(+test), `src/landos/landportal-client.ts`,
+`src/landos/public-property-intelligence-live.ts` (+test),
+`src/landos/property-resolution-engine.ts` (+test),
 `web/src/components/LeadCardIntake.tsx`, plus the untracked government-record
 and Smart Intake modules/tests/panels. Review the diff carefully.
 
@@ -127,6 +133,5 @@ artifacts.
 ## External diligence and next action
 
 - Deal 30 still needs a valid authenticated LandPortal 2D replacement image.
-- Obtain professional deed/title/lien, tax, zoning, access, septic, utility, and
-  split verification before relying on those business conclusions.
-- Do not commit or push without separate explicit authorization.
+- Professional deed/title/lien, tax, zoning, access, septic, utility, and split
+  verification remain required before relying on those conclusions.

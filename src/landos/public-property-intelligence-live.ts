@@ -20,7 +20,7 @@ import type {
 import { SCREENING_DISCLAIMERS, slopeBandFor, SLOPE_BANDS } from './public-property-intelligence.js';
 import { findCountyGis, computeExactOverlaps, queryLayerByPolygon, queryLayerByEnvelope, type CountyGisCapability } from './county-gis-capabilities.js';
 import { interiorGrid, measureFrontage, overlapLocationDescription, ringsAreaAcres, type Rings, type LonLat } from './parcel-spatial.js';
-import { addressVariantsCompatible } from './instruction-consistency.js';
+import { addressVariantsCompatible, roadNamesCompatible } from './instruction-consistency.js';
 
 type Pos = [number, number];
 type ArcFeature = { attributes?: Record<string, unknown>; geometry?: { rings?: Rings; paths?: Pos[][] } };
@@ -127,7 +127,7 @@ interface ParcelStrategy {
  * remaining work.
  */
 export async function lookupOfficialParcel(
-  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn' | 'apnAlternates' | 'owner'>,
   timeoutMs = 25_000,
   signal?: AbortSignal,
 ): Promise<OfficialParcelLookupResult> {
@@ -193,7 +193,7 @@ function isCallerCancellation(error: unknown, signal?: AbortSignal): boolean {
  *  order. Building the list up front is what proves whether a later strategy
  *  could still produce a result. */
 function applicableParcelStrategies(
-  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn' | 'apnAlternates' | 'owner'>,
   timeoutMs: number,
   signal?: AbortSignal,
 ): ParcelStrategy[] {
@@ -249,7 +249,10 @@ function applicableParcelStrategies(
   }
 
   // Strategy 4: Tennessee Comptroller statewide public parcel layer.
-  if (state === 'TN' && (input.address || input.apn)) {
+  // Multi-path: APN identity first (with jurisdiction-appropriate format
+  // variants), then county + owner name as an independent parcel-lookup key,
+  // then the street address as corroboration only.
+  if (state === 'TN' && (input.address || input.apn || (input.owner && input.county))) {
     strategies.push({
       source: 'Tennessee Comptroller public parcel layer',
       run: () => tennesseeLookup(input, timeoutMs, signal),
@@ -305,58 +308,162 @@ async function floridaDorLookup(
   };
 }
 
+/**
+ * PURE: ordered, bounded TN where-clause candidates for an APN. The statewide
+ * layer indexes a parcel three ways — PARCELID "CTY MAP  PARCEL INTERVAL YEAR",
+ * GISLINK "CCCMMM[GP] PPPPP" (county code + control map + parcel digits), and
+ * CMAP/PARCEL component fields (parcel printed "042.00" for digits "04200").
+ * A pasted APN like Regrid's "073090 04200" is the GISLINK with collapsed
+ * spacing, so ordered-group patterns and the component decomposition are both
+ * generated WITHOUT changing the underlying candidate value. Capped at 8.
+ */
+export function tennesseeApnLookupClauses(
+  apn: string,
+  alternates: string[] = [],
+): Array<{ label: string; variant: string; where: string }> {
+  const clauses: Array<{ label: string; variant: string; where: string }> = [];
+  const seen = new Set<string>();
+  const push = (label: string, variant: string, where: string) => {
+    if (!seen.has(where)) { seen.add(where); clauses.push({ label, variant, where }); }
+  };
+  const raws = [...new Set([
+    apn.trim(),
+    apn.trim().replace(/-/g, ' ').replace(/\s+/g, ' '),
+    ...alternates.map((alt) => alt.trim()),
+  ])].filter(Boolean);
+  for (const variant of raws) push('exact PARCELID/PARCEL equality', variant, `(PARCELID = '${sql(variant)}' OR PARCEL = '${sql(variant)}')`);
+  const groups = apn.toUpperCase().split(/[^0-9A-Z]+/).filter(Boolean);
+  if (groups.length >= 2) {
+    push('GISLINK ordered-group pattern', groups.join(' '), `GISLINK LIKE '${sql(groups.join('%'))}%'`);
+  }
+  const digits = apn.replace(/\D/g, '');
+  if (groups.length === 1 && digits.length >= 8) {
+    push('GISLINK map+parcel pattern', digits, `GISLINK LIKE '${sql(digits.slice(0, digits.length - 5))}%${sql(digits.slice(-5))}%'`);
+  }
+  if (digits.length >= 8) {
+    const parcelDigits = digits.slice(-5);
+    const parcelFmt = `${parcelDigits.slice(0, 3)}.${parcelDigits.slice(3)}`;
+    for (const cmap of new Set([digits.slice(3, -5), digits.slice(0, -5)])) {
+      if (cmap.length >= 2 && cmap.length <= 4) {
+        push('control map + parcel decomposition', `map ${cmap}, parcel ${parcelFmt}`, `(CMAP = '${sql(cmap)}' AND PARCEL = '${sql(parcelFmt)}')`);
+      }
+    }
+  }
+  return clauses.slice(0, 8);
+}
+
+const TN_OWNER_STOPWORDS = new Set(['ETUX', 'ETAL', 'ETVIR', 'ET', 'UX', 'AL', 'TRUSTEE', 'TRUSTEES', 'TRUST', 'LLC', 'INC', 'JR', 'SR', 'II', 'III']);
+
+function tnOwnerCoreTokens(name: string): string[] {
+  return String(name ?? '').toUpperCase().replace(/[^A-Z ]/g, ' ').split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => token.length > 1 && !TN_OWNER_STOPWORDS.has(token));
+}
+
+/**
+ * PURE: does a county owner-of-record string plausibly name the same person as
+ * the candidate owner? Order-insensitive core-token containment (initials and
+ * suffixes ignored) — "SACHAN DILEEP S" matches "SACHAN DILEEP" and
+ * "DILEEP S SACHAN". A LOOKUP KEY ONLY: this never gates seller authority and
+ * a lead/wholesaler contact differing from the record owner never blocks work.
+ */
+export function tennesseeOwnerNamesReconcile(candidateOwner: string, recordOwner: string): boolean {
+  const a = new Set(tnOwnerCoreTokens(candidateOwner));
+  const b = new Set(tnOwnerCoreTokens(recordOwner));
+  if (!a.size || !b.size) return false;
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+  for (const token of small) if (!big.has(token)) return false;
+  return true;
+}
+
 async function tennesseeLookup(
-  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn'>,
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn' | 'apnAlternates' | 'owner'>,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<StrategyOutcome> {
   const county = String(input.county ?? '').replace(/\s+county$/i, '').trim();
-  // APN first (strongest identity). The statewide layer stores PARCELID as
-  // "CTY MAP   PARCEL INTERVAL YEAR" (county-code prefixed, fixed-width), so
-  // exact equality is tried first and then ONE bounded county-filtered LIKE
-  // over the map + parcel digit groups. Multiple candidates never substitute.
+  const countyWhere = county ? `COUNTY_NAME = '${sql(county)}' AND ` : '';
+  const notes: string[] = [];
+  // ── Path 1: APN identity (primary when county/state + APN are available).
+  // Jurisdiction-appropriate format variants are generated; the underlying
+  // candidate value is never changed. Multiple candidates never substitute.
+  const apnDigits = (input.apn ?? '').replace(/\D/g, '');
   if (input.apn) {
-    const raw = input.apn.trim();
-    const wheres = [...new Set([raw, raw.replace(/-/g, ' ').replace(/\s+/g, ' ')])]
-      .map((v) => `(PARCELID = '${sql(v)}' OR PARCEL = '${sql(v)}')`);
-    const digits = raw.replace(/\D/g, '');
-    if (digits.length >= 6) {
-      const map = digits.slice(0, 3);
-      const parcelDigits = digits.slice(3);
-      wheres.push(`PARCELID LIKE '%${sql(map)}%${sql(parcelDigits.padStart(5, '0'))}%'`);
-    }
-    for (const clause of wheres) {
-      const where = `${county ? `COUNTY_NAME = '${sql(county)}' AND ` : ''}${clause}`;
-      const url = query(TN, where, true);
+    for (const clause of tennesseeApnLookupClauses(input.apn, input.apnAlternates ?? [])) {
+      const url = query(TN, `${countyWhere}${clause.where}`, true);
       const hits = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
         .map((feature) => tennessee(feature, url))
-        .filter((value): value is OfficialParcel => !!value);
+        .filter((value): value is OfficialParcel => !!value)
+        // Identity guard: the matched parcel's own GISLINK/PARCELID digits must
+        // contain (or be contained by) the supplied APN digits, so a wildcard
+        // pattern can never substitute a different parcel.
+        .filter((value) => {
+          if (apnDigits.length < 7) return true;
+          const hitDigits = String(value.facts.gisLink ?? value.apn ?? '').replace(/\D/g, '');
+          return hitDigits === apnDigits || hitDigits.endsWith(apnDigits) || apnDigits.endsWith(hitDigits);
+        });
       if (hits.length === 1) {
-        return { parcel: hits[0], status: 'matched', note: 'Exact APN/parcel-id matched (county-filtered).' };
+        return { parcel: hits[0], status: 'matched', note: `APN matched by ${clause.label} using variant "${clause.variant}"${county ? ` (county-filtered to ${county})` : ''}.` };
+      }
+      notes.push(`APN ${clause.label} ("${clause.variant}"): ${hits.length === 0 ? 'no parcel matched' : `${hits.length} parcels matched — ambiguous, none substituted`}.`);
+    }
+  }
+  // ── Path 2: county + owner name — an INDEPENDENT parcel-lookup key when the
+  // APN did not confirm. Never a seller-authority gate; a differing lead or
+  // wholesaler contact never blocks research.
+  if (input.owner && county) {
+    const needle = [...tnOwnerCoreTokens(input.owner)].sort((a, b) => b.length - a.length)[0];
+    if (needle) {
+      const url = query(TN, `${countyWhere}(OWNER LIKE '%${sql(needle)}%' OR OWNER2 LIKE '%${sql(needle)}%')`, true);
+      const rows = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
+        .map((feature) => tennessee(feature, url))
+        .filter((value): value is OfficialParcel => !!value);
+      const ownerHits = rows.filter((row) =>
+        (row.owner && tennesseeOwnerNamesReconcile(input.owner!, row.owner))
+        || (typeof row.facts.owner2 === 'string' && row.facts.owner2 && tennesseeOwnerNamesReconcile(input.owner!, row.facts.owner2)));
+      if (ownerHits.length === 1) {
+        return { parcel: ownerHits[0], status: 'matched', note: `County + owner-name lookup matched exactly one ${county} County parcel for owner "${input.owner}" (owner name used as a parcel-lookup key only, never a seller-authority gate).` };
+      }
+      if (ownerHits.length > 1 && input.address) {
+        const corroborated = ownerHits.filter((row) => roadNamesCompatible(input.address!, row.address));
+        if (corroborated.length === 1) {
+          return { parcel: corroborated[0], status: 'matched', note: `County + owner-name lookup found ${ownerHits.length} ${county} County parcels for owner "${input.owner}"; road corroboration ("${input.address}") reduced them to exactly one. Owner name and road were lookup/corroboration keys only.` };
+        }
+        notes.push(`County + owner lookup found ${ownerHits.length} parcels for "${input.owner}"; road corroboration could not reduce them to one — none substituted.`);
+      } else if (ownerHits.length !== 1) {
+        notes.push(`County + owner lookup ("${input.owner}", needle "${needle}"): ${ownerHits.length === 0 ? 'no owner-of-record reconciled' : `${ownerHits.length} parcels matched — ambiguous, none substituted`}.`);
       }
     }
   }
+  // ── Path 3: street address — SECONDARY corroboration, never the primary key
+  // when APN/owner are available. Multiple compatible candidates never resolve.
   if (!input.address) {
-    return { parcel: null, status: 'no_match', note: 'No official parcel matched the APN.' };
+    return { parcel: null, status: 'no_match', note: notes.join(' ') || 'No official parcel matched the supplied identifiers.' };
   }
-  const where = `${county ? `COUNTY_NAME = '${sql(county)}' AND ` : ''}UPPER(ADDRESS) LIKE '%${sql(tnNeedle(input.address))}%'`;
+  const where = `${countyWhere}UPPER(ADDRESS) LIKE '%${sql(tnNeedle(input.address))}%'`;
   const url = query(TN, where, true);
   const candidates = ((await json<Arc>(url, timeoutMs, signal)).features ?? [])
     .map((feature) => tennessee(feature, url))
     .filter((value): value is OfficialParcel => !!value);
-  const compatible = candidates.filter((candidate) => addressesMateriallyAgree(input.address!, candidate.address));
+  const hasHouseNumber = /^\s*\d+[A-Za-z]?\s/.test(input.address.trim());
+  const compatible = candidates.filter((candidate) => hasHouseNumber
+    ? addressesMateriallyAgree(input.address!, candidate.address)
+    : roadNamesCompatible(input.address!, candidate.address));
   // A missing official street-name token is a harmless normalization only
   // when it produces one unambiguous county candidate. Multiple compatible
   // parcel candidates remain unresolved; no nearest/proximity substitution.
   const parcel = compatible.length === 1 ? compatible[0] : null;
+  const addressNote = parcel
+    ? 'Exact normalized street address matched one county parcel.'
+    : compatible.length > 1
+      ? `${compatible.length} parcels share the candidate road "${input.address}"; the address alone cannot pick one (address is corroboration, not a primary key) — none substituted.`
+      : candidates.length
+        ? `Candidate street name materially differed from every returned parcel (requested "${input.address}"); no candidate was substituted.`
+        : 'No official parcel matched the street search.';
   return {
     parcel,
     status: parcel ? 'matched' : 'no_match',
-    note: parcel
-      ? 'Exact normalized street address matched.'
-      : candidates.length
-        ? 'Candidate street name materially differed; no candidate was substituted.'
-        : 'No official parcel matched.',
+    note: [...notes, addressNote].join(' '),
   };
 }
 
@@ -1545,9 +1652,15 @@ function fayette(feature: ArcFeature, url: string, suppliedAddress: string | nul
 function tennessee(feature: ArcFeature, url: string): OfficialParcel | null {
   const attrs = feature.attributes ?? {};
   const rings = feature.geometry?.rings;
-  const apn = str(attrs.PARCELID) ?? str(attrs.PARCEL);
-  const address = tnAddress(str(attrs.ADDRESS) ?? '');
-  if (!rings?.length || !apn || !address) return null;
+  // GISLINK ("073090    04200") collapsed to single spacing IS the parcel
+  // number format operators paste from Regrid/county tools ("073090 04200").
+  // Returning it as the APN keeps cross-source identity comparison honest —
+  // the fixed-width PARCELID ("073 090    04200 000 2026") would read as a
+  // DIFFERENT parcel to the wrong-parcel guard. PARCELID stays in facts.
+  const gisLink = str(attrs.GISLINK);
+  const apn = (gisLink ? gisLink.replace(/\s+/g, ' ').trim() : null) ?? str(attrs.PARCELID) ?? str(attrs.PARCEL);
+  if (!rings?.length || !apn) return null;
+  const address = tnAddress(str(attrs.ADDRESS) ?? '') || `APN ${apn}`;
   return {
     provider: 'Tennessee Comptroller public parcel layer',
     sourceUrl: url,
@@ -1560,7 +1673,14 @@ function tennessee(feature: ArcFeature, url: string): OfficialParcel | null {
     coordinates: center(rings[0]),
     geometry: { rings },
     datasetDate: '2026',
-    facts: { parcel: str(attrs.PARCEL) },
+    facts: {
+      parcel: str(attrs.PARCEL),
+      controlMap: str(attrs.CMAP),
+      parcelId: str(attrs.PARCELID),
+      gisLink,
+      owner2: str(attrs.OWNER2),
+      tpadUrl: str(attrs.LINK_TPAD),
+    },
   };
 }
 

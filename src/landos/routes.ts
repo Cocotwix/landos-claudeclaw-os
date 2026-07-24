@@ -119,9 +119,10 @@ import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from 
 import { extractZipCandidate, extractApnCandidates } from './intake-normalize.js';
 import { buildSmartIntake } from './smart-intake.js';
 import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
-import { planResolver, type IntakeFields } from './resolver-planner.js';
+import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
+import { apnSearchVariants, ownerSearchVariants } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
-import { resolveProperty, type ResolutionDeps } from './property-resolution-engine.js';
+import { resolveProperty, type ResolutionDeps, type PropertyResolution } from './property-resolution-engine.js';
 import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
 import { listNavigationModels } from './browser-navigation-model.js';
@@ -1254,7 +1255,10 @@ function liveResolutionDeps(timeoutMs: number): ResolutionDeps {
     // live persistent-session driver. configured() is true only when the operator's
     // Chrome session is connected; otherwise the services report parked (honest).
     // Never stores a credential; never prints cookies/tokens.
-    landPortalBrowser: undefined,
+    // LandPortal is the approved parcel-level browser path: it searches by
+    // county/state + APN (and owner), and DISCOVERS the LandPortal property id
+    // + FIPS from the result — they are never required as input.
+    landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
     countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
     timeoutMs,
   };
@@ -1276,16 +1280,21 @@ function liveResolutionDeps(timeoutMs: number): ResolutionDeps {
 // predecessor's error) so one failed mission never poisons the queue.
 let parallelResolutionGate: Promise<unknown> = Promise.resolve();
 
+/** Serialize any live-browser-driving mission through the single-tab gate.
+ *  Later calls queue instead of colliding; a failed mission never poisons the
+ *  queue. Shared by parallel resolution AND every resolveProperty call whose
+ *  deps include a live browser lane. */
+function withBrowserMissionGate<T>(run: () => Promise<T>): Promise<T> {
+  const result = parallelResolutionGate.then(run, run);
+  parallelResolutionGate = result.catch(() => undefined);
+  return result;
+}
+
 async function runParallelParcelResolution(
   fields: ParsedIntakeFields,
   timeoutMs: number,
 ): Promise<ParallelResolution> {
-  const run = parallelResolutionGate.then(
-    () => runParallelParcelResolutionInner(fields, timeoutMs),
-    () => runParallelParcelResolutionInner(fields, timeoutMs),
-  );
-  parallelResolutionGate = run.catch(() => undefined);
-  return run;
+  return withBrowserMissionGate(() => runParallelParcelResolutionInner(fields, timeoutMs));
 }
 
 async function runParallelParcelResolutionInner(
@@ -2771,6 +2780,51 @@ export function registerLandosRoutes(app: Hono): void {
     return parseJsonResponse<Record<string, unknown>>(response) ?? {};
   };
 
+  /** Promote a CONFIRMED intake resolution through the existing approved path:
+   *  the property card is written from the APPROVED SOURCE's returned record
+   *  (never from screenshot candidate text), the deal keeps/gains its subject
+   *  card link, and the parcel-identity verdict is persisted so downstream
+   *  eligibility follows the standard confirmed-parcel gate. A deal that
+   *  already has an ACCEPTED verified parcel with a different APN is NEVER
+   *  changed — the contradiction is recorded for Tyler instead. */
+  const promoteConfirmedIntakeResolution = (
+    dealCardId: number,
+    resolution: PropertyResolution,
+  ): { canonicalPromotionApplied: boolean; note: string; cardId?: number } => {
+    try {
+      const deal = getDealCard(dealCardId);
+      if (!deal) return { canonicalPromotionApplied: false, note: 'No canonical promotion: deal card not found.' };
+      const existingCard = (deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0];
+      const p = resolution.property;
+      const resolvedApnKey = String(p.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+      const acceptedApnKey = String(existingCard?.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+      if (existingCard && existingCard.verification_status === 'verified_property' && acceptedApnKey && resolvedApnKey && acceptedApnKey !== resolvedApnKey) {
+        try { addCardNextAction({ cardId: Number(existingCard.id), action: `⚠ Smart Intake resolution confirmed APN ${p.apn} (${p.verificationSource ?? 'approved source'}), but this card's ACCEPTED APN is ${existingCard.apn}. Accepted record kept unchanged — confirm with Tyler before changing.`, createdBy: 'landos/intake-resolution' }); } catch { /* best-effort */ }
+        return { canonicalPromotionApplied: false, note: `No promotion: this deal already has an accepted verified parcel (APN ${existingCard.apn}); the newly confirmed APN ${p.apn} was recorded for operator review instead.` };
+      }
+      const { card } = upsertCardFromDukeRun({
+        entity: deal.entity as LandosEntity,
+        agentId: 'landos/intake-resolution',
+        cardId: existingCard ? Number(existingCard.id) : undefined,
+        activeInputAddress: p.normalizedAddress || p.address || `APN ${p.apn}`,
+        city: p.city, state: p.state, county: p.county,
+        apn: p.apn, lpPropertyId: p.propertyId, fips: p.fips, lpUrl: p.lpUrl, owner: p.owner, acres: p.acres,
+        lat: p.coordinates?.lat ?? null, lng: p.coordinates?.lng ?? null,
+        verified: true,
+        verificationSource: p.verificationSource ?? resolution.identityBasis,
+        summary: 'Smart Intake resolution — parcel confirmed by an approved parcel-level source.',
+      });
+      if (!existingCard) {
+        try { linkPropertyToDeal({ dealCardId, cardId: card.id, role: 'subject' }); } catch { /* link is idempotent-best-effort */ }
+      }
+      try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks */ }
+      try { attachCardActivity({ cardId: card.id, agentId: 'landos/intake-resolution', kind: 'parcel_resolution', summary: `Parcel confirmed from Smart Intake candidates via ${p.verificationSource ?? 'an approved parcel-level source'}; canonical identity promoted through the standard resolution path. Screenshot candidates themselves remain non-canonical evidence.`, ref: `intake-resolution:${dealCardId}` }); } catch { /* history is best-effort */ }
+      return { canonicalPromotionApplied: true, cardId: card.id, note: `Canonical identity was promoted through the standard approved path from the ${p.verificationSource ?? 'approved parcel-level source'} record (never from screenshot text). Downstream research eligibility now follows the standard confirmed-parcel gate.` };
+    } catch (error) {
+      return { canonicalPromotionApplied: false, note: `Promotion attempt failed and was skipped: ${(error as Error).message}` };
+    }
+  };
+
   const beginIntakeCandidateResolution = async (
     dealCardId: number,
     submissionId: number,
@@ -2780,16 +2834,22 @@ export function registerLandosRoutes(app: Hono): void {
       for (const [key, value] of Object.entries(fields)) if (value && !merged[key]) merged[key] = value;
       return merged;
     }, {});
+    // APN normalization variants are search keys only; the stored candidate
+    // value is never changed. Punctuation/spacing variants come from the shared
+    // exact-search helper; jurisdiction-specific decompositions are applied
+    // inside the official adapters themselves.
+    const apnAlternates = candidate.apn ? apnSearchVariants(candidate.apn).filter((variant) => variant !== candidate.apn) : [];
     const fields: ParsedIntakeFields = {
       address: candidate.address || candidate.road || undefined,
       apn: candidate.apn || undefined,
+      apnAlternates: apnAlternates.length ? apnAlternates : undefined,
       county: candidate.county || undefined,
       state: candidate.state || undefined,
       city: candidate.city || undefined,
       zip: candidate.zip || undefined,
       owner: candidate.owner || undefined,
     };
-    const usable = [fields.address, fields.apn, fields.county, fields.state].filter(Boolean);
+    const usable = [fields.address, fields.apn, fields.county, fields.state, fields.owner].filter(Boolean);
     if (usable.length === 0) {
       const handoff = {
         state: 'awaiting_edit',
@@ -2797,11 +2857,30 @@ export function registerLandosRoutes(app: Hono): void {
         candidateFields: fields,
         canonicalPromotionApplied: false,
         ownerContactMatchRequired: false,
-        message: 'No address, APN, county, or state was readable enough to start property resolution.',
+        message: 'No address, APN, county, state, or owner was readable enough to start property resolution.',
       };
       updateLeadCardIntakeResolution(dealCardId, submissionId, handoff);
       return handoff;
     }
+    const ownerVariants = fields.owner ? ownerSearchVariants(fields.owner) : [];
+    // The explicit multi-path lookup order, shown to the operator verbatim.
+    const lookupOrder = [
+      fields.apn && (fields.county || fields.state)
+        ? `Primary — official state/county parcel source by ${[fields.county, fields.state].filter(Boolean).join(', ')} + APN ${fields.apn}`
+        : null,
+      fields.apn
+        ? `APN normalization variants (search keys only, candidate unchanged): ${[fields.apn, ...apnAlternates].join('  |  ')}`
+        : null,
+      fields.apn || fields.owner || fields.address
+        ? 'LandPortal parcel-level browser search by county/state + APN (and owner). LandPortal property id + FIPS are discovered from the result — never required as input.'
+        : null,
+      fields.owner && fields.county
+        ? `Independent — ${fields.county} + owner name "${fields.owner}" as a parcel-lookup key (variants: ${ownerVariants.join('  |  ')}). Never a seller-authority gate; a differing lead/wholesaler contact never blocks research.`
+        : null,
+      fields.address
+        ? `Secondary corroboration only — address/road "${[fields.address, ...[fields.city, fields.zip].filter((part): part is string => !!part && !fields.address!.toUpperCase().includes(part.toUpperCase()))].join(', ')}". A materially different road is rejected, never accepted or corroborated.`
+        : null,
+    ].filter((value): value is string => !!value);
     const resolutionText = [
       fields.address ? `Address: ${fields.address}` : '',
       fields.city ? `City: ${fields.city}` : '',
@@ -2813,24 +2892,75 @@ export function registerLandosRoutes(app: Hono): void {
     ].filter(Boolean).join('\n');
     try {
       await ensureBrowserSession();
-      const resolution = await resolveProperty(
+      // Best-effort LandPortal sign-in so the approved parcel-level browser
+      // lane can actually search; an unauthenticated session degrades honestly.
+      try { await ensureLandPortalAuthenticated(); } catch { /* lane parks honestly */ }
+      const resolution = await withBrowserMissionGate(() => resolveProperty(
         { rawText: resolutionText, fields },
         liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
-      );
+      ));
       writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(resolutionText, fields, resolution));
+      // Source-by-source outcomes: exact facts each source returned, never a
+      // bare count. Operator candidate input is excluded (it is the input).
+      const sources = resolution.candidates
+        .filter((entry) => entry.lane !== 'operator_input')
+        .map((entry) => ({
+          source: entry.source,
+          lane: entry.lane,
+          sourceUrl: entry.sourceUrl ?? null,
+          confidence: entry.confidence,
+          facts: Object.fromEntries(Object.entries({
+            apn: entry.apn, owner: entry.owner, address: entry.address, county: entry.county,
+            state: entry.state, zip: entry.zip, acres: entry.acres, propertyId: entry.propertyId,
+            coordinates: entry.coordinates ? `${entry.coordinates.lat}, ${entry.coordinates.lng}` : undefined,
+          }).filter(([, value]) => value !== undefined && value !== null && value !== '')),
+        }));
+      const laneOutcomes = resolution.lanesAttempted.map((lane) => ({
+        lane: lane.lane,
+        ran: lane.ran,
+        status: lane.status,
+        verdict: lane.contributed ? 'accepted' : lane.ran ? 'not accepted' : 'not run',
+        reason: lane.note,
+      }));
+      const rejected = resolution.lanesAttempted
+        .filter((lane) => lane.ran && !lane.contributed)
+        .map((lane) => ({ lane: lane.lane, status: lane.status, reason: lane.note }));
+      const nextIdentifier = smallestNextIdentifier({
+        address: fields.address, city: fields.city, state: fields.state, zip: fields.zip,
+        county: fields.county, fips: fields.fips, apn: fields.apn, owner: fields.owner, propertyId: fields.propertyId,
+      });
+      const confirmed = resolution.resolutionStatus === 'confirmed' && resolution.identityEstablished && !resolution.identityConflict;
+      const promotion = confirmed
+        ? promoteConfirmedIntakeResolution(dealCardId, resolution)
+        : { canonicalPromotionApplied: false, note: 'No canonical promotion: the parcel is not yet confirmed by an approved parcel-level source. Screenshot candidates remain non-canonical.' };
       const handoff = {
         state: 'attempted',
         attempted: true,
         candidateFields: fields,
+        apnVariantsTried: [fields.apn, ...apnAlternates].filter(Boolean),
+        ownerVariants,
+        lookupOrder,
         resolutionStatus: resolution.resolutionStatus,
         confidence: resolution.confidence,
         matchedReason: resolution.matchedReason,
         identityEstablishedByApprovedSource: resolution.identityEstablished,
+        identityBasis: resolution.identityBasis,
+        identityConflict: resolution.identityConflict ?? null,
+        agreement: resolution.agreement.explanation,
         missing: resolution.missing,
         lanesAttempted: resolution.lanesAttempted,
-        canonicalPromotionApplied: false,
+        laneOutcomes,
+        rejected,
+        sources,
+        browser: (resolution.browserEvidence ?? []).map((ev) => redactEvidence(ev)),
+        smallestNextIdentifier: nextIdentifier,
+        guidance: resolution.guidance ?? null,
+        canonicalPromotionApplied: promotion.canonicalPromotionApplied,
+        promotion,
         ownerContactMatchRequired: false,
-        message: 'Screenshot candidates were sent through property resolution. No screenshot field was promoted to canonical identity.',
+        message: confirmed
+          ? `Parcel confirmed. ${resolution.identityBasis} ${promotion.note}`
+          : `Screenshot candidates went through multi-path resolution (${lookupOrder.length} lookup path${lookupOrder.length === 1 ? '' : 's'}). ${resolution.matchedReason} No screenshot field was promoted to canonical identity.`,
       };
       updateLeadCardIntakeResolution(dealCardId, submissionId, handoff);
       return handoff;
@@ -2839,6 +2969,7 @@ export function registerLandosRoutes(app: Hono): void {
         state: 'needs_retry',
         attempted: true,
         candidateFields: fields,
+        lookupOrder,
         canonicalPromotionApplied: false,
         ownerContactMatchRequired: false,
         message: `Candidates were retained, but the approved-source resolution attempt needs retry: ${(error as Error).message}`,
@@ -5558,10 +5689,10 @@ export function registerLandosRoutes(app: Hono): void {
     // honestly downstream, exactly as before.
     const lpReadiness = { phase: 'optional_not_requested', authenticated: false, reason: null, missingEnv: [] as string[] };
     logger.info({ event: 'optional_source_readiness', phase: lpReadiness.phase, authenticated: lpReadiness.authenticated, hasReason: !!lpReadiness.reason, missingEnv: lpReadiness.missingEnv }, 'optional_source_readiness');
-    const resolution = await resolveProperty(
+    const resolution = await withBrowserMissionGate(() => resolveProperty(
       { rawText: text.trim(), fields: cls.parsedFields },
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
-    );
+    ));
     logger.info({ event: 'acquire_lanes', browserSession: browserStart.status, browserStartError: browserStart.error, lanes: (resolution.lanesAttempted ?? []).map((l) => `${l.lane}:${l.status}:${l.contributed ? 'contrib' : 'nc'}`), browser: (resolution.browserEvidence ?? []).map((b) => `${b.service}:${b.status}:${b.facts?.length ?? 0}f`) }, 'acquire_lanes');
 
     if (resolution.status === 'needs_clarification') {
@@ -5920,10 +6051,10 @@ export function registerLandosRoutes(app: Hono): void {
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const cls = classifySmartIntake(text.trim());
     await ensureBrowserSession();
-    const resolution = await resolveProperty(
+    const resolution = await withBrowserMissionGate(() => resolveProperty(
       { rawText: text.trim(), fields: cls.parsedFields },
       liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
-    );
+    ));
     const session = await browserSessionHealth();
     return c.json({ classification: cls, resolution, browserLanes: browserLaneStatus(), session });
   });

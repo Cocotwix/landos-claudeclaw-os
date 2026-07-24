@@ -69,3 +69,20 @@ describe('smallestNextIdentifier', () => {
     expect(smallestNextIdentifier({ address: '472 West Rd', state: 'GA', zip: '31781', owner: 'X' })).toBe('APN (parcel number)');
   });
 });
+
+describe('smallestNextIdentifier — APN + county already supplied (Deal 32 regression)', () => {
+  it('never demands LandPortal property id + FIPS when county/state + APN exist', () => {
+    const answer = smallestNextIdentifier({
+      address: 'OLD RIDGE RD, KINGSTON, TN 37763', city: 'KINGSTON', state: 'TN', zip: '37763',
+      county: 'Roane County', apn: '073090 04200', owner: 'SACHAN DILEEP S',
+    });
+    expect(answer).not.toMatch(/property id/i);
+    expect(answer).toMatch(/none/i);
+    expect(answer).toMatch(/073090 04200/);
+    expect(answer).toMatch(/official parcel-source confirmation/i);
+  });
+
+  it('asks for the county when only an APN is supplied', () => {
+    expect(smallestNextIdentifier({ apn: '073090 04200' })).toBe('county');
+  });
+});

@@ -496,6 +496,21 @@ export function ownerSearchVariants(owner: string | null | undefined): string[] 
     out.add(swapped);
     out.add(base.toUpperCase());
     out.add(swapped.toUpperCase());
+    // County records commonly index "SURNAME GIVEN M" — when the final token is
+    // a single-letter middle initial, also try the name without it and the
+    // given-names-first rotation ("SACHAN DILEEP S" -> "SACHAN DILEEP",
+    // "DILEEP S SACHAN"). Conservative formatting variants only; the parcel is
+    // still accepted only on a returned-identity match.
+    if (/^[A-Za-z]$/.test(toks[toks.length - 1]) && toks.length >= 3) {
+      const noInitial = toks.slice(0, -1).join(' ');
+      out.add(noInitial);
+      out.add(noInitial.toUpperCase());
+    }
+    if (toks.length >= 2) {
+      const rotated = [...toks.slice(1), toks[0]].join(' ');
+      out.add(rotated);
+      out.add(rotated.toUpperCase());
+    }
     const last = toks[toks.length - 1];
     out.add(last);
     out.add(last.toUpperCase());

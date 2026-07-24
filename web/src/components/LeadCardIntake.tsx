@@ -19,11 +19,22 @@ type Submission = {
   mimeType?: string;
   summary: string; sections: string[]; extracted?: { transcript?: Transcript | null; followUps?: string[] }; transcript?: Transcript | null;
   facts: RoutedFact[]; status: string; createdAt?: number;
-  resolutionHandoff?: {
-    state?: string; attempted?: boolean; resolutionStatus?: string; identityEstablishedByApprovedSource?: boolean;
-    canonicalPromotionApplied?: boolean; ownerContactMatchRequired?: boolean; message?: string;
-  };
+  resolutionHandoff?: ResolutionHandoff;
   artifacts?: IntakeArtifact[];
+};
+type ResolutionHandoff = {
+  state?: string; attempted?: boolean; resolutionStatus?: string; confidence?: number;
+  matchedReason?: string; identityEstablishedByApprovedSource?: boolean; identityBasis?: string;
+  identityConflict?: { requestedApn?: string; resolvedApn?: string; source?: string } | null;
+  agreement?: string; missing?: string[];
+  apnVariantsTried?: string[]; ownerVariants?: string[]; lookupOrder?: string[];
+  laneOutcomes?: Array<{ lane: string; ran: boolean; status: string; verdict: string; reason: string }>;
+  rejected?: Array<{ lane: string; status: string; reason: string }>;
+  sources?: Array<{ source: string; lane: string; sourceUrl?: string | null; confidence?: number; facts?: Record<string, string | number> }>;
+  browser?: Array<{ service: string; status: string; note: string; facts?: Array<{ label?: string; fact?: string; value?: string; source?: string; sourceUrl?: string }>; sourcesUsed?: Array<{ type: string; url: string }> }>;
+  smallestNextIdentifier?: string; guidance?: string | null;
+  canonicalPromotionApplied?: boolean; promotion?: { canonicalPromotionApplied?: boolean; note?: string };
+  ownerContactMatchRequired?: boolean; message?: string;
 };
 type IntakeCandidate = { id: number; key: string; value: string; confidence: string; uncertain: boolean; source: string };
 type IntakeArtifact = {
@@ -77,6 +88,116 @@ function TranscriptResult({ transcript }: { transcript?: Transcript | null }) {
     <div class="mt-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 space-y-1.5">
       {rows.length > 0 && <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">{rows.map(([label, value]) => <div key={label} class="text-[11.5px]"><span class="text-[var(--color-text-faint)]">{label}:</span> {value}</div>)}</div>}
       {lists.map(([label, values]) => values?.length ? <div key={label} class="text-[11.5px]"><span class="text-[var(--color-text-faint)]">{label}:</span> {values.slice(0, 5).join('; ')}</div> : null)}
+    </div>
+  );
+}
+
+const resolutionLaneLabel = (lane: string) => ({
+  landos_cache: 'LandOS cache',
+  realie_landportal: 'Optional parcel-provider cross-check',
+  census_geocode: 'US Census county derivation',
+  county_gis: 'Official state/county parcel source',
+  address_suggest: 'Public address search (corroboration only)',
+  homeharvest: 'Open listing data',
+  landportal_readonly: 'LandPortal parcel-level browser search',
+  county_records: 'Official county records browser',
+  landportal: 'LandPortal parcel-level browser search',
+}[lane] ?? lane.replace(/_/g, ' '));
+
+function ResolutionHandoffPanel({ handoff }: { handoff: ResolutionHandoff }) {
+  const statusLine = [
+    handoff.resolutionStatus ? `Parcel: ${handoff.resolutionStatus}` : null,
+    typeof handoff.confidence === 'number' ? `confidence ${handoff.confidence.toFixed(2)}` : null,
+    handoff.identityEstablishedByApprovedSource ? 'identity established by an approved source' : 'identity not yet established',
+  ].filter(Boolean).join(' · ');
+  return (
+    <div data-testid="smart-intake-resolution-handoff" class="mt-2 rounded-md border border-[var(--color-border)] p-2.5 text-[11px] text-[var(--color-text-muted)] space-y-2">
+      <div>
+        <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">Parcel resolution — every lookup path, source, and outcome</div>
+        <div data-testid="resolution-status-line" class="mt-0.5 font-medium text-[var(--color-text)]">{statusLine}</div>
+        {handoff.message && <div class="mt-1">{handoff.message}</div>}
+      </div>
+      {handoff.identityConflict && (
+        <div data-testid="resolution-identity-conflict" class="rounded border border-red-500 bg-red-500/10 p-2 font-medium text-red-700 dark:text-red-300">
+          Wrong-parcel hard stop: requested APN {handoff.identityConflict.requestedApn} but {handoff.identityConflict.source} resolved APN {handoff.identityConflict.resolvedApn}. Nothing downstream runs.
+        </div>
+      )}
+      {(handoff.lookupOrder ?? []).length > 0 && (
+        <div data-testid="resolution-lookup-order">
+          <div class="font-semibold text-[var(--color-text)]">Lookup order attempted</div>
+          <ol class="mt-0.5 list-decimal space-y-0.5 pl-4">{handoff.lookupOrder!.map((step) => <li key={step}>{step}</li>)}</ol>
+        </div>
+      )}
+      {(handoff.laneOutcomes ?? []).length > 0 && (
+        <div data-testid="resolution-lane-outcomes">
+          <div class="font-semibold text-[var(--color-text)]">Source-by-source outcomes</div>
+          <div class="mt-1 space-y-1">
+            {handoff.laneOutcomes!.map((lane, index) => (
+              <div key={`${lane.lane}-${index}`} class="rounded border border-[var(--color-border)] p-1.5">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="font-medium text-[var(--color-text)]">{resolutionLaneLabel(lane.lane)}</span>
+                  <span class={`rounded-full border px-1.5 py-0.5 text-[9.5px] uppercase tracking-wide ${lane.verdict === 'accepted' ? 'border-emerald-600 text-emerald-700 dark:text-emerald-300' : 'border-[var(--color-border)] text-[var(--color-text-faint)]'}`}>{lane.verdict}</span>
+                  <span class="text-[10px] text-[var(--color-text-faint)]">{lane.status}</span>
+                </div>
+                <div class="mt-0.5">{lane.reason}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {(handoff.sources ?? []).length > 0 && (
+        <div data-testid="resolution-source-facts">
+          <div class="font-semibold text-[var(--color-text)]">Facts returned by each source</div>
+          <div class="mt-1 grid gap-1.5 md:grid-cols-2">
+            {handoff.sources!.map((source, index) => (
+              <div key={`${source.source}-${index}`} class="rounded border border-[var(--color-border)] p-1.5">
+                <div class="font-medium text-[var(--color-text)]">{source.source}</div>
+                {source.facts && Object.keys(source.facts).length > 0 && (
+                  <div class="mt-0.5 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-0.5">
+                    {Object.entries(source.facts).map(([key, value]) => (
+                      <div key={key} class="contents">
+                        <span class="text-[var(--color-text-faint)]">{key}</span>
+                        <span class="break-words text-[var(--color-text)]">{String(value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer" class="mt-0.5 inline-block text-[10px] text-[var(--color-accent)] underline">Source opened</a>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {(handoff.browser ?? []).some((entry) => (entry.facts ?? []).length > 0 || (entry.sourcesUsed ?? []).length > 0) && (
+        <div data-testid="resolution-browser-facts">
+          <div class="font-semibold text-[var(--color-text)]">Browser research facts (with provenance)</div>
+          <div class="mt-1 space-y-1">
+            {handoff.browser!.map((entry, index) => (
+              <div key={`${entry.service}-${index}`} class="rounded border border-[var(--color-border)] p-1.5">
+                <div class="font-medium text-[var(--color-text)]">{resolutionLaneLabel(entry.service)} <span class="text-[10px] font-normal text-[var(--color-text-faint)]">{entry.status}</span></div>
+                <div class="mt-0.5">{entry.note}</div>
+                {(entry.facts ?? []).map((fact, factIndex) => (
+                  <div key={factIndex} class="mt-0.5 border-l-2 border-[var(--color-border)] pl-2">
+                    {[fact.label, fact.fact, fact.value].filter(Boolean).join(': ')}{fact.source ? ` — ${fact.source}` : ''}
+                  </div>
+                ))}
+                {(entry.sourcesUsed ?? []).map((used, usedIndex) => (
+                  <div key={usedIndex} class="mt-0.5 text-[10px] text-[var(--color-text-faint)]">Opened: {used.type} · {used.url}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div data-testid="resolution-next-identifier">
+        {(handoff.missing ?? []).length > 0 && <div>Still unknown: {handoff.missing!.join(', ')}</div>}
+        {handoff.smallestNextIdentifier && <div><span class="font-medium text-[var(--color-text)]">Smallest next identifier needed:</span> {handoff.smallestNextIdentifier}</div>}
+        {handoff.guidance && <div class="mt-0.5">{handoff.guidance}</div>}
+      </div>
+      <div class="font-medium text-[var(--color-text)]">
+        Canonical promotion: {handoff.canonicalPromotionApplied ? 'applied through the standard approved path (from the approved source record, never from screenshot text)' : 'none'} · Owner/contact match required: no
+      </div>
+      {handoff.promotion?.note && <div>{handoff.promotion.note}</div>}
     </div>
   );
 }
@@ -292,7 +413,7 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
             <div class="mt-2 grid gap-2 md:grid-cols-2">{Object.entries(candidateDraft).map(([key, value]) => <label key={key} class="text-[10.5px] text-[var(--color-text-muted)]"><span>{key.replace(/([A-Z])/g, ' $1')}</span><input class={inputClass} value={value} onInput={(event) => setCandidateDraft((current) => ({ ...current, [key]: (event.target as HTMLInputElement).value }))} /></label>)}</div>
             <button type="button" data-testid="smart-intake-save-candidates" disabled={busy} onClick={() => void saveCandidateEdits(latest.id)} class="mt-2 rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-medium text-[var(--color-accent)] disabled:opacity-40">Save candidate corrections and retry resolution</button>
           </div>}
-          {latest.resolutionHandoff?.message && <div data-testid="smart-intake-resolution-handoff" class="mt-2 rounded-md border border-[var(--color-border)] p-2 text-[11px] text-[var(--color-text-muted)]">{latest.resolutionHandoff.message}<div class="mt-1 font-medium text-[var(--color-text)]">Canonical promotion: none · Owner/contact match required: no</div></div>}
+          {latest.resolutionHandoff?.message && <ResolutionHandoffPanel handoff={latest.resolutionHandoff} />}
         </div>;
       })()}
       {submissions.length > 1 && (

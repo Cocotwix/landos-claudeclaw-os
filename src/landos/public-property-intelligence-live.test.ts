@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { addressesMateriallyAgree, makeLivePublicIntelligenceAdapters, type OfficialParcel } from './public-property-intelligence-live.js';
+import { addressesMateriallyAgree, makeLivePublicIntelligenceAdapters, tennesseeApnLookupClauses, tennesseeOwnerNamesReconcile, type OfficialParcel } from './public-property-intelligence-live.js';
 
 describe('official public parcel address reconciliation (unit)', () => {
   it('accepts suffix, capitalization, and one-token official normalization variants', () => {
@@ -291,7 +291,7 @@ describe('lookupOfficialParcel — existing behavior preserved', () => {
     expect(result.parcel?.provider).toBe('Tennessee Comptroller public parcel layer');
     expect(result.parcel?.apn).toBe('062 059G A 03400 000 2026');
     expect(result.attempted).toEqual([
-      { source: 'Tennessee Comptroller public parcel layer', status: 'matched', note: 'Exact normalized street address matched.' },
+      { source: 'Tennessee Comptroller public parcel layer', status: 'matched', note: 'Exact normalized street address matched one county parcel.' },
     ]);
   });
 
@@ -324,5 +324,30 @@ describe('lookupOfficialParcel — existing behavior preserved', () => {
     expect(result.attempted).toEqual([
       { source: 'Official public parcel lookup', status: 'unavailable', note: 'No tested public parcel adapter is available for this jurisdiction.' },
     ]);
+  });
+});
+
+describe('Tennessee multi-path parcel lookup keys (pure)', () => {
+  it('generates jurisdiction-appropriate APN clauses for a Regrid-format GISLINK APN', () => {
+    const clauses = tennesseeApnLookupClauses('073090 04200');
+    const wheres = clauses.map((clause) => clause.where);
+    expect(wheres.some((where) => where.includes("PARCELID = '073090 04200'"))).toBe(true);
+    expect(wheres.some((where) => where.includes("GISLINK LIKE '073090%04200%'"))).toBe(true);
+    expect(wheres.some((where) => where.includes("CMAP = '090' AND PARCEL = '042.00'"))).toBe(true);
+    expect(clauses.length).toBeLessThanOrEqual(8);
+  });
+
+  it('includes operator-supplied alternates without changing the underlying candidate', () => {
+    const clauses = tennesseeApnLookupClauses('073090 04200', ['07309004200']);
+    expect(clauses.some((clause) => clause.where.includes("PARCELID = '07309004200'"))).toBe(true);
+  });
+
+  it('reconciles conservative owner-name variants in both directions', () => {
+    expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SACHAN DILEEP S')).toBe(true);
+    expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SACHAN DILEEP')).toBe(true);
+    expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'DILEEP S SACHAN')).toBe(true);
+    expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SACHAN DILEEP ETUX')).toBe(true);
+    expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SMITH JOHN')).toBe(false);
+    expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SACHAN RAVI')).toBe(false);
   });
 });
