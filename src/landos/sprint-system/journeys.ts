@@ -70,7 +70,10 @@ export interface GoldenJourney {
 
 const DEAL_LIST_PATH = '/landos';
 const DEAL_PATH = '/landos?deal={dealId}';
-const LEAD_WORKSPACE_PATH = '/dept/acquisitions?deal={dealId}';
+// Canonical Acquisitions deep link. Since the accepted recovery merge
+// (PR #2, 2026-07-23) this path renders the canonical Deal Card; the legacy
+// Lead Workspace view is retired and must never render.
+const ACQUISITIONS_DEAL_PATH = '/dept/acquisitions?deal={dealId}';
 
 function dealCardShell(criteria: CardCriteria, shot: string): JourneyStep[] {
   return [
@@ -99,7 +102,7 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
       { kind: 'screenshot', name: 'ws1-opportunity-board', description: 'Capture the business-stage opportunity board' },
       { kind: 'refresh_persistence', expectAnyOf: ['New Leads', 'Researching', 'Ready for Discovery Call', 'Pursuing'], expectTestId: 'opportunity-board', description: 'The canonical board survives refresh' },
       { kind: 'restart_persistence', expectAnyOf: ['New Leads', 'Researching', 'Ready for Discovery Call', 'Pursuing'], expectTestId: 'opportunity-board', description: 'The canonical board survives a managed restart' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open the selected canonical Lead Workspace' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the selected canonical Lead Workspace' },
       { kind: 'expect_test_id', testId: 'lead-trash-action', count: 1, description: 'The owner-visible recoverable Trash action is present' },
       { kind: 'screenshot', name: 'ws1-lead-trash-action', description: 'Capture the visible recoverable Trash action' },
     ],
@@ -122,7 +125,7 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     startingState: 'An existing partial lead with a durable research mission and the bounded investigative path plan.',
     operatorSteps: [
       { kind: 'select_card', criteria: 'investigative_path_plan', description: 'Select a lead whose durable mission contains the complete investigative path plan' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open the partial lead in the live Lead Workspace' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the partial lead in the live Lead Workspace' },
       { kind: 'expect_test_id', testId: 'original-lead-intake', count: 1, description: 'The exact original operator data dump remains visible' },
       { kind: 'expect_test_id', testId: 'research-trace-toggle', count: 1, description: 'The visible research and verification trace is available' },
       { kind: 'click_test_id', testId: 'research-trace-toggle', description: 'Expand the owner-visible investigative trace' },
@@ -159,7 +162,7 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     startingState: 'An existing partial lead with a durable investigative mission and a current discovery package.',
     operatorSteps: [
       { kind: 'select_card', criteria: 'investigative_path_plan', description: 'Select the durable partial-lead fixture from WS2' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open the Lead Workspace in the managed operating app' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the Lead Workspace in the managed operating app' },
       { kind: 'expect_test_id', testId: 'discovery-package-entry', count: 1, description: 'One obvious pre-discovery report entry point is visible on the Lead Card' },
       { kind: 'click_test_id', testId: 'discovery-package-entry', description: 'Open the pre-discovery research report' },
       { kind: 'expect_test_id', testId: 'discovery-package', count: 1, description: 'Exactly one current report is rendered' },
@@ -219,38 +222,40 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     fixturePolicy: 'Read-only and property-independent; no operating record is selected or changed.',
   },
   {
-    id: 'lead-workspace-acquisitions-readonly',
-    name: 'Lead Workspace through Acquisitions',
-    capability: 'lead-workspace',
+    // Re-baselined 2026-07-24 (Tyler-directed): replaces the retired
+    // lead-workspace-acquisitions-readonly journey. The recovery merge (PR #2)
+    // made the canonical Deal Card the one composed operator view on every
+    // Acquisitions entry path; this journey protects that architecture.
+    id: 'acquisitions-deal-card-readonly',
+    name: 'Canonical Deal Card through Acquisitions',
+    capability: 'acquisitions-deal-card',
     department: 'acquisitions',
     startingState: 'An existing safe deal-card fixture selected without modifying operator data.',
     operatorSteps: [
-      { kind: 'select_card', criteria: 'any', description: 'Select an existing safe Lead Workspace fixture' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open the Lead Workspace from the Acquisitions deep link' },
-      { kind: 'expect_test_id', testId: 'lead-workspace-root', count: 1, description: 'The Lead Workspace root is present exactly once' },
-      { kind: 'api_reconcile', apiPath: '/api/landos/lead-workspace/{dealId}', description: 'Lead Workspace API responds for the selected fixture' },
-      { kind: 'expect_test_id', testId: 'lead-workspace-strategy', count: 5, description: 'Exactly the five approved strategies are rendered' },
-      { kind: 'forbid_test_id', testId: 'deal-card-root', description: 'The legacy DealCard root is absent from the Lead Workspace' },
+      { kind: 'select_card', criteria: 'any', description: 'Select an existing safe deal-card fixture' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the canonical Deal Card from the Acquisitions deep link' },
+      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The canonical Deal Card root is present exactly once' },
+      { kind: 'forbid_test_id', testId: 'lead-workspace-root', description: 'The retired legacy Lead Workspace never renders' },
+      { kind: 'api_reconcile', apiPath: '/api/landos/deal-cards/{dealId}', description: 'The Deal Card API responds for the selected fixture' },
       { kind: 'forbid_text', anyOf: ['Â·', 'â€'], description: 'No double-encoded UTF-8 mojibake is visible to the operator' },
       { kind: 'navigate', path: '/dept/acquisitions?section=library', description: 'Open the Acquisitions Deal Library list' },
       { kind: 'click_text', text: '#{dealId}', description: 'Click the selected deal row in the Deal Library' },
-      { kind: 'expect_test_id', testId: 'lead-workspace-root', count: 1, description: 'The library click path lands on the Lead Workspace, not the legacy Deal Card' },
-      { kind: 'forbid_test_id', testId: 'deal-card-root', description: 'No silent fallback to the legacy Deal Card from the library click path' },
-      { kind: 'screenshot', name: 'lead-workspace-desktop', description: 'Capture the desktop Lead Workspace' },
-      { kind: 'refresh_persistence', expectAnyOf: [], expectTestId: 'lead-workspace-root', description: 'Reload and confirm the Lead Workspace remains available' },
+      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The library click path lands on the canonical Deal Card' },
+      { kind: 'forbid_test_id', testId: 'lead-workspace-root', description: 'No fallback to the retired Lead Workspace from the library click path' },
+      { kind: 'screenshot', name: 'acquisitions-deal-card-desktop', description: 'Capture the desktop canonical Deal Card' },
+      { kind: 'refresh_persistence', expectAnyOf: [], expectTestId: 'deal-card-root', description: 'Reload and confirm the canonical Deal Card remains available' },
       { kind: 'set_viewport', width: 412, height: 915, description: 'Use a Galaxy S24 Ultra-width mobile viewport' },
-      { kind: 'expect_test_id', testId: 'lead-workspace-root', count: 1, description: 'The Lead Workspace root remains available on mobile' },
-      { kind: 'expect_test_id', testId: 'lead-workspace-strategy', count: 5, description: 'All five approved strategies remain available on mobile' },
-      { kind: 'screenshot', name: 'lead-workspace-mobile', description: 'Capture the mobile Lead Workspace' },
+      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The canonical Deal Card remains available on mobile' },
+      { kind: 'screenshot', name: 'acquisitions-deal-card-mobile', description: 'Capture the mobile canonical Deal Card' },
     ],
-    expectedBackendState: 'The versioned lead-workspace API returns the composed read model for the selected fixture.',
-    expectedFrontendState: 'Acquisitions renders the Lead Workspace, not the legacy DealCard, with exactly five approved strategies on desktop and mobile.',
-    prohibitedContradictions: ['Lead Workspace root missing', 'Legacy DealCard root rendered in the new flow', 'Strategy count differs from the approved five'],
-    requiredScreenshots: ['lead-workspace-desktop', 'lead-workspace-mobile'],
+    expectedBackendState: 'The deal-cards API returns the canonical read model for the selected fixture.',
+    expectedFrontendState: 'Acquisitions renders the canonical Deal Card, never the retired Lead Workspace, on desktop and mobile.',
+    prohibitedContradictions: ['Deal Card root missing', 'Retired Lead Workspace rendered on any Acquisitions path', 'Library click path bypasses the canonical Deal Card'],
+    requiredScreenshots: ['acquisitions-deal-card-desktop', 'acquisitions-deal-card-mobile'],
     persistence: { refresh: true, restart: false },
     allowedExternalBlockers: [],
-    passCriteria: 'The read-only Acquisitions deep link, API, semantic roots, approved strategy count, refresh, and mobile viewport all pass.',
-    failureCriteria: 'Missing workspace/API, a legacy DealCard root, a strategy count other than five, or failed refresh/mobile rendering.',
+    passCriteria: 'The read-only Acquisitions deep link, API, canonical Deal Card root, library click path, refresh, and mobile viewport all pass.',
+    failureCriteria: 'Missing Deal Card/API, a retired Lead Workspace root, or failed refresh/mobile rendering.',
     mutating: false,
     fixturePolicy: 'Read-only against a dynamically selected existing deal-card fixture; never creates or updates an operator record.',
   },
@@ -313,36 +318,39 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     fixturePolicy: 'Read-only against an existing verified card; no record is modified.',
   },
   {
-    id: 'phase1-unresolved-discovery-package',
-    name: 'Phase 1 truthful incomplete pre-call research report',
+    // Re-baselined 2026-07-24 (Tyler-directed): replaces the retired
+    // phase1-unresolved-discovery-package journey. The Lead Workspace
+    // discovery-package panel is retired; the truthful-incomplete pre-call
+    // outcome now lives on the canonical Deal Card: honest unbuilt Property
+    // Summary, unconfirmed facts marked unconfirmed, Smart Intake still
+    // available, and no paid or outbound action — with refresh and managed
+    // restart persistence.
+    id: 'unresolved-lead-truthful-card',
+    name: 'Unresolved lead renders a truthful canonical Deal Card',
     capability: 'phase1-discovery-package',
     department: 'acquisitions',
     startingState: 'An existing lead whose durable research mission rejected unassociated parcel evidence.',
     operatorSteps: [
-      { kind: 'select_card', criteria: 'quarantined_research', description: 'Select an unresolved Lead Card with durable rejected research evidence' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open its current Lead Workspace' },
-      { kind: 'expect_test_id', testId: 'discovery-package', count: 1, description: 'One current discovery package is visible' },
-      { kind: 'expect_test_id', testId: 'unresolved-call-brief', count: 1, description: 'Unresolved identity produces a useful call warning instead of blocking the call' },
-      { kind: 'expect_test_id', testId: 'discovery-package-readiness', count: 1, description: 'The report visibly says it is incomplete, never ready' },
-      { kind: 'expect_test_id', testId: 'discovery-package-blockers', count: 1, description: 'Concrete missing evidence is visible' },
-      { kind: 'expect_test_id', testId: 'discovery-package-strategy-hypothesis', count: 2, description: 'Two unranked validation hypotheses replace unsupported strategy recommendations' },
-      { kind: 'expect_test_id', testId: 'discovery-package-comps', count: 1, description: 'Qualified sold-comp evidence and its gating explanation are visible' },
-      { kind: 'expect_test_id', testId: 'discovery-package-pdf', count: 1, description: 'The same package has a PDF download control' },
-      { kind: 'expect_text', anyOf: ['Market Pulse', 'Land Score', '40–60% owner-review range'], description: 'Required call-package sections are visible' },
+      { kind: 'select_card', criteria: 'quarantined_research', description: 'Select an unresolved lead with durable rejected research evidence' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open its canonical Deal Card' },
+      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The canonical Deal Card renders' },
+      { kind: 'expect_text', anyOf: ['No versioned Property Summary exists yet'], description: 'No fabricated report: the Property Summary honestly reports it has not been built' },
+      { kind: 'expect_text', anyOf: ['Not yet confirmed'], description: 'Unconfirmed facts are visibly marked unconfirmed, never invented' },
+      { kind: 'expect_test_id', testId: 'open-smart-intake', count: 1, description: 'Smart Intake evidence capture remains available; the human call path is not blocked' },
       { kind: 'forbid_text', anyOf: ['Call prep is ready even when research is incomplete', 'Two strongest first-look strategies'], description: 'The prior false-ready and unsupported-ranking claims are absent' },
-      { kind: 'screenshot', name: 'phase1-unresolved-call-package', description: 'Capture the truthful incomplete pre-call report' },
-      { kind: 'refresh_persistence', expectAnyOf: ['Pre-call property research report', 'Research is not yet decision-useful'], expectTestId: 'discovery-package', description: 'The report persists across hard refresh' },
-      { kind: 'restart_persistence', expectAnyOf: ['Pre-call property research report', 'Research is not yet decision-useful'], expectTestId: 'discovery-package', description: 'The report persists across a canonical managed restart' },
       { kind: 'forbid_text', anyOf: ['Buy paid report', 'Use comp credit', 'Send offer', 'Send contract'], description: 'No paid or prohibited outbound action is offered' },
+      { kind: 'screenshot', name: 'unresolved-truthful-card', description: 'Capture the truthful unresolved canonical Deal Card' },
+      { kind: 'refresh_persistence', expectAnyOf: ['Not yet confirmed'], expectTestId: 'deal-card-root', description: 'The truthful unresolved state persists across hard refresh' },
+      { kind: 'restart_persistence', expectAnyOf: ['Not yet confirmed'], expectTestId: 'deal-card-root', description: 'The truthful unresolved state persists across a canonical managed restart' },
     ],
-    expectedBackendState: 'One persisted DiscoveryPackage object is assembled from the existing opportunity/Deal/Property graph and drives the downloadable representation.',
-    expectedFrontendState: 'The Lead Card says research is incomplete, shows exact blockers and qualified-comp rules, exposes Market Pulse/score/visual gaps, and labels strategies as validation hypotheses while leaving the human call unblocked.',
-    prohibitedContradictions: ['Incomplete research labeled ready', 'Hypotheses presented as ranked recommendations', 'PDF uses another projection', 'Paid/API action offered'],
-    requiredScreenshots: ['phase1-unresolved-call-package'],
+    expectedBackendState: 'The canonical deal-card read model reports the unresolved identity honestly; no fabricated summary, valuation, or strategy exists for the unconfirmed parcel.',
+    expectedFrontendState: 'The canonical Deal Card says plainly what is not yet confirmed, offers Smart Intake for more evidence, and never claims readiness or offers paid/outbound actions.',
+    prohibitedContradictions: ['Incomplete research labeled ready', 'Unconfirmed facts presented as confirmed', 'Paid/API action offered'],
+    requiredScreenshots: ['unresolved-truthful-card'],
     persistence: { refresh: true, restart: true },
     allowedExternalBlockers: [],
-    passCriteria: 'The unresolved report is truthful, useful for questions, PDF-backed, prohibited-action free, and persists through refresh/restart.',
-    failureCriteria: 'False ready claim, unsupported ranking, missing evidence gates/PDF, a blocked call, prohibited action, or persistence failure.',
+    passCriteria: 'The unresolved canonical Deal Card is truthful, keeps evidence intake open, offers no prohibited action, and persists through refresh/restart.',
+    failureCriteria: 'False ready claim, fabricated facts, missing Smart Intake path, prohibited action, or persistence failure.',
     mutating: false,
     fixturePolicy: 'Read-only selection by durable quarantined-research state; no provider action or owner decision.',
   },
@@ -354,7 +362,7 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     startingState: 'An isolated synthetic QA Lead Card with a current discovery package.',
     operatorSteps: [
       { kind: 'select_card', criteria: 'any', description: 'Select an isolated synthetic Lead Card' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open the Lead Workspace transcript surface' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the Lead Workspace transcript surface' },
       { kind: 'expect_test_id', testId: 'transcript-reconciliation', count: 1, description: 'Transcript paste and upload controls are on the Lead Card' },
       { kind: 'fill_test_id', testId: 'transcript-paste-input', value: 'Synthetic QA discovery call. Seller Morgan Test says heir Casey Test also decides. They inherited the land, want to sell within 30 days, and ask $72,000. Seller says the tract is 18 acres with road access and power, but current research has not verified acreage or utilities. Call the owner back Friday after verifying acreage and access.', description: 'Paste a synthetic discovery transcript with parties, motivation, price, timeline, claims, conflict, and follow-up' },
       { kind: 'click_test_id', testId: 'transcript-paste-submit', description: 'Preserve the exact pasted original and reconcile it' },
@@ -478,7 +486,7 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
       ...dealCardShell('apn_conflict', 'apn-conflict-card'),
       { kind: 'expect_text', anyOf: ['APN', 'apn'], description: 'APN information is visible' },
       { kind: 'expect_text', anyOf: ['WRONG PARCEL', 'conflict', 'Conflict', 'mismatch'], description: 'The conflict is disclosed, not hidden' },
-      { kind: 'expect_text', anyOf: ['different parcel', 'DIFFERENT parcel', 'does not match'], description: 'Both identifiers are contrasted: the requested parcel differs from the resolved parcel' },
+      { kind: 'expect_text', anyOf: ['different parcel', 'does not match', 'not the requested parcel'], description: 'The contrast is explicit: the resolved candidate is not the requested parcel' },
       { kind: 'expect_text', anyOf: ['NOT accepted', 'not confirmed', 'NOT confirmed', 'on hold', 'No Property Intelligence'], description: 'The record states why it is blocked and that nothing downstream ran' },
       { kind: 'forbid_text', anyOf: ['Verified parcel identity accepted'], description: 'The conflicted parcel is never presented as verified' },
     ],
@@ -669,31 +677,40 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     fixturePolicy: 'Read-only.',
   },
   {
-    id: 'phase1-verified-research-mission',
-    name: 'Phase 1 verified research mission and quarantine',
+    // Re-baselined 2026-07-24 (Tyler-directed): replaces the retired
+    // phase1-verified-research-mission journey. The Lead Workspace mission
+    // panel is retired; the durable-mission and quarantine outcome now lives
+    // on the canonical Deal Card research-progress panel: a quarantined
+    // mission is disclosed as needing parcel confirmation, rejected evidence
+    // is excluded from the canonical record and says so, and the safe next
+    // action is an explicit operator re-run control.
+    id: 'research-quarantine-honesty',
+    name: 'Quarantined research mission on the canonical Deal Card',
     capability: 'phase1-verified-research-mission',
     department: 'research',
     startingState: 'An existing operating lead with a completed research mission and retained quarantined evidence; read-only QA.',
     operatorSteps: [
       { kind: 'select_card', criteria: 'quarantined_research', description: 'Select a lead whose research agent rejected unassociated or contradictory parcel evidence' },
-      { kind: 'navigate', path: LEAD_WORKSPACE_PATH, description: 'Open the selected Lead Workspace' },
-      { kind: 'expect_test_id', testId: 'research-mission-status', count: 1, description: 'The durable Property Research Agent mission is visible' },
-      { kind: 'expect_text', anyOf: ['Immutable search'], description: 'The operator-entered search boundary is visible' },
-      { kind: 'expect_test_id', testId: 'research-verification-result', count: 1, description: 'The semantic parcel verification result is visible' },
-      { kind: 'expect_test_id', testId: 'quarantined-research-evidence', count: 1, description: 'Rejected evidence is visibly preserved and excluded' },
-      { kind: 'api_reconcile', apiPath: '/api/landos/lead-workspace/{dealId}', description: 'The visible mission agrees with the Lead Workspace API' },
-      { kind: 'screenshot', name: 'phase1-verified-research-mission', description: 'Capture immutable constraints, verification, trace, and quarantine' },
-      { kind: 'refresh_persistence', expectAnyOf: ['Immutable search', 'Quarantined evidence'], expectTestId: 'research-mission-status', description: 'Mission state and quarantine remain visible after refresh' },
-      { kind: 'restart_persistence', expectAnyOf: ['Immutable search', 'Quarantined evidence'], expectTestId: 'research-mission-status', description: 'Mission state and quarantine survive a managed restart' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the selected canonical Deal Card' },
+      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The canonical Deal Card renders' },
+      { kind: 'expect_test_id', testId: 'deal-card-research-progress', count: 1, description: 'The durable research mission status is visible on the canonical Deal Card' },
+      { kind: 'expect_text', anyOf: ['Research needs parcel confirmation'], description: 'The quarantined mission is disclosed as needing parcel confirmation' },
+      { kind: 'expect_text', anyOf: ['No parcel evidence was promoted'], description: 'Rejected evidence is excluded from the canonical record and says so' },
+      { kind: 'expect_test_id', testId: 'deal-card-research-retry', count: 1, description: 'The safe next action is an explicit operator re-run control' },
+      { kind: 'forbid_text', anyOf: ['Automatic property research complete'], description: 'A quarantined mission is never presented as complete' },
+      { kind: 'api_reconcile', apiPath: '/api/landos/deal-cards/{dealId}', description: 'The visible card agrees with the canonical deal-card API' },
+      { kind: 'screenshot', name: 'research-quarantine-honesty', description: 'Capture the quarantined mission disclosure and re-run control' },
+      { kind: 'refresh_persistence', expectAnyOf: ['Research needs parcel confirmation'], expectTestId: 'deal-card-research-progress', description: 'Mission state and quarantine disclosure remain visible after refresh' },
+      { kind: 'restart_persistence', expectAnyOf: ['Research needs parcel confirmation'], expectTestId: 'deal-card-research-progress', description: 'Mission state and quarantine disclosure survive a managed restart' },
     ],
-    expectedBackendState: 'The durable mission preserves immutable operator constraints, bounded attempts, tool trace, semantic verification, safe next action, and quarantined evidence without promoting rejected parcel data.',
-    expectedFrontendState: 'The Lead Workspace names the acting role and visibly shows search constraints, outcome, verification, gaps, safe next action, trace, and quarantine exclusion.',
-    prohibitedContradictions: ['Wrong-jurisdiction facts promoted', 'Research shown as not started after a completed attempt', 'Quarantined evidence projected as canonical'],
-    requiredScreenshots: ['phase1-verified-research-mission'],
+    expectedBackendState: 'The durable mission preserves bounded attempts, verification outcome, safe next action, and quarantined evidence without promoting rejected parcel data.',
+    expectedFrontendState: 'The canonical Deal Card visibly discloses the quarantined mission, the exclusion of rejected evidence, and an explicit re-run control.',
+    prohibitedContradictions: ['Wrong-jurisdiction facts promoted', 'Quarantined mission presented as complete', 'Quarantined evidence projected as canonical'],
+    requiredScreenshots: ['research-quarantine-honesty'],
     persistence: { refresh: true, restart: true },
     allowedExternalBlockers: [],
-    passCriteria: 'The durable, jurisdiction-safe research mission and its quarantine remain API-backed and visible through refresh and restart.',
-    failureCriteria: 'Mission state disappears, immutable constraints change, rejected evidence is promoted, or frontend and API disagree.',
+    passCriteria: 'The durable quarantined mission remains API-backed and visible on the canonical Deal Card through refresh and restart.',
+    failureCriteria: 'Mission state disappears, rejected evidence is promoted, quarantine reads as complete, or frontend and API disagree.',
     mutating: false,
     fixturePolicy: 'Read-only selection by durable research state; no provider or operating-data mutation.',
   },

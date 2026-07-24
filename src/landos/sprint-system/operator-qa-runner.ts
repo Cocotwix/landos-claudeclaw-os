@@ -349,6 +349,13 @@ export async function selectFixtureCard(
         | null
         | undefined;
       if (resolution.status === 200 && snapshot?.identityConflict) {
+        // A recorded conflict can be superseded: when a later attempt promoted
+        // a candidate and the property now reads verified_property, the card
+        // presents the promoted state, not the hard stop. The journey needs a
+        // card whose CURRENT presentation is the conflict block, so skip
+        // verified-property cards with only a historical conflict.
+        const detail = await fetcher(`/api/landos/deal-cards/${id}`);
+        if (detail.status === 200 && detail.text.includes('"verification_status":"verified_property"')) continue;
         return { dealId: id, detail: `genuine identity conflict (requested ${snapshot.identityConflict.requestedApn ?? '?'} vs resolved ${snapshot.identityConflict.resolvedApn ?? '?'})` };
       }
       continue;

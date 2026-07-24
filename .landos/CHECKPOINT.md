@@ -1,9 +1,9 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-24T15:14:44.540Z
-- **HEAD at generation:** `cba457d`
-- **Worktree:** DIRTY; 76 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Generated:** 2026-07-24T16:08:10.407Z
+- **HEAD at generation:** `78c3cac`
+- **Worktree:** DIRTY; 52 modified/untracked paths at refresh time. Preserve unrelated changes.
 - **Latest tests:** PASS at 2026-07-23T23:51:25-04:00; 304 files, 3728 tests, 0 failures (vitest run, full suite).
 - **Latest typecheck:** PASS at 2026-07-24T00:07:00-04:00; tsc --noEmit.
 - **Latest production build:** PASS at 2026-07-24T00:07:45-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.

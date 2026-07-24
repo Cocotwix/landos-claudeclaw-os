@@ -247,27 +247,37 @@ describe('journey execution', () => {
     expect(result.findings[0].liveUrl).not.toContain('test-token');
   });
 
-  it('runs Lead Workspace semantic assertions through the Acquisitions deep link', async () => {
+  it('runs canonical Deal Card semantic assertions through the Acquisitions deep link', async () => {
     const root = fixtureRoot();
     const log: string[] = [];
     const deps = baseDeps(root, {
-      browserFactory: fakeBrowser(() => 'Acquisitions Lead Workspace', log, {
-        'lead-workspace-root': 1,
-        'lead-workspace-strategy': 5,
-        'deal-card-root': 0,
+      browserFactory: fakeBrowser(() => 'Acquisitions canonical Deal Card', log, {
+        'deal-card-root': 1,
+        'lead-workspace-root': 0,
       }),
       fetchImpl: fakeFetch({
         'http://localhost:3141': { status: 200, body: SERVED_HTML },
         '/api/health': { status: 200, body: '{"ok":true}' },
         '/api/landos/deal-cards': { status: 200, body: '[{"id":5,"status":"verified"}]' },
         '/api/landos/deal-cards/5': { status: 200, body: '{"id":5,"status":"verified"}' },
-        '/api/landos/lead-workspace/5': { status: 200, body: '{"contract":{"version":"1.0"}}' },
       }),
     });
-    const result = await runJourney(getJourney('lead-workspace-acquisitions-readonly'), deps, { runId: 'lead-workspace' });
+    const result = await runJourney(getJourney('acquisitions-deal-card-readonly'), deps, { runId: 'deal-card-readonly' });
     expect(result.outcome).toBe('pass');
     expect(log.some((entry) => entry.includes('/dept/acquisitions?deal=5'))).toBe(true);
     expect(log).toContain('viewport 412x915');
+  });
+
+  it('the retired Lead Workspace journey ids stay retired', () => {
+    // Re-baseline 2026-07-24: the recovery merge replaced the Lead Workspace
+    // with the canonical Deal Card. These journey ids must not silently return.
+    const ids = GOLDEN_JOURNEYS.map((j) => j.id);
+    for (const retired of ['lead-workspace-acquisitions-readonly', 'phase1-verified-research-mission', 'phase1-unresolved-discovery-package']) {
+      expect(ids).not.toContain(retired);
+    }
+    for (const replacement of ['acquisitions-deal-card-readonly', 'research-quarantine-honesty', 'unresolved-lead-truthful-card']) {
+      expect(ids).toContain(replacement);
+    }
   });
 
   it('never issues non-GET requests and refuses mutating journeys by default', async () => {
@@ -427,5 +437,34 @@ describe('fixture selection', () => {
     const selected = await selectFixtureCard('apn_conflict', withConflict);
     expect(selected?.dealId).toBe(2);
     expect(selected?.detail).toContain('111-22-333');
+  });
+
+  // Regression (re-baseline 2026-07-24): a recorded identityConflict can be
+  // superseded by a later attempt that promoted a candidate — the property
+  // then reads verified_property and the card presents the promoted state,
+  // not the hard stop. The selector must skip such cards and pick one whose
+  // current presentation is still the conflict block.
+  it('apn_conflict skips superseded conflicts on verified_property cards', async () => {
+    const fetcher = async (apiPath: string) => {
+      if (apiPath === '/api/landos/deal-cards') {
+        return { status: 200, json: [{ id: 30 }, { id: 23 }], text: '[{"id":30},{"id":23}]' };
+      }
+      if (apiPath === '/api/landos/deal-cards/30/resolution' || apiPath === '/api/landos/deal-cards/23/resolution') {
+        return {
+          status: 200,
+          json: { snapshot: { state: 'unresolved', identityConflict: { requestedApn: 'A-1', resolvedApn: 'B-2', source: 'county layer' } } },
+          text: '',
+        };
+      }
+      if (apiPath === '/api/landos/deal-cards/30') {
+        return { status: 200, json: { id: 30 }, text: '{"id":30,"prop":{"verification_status":"verified_property","identityState":"candidate"}}' };
+      }
+      if (apiPath === '/api/landos/deal-cards/23') {
+        return { status: 200, json: { id: 23 }, text: '{"id":23,"prop":{"verification_status":"address_matched"}}' };
+      }
+      return { status: 200, json: {}, text: '{}' };
+    };
+    const selected = await selectFixtureCard('apn_conflict', fetcher);
+    expect(selected?.dealId).toBe(23);
   });
 });
