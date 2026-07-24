@@ -66,11 +66,17 @@ interface DealResearchProgress {
 
 const ACTIVE_RESEARCH_STATUSES = new Set(['queued', 'running']);
 
-function DealResearchProgressPanel({ progress, retrying, actionError, onRetry }: { progress: DealResearchProgress; retrying: boolean; actionError: string; onRetry: () => void }) {
+function DealResearchProgressPanel({ progress, retrying, actionError, canonicalConfirmed, onRetry }: { progress: DealResearchProgress; retrying: boolean; actionError: string; canonicalConfirmed?: boolean; onRetry: () => void }) {
   const mission = progress.mission;
   if (!mission) return null;
   const running = ACTIVE_RESEARCH_STATUSES.has(mission.status);
-  const verified = mission.verification?.accepted === true || mission.verification?.identityState === 'confirmed';
+  const missionVerified = mission.verification?.accepted === true || mission.verification?.identityState === 'confirmed';
+  // The accepted canonical identity is authoritative. A mission whose stored
+  // identityState is older (e.g. 'candidate') is history superseded by the later
+  // accepted confirmation, never the current identity state.
+  const verified = missionVerified || !!canonicalConfirmed;
+  const missionSuperseded = !!canonicalConfirmed && !missionVerified && !running
+    && !!mission.verification && mission.verification.identityState !== 'confirmed';
   const title = running
     ? 'Automatic property research is running'
     : mission.status === 'complete'
@@ -95,7 +101,12 @@ function DealResearchProgressPanel({ progress, retrying, actionError, onRetry }:
             {title}
           </div>
           <div class="mt-1 text-[11.5px] leading-relaxed text-[var(--color-text-muted)]">{detail}</div>
-          {!running && mission.safeNextAction && <div class="mt-1 text-[11px] text-[var(--color-text-muted)]"><span class="font-medium text-[var(--color-text)]">Next:</span> {mission.safeNextAction}</div>}
+          {missionSuperseded && (
+            <div data-testid="deal-card-research-superseded" class="mt-1 text-[11px] text-[var(--color-text-muted)]">
+              This run's parcel status ({mission.verification?.identityState ?? 'unknown'}) is earlier history, superseded by the accepted confirmed parcel identity on this card.
+            </div>
+          )}
+          {!running && mission.safeNextAction && !missionSuperseded && <div class="mt-1 text-[11px] text-[var(--color-text-muted)]"><span class="font-medium text-[var(--color-text)]">Next:</span> {mission.safeNextAction}</div>}
           {mission.error && <div class="mt-1 text-[11px] text-[var(--color-status-failed)]">{mission.error}</div>}
           {actionError && <div class="mt-1 text-[11px] text-[var(--color-status-failed)]">{actionError}</div>}
         </div>
@@ -5169,7 +5180,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           </div>
 
           {researchProgress && (
-            <DealResearchProgressPanel progress={researchProgress} retrying={researchRetrying} actionError={researchActionError} onRetry={() => void retryResearch()} />
+            <DealResearchProgressPanel progress={researchProgress} retrying={researchRetrying} actionError={researchActionError} canonicalConfirmed={propertySummary?.identity.status === 'confirmed'} onRetry={() => void retryResearch()} />
           )}
 
           {/* One general living-record intake for notes, transcripts, contacts,

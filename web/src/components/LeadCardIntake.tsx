@@ -26,6 +26,10 @@ type ResolutionHandoff = {
   state?: string; attempted?: boolean; resolutionStatus?: string; confidence?: number;
   matchedReason?: string; identityEstablishedByApprovedSource?: boolean; identityBasis?: string;
   identityConflict?: { requestedApn?: string; resolvedApn?: string; source?: string } | null;
+  acceptedIdentityState?: string | null; acceptedIdentityConfirmed?: boolean;
+  acceptedCanonicalApn?: string | null;
+  attemptReconciliation?: 'no_accepted_identity' | 'corroborates' | 'attempt_conflict' | 'accepted_stands';
+  reconciliationMessage?: string | null;
   agreement?: string; missing?: string[];
   apnVariantsTried?: string[]; ownerVariants?: string[]; lookupOrder?: string[];
   laneOutcomes?: Array<{ lane: string; ran: boolean; status: string; verdict: string; reason: string }>;
@@ -105,10 +109,14 @@ const resolutionLaneLabel = (lane: string) => ({
 }[lane] ?? lane.replace(/_/g, ' '));
 
 function ResolutionHandoffPanel({ handoff }: { handoff: ResolutionHandoff }) {
+  // A confirmed Deal Card keeps its accepted parcel; the latest attempt is
+  // history relative to that accepted identity, never an override of it.
+  const acceptedConfirmed = !!handoff.acceptedIdentityConfirmed;
+  const identityEstablished = handoff.identityEstablishedByApprovedSource || acceptedConfirmed;
   const statusLine = [
     handoff.resolutionStatus ? `Parcel: ${handoff.resolutionStatus}` : null,
     typeof handoff.confidence === 'number' ? `confidence ${handoff.confidence.toFixed(2)}` : null,
-    handoff.identityEstablishedByApprovedSource ? 'identity established by an approved source' : 'identity not yet established',
+    identityEstablished ? 'identity established by an approved source' : 'identity not yet established',
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="smart-intake-resolution-handoff" class="mt-2 rounded-md border border-[var(--color-border)] p-2.5 text-[11px] text-[var(--color-text-muted)] space-y-2">
@@ -117,7 +125,21 @@ function ResolutionHandoffPanel({ handoff }: { handoff: ResolutionHandoff }) {
         <div data-testid="resolution-status-line" class="mt-0.5 font-medium text-[var(--color-text)]">{statusLine}</div>
         {handoff.message && <div class="mt-1">{handoff.message}</div>}
       </div>
-      {handoff.identityConflict && (
+      {acceptedConfirmed && handoff.attemptReconciliation === 'attempt_conflict' && (
+        <div data-testid="resolution-attempt-conflict" class="rounded border border-amber-500 bg-amber-500/10 p-2 font-medium text-amber-700 dark:text-amber-300">
+          {handoff.reconciliationMessage
+            ?? 'Latest resolution attempt conflicts with the accepted canonical parcel and requires operator review. The accepted parcel identity remains confirmed; downstream intelligence continues.'}
+          {handoff.identityConflict && (
+            <div class="mt-1 font-normal">This attempt resolved APN {handoff.identityConflict.resolvedApn} from {handoff.identityConflict.source}, which differs from the accepted parcel{handoff.acceptedCanonicalApn ? ` (APN ${handoff.acceptedCanonicalApn})` : ''}. The accepted identity was not changed.</div>
+          )}
+        </div>
+      )}
+      {acceptedConfirmed && handoff.attemptReconciliation === 'corroborates' && (
+        <div data-testid="resolution-attempt-corroborates" class="rounded border border-emerald-600 bg-emerald-500/10 p-2 font-medium text-emerald-700 dark:text-emerald-300">
+          {handoff.reconciliationMessage ?? 'Latest resolution attempt corroborates the confirmed parcel.'}
+        </div>
+      )}
+      {!acceptedConfirmed && handoff.identityConflict && (
         <div data-testid="resolution-identity-conflict" class="rounded border border-red-500 bg-red-500/10 p-2 font-medium text-red-700 dark:text-red-300">
           Wrong-parcel hard stop: requested APN {handoff.identityConflict.requestedApn} but {handoff.identityConflict.source} resolved APN {handoff.identityConflict.resolvedApn}. Nothing downstream runs.
         </div>

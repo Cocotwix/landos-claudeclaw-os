@@ -122,7 +122,8 @@ import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import { apnSearchVariants, ownerSearchVariants } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
-import { resolveProperty, type ResolutionDeps, type PropertyResolution } from './property-resolution-engine.js';
+import { resolveProperty, apnIdentifiersCorroborate, type ResolutionDeps, type PropertyResolution } from './property-resolution-engine.js';
+import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
 import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
 import { listNavigationModels } from './browser-navigation-model.js';
@@ -2800,7 +2801,11 @@ export function registerLandosRoutes(app: Hono): void {
       const p = resolution.property;
       const resolvedApnKey = String(p.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
       const acceptedApnKey = String(existingCard?.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
-      if (existingCard && existingCard.verification_status === 'verified_property' && acceptedApnKey && resolvedApnKey && acceptedApnKey !== resolvedApnKey) {
+      // A jurisdiction format variant of the SAME parcel (TN short vs full APN) is
+      // never a mismatch; only a genuinely different parcel is flagged for review.
+      const sameAcceptedParcel = acceptedApnKey && resolvedApnKey
+        && apnIdentifiersCorroborate(String(existingCard?.apn ?? ''), String(p.apn ?? ''));
+      if (existingCard && existingCard.verification_status === 'verified_property' && acceptedApnKey && resolvedApnKey && !sameAcceptedParcel) {
         try { addCardNextAction({ cardId: Number(existingCard.id), action: `⚠ Smart Intake resolution confirmed APN ${p.apn} (${p.verificationSource ?? 'approved source'}), but this card's ACCEPTED APN is ${existingCard.apn}. Accepted record kept unchanged — confirm with Tyler before changing.`, createdBy: 'landos/intake-resolution' }); } catch { /* best-effort */ }
         return { canonicalPromotionApplied: false, note: `No promotion: this deal already has an accepted verified parcel (APN ${existingCard.apn}); the newly confirmed APN ${p.apn} was recorded for operator review instead.` };
       }
@@ -2935,6 +2940,33 @@ export function registerLandosRoutes(app: Hono): void {
       const promotion = confirmed
         ? promoteConfirmedIntakeResolution(dealCardId, resolution)
         : { canonicalPromotionApplied: false, note: 'No canonical promotion: the parcel is not yet confirmed by an approved parcel-level source. Screenshot candidates remain non-canonical.' };
+      // ── Reconcile THIS attempt with the ACCEPTED canonical identity ─────────
+      // A confirmed Deal Card keeps its accepted parcel regardless of a later
+      // attempt. A contradicting attempt is an operator-review flag, never a
+      // revocation; a corroborating attempt is shown as corroboration.
+      const acceptedIdentity = readParcelIdentity(dealCardId);
+      const acceptedConfirmed = acceptedIdentity?.state === 'confirmed';
+      const acceptedSummary = acceptedConfirmed ? readPropertySummaryForDeal(dealCardId) : null;
+      // Prefer the synchronized summary APN; fall back to the confirmed subject
+      // property card's APN so reconciliation works even when the read-model
+      // slice has not been rebuilt yet.
+      let acceptedCanonicalApn = acceptedSummary?.identity?.apn ?? null;
+      if (acceptedConfirmed && !acceptedCanonicalApn) {
+        const acceptedDeal = getDealCard(dealCardId);
+        const acceptedCard = (acceptedDeal?.propertyCards as Array<Record<string, unknown>> | undefined)?.[0];
+        if (acceptedCard && acceptedCard.verification_status === 'verified_property' && acceptedCard.apn) {
+          acceptedCanonicalApn = String(acceptedCard.apn);
+        }
+      }
+      const attemptApn = resolution.property.apn ?? resolution.verifiedData?.identity?.apn ?? null;
+      const reconciliation = reconcileAttemptWithAcceptedIdentity({
+        acceptedState: acceptedIdentity?.state ?? null,
+        acceptedCanonicalApn,
+        attemptApn,
+        attemptHasConflict: !!resolution.identityConflict,
+        attemptEstablished: resolution.identityEstablished,
+      });
+      const { attemptReconciliation, reconciliationMessage } = reconciliation;
       const handoff = {
         state: 'attempted',
         attempted: true,
@@ -2945,9 +2977,19 @@ export function registerLandosRoutes(app: Hono): void {
         resolutionStatus: resolution.resolutionStatus,
         confidence: resolution.confidence,
         matchedReason: resolution.matchedReason,
-        identityEstablishedByApprovedSource: resolution.identityEstablished,
+        // A confirmed Deal Card is established by an approved source regardless of
+        // whether THIS attempt independently re-established it (req: a confirmed
+        // card must never read "identity not yet established").
+        identityEstablishedByApprovedSource: reconciliation.identityEstablishedByApprovedSource,
         identityBasis: resolution.identityBasis,
         identityConflict: resolution.identityConflict ?? null,
+        // Accepted-canonical reconciliation for the panel: the latest attempt is
+        // history relative to the accepted identity, never an override of it.
+        acceptedIdentityState: acceptedIdentity?.state ?? null,
+        acceptedIdentityConfirmed: acceptedConfirmed,
+        acceptedCanonicalApn,
+        attemptReconciliation,
+        reconciliationMessage,
         agreement: resolution.agreement.explanation,
         missing: resolution.missing,
         lanesAttempted: resolution.lanesAttempted,

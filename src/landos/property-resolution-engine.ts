@@ -82,6 +82,44 @@ function compactParcelId(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/** PURE: reduce an APN/parcel id to its identity-bearing DIGIT CORE — the ordered
+ *  digit groups with a trailing 4-digit YEAR and, after that, a trailing all-zero
+ *  INTEREST group removed. A Tennessee full PARCELID "015 027 04512 000 2026"
+ *  reduces to its district+map+parcel core "01502704512" (the same digits the
+ *  GISLINK form carries), while the short map-and-parcel "027 045.12" reduces to
+ *  "02704512" — the full core with the county/district prefix. Stripping only
+ *  ever removes NON-identifying trailing components and always leaves >= 2 groups,
+ *  so the map/parcel digits that distinguish neighboring parcels are never lost. */
+function apnCoreDigits(raw: string): string {
+  let groups = (String(raw ?? '').match(/\d+/g) ?? []).filter(Boolean);
+  if (groups.length >= 3) {
+    const last = groups[groups.length - 1];
+    const year = Number(last);
+    if (last.length === 4 && year >= 1900 && year <= 2099) groups = groups.slice(0, -1);
+  }
+  if (groups.length >= 3 && /^0+$/.test(groups[groups.length - 1])) groups = groups.slice(0, -1);
+  return groups.join('');
+}
+
+/** PURE: do two parcel identifiers name the SAME parcel, allowing jurisdiction
+ *  format variants? Mirrors the Tennessee parcel matcher's own identity guard:
+ *  corroborates when the digit cores are equal, or when one core is the SUFFIX of
+ *  the other (a county/district prefix present in one format and absent from a
+ *  shorter map-and-parcel format), requiring >= 7 shared digits so a weak partial
+ *  can never corroborate. Reordered digit groups, neighboring parcel numbers,
+ *  differing suffixes (Beaufort ...0085 vs ...0084), and unrelated identifiers all
+ *  return false. This is ordered structural equivalence, NOT substring matching —
+ *  the county/state guard (detectJurisdictionConflict) still separates same-number
+ *  parcels in different counties. */
+export function apnIdentifiersCorroborate(a: string, b: string): boolean {
+  const ca = apnCoreDigits(a);
+  const cb = apnCoreDigits(b);
+  if (ca.length < 4 || cb.length < 4) return false;
+  if (ca === cb) return true;
+  const [shorter, longer] = ca.length <= cb.length ? [ca, cb] : [cb, ca];
+  return shorter.length >= 7 && longer.endsWith(shorter);
+}
+
 /**
  * PURE: detect a hard APN conflict. Returns a conflict ONLY when the operator
  * supplied at least one usable APN variant AND at least one parcel-level lane
@@ -95,15 +133,16 @@ export function detectApnConflict(
   resolved: Array<{ apn?: string; source: string; context?: string }>,
 ): ApnConflict | null {
   const reqRaw = [requested.apn, ...(requested.apnAlternates ?? [])]
-    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-  const reqVariants = reqRaw.map(compactParcelId).filter((x) => x.length >= 4);
-  if (reqVariants.length === 0) return null;
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    .filter((x) => compactParcelId(x).length >= 4);
+  if (reqRaw.length === 0) return null;
   const resolvedApns = resolved
-    .map((r) => ({ compact: r.apn ? compactParcelId(r.apn) : '', apn: r.apn, source: r.source, context: r.context }))
-    .filter((r) => r.compact.length >= 4);
+    .filter((r): r is { apn: string; source: string; context?: string } => typeof r.apn === 'string' && compactParcelId(r.apn).length >= 4);
   if (resolvedApns.length === 0) return null;
-  // Any resolved APN matching a requested variant confirms the same parcel.
-  if (resolvedApns.some((r) => reqVariants.includes(r.compact))) return null;
+  // Any resolved APN that corroborates a requested variant (jurisdiction format
+  // variants included: TN short "027 045.12" vs full "015 027 04512 000 2026")
+  // confirms the same parcel — a different FORMAT is never a conflict.
+  if (resolvedApns.some((r) => reqRaw.some((req) => apnIdentifiersCorroborate(req, r.apn)))) return null;
   const first = resolvedApns[0];
   return {
     requestedApn: reqRaw[0],
@@ -152,14 +191,15 @@ export function detectJurisdictionConflict(
   if (!reqCounty) return null;
   const reqApnVariants = [requested.apn, ...(requested.apnAlternates ?? [])]
     .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
-    .map(compactParcelId)
-    .filter((x) => x.length >= 4);
+    .filter((x) => compactParcelId(x).length >= 4);
   if (reqApnVariants.length === 0) return null;
   for (const r of resolved) {
     const rc = normCounty(r.county);
     if (!rc || rc === reqCounty) continue;
-    const rApn = r.apn ? compactParcelId(r.apn) : '';
-    if (!rApn || !reqApnVariants.includes(rApn)) continue; // must be the SAME parcel number
+    // Same parcel number (jurisdiction format variants included) resolving in a
+    // DIFFERENT county is a cross-county collision — the corroboration test that
+    // clears a same-county format variant here proves the wrong-county landing.
+    if (!r.apn || !reqApnVariants.some((req) => apnIdentifiersCorroborate(req, r.apn!))) continue;
     const reqState = normState(requested.state);
     const rs = normState(r.state);
     // State agreement is not required, but include it in the display when known.
@@ -496,12 +536,12 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       // never a silent verification of either (QA finding W2-F2 shape).
       if (
         officialPatch?.apn && fields.apn && officialPatch.address && fields.address
-        && compactParcelId(officialPatch.apn) === compactParcelId(fields.apn)
+        && apnIdentifiersCorroborate(officialPatch.apn, fields.apn)
         && !addressVariantsCompatible(fields.address, officialPatch.address)
       ) {
         try {
           const byAddress = await deps.officialParcel({ ...fields, apn: undefined, apnAlternates: undefined }, timeoutMs);
-          if (byAddress.patch?.apn && compactParcelId(byAddress.patch.apn) !== compactParcelId(officialPatch.apn)) {
+          if (byAddress.patch?.apn && !apnIdentifiersCorroborate(byAddress.patch.apn, officialPatch.apn)) {
             addressApnContradiction = {
               requestedApn: fields.apn,
               resolvedApn: byAddress.patch.apn,
