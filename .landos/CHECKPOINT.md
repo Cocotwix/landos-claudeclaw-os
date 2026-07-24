@@ -1,131 +1,137 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-20T14:19:39.217Z
-- **HEAD at generation:** `ee94d14`
-- **Worktree:** DIRTY; 51 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-15T23:20:46-04:00; 264 files, 3391 tests, 0 failures (vitest run, full suite).
-- **Latest typecheck:** PASS at 2026-07-15T23:14:00-04:00; tsc --noEmit.
-- **Latest production build:** PASS at 2026-07-15T23:21:30-04:00; Vite production bundle and server TypeScript build; managed runtime restarted on the fresh bundle.
-- **Managed runtime:** RUNNING healthy at 2026-07-15T23:32:00-04:00; PID 122616; http://localhost:3141.
+- **Generated:** 2026-07-24T04:20:10.830Z
+- **HEAD at generation:** `e614d51`
+- **Worktree:** DIRTY; 62 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-07-23T16:00:56-04:00; 295 files, 3642 tests, 0 failures (vitest run, full suite).
+- **Latest typecheck:** PASS at 2026-07-23T16:01:30-04:00; tsc --noEmit.
+- **Latest production build:** PASS at 2026-07-23T16:02:30-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy at 2026-07-23T16:04:38-04:00; PID 60512; http://localhost:3141.
 - **Active sprint:** sprint-2026-07-17-operator-useful-leads (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
 - **Sprint ledger:** .landos/sprints/sprint-2026-07-17-operator-useful-leads/ledger.json; proof report .landos/sprints/sprint-2026-07-17-operator-useful-leads/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
 
-## Market Research verify-and-complete sweep — COMPLETE (2026-07-19d)
+Live repository state, database state, runtime, and owner-visible behavior override anything written here.
+Detailed reports remain under `docs/landos/`. Do not
+commit or push until Tyler explicitly authorizes it.
 
-Sticky Drill Deep header shipped. JSON-payload sweep re-verified 50/50 states
-→ 30,425 ZIPs (+541 recovered, incl. 119 counties wrongly marked done) and
-declared ZIP counts on all 3,138 counties. Cross-county ZIP membership built
-(landos_mr_zip_county + union rendering in listMrRows + payload-proof
-zipShortfalls): Denver/Muscogee "missing" ZIPs were under neighbor parents,
-not absent. FE-vs-backend: 6,070 rows / 72,840 cells over US + all 50 county
-tables + all 157 GA ZIP tables + 2 per other state → 0 mismatches.
+## Current objective and state
 
-## Market Research multi-band expansion (2026-07-19e) — controlling task list
+The derived block above is stale where it disagrees with this session's
+verified results: full suite PASS 2026-07-24, 304 files / 3728 tests / 0
+failures; server tsc, server build, and Vite production build PASS (only the
+existing large-chunk advisory); managed runtime RUNNING healthy PID 53840 at
+http://localhost:3141.
 
-Owner request: finish cross-county ZIP membership; add bands <1, 1-2, 2-5
-(done), 5-10, 10-20, 20-50, 50+, all-acreage nationally; FIRST find the
-fastest reusable extraction (no full browser sweep per band; consider work
-outside the LandOS server); keep dashboard responsive; verify; NO commit/push.
+Four uncommitted vertical slices coexist and must be preserved:
 
-- [x] Evidence probed: dropdown = All/0-1/1-2/2-5/5-10/10-20/20-50/50-100/100+
-  (no native 50+ — both halves collected); every admin-ajax request carries
-  the band in filters.acre_range; requests are uniform units (states /
-  counties-per-state / zips-per-(state,county)); DB already WAL.
-- [x] Architecture built + tested (25 passing): out-of-server worker
-  `dist/landos/mr-band-collect-cli.js <band>`
-  (market-research-band-collector.ts) opens its own tab in the authenticated
-  Chrome, captures the page's OWN band-filtered request as the verbatim
-  filter template, replays the site's drill-deep data calls in-page (same
-  session, read-only, throttled + 3× retry), retains via shared store fns
-  (metrics, add-only fills, NULL-only counts, memberships → cross-county fix
-  completes as a side effect). Resumable per-unit ledger
-  landos_mr_band_unit ('empty' = real provider absence). ACREAGE_BANDS +
-  DRILL_DEEP_ACREAGE extended; overview lists all bands (UI shows retained
-  only); getCollectionStatus derives running from ledger freshness.
-- [x] Bands COLLECTED COMPLETE (0 failed units; 51 states / 3,138 counties /
-  ~32.4k ZIPs each): 0-1, 1-2, 5-10, 10-20, 20-50, 50-100 (+2-5 earlier).
-  Provider-empty units recorded honestly (54-55/band).
-- [x] Multi-band FE-vs-API verification PASSED: 8 bands × (US + GA counties +
-  2 GA cross-county ZIP tables) = 1,792 rows / 21,504 cells, **0 mismatches**;
-  band selector lists exactly the retained bands; Stephens 13257 renders 4
-  ZIPs incl. cross-county 30577 (owned by 13011). Screenshots
-  store/browser-shots/mr-band-verify/. Dashboard during/after collection:
-  / 41ms, overview 96ms.
-- [x] ALL 9 BANDS COMPLETE 2026-07-20 14:10Z. A LandPortal maintenance window
-  (~09:45Z, "under construction") had left 100+ partial and `all` unstarted;
-  the durable watcher `scripts/mr-band-autoretry.mjs` (detached, backoff,
-  per-unit resume, log logs/mr-band-autoretry.log + status
-  store/mr-band-autoretry.json) rode it out and finished both. Maintenance had
-  also logged the session out — re-auth via the approved
-  POST /api/landos/browser/ensure-auth (env credential, never displayed).
-  FINAL per band (each): 51 states, 3,138 counties, ~32.4k ZIPs, **0 failed
-  units**; totals 28,242 county rows + 290,020 ZIP rows across bands.
-- [x] Final multi-band FE verification: 9 bands, 2,016 rendered rows, 24,192
-  cells, **0 mismatches** (store/browser-shots/mr-band-verify/). Runtime
-  healthy; dashboard responsive throughout. NOT committed or pushed.
+1. Canonical Property Version -> evidence -> versioned Property Summary.
+2. Durable government-record collectors -> immutable pages/claims -> versioned
+   Government Record Risk snapshot -> owner Documents panel.
+3. Smart Intake native text paste + multi-image clipboard/upload/drop ->
+   immutable artifact + exact multimodal transcription -> editable unconfirmed
+   candidates -> approved-source resolution attempt with no screenshot promotion.
+4. Multi-path parcel resolution for the Smart Intake handoff: state/county +
+   APN primary (normalization variants), LandPortal parcel-level browser search
+   (property id/FIPS discovered, never required), county + owner as an
+   independent lookup key (never a seller-authority gate), address as secondary
+   corroboration with materially different roads rejected, full operator-visible
+   evidence, and standard-path canonical promotion on confirmation.
 
-## Market Research gap fill — COMPLETE (2026-07-19)
+## Multi-path resolution fix (2026-07-24)
 
-241 missing values extracted ADD-ONLY (each with a landos_mr_correction audit
-entry; retained values never modified — live trailing-window numbers drift).
-Remaining blanks (23,676 geographies, 21,987 zero-sales) verified as “-” on
-LandPortal itself. Machinery: `fillMissingMrMetrics`, `computeMrGaps`,
-`collectMarketGapFill`, POST /api/landos/market-research/fill-gaps.
+Root cause: geocoder-first `liveResolutionDeps` (LandPortal lanes off), TN
+adapter unable to decompose GISLINK-format APNs, trailing ZIP misread as house
+number (wrong-road corroboration accepted), planner falling through to
+"LandPortal property id + FIPS". Fixed in `instruction-consistency`
+(first-token street number; `roadNamesCompatible`), `resolver-planner`
+(honest next identifier), `landportal-client` (owner-variant extensions),
+`public-property-intelligence-live` (TN APN clause generation + county+owner
+path + corroboration-only address; collapsed GISLINK as APN),
+`property-resolution-engine` (materially different suggested road rejected),
+`routes` (LandPortal browser lane wired, browser-mission gate, full-evidence
+handoff, `promoteConfirmedIntakeResolution` via the standard approved path,
+accepted-parcel contradiction protection), and `LeadCardIntake.tsx`
+(`ResolutionHandoffPanel` shows every path, source, fact, rejection, promotion).
 
-## Market Research workspace — COMPLETE (2026-07-19)
+Live Deal 32 acceptance via the operator button: TN Comptroller matched APN
+`073090 04200` (GISLINK ordered-group, Roane-filtered) returning owner
+`SACHAN DILEEP S`, `OLD RIDGE RD`, 12.28 ac, coordinates + source URL.
+LandPortal genuinely searched (4 APN variants + owner + address) and honestly
+refused a Davidson-county APN collision. No Ridge Trail Road in stored state;
+regression test pins the rejection. Identity `confirmed` (1.0); property card
+32 verified from the official record and linked subject; downstream follows
+the confirmed-parcel gate. Refresh + managed restart preserved one
+submission/artifact (same SHA-256) and nine candidates. Only console message:
+pre-existing honest 502 from `/overlay/aerial` (no Roane aerial capability),
+newly visible because the parcel is confirmed.
 
-Capability at `/dept/market-research`: Heat Map + Drill Deep over immutable
-quarterly snapshots (`landos_mr_*`), API `/api/landos/market-research/*`,
-shared snapshot/band/metric/selection state, ZCTA + albers TopoJSON at
-`/geo/*`. Bands appear only with real retained data. Tab-return bug fixed
-(rejected topo fetches cached forever → permanent spinner;
-`web/src/lib/topo-loader.ts` retries). Collector hardened + regression-tested
-(interactive-leaf clicks, VISIBLE-grid checks, patient retries for provider
-render storms, child-row-presence expand/collapse, chunked writes, resumable
-runs). Acceptance witnessed in visible Chrome (store/browser-shots/).
+## Smart Intake implementation and proof
 
-Ops notes: `npm run landos:restart` kills the CDP Chrome child (relaunch via
-POST /api/landos/browser/start). Temp `scripts/tmp-mr-*.mjs` (no secrets) are
-sandbox-undeletable; safe to remove. Pre-existing full-suite failures NOT from
-these builds: memory-budget tests, Property Board test vs dirty uncommitted
-work, comp-map selection-gate expectation.
+- `LeadCardIntake.tsx` keeps text-only paste fully native; image-bearing
+  clipboard events insert `text/plain` once and append every supported image;
+  multi-select, drag/drop, and remove work. PNG/JPEG/WEBP ≤10 MB validated by
+  MIME + extension + magic bytes; rich HTML never rendered.
+- Submissions carry an idempotency key and resolution result; artifact rows
+  are immutable (UPDATE/DELETE triggers) with full provenance (name, URL,
+  MIME, size, SHA-256, method, exact text, extraction JSON/status/model,
+  timestamp). Candidates live in separate editable rows; operator corrections
+  never change the original image or extraction; original text stored exactly.
+- Screenshot candidates stay `candidate` status, never update canonical
+  identity/geometry; owner/contact mismatch is non-gating; extraction failure
+  preserves the image with honest `unavailable` status.
 
-## Lead Card system-wide build (carried, compacted 2026-07-19)
+Deal 32 Roane proof (earlier sessions, now superseded by confirmation below):
+the blank card's supplied PNG (2,949,777 bytes, SHA-256
+`df2e1d2c898c9726daca94fbdb0db600ced3a59339a4ca9d012fdbb850ea09f3`) yielded
+nine editable candidates (owner `SACHAN DILEEP S`, road `OLD RIDGE RD`,
+KINGSTON TN 37763, Roane County, APN `073090 04200`, platform Regrid; acreage/
+coordinates explicitly unread). A resolution-only UI defect hiding Smart
+Intake and an unlabeled thumbnail link were fixed; the labeled in-card
+full-resolution viewer (fit/100%) works in pending and confirmed paths.
+Refresh/restart preserved one submission, one artifact, nine candidates with
+no duplicates and no console errors.
 
-- [ ] Card 25 (272 McAlister Rd, Kingstree SC): owner-confirmed identity
-  `45-177-182` / WRAGG JESSICA MARIE / Book 795 Page 429 persisted + protected.
-  Missing: deed image (Williamsburg recorder needs an authenticated county
-  session — external blocker) and a qualified sold-comp valuation set.
-  HomeHarvest comp-coordinate repair built; owner-visible check pending.
-- [ ] Card 28 (585 Marksmen Ct, Fayetteville GA): complete except deed image
-  (GSCCCA images are paid-only — prohibited) and qualified valuation set.
-- [ ] Automatic free official lien/judgment search per verified card (true "no
-  liens found" only after a completed official no-match search).
-- [ ] County-record retention of source/reference/status/image beside the deed
-  gallery on every card; shared recorder capability (free-only accounts,
-  DPAPI credential reuse, real page capture — adapter exists, no county
-  exercised end to end); deed-page gallery on every card (Card 14 works).
-- [ ] Backfill every real Lead Card (owner/deed, parcel, imagery, terrain,
-  feasibility, qualified comps, market evidence); remove owner-facing
-  diagnostics; exercise all owner actions per card.
+## Prior slice proof to preserve
 
-## Phase 1 finalization (carried)
+- Deal 31 verified control (identity/snapshot v1, 100%, nine immutable
+  evidence items) and Deal 10 unresolved control (imagery/comps/valuation/
+  strategy withheld) both persist through restart.
+- Deal 14 government record snapshot v5: identity v1, 60% screened, medium
+  confidence; deed/ownership complete, other lanes honestly partial; seven
+  retained pages for instrument 1997O31519 with SHA-256 + official source.
 
-- [x] Scope audit; full regression + build repaired and passed 2026-07-18.
-- [ ] Validate storage isolation / LandPortal replacement (QA data never shown
-  as operating leads).
-- [ ] Full owner walkthrough (Mission Control, acquisitions, Lead Workspace,
-  intake, county research, discovery package, transcripts, Max, browser
-  research); then stage/commit/push with Tyler's authorization.
+## Preserved work and exclusions
 
-## Pending Tyler decisions
+Intended modified files include `.landos/CHECKPOINT.md`, `src/landos/db.ts`,
+`src/landos/routes.ts`, `src/landos/lead-card-intake.ts` and tests,
+`src/landos/instruction-consistency.ts` (+test), `src/landos/resolver-planner.ts`
+(+test), `src/landos/landportal-client.ts`,
+`src/landos/public-property-intelligence-live.ts` (+test),
+`src/landos/property-resolution-engine.ts` (+test),
+`web/src/components/LeadCardIntake.tsx`, plus the untracked government-record
+and Smart Intake modules/tests/panels. Review the diff carefully.
 
-- None. No paid accounts/charges, secret changes, QA leads, or silent APN
-  merges. Commit/push requires explicit authorization.
+Never stage local `.claude`, `.kilo`, root debug scripts, `tmp_query*`,
+`verify-deal30.mjs`, or `scripts/tmp-*`; they are unrelated investigation
+artifacts.
 
-## Next recommended system-wide priority
+## Required invariants
 
-- Finish bands 100+/all when LandPortal exits maintenance; then resume Lead
-  Card completion (qualified comps + recorder images) and backfill.
+1. One accepted property identity version is current.
+2. Candidate and confirmed states cannot coexist in the owner read model.
+3. Accepted facts link to evidence and the researched identity version.
+4. Operator corrections beat weaker automation.
+5. GET requests perform no provider work or reconciliation writes.
+6. Collector failures are isolated and restart-resumable.
+7. Unresolved identity cannot show parcel-specific imagery, ranked best comps,
+   FMV, or actionable strategy.
+8. Screenshot text/geometry never establishes official identity or boundaries.
+9. Lead/seller/wholesaler identity never must match screenshot owner.
+
+## External diligence and next action
+
+- Deal 30 still needs a valid authenticated LandPortal 2D replacement image.
+- Professional deed/title/lien, tax, zoning, access, septic, utility, and split
+  verification remain required before relying on those conclusions.

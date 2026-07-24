@@ -92,19 +92,6 @@ function capturedAsset(source: VisualSourceKind, storedPath: string, ctx: Visual
   };
 }
 
-function hasCoords(ctx: VisualCaptureContext): boolean {
-  return typeof ctx.lat === 'number' && Number.isFinite(ctx.lat) && typeof ctx.lng === 'number' && Number.isFinite(ctx.lng);
-}
-
-// Google Earth Web deep link. tilt=0 → straight-down overhead; tilt>0 → 3D.
-function googleEarthUrl(lat: number, lng: number, tiltDeg: number): string {
-  // @lat,lng,ALTITUDEa,RANGEd,HEADINGy,0h,TILTt,0r
-  return `https://earth.google.com/web/@${lat},${lng},600a,2500d,35y,0h,${tiltDeg}t,0r`;
-}
-function streetViewUrl(lat: number, lng: number): string {
-  return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`;
-}
-
 /**
  * Build the LIVE visual source capturers. `fallback` (the persistence-derived
  * default capturers) is used when a live attempt captures nothing, so a live
@@ -127,57 +114,6 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
     return lpShots ?? { parcelShotPath: null, terrainShotPath: null };
   };
 
-  const gate = async (source: VisualSourceKind, ctx: VisualCaptureContext): Promise<VisualAssetMeta | null> => {
-    const status = await deps.ensureSession();
-    if (status === 'live') return null;
-    if (status === 'auth_needed' && (source === 'google_earth_overhead' || source === 'google_earth_3d' || source === 'street_view')) return null; // Google needs no login
-    // Session down (or LandPortal needs login): blocked with exact reason, then fallback.
-    const blk = blockedAsset(source, 'blocked', sessionBlocker(status), subjectOf(ctx), deps.now());
-    return useFallback(source, ctx, blk);
-  };
-
-  const earthCapturer = (source: 'google_earth_overhead' | 'google_earth_3d', tilt: number): VisualSourceCapturer => ({
-    source,
-    label: VISUAL_SOURCE_LABEL[source],
-    async capture(ctx): Promise<VisualAssetMeta> {
-      const gated = await gate(source, ctx);
-      if (gated) return gated;
-      const ts = deps.now();
-      if (!hasCoords(ctx)) return useFallback(source, ctx, blockedAsset(source, 'blocked', 'coordinates missing — Google Earth needs a confirmed lat/lng for this parcel.', subjectOf(ctx), ts));
-      const tmp = path.join(deps.tmpDir, `earth-${source}-${ctx.cardId}-${Date.now()}.png`);
-      let ok = false;
-      // Google Earth's first WebGL load routinely exceeds 9s and screenshots the
-      // splash screen — a non-parcel frame that must never persist as evidence.
-      try { ok = await deps.capturePage(googleEarthUrl(ctx.lat as number, ctx.lng as number, tilt), tmp, { timeoutMs: 45000, settleMs: 18000 }); }
-      catch { ok = false; }
-      if (!ok) return useFallback(source, ctx, blockedAsset(source, 'blocked', 'page failed — Google Earth did not render a usable frame (WebGL/load). Retry with the session focused.', subjectOf(ctx), ts));
-      let stored: string;
-      try { stored = deps.storeCopy(tmp, ctx.cardId, source); } catch { return blockedAsset(source, 'blocked', 'implementation gap — captured image could not be stored.', subjectOf(ctx), ts); }
-      if (deps.fileSize(stored) < MIN_USEFUL_BYTES) return useFallback(source, ctx, blockedAsset(source, 'unavailable', 'view unavailable — Google Earth returned a blank/too-small frame.', subjectOf(ctx), ts));
-      return capturedAsset(source, stored, ctx, ts);
-    },
-  });
-
-  const streetViewCapturer: VisualSourceCapturer = {
-    source: 'street_view',
-    label: VISUAL_SOURCE_LABEL.street_view,
-    async capture(ctx): Promise<VisualAssetMeta> {
-      const gated = await gate('street_view', ctx);
-      if (gated) return gated;
-      const ts = deps.now();
-      if (!hasCoords(ctx)) return useFallback('street_view', ctx, blockedAsset('street_view', 'blocked', 'coordinates missing — Street View needs a lat/lng viewpoint.', subjectOf(ctx), ts));
-      const tmp = path.join(deps.tmpDir, `streetview-${ctx.cardId}-${Date.now()}.png`);
-      let ok = false;
-      try { ok = await deps.capturePage(streetViewUrl(ctx.lat as number, ctx.lng as number), tmp, { timeoutMs: 25000, settleMs: 6000 }); }
-      catch { ok = false; }
-      if (!ok) return useFallback('street_view', ctx, blockedAsset('street_view', 'unavailable', 'view unavailable — no Street View pano at this viewpoint, or the page failed to render.', subjectOf(ctx), ts));
-      let stored: string;
-      try { stored = deps.storeCopy(tmp, ctx.cardId, 'street_view'); } catch { return blockedAsset('street_view', 'blocked', 'implementation gap — captured image could not be stored.', subjectOf(ctx), ts); }
-      if (deps.fileSize(stored) < MIN_USEFUL_BYTES) return useFallback('street_view', ctx, blockedAsset('street_view', 'unavailable', 'view unavailable — Street View returned a blank/too-small frame.', subjectOf(ctx), ts));
-      return capturedAsset('street_view', stored, ctx, ts);
-    },
-  };
-
   const landPortalCapturer = (source: 'landportal' | 'landportal_3d'): VisualSourceCapturer => ({
     source,
     label: VISUAL_SOURCE_LABEL[source],
@@ -196,11 +132,15 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
         return useFallback(source, ctx, blockedAsset(source, 'blocked', 'card LandPortal URL is malformed.', subjectOf(ctx), ts));
       }
       const authed = await deps.landPortalAuthed();
-      if (authed === false) return useFallback(source, ctx, blockedAsset(source, 'blocked', sessionBlocker('auth_needed'), subjectOf(ctx), ts));
+      // A readiness navigation can fail while an already-open, authenticated
+      // parcel tab remains usable. Let the capture driver prove that tab through
+      // its visible owner/parcel/property panel before reporting auth missing.
       const shots = await getLandPortal(ctx.landPortalUrl);
       const src = source === 'landportal' ? shots.parcelShotPath : shots.terrainShotPath;
       if (!src) {
-        const reason = source === 'landportal'
+        const reason = authed === false
+          ? sessionBlocker('auth_needed')
+          : source === 'landportal'
           ? 'page failed — LandPortal parcel view did not produce a screenshot (login/slow render).'
           : 'selector/control not found — the LandPortal 3D/terrain control was not present on this parcel view.';
         return useFallback(source, ctx, blockedAsset(source, source === 'landportal_3d' ? 'unavailable' : 'blocked', reason, subjectOf(ctx), ts));
@@ -223,13 +163,11 @@ export function makeLiveVisualCapturers(deps: LiveVisualDeps, fallback: VisualSo
   };
 
   return [
-    earthCapturer('google_earth_3d', 60),
-    // The overhead Google Earth pass is NOT captured live: the web app replays
-    // its boot splash on each fresh page, which persists a non-parcel frame as
-    // "evidence". The official county aerial with the exact parcel boundary
-    // (parcel-overlay-visuals) covers the overhead role strictly better; the
-    // persistence-derived fallback still serves any eligible stored overhead.
-    streetViewCapturer,
+    // Google Earth Web and browser-rendered Street View are intentionally not
+    // returned here. Their loading shells can be large enough to pass a byte
+    // check while still being a globe splash or black frame. The merged default
+    // capturers use the association-verified Google Static Maps / Street View
+    // assets instead, which are the canonical owner-facing Google visuals.
     landPortalCapturer('landportal'),
     landPortalCapturer('landportal_3d'),
     countyGisCapturer,
@@ -258,7 +196,10 @@ export async function defaultLiveVisualDeps(): Promise<LiveVisualDeps> {
   const now = () => new Date().toISOString();
   return {
     ensureSession: async () => (await session.ensureBrowserSession()) as LiveSessionStatus,
-    landPortalAuthed: async () => (await session.browserSessionHealth()).landportalAuthenticated,
+    // Do not trust the session's cached/unknown auth bit here. A visual run is
+    // expected to be self-sufficient: verify the LandPortal session and use the
+    // existing env-backed automatic login path before opening the parcel tab.
+    landPortalAuthed: async () => (await session.ensureLandPortalAuthenticated()).ready,
     capturePage: async (url, outPath, opts) => {
       try { fs.mkdirSync(path.dirname(outPath), { recursive: true }); } catch { /* ignore */ }
       const res = await session.withWorkingPage(async (page) => {

@@ -38,11 +38,12 @@ describe('Acquisitions is one cohesive department workspace', () => {
 
   it('opens a Deal Card in-workspace from the pipeline (never bouncing to the spine)', () => {
     // openDeal stays in-workspace (library section) and records the ?deal=
-    // deep link so a browser refresh restores the same Lead Workspace.
+    // deep link so a browser refresh restores the same canonical Deal Card.
     expect(ACQ).toMatch(/function openDeal\(id: number\) \{[\s\S]*?setDealId\(id\);[\s\S]*?setSection\('library'\);[\s\S]*?searchParams\.set\('deal', String\(id\)\)/);
-    // The Deal Library click path routes to the Lead Workspace, never the
-    // legacy in-place Deal Card open.
+    // The Deal Library click path routes to the full canonical Deal Card.
     expect(ACQ).toMatch(/<DealCard entity="all" key="library-list" onOpenDeal=\{openDeal\}/);
+    expect(ACQ).toMatch(/<DealCard dealCardId=\{dealId\} entity="all" key=\{dealId\}/);
+    expect(ACQ).not.toMatch(/LeadWorkspace/);
     // The workspace never renders the old feature tabs as its navigation.
     for (const bad of ['Cost Control', 'Org / Agents', 'Model Router', 'Command', 'Knowledge']) {
       expect(ACQ.includes(`label="${bad}"`), `Acquisitions must not repeat spine tab ${bad}`).toBe(false);

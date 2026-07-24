@@ -80,6 +80,40 @@ describe('document registry — research tasks (generic, evidence-derived)', () 
     const reg = buildDocumentRegistry({ cardId: 14, evidenceRows: noLot, visualFileNames: FILES, acreageConflict: false });
     expect(reg.researchTasks.map((t) => t.title).join(' ')).not.toMatch(/plat/i);
   });
+
+  it('does not claim a deed was read when the card has no recorded documents', () => {
+    const reg = buildDocumentRegistry({ cardId: 31, evidenceRows: [], visualFileNames: [] });
+    const task = reg.researchTasks.find((row) => /easements\/encumbrances/i.test(row.title));
+    expect(reg.summaryLine).toMatch(/no recorded documents retrieved/i);
+    expect(task?.why).toMatch(/no deed .* has been retrieved/i);
+    expect(task?.why).not.toMatch(/one deed has been read/i);
+  });
+});
+
+describe('document registry - operator uploads', () => {
+  it('retains the card-scoped upload basename and MIME type for owner-facing open and preview controls', () => {
+    const reg = buildDocumentRegistry({
+      cardId: 14,
+      evidenceRows: [],
+      visualFileNames: [],
+      uploads: [{
+        id: 7,
+        category: 'other',
+        title: 'property-context.png',
+        docType: 'smart_intake_original',
+        fileName: '123_property-context.png',
+        mimeType: 'image/png',
+        documentDate: null,
+        uploadedAt: '2026-07-22 20:23:03',
+        note: 'Original smart-intake submission retained on the Deal Card.',
+      }],
+    });
+    expect(reg.documents[0]).toMatchObject({
+      uploaded: true,
+      uploadedFileName: '123_property-context.png',
+      mimeType: 'image/png',
+    });
+  });
 });
 
 describe('document page serving guard', () => {

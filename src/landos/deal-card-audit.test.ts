@@ -139,17 +139,17 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
     expect(a.passed).toBe(true);
   });
 
-  it('fails one_comp_pricing_gate when an acquisition band exists on one validated sold comp', () => {
+  it('allows the owner FMV formula from one validated sold comp', () => {
     const a = auditDealCardCoherence({
       report: cleanReport,
       executiveSummary: cleanEs,
       subjectCardId: 15,
-      compRegistry: { counts: { validatedSold: 1, validatedActive: 3, rawCandidates: 26, rejected: 15 }, valuationReady: false },
+      compRegistry: { counts: { validatedSold: 1, validatedActive: 3, rawCandidates: 26, rejected: 15 }, valuationReady: true },
       pursuit: { recommended: null, runnerUps: [], attractiveAcquisition: { low: 60_438, high: 90_657, estMarketValue: 151_095 } },
     });
     const c = a.checks.find((x) => x.id === 'one_comp_pricing_gate')!;
-    expect(c.pass).toBe(false);
-    expect(c.detail).toMatch(/one observation is not a market/i);
+    expect(c.pass).toBe(true);
+    expect(c.detail).toMatch(/respect the validated-comp gate/i);
   });
 
   it('fails comp_counts_validated when compState counts disagree with the registry', () => {
@@ -205,6 +205,20 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
       strategyReadiness: { strategies: [{ strategy: 'Cash Flip' }, { strategy: 'Novation or Double Close' }, { strategy: 'Subdivide or Minor Split' }, { strategy: 'Land-Home Package' }, { strategy: 'Pass' }], pricingAllowed: true },
     });
     expect(withPass.checks.find((x) => x.id === 'strategy_five_approved')!.pass).toBe(false);
+  });
+
+  it('recognizes Cash Flip as the approved quick-flip strategy', () => {
+    const a = auditDealCardCoherence({
+      report: cleanReport, executiveSummary: cleanEs, subjectCardId: 15,
+      strategyReadiness: { strategies: [
+        { strategy: 'Cash Flip' },
+        { strategy: 'Novation or Double Close' },
+        { strategy: 'Subdivide or Minor Split' },
+        { strategy: 'Land-Home Package' },
+        { strategy: 'Improvement Then Flip' },
+      ], pricingAllowed: false },
+    });
+    expect(a.checks.find((x) => x.id === 'strategy_five_approved')).toMatchObject({ pass: true });
   });
 
   it('fails pricing_gate_agreement when the gate is closed but a band or winner shows', () => {

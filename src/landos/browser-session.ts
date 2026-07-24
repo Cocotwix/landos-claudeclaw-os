@@ -19,6 +19,7 @@ import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
 import { readEnvFile } from '../env.js';
+import { logger } from '../logger.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
 
@@ -800,7 +801,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const read = await readPage(page);
       return { url: read.url, fields: read.fields, snippets: read.snippets };
     },
-    // ONE-PASS LandPortal capture in a FRESH deep-link tab: full parcel fields +
+    // ONE-PASS LandPortal capture in the authenticated working tab: full parcel fields +
     // a wide parcel screenshot + all comparable rows (expands "View all") + clicks
     // the real "Show on Map" anchor (js-lp-estimate-show-on-map) and screenshots
     // the comps map. Proves the map was reached (mapReached) and never touches a
@@ -818,7 +819,26 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       };
       await ensureBrowserSession(deps);
       if (!state.browser) return empty;
-      const page = await state.browser.newPage();
+      // Prefer an already-open authenticated parcel tab whose visible property
+      // panel proves it is a real parcel page. Never reuse an arbitrary tab:
+      // LandPortal host + property query + visible identity fields are required.
+      let page = await getWorkingPage();
+      let reusedReadyParcelPage = false;
+      for (const candidate of await state.browser.pages()) {
+        const candidateUrl = candidate.url();
+        if (!/^https:\/\/(?:www\.)?landportal\.com\//i.test(candidateUrl) || !/[?&]property=/i.test(candidateUrl)) continue;
+        const ready = await candidate.evaluate<boolean>((() => {
+          const text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ');
+          return /property\s+(?:overview|details)/i.test(text)
+            && /parcel\s+(?:id|address)/i.test(text)
+            && /owner\s+(?:name|of\s+record)/i.test(text);
+        }) as unknown as () => boolean).catch(() => false);
+        if (ready) {
+          page = candidate;
+          reusedReadyParcelPage = true;
+          break;
+        }
+      }
       const dir = cfg.screenshotDir;
       try { (await import('fs')).mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -843,50 +863,212 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       try {
         try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
         await (page as unknown as { bringToFront?: () => Promise<void> }).bringToFront?.();
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
+        if (!reusedReadyParcelPage) {
+          try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
+          } catch (error) {
+            // LandPortal's map SPA can exceed the navigation event deadline while
+            // continuing to render the correct parcel in the same tab. Do not fail
+            // on that event alone; the authenticated panel, identity fields, map,
+            // and painted-tile gates below decide whether the page is usable.
+            logger.warn({ event: 'landportal_navigation_timeout_continuing', error: error instanceof Error ? error.message : String(error) }, 'landportal_navigation_timeout_continuing');
+          }
+        }
         await sleep(6500);
-        const parcelFile = path.join(dir, `landportal-parcel-${Date.now()}.png`);
-        await page.screenshot({ path: parcelFile });
+        // Do not use the generic popup closer here: LandPortal's parcel-detail
+        // sidebar also exposes an accessible "Close" control and must remain
+        // open as the parcel-identity proof for this screenshot.
         // Read the full parcel fact sheet on the parcel view (before the map click).
         const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+        // LandPortal's logged-out shell still accepts the property query string
+        // and renders state/county/APN text over a national map. That is not a
+        // parcel visual. Require the authenticated property panel and a rendered
+        // map before any screenshot can be treated as evidence.
+        const readParcelSignals = () => page.evaluate<{ authenticated: boolean; propertyPanel: boolean; mapRendered: boolean; hasPropertyHeading: boolean; hasParcelField: boolean; hasOwnerField: boolean }>((() => {
+          const text = ((document.body && (document.body as any).innerText) || '').replace(/\s+/g, ' ');
+          const authenticated = /\blogout\b/i.test(text) && !/\blog\s*in\b/i.test(text.slice(0, 1200));
+          const hasPropertyHeading = /property\s+(?:overview|details)/i.test(text);
+          const hasParcelField = /parcel\s+(?:id|address)/i.test(text);
+          const hasOwnerField = /owner\s+(?:name|of\s+record)/i.test(text);
+          const propertyPanel = hasPropertyHeading && hasParcelField && hasOwnerField;
+          const mapRendered = !!document.querySelector('canvas,.mapboxgl-canvas,.leaflet-container,[class*="map" i] canvas,[id*="map" i]');
+          return { authenticated, propertyPanel, mapRendered, hasPropertyHeading, hasParcelField, hasOwnerField };
+        }) as unknown as () => { authenticated: boolean; propertyPanel: boolean; mapRendered: boolean; hasPropertyHeading: boolean; hasParcelField: boolean; hasOwnerField: boolean });
+        let parcelSignals = await readParcelSignals();
+        for (let attempt = 0; attempt < 8 && !parcelSignals.propertyPanel; attempt++) {
+          await sleep(2000);
+          parcelSignals = await readParcelSignals();
+        }
+        // A newly opened authenticated LandPortal tab occasionally paints only
+        // the account shell on its first deep-link navigation. Re-open the exact
+        // parcel URL once before giving up; this is still read-only and avoids
+        // treating a transient client-side route miss as an expired session.
+        if (parcelSignals.authenticated && !parcelSignals.propertyPanel) {
+          try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
+          } catch (error) {
+            logger.warn({ event: 'landportal_navigation_timeout_continuing', retry: true, error: error instanceof Error ? error.message : String(error) }, 'landportal_navigation_timeout_continuing');
+          }
+          await sleep(9000);
+          parcelSignals = await readParcelSignals();
+          for (let attempt = 0; attempt < 8 && !parcelSignals.propertyPanel; attempt++) {
+            await sleep(2000);
+            parcelSignals = await readParcelSignals();
+          }
+        }
+        if (!parcelSignals.authenticated || !parcelSignals.propertyPanel || !parcelSignals.mapRendered) {
+          logger.warn({ event: 'landportal_visual_rejected', reason: 'parcel_not_ready', ...parcelSignals }, 'landportal_visual_rejected');
+          if (!parcelSignals.authenticated) {
+            state.auth = { authenticated: false, atIso: now() };
+            state.status = 'auth_needed';
+          }
+          return empty;
+        }
         const overlayShots: Array<{ overlay: string; path: string; purpose: string }> = [];
-        const clickVisible = async (labels: RegExp[]): Promise<boolean> => page.evaluate<boolean>(((patterns: string[]) => {
-          const rx = patterns.map((p) => new RegExp(p, 'i'));
+        const buttonState = async (name: string): Promise<boolean> => page.evaluate<boolean>(((expected: string) => {
+          const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+          const wanted = normalize(expected);
           const visible = (el: any): boolean => {
             if (!el || !el.getBoundingClientRect) return false;
-            const r = el.getBoundingClientRect();
-            if (r.width < 1 || r.height < 1) return false;
-            const st = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
-            return !(st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.1));
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 1 || rect.height < 1) return false;
+            const style = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
+            return !(style && (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.1));
           };
-          const els = Array.from(document.querySelectorAll('button,a,label,span,div,[role=button],[role=menuitem]')) as any[];
-          const el = els.find((e) => {
-            if (!visible(e)) return false;
-            const text = (e.textContent || e.getAttribute?.('aria-label') || e.getAttribute?.('title') || '').replace(/\s+/g, ' ').trim();
-            return text.length > 0 && text.length < 80 && rx.some((r) => r.test(text));
+          return Array.from(document.querySelectorAll('button,[role=button]')).some((el: any) => {
+            if (!visible(el)) return false;
+            const accessibleName = el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.textContent || '';
+            return normalize(accessibleName) === wanted;
           });
-          if (el) { el.scrollIntoView?.({ block: 'center', inline: 'center' }); el.click(); return true; }
-          return false;
-        }) as unknown as () => boolean, labels.map((r) => r.source));
-        try { await clickVisible([/base\s*maps?/i, /overlays?/i, /basemaps?\s*&?\s*overlays?/i]); await sleep(700); } catch { /* best-effort */ }
-        const captureOverlay = async (label: string, purpose: string, labels: RegExp[]): Promise<void> => {
+        }) as unknown as () => boolean, name);
+        const clickNamedButton = async (name: string): Promise<boolean> => page.evaluate<boolean>(((expected: string) => {
+          const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+          const wanted = normalize(expected);
+          const visible = (el: any): boolean => {
+            if (!el || !el.getBoundingClientRect) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 1 || rect.height < 1) return false;
+            const style = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
+            return !(style && (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.1));
+          };
+          const button = Array.from(document.querySelectorAll('button,[role=button]')).find((el: any) => {
+            if (!visible(el)) return false;
+            const accessibleName = el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.textContent || '';
+            return normalize(accessibleName) === wanted;
+          }) as any || (wanted === 'zoom out'
+            ? document.querySelector('button.mapboxgl-ctrl-zoom-out,.leaflet-control-zoom-out,button[aria-label*="zoom out" i],button[title*="zoom out" i]')
+            : wanted === 'fit'
+              ? document.querySelector('button[class*="fit" i],button[aria-label*="fit" i],button[title*="fit" i]')
+              : null) as any;
+          if (!button) return false;
+          button.click();
+          return true;
+        }) as unknown as () => boolean, name);
+        const focusMapCanvas = async (): Promise<boolean> => page.evaluate<boolean>((() => {
+          const canvas = document.querySelector('canvas.mapboxgl-canvas, canvas');
+          if (!canvas) return false;
+          canvas.setAttribute('tabindex', '0');
+          canvas.focus();
+          return document.activeElement === canvas;
+        }) as unknown as () => boolean);
+        const zoomOutParcelMap = async (steps = 5): Promise<number> => {
+          let completed = 0;
+          for (let step = 0; step < steps; step++) {
+            let driven = false;
+            if (page.keyboard && await focusMapCanvas()) {
+              await page.keyboard.press('-');
+              driven = true;
+            } else {
+              driven = await clickNamedButton('Zoom out');
+            }
+            if (!driven) break;
+            completed++;
+            await sleep(950);
+          }
+          return completed;
+        };
+        const orientRoadBelowParcel = async (): Promise<number> => {
+          if (!page.keyboard || !(await focusMapCanvas())) return 0;
+          // LandPortal uses Mapbox's 10-degree Shift+Arrow bearing step. The
+          // subject's road is north of the mapped polygon; a 180-degree bearing
+          // puts the road-side foreground at the bottom and the property above.
+          for (let step = 0; step < 18; step++) {
+            await page.keyboard.press('Shift+ArrowRight');
+            await sleep(90);
+          }
+          return 180;
+        };
+        // The default parcel view fills the frame with the subject and hides the
+        // surrounding road/neighbor context. Retain a deliberately wider view so
+        // the operator can inspect the subject in its immediate setting.
+        // Normalize the camera to the parcel first, then deliberately move five
+        // levels wider. This retains the road-side foreground plus enough land
+        // beyond the subject for a useful neighbor inspection. Refuse to save a
+        // misleading tight crop if the site's
+        // zoom controls cannot be driven.
+        await clickNamedButton('Fit');
+        await sleep(1400);
+        const zoomedOutSteps = await zoomOutParcelMap(5);
+        logger.info({ event: 'landportal_visual_zoom', completed: zoomedOutSteps, requested: 5 }, 'landportal_visual_zoom');
+        if (zoomedOutSteps !== 5) return empty;
+        const bearingDegrees = await orientRoadBelowParcel();
+        logger.info({ event: 'landportal_visual_orientation', bearingDegrees }, 'landportal_visual_orientation');
+        // Mapbox re-fetches/repaints satellite tiles after every camera change;
+        // the former 900 ms pause routinely captured only the gray base canvas.
+        await sleep(16000);
+        const parcelFile = path.join(dir, `landportal-parcel-${Date.now()}.png`);
+        await page.screenshot({ path: parcelFile });
+        // The parcel/sidebar chrome alone makes a gray map screenshot look like
+        // a non-empty PNG. At this viewport real satellite tiles are materially
+        // larger; retry once, then reject rather than promote an unpainted map.
+        if (fs.statSync(parcelFile).size < 500_000) {
+          await sleep(10000);
+          await page.screenshot({ path: parcelFile });
+        }
+        if (fs.statSync(parcelFile).size < 500_000) {
+          logger.warn({ event: 'landportal_visual_rejected', reason: 'satellite_tiles_unpainted', bytes: fs.statSync(parcelFile).size }, 'landportal_visual_rejected');
+          return empty;
+        }
+        const openOverlayDialog = async (): Promise<boolean> => {
+          if (await buttonState('Close')) return true;
+          const opened = await clickNamedButton('Basemaps and overlays');
+          if (!opened) return false;
+          await sleep(500);
+          return buttonState('Close');
+        };
+        const closeOverlayDialog = async (): Promise<boolean> => {
+          if (!(await buttonState('Close'))) return true;
+          const closed = await clickNamedButton('Close');
+          if (!closed) return false;
+          await sleep(350);
+          return !(await buttonState('Close'));
+        };
+        const captureOverlay = async (label: string, purpose: string): Promise<void> => {
           try {
-            const on = await clickVisible(labels);
-            if (!on) return;
+            if (!(await openOverlayDialog())) return;
+            const enableName = `Enable ${label}`;
+            const disableName = `Disable ${label}`;
+            if (await buttonState(enableName)) await clickNamedButton(enableName);
+            if (!(await buttonState(disableName))) return;
             await sleep(1800);
+            if (!(await closeOverlayDialog())) return;
             const file = path.join(dir, `${purpose}-${Date.now()}.png`);
             await page.screenshot({ path: file });
             overlayShots.push({ overlay: label, path: file, purpose });
-            await clickVisible(labels).catch(() => false);
+            if (await openOverlayDialog()) {
+              if (await buttonState(disableName)) await clickNamedButton(disableName);
+              await closeOverlayDialog();
+            }
             await sleep(600);
           } catch { /* overlay unavailable; leave it absent */ }
         };
-        await captureOverlay('Contour Lines', 'landportal_overlay_contour_lines', [/contour/i, /topo/i]);
-        await captureOverlay('Wetlands', 'landportal_overlay_wetlands', [/wetland/i, /nwi/i]);
-        await captureOverlay('FEMA Floodplain', 'landportal_overlay_fema_floodplain', [/fema/i, /flood/i]);
+        await captureOverlay('Contour Lines', 'landportal_overlay_contour_lines');
+        await captureOverlay('Wetlands', 'landportal_overlay_wetlands');
+        await captureOverlay('FEMA Floodplain', 'landportal_overlay_fema_floodplain');
         let terrainShotPath: string | null = null;
         try {
-          const terrainOn = await clickVisible([/^3d$/i, /3d view/i, /terrain/i]);
+          await closeOverlayDialog();
+          const terrainOn = await clickNamedButton('Toggle 3D terrain');
           if (terrainOn) {
             await sleep(2200);
             terrainShotPath = path.join(dir, `landportal-terrain-${Date.now()}.png`);
@@ -903,10 +1085,12 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         let compsMapShotPath: string | null = null;
         if (mapReached) { const compsFile = path.join(dir, `landportal-compsmap-${Date.now()}.png`); await page.screenshot({ path: compsFile }); compsMapShotPath = compsFile; }
         return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, terrainShotPath, compRows: compRows ?? [], mapReached, capturedAtIso: now() };
-      } catch {
+      } catch (error) {
+        logger.warn({ event: 'landportal_visual_capture_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_visual_capture_failed');
         return empty;
       } finally {
-        try { await (page as unknown as { close?: () => Promise<void> }).close?.(); } catch { /* leave tab */ }
+        // The authenticated working tab is intentionally retained for the next
+        // read-only mission; the browser-session manager owns its lifecycle.
       }
     },
     // Full-panel read: opens the parcel's canonical deep link in a FRESH tab (the

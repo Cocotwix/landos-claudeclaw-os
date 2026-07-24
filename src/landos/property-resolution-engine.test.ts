@@ -432,3 +432,45 @@ describe('official public lane wrong-parcel hard stop', () => {
     expect(r.property.parcelVerified).toBe(true);
   });
 });
+
+describe('address-suggest corroboration guard (Deal 32 Roane regression)', () => {
+  const DEAL32_FIELDS = {
+    address: 'OLD RIDGE RD, KINGSTON, TN 37763', city: 'KINGSTON', state: 'TN', zip: '37763',
+    county: 'Roane County', apn: '073090 04200', owner: 'SACHAN DILEEP S',
+  };
+
+  it('REJECTS a materially different suggested road — Ridge Trail Road never corroborates Old Ridge Rd', async () => {
+    const r = await resolveProperty(
+      { fields: DEAL32_FIELDS },
+      {
+        suggest: async () => ({
+          query: 'OLD RIDGE RD, KINGSTON, TN, 37763', source: 'Photon', cached: false,
+          suggestions: [{ label: 'Ridge Trail Road, Kingston, TN, 37763', line1: 'Ridge Trail Road', city: 'Kingston', state: 'TN', zip: '37763', source: 'Photon', confidence: 0.9 }],
+        }),
+        now: NOW,
+      },
+    );
+    const lane = r.lanesAttempted.find((l) => l.lane === 'address_suggest');
+    expect(lane?.status).toBe('rejected_material_road_difference');
+    expect(lane?.contributed).toBe(false);
+    expect(lane?.note).toMatch(/materially different road/i);
+    expect(r.property.address).toBe('OLD RIDGE RD, KINGSTON, TN 37763');
+    expect(r.property.evidence.some((e) => /Ridge Trail/i.test(String(e.value)))).toBe(false);
+  });
+
+  it('still corroborates when the suggested road matches the candidate road', async () => {
+    const r = await resolveProperty(
+      { fields: { address: 'OLD RIDGE RD, KINGSTON, TN 37763', state: 'TN', county: 'Roane County' } },
+      {
+        suggest: async () => ({
+          query: 'OLD RIDGE RD, KINGSTON, TN, 37763', source: 'Photon', cached: false,
+          suggestions: [{ label: 'Old Ridge Road, Kingston, TN, 37763', line1: 'Old Ridge Road', city: 'Kingston', state: 'TN', zip: '37763', coordinates: { lat: 35.87, lng: -84.53 }, source: 'Photon', confidence: 0.8 }],
+        }),
+        now: NOW,
+      },
+    );
+    const lane = r.lanesAttempted.find((l) => l.lane === 'address_suggest');
+    expect(lane?.status).toBe('suggested');
+    expect(lane?.contributed).toBe(true);
+  });
+});

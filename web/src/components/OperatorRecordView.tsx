@@ -113,9 +113,10 @@ function HeaderFact({ label, value, warn }: { label: string; value: string | nul
   );
 }
 
-export function OperatorCrmHeader({ record, stage, heroSrc, heroHref, badges }: {
+export function OperatorCrmHeader({ record, stage, sellerLead, heroSrc, heroHref, badges }: {
   record: OperatorRecordView;
   stage: string;
+  sellerLead?: string | null;
   heroSrc: string | null;
   heroHref?: string | null;
   badges?: preact.ComponentChildren;
@@ -133,10 +134,6 @@ export function OperatorCrmHeader({ record, stage, heroSrc, heroHref, badges }: 
     : id.assessedAcres == null && id.mappedAcres == null
       ? 'Not yet confirmed'
       : `${id.assessedAcres ?? id.mappedAcres} ac${id.mappedAcres != null && id.assessedAcres != null ? ` (mapped ${id.mappedAcres})` : ''}`;
-  const offerTone: Verdict = record.offerReadiness.state === 'ready' ? 'good'
-    : record.offerReadiness.state === 'needs_confirmation' ? 'caution'
-    : record.offerReadiness.state === 'researching' ? 'unknown'
-    : 'risk';
   return (
     <div class="rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-card)] overflow-hidden">
       <div class="flex flex-col lg:flex-row">
@@ -147,17 +144,12 @@ export function OperatorCrmHeader({ record, stage, heroSrc, heroHref, badges }: 
             {badges}
           </div>
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-[11px] px-2 py-0.5 rounded-full font-semibold" style={`background:${verdictColor(offerTone)}22;color:${verdictColor(offerTone)};border:1px solid ${verdictColor(offerTone)}55`}>
-              Offer: {record.offerReadiness.state.replace(/_/g, ' ')}
-            </span>
             <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border-strong)] text-[var(--color-text-muted)]">Stage: {stage}</span>
-            <span class="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-border-strong)] text-[var(--color-text-muted)]" title={id.parcelConfidence}>
-              {id.parcelConfidence.startsWith('Verified') ? '✓ Parcel verified' : id.parcelConfidence}
-            </span>
           </div>
           <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-2.5">
+            <HeaderFact label="Seller / Lead" value={sellerLead} />
             <HeaderFact label="APN / Parcel ID" value={id.apn} />
-            <HeaderFact label="Owner (working label)" value={id.owner} warn={(id.ownerWarnings?.length ?? 0) > 0} />
+            <HeaderFact label="Owner of record" value={id.owner} warn={(id.ownerWarnings?.length ?? 0) > 0} />
             <HeaderFact label="Acreage" value={acreage} warn={id.acreageConflict} />
             <HeaderFact label="Owner mailing" value={id.ownerMailing} />
             <HeaderFact label="Coordinates" value={id.coordinates ? `${id.coordinates.lat.toFixed(5)}, ${id.coordinates.lng.toFixed(5)}` : null} />
@@ -379,7 +371,7 @@ export function EvidenceGallery({ dealId, token }: { dealId: number; token: stri
   return (
     <div>
       <div class="text-[11px] uppercase tracking-[0.07em] font-bold text-[var(--color-text-muted)] mb-2">
-        Parcel evidence maps <span class="normal-case font-normal text-[var(--color-text-faint)]">— official geometry drawn on official rasters; screening evidence, not a survey</span>
+        Property maps <span class="normal-case font-normal text-[var(--color-text-faint)]">— parcel geometry with public map layers; not a survey</span>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
         {OVERLAY_KINDS.filter((o) => !failed[o.kind]).map((overlay) => {

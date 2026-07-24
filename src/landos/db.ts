@@ -1025,6 +1025,159 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_landos_market_scan ON landos_market_scan(deal_card_id, kind);
 
+    -- Phase 1E living lead-card intake. The original submission is immutable;
+    -- routed conclusions live in child rows so conflicts are retained instead
+    -- of overwriting an earlier accepted fact.
+    CREATE TABLE IF NOT EXISTS landos_intake_submission (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      submission_type       TEXT NOT NULL DEFAULT 'general',
+      source                TEXT NOT NULL DEFAULT 'operator',
+      original_text         TEXT NOT NULL DEFAULT '',
+      original_file_name    TEXT NOT NULL DEFAULT '',
+      original_file_url     TEXT NOT NULL DEFAULT '',
+      mime_type             TEXT NOT NULL DEFAULT '',
+      summary               TEXT NOT NULL DEFAULT '',
+      routed_sections_json  TEXT NOT NULL DEFAULT '[]',
+      extracted_json        TEXT NOT NULL DEFAULT '{}',
+      idempotency_key       TEXT NOT NULL DEFAULT '',
+      resolution_json       TEXT NOT NULL DEFAULT '{}',
+      status                TEXT NOT NULL DEFAULT 'received',
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_submission
+      ON landos_intake_submission(deal_card_id, created_at DESC, id DESC);
+
+    -- Immutable image evidence stays separate from editable candidate fields.
+    -- The file URL is card-scoped and never contains a local filesystem path.
+    CREATE TABLE IF NOT EXISTS landos_intake_artifact (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id         INTEGER NOT NULL REFERENCES landos_intake_submission(id),
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      document_upload_id    INTEGER,
+      original_file_name    TEXT NOT NULL DEFAULT '',
+      file_url              TEXT NOT NULL DEFAULT '',
+      mime_type             TEXT NOT NULL,
+      byte_size             INTEGER NOT NULL,
+      sha256                TEXT NOT NULL,
+      source_method         TEXT NOT NULL CHECK (source_method IN ('clipboard','upload','drop')),
+      exact_extracted_text  TEXT NOT NULL DEFAULT '',
+      extraction_json       TEXT NOT NULL DEFAULT '{}',
+      extraction_status     TEXT NOT NULL DEFAULT 'unavailable'
+                              CHECK (extraction_status IN ('complete','partial','unavailable')),
+      extraction_model      TEXT NOT NULL DEFAULT '',
+      captured_at           INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(submission_id, sha256)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_artifact_card
+      ON landos_intake_artifact(deal_card_id, captured_at DESC, id DESC);
+    CREATE TRIGGER IF NOT EXISTS landos_intake_artifact_immutable_update
+      BEFORE UPDATE ON landos_intake_artifact
+      BEGIN SELECT RAISE(ABORT, 'intake artifacts are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS landos_intake_artifact_immutable_delete
+      BEFORE DELETE ON landos_intake_artifact
+      BEGIN SELECT RAISE(ABORT, 'intake artifacts are immutable'); END;
+
+    CREATE TABLE IF NOT EXISTS landos_intake_candidate (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id  INTEGER NOT NULL REFERENCES landos_intake_submission(id),
+      artifact_id    INTEGER NOT NULL REFERENCES landos_intake_artifact(id),
+      deal_card_id   INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      candidate_key  TEXT NOT NULL,
+      value          TEXT NOT NULL DEFAULT '',
+      confidence     TEXT NOT NULL DEFAULT 'candidate',
+      uncertain      INTEGER NOT NULL DEFAULT 0,
+      source         TEXT NOT NULL DEFAULT 'image extraction',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(artifact_id, candidate_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_candidate_card
+      ON landos_intake_candidate(deal_card_id, candidate_key, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_intake_fact (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id  INTEGER NOT NULL REFERENCES landos_intake_submission(id),
+      deal_card_id   INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      section        TEXT NOT NULL DEFAULT 'activity',
+      fact_key       TEXT NOT NULL DEFAULT '',
+      value          TEXT NOT NULL DEFAULT '',
+      fact_status    TEXT NOT NULL DEFAULT 'stated',
+      conflict_note  TEXT NOT NULL DEFAULT '',
+      source         TEXT NOT NULL DEFAULT 'operator submission',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_fact
+      ON landos_intake_fact(deal_card_id, section, fact_key, created_at DESC);
+
+    -- Government, utility, and vendor resources are separate from seller
+    -- people. Representatives are part of the dedupe key, allowing multiple
+    -- people at one department without duplicate cards for the same person.
+    CREATE TABLE IF NOT EXISTS landos_resource_contact (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      category              TEXT NOT NULL DEFAULT 'other',
+      organization          TEXT NOT NULL DEFAULT '',
+      department            TEXT NOT NULL DEFAULT '',
+      representative        TEXT NOT NULL DEFAULT '',
+      role                  TEXT NOT NULL DEFAULT '',
+      phone                 TEXT NOT NULL DEFAULT '',
+      email                 TEXT NOT NULL DEFAULT '',
+      website               TEXT NOT NULL DEFAULT '',
+      address               TEXT NOT NULL DEFAULT '',
+      jurisdiction          TEXT NOT NULL DEFAULT '',
+      notes                 TEXT NOT NULL DEFAULT '',
+      source                TEXT NOT NULL DEFAULT '',
+      last_contacted_date   TEXT NOT NULL DEFAULT '',
+      linked_items_json     TEXT NOT NULL DEFAULT '[]',
+      next_follow_up        TEXT NOT NULL DEFAULT '',
+      dedupe_key            TEXT NOT NULL DEFAULT '',
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, dedupe_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_resource_contact
+      ON landos_resource_contact(deal_card_id, category, organization);
+
+    -- Owner-readable outcomes from the jurisdiction-aware public-record lane.
+    -- An inaccessible index is recorded as retrieved_no with the exact reason;
+    -- it is never translated into a claim that no lien/deed/restriction exists.
+    CREATE TABLE IF NOT EXISTS landos_public_record_outcome (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id      INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      category          TEXT NOT NULL,
+      title             TEXT NOT NULL DEFAULT '',
+      jurisdiction      TEXT NOT NULL DEFAULT '',
+      authority         TEXT NOT NULL DEFAULT '',
+      retrieval_status  TEXT NOT NULL DEFAULT 'retrieved_no',
+      summary           TEXT NOT NULL DEFAULT '',
+      facts_json        TEXT NOT NULL DEFAULT '{}',
+      source_url        TEXT NOT NULL DEFAULT '',
+      screenshot_url    TEXT NOT NULL DEFAULT '',
+      document_url      TEXT NOT NULL DEFAULT '',
+      searched_at       TEXT NOT NULL DEFAULT '',
+      next_follow_up    TEXT NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, category, authority)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_public_record_outcome
+      ON landos_public_record_outcome(deal_card_id, category, updated_at DESC);
+
+    -- Explicit aliases reconcile official last-name-first formatting and known
+    -- intake corrections to one canonical person while retaining provenance.
+    CREATE TABLE IF NOT EXISTS landos_person_alias (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      person_id    INTEGER NOT NULL REFERENCES landos_person(id),
+      alias_name   TEXT NOT NULL,
+      alias_key    TEXT NOT NULL,
+      source       TEXT NOT NULL DEFAULT '',
+      official_format INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(person_id, alias_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_person_alias_key ON landos_person_alias(alias_key);
+
     CREATE TABLE IF NOT EXISTS landos_research_item (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       kind        TEXT NOT NULL
@@ -1074,12 +1227,38 @@ function createLandosSchema(db: Database.Database): void {
   // Market Matrix: per-snapshot data-quality flags (accepted-but-unusual values,
   // e.g. LandPortal STR > 100%). Migration for existing store DBs.
   addColumn('landos_market_snapshot', 'flags_json', `flags_json TEXT NOT NULL DEFAULT '[]'`);
+  addColumn('landos_intake_submission', 'idempotency_key', `idempotency_key TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_intake_submission', 'resolution_json', `resolution_json TEXT NOT NULL DEFAULT '{}'`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_landos_intake_submission_idempotency
+    ON landos_intake_submission(deal_card_id, idempotency_key)
+    WHERE idempotency_key <> ''`);
   // Comp coordinates for the embedded LandOS comp map. ENRICHMENT ONLY (plot +
   // straight-line distance): providers supply them when available, otherwise a
   // bounded cached geocode fills them. Never used for comp identity/dedup
   // decisions beyond the existing coordinate matcher.
   addColumn('landos_comp', 'lat', `lat REAL`);
   addColumn('landos_comp', 'lng', `lng REAL`);
+  // Phase 1D normalized comparable record. landos_comp remains the one shared
+  // registry; these additive fields carry provider-complete evidence without
+  // weakening the legacy manual-comp constraints.
+  addColumn('landos_comp', 'canonical_source', `canonical_source TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'city', `city TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'zip', `zip TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'distance_miles', `distance_miles REAL`);
+  addColumn('landos_comp', 'listing_date', `listing_date TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'days_on_market', `days_on_market INTEGER`);
+  addColumn('landos_comp', 'property_class', `property_class TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'classification', `classification TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'thumbnail_url', `thumbnail_url TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'retrieved_at', `retrieved_at TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'radius_miles', `radius_miles REAL`);
+  addColumn('landos_comp', 'date_window_months', `date_window_months INTEGER`);
+  addColumn('landos_comp', 'inclusion_reason', `inclusion_reason TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'source_attributions_json', `source_attributions_json TEXT NOT NULL DEFAULT '[]'`);
+  addColumn('landos_comp', 'canonical_key', `canonical_key TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'updated_at', `updated_at INTEGER NOT NULL DEFAULT 0`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_landos_comp_canonical
+           ON landos_comp(deal_card_id, canonical_key)`);
   // Normalize provider-echoed county names to the LandOS bare-name convention
   // ("Pickens", not "Pickens County") — the UI appends "County" itself. US
   // county proper names never end in " County", so this is a safe idempotent
@@ -1102,6 +1281,18 @@ function createLandosSchema(db: Database.Database): void {
   // accepted / rejected. Migration for existing store DBs.
   addColumn('landos_browser_agent_run', 'rows_flagged', `rows_flagged INTEGER NOT NULL DEFAULT 0`);
   addColumn('landos_browser_agent_run', 'rows_unknown', `rows_unknown INTEGER NOT NULL DEFAULT 0`);
+  // Three-brain government-record slice: reusable collector routing metadata
+  // and guaranteed browser-cleanup proof, added without rewriting old attempts.
+  addColumn('landos_property_collector_job', 'source_jurisdiction', `source_jurisdiction TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_property_collector_job', 'platform', `platform TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_property_collector_job', 'adapter_key', `adapter_key TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_property_collector_attempt', 'outcome_kind', `outcome_kind TEXT NOT NULL DEFAULT 'completed'`);
+  addColumn('landos_property_collector_attempt', 'cleanup_status', `cleanup_status TEXT NOT NULL DEFAULT 'not_applicable'`);
+  addColumn('landos_property_collector_attempt', 'cleanup_error', `cleanup_error TEXT`);
+  addColumn('landos_property_collector_attempt', 'owned_resource_count', `owned_resource_count INTEGER NOT NULL DEFAULT 0`);
+  addColumn('landos_property_collector_attempt', 'open_resource_count_after', `open_resource_count_after INTEGER NOT NULL DEFAULT 0`);
+  addColumn('landos_property_collector_attempt', 'memory_before_bytes', `memory_before_bytes INTEGER`);
+  addColumn('landos_property_collector_attempt', 'memory_after_bytes', `memory_after_bytes INTEGER`);
 
   // Acquisitions department (CRM-independent intelligence layer) — one row per
   // Deal Card holding the seller profile, communication log, discovery notes, and
@@ -1602,6 +1793,242 @@ function createLandosSchema(db: Database.Database): void {
       updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
 
+    -- Property Summary vertical slice. These tables are additive read-model
+    -- infrastructure beneath the legacy Deal Card. They deliberately separate
+    -- accepted identity, immutable evidence, durable collector execution, and
+    -- immutable operator snapshots so a GET never has to research or reconcile.
+    CREATE TABLE IF NOT EXISTS landos_property_identity_version (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_card_id      INTEGER REFERENCES landos_property_card(id) ON DELETE SET NULL,
+      version               INTEGER NOT NULL,
+      status                TEXT NOT NULL
+                            CHECK (status IN ('unresolved','candidate','confirmed','disputed','rejected','archived')),
+      address               TEXT,
+      city                  TEXT,
+      county                TEXT,
+      state                 TEXT,
+      zip                   TEXT,
+      apn                   TEXT,
+      owner                 TEXT,
+      acreage               REAL,
+      geometry_json         TEXT,
+      basis                 TEXT NOT NULL DEFAULT '',
+      confidence            REAL NOT NULL DEFAULT 0,
+      source_refs_json      TEXT NOT NULL DEFAULT '[]',
+      change_reason         TEXT NOT NULL,
+      created_by            TEXT NOT NULL,
+      is_current            INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0,1)),
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, version)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_property_identity_one_current
+      ON landos_property_identity_version(deal_card_id) WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_property_identity_version_deal
+      ON landos_property_identity_version(deal_card_id, version DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_property_evidence_item (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      domain                TEXT NOT NULL,
+      evidence_kind         TEXT NOT NULL,
+      fact_key              TEXT,
+      raw_value_json        TEXT NOT NULL DEFAULT 'null',
+      normalized_value_json TEXT NOT NULL DEFAULT 'null',
+      source_name           TEXT NOT NULL,
+      source_url            TEXT,
+      source_tier           TEXT NOT NULL,
+      verification_status   TEXT NOT NULL,
+      confidence            TEXT NOT NULL,
+      collector_key         TEXT NOT NULL,
+      retrieved_at          TEXT NOT NULL,
+      effective_at          TEXT,
+      fresh_until           TEXT,
+      artifact_ref          TEXT,
+      supersedes_evidence_id INTEGER REFERENCES landos_property_evidence_item(id) ON DELETE SET NULL,
+      dispute_group         TEXT,
+      idempotency_key       TEXT NOT NULL UNIQUE,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_evidence_deal_domain
+      ON landos_property_evidence_item(deal_card_id, domain, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_property_evidence_identity
+      ON landos_property_evidence_item(property_identity_version_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_property_evidence_immutable_update
+      BEFORE UPDATE ON landos_property_evidence_item
+      BEGIN
+        SELECT RAISE(ABORT, 'property evidence is append-only');
+      END;
+    CREATE TRIGGER IF NOT EXISTS trg_property_evidence_immutable_delete
+      BEFORE DELETE ON landos_property_evidence_item
+      WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id=OLD.deal_card_id), 0) = 0
+      BEGIN
+        SELECT RAISE(ABORT, 'property evidence is append-only');
+      END;
+
+    CREATE TABLE IF NOT EXISTS landos_property_collector_job (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      collector_key         TEXT NOT NULL,
+      status                TEXT NOT NULL
+                            CHECK (status IN ('queued','running','succeeded','partial','blocked','failed')),
+      input_hash            TEXT NOT NULL,
+      idempotency_key       TEXT NOT NULL UNIQUE,
+      dependency_json       TEXT NOT NULL DEFAULT '[]',
+      attempt_count         INTEGER NOT NULL DEFAULT 0,
+      last_error            TEXT,
+      source_jurisdiction   TEXT NOT NULL DEFAULT '',
+      platform              TEXT NOT NULL DEFAULT '',
+      adapter_key           TEXT NOT NULL DEFAULT '',
+      queued_at             INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      started_at            INTEGER,
+      finished_at           INTEGER,
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_collector_job_deal
+      ON landos_property_collector_job(deal_card_id, collector_key, id DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_property_collector_attempt (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id                INTEGER NOT NULL REFERENCES landos_property_collector_job(id) ON DELETE CASCADE,
+      attempt_number        INTEGER NOT NULL,
+      status                TEXT NOT NULL
+                            CHECK (status IN ('running','succeeded','partial','blocked','failed')),
+      started_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      finished_at           INTEGER,
+      error                 TEXT,
+      output_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      outcome_kind          TEXT NOT NULL DEFAULT 'completed',
+      cleanup_status        TEXT NOT NULL DEFAULT 'not_applicable',
+      cleanup_error         TEXT,
+      owned_resource_count  INTEGER NOT NULL DEFAULT 0,
+      open_resource_count_after INTEGER NOT NULL DEFAULT 0,
+      memory_before_bytes   INTEGER,
+      memory_after_bytes    INTEGER,
+      UNIQUE(job_id, attempt_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_collector_attempt_job
+      ON landos_property_collector_attempt(job_id, attempt_number DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_deal_intelligence_snapshot (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      version               INTEGER NOT NULL,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      prior_snapshot_id     INTEGER REFERENCES landos_deal_intelligence_snapshot(id) ON DELETE SET NULL,
+      snapshot_type         TEXT NOT NULL DEFAULT 'property_summary_v1',
+      status                TEXT NOT NULL CHECK (status IN ('current','superseded')),
+      input_hash            TEXT NOT NULL,
+      evidence_max_id       INTEGER,
+      completeness_json     TEXT NOT NULL,
+      summary_json          TEXT NOT NULL,
+      change_reason         TEXT NOT NULL,
+      generated_by          TEXT NOT NULL,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, version),
+      UNIQUE(deal_card_id, input_hash)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_deal_intelligence_one_current
+      ON landos_deal_intelligence_snapshot(deal_card_id, snapshot_type)
+      WHERE status = 'current';
+    CREATE INDEX IF NOT EXISTS idx_deal_intelligence_snapshot_deal
+      ON landos_deal_intelligence_snapshot(deal_card_id, version DESC);
+
+    -- Recorded government-record artifact registry. The byte/page captures live
+    -- in the gitignored LandOS artifact store; this append-only registry keeps
+    -- their official provenance, hash, collector lineage, and identity version.
+    CREATE TABLE IF NOT EXISTS landos_property_record_artifact (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      property_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id) ON DELETE CASCADE,
+      domain                TEXT NOT NULL
+                            CHECK (domain IN ('deed_ownership','surveys_plats','recorded_encumbrances','property_tax','lien_judgment')),
+      source_jurisdiction   TEXT NOT NULL,
+      source_name           TEXT NOT NULL,
+      source_url            TEXT,
+      portal_reference      TEXT,
+      instrument_number     TEXT,
+      book_page             TEXT,
+      parcel_reference      TEXT,
+      account_reference     TEXT,
+      recording_filing_date TEXT,
+      document_type         TEXT NOT NULL,
+      page_count            INTEGER NOT NULL DEFAULT 0,
+      capture_count         INTEGER NOT NULL DEFAULT 0,
+      artifact_hash         TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      display_name          TEXT NOT NULL,
+      storage_path          TEXT NOT NULL,
+      capture_manifest_json TEXT NOT NULL DEFAULT '[]',
+      collector_job_id      INTEGER REFERENCES landos_property_collector_job(id) ON DELETE SET NULL,
+      collector_attempt_id  INTEGER REFERENCES landos_property_collector_attempt(id) ON DELETE SET NULL,
+      retrieved_at          TEXT NOT NULL,
+      idempotency_key       TEXT NOT NULL UNIQUE,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_record_artifact_deal
+      ON landos_property_record_artifact(deal_card_id, domain, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_property_record_artifact_identity
+      ON landos_property_record_artifact(property_identity_version_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_property_record_artifact_immutable_update
+      BEFORE UPDATE ON landos_property_record_artifact
+      BEGIN
+        SELECT RAISE(ABORT, 'property record artifacts are append-only');
+      END;
+    CREATE TRIGGER IF NOT EXISTS trg_property_record_artifact_immutable_delete
+      BEFORE DELETE ON landos_property_record_artifact
+      WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id=OLD.deal_card_id), 0) = 0
+      BEGIN
+        SELECT RAISE(ABORT, 'property record artifacts are append-only');
+      END;
+
+    -- Durable ownership correction request. An accepted identity never changes
+    -- from research alone: an approved correction records the prior/replacement
+    -- values, evidence, actor, approval, reason, and only the declared dependent
+    -- outputs that were invalidated.
+    CREATE TABLE IF NOT EXISTS landos_property_identity_correction (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      prior_identity_version_id INTEGER NOT NULL REFERENCES landos_property_identity_version(id),
+      replacement_json      TEXT NOT NULL,
+      evidence_refs_json    TEXT NOT NULL DEFAULT '[]',
+      reason                TEXT NOT NULL,
+      requested_by          TEXT NOT NULL,
+      approval_id           INTEGER NOT NULL REFERENCES landos_approval(id),
+      declared_invalidations_json TEXT NOT NULL DEFAULT '[]',
+      status                TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','applied','rejected')),
+      replacement_identity_version_id INTEGER REFERENCES landos_property_identity_version(id),
+      applied_by            TEXT,
+      requested_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      applied_at            INTEGER,
+      UNIQUE(approval_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_property_identity_correction_deal
+      ON landos_property_identity_correction(deal_card_id, requested_at DESC);
+
+    -- Browser ownership ledger for guaranteed cleanup. Only pages/contexts
+    -- explicitly registered by a LandOS job can be selected by the janitor.
+    CREATE TABLE IF NOT EXISTS landos_browser_owned_resource (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id                INTEGER NOT NULL REFERENCES landos_property_collector_job(id) ON DELETE CASCADE,
+      attempt_id            INTEGER NOT NULL REFERENCES landos_property_collector_attempt(id) ON DELETE CASCADE,
+      resource_key          TEXT NOT NULL,
+      resource_type         TEXT NOT NULL CHECK (resource_type IN ('context','page','popup','download','temporary_session')),
+      parent_resource_key   TEXT,
+      safe_url              TEXT,
+      status                TEXT NOT NULL DEFAULT 'open'
+                            CHECK (status IN ('open','closed','abandoned','cleanup_failed')),
+      opened_at             INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      closed_at             INTEGER,
+      cleanup_error         TEXT,
+      UNIQUE(attempt_id, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_owned_resource_open
+      ON landos_browser_owned_resource(status, attempt_id, id);
+
     -- Auditable guard against prompt/instruction overrides of accepted parcel
     -- evidence, plus a non-destructive correction link for erroneous intakes.
     CREATE TABLE IF NOT EXISTS landos_instruction_contradiction (
@@ -1857,6 +2284,18 @@ function createLandosSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_landos_reconciliation_task_open
       ON landos_opportunity_reconciliation_task(opportunity_id, status, created_at DESC);
   `);
+  // The Property Summary tables are created in the second schema block above,
+  // so existing databases must receive these columns after that block exists.
+  addColumn('landos_property_collector_job', 'source_jurisdiction', `source_jurisdiction TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_property_collector_job', 'platform', `platform TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_property_collector_job', 'adapter_key', `adapter_key TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_property_collector_attempt', 'outcome_kind', `outcome_kind TEXT NOT NULL DEFAULT 'completed'`);
+  addColumn('landos_property_collector_attempt', 'cleanup_status', `cleanup_status TEXT NOT NULL DEFAULT 'not_applicable'`);
+  addColumn('landos_property_collector_attempt', 'cleanup_error', `cleanup_error TEXT`);
+  addColumn('landos_property_collector_attempt', 'owned_resource_count', `owned_resource_count INTEGER NOT NULL DEFAULT 0`);
+  addColumn('landos_property_collector_attempt', 'open_resource_count_after', `open_resource_count_after INTEGER NOT NULL DEFAULT 0`);
+  addColumn('landos_property_collector_attempt', 'memory_before_bytes', `memory_before_bytes INTEGER`);
+  addColumn('landos_property_collector_attempt', 'memory_after_bytes', `memory_after_bytes INTEGER`);
   addColumn('landos_opportunity', 'pipeline_stage', `pipeline_stage TEXT NOT NULL DEFAULT 'new_lead'`);
   db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
               VALUES (?, ?, ?)`).run(
@@ -1912,6 +2351,12 @@ function createLandosSchema(db: Database.Database): void {
       );
     `);
   }
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260723_006_government_record_risk_slice',
+    'sha256:7a2916c43c18ef7622a15ec05ec5a692d2d0803e1a9ad9586fe31a58d3f2b269',
+    'Add versioned deed, ownership, survey, encumbrance, tax, lien/judgment evidence, artifacts, correction approvals, and browser cleanup lineage.',
+  );
 
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead
   // opportunity, including soft-deleted/research cards. We deliberately retain

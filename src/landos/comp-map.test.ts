@@ -18,7 +18,7 @@ const coordsFor = (m: Record<string, { lat: number; lng: number }>): CoordsLooku
 describe('buildCompMapView', () => {
   it('assembles subject + sold/active markers with labeled PPA, providers, and links', () => {
     const registry = buildCompRegistry(subjectMarket, [
-      cand({}),
+      cand({ thumbnailUrl: 'https://images.example/1.jpg' }),
       cand({ addressDesc: '2 Ridge Rd, Pickens, SC', lane: 'active', priceKind: 'list', price: 80_000, acres: 1.0, sourceUrl: 'https://redfin.example/2', provider: 'Redfin' }),
     ]);
     const view = buildCompMapView({
@@ -29,6 +29,7 @@ describe('buildCompMapView', () => {
     expect(sold.ppa?.label).toBe('Sold PPA');
     expect(sold.providers).toContain('Zillow');
     expect(sold.providerLinks[0]).toContain('zillow.example');
+    expect(sold.thumbnailUrl).toBe('https://images.example/1.jpg');
     expect(sold.lat).toBeCloseTo(34.99, 2);
     expect(sold.distanceMiles).toBeGreaterThan(0);
     const active = view.markers.find((m) => m.status === 'active')!;
@@ -45,9 +46,12 @@ describe('buildCompMapView', () => {
       acres: 1.0 + i * 0.1,
       price: 50_000 + i * 1_000,
       sourceUrl: `https://zillow.example/${i + 1}`,
+      distanceMiles: 1 + i * 0.5,
+      saleOrListDate: '2026-02-01',
     }));
     const registry = buildCompRegistry(subjectMarket, candidates);
-    const view = buildCompMapView({ subject, registry, coords: coordsFor({}) });
+    const coords = coordsFor({ '1 ridge rd, pickens, sc': { lat: 34.99, lng: -82.65 } });
+    const view = buildCompMapView({ subject, registry, coords });
     const selected = view.markers.filter((m) => m.selected);
     expect(selected.length).toBeGreaterThan(0);
     expect(selected.length).toBeLessThanOrEqual(5);
@@ -69,6 +73,25 @@ describe('buildCompMapView', () => {
     expect(rejected[0].lat).toBeNull(); // rejected evidence is never plotted as usable
   });
 
+  it('reports plotted and table-only counts for sold/active land, not hidden strategy context', () => {
+    const registry = buildCompRegistry(subjectMarket, [
+      cand({}),
+      cand({ addressDesc: '8 House Rd, Pickens, SC', compClass: 'residential', sourceUrl: 'https://zillow.example/house' }),
+    ]);
+    const view = buildCompMapView({
+      subject,
+      registry,
+      coords: coordsFor({
+        '1 ridge rd, pickens, sc': { lat: 34.99, lng: -82.65 },
+        '8 house rd, pickens, sc': { lat: 34.98, lng: -82.64 },
+      }),
+    });
+    expect(view.counts.context).toBe(1);
+    expect(view.counts.plottable).toBe(1);
+    expect(view.counts.tableOnly).toBe(0);
+    expect(view.summaryLine).toMatch(/1 shown on the map/);
+  });
+
   it('a duplicate across providers counts once with both providers attached', () => {
     const registry = buildCompRegistry(subjectMarket, [
       cand({}),
@@ -85,5 +108,13 @@ describe('buildCompMapView', () => {
     const view = buildCompMapView({ subject, registry: buildCompRegistry(subjectMarket, []), coords: coordsFor({}), now: () => new Date('2026-07-14T12:00:00Z') });
     expect(view.attribution).toMatch(/OpenStreetMap/);
     expect(view.refreshDateIso).toBe('2026-07-14T12:00:00.000Z');
+  });
+
+  it('retains an optional official subject polygon without inventing one', () => {
+    const polygon = [{ lat: 34.99, lng: -82.66 }, { lat: 35.0, lng: -82.66 }, { lat: 35.0, lng: -82.65 }];
+    const withPolygon = buildCompMapView({ subject: { ...subject, polygon }, registry: buildCompRegistry(subjectMarket, []), coords: coordsFor({}) });
+    const withoutPolygon = buildCompMapView({ subject, registry: buildCompRegistry(subjectMarket, []), coords: coordsFor({}) });
+    expect(withPolygon.subject.polygon).toEqual(polygon);
+    expect(withoutPolygon.subject.polygon).toBeUndefined();
   });
 });

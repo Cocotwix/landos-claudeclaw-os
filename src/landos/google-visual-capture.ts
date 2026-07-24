@@ -127,7 +127,7 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
   let svPano: Coords | null = null;
   let svDistanceM: number | null = null;
   try {
-    const metaUrl = buildStreetViewMetadataUrl({ address: null, coords, key });
+    const metaUrl = buildStreetViewMetadataUrl({ address: null, coords, key, radius: MAX_PARCEL_CONTEXT_DISTANCE_M });
     const metaRes = await fetchImpl(metaUrl);
     if (metaRes.ok) {
       const meta = JSON.parse(Buffer.from(await metaRes.arrayBuffer()).toString('utf8')) as { status?: string; location?: { lat?: number; lng?: number } };
@@ -161,7 +161,10 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
   if (svPano && svDistanceM != null && svDistanceM <= MAX_PARCEL_CONTEXT_DISTANCE_M) {
     plan.push({
       service: 'street_view_static',
-      url: buildStreetViewUrl({ address: null, coords, key, heading: svHeading }),
+      // Target the exact metadata-returned panorama. Querying the parcel centroid
+      // again would use Google's smaller default search radius and can return no
+      // image even after the wider, distance-checked metadata lookup succeeded.
+      url: buildStreetViewUrl({ address: null, coords: svPano, key, heading: svHeading }),
       association: {
         ...baseAssociation,
         basis: 'parcel_nearby_street_view',

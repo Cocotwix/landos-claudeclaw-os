@@ -127,11 +127,19 @@ export function planResolver(fields: IntakeFields): ResolverPlan {
 }
 
 /** The smallest useful extra identifier to request, given what was supplied and
- *  the candidate-ambiguity situation. Prefers the lightest disambiguator. */
+ *  the candidate-ambiguity situation. Prefers the lightest disambiguator.
+ *
+ *  When APN + county/FIPS are already supplied, there is NO smaller identifier
+ *  left to ask for — LandPortal property id and FIPS are DISCOVERED from a
+ *  parcel-source result, never required as operator input. In that situation
+ *  the honest answer names the missing step (an official parcel-source
+ *  confirmation of the supplied APN), not a heavier identifier. */
 export function smallestNextIdentifier(fields: IntakeFields): string {
+  if (has(fields.apn) && (has(fields.county) || has(fields.fips))) {
+    return `none — state/county and APN ${fields.apn!.trim()} are already supplied. The missing step is an official parcel-source confirmation of that APN (county assessor/GIS, state parcel layer, or the LandPortal parcel page), or the county's own APN formatting if the supplied format does not match`;
+  }
+  if (has(fields.apn)) return 'county';
   if (!has(fields.zip) && (has(fields.address) || has(fields.city))) return 'ZIP code';
   if (!has(fields.owner)) return 'owner name';
-  if (!has(fields.apn)) return 'APN (parcel number)';
-  if (!has(fields.county) && !has(fields.fips)) return 'county';
-  return 'LandPortal property id + FIPS';
+  return 'APN (parcel number)';
 }

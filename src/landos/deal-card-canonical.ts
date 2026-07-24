@@ -25,6 +25,7 @@ import { providerDisplayName } from './comp-providers.js';
 import { buildResearchMissionView, type ResearchMissionView } from './research-mission.js';
 import { attachCardActivity, getCardActivity, getPropertyCard } from './property-card.js';
 import type { OperatorPropertyRecord } from './operator-property-record.js';
+import type { CompProviderRun } from './comp-orchestrator.js';
 
 /** Bump when the canonical Deal Card model changes shape/semantics. */
 export const DEAL_CARD_MODEL_VERSION = 2;
@@ -44,19 +45,28 @@ interface MarketCompLite {
   acres?: number | null;
   pricePerAcre?: number | null;
   sourceUrl?: string | null;
+  thumbnailUrl?: string | null;
   sourceLabel?: string | null;
   addressDesc?: string | null;
   lat?: number | null;
   lng?: number | null;
   compClass?: string | null;
+  listingDate?: string | null;
+  daysOnMarket?: number | null;
+  distanceMiles?: number | null;
+  inclusionReason?: string | null;
 }
 
 export interface ReportCompLanes {
+  status?: string | null;
+  providerChain?: string[] | null;
+  providers?: Array<{ providerId: string; status: string; kept: number }> | null;
+  note?: string | null;
   sold?: MarketCompLite[] | null;
   supplementalSold?: MarketCompLite[] | null;
   active?: MarketCompLite[] | null;
   valuation?: MarketCompLite[] | null;
-  landportalComps?: { rows?: MarketCompLite[] | null } | null;
+  landportalComps?: { status?: string | null; count?: number | null; note?: string | null; rows?: MarketCompLite[] | null } | null;
 }
 
 function laneCandidates(rows: MarketCompLite[] | null | undefined, lane: CompRegistryCandidate['lane'], fallbackProvider: string): CompRegistryCandidate[] {
@@ -72,26 +82,118 @@ function laneCandidates(rows: MarketCompLite[] | null | undefined, lane: CompReg
     acres: r.acres ?? null,
     pricePerAcre: r.pricePerAcre ?? null,
     sourceUrl: r.sourceUrl ?? null,
+    thumbnailUrl: r.thumbnailUrl ?? null,
     compClass: r.compClass ?? null,
+    listingDate: r.listingDate ?? null,
+    daysOnMarket: r.daysOnMarket ?? null,
+    distanceMiles: r.distanceMiles ?? null,
+    inclusionReason: r.inclusionReason ?? null,
   }));
 }
 
 function persistedCandidates(rows: CompRow[]): CompRegistryCandidate[] {
-  return rows.map((r) => ({
+  return rows.flatMap((r) => {
+    let attributions: Array<{ provider?: string; url?: string | null }> = [];
+    try { attributions = JSON.parse(r.source_attributions_json || '[]'); } catch { attributions = []; }
+    const sources = attributions.length ? attributions : [{ provider: r.canonical_source || r.source_label || 'Unknown', url: r.source_url || null }];
+    return sources.map((source) => ({
     id: r.id,
-    provider: r.source_label || 'Unknown',
-    lane: (r.price_kind === 'sold' ? 'sold' : 'active') as CompRegistryCandidate['lane'],
+    provider: source.provider || r.canonical_source || r.source_label || 'Unknown',
+    lane: (r.price_kind === 'sale' || r.price_kind === 'sold' ? 'sold' : r.price_kind === 'list' ? 'active' : 'unknown') as CompRegistryCandidate['lane'],
     addressDesc: r.address_desc || null,
     apn: r.apn || null,
     state: r.state || null,
+    lat: typeof r.lat === 'number' ? r.lat : null,
+    lng: typeof r.lng === 'number' ? r.lng : null,
     price: typeof r.price === 'number' ? r.price : null,
     priceKind: r.price_kind || null,
     saleOrListDate: r.sale_or_list_date || null,
     acres: typeof r.acres === 'number' ? r.acres : null,
     pricePerAcre: typeof r.price_per_acre === 'number' ? r.price_per_acre : null,
-    sourceUrl: r.source_url || null,
+    sourceUrl: source.url || r.source_url || null,
+    thumbnailUrl: r.thumbnail_url || null,
+    listingDate: r.listing_date || null,
+    daysOnMarket: typeof r.days_on_market === 'number' ? r.days_on_market : null,
+    distanceMiles: typeof r.distance_miles === 'number' ? r.distance_miles : null,
+    inclusionReason: r.inclusion_reason || null,
+    compClass: r.property_class || null,
     persistedStatus: r.status || null,
-  }));
+    }));
+  });
+}
+
+function retainedProviderStatus(status: string | null | undefined, candidateCount: number): CompProviderRun['status'] {
+  const value = (status ?? '').trim().toLowerCase();
+  if (['connected', 'collected', 'complete', 'succeeded', 'strong', 'partial'].includes(value)) {
+    return candidateCount > 0 ? 'succeeded' : 'no_result';
+  }
+  if (['no_comps', 'no_results', 'no_result', 'empty'].includes(value)) return 'no_result';
+  if (['not_authorized', 'blocked'].includes(value)) return 'blocked';
+  if (['timeout', 'timed_out'].includes(value)) return 'timeout';
+  if (['error', 'failed'].includes(value)) return 'failed';
+  return 'unavailable';
+}
+
+function providerKey(value: string): string {
+  return value.toLowerCase().replace(/_browser$/, '').replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Convert the report pipeline's retained provider audit into canonical
+ * orchestration outcomes. This does not call a provider or rebuild the comp
+ * registry; it preserves what the report already attempted (including honest
+ * no-result/blocked/failure outcomes) beside the reconciled registry.
+ */
+export function retainedCompRunsFromReport(reportLanes: ReportCompLanes | null): CompProviderRun[] {
+  if (!reportLanes) return [];
+  const allCandidates: CompRegistryCandidate[] = [
+    ...laneCandidates(reportLanes.sold, 'sold', 'Realie'),
+    ...laneCandidates(reportLanes.supplementalSold, 'supplemental', 'Zillow'),
+    ...laneCandidates(reportLanes.active, 'active', 'Realie'),
+    ...laneCandidates(reportLanes.valuation, 'valuation', 'Realie'),
+    ...laneCandidates(reportLanes.landportalComps?.rows, 'landportal', 'LandPortal visible'),
+  ];
+  const outcomes = new Map<string, { provider: string; status: string; kept: number; notes: string[] }>();
+  const remember = (provider: string, status: string, kept = 0, note?: string | null) => {
+    const key = providerKey(provider);
+    if (!key) return;
+    const previous = outcomes.get(key);
+    outcomes.set(key, {
+      provider: previous?.provider ?? provider,
+      status: previous?.status && ['connected', 'collected'].includes(previous.status.toLowerCase()) ? previous.status : status,
+      kept: Math.max(previous?.kept ?? 0, kept),
+      notes: [...(previous?.notes ?? []), ...(note?.trim() ? [note.trim()] : [])],
+    });
+  };
+  for (const provider of reportLanes.providers ?? []) {
+    remember(provider.providerId, provider.status, provider.kept);
+  }
+  for (const attempt of reportLanes.providerChain ?? []) {
+    const separator = attempt.indexOf(':');
+    if (separator < 1) continue;
+    remember(attempt.slice(0, separator), attempt.slice(separator + 1));
+  }
+  if (reportLanes.landportalComps) {
+    remember('LandPortal visible', reportLanes.landportalComps.status ?? 'not_run', reportLanes.landportalComps.count ?? reportLanes.landportalComps.rows?.length ?? 0, reportLanes.landportalComps.note);
+  }
+  return [...outcomes.values()].map((outcome): CompProviderRun => {
+    const key = providerKey(outcome.provider);
+    const candidates = allCandidates.filter((candidate) => {
+      const candidateKey = providerKey(candidate.provider);
+      return candidateKey === key || candidateKey.includes(key) || key.includes(candidateKey);
+    });
+    const status = retainedProviderStatus(outcome.status, candidates.length || outcome.kept);
+    return {
+      provider: outcome.provider,
+      status,
+      result: null,
+      elapsedMs: 0,
+      candidates,
+      note: outcome.notes.length
+        ? outcome.notes.join(' ')
+        : `${outcome.provider}: retained ${outcome.status} outcome from the canonical report run (${outcome.kept} kept).`,
+    };
+  });
 }
 
 /** Build the unique comp registry for a deal from every persisted + report lane. */
@@ -238,8 +340,10 @@ export function modelVersionForCard(cardId: number | null, registry: CompRegistr
 }
 
 function countPendingWrongMarketRows(registry: CompRegistry): number {
-  // Rejected for wrong-market by the CURRENT validator (not the persisted status).
-  return registry.rejected.filter((r) => /^wrong market/i.test(r.reason)).length;
+  // Only a landos_comp row has something for the reconcile action to mutate.
+  // Provider/report candidates can be rejected in the read-time registry, but
+  // must not create an owner-facing Reconcile button that can never clear.
+  return registry.rejected.filter((r) => r.persistedId != null && !/^previously rejected/i.test(r.reason)).length;
 }
 
 export interface ReconcileResult {
@@ -275,7 +379,9 @@ export function reconcileDealCard(input: {
     for (const row of persisted) {
       if ((row.status ?? '') === 'rejected') continue;
       const rowState = (row.state ?? '').trim().toUpperCase() || addressStateCode(row.address_desc);
-      if (rowState && rowState !== subjState) {
+      const wrongMarket = !!rowState && rowState !== subjState;
+      const missingMarketplaceLocality = !rowState && /zillow/i.test(row.source_label ?? '');
+      if (wrongMarket || missingMarketplaceLocality) {
         const res = mark.run(row.id);
         if ((res.changes ?? 0) > 0) compStatusFixes += 1;
       }

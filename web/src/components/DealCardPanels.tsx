@@ -191,7 +191,6 @@ export function ReconciledLandScorePanel({ ls }: { ls: OperatorRecordView['landS
         <span class="text-[11.5px] uppercase tracking-[0.07em] font-bold text-[var(--color-text-muted)]">Land Score (screening rubric)</span>
         <span class="text-[14px] font-bold text-[var(--color-text)]">{ls.score}/{ls.maxScore}</span>
         <span class="text-[11.5px] px-2 py-0.5 rounded-full font-semibold border" style={`color:${tone};border-color:${tone}55;background:${tone}11`}>{profile}</span>
-        <span class="text-[11px] text-[var(--color-text-faint)]">confidence {ls.confidence.replace(/_/g, ' ')}</span>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
         {ls.factors.map((f) => (
@@ -209,7 +208,6 @@ export function ReconciledLandScorePanel({ ls }: { ls: OperatorRecordView['landS
           ))}
         </ul>
       )}
-      <div class="text-[11.5px] text-[var(--color-text-faint)]">{ls.note}</div>
     </div>
   );
 }

@@ -109,7 +109,9 @@ const stateValue = (value: string | null): string | null => {
 const countyValue = (value: string | null): string | null => value ? value.toLowerCase().replace(/\bcounty\b/g, '').replace(/[^a-z0-9]/g, '') || null : null;
 const cityValue = (value: string | null): string | null => value ? value.toLowerCase().replace(/[^a-z0-9]/g, '') || null : null;
 const apnValue = (value: string | null): string | null => value ? value.toLowerCase().replace(/[^a-z0-9]/g, '') || null : null;
-const addressValue = (value: string | null): string | null => value ? value.toLowerCase().replace(/\b(road|rd|street|st|avenue|ave|lane|ln|highway|hwy|drive|dr|court|ct|boulevard|blvd)\b/g, '').replace(/[^a-z0-9]/g, '') || null : null;
+const addressValue = (value: string | null): string | null => value
+  ? value.split(',')[0].toLowerCase().replace(/\b(road|rd|street|st|avenue|ave|lane|ln|highway|hwy|drive|dr|court|ct|boulevard|blvd)\b/g, '').replace(/[^a-z0-9]/g, '') || null
+  : null;
 
 /** A provider may abbreviate a suffix or preserve a one-character spelling
  * correction (for example, McAlister -> McAllister). Accept that narrow case
@@ -244,8 +246,20 @@ export function verifyInspectionIdentity(
   const warnings: string[] = [];
   const stateMatches = !expected.state || !observed.state || upper(expected.state) === upper(observed.state);
   const countyMatches = !expected.county || !observed.county || countyValue(expected.county) === countyValue(observed.county);
-  const apnMatches = !!expected.apn && !!observed.apn && apnValue(expected.apn) === apnValue(observed.apn);
   const addressMatches = !expected.address || !observed.address || addressesMatch(expected.address, observed.address);
+  const expectedApn = apnValue(expected.apn);
+  const observedApn = apnValue(observed.apn);
+  const apnMatchesExactly = !!expectedApn && !!observedApn && expectedApn === observedApn;
+  // Some official statewide parcel identifiers wrap the shorter county parcel
+  // number shown by LandPortal. Accept that relationship only when a
+  // meaningful shorter identifier is embedded intact and the street plus
+  // county/state independently agree. This never makes a conflicting parcel
+  // number acceptable on address evidence alone.
+  const apnMatchesEmbeddedCountyId = !!expectedApn && !!observedApn
+    && Math.min(expectedApn.length, observedApn.length) >= 7
+    && (expectedApn.includes(observedApn) || observedApn.includes(expectedApn))
+    && addressMatches && stateMatches && countyMatches;
+  const apnMatches = apnMatchesExactly || apnMatchesEmbeddedCountyId;
   if (!stateMatches) reasons.push(`state mismatch: expected ${expected.state}, observed ${observed.state}`);
   if (!countyMatches) reasons.push(`county mismatch: expected ${expected.county}, observed ${observed.county}`);
   const cityMatches = !expected.city || !observed.city || cityValue(expected.city) === cityValue(observed.city);
@@ -403,6 +417,35 @@ export function quarantineMismatchedPropertyInspections(
     }
   }
   return quarantined;
+}
+
+/** Restore only evidence previously quarantined for this opportunity when the
+ * owner-confirmed identity now corroborates it. The evidence is re-evaluated
+ * from its durable activity record; no provider result is rewritten. */
+export function restoreMatchingPropertyInspections(
+  opportunityId: number,
+  cardId: number,
+  constraints: ResearchIdentityConstraints,
+): number[] {
+  const db = getLandosDb();
+  const rows = db.prepare(`SELECT a.id, a.ref FROM landos_card_activity a
+    INNER JOIN landos_quarantined_card_evidence q ON q.activity_id = a.id
+    WHERE a.card_id = ? AND q.opportunity_id = ?
+      AND a.kind IN ('property_inspection','landportal_inspection')
+    ORDER BY a.created_at DESC, a.id DESC`).all(cardId, opportunityId) as Array<{ id: number; ref: string }>;
+  const restored: number[] = [];
+  for (const row of rows) {
+    try {
+      const inspection = JSON.parse(row.ref) as PropertyInspectionRecord;
+      if (!verifyInspectionIdentity(constraints, inspection).accepted) continue;
+      const result = db.prepare(`DELETE FROM landos_quarantined_card_evidence
+        WHERE activity_id = ? AND opportunity_id = ?`).run(row.id, opportunityId);
+      if (result.changes) restored.push(row.id);
+    } catch {
+      // Malformed retained evidence stays quarantined.
+    }
+  }
+  return restored;
 }
 
 export function isCardActivityQuarantined(activityId: number): boolean {

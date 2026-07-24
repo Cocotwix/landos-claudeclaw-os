@@ -48,6 +48,36 @@ describe('visual-conclusion sanitizer', () => {
     expect(obs.confidences.parcelAttribution).toBe('unresolved');
     expect(obs.confidences.underwritingSignificance).toBe('unresolved');
   });
+
+  it('neutralizes analyzer wording that asserts direct frontage', () => {
+    const { text } = sanitizeVisualConclusion('The parcel has approximately 218 feet of direct frontage along the paved Talley Road.');
+    expect(text).toMatch(/218 ft of paved Talley Road centerline is visible near the mapped parcel/i);
+    expect(text).toMatch(/contact and access remain unresolved/i);
+    expect(text).not.toMatch(/direct frontage/i);
+  });
+
+  it('keeps a qualified driveway observation grammatical while removing the frontage claim', () => {
+    const { text } = sanitizeVisualConclusion('While the parcel fronts a paved road, there is no visible driveway due to the steep grade.');
+    expect(text).toBe('A paved road is visible nearby, but direct parcel–road contact and access remain unresolved; there is no visible driveway due to the steep grade.');
+  });
+
+  it('removes an imagery-based direct physical access assertion', () => {
+    const { text } = sanitizeVisualConclusion('The parcel has direct physical access to a paved two-lane road (Talley Rd).');
+    expect(text).toMatch(/paved two-lane road.*visible near the mapped parcel/i);
+    expect(text).toMatch(/physical or legal access remain unresolved/i);
+    expect(text).not.toMatch(/has direct physical access/i);
+  });
+
+  it('neutralizes stale frontage and access assertions, including multiple claims in one string', () => {
+    const { text, rewritten } = sanitizeVisualConclusion(
+      'The parcel features approximately 218 feet of direct road proximity along Talley Rd. Confirmed road frontage means access is not an issue.',
+    );
+    expect(rewritten).toBe(true);
+    expect(text).toMatch(/218 ft of Talley Rd centerline is visible near the mapped parcel/i);
+    expect(text).toMatch(/direct parcel.*road contact and access remain unresolved/i);
+    expect(text).toMatch(/physical and legal access remain unresolved/i);
+    expect(text).not.toMatch(/confirmed road frontage|access is not an issue|features approximately/i);
+  });
 });
 
 describe('persisted-run sanitizer', () => {

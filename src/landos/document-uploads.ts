@@ -24,7 +24,7 @@ export const UPLOAD_CATEGORIES: Array<{ value: RegisteredDocument['category']; l
   { value: 'other', label: 'Other (perc test, delineation, elevation certificate, utility/zoning letter, closing doc)' },
 ];
 
-const ALLOWED_EXT = /\.(pdf|png|jpg|jpeg|webp|tif|tiff|txt|md|doc|docx|xls|xlsx)$/i;
+const ALLOWED_EXT = /\.(pdf|png|jpg|jpeg|webp|tif|tiff|txt|md|srt|vtt|csv|json|doc|docx|xls|xlsx)$/i;
 const MAX_BYTES = 40 * 1024 * 1024;
 
 function ensureTable(): void {
@@ -72,7 +72,7 @@ export function saveDocumentUpload(input: SaveUploadInput): UploadedDocumentRow 
   ensureTable();
   if (!Number.isInteger(input.dealCardId) || input.dealCardId < 1) throw new Error('A valid Deal Card is required.');
   const base = safeBaseName(input.fileName);
-  if (!ALLOWED_EXT.test(base)) throw new Error('Unsupported file type. Allowed: pdf, images, txt/md, doc(x), xls(x).');
+  if (!ALLOWED_EXT.test(base)) throw new Error('Unsupported file type. Allowed: pdf, images, txt/md/srt/vtt/csv/json, doc(x), xls(x).');
   if (!input.bytes.length) throw new Error('The uploaded file is empty.');
   if (input.bytes.length > MAX_BYTES) throw new Error('File exceeds the 40 MB upload limit.');
   const dir = uploadDir(input.dealCardId);

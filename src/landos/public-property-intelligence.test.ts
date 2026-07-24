@@ -174,7 +174,7 @@ describe('public property intelligence fixture contract', () => {
 });
 
 describe('independent bounded provider orchestration', () => {
-  it('starts every task in parallel', async () => {
+  it('honors the contract concurrency bound and drains queued tasks as slots free', async () => {
     let started = 0;
     let release!: () => void;
     const wait = new Promise<void>((resolve) => { release = resolve; });
@@ -200,9 +200,10 @@ describe('independent bounded provider orchestration', () => {
       now: FIXED_NOW,
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(started).toBe(11);
+    expect(started).toBe(8);
     release();
     expect((await pending).status).toBe('complete');
+    expect(started).toBe(PUBLIC_INTELLIGENCE_TASKS.length);
   });
 
   it('isolates provider failure, timeout, missing adapters, and optional Land Portal blocking', async () => {

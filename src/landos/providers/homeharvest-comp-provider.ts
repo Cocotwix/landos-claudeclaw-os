@@ -89,6 +89,8 @@ export interface HomeHarvestComp {
   descriptionText: string | null;
   compClass: CompClass;
   classReason: string;
+  eventKind: 'sold' | 'active';
+  listingDate: string | null;
 }
 
 export interface HomeHarvestResult {
@@ -97,6 +99,8 @@ export interface HomeHarvestResult {
   sold: HomeHarvestComp[];
   /** Raw-land ACTIVE listings — asking-market context. */
   active: HomeHarvestComp[];
+  /** Every normalized provider row, retained before land/use/recency classification. */
+  candidates: HomeHarvestComp[];
   /** Count of rows dropped because they classified as non-land (kept honest). */
   excludedNonLand: number;
   source: string;
@@ -195,6 +199,8 @@ function toComp(row: HomeHarvestRow, isActive: boolean): HomeHarvestComp | null 
     descriptionText,
     compClass: classification.class,
     classReason: classification.reason,
+    eventKind: isActive ? 'active' : 'sold',
+    listingDate: dateOnly(row.list_date) || null,
   };
 }
 
@@ -206,7 +212,7 @@ function toComp(row: HomeHarvestRow, isActive: boolean): HomeHarvestComp | null 
  */
 export async function fetchHomeHarvestComps(query: HomeHarvestQuery, deps: HomeHarvestDeps = {}): Promise<HomeHarvestResult> {
   const now = (deps.now ?? (() => new Date().toISOString()))();
-  const base: HomeHarvestResult = { status: 'error', sold: [], active: [], excludedNonLand: 0, source: 'HomeHarvest (Realtor.com, open-source)', timestamp: now, note: '' };
+  const base: HomeHarvestResult = { status: 'error', sold: [], active: [], candidates: [], excludedNonLand: 0, source: 'HomeHarvest (Realtor.com, open-source)', timestamp: now, note: '' };
 
   const loc = buildLocation(query);
   if (!loc) return { ...base, status: 'no_area', note: 'No address / city+state / ZIP to search HomeHarvest.' };
@@ -238,11 +244,13 @@ export async function fetchHomeHarvestComps(query: HomeHarvestQuery, deps: HomeH
   const nowMs = deps.nowMs ?? Date.now();
   const sold: HomeHarvestComp[] = [];
   const active: HomeHarvestComp[] = [];
+  const candidates: HomeHarvestComp[] = [];
   let excludedNonLand = 0;
   for (const row of resp.rows ?? []) {
     const isActive = row.listing_type === 'for_sale';
     const comp = toComp(row, isActive);
     if (!comp) continue;
+    candidates.push(comp);
     if (!RAW_LAND.has(comp.compClass)) { excludedNonLand++; continue; }
     if (isActive) {
       active.push(comp);
@@ -260,7 +268,7 @@ export async function fetchHomeHarvestComps(query: HomeHarvestQuery, deps: HomeH
   const note = status === 'collected'
     ? `HomeHarvest: ${sold.length} raw-land sold comp(s), ${active.length} land active listing(s)${excludedNonLand ? `, ${excludedNonLand} non-land row(s) excluded` : ''}.`
     : `HomeHarvest ran but returned no raw-land rows for ${loc.location}${excludedNonLand ? ` (${excludedNonLand} non-land row(s) excluded)` : ''}.`;
-  return { ...base, status, sold, active, excludedNonLand, note };
+  return { ...base, status: candidates.length ? 'collected' : status, sold, active, candidates, excludedNonLand, note };
 }
 
 /**

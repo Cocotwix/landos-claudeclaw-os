@@ -39,14 +39,10 @@ describe('strategy readiness — five approved strategies only', () => {
 });
 
 describe('strategy readiness — pricing gate', () => {
-  it('one sold comp is never a pricing basis (thin evidence stays blocked, not not-viable)', () => {
-    const r = buildStrategyReadiness(inputs({ validatedSoldComps: 1, valuationReady: false }));
-    expect(r.pricingAllowed).toBe(false);
-    expect(r.pricingBlockers.join(' ')).toMatch(/one validated sold observation exists, but it is insufficient/i);
-    expect(r.pricingBlockers.join(' ')).toMatch(/thin-market local acreage cluster/i);
-    const quickFlip = r.strategies.find((s) => s.strategy === 'Cash Flip')!;
-    expect(quickFlip.status).toBe('blocked');
-    expect(quickFlip.status).not.toBe('not_viable');
+  it('one usable sold comp opens the owner FMV formula when parcel and acreage are stable', () => {
+    const r = buildStrategyReadiness(inputs({ validatedSoldComps: 1, valuationReady: true, acreageConflict: false }));
+    expect(r.pricingAllowed).toBe(true);
+    expect(r.pricingBlockers).toHaveLength(0);
   });
 
   it('acreage conflict blocks pricing even with a comp band', () => {
@@ -62,9 +58,9 @@ describe('strategy readiness — pricing gate', () => {
     expect(r.decision).toBe('tyler_review');
   });
 
-  it('valuation conflict blocks pricing', () => {
+  it('asking or automated-value disagreement never blocks sold-comp pricing', () => {
     const r = buildStrategyReadiness(inputs({ validatedSoldComps: 4, valuationReady: true, acreageConflict: false, valuationConflict: true }));
-    expect(r.pricingAllowed).toBe(false);
+    expect(r.pricingAllowed).toBe(true);
   });
 });
 

@@ -189,10 +189,10 @@ export function buildPursuitDecision(inputs: PursuitInputs): PursuitDecision {
     answer = 'pursue_with_caution';
     answerLine = `Pursue with caution — value sources disagree, so the attractive band is provisional. Tighten comps before quoting numbers to the seller.`;
     reasons.push(val.conflictNote ?? 'Valuation sources disagree materially.');
-  } else if ((inputs.compState?.soldCount ?? 0) > 0 && (val?.confidence === 'high' || val?.confidence === 'medium')) {
+  } else if (val?.primary?.kind === 'landportal_comps' && (val.confidence === 'high' || val.confidence === 'medium')) {
     answer = 'pursue';
-    answerLine = `Pursue — a sold-comp-backed value exists. This becomes attractive at $${attractive.low.toLocaleString('en-US')}–$${attractive.high.toLocaleString('en-US')} (40-60% of value).`;
-    reasons.push(`Primary value is backed by closed sales (${val?.primary?.label}).`);
+    answerLine = `Pursue — a LandPortal-comp value exists. This becomes attractive at $${attractive.low.toLocaleString('en-US')}–$${attractive.high.toLocaleString('en-US')} (40-60% of value).`;
+    reasons.push(`Primary FMV uses ${val.primary.label}; other provider comps remain visible as context.`);
   } else {
     answer = 'pursue_with_caution';
     answerLine = `Pursue with caution — the value basis is ${val?.primary?.label ?? 'preliminary'} (${val?.confidence} confidence), not a sold-comp band. Attractive at $${attractive.low.toLocaleString('en-US')}–$${attractive.high.toLocaleString('en-US')} if the value holds.`;

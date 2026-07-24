@@ -20,12 +20,16 @@ import { buildValuationHierarchy, selectBestComps, type BestCompsSelection, type
 import type { PricingGate } from './strategy-readiness.js';
 import { providerDisplayName } from './comp-providers.js';
 import { formatCountyLabel, sanitizeGeographySuffixes } from './fact-format.js';
+import { landPortalValuationStats, type LandPortalComparableLike } from './landportal-valuation.js';
 
 function ppaOf(c: UniqueComp): number | null {
-  if (typeof c.primary.pricePerAcre === 'number' && c.primary.pricePerAcre > 0) return c.primary.pricePerAcre;
+  // Price and acreage are the canonical transaction facts. Recompute their
+  // quotient before trusting a provider's rounded/stale PPA so every surface
+  // shows the same operator-verifiable division math.
   if (typeof c.primary.price === 'number' && c.primary.price > 0 && typeof c.acres === 'number' && c.acres > 0) {
     return Math.round(c.primary.price / c.acres);
   }
+  if (typeof c.primary.pricePerAcre === 'number' && c.primary.pricePerAcre > 0) return c.primary.pricePerAcre;
   return null;
 }
 
@@ -59,10 +63,15 @@ function quartile(ns: number[], q: number): number | null {
  *  is the INTERQUARTILE range: raw min/max over a mixed rural comp set produces
  *  absurd ranges driven by outliers/improved sales and is never displayed. */
 export function registryValuationStats(registry: CompRegistry): RegistryValuationStats {
-  const soldPpas = registry.validatedSold.map(ppaOf).filter((v): v is number => v != null);
+  // The registry retains every traceable vacant-land sale, but only direct and
+  // secondary local comparables belong in the subject valuation. Small-lot,
+  // large-acreage, and weak segments remain visible market context.
+  const valuationSold = registry.validatedSold.filter((comp) =>
+    comp.comparability === 'direct_comparable' || comp.comparability === 'secondary_local_comparable');
+  const soldPpas = valuationSold.map(ppaOf).filter((v): v is number => v != null);
   const activePpas = registry.validatedActive.map(ppaOf).filter((v): v is number => v != null);
   return {
-    soldCount: registry.counts.validatedSold,
+    soldCount: valuationSold.length,
     soldMedianPpa: median(soldPpas),
     ppaMin: quartile(soldPpas, 0.25),
     ppaMax: quartile(soldPpas, 0.75),
@@ -80,18 +89,33 @@ export function valuationFromRegistry(
   registry: CompRegistry,
   acres: number | null,
   persisted: ValuationHierarchy | null | undefined,
+  bestComps?: BestCompsSelection | null,
+  landPortalComps?: LandPortalComparableLike[] | null,
 ): ValuationHierarchy {
   const stats = registryValuationStats(registry);
+  const selectedPpas = (bestComps?.comps ?? [])
+    .filter((comp) => comp.lane === 'sold' && comp.price != null && comp.price > 0 && comp.acres != null && comp.acres > 0)
+    .slice(0, 5)
+    .map((comp) => Math.round(comp.price! / comp.acres!));
+  const selectedAveragePpa = selectedPpas.length
+    ? Math.round(selectedPpas.reduce((sum, value) => sum + value, 0) / selectedPpas.length)
+    : null;
   const keepBasis = (id: string) => {
     const all = [persisted?.primary, ...(persisted?.supporting ?? [])].filter((b): b is NonNullable<typeof b> => b != null);
     return all.find((b) => b.id === id) ?? null;
   };
   const lp = keepBasis('lp_estimate');
   const assessed = keepBasis('assessed');
+  const landPortal = landPortalValuationStats(landPortalComps, acres);
   return buildValuationHierarchy({
     acres,
-    soldComps: stats.soldCount > 0 && stats.soldMedianPpa != null
-      ? { count: stats.soldCount, medianPpa: stats.soldMedianPpa, ppaMin: stats.ppaMin, ppaMax: stats.ppaMax }
+    landPortalComps: landPortal.count > 0
+      ? { count: landPortal.count, averagePpa: landPortal.averagePricePerAcre }
+      : null,
+    soldComps: selectedAveragePpa != null
+      ? { count: selectedPpas.length, averagePpa: selectedAveragePpa, ppaMin: selectedAveragePpa, ppaMax: selectedAveragePpa }
+      : stats.soldCount > 0 && stats.soldMedianPpa != null
+      ? { count: Math.min(stats.soldCount, 5), medianPpa: stats.soldMedianPpa, ppaMin: stats.ppaMin, ppaMax: stats.ppaMax }
       : null,
     activeComps: stats.activeCount > 0 && stats.activeAvgPpa != null
       ? { count: stats.activeCount, avgPpa: stats.activeAvgPpa }
@@ -221,7 +245,10 @@ export function bestCompsFromRegistry(
   } = {},
 ): BestCompsSelection {
   const normAddr = (a: string | null | undefined) => (a ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const candidates: CompCandidate[] = registry.validatedSold.map((c: UniqueComp) => {
+  const similarSold = registry.validatedSold.filter((c) =>
+    c.comparability === 'direct_comparable' || c.comparability === 'secondary_local_comparable');
+  const valuationPool = similarSold.length ? similarSold : registry.validatedSold;
+  const candidates: CompCandidate[] = valuationPool.map((c: UniqueComp) => {
     const soldTx = c.transactions.find((t) => t.kind === 'sold') ?? c.primary;
     const coords = opts.coordsByAddress?.get(normAddr(c.address)) ?? null;
     const distanceMiles = coords && opts.subjectCoords ? straightLineMiles(opts.subjectCoords, coords) : null;
@@ -248,7 +275,7 @@ export function bestCompsFromRegistry(
   return {
     ...selection,
     rationale: selection.comps.length
-      ? `${selection.rationale} Closed sales only, from the validated unique registry (${registry.counts.validatedSold} available).${noDistance > 0 ? ` Distance is straight-line where coordinates are known; ${noDistance} comp(s) have no calculated distance.` : ' Distances are straight-line.'}`
+      ? `${selection.rationale} Closed sales only, from ${valuationPool.length} size-similar accepted sale${valuationPool.length === 1 ? '' : 's'} (${registry.counts.validatedSold} accepted sold records available overall).${noDistance > 0 ? ` Distance is straight-line where coordinates are known; ${noDistance} comp(s) have no calculated distance and received no location points.` : ' Distances are straight-line.'}`
       : selection.rationale,
   };
 }

@@ -693,7 +693,7 @@ async function runLandPortalAgentic(
     let comparables: LandPortalComparableRecord[] = [];
     if (lpVisuals) {
       if (lpVisuals.parcelShotPath) {
-        inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel View', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal parcel view (deep-link full page).' });
+        inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel + Neighbor Context', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 2D parcel view fitted to the subject and zoomed out five steps to retain the road-side foreground, subject boundary, and broader neighboring-area context.' });
       }
       if (lpVisuals.terrainShotPath) {
         inspectionAssets.push({ key: 'parcel_3d', label: 'LandPortal 3D / terrain view', kind: 'parcel_3d', purpose: LANDPORTAL_3D_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.terrainShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 3D or terrain view screenshot when available.' });

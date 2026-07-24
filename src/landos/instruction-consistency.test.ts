@@ -3,6 +3,7 @@ import { _initTestLandosDb, getLandosDb } from './db.js';
 import {
   addressVariantsCompatible,
   evaluatePropertyInstructionConsistency,
+  roadNamesCompatible,
 } from './instruction-consistency.js';
 import { getPropertyCard, setCardVerificationStatus, upsertPropertyCard } from './property-card.js';
 
@@ -100,5 +101,27 @@ describe('material property instruction consistency', () => {
     });
     expect(result.error).toBeUndefined();
     expect(result.card?.verification_status).toBe('rejected_mismatch');
+  });
+});
+
+describe('road-name compatibility (road-only situs, no house numbers required)', () => {
+  it('accepts the same road across suffix/case/locality formatting', () => {
+    expect(roadNamesCompatible('OLD RIDGE RD', 'Old Ridge Road')).toBe(true);
+    expect(roadNamesCompatible('OLD RIDGE RD, KINGSTON, TN 37763', 'OLD RIDGE RD')).toBe(true);
+    expect(roadNamesCompatible('FOO TRL', 'FOO TRAIL')).toBe(true);
+  });
+
+  it('rejects a materially different road (Ridge Trail Road is NOT Old Ridge Rd)', () => {
+    expect(roadNamesCompatible('OLD RIDGE RD, KINGSTON, TN 37763', 'Ridge Trail Road, Kingston, TN, 37763')).toBe(false);
+    expect(roadNamesCompatible('OLD RIDGE RD', 'Ridge Trail Road')).toBe(false);
+    expect(roadNamesCompatible('OLD RIDGE RD', 'LAKE SHORE RD')).toBe(false);
+  });
+
+  it('never mistakes a trailing ZIP for a house number', () => {
+    // Regression: "OLD RIDGE RD, KINGSTON, TN 37763" previously parsed 37763 as
+    // the street number, which made every road-only comparison fail as
+    // "materially different".
+    expect(roadNamesCompatible('OLD RIDGE RD, KINGSTON, TN 37763', 'Old Ridge Road')).toBe(true);
+    expect(addressVariantsCompatible('171 Davidson Road, Venore, TN 37885', '171 CAMP DAVIDSON RD, VONORE, TN 37885')).toBe(true);
   });
 });

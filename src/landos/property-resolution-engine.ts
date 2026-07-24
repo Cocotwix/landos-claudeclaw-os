@@ -21,7 +21,7 @@ import {
   type NormalizedProperty, type RetrievalLane, type PropertyEvidence, isParcelLevelLane,
 } from './normalized-property.js';
 import type { ParsedIntakeFields } from './intake-router.js';
-import { addressVariantsCompatible } from './instruction-consistency.js';
+import { addressVariantsCompatible, roadNamesCompatible } from './instruction-consistency.js';
 import { classifySmartIntake } from './intake-router.js';
 import { smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import type { DukeVerificationResult } from './duke-verification-bridge.js';
@@ -528,7 +528,16 @@ export async function resolveProperty(input: ResolutionInput, deps: ResolutionDe
       const q = suggestQuery(fields, input.rawText);
       const sres = await deps.suggest(q);
       const top = sres.suggestions[0];
-      if (top) {
+      const suggestedLine = top ? (top.line1 ?? top.label) : undefined;
+      // A geocoder suggestion is SECONDARY corroboration only. When the operator
+      // supplied a road and the suggestion names a MATERIALLY DIFFERENT road
+      // (e.g. "Ridge Trail Road" for candidate "Old Ridge Rd"), it must be
+      // REJECTED — never merged, never labeled accepted or corroborated. Without
+      // this check the wrong road became the strongest contributing evidence.
+      if (top && fields.address && suggestedLine && !roadNamesCompatible(fields.address, suggestedLine)) {
+        record('address_suggest', true, false, 'rejected_material_road_difference',
+          `Smart Address Search returned "${top.label}" (${top.source}), a materially different road than the candidate "${fields.address}". Rejected: not merged and not corroboration for the candidate road.`);
+      } else if (top) {
         // Some providers return a road/highway SEGMENT without the house number
         // (e.g. "State Highway 153, Winters, TX" for "2510 State Highway 153").
         // Preserve the operator's house number so corroboration never strips it.

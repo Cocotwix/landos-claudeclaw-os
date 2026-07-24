@@ -17,10 +17,12 @@ describe('Deal Card Strategy — shared readiness record, not a worksheet', () =
     expect(SRC).not.toMatch(/Collapsible title="Manual strategy worksheet"/);
   });
 
-  it('renders the shared strategy readiness record + merged blocker panel', () => {
-    expect(SRC).toMatch(/<StrategyReadinessPanel readiness=\{strategyReadiness\}/);
-    expect(SRC).toMatch(/<RemainingBlockersPanel readiness=\{strategyReadiness\} unknowns=\{operatorRecord\?\.unknowns\}/);
-    expect(SRC).not.toMatch(/<ConfirmBeforeOfferSection/);
+  it('renders the pursuit and exit analysis without readiness panels', () => {
+    expect(SRC).toMatch(/<PursuitPanel pursuit=\{pursuit\}/);
+    expect(SRC).toMatch(/<OwnerStrategiesPanel analysis=\{ownerAnalysis\}/);
+    expect(SRC).not.toMatch(/<StrategyReadinessPanel\b/);
+    expect(SRC).not.toMatch(/<RemainingBlockersPanel\b/);
+    expect(SRC).not.toMatch(/report\?\.valuation\?\.conflict/);
   });
 
   it('uses no coordinate/map-pin identity language', () => {

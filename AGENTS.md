@@ -122,3 +122,7 @@ After tests and build, restart if needed, confirm `localhost:3141` responds,
 perform the mandatory personal visual walkthrough above, and report the exact
 workflow exercised, visible business result, current server PID, and exact URL.
 Do not leave LandOS stopped.
+
+## Output discipline
+
+Keep implementation in the repository. Do not print full source files, full schemas, large diffs, or lengthy implementation output into chat. Edit and inspect files directly. Use brief progress checkpoints only. Store detailed implementation notes and continuation state in a repository worklog if needed. The final response must be a concise report referencing file paths, test results, live URLs, blockers, and remaining work.

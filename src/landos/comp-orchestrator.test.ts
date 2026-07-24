@@ -79,7 +79,8 @@ describe('classifyNonSelected — nothing silently discarded', () => {
   const subject = { state: 'SC', county: 'Pickens', acres: 10 };
   const cand = (over: Record<string, unknown>) => ({
     provider: 'Zillow', lane: 'sold' as const, addressDesc: '1 Test Rd, Pickens, SC', state: 'SC',
-    price: 50_000, priceKind: 'sold', saleOrListDate: '2026-01-15', acres: 9, ...over,
+    price: 50_000, priceKind: 'sold', saleOrListDate: '2026-01-15', acres: 9,
+    sourceUrl: 'https://example.com/verified-sale', ...over,
   });
 
   it('classifies non-selected solds, actives, duplicates, and rejected with reasons', () => {

@@ -41,11 +41,39 @@ export interface InstructionConsistencyResult {
 const ROAD_WORDS = new Set(['ROAD', 'RD', 'STREET', 'ST', 'AVENUE', 'AVE', 'DRIVE', 'DR', 'LANE', 'LN', 'HIGHWAY', 'HWY', 'ROUTE', 'RT']);
 
 function tokens(value: string): string[] {
-  return String(value ?? '').toUpperCase().replace(/\bTENNESSEE\b/g, 'TN').replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+  return String(value ?? '').toUpperCase().replace(/\bTENNESSEE\b/g, 'TN').replace(/\bTRL\b/g, 'TRAIL').replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
 }
 
 function streetNumber(value: string): string | null {
-  return tokens(value).find((token) => /^\d+[A-Z]?$/.test(token)) ?? null;
+  // A US house number leads the street line. Scanning the whole string made a
+  // trailing ZIP ("OLD RIDGE RD, KINGSTON, TN 37763") read as a house number,
+  // which then failed every road-only comparison as "materially different".
+  const first = tokens(value)[0];
+  return first && /^\d+[A-Z]?$/.test(first) && !/^\d{5}$/.test(first) ? first : null;
+}
+
+/** Street line only (before the first comma) — city/state/ZIP never join a
+ *  road-name comparison. */
+function streetLine(value: string): string {
+  return String(value ?? '').split(',')[0] ?? '';
+}
+
+/**
+ * PURE: do two ROAD NAMES refer to the same road? House numbers are not
+ * required — this is the comparator for road-only situs candidates (vacant
+ * land). "OLD RIDGE RD" ↔ "Old Ridge Road" agree; "OLD RIDGE RD" ↔
+ * "Ridge Trail Road" are materially different and must never corroborate.
+ * Same tolerance as addressVariantsCompatible: the shorter token set must be
+ * fully contained in the longer, with at most one extra token.
+ */
+export function roadNamesCompatible(a: string, b: string): boolean {
+  const left = coreStreet(streetLine(a));
+  const right = coreStreet(streetLine(b));
+  if (!left.length || !right.length) return false;
+  const short = left.length <= right.length ? left : right;
+  const long = left.length <= right.length ? right : left;
+  if (!short.every((word) => long.includes(word))) return false;
+  return long.length - short.length <= 1;
 }
 
 function coreStreet(value: string): string[] {

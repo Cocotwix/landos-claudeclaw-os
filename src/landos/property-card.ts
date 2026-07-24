@@ -906,12 +906,60 @@ function copyInspectionAsset(cardId: number, asset: PendingLandPortalInspectionA
   }
 }
 
-/** Persist the latest LandPortal parcel inspection for a property card. */
+function nonBlank(value: unknown): boolean {
+  return typeof value === 'string' ? value.trim().length > 0 : value != null;
+}
+
+function mergeUniqueBy<T>(rows: T[], keyOf: (row: T) => string): T[] {
+  const merged = new Map<string, T>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    if (!key) continue;
+    merged.set(key, row);
+  }
+  return [...merged.values()];
+}
+
+/**
+ * Property inspection is cumulative evidence. A later county-only gap-fill may
+ * add official facts, but it must never erase an earlier LandPortal parcel page,
+ * visual, overlay, or comparable. Later non-empty values win only within the
+ * same field/key; arrays are deduplicated and retained across runs.
+ */
+export function mergePropertyInspections(records: Array<PropertyInspectionRecord | null | undefined>): PropertyInspectionRecord | null {
+  const usable = records.filter((record): record is PropertyInspectionRecord => !!record);
+  if (!usable.length) return null;
+  const facts: Record<string, string> = {};
+  for (const record of usable) {
+    for (const [key, value] of Object.entries(record.parcelFacts ?? {})) {
+      if (nonBlank(value)) facts[key] = value;
+    }
+  }
+  const landPortalUrl = [...usable].reverse().map((r) => r.parcelUrl).find((url) => !!url && /landportal/i.test(url));
+  const latestParcelUrl = [...usable].reverse().map((r) => r.parcelUrl).find((url) => nonBlank(url));
+  const latestComparablesUrl = [...usable].reverse().map((r) => r.comparablesUrl).find((url) => nonBlank(url));
+  const all = <T>(pick: (record: PropertyInspectionRecord) => T[]) => usable.flatMap((record) => pick(record) ?? []);
+  return {
+    parcelUrl: landPortalUrl ?? latestParcelUrl ?? null,
+    comparablesUrl: latestComparablesUrl ?? null,
+    parcelFacts: facts,
+    assets: mergeUniqueBy(all((r) => r.assets), (row) => row.key || row.storedPath),
+    overlays: mergeUniqueBy(all((r) => r.overlays), (row) => `${row.overlay}|${row.screenshotKey ?? ''}`),
+    visualObservations: mergeUniqueBy(all((r) => r.visualObservations), (row) => `${row.label}|${row.detail}|${row.evidence}`),
+    comparables: mergeUniqueBy(all((r) => r.comparables), (row) => `${row.sourceUrl ?? ''}|${row.address ?? ''}|${row.acres ?? ''}|${row.price ?? ''}`),
+    sources: mergeUniqueBy(all((r) => r.sources ?? []), (row) => `${row.provider}|${row.stage}|${row.url ?? ''}`),
+    evidence: mergeUniqueBy(all((r) => r.evidence ?? []), (row) => `${row.label}|${row.source ?? ''}|${row.url ?? ''}|${row.detail}`),
+    discoveryQuestions: [...new Set(all((r) => r.discoveryQuestions ?? []).filter(nonBlank))],
+    missingInformation: [...new Set(all((r) => r.missingInformation ?? []).filter(nonBlank))],
+  };
+}
+
+/** Persist cumulative property-inspection evidence for a property card. */
 export function savePropertyInspection(cardId: number, inspection: PendingPropertyInspectionRecord): void {
   const assets = inspection.assets
     .map((asset) => copyInspectionAsset(cardId, asset))
     .filter((asset): asset is LandPortalInspectionAsset => !!asset);
-  const payload: PropertyInspectionRecord = {
+  const captured: PropertyInspectionRecord = {
     parcelUrl: inspection.parcelUrl,
     comparablesUrl: inspection.comparablesUrl,
     parcelFacts: inspection.parcelFacts,
@@ -924,6 +972,7 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
     discoveryQuestions: inspection.discoveryQuestions ?? [],
     missingInformation: inspection.missingInformation ?? [],
   };
+  const payload = mergePropertyInspections([loadPropertyInspection(cardId), captured]) ?? captured;
   attachCardActivity({
     cardId,
     agentId: 'acquisition-specialist',
@@ -933,20 +982,20 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
   });
 }
 
-/** Load the newest persisted LandPortal inspection for a property card. */
+/** Load the cumulative, non-destructive property inspection for a card. */
 export function loadPropertyInspection(cardId: number): PropertyInspectionRecord | null {
-  const row = getLandosDb()
+  const rows = getLandosDb()
     .prepare(`SELECT a.ref FROM landos_card_activity a
       WHERE a.card_id = ?
         AND a.kind IN ('property_inspection','landportal_inspection')
         AND NOT EXISTS (SELECT 1 FROM landos_quarantined_card_evidence q WHERE q.activity_id = a.id)
-      ORDER BY a.created_at DESC, a.id DESC LIMIT 1`)
-    .get(cardId) as { ref: string } | undefined;
-  if (!row?.ref) return null;
-  try {
+      ORDER BY a.created_at ASC, a.id ASC`)
+    .all(cardId) as Array<{ ref: string }>;
+  const parsedRows: PropertyInspectionRecord[] = [];
+  for (const row of rows) try {
     const parsed = JSON.parse(row.ref) as PropertyInspectionRecord;
-    if (!parsed || typeof parsed !== 'object') return null;
-    return {
+    if (!parsed || typeof parsed !== 'object') continue;
+    parsedRows.push({
       parcelUrl: typeof parsed.parcelUrl === 'string' ? parsed.parcelUrl : null,
       comparablesUrl: typeof parsed.comparablesUrl === 'string' ? parsed.comparablesUrl : null,
       parcelFacts: parsed.parcelFacts && typeof parsed.parcelFacts === 'object' ? parsed.parcelFacts : {},
@@ -958,10 +1007,9 @@ export function loadPropertyInspection(cardId: number): PropertyInspectionRecord
       evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
       discoveryQuestions: Array.isArray(parsed.discoveryQuestions) ? parsed.discoveryQuestions : [],
       missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation : [],
-    };
-  } catch {
-    return null;
-  }
+    });
+  } catch { /* one corrupt historic activity must not hide other valid evidence */ }
+  return mergePropertyInspections(parsedRows);
 }
 
 export function saveLandPortalInspection(cardId: number, inspection: PendingLandPortalInspectionRecord): void {

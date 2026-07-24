@@ -13,7 +13,7 @@ import { createDealCard } from './deal-card.js';
 import { getDealCardDd, upsertDealCardDd } from './deal-card-dd.js';
 import { getDealCardStrategy } from './deal-card-strategy.js';
 import { getDealCardMarket } from './deal-card-market.js';
-import { getDealCardReport, runDealCardReport, buildIdentityText, buildPersistedResolver, supportingCoordinatesForVerifiedParcel } from './deal-card-report.js';
+import { getDealCardReport, runDealCardReport, buildIdentityText, buildPersistedResolver, supportingCoordinatesForVerifiedParcel, retainPriorMarketCompEvidence, type MarketCompsView } from './deal-card-report.js';
 import { runDukeVerification } from './duke-verification-bridge.js';
 import { getDealCard } from './deal-card.js';
 import { upsertCardFromDukeRun, getPropertyCardRow } from './property-card.js';
@@ -22,6 +22,34 @@ import type { LpPropertySummary, LpResolveArgs, LpResolveResult } from './landpo
 
 beforeEach(() => {
   _initTestLandosDb();
+});
+
+it('retains prior source-backed comp lanes when a refresh returns no replacement rows', () => {
+  const base = (): MarketCompsView => ({
+    status: 'no_comps', primaryProvider: 'none', providerChain: [], soldCount: 0, activeCount: 0,
+    sold: [], active: [], supplementalSold: [], valuation: [],
+    metrics: { soldAvgPrice: null, soldAvgPpa: null, soldMedianPpa: null, ppaMin: null, ppaMax: null, activeAvgPrice: null, domMedian: null },
+    sparseExplanation: null, providers: [], source: 'multi-provider', timestamp: null, note: 'No rows.', research: null,
+    landportalComps: { status: 'none', count: 0, note: 'No rows.', rows: [] },
+  });
+  const sold = { price: 100_000, saleDateIso: '2025-12-01', acres: 5, pricePerAcre: 20_000, sourceUrl: 'https://source.example/sold', sourceLabel: 'Realie' };
+  const active = { price: 125_000, saleDateIso: '2026-07-01', acres: 5, pricePerAcre: 25_000, sourceUrl: 'https://source.example/active', sourceLabel: 'Realie' };
+  const prior: MarketCompsView = {
+    ...base(), status: 'collected', primaryProvider: 'realie', providerChain: ['realie:collected'],
+    soldCount: 1, activeCount: 1, sold: [sold], active: [active], providers: [{ providerId: 'realie', status: 'collected', kept: 2 }],
+    metrics: { ...base().metrics, soldMedianPpa: 20_000, activeAvgPrice: 125_000 }, timestamp: '2026-07-20T00:00:00.000Z', note: 'Collected.',
+  };
+  const fresh: MarketCompsView = {
+    ...base(), providerChain: ['realie:no_comps', 'redfin:timed_out'],
+    providers: [{ providerId: 'realie', status: 'no_comps', kept: 0 }], note: 'Fresh providers returned no rows.',
+  };
+
+  const retained = retainPriorMarketCompEvidence(fresh, prior);
+  expect(retained).toMatchObject({ status: 'collected', primaryProvider: 'realie', soldCount: 1, activeCount: 1 });
+  expect(retained.sold[0].sourceUrl).toBe(sold.sourceUrl);
+  expect(retained.active[0].sourceUrl).toBe(active.sourceUrl);
+  expect(retained.providerChain).toEqual(['realie:collected', 'realie:no_comps', 'redfin:timed_out']);
+  expect(retained.note).toMatch(/Retained prior source-backed sold, active/i);
 });
 
 it('uses an APN-matched inspection centroid instead of stale supporting coordinates', () => {
@@ -524,7 +552,13 @@ describe('Deal Card report — reuse persisted verified data (no Realie credit)'
     seedVerifiedCard(id);
     let called = false;
     const resolve = async (): Promise<LpResolveResult> => { called = true; return verifiedResolve({} as LpResolveArgs); };
-    await runDealCardReport(id, { resolve, timeoutMs: 1000, reverify: true });
+    await runDealCardReport(id, {
+      resolve, timeoutMs: 1000, reverify: true,
+      retrieveCompsImpl: async () => getDealCardReport(id).marketComps,
+      femaFetch: async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) }),
+      nwiFetch: async () => ({ ok: true, status: 200, json: async () => ({ features: [] }) }),
+      usgsFetch: async () => ({ ok: true, status: 200, json: async () => ({ value: '100' }) }),
+    });
     expect(called).toBe(true);
   });
 });

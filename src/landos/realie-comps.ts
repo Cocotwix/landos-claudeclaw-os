@@ -43,6 +43,8 @@ export interface RealieCompsResult {
   valuation: RealieComp[];
   /** Sold comps excluded by validation, with the reason (transparency). */
   excluded: Array<{ comp: RealieComp; reason: string }>;
+  /** Every normalized API row, retained before downstream classification. */
+  candidates: RealieComp[];
   count: number;
   source: string;
   timestamp: string;
@@ -111,7 +113,7 @@ function validateSold(comps: RealieComp[], opts: { subjectAcres?: number | null;
 export async function fetchRealieComps(lat: number | null | undefined, lng: number | null | undefined, deps: RealieCompsDeps = {}): Promise<RealieCompsResult> {
   const env = deps.env ?? process.env;
   const now = (deps.now ?? (() => new Date().toISOString()))();
-  const base: RealieCompsResult = { status: 'error', sold: [], valuation: [], excluded: [], count: 0, source: 'Realie premium comparables', timestamp: now, note: '', validationNote: '' };
+  const base: RealieCompsResult = { status: 'error', sold: [], valuation: [], excluded: [], candidates: [], count: 0, source: 'Realie premium comparables', timestamp: now, note: '', validationNote: '' };
   if (typeof lat !== 'number' || typeof lng !== 'number') return { ...base, status: 'no_comps', note: 'No coordinates for comp discovery (Realie comps require lat/lng).' };
   const key = (deps.key ?? env.REALIE_API_KEY ?? '').trim();
   if (!key) return { ...base, status: 'error', note: 'Realie not configured (no REALIE_API_KEY).' };
@@ -125,7 +127,7 @@ export async function fetchRealieComps(lat: number | null | undefined, lng: numb
     if (!res.ok) return { ...base, status: 'error', note: `Realie comps HTTP ${res.status}.` };
     const body = (await res.json()) as { comparables?: Array<Record<string, unknown>>; metadata?: { count?: number } };
     const rows = body.comparables ?? [];
-    const sold: RealieComp[] = []; const valuation: RealieComp[] = [];
+    const sold: RealieComp[] = []; const valuation: RealieComp[] = []; const candidates: RealieComp[] = [];
     for (const r of rows) {
       const acres = n(r.acres) ?? n(r.lotSizeArea);
       const soldPrice = n(r.transferPrice) ?? n(r.assessorSalePrice) ?? n(r.pastPriceSale);
@@ -140,6 +142,7 @@ export async function fetchRealieComps(lat: number | null | undefined, lng: numb
         buildingAreaSqft: n(r.buildingArea) ?? n(r.totalBuildingArea) ?? n(r.livingArea),
         lat: n(r.latitude), lng: n(r.longitude),
       };
+      candidates.push(comp);
       if (soldPrice && soldDateIso) sold.push(comp); else if (marketValue) valuation.push(comp);
     }
     const count = body.metadata?.count ?? rows.length;
@@ -149,8 +152,8 @@ export async function fetchRealieComps(lat: number | null | undefined, lng: numb
     const validationNote = deps.subjectImproved === true
       ? `Subject is improved — improved comps retained. ${filtered.length} included, ${excluded.length} excluded.`
       : `Subject treated as VACANT land — ${improvedExcluded} improved/house sale(s) excluded so they don't inflate the land price-per-acre. ${filtered.length} included, ${excluded.length} excluded.`;
-    if (filtered.length === 0 && valuation.length === 0) return { ...base, status: 'no_comps', count, excluded, validationNote, note: `Realie returned ${count} nearby parcels; ${sold.length} had sales but none survived validation (acreage band / recency / vacant-land). Widen radius/timeframe.` };
-    return { ...base, status: 'collected', sold: filtered, valuation, excluded, count, validationNote, note: `Realie premium comparables: ${filtered.length} validated sold (of ${sold.length} sales, ${count} nearby), ${valuation.length} valuation-only.` };
+    if (filtered.length === 0 && valuation.length === 0) return { ...base, status: candidates.length ? 'collected' : 'no_comps', candidates, count, excluded, validationNote, note: `Realie returned ${count} nearby parcels; all ${sold.length} sales were retained for downstream classification but none qualified for the vacant-land sold lane.` };
+    return { ...base, status: 'collected', sold: filtered, valuation, excluded, candidates, count, validationNote, note: `Realie premium comparables: ${candidates.length} rows persisted before classification; ${filtered.length} qualified sold, ${valuation.length} valuation-only.` };
   } catch (e: unknown) {
     return { ...base, status: 'error', note: `Realie comps error: ${(e as Error)?.message ?? String(e)}.` };
   }

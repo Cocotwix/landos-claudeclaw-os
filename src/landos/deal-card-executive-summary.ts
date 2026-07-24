@@ -12,6 +12,7 @@ import { operatorizePersistedGap, type DealCardReportView } from './deal-card-re
 import type { GrowthDriverSummary } from './browser-market-intelligence.js';
 
 import type { PublicIntelligenceRun, PublicIntelligenceTaskRecord } from './public-property-intelligence.js';
+import { landPortalValuationStats } from './landportal-valuation.js';
 export type MarketDirection = 'strengthening' | 'softening' | 'stable' | 'unknown';
 
 export interface MarketPulseSynthesis {
@@ -296,7 +297,54 @@ export interface ExecutiveGates {
 
 function buildAcquisitionRange(report: DealCardReportView, pulse: MarketPulseSynthesis, gates?: ExecutiveGates | null): PreliminaryAcquisitionRange {
   const acres = acresOf(report);
-  const { p25, median, p75 } = pulse.pricePerAcre;
+  const lp = landPortalValuationStats(report.landportalInspection?.comparables, acres);
+  const assumptions = [
+    'Pre-call planning estimate only — NOT an approved offer or final underwriting.',
+    `FMV uses the average exact price / acres from ${lp.count} usable LandPortal comp${lp.count === 1 ? '' : 's'}; other provider comps remain visible but do not influence FMV.`,
+    'Assumes a clean, marketable, vacant parcel; no title/access/buildability confirmed yet.',
+    "Acquisition band reflects Tyler's 40-60% of fair-market-value rule.",
+  ];
+  if (gates && !gates.pricingAllowed) {
+    return {
+      available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null,
+      acquisition40: null, acquisition60: null, recommendedRange: null, confidence: 'none', assumptions,
+      increaseValueIf: [], decreaseValueIf: [],
+      note: `Pricing blocked by the shared gate: ${gates.pricingBlockers.join(' ')} No acquisition target exists until the gate opens.`,
+    };
+  }
+  if (acres == null || acres <= 0 || lp.averagePricePerAcre == null || lp.count === 0) {
+    return {
+      available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null,
+      acquisition40: null, acquisition60: null, recommendedRange: null, confidence: 'none', assumptions,
+      increaseValueIf: [], decreaseValueIf: [],
+      note: acres ? 'No usable LandPortal comp with both price and acreage is available yet.' : 'Subject acreage is required before applying the LandPortal comp value.',
+    };
+  }
+  const fmv = Math.round(lp.averagePricePerAcre * acres);
+  const acquisition40 = Math.round(fmv * 0.4);
+  const acquisition60 = Math.round(fmv * 0.6);
+  const confidence: PreliminaryAcquisitionRange['confidence'] = report.parcelVerified
+    ? lp.count >= 3 ? (pulse.confidence === 'none' ? 'medium' : pulse.confidence) : 'low'
+    : 'low';
+  const prefix = report.parcelVerified ? 'Preliminary acquisition target' : 'Local-area acquisition target (parcel NOT verified — weaker)';
+  return {
+    available: true, acres, estConservativeValue: fmv, estMarketRange: [fmv, fmv], estMidValue: fmv,
+    acquisition40, acquisition60, recommendedRange: [acquisition40, acquisition60], confidence, assumptions,
+    increaseValueIf: ['Confirmed road frontage + legal access', 'Confirmed buildable / low slope', 'Utilities at the road', 'Clean title + no liens', 'Higher-and-better use (subdivision / infill)'],
+    decreaseValueIf: ['Wetlands / FEMA flood coverage', 'Landlocked or shared access', 'Steep slope / unbuildable', 'Back taxes / liens / probate', 'Deed/boundary issues'],
+    note: `${prefix}: ${money(acquisition40)}-${money(acquisition60)} (40-60% of ${money(fmv)} FMV at ${money(lp.averagePricePerAcre)}/acre x ${acres} ac from ${lp.count} LandPortal comp${lp.count === 1 ? '' : 's'}). Other provider comps remain visible but do not influence FMV. Confirm title, access, and costs before any offer.`,
+  };
+}
+
+function buildAcquisitionRangeLegacy(report: DealCardReportView, pulse: MarketPulseSynthesis, gates?: ExecutiveGates | null): PreliminaryAcquisitionRange {
+  const acres = acresOf(report);
+  const selectedSold = (report.bestComps?.comps ?? [])
+    .filter((comp) => comp.lane === 'sold' && comp.price != null && comp.price > 0 && comp.acres != null && comp.acres > 0)
+    .slice(0, 5);
+  const selectedPpas = selectedSold.map((comp) => Math.round(comp.price! / comp.acres!));
+  const averageSoldPpa = selectedPpas.length
+    ? Math.round(selectedPpas.reduce((sum, value) => sum + value, 0) / selectedPpas.length)
+    : report.valuation?.primary?.kind === 'comp_sold' ? report.valuation.primary.ppa : pulse.pricePerAcre.median;
   // The SHARED pricing gate outranks the local band math. A computable median is
   // never sufficient: a closed gate (valuation conflict, disputed acreage, thin
   // validated set) suppresses the range and says exactly why.
@@ -311,34 +359,29 @@ function buildAcquisitionRange(report: DealCardReportView, pulse: MarketPulseSyn
       note: `Pricing blocked by the shared gate: ${gates.pricingBlockers.join(' ')} No acquisition target exists until the gate opens.`,
     };
   }
-  // Price a range whenever a sold-comp band + acreage exist. When the parcel is
+  // Price FMV whenever at least one accepted sold comp + acreage exist. When the parcel is
   // NOT verified this is LOCAL AREA CONTEXT (weaker) — computed, but capped to low
   // confidence and clearly labeled, per the pre-discovery-call intelligence mandate.
-  const available = !!(acres && median);
+  const available = !!(acres && averageSoldPpa);
   const assumptions = [
     'Pre-call planning estimate only — NOT an approved offer or final underwriting.',
     report.parcelVerified
-      ? 'Based on verified Realie sold comps (price-per-acre) applied to verified acreage.'
-      : 'LOCAL AREA CONTEXT (parcel not verified): area sold comps (price-per-acre) applied to the lead acreage — weaker than a parcel-specific estimate.',
+      ? `Based on the average sold price per acre from the ${selectedSold.length || pulse.soldCount} closest available accepted sold comp${(selectedSold.length || pulse.soldCount) === 1 ? '' : 's'}, applied to verified acreage.`
+      : 'LOCAL AREA CONTEXT (parcel not verified): accepted sold comps (price-per-acre) applied to the lead acreage — weaker than a parcel-specific estimate.',
     'Assumes a clean, marketable, vacant parcel; no title/access/buildability confirmed yet.',
     "Acquisition band reflects Tyler's ~40–60% of market-value philosophy.",
   ];
-  if (pulse.soldCount < 3 || p25 == null || p75 == null || p25 === p75) {
-    const count = pulse.soldCount;
-    return { available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null, acquisition40: null, acquisition60: null, recommendedRange: null, confidence: count > 0 ? 'low' : 'none', assumptions, increaseValueIf: [], decreaseValueIf: [], note: `Preliminary comp indication only: ${count} sold comp${count === 1 ? '' : 's'} is insufficient for a reliable value or offer range. Expand and validate comparable sales before pricing.` };
-  }
-
   if (!available) {
-    return { available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null, acquisition40: null, acquisition60: null, recommendedRange: null, confidence: 'none', assumptions, increaseValueIf: [], decreaseValueIf: [], note: acres ? 'No sold-comp price band yet — gather comps to price a range.' : median ? 'Area $/acre known but acreage is unknown — provide acreage to compute a total value/offer.' : 'No sold comps + acreage yet — gather comps to price a range.' };
+    return { available: false, acres, estConservativeValue: null, estMarketRange: null, estMidValue: null, acquisition40: null, acquisition60: null, recommendedRange: null, confidence: 'none', assumptions, increaseValueIf: [], decreaseValueIf: [], note: acres ? 'No accepted sold comp with usable price and acreage is available yet.' : averageSoldPpa ? 'Sold-comp $/acre is known but subject acreage is unknown.' : 'No accepted sold comps plus subject acreage are available yet.' };
   }
   const a = acres as number;
-  const estMid = (median as number) * a;
-  const estLow = (p25 ?? median!) * a;
-  const estHigh = (p75 ?? median!) * a;
+  const estMid = (averageSoldPpa as number) * a;
+  const estLow = estMid;
+  const estHigh = estMid;
   const acq40 = 0.40 * estMid;
   const acq60 = 0.60 * estMid;
   // Unverified area context is inherently weaker: cap confidence at 'low'.
-  const rawConf = pulse.confidence === 'none' ? 'low' : pulse.confidence;
+  const rawConf = selectedSold.length >= 3 ? (pulse.confidence === 'none' ? 'medium' : pulse.confidence) : 'low';
   const confidence: PreliminaryAcquisitionRange['confidence'] = report.parcelVerified ? rawConf : 'low';
   const contextPrefix = report.parcelVerified ? 'Preliminary acquisition target' : 'Local-area acquisition target (parcel NOT verified — weaker)';
   return {
@@ -349,7 +392,7 @@ function buildAcquisitionRange(report: DealCardReportView, pulse: MarketPulseSyn
     assumptions,
     increaseValueIf: ['Confirmed road frontage + legal access', 'Confirmed buildable / low slope', 'Utilities at the road', 'Clean title + no liens', 'Higher-and-better use (subdivision / infill)'],
     decreaseValueIf: ['Wetlands / FEMA flood coverage', 'Landlocked or shared access', 'Steep slope / unbuildable', 'Back taxes / liens / probate', 'Deed/boundary issues'],
-    note: `${contextPrefix}: ${money(acq40)}–${money(acq60)} (≈40–60% of an estimated ${money(estMid)} market value at ${money(median)}/acre × ${a} ac). Confirm with tighter sold comps + costs before any offer.`,
+    note: `${contextPrefix}: ${money(acq40)}–${money(acq60)} (40–60% of ${money(estMid)} FMV at an average ${money(averageSoldPpa)}/acre × ${a} ac from ${selectedSold.length || pulse.soldCount} accepted sold comp${(selectedSold.length || pulse.soldCount) === 1 ? '' : 's'}). Confirm title, access, and costs before any offer.`,
   };
 }
 
@@ -470,6 +513,19 @@ function buildDealEconomics(range: PreliminaryAcquisitionRange, pulse: MarketPul
   return { available: true, estValueLow: lo, estValueMid: range.estMidValue, estValueHigh: hi, acquisitionRange: range.recommendedRange, roughSpread, confidence: pulse.confidence === 'none' ? 'low' : pulse.confidence, assumptions, missingCostItems, whyUnderwritingLater };
 }
 
+function verifiedIdentitySource(report: DealCardReportView): string {
+  const factSource = report.ddFactChecklist.find((row) => row.status === 'verified' && row.source)?.source?.trim();
+  const statusSource = report.parcelVerificationStatus.match(/^Parcel verified \((.*)\)$/i)?.[1]
+    ?.replace(/,\s*non-credit\s*$/i, '')
+    .trim();
+  const raw = factSource || statusSource || 'a named parcel source';
+  const original = raw.match(/^Persisted verified Property Card\s*\(orig:\s*(.+)\)$/i)?.[1] ?? raw;
+  return original
+    .replace(/\s*\(reused[^)]*\)\s*$/i, '')
+    .replace(/\s*\(non-credit\)\s*$/i, '')
+    .trim();
+}
+
 /** Synthesize the operator-ready Executive Summary from the persisted report.
  *  When the caller supplies gates from the canonical shared records, pricing is
  *  suppressed while the gate is closed and seller questions come from the
@@ -493,7 +549,7 @@ export function buildExecutiveSummary(report: DealCardReportView, growth?: Growt
 
   const screeningRisks = publicScreeningRisks(publicRun);
   let whatItIs = verified
-    ? `${acres ? `${acres}-acre ` : ''}${landUse || 'parcel'}${county ? ` in ${county}` : ''}${zoning ? `, zoned ${zoning}` : ''}. Identity verified via Realie (parcel record). DD completeness: ${report.ddCompleteness?.label ?? 'in progress'}.`
+    ? `${acres ? `${acres}-acre ` : ''}${landUse || 'parcel'}${county ? ` in ${county}` : ''}${zoning ? `, zoned ${zoning}` : ''}. Identity verified via ${verifiedIdentitySource(report)}. DD completeness: ${report.ddCompleteness?.label ?? 'in progress'}.`
     : 'Parcel identity not yet verified — area context only until a trusted provider resolves the input to a real parcel record.';
 
   const officialCountyEvidence = publicTask(publicRun, 'county_records')?.evidence.find((item) => item.sourceTier === 'official_county_state');

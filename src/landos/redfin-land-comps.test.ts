@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseRedfinCityPath, redfinLandFilterUrl, normalizeRedfinListings, fetchRedfinLandComps, type RawRedfinListing } from './redfin-land-comps.js';
+import { parseRedfinCityPath, redfinLandFilterUrl, redfinSearchQueries, normalizeRedfinListings, fetchRedfinLandComps, verifyRedfinResolvedGeography, type RawRedfinListing } from './redfin-land-comps.js';
 
 describe('redfin URL + path helpers', () => {
   it('parses the /city/{id}/{ST}/{Name} path from search-suggestion hrefs', () => {
@@ -9,7 +9,8 @@ describe('redfin URL + path helpers', () => {
   });
   it('builds the Lots/Land filter URL', () => {
     expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres')).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land');
-    expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres', { sold: true })).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land,include=sold');
+    expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres', { sold: true })).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land,include=sold-1yr');
+    expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres', { sold: true, dateWindowMonths: 24 })).toContain('include=sold-2yr');
   });
 });
 
@@ -89,5 +90,43 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
   it('is disabled without a locality', async () => {
     const r = await fetchRedfinLandComps({ subjectAcres: 0.25 }, { force: true, resolveChrome: chrome, connect: (async () => null) as never });
     expect(r.status).toBe('disabled');
+  });
+
+  it('rejects a same-state coordinate resolution in Chattanooga for a Newport subject', () => {
+    const input = { lat: 36.0298, lng: -83.1112, zip: '37843', city: 'Newport', county: 'Cocke', state: 'TN' };
+    const query = redfinSearchQueries(input)[0];
+    expect(verifyRedfinResolvedGeography(input, query, '/city/3641/TN/Chattanooga', { text: 'Chattanooga TN 37411' }, [
+      { address: '4217 Ohls Ave, Chattanooga, TN 37410', price: 57000, acres: null, sqftLot: null, residential: false, url: null },
+    ]).valid).toBe(false);
+  });
+
+  it('retries from a wrong coordinate resolution to a verified subject-locality path', async () => {
+    const input = { lat: 26.61, lng: -81.64, zip: '33971', city: 'Lehigh Acres', county: 'Lee', state: 'FL', subjectAcres: 0.25 };
+    expect(redfinSearchQueries(input).map((query) => query.kind)).toEqual(['coordinates', 'locality']);
+    let query = '';
+    let current = '';
+    const connect = async () => ({
+      async newPage() {
+        return {
+          async setViewport() {},
+          async goto(url: string) { current = url; },
+          async evaluate(fn: unknown, arg?: unknown) {
+            const src = String(fn);
+            if (src.includes('scrollBy')) return undefined as never;
+            if (src.includes('search-box-input')) { query = String(arg ?? ''); return true as never; }
+            if (src.includes('press and hold')) return false as never;
+            if (src.includes('HomeCardContainer')) return (current.includes('/zipcode/33971/') ? listings : []) as never;
+            if (src.includes('/city/')) return (query.includes('Lehigh Acres') ? 'https://www.redfin.com/zipcode/33971' : 'https://www.redfin.com/city/1/AB/Taber') as never;
+            if (src.includes('document.title')) return { url: current, text: current } as never;
+            return undefined as never;
+          },
+        };
+      },
+      async close() {},
+    });
+    const result = await fetchRedfinLandComps(input, { force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: connect as never, timeoutMs: 10, settleMs: 1, suggestionSettleMs: 1, scrollSettleMs: 1 });
+    expect(result.status).toBe('retrieved');
+    expect(result.routeTried).toContain('/zipcode/33971/');
+    expect(result.note).toMatch(/automatically correcting 1 wrong-geography route/i);
   });
 });

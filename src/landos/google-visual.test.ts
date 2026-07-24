@@ -115,8 +115,10 @@ describe('google-visual capture (gated; injected fetch — no real Google call)'
     );
     expect(r.captured).toBe(true);
     expect(calls[0]).toContain('maps.googleapis.com/maps/api/streetview/metadata');
+    expect(calls[0]).toContain('radius=300');
     expect(calls[1]).toContain('maps.googleapis.com/maps/api/staticmap');
     expect(calls[2]).toContain('maps.googleapis.com/maps/api/streetview');
+    expect(calls[2]).toContain('location=31.4984%2C-83.7721');
     expect(r.assets.maps_static?.storedPath && fs.existsSync(r.assets.maps_static.storedPath)).toBe(true);
     expect(r.assets.maps_static?.association?.basis).toBe('verified_parcel_coordinates');
     expect(loadVisualUsage(usageFile).capturesMade).toBe(2);

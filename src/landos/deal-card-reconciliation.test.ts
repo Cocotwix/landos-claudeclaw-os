@@ -79,6 +79,26 @@ describe('reconcileFacts — official/provider outranks visual, conflicts surfac
     expect(r.flood.conflict).toBe(true); // X vs AE is a categorical disagreement
   });
 
+  it('treats FEMA Zone X and LandPortal not-in-hazard wording as equivalent', () => {
+    const r = reconcileFacts({
+      factSheet: { environment: { femaFloodZone: 'Not in a flood hazard area' } },
+      govDd: { flood: { status: 'live', zone: 'X' } },
+    });
+    expect(r.flood.primary).toBe('X');
+    expect(r.flood.conflict).toBe(false);
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it('uses retained LandPortal wetland coverage without conflicting with NWI none', () => {
+    const r = reconcileFacts({
+      factSheet: { environment: { wetlandsPct: '2.79%' } },
+      govDd: { wetlands: { status: 'live', type: 'None mapped' } },
+    });
+    expect(r.wetlands.primary).toBe('2.79% coverage');
+    expect(r.wetlands.primarySource).toBe('LandPortal parcel');
+    expect(r.wetlands.conflict).toBe(false);
+  });
+
   it('no data → unknown, no fabrication', () => {
     const r = reconcileFacts({});
     expect(r.acreage.status).toBe('unknown');
@@ -88,6 +108,18 @@ describe('reconcileFacts — official/provider outranks visual, conflicts surfac
 });
 
 describe('buildValuationHierarchy — one primary basis, sold outranks asking/county', () => {
+  it('uses LandPortal comps as FMV while retaining other providers as context', () => {
+    const v = buildValuationHierarchy({
+      acres: 5.82,
+      landPortalComps: { count: 5, averagePpa: 8652 },
+      soldComps: { count: 5, averagePpa: 17992, ppaMin: 17992, ppaMax: 17992 },
+      activeComps: { count: 54, avgPpa: 34655 },
+    });
+    expect(v.primary).toMatchObject({ kind: 'landportal_comps', value: 50355, ppa: 8652 });
+    expect(v.supporting.map((row) => row.kind)).toEqual(expect.arrayContaining(['comp_sold', 'comp_active_asking']));
+    expect(v.conflict).toBe(false);
+  });
+
   it('sold comps are the primary basis; LP estimate is supporting', () => {
     const v = buildValuationHierarchy({
       acres: 17.93,
@@ -100,16 +132,16 @@ describe('buildValuationHierarchy — one primary basis, sold outranks asking/co
     expect(v.valueRange).toEqual({ low: Math.round(3500 * 17.93), high: Math.round(5200 * 17.93), basisId: 'comp_sold' });
   });
 
-  it('detects the $79k vs $191k conflict and flips next action to tighten comps', () => {
+  it('keeps other valuation sources as context without overriding sold comps', () => {
     const v = buildValuationHierarchy({
       acres: 20,
       soldComps: { count: 2, medianPpa: 3950, ppaMin: 3000, ppaMax: 5000 }, // ~$79k
       lpEstimate: { price: 191000, ppa: 9550 },                              // ~$191k
     });
     expect(v.primary?.kind).toBe('comp_sold');
-    expect(v.conflict).toBe(true);
-    expect(v.conflictNote).toMatch(/Valuation conflict detected/);
-    expect(v.nextAction).toMatch(/Tighten comps/);
+    expect(v.conflict).toBe(false);
+    expect(v.conflictNote).toBeNull();
+    expect(v.nextAction).toBeNull();
     expect(v.confidence).not.toBe('high');
   });
 
@@ -130,15 +162,15 @@ describe('buildValuationHierarchy — one primary basis, sold outranks asking/co
     expect(v.primary?.kind).toBe('comp_active_asking');
     expect(v.confidence).toBe('low');
   });
-  it('keeps a one-sale indication out of the value range and offer path', () => {
+  it('computes an FMV indication from one sold comp with low confidence', () => {
     const v = buildValuationHierarchy({
       acres: 7.5,
       soldComps: { count: 1, medianPpa: 20_146, ppaMin: 20_146, ppaMax: 20_146 },
     });
     expect(v.primary?.kind).toBe('comp_sold');
     expect(v.confidence).toBe('low');
-    expect(v.valueRange).toBeNull();
-    expect(v.nextAction).toMatch(/Preliminary comp indication only/);
+    expect(v.valueRange).toEqual({ low: Math.round(20_146 * 7.5 * 0.9), high: Math.round(20_146 * 7.5 * 1.1), basisId: 'comp_sold' });
+    expect(v.nextAction).toBeNull();
   });
 
 });
@@ -205,10 +237,12 @@ describe('selectBestComps — the memo shortlist (best 3-5, not twenty)', () => 
   });
 
   it('caps the shortlist at five even when many comps exist', () => {
+    const asOf = new Date('2026-07-17T00:00:00Z');
+    const dated = (monthsAgo: number) => new Date(asOf.getTime() - monthsAgo * 30.4 * 86400000).toISOString().slice(0, 10);
     const cands: CompCandidate[] = Array.from({ length: 12 }, (_, i) => ({
-      price: 90000 + i * 1000, pricePerAcre: 18000, acres: 5 + i * 0.1, saleDateIso: iso(3 + i), sourceLabel: 'Realie', distanceMiles: 2, lane: 'sold' as const,
+      price: 90000 + i * 1000, pricePerAcre: 18000, acres: 5 + i * 0.1, saleDateIso: dated(3 + i), sourceLabel: 'Realie', distanceMiles: 2, lane: 'sold' as const,
     }));
-    const r = selectBestComps(5, cands);
+    const r = selectBestComps(5, cands, 5, asOf);
     expect(r.comps.length).toBe(5);
     expect(r.consideredCount).toBe(10); // 12-month tier was sufficient; older rows stay out.
     expect(r.rationale).toMatch(/Top 5 of 10/);
@@ -280,11 +314,12 @@ describe('selectBestComps — the memo shortlist (best 3-5, not twenty)', () => 
     expect(r.policy.exclusions.some((x) => /lacks an expansion reason/.test(x))).toBe(true);
   });
 
-  it('keeps a sold row with no measured distance out of the valuation shortlist', () => {
+  it('retains a usable sold row with no measured distance as a zero-location-score fallback', () => {
     const r = selectBestComps(5, [
       { price: 90_000, pricePerAcre: 18_000, acres: 5, saleDateIso: '2026-05-01', addressDesc: 'Distance missing', lane: 'sold' },
     ], 5, new Date('2026-07-17T12:00:00Z'));
-    expect(r.comps).toEqual([]);
-    expect(r.policy.exclusions).toContain('Distance missing: distance is not established.');
+    expect(r.comps).toHaveLength(1);
+    expect(r.comps[0].distanceMiles).toBeNull();
+    expect(r.comps[0].scoreComponents.distance).toBe(0);
   });
 });
