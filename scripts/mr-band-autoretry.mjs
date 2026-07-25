@@ -123,14 +123,25 @@ for (const band of BANDS) {
 log('all requested bands complete — running front-end verification');
 writeStatus({ state: 'verifying', done });
 try {
-  const { stdout } = await run('node', ['scripts/tmp-mr-band-verify.mjs'], { cwd: ROOT, maxBuffer: 1024 * 1024 * 64 });
+  const { stdout } = await run('node', ['scripts/mr-band-verify.mjs'], { cwd: ROOT, maxBuffer: 1024 * 1024 * 64 });
   const tail = stdout.trim().split('\n').slice(-3).join(' | ');
   log(`verification: ${tail}`);
   writeStatus({ state: 'done', done, verification: tail });
   await notify(`Market Research all bands complete. Verification: ${tail} ✅`);
 } catch (e) {
-  log(`verification failed to run: ${String(e).slice(0, 200)}`);
-  writeStatus({ state: 'done_verify_failed', done });
-  await notify('Market Research bands complete, but the verification script failed to run. ⚠️');
+  // The verifier exits non-zero when it finds mismatches, which execFile
+  // surfaces as a rejection. That is a real verification result, not a
+  // failure to run, so keep its output instead of discarding it.
+  const stdout = (e?.stdout ?? '').trim();
+  if (stdout) {
+    const tail = stdout.split('\n').slice(-3).join(' | ');
+    log(`verification found problems: ${tail}`);
+    writeStatus({ state: 'done_verify_problems', done, verification: tail });
+    await notify(`Market Research bands complete, but verification found problems: ${tail} ⚠️`);
+  } else {
+    log(`verification failed to run: ${String(e).slice(0, 200)}`);
+    writeStatus({ state: 'done_verify_failed', done });
+    await notify('Market Research bands complete, but the verification script failed to run. ⚠️');
+  }
 }
 log('AUTO-RETRY DONE');

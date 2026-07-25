@@ -144,6 +144,11 @@ agents/*/agent.yaml.backup
 # (absolute paths, private repo refs). Keep them out of the shared repo.
 .claude/skills/
 
+# Kilo agent tool config — per-machine tool permissions and local rule files,
+# not project source. Scoped to the directory itself so a future top-level
+# file merely starting with "kilo" is still tracked normally.
+.kilo/
+
 # Claudex (codex review loop) state and logs. Per-machine artifacts:
 # state files reference local PIDs and absolute paths; log files stream
 # every reviewer invocation. Both at the project root AND inside per-agent

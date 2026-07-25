@@ -1,19 +1,20 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-25T18:27:14.186Z
-- **HEAD at generation:** `0fccf8b`
-- **Worktree:** DIRTY; 85 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-25T14:06:45-04:00; 325 files, 4117 tests, 0 failures (vitest run, full suite).
-- **Latest typecheck:** PASS at 2026-07-25T14:07:20-04:00; tsc --noEmit (server). Frontend web/tsconfig.json is still not green and has no npm script: 92 pre-existing errors, 0 of them in files this phase touched; the authoritative build path passes.
-- **Latest production build:** PASS at 2026-07-25T14:08:05-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy at 2026-07-25T14:09:22-04:00; PID 8892; http://localhost:3141.
+- **Generated:** 2026-07-25T19:26:01.153Z
+- **HEAD at generation:** `1b4f320`
+- **Worktree:** DIRTY; 8 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-07-25T15:24:41-04:00; 325 files, 4117 tests, 0 failures (vitest run, full suite).
+- **Latest typecheck:** PASS at 2026-07-25T15:19:02-04:00; tsc --noEmit (server) clean; frontend web/tsconfig.json stays pre-existing-red, see Known limitations.
+- **Latest production build:** PASS at 2026-07-25T15:19:28-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy at 2026-07-25T15:25:28-04:00; PID 8892; http://localhost:3141.
 - **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
 - **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
 
-Live repository, database, runtime and owner-visible behavior override anything
-here. Detail lives under `docs/landos/`. Do not push without Tyler's go-ahead.
+Live repository, database, runtime and owner-visible behavior
+override anything written here. Detail lives under `docs/landos/`. Do not push
+without Tyler's go-ahead.
 
 ## Current objective and state
 
