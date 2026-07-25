@@ -50,6 +50,7 @@ import { getDealCardDd, upsertDealCardDd, type DealCardDdView, type DealCardSour
 import { getDealCardMarket, upsertDealCardMarket, type DealCardMarketView, type DealCardMarketPatch } from './deal-card-market.js';
 import { getDealCardStrategy, upsertDealCardStrategy, type DealCardStrategyView, type DealCardStrategyPatch } from './deal-card-strategy.js';
 import { runDukeVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
+import { isCanonicalIdentityConfirmed } from './canonical-identity.js';
 import { confirmParcelForDeal, confirmParcel, writeParcelIdentity, type ConfirmedParcel } from './parcel-identity.js';
 import { analyzeConfirmedParcelStrategy, blockedStrategyAnalysis } from './duke-analysis.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD } from './offer-engine.js';
@@ -1698,6 +1699,8 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
         },
       }
     : rawLandPortalInspection;
+  // The one accepted identity every projection evaluates from. Read-only.
+  const canonicalConfirmed = isCanonicalIdentityConfirmed(row.deal_card_id);
   return {
     ...base,
     ...parsed,
@@ -1711,8 +1714,17 @@ function rowToView(row: DealCardReportRow): DealCardReportView {
     exists: true,
     dealCardId: row.deal_card_id,
     reportStatus: REPORT_STATUS_SET.has(row.report_status) ? row.report_status : 'failed',
-    parcelVerificationStatus: row.parcel_verification_status || base.parcelVerificationStatus,
-    parcelVerified: row.parcel_verified === 1,
+    // READ-MODEL PRECEDENCE: the persisted report row is a SNAPSHOT of what was
+    // true when the report last ran. If the operator has since accepted a
+    // canonical parcel identity, that acceptance is the current truth and this
+    // stale snapshot must not keep presenting the property as unverified. The
+    // report is never rewritten here (a read performs no writes) — it is read
+    // through the accepted identity. A confirmed Deal Card can no longer show
+    // "Needs Verification" anywhere.
+    parcelVerificationStatus: canonicalConfirmed && row.parcel_verified !== 1
+      ? 'Parcel identity confirmed from the accepted canonical property record (this report snapshot predates the confirmation).'
+      : (row.parcel_verification_status || base.parcelVerificationStatus),
+    parcelVerified: row.parcel_verified === 1 || canonicalConfirmed,
     // Read-time geography repair: older persisted narratives may carry a
     // duplicated county suffix ("X County County") from the pre-formatter era.
     ddSummary: sanitizeGeographySuffixes(row.dd_summary),
@@ -1763,10 +1775,23 @@ function getReportRow(dealCardId: number): DealCardReportRow | undefined {
     .get(dealCardId) as DealCardReportRow | undefined;
 }
 
-/** Read the persisted report for a Deal Card (honest empty view when none). */
+/** Read the persisted report for a Deal Card (honest empty view when none).
+ *
+ *  Read-model precedence applies to the EMPTY view too. A Deal Card whose parcel
+ *  the operator has accepted but which has never had a report run is a confirmed
+ *  card with no report — not an unverified property. Without this, the Executive
+ *  Summary headlined a confirmed parcel "Needs Verification — resolve the parcel
+ *  to begin" purely because no report row existed. */
 export function getDealCardReport(dealCardId: number): DealCardReportView {
   const row = getReportRow(dealCardId);
-  return row ? rowToView(row) : emptyReport(dealCardId);
+  if (row) return rowToView(row);
+  const empty = emptyReport(dealCardId);
+  if (!isCanonicalIdentityConfirmed(dealCardId)) return empty;
+  return {
+    ...empty,
+    parcelVerified: true,
+    parcelVerificationStatus: 'Parcel identity confirmed from the accepted canonical property record. No Property Intelligence report has been run yet.',
+  };
 }
 
 export interface DealCardReportSummary {
@@ -1781,7 +1806,11 @@ export interface DealCardReportSummary {
  *  full report). Reads the persisted row and parses the completeness only. */
 export function getDealCardReportSummary(dealCardId: number): DealCardReportSummary {
   const row = getReportRow(dealCardId);
-  if (!row) return { exists: false, reportStatus: 'not_run', parcelVerified: false, ddPercentComplete: 0, generatedAt: null };
+  // Same read-model precedence as the full report view: an accepted canonical
+  // identity is the current truth even when no report has been run yet, so a
+  // confirmed card never reads as unverified on the board either.
+  const canonicalConfirmed = isCanonicalIdentityConfirmed(dealCardId);
+  if (!row) return { exists: false, reportStatus: 'not_run', parcelVerified: canonicalConfirmed, ddPercentComplete: 0, generatedAt: null };
   let pct = 0;
   try {
     const j = JSON.parse(row.report_json) as Partial<DealCardReportView>;
@@ -1790,7 +1819,7 @@ export function getDealCardReportSummary(dealCardId: number): DealCardReportSumm
   return {
     exists: true,
     reportStatus: REPORT_STATUS_SET.has(row.report_status) ? row.report_status : 'failed',
-    parcelVerified: row.parcel_verified === 1,
+    parcelVerified: row.parcel_verified === 1 || canonicalConfirmed,
     ddPercentComplete: pct,
     generatedAt: row.updated_at,
   };

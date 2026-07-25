@@ -1,13 +1,13 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-24T16:08:10.407Z
-- **HEAD at generation:** `78c3cac`
-- **Worktree:** DIRTY; 52 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-23T23:51:25-04:00; 304 files, 3728 tests, 0 failures (vitest run, full suite).
-- **Latest typecheck:** PASS at 2026-07-24T00:07:00-04:00; tsc --noEmit.
-- **Latest production build:** PASS at 2026-07-24T00:07:45-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy at 2026-07-24T00:55:00-04:00; PID 53840; http://localhost:3141.
+- **Generated:** 2026-07-25T05:56:34.277Z
+- **HEAD at generation:** `150a9db`
+- **Worktree:** DIRTY; 89 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-07-25T01:54:23-04:00; 321 files, 3963 tests, 0 failures (vitest run, full suite).
+- **Latest typecheck:** PASS at 2026-07-25T01:55:10-04:00; tsc --noEmit (server). Frontend web/tsconfig.json is not green and has no npm script: 92 pre-existing errors, 35 in files this sprint never touched, 0 in changed regions.
+- **Latest production build:** PASS at 2026-07-25T01:56:02-04:00; server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy at 2026-07-25T01:56:20-04:00; PID 71864; http://localhost:3141.
 - **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
 - **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
@@ -18,34 +18,40 @@ commit or push until Tyler explicitly authorizes it.
 
 ## Current objective and state
 
-PR #2 (recovery/deal-card-preservation-2026-07-23 -> main) is MERGED; local
-main == origin/main == merge commit `4cc64c2f4d3480811c2eb793400bea35f01655c1`
-containing feature commits `e614d515a454c848491c19b095f90db176aa67da`
-(government-record risk slice + Smart Intake artifacts) and
-`3213fa991befbbaccde10ec7853c286aff3fb2d0` (multi-path parcel resolution).
-The recovery branch remains locally and on origin. Merged capability set:
+The LandPortal + Deal Card recovery sprint is COMPLETE and committed locally on
+`main` (not pushed). It repaired the BROWSER AND DEAL CARD FOUNDATION only. It
+did NOT complete the Property Intelligence workflow, LandPortal comps,
+government-records research, or full Deal Card research; those remain open.
 
-1. Government-record risk slice: durable collector jobs/attempts, append-only
-   immutable pages/claims with SHA-256 artifacts, pure Analyst producing a
-   versioned Government Record Risk snapshot (deed/survey/encumbrance/tax/
-   lien/judgment lanes), persisted Deal Card Documents panel.
-2. Smart Intake: native text paste plus screenshot paste/upload/drag-drop;
-   immutable original-image retention with labeled full-resolution viewer
-   (fit/100%); editable extracted candidates; no automatic canonical
-   promotion; owner/contact mismatch never blocks research.
-3. Multi-path parcel resolution: state/county + APN primary with
-   jurisdiction-appropriate normalization variants; LandPortal parcel-level
-   browser lane wired (property id/FIPS discovered, never required input);
-   county + owner as an independent lookup key (never a seller-authority
-   gate); address as secondary corroboration with materially different roads
-   rejected; full source-by-source evidence, accept/reject reasons, and an
-   honest smallest-next-identifier shown to the operator; canonical promotion
-   through the standard approved path on confirmation, with accepted-parcel
-   contradiction protection.
+Committed capability set:
 
-Verification at merge: full suite 304 files / 3728 tests / 0 failures; server
-tsc, server build, and Vite production build PASS (only the pre-existing
-large-chunk advisory); memory audit PASS; managed runtime healthy.
+1. Shared LandPortal capability (`landportal-capability.ts`) with mandatory
+   visual checkpoints at every consequential action: configured search before
+   submit, result before selection, parcel before extraction, capture before and
+   after saving.
+2. Jurisdiction filters are applied AND read back off the page. A filter counts
+   only when the widget displays it; a search whose filters cannot be seen is not
+   submitted. A driver that cannot see the controls is never called verified.
+3. Owner ranking for surname-first records with trailing initials, and rural
+   road-only situs matching that needs no house number; exact owner + exact road
+   + correct jurisdiction is a strong identifier.
+4. Screenshot-quality contract is the ONLY route into the evidence set: two gate
+   functions, no ungated push, pinned by a structural test. Ineffective captures
+   are rejected and kept as honest history.
+5. LandPortal-owned page cleanup on success, partial, failure, timeout and visual
+   rejection; pages already open belong to the operator and are preserved.
+6. Canonical identity propagation into the versioned Property Summary, ending the
+   confirmed-versus-unresolved contradiction. Reads never write.
+7. Deal Card tab navigation works and is read-only (view state plus a
+   sessionStorage preference); Smart Intake evidence is docked at card level so no
+   tab change or identity confirmation can hide it; honest empty states.
+8. Duplicate protection across submissions, artifacts, candidates, identity
+   versions and browser resources.
+
+Verification before commit: full suite 321 files / 3963 tests / 0 failures;
+server `tsc --noEmit` PASS; server build and Vite production build PASS (only the
+pre-existing large-chunk advisory); live store `quick_check ok`, 0 foreign-key
+violations; memory audit PASS; managed runtime healthy.
 
 ## Deal 32 live proof (Roane County, TN)
 
@@ -94,6 +100,19 @@ artifacts and stay uncommitted.
 
 ## Known limitations and next action
 
+- This sprint repaired the browser and Deal Card foundation ONLY. Property
+  Intelligence end to end, LandPortal comps, government-records research and full
+  Deal Card research are NOT finished.
+- The frontend `web/tsconfig.json` typecheck is not green and has no npm script:
+  92 pre-existing errors (68 unused declarations), 35 of them in files this sprint
+  never touched. The authoritative build path (`vite build && tsc`) passes.
+- The screenshot contract judges parcel identity, boundary visibility, tile load,
+  byte size and obstruction — not zoom framing, so an accepted capture can still
+  be framed wider than ideal.
+- LandPortal's collapsed parcel panel does not display county, state or
+  coordinates; those stay honestly unverified on that view.
+- `readScope` reads select2 and native selects. A bespoke non-select2 dropdown
+  reports no scope controls and downgrades the filter checks to unverified.
 - `/overlay/aerial` returns an honest 502 for Roane (no county aerial overlay
   capability configured); it surfaces once a parcel is confirmed.
 - Deal 30 still needs a valid authenticated LandPortal 2D replacement image.

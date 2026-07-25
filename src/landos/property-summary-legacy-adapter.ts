@@ -1,3 +1,4 @@
+import { dealCardsAwaitingCanonicalReconciliation, resolveCanonicalIdentity } from './canonical-identity.js';
 import { getDealCard } from './deal-card.js';
 import { readParcelIdentity } from './parcel-identity.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
@@ -142,4 +143,52 @@ export function synchronizePropertySummaryForDeal(input: {
 /** Pure read adapter for routes and tests. It performs SELECTs only. */
 export function readPropertySummaryForDeal(dealCardId: number): PropertySummaryReadModel | null {
   return getPropertySummaryReadModel(dealCardId);
+}
+
+/**
+ * WRITE. Build the durable versioned Property Summary for an identity the
+ * operator has already accepted.
+ *
+ * Confirming a parcel wrote the legacy verdict; if the versioned slice was never
+ * built, the Deal Card showed a confirmed parcel in one panel and an unresolved,
+ * pipeline-locked property in another. Called at confirmation time and by startup
+ * recovery — never from a GET, so opening or refreshing a Deal Card stays
+ * read-only. Idempotent: it does nothing unless a reconciliation is actually owed.
+ */
+export function reconcileCanonicalIdentity(input: {
+  dealCardId: number;
+  actor: string;
+  changeReason: string;
+}): { reconciled: boolean; reason: string } {
+  const canonical = resolveCanonicalIdentity(input.dealCardId);
+  if (!canonical.confirmed) return { reconciled: false, reason: 'No accepted canonical identity to reconcile.' };
+  if (!canonical.versionPending) return { reconciled: false, reason: 'Versioned identity already agrees with the accepted verdict.' };
+  synchronizePropertySummaryForDeal({
+    dealCardId: input.dealCardId,
+    actor: input.actor,
+    changeReason: input.changeReason,
+  });
+  return { reconciled: true, reason: 'Built the versioned Property Summary from the accepted canonical identity.' };
+}
+
+/**
+ * Startup recovery: reconcile every Deal Card whose parcel identity was accepted
+ * but whose versioned slice was never built, so a card confirmed by an older code
+ * path stops contradicting itself. Failures are isolated per card.
+ */
+export function reconcileAllPendingCanonicalIdentities(actor = 'canonical-identity-recovery'): {
+  inspected: number; reconciled: number; failed: number;
+} {
+  const dealCardIds = dealCardsAwaitingCanonicalReconciliation();
+  let reconciled = 0, failed = 0;
+  for (const dealCardId of dealCardIds) {
+    try {
+      if (reconcileCanonicalIdentity({
+        dealCardId,
+        actor,
+        changeReason: 'Startup reconciliation: accepted canonical identity had no versioned Property Summary.',
+      }).reconciled) reconciled += 1;
+    } catch { failed += 1; }
+  }
+  return { inspected: dealCardIds.length, reconciled, failed };
 }

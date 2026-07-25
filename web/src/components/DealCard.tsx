@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { PageState } from '@/components/PageState';
 import { ModelControl } from '@/components/ModelControl';
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete, dashboardToken } from '@/lib/api';
@@ -2608,7 +2608,7 @@ function PublicRecordsResearchSection({ dealId }: { dealId: number }) {
 // deeper, editable detail (property DD + visuals + browser intelligence live
 // under Property; report generation + files under Documents; the report/audit
 // timeline under Activity).
-type DealTab = 'overview' | 'property' | 'diligence' | 'market' | 'strategy' | 'visuals' | 'seller' | 'resources' | 'documents' | 'activity';
+type DealTab = 'overview' | 'property' | 'diligence' | 'market' | 'strategy' | 'visuals' | 'seller' | 'resources' | 'documents' | 'activity' | 'intake';
 const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'property', label: 'Property' },
@@ -2620,25 +2620,58 @@ const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
   { id: 'resources', label: 'Resources' },
   { id: 'documents', label: 'Documents' },
   { id: 'activity', label: 'Activity' },
+  { id: 'intake', label: 'Smart Intake' },
 ];
+const DEAL_TAB_IDS = new Set<string>(DEAL_TABS.map((t) => t.id));
+function isDealTab(v: unknown): v is DealTab {
+  return typeof v === 'string' && DEAL_TAB_IDS.has(v);
+}
 
+// The selected tab is a VIEW preference, not deal data. It is remembered per deal
+// in sessionStorage so a refresh deterministically restores the workspace the
+// operator was in, and it never touches the database.
+const tabStorageKey = (dealCardId: number) => `landos.dealCard.${dealCardId}.tab`;
+function rememberDealTab(dealCardId: number, tab: DealTab): void {
+  try { sessionStorage.setItem(tabStorageKey(dealCardId), tab); } catch { /* private mode — the tab simply resets */ }
+}
+function restoreDealTab(dealCardId: number): DealTab {
+  try {
+    const saved = sessionStorage.getItem(tabStorageKey(dealCardId));
+    if (isDealTab(saved)) return saved;
+  } catch { /* private mode */ }
+  return 'overview';
+}
+
+/** The Deal Card workspace switcher. Each tab is a real tab control: it carries
+ *  its selected state in `aria-selected`, exposes a stable test id, and its click
+ *  handler stops propagation so no surrounding card/section/form handler can
+ *  swallow the selection. */
 function DealTabBar({ active, onSelect }: { active: DealTab; onSelect: (t: DealTab) => void }) {
   return (
-    <div class="flex flex-wrap gap-0.5 -mb-px overflow-x-auto">
-      {DEAL_TABS.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          onClick={() => onSelect(t.id)}
-          class={`px-3 py-1.5 text-[12px] font-medium whitespace-nowrap rounded-t-md border-b-2 ${
-            active === t.id
-              ? 'border-[var(--color-accent)] text-[var(--color-text)]'
-              : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
-          }`}
-        >
-          {t.label}
-        </button>
-      ))}
+    <div role="tablist" aria-label="Deal Card sections" data-testid="deal-tabbar" class="flex flex-wrap gap-0.5 -mb-px overflow-x-auto">
+      {DEAL_TABS.map((t) => {
+        const selected = active === t.id;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            id={`deal-tab-${t.id}`}
+            data-testid={`deal-tab-${t.id}`}
+            data-active={selected ? 'true' : 'false'}
+            aria-selected={selected}
+            aria-controls={`deal-panel-${t.id}`}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onSelect(t.id); }}
+            class={`relative z-10 px-3 py-1.5 text-[12px] font-medium whitespace-nowrap rounded-t-md border-b-2 ${
+              selected
+                ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[var(--color-elevated)]'
+                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
+            }`}
+          >
+            {t.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -4068,9 +4101,16 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   const [resolution, setResolution] = useState<ResolutionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Active Deal Card tab. Resets to Summary whenever a different card opens so the
-  // operator always lands on the 30-second read.
-  const [activeTab, setActiveTab] = useState<DealTab>('overview');
+  // Active Deal Card tab. It resets to Overview only when a DIFFERENT card opens;
+  // an in-place reload (a panel saved, evidence changed, research finished) keeps
+  // the operator in the workspace they are working in. Previously every reload
+  // snapped back to Overview, which read as "the tabs do not work".
+  const [activeTab, setActiveTabState] = useState<DealTab>('overview');
+  const openedDealIdRef = useRef<number | null>(null);
+  const selectTab = (tab: DealTab) => {
+    setActiveTabState(tab);
+    if (openedDealIdRef.current != null) rememberDealTab(openedDealIdRef.current, tab);
+  };
 
   // Saved-cards list state. The list is the primary open flow: fetched on mount
   // (unless we were handed a specific dealCardId) and refreshed after any write.
@@ -4267,7 +4307,10 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     try {
       setLoading(true);
       setError(null);
-      if (resetTab) setActiveTab('overview');
+      // Opening a different card restores that card's remembered workspace
+      // (Overview by default). Reloading the SAME card never moves the operator.
+      if (resetTab && openedDealIdRef.current !== id) setActiveTabState(restoreDealTab(id));
+      openedDealIdRef.current = id;
       setDdEditing(false);
       setDdWarnings([]);
       setStrategyEditing(false);
@@ -5043,7 +5086,11 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       {mode === 'view' && error && <PageState error={error} />}
       {mode === 'view' && loading && !deal && <PageState loading />}
 
-      {mode === 'view' && deal && (
+      {/* The versioned Property Summary is the identity read. On an unresolved card
+          it is the whole story, so it stays pinned; on a tabbed card it belongs to
+          the Overview and Property workspaces (below) rather than sitting above
+          every tab, where it made switching tabs look like nothing changed. */}
+      {mode === 'view' && deal && showResolution && (
         <PropertySummarySnapshotPanel
           value={propertySummary}
           loading={propertySummaryLoading}
@@ -5165,15 +5212,20 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               </div>
             )}
             <div class="flex flex-wrap items-center gap-2">
-              <div class="min-w-0 flex-1"><DealTabBar active={activeTab} onSelect={setActiveTab} /></div>
+              <div class="min-w-0 flex-1"><DealTabBar active={activeTab} onSelect={selectTab} /></div>
               <button
                 type="button"
                 data-testid="open-smart-intake"
                 class="shrink-0 rounded-md border border-[var(--color-accent)] bg-[var(--color-card)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-accent)] shadow-sm"
                 onClick={() => {
-                  const panel = document.getElementById('deal-card-smart-intake');
-                  panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  window.setTimeout(() => (panel?.querySelector('[aria-label="New Deal Card information"]') as HTMLTextAreaElement | null)?.focus(), 250);
+                  // Smart Intake is its own workspace now: open the tab, then put
+                  // the cursor in the box. No scroll hunting through a long page.
+                  selectTab('intake');
+                  window.setTimeout(() => {
+                    const panel = document.getElementById('deal-card-smart-intake');
+                    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    (panel?.querySelector('[aria-label="New Deal Card information"]') as HTMLTextAreaElement | null)?.focus();
+                  }, 60);
                 }}
               >+ Smart Intake</button>
             </div>
@@ -5183,15 +5235,39 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
             <DealResearchProgressPanel progress={researchProgress} retrying={researchRetrying} actionError={researchActionError} canonicalConfirmed={propertySummary?.identity.status === 'confirmed'} onRetry={() => void retryResearch()} />
           )}
 
-          {/* One general living-record intake for notes, transcripts, contacts,
-              public records, documents and screenshots. The original is retained
-              and conclusions are routed to their owner-facing sections. */}
-          <SmartIntakePanel dealId={deal.id} token={dashboardToken} onChanged={() => void load(deal.id)} />
+          {/* ── THE ACTIVE WORKSPACE ────────────────────────────────────────
+              Exactly one tab's panel is in the document at a time, wrapped in a
+              single identified tabpanel. Selecting a tab REPLACES the workspace;
+              nothing sits above the panels competing for the viewport, which is
+              what made tab clicks read as "nothing happened". Mounting a panel is
+              read-only: it never runs research and never writes.
+
+              The one exception is Smart Intake, which is DOCKED below (see the
+              dock immediately after this container): retained originals are Deal
+              Card evidence, not one tab's content. */}
+          <div class="flex flex-col gap-3">
+          <div
+            role="tabpanel"
+            id={`deal-panel-${activeTab}`}
+            data-testid={`deal-panel-${activeTab}`}
+            data-active-tab={activeTab}
+            aria-labelledby={`deal-tab-${activeTab}`}
+            class="space-y-3"
+          >
 
           {/* ══ OVERVIEW TAB ══ The Property Intelligence Report read: hero,
               executive summary, key facts, what-the-facts-mean, risks/unknowns,
               market + strategy + seller snapshots, source-labeled facts. The one
               complete understanding of the opportunity. */}
+          {activeTab === 'overview' && (
+            <PropertySummarySnapshotPanel
+              value={propertySummary}
+              loading={propertySummaryLoading}
+              rebuilding={propertySummaryRebuilding}
+              error={propertySummaryError}
+              onRebuild={() => void rebuildPropertySummary()}
+            />
+          )}
           {activeTab === 'overview' && (
             <OverviewTab
               report={report}
@@ -5279,6 +5355,19 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               parcel roster — each with its OWN honest state and card-scoped
               imagery. Imagery is never reused across parcels, and an unresolved
               parcel shows its next resolution action, never a stand-in image. */}
+          {/* PROPERTY TAB — the versioned Property Summary is the canonical
+              identity read; Overview and Property both open on it so identity is
+              never asserted differently in two places. */}
+          {activeTab === 'property' && (
+            <PropertySummarySnapshotPanel
+              value={propertySummary}
+              loading={propertySummaryLoading}
+              rebuilding={propertySummaryRebuilding}
+              error={propertySummaryError}
+              onRebuild={() => void rebuildPropertySummary()}
+            />
+          )}
+
           {activeTab === 'property' && (parcelRoster?.length ?? 0) > 1 && (
             <div class="space-y-3">
               <div class="text-[12.5px] font-semibold text-[var(--color-text)] px-1">
@@ -5292,6 +5381,24 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
 
           {/* Property Intelligence run controls + status — Documents tab.
               Preserves the Run / Re-run / Download Property Intelligence actions. */}
+
+          {/* NO TAB IS EVER BLANK. Strategy is composed entirely from the
+              Property Intelligence report, so before a report exists the tab
+              rendered nothing at all and reading it as "the tabs do not work"
+              was fair. Say what is missing and what unlocks it instead. */}
+          {activeTab === 'strategy' && !report?.exists && (
+            <Section title="Strategy">
+              <div class="rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-2">
+                <div class="text-[13px] font-semibold text-[var(--color-text)]">No strategy read yet</div>
+                <div class="text-[12px] leading-relaxed text-[var(--color-text-muted)]">
+                  Exit strategy, pursuit posture, and the comp basis are all derived from the Property Intelligence report. None has been run for this Deal Card, so nothing is asserted here — a strategy without evidence would be a guess.
+                </div>
+                <div class="text-[12px] text-[var(--color-text-muted)]">
+                  Run Property Intelligence from the <span class="text-[var(--color-accent)]">Documents</span> tab to populate this workspace.
+                </div>
+              </div>
+            </Section>
+          )}
 
           {/* Visuals before any report/capture — honest placeholder, not a blank tab. */}
           {/* Report-derived sections, routed to their tabs (unchanged data/props). */}
@@ -5540,6 +5647,33 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           </Section>
           )}
 
+          </div>
+
+          {/* ══ SMART INTAKE DOCK ══════════════════════════════════════════
+              REGRESSION THIS FIXES: retained Smart Intake originals — the exact
+              screenshot the operator submitted, its SHA-256 provenance, and the
+              editable candidates — used to be part of the Deal Card body. When
+              the tabbed workspace landed, the whole panel moved INSIDE the
+              tabpanel, so confirming the parcel (which swaps the resolution view
+              for this tabbed view) took the retained screenshot off the card
+              entirely, and every tab change unmounted and refetched it.
+
+              Retained originals are Deal Card EVIDENCE, not one tab's content.
+              One persistent mount, present on every tab, so tab navigation can
+              never unmount, refetch, hide, or detach the artifact, and canonical
+              identity confirmation can never remove it from the card. Selecting
+              Smart Intake pulls this same mounted panel to the top of the
+              workspace (CSS order only) instead of rendering a second copy —
+              there is exactly one SmartIntakePanel on the card at all times. */}
+          <div
+            data-testid="smart-intake-dock"
+            data-intake-active={activeTab === 'intake' ? 'true' : 'false'}
+            class={activeTab === 'intake' ? 'order-first' : ''}
+          >
+            <SmartIntakePanel dealId={deal.id} token={dashboardToken} onChanged={() => void load(deal.id, false)} />
+          </div>
+
+          </div>
         </>
       )}
     </div>

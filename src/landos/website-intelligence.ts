@@ -22,6 +22,11 @@ export interface ObservedControl {
   type?: string;
   /** For selects/option groups: the visible option texts. */
   options?: string[];
+  /** The value the page currently DISPLAYS in this control. Populated by an
+   *  observer that reads the rendered input, so a visual checkpoint can compare
+   *  what is on screen against what was meant to be entered. Absent when the
+   *  observer cannot read it — absent is "unverified", never "matches". */
+  value?: string;
 }
 
 export interface PageObservation {
@@ -312,9 +317,45 @@ export interface CandidateScore {
 
 function compact(s: string): string { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-/** Score one candidate against the target. Strong identifiers (APN, full
- *  number+street address) carry the weight; owner/county/state are context only.
- *  Pure. */
+/** Words that carry no identity in a person/entity name or a street name. */
+const NAME_NOISE = new Set(['the', 'and', 'of', 'jr', 'sr', 'ii', 'iii', 'iv', 'etal', 'et', 'al', 'mr', 'mrs', 'ms']);
+const STREET_SUFFIXES = new Set([
+  'rd', 'road', 'st', 'street', 'ave', 'avenue', 'dr', 'drive', 'ln', 'lane', 'ct', 'court', 'cir', 'circle',
+  'blvd', 'boulevard', 'hwy', 'highway', 'pkwy', 'parkway', 'trl', 'trail', 'way', 'pl', 'place', 'ter', 'terrace',
+  'loop', 'run', 'pike', 'route', 'rte',
+]);
+
+/** PURE: the identity-bearing tokens of an owner-of-record name, order-independent.
+ *  County records write names surname-first with trailing initials ("SACHAN DILEEP
+ *  S"), so the LAST token is frequently a one-letter middle initial, not a surname.
+ *  Single letters, punctuation, and honorific/suffix noise are dropped; whatever
+ *  remains is what actually distinguishes this owner from another. */
+export function ownerNameTokens(owner: string): string[] {
+  return String(owner ?? '')
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !NAME_NOISE.has(w));
+}
+
+/** PURE: the identity-bearing tokens of a street/situs line, dropping the house
+ *  number and the generic suffix ("OLD RIDGE RD" ⇢ ["old","ridge"]). A rural situs
+ *  often has NO house number at all, so the street words are the whole signal. */
+export function roadNameTokens(address: string): string[] {
+  return String(address ?? '')
+    .split(',')[0]
+    .toLowerCase()
+    .replace(/^\s*\d+\s*/, '')
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STREET_SUFFIXES.has(w));
+}
+
+/** Score one candidate against the target. A strong identifier is an APN, a full
+ *  number+street address, OR the combination that uniquely names a rural parcel:
+ *  the exact owner of record plus the exact road plus the correct jurisdiction.
+ *  Land records routinely carry no house number, so requiring one made an exact,
+ *  visibly correct owner result unselectable. Pure. */
 export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; address?: string; owner?: string; city?: string; county?: string; state?: string }): CandidateScore {
   const hayRaw = c.text.toLowerCase();
   const hayC = compact(c.text);
@@ -323,23 +364,44 @@ export function scoreResultCandidate(c: ResultCandidate, key: { apn?: string; ad
   let strong = false;
 
   if (key.apn) { const a = compact(key.apn); if (a.length >= 5 && hayC.includes(a)) { score += 0.6; matched.push('apn'); strong = true; } }
+  let roadExact = false;
   if (key.address) {
     const num = (key.address.match(/^\s*(\d+)/) || [])[1];
-    const street = key.address.split(',')[0].replace(/^\s*\d+\s*/, '').trim().toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+    const road = roadNameTokens(key.address);
     const numHit = num ? new RegExp(`\\b${num}\\b`).test(hayRaw) : false;
-    const streetHits = street.filter((w) => hayRaw.includes(w)).length;
-    if (numHit && streetHits >= 1) { score += 0.6; matched.push('address'); strong = true; }
-    else if (streetHits >= 1) { score += 0.15; matched.push('street'); }
+    const roadHits = road.filter((w) => hayRaw.includes(w)).length;
+    // EXACT road: every identity-bearing street word is present ("OLD RIDGE" both
+    // matched), not merely one of them — "RIDGE TRAIL" must not pass as "OLD RIDGE".
+    roadExact = road.length > 0 && roadHits === road.length;
+    if (numHit && roadHits >= 1) { score += 0.6; matched.push('address'); strong = true; }
+    else if (roadExact) { score += 0.35; matched.push('road'); }
+    else if (roadHits >= 1) { score += 0.15; matched.push('street'); }
   }
-  if (key.owner) { const surname = key.owner.toLowerCase().replace(/[,.].*$/, '').split(/\s+/).pop() || ''; if (surname.length > 2 && hayRaw.includes(surname)) { score += 0.2; matched.push('owner'); } }
+  // Owner of record. An EXACT owner match (every identity-bearing token present)
+  // is a real identifier on a land record, not mere context.
+  let ownerExact = false;
+  if (key.owner) {
+    const tokens = ownerNameTokens(key.owner);
+    const hits = tokens.filter((w) => hayRaw.includes(w)).length;
+    ownerExact = tokens.length > 0 && hits === tokens.length;
+    if (ownerExact) { score += 0.4; matched.push('owner_exact'); }
+    else if (hits > 0) { score += 0.2; matched.push('owner'); }
+  }
   // City/locality disambiguates same-APN parcels across counties (LandPortal
   // candidate rows show the CITY, e.g. "HELENWOOD" vs "LIMESTONE", not the county).
-  if (key.city) { const cityTokens = key.city.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3); if (cityTokens.some((w) => hayRaw.includes(w))) { score += 0.25; matched.push('city'); } }
-  if (key.county && hayRaw.includes(key.county.toLowerCase())) { score += 0.1; matched.push('county'); }
-  if (key.state && new RegExp(`\\b${key.state.toLowerCase()}\\b`).test(hayRaw)) { score += 0.1; matched.push('state'); }
+  let cityHit = false;
+  if (key.city) { const cityTokens = key.city.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3); cityHit = cityTokens.some((w) => hayRaw.includes(w)); if (cityHit) { score += 0.25; matched.push('city'); } }
+  const countyHit = !!key.county && hayRaw.includes(key.county.toLowerCase().replace(/\s*county\s*$/, ''));
+  if (countyHit) { score += 0.1; matched.push('county'); }
+  const stateHit = !!key.state && new RegExp(`\\b${key.state.toLowerCase()}\\b`).test(hayRaw);
+  if (stateHit) { score += 0.1; matched.push('state'); }
 
-  // HIGH only when a strong identifier (APN or full address) matched AND total
-  // clears the bar — never a weak match.
+  // RURAL LAND IDENTIFIER: exact owner of record + exact road + the correct
+  // jurisdiction (city or county) names one parcel as surely as an APN does. This
+  // is the path a human operator uses when the county-local APN format differs
+  // from the state-format APN on file.
+  if (ownerExact && roadExact && (cityHit || countyHit)) { strong = true; matched.push('owner_road_jurisdiction'); }
+
   const confidence: CandidateScore['confidence'] = strong && score >= 0.6 ? 'high' : score >= 0.4 ? 'medium' : 'low';
   return { index: c.index, score: Math.min(score, 1), matched, confidence };
 }

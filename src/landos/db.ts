@@ -2070,6 +2070,65 @@ function createLandosSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_browser_owned_resource_open
       ON landos_browser_owned_resource(status, attempt_id, id);
 
+    -- SHARED LandPortal capability: one execution ledger for every LandOS
+    -- workflow that reaches LandPortal (Smart Intake, parcel resolution, comps,
+    -- visuals, reports, Property Research). Missions differ; the surface does not.
+    CREATE TABLE IF NOT EXISTS landos_landportal_job (
+      id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      mission                   TEXT NOT NULL,
+      request_key               TEXT NOT NULL DEFAULT '',
+      status                    TEXT NOT NULL DEFAULT 'running'
+                                CHECK (status IN ('running','succeeded','partial','failed','timed_out','cancelled','visual_rejected')),
+      error                     TEXT,
+      owned_resource_count      INTEGER NOT NULL DEFAULT 0,
+      open_resource_count_after INTEGER NOT NULL DEFAULT 0,
+      started_at                INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      finished_at               INTEGER
+    );
+
+    -- Browser ownership ledger for the shared LandPortal capability. Only
+    -- resources a LandOS job explicitly registered appear here, so the janitor
+    -- can never close an operator's own manually opened tab.
+    CREATE TABLE IF NOT EXISTS landos_landportal_job_resource (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id                INTEGER NOT NULL REFERENCES landos_landportal_job(id) ON DELETE CASCADE,
+      resource_key          TEXT NOT NULL,
+      resource_type         TEXT NOT NULL
+                            CHECK (resource_type IN ('context','page','popup','viewer','download','temporary_session')),
+      parent_resource_key   TEXT,
+      safe_url              TEXT,
+      status                TEXT NOT NULL DEFAULT 'open'
+                            CHECK (status IN ('open','closed','abandoned','cleanup_failed')),
+      opened_at             INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      closed_at             INTEGER,
+      cleanup_error         TEXT,
+      UNIQUE(job_id, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landportal_job_resource_open
+      ON landos_landportal_job_resource(status, job_id, id);
+
+    -- Screenshot quality contract. Every LandPortal capture records its verdict,
+    -- reason, timestamp, parcel association, source URL, and artifact hash. Only
+    -- an ACCEPTED capture is ever presented as evidence; rejected attempts stay
+    -- as honest history.
+    CREATE TABLE IF NOT EXISTS landos_landportal_capture (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id      INTEGER,
+      parcel_apn        TEXT,
+      purpose           TEXT NOT NULL DEFAULT '',
+      source_url        TEXT NOT NULL DEFAULT '',
+      quality_result    TEXT NOT NULL
+                        CHECK (quality_result IN ('accepted','recapture_required','unavailable')),
+      quality_reason    TEXT NOT NULL DEFAULT '',
+      screenshot_path   TEXT,
+      artifact_hash     TEXT,
+      captured_at_iso   TEXT,
+      attempt_count     INTEGER NOT NULL DEFAULT 0,
+      created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_landportal_capture_deal
+      ON landos_landportal_capture(deal_card_id, quality_result, id DESC);
+
     -- Auditable guard against prompt/instruction overrides of accepted parcel
     -- evidence, plus a non-destructive correction link for erroneous intakes.
     CREATE TABLE IF NOT EXISTS landos_instruction_contradiction (

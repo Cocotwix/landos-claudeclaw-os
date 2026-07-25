@@ -14,6 +14,8 @@
 // authenticated session only; never stores a credential. Driver is injectable —
 // the live Puppeteer driver plugs in; the default parked stub never fabricates.
 
+import fs from 'node:fs';
+
 import {
   type BrowserService, type BrowserDriver, type BrowserEvidence, type BrowserWorkflowInput,
   type BrowserSearchKey, type BrowserPageRead, type BrowserRunHooks, type BrowserFact,
@@ -38,10 +40,24 @@ import { pickParcelRecordLink } from './browser-navigator.js';
 import { retrieveWithLearning } from './browser-learning.js';
 import { diagnoseFailure, attemptRecovery } from './browser-failure-diagnosis.js';
 import { recordNavigationRequirement } from './browser-navigation-model.js';
+// The SHARED LandPortal capability. Every consequential action in this workflow —
+// submitting a search, selecting a result, extracting facts, capturing a
+// screenshot — passes through its visual checkpoints. No LandPortal result is
+// accepted and no screenshot is persisted without them.
+import {
+  verifySearchConfiguration, verifyResultSelection, verifyParcelSelected, assessScreenshotQuality,
+  type LandPortalSubject, type LandPortalSearchMode, type VisualCheckpoint,
+  type SearchConfigurationFrame, type ParcelDetailFrame, type CaptureFrame, type CaptureIntent,
+} from './landportal-capability.js';
 
 // NOTE: the apex domain (no www) serves the app; www.landportal.com returns 404.
 export const LANDPORTAL_BROWSER_BASE = 'https://landportal.com';
 export const LANDPORTAL_SCREENSHOT_PURPOSE = 'landportal_property_loaded';
+/** Visual-verification captures: the configured search before it is submitted,
+ *  and the selected parcel before anything is extracted from it. These are the
+ *  frames the agent actually inspects, not evidence presented to the operator. */
+export const LANDPORTAL_SEARCH_CONFIG_PURPOSE = 'landportal_search_configuration_verify';
+export const LANDPORTAL_PARCEL_VERIFY_PURPOSE = 'landportal_parcel_selection_verify';
 export const LANDPORTAL_3D_SCREENSHOT_PURPOSE = 'landportal_property_3d';
 export const LANDPORTAL_BOUNDARY_SCREENSHOT_PURPOSE = 'landportal_parcel_boundary_satellite';
 export const LANDPORTAL_COMPARABLES_SCREENSHOT_PURPOSE = 'landportal_comparables_map';
@@ -410,6 +426,137 @@ async function inspectComparables(
  * Downstream Property Intelligence runs only AFTER the parcel is confirmed (the
  * verified parcel-panel read is what establishes ParcelIdentity upstream).
  */
+// ── Shared-capability adapters ──────────────────────────────────────────────
+// The visual checkpoints compare the SUBJECT against what the page displays.
+// These map this workflow's observation shape onto the capability's frames; the
+// capability itself stays browser-agnostic and pure.
+
+function subjectFromKey(key: BrowserSearchKey): LandPortalSubject {
+  return {
+    apn: key.apn, apnAlternates: key.apnAlternates, owner: key.owner, address: key.address,
+    city: key.city, county: key.county, state: key.state, zip: key.zip,
+    // Confirmed measures cross-check the opened parcel; they never drive a search.
+    acreage: key.acreage ?? null, lat: key.lat ?? null, lng: key.lng ?? null,
+  };
+}
+
+/** Which search mode the page VISIBLY shows as selected. Null when the surface
+ *  does not display a mode toggle (nothing to compare, never a false claim). */
+function observedSearchMode(obs: PageObservation): LandPortalSearchMode | null {
+  const current = obs.methodToggle?.current;
+  if (!current) return null;
+  if (/apn|parcel/i.test(current)) return 'apn';
+  if (/owner/i.test(current)) return 'owner';
+  if (/address|location|global/i.test(current)) return 'address';
+  return null;
+}
+
+/** The value the page echoes back for a control, when it exposes one. */
+function observedInputValue(obs: PageObservation, selector: string): string | undefined {
+  const control = obs.searchControls.find((c) => c.selector === selector) as { value?: string } | undefined;
+  return typeof control?.value === 'string' ? control.value : undefined;
+}
+
+/** Size of a saved capture, or null when it cannot be read. Null means "cannot
+ *  judge blankness", never "the image is fine". */
+function byteSize(p: string | null): number | null {
+  if (!p) return null;
+  try { return fs.statSync(p).size; } catch { return null; }
+}
+
+function fieldLike(fields: Record<string, string>, rx: RegExp): string | null {
+  for (const [k, v] of Object.entries(fields)) { if (rx.test(k) && String(v ?? '').trim()) return String(v).trim(); }
+  return null;
+}
+function numberLike(fields: Record<string, string>, rx: RegExp): number | null {
+  const raw = fieldLike(fields, rx);
+  if (!raw) return null;
+  // Keep the sign: a stripped minus turns a western longitude into an eastern
+  // one and would fail the map-location cross-check on every US parcel.
+  const match = String(raw).match(/-?\d+(?:\.\d+)?/);
+  const n = match ? Number(match[0]) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Build the parcel-detail frame from the rendered record page. A field the page
+ *  does not display stays null — the capability records that as unverified
+ *  rather than treating it as a contradiction. */
+function parcelDetailFrame(obs: PageObservation, screenshotPath: string | null, detailPanelOpen: boolean): ParcelDetailFrame {
+  const f = obs.fields ?? {};
+  return {
+    url: obs.url,
+    // No map on the detail view means there is no boundary highlight to compare.
+    parcelHighlighted: obs.hasMap ? true : null,
+    detailPanelOpen,
+    owner: fieldLike(f, /owner/i),
+    address: fieldLike(f, /parcel address|situs|site address|^address$/i),
+    city: fieldLike(f, /^city$/i),
+    county: fieldLike(f, /^county$/i),
+    state: fieldLike(f, /^state$/i),
+    apn: fieldLike(f, /parcel id|parcel number|^apn$/i),
+    acreage: numberLike(f, /^acres$|deeded acres|gis acres/i),
+    lat: numberLike(f, /latitude|^lat$/i),
+    lng: numberLike(f, /longitude|^lon|^lng$/i),
+    landPortalPropertyId: (obs.url.match(/[?&]property=([^&]+)/) || [])[1] ?? null,
+    fips: fieldLike(f, /fips/i),
+    screenshotPath,
+  };
+}
+
+/**
+ * THE ONLY WAY a LandPortal capture becomes evidence.
+ *
+ * Every retrieval path — agentic, workflow, and legacy — records a quality
+ * verdict here and pushes the image only when it is accepted, so no LandPortal
+ * screenshot can be presented as proof without having passed the contract. A
+ * rejected capture stays as honest history in `captureVerdicts`.
+ */
+function recordLandPortalCapture(
+  ev: BrowserEvidence,
+  shot: { path: string; capturedAtIso: string; purpose: string },
+  frame: CaptureFrame,
+  intent: CaptureIntent,
+): boolean {
+  const verdict = assessScreenshotQuality(frame, intent);
+  (ev.captureVerdicts ??= []).push({ purpose: shot.purpose, path: shot.path, result: verdict.result, reason: verdict.reason });
+  if (verdict.result !== 'accepted') return false;
+  ev.screenshots.push(shot);
+  return true;
+}
+
+/** The capture intent for a plain parcel-record proof shot. */
+function parcelCaptureIntent(key: BrowserSearchKey, openedApn: string | null): CaptureIntent {
+  const subject = subjectFromKey(key);
+  return {
+    provesFact: `The subject parcel ${key.apn ?? key.address ?? 'record'} as LandPortal renders it, with its boundary in context.`,
+    boundaryRequired: true,
+    // The opened record's own identifier counts as a subject identifier: a parcel
+    // resolved by address with a wrong operator APN is still the right parcel.
+    subject: openedApn ? { ...subject, apnAlternates: [...(subject.apnAlternates ?? []), openedApn] } : subject,
+  };
+}
+
+/** The parcel identifier the page itself displays, when it displays one. */
+function displayedParcelApn(fields: Record<string, string> | undefined, key: BrowserSearchKey): string | null {
+  return fieldLike(fields ?? {}, /parcel id|parcel number|^apn$/i) ?? key.apn ?? null;
+}
+
+function captureFrameFor(obs: PageObservation, apn: string | null, screenshotPath: string | null, bytes: number | null): CaptureFrame {
+  return {
+    url: obs.url,
+    parcelApn: apn,
+    intendedOverlay: null,
+    activeOverlay: null,
+    // A LandPortal parcel view that reached the record page renders the subject
+    // boundary; a search surface does not.
+    boundaryVisible: /[?&]property=/.test(obs.url),
+    tilesLoaded: true,
+    obstructions: obs.interactive?.hasModal ? ['modal dialog'] : [],
+    bytes,
+    screenshotPath,
+  };
+}
+
 async function runLandPortalAgentic(
   input: BrowserWorkflowInput,
   driver: BrowserDriver,
@@ -488,6 +635,19 @@ async function runLandPortalAgentic(
       return streetTokens.some((tok) => hay.includes(tok));
     };
 
+    // The subject every visual checkpoint compares the screen against.
+    const subject = subjectFromKey(key);
+    // Every checkpoint the run performed, in order — the operator-visible record
+    // of what was actually looked at before each consequential action.
+    const checkpoints: VisualCheckpoint[] = [];
+    // The identifier of the parcel the parcel_selected checkpoint verified, as it
+    // read at verification time. Captures are compared against THIS, so drift to a
+    // different parcel between verification and capture is still caught.
+    let verifiedParcelApn: string | null = null;
+    // Every capture verdict, including the rejected ones. A rejected capture is
+    // retained as honest history and never presented as accepted evidence.
+    const captureVerdicts: Array<{ purpose: string; path: string | null; result: string; reason: string }> = [];
+
     let picked: { index: number; score: number; matched: string[] } | null = null;
     let usedMethod = '';
     let verifiedReached = false;
@@ -511,17 +671,96 @@ async function runLandPortalAgentic(
       await driver.selectMethod!(a.method, t());
       // Scope the search to the jurisdiction (State, then County) so a parcel
       // resolves uniquely (the click opens the parcel panel, not a results list).
+      //
+      // The scope is applied and then READ BACK OFF THE PAGE. What the setter
+      // believes it clicked is not evidence; what the dropdowns display is. A
+      // county list that loads only after its state is chosen frequently needs a
+      // second application, so an incomplete read-back is re-applied once before
+      // the checkpoint judges it.
+      let appliedScope: string[] = [];
+      let scopeView: { available: boolean; state: string | null; county: string | null; extras: string[] } =
+        { available: false, state: null, county: null, extras: [] };
       if (driver.setScope && (key.state || key.county)) {
         const scope = [stateName(key.state), key.county].filter(Boolean) as string[];
-        const set = await driver.setScope(scope, t());
-        if (set.length) trace.push(`scope:${set.join('/')}`);
+        // AUTHORITY: a driver that can SEE the scope controls decides both whether
+        // they exist and what they display — a failed read is `state: null` on an
+        // available control, which blocks. A driver that cannot see them (the
+        // parked stub, a non-visual surface) cannot claim the controls exist, so
+        // availability falls back to what it managed to apply. Claiming
+        // availability on its behalf would block every non-visual surface,
+        // including sites that genuinely have no jurisdiction filter.
+        const readScope = async () => driver.readScope
+          ? await driver.readScope(t()).catch(() => ({ available: true, state: null, county: null, extras: [] }))
+          : { available: appliedScope.length > 0, state: appliedScope[0] ?? null, county: appliedScope[1] ?? null, extras: [] };
+        const wanted = { state: stateName(key.state), county: key.county };
+        const complete = (v: { state: string | null; county: string | null }) =>
+          (!wanted.state || !!v.state) && (!wanted.county || !!v.county);
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+          appliedScope = await driver.setScope(scope, t());
+          scopeView = await readScope();
+          if (complete(scopeView)) break;
+          trace.push(`scope-retry:${attempt + 1} state="${scopeView.state ?? 'none'}" county="${scopeView.county ?? 'none'}"`);
+        }
+        trace.push(driver.readScope
+          ? `scope-displayed:state="${scopeView.state ?? 'none'}",county="${scopeView.county ?? 'none'}"`
+          // Say plainly that nothing was read off the page, so "verified" is never
+          // implied by a driver that cannot see the controls.
+          : `scope-not-visually-readable:applied="${appliedScope.join('/') || 'none'}"`);
         obs = await obsv();
       }
       await driver.typeSearch!(searchSel, a.value, t());
       obs = await obsv();
+
+      // ── VISUAL CHECKPOINT 1: before submitting ──────────────────────────
+      // Look at the configured search and confirm the mode, the entered value,
+      // and the jurisdiction filters are what we meant — and that no filter from
+      // a previous property survived. A misconfigured search is never submitted.
+      const configShot = await driver.screenshot(LANDPORTAL_SEARCH_CONFIG_PURPOSE, t()).catch(() => null);
+      const configFrame: SearchConfigurationFrame = {
+        url: obs.url,
+        selectedMode: observedSearchMode(obs),
+        enteredValues: { [a.method]: observedInputValue(obs, searchSel) ?? a.value } as SearchConfigurationFrame['enteredValues'],
+        // The jurisdiction filters as the page DISPLAYS them. If the dropdowns
+        // still read "Select Value", these are null and the checkpoint blocks the
+        // submission — which is exactly the failure this replaces.
+        activeState: scopeView.state,
+        activeCounty: scopeView.county,
+        activeFilters: scopeView.extras,
+        screenshotPath: configShot?.path ?? null,
+      };
+      const configCheck = verifySearchConfiguration(configFrame, {
+        mode: a.method as LandPortalSearchMode,
+        value: a.value,
+        subject,
+        // Availability is about whether the SURFACE offers jurisdiction filters,
+        // never about whether we managed to set them. Tying it to our own success
+        // is what downgraded "the filter is not applied" from a blocker to an
+        // unverified note and let the unscoped search through.
+        jurisdictionScopingAvailable: scopeView.available,
+      });
+      checkpoints.push(configCheck);
+      if (!configCheck.passed) {
+        trace.push(`visual(search-config) BLOCKED:${configCheck.blockers.join('; ')}`);
+        continue; // never submit a search we could not visually confirm
+      }
+      trace.push(`visual(search-config) OK:${a.method}`);
+
       const candidates = (await driver.readCandidates!(t())) as ResultCandidate[];
       const candidateSample = candidates.slice(0, 3).map((c) => c.text.slice(0, 80)).join(' || ');
-      let best = pickBestCandidate(candidates, key);
+
+      // ── VISUAL CHECKPOINT 2: before selecting a result ──────────────────
+      // Compare the visible results field by field — owner, state, county, road,
+      // city/ZIP, APN variants, acreage — and select ONLY a result that is
+      // structurally the subject. This is the checkpoint that recognizes the
+      // first OLD RIDGE RD / SACHAN DILEEP S / Roane row instead of reporting
+      // "no confident match", and that refuses a cross-county APN collision.
+      const selection = verifyResultSelection(candidates, subject);
+      checkpoints.push(selection.checkpoint);
+      let best = selection.selected
+        ? { index: selection.selected.candidate.index, score: selection.selected.score, matched: selection.selected.matched, confidence: selection.selected.confidence }
+        : pickBestCandidate(candidates, key);
+      if (selection.selected) trace.push(`visual(result) OK:#${selection.selected.candidate.index}(${selection.selected.matched.join('+')})`);
       if (!best && a.method === 'address' && key.address && /^\s*\d+/.test(key.address) && candidates.length > 0) {
         const firstScore = scoreResultCandidate(candidates[0], key);
         best = { index: candidates[0].index, score: firstScore.score, matched: [...firstScore.matched, 'first_plausible_address_candidate'], confidence: 'medium' };
@@ -601,11 +840,35 @@ async function runLandPortalAgentic(
           openedViaResults = `, result#${resultBest.index}(${resultBest.matched.join('+')})â†’${v.pageType}`;
         }
       }
+      // ── VISUAL CHECKPOINT 3: after selecting, before extracting anything ──
+      // The highlighted parcel, the detail panel, the owner, the road, the county
+      // and state, the APN, the acreage, and the map location must all refer to
+      // the SAME subject. A displayed value that contradicts the subject is a
+      // hard stop — this is what rejects the Nashville parcel that merely shares
+      // an APN string. A value the page does not display is recorded as
+      // unverified, never silently treated as agreement.
+      let parcelCheck: VisualCheckpoint | null = null;
+      if (v.reached) {
+        const detailShot = await driver.screenshot(LANDPORTAL_PARCEL_VERIFY_PURPOSE, t()).catch(() => null);
+        const detailFrame = parcelDetailFrame(obs, detailShot?.path ?? null, true);
+        parcelCheck = verifyParcelSelected(detailFrame, subject);
+        // Remember the identifier of the parcel this checkpoint VERIFIED, as it
+        // read at verification time. Later captures are judged against this, not
+        // against unverified operator input: a parcel resolved by address with a
+        // wrong operator APN (flagged separately as apnConflict) is still the
+        // right parcel, and its capture is still evidence.
+        if (parcelCheck.passed && detailFrame.apn) verifiedParcelApn = detailFrame.apn;
+        checkpoints.push(parcelCheck);
+        trace.push(parcelCheck.passed
+          ? `visual(parcel) OK:${parcelCheck.confirmed.length} confirmed${parcelCheck.unverified.length ? `, ${parcelCheck.unverified.length} not displayed` : ''}`
+          : `visual(parcel) BLOCKED:${parcelCheck.blockers.join('; ')}`);
+      }
       // CONSISTENCY: the opened parcel must match the known street address — an
       // APN can be wrong or shared by a different parcel; never accept a mismatch.
       const consistent = matchesKnownAddress(obs) || best.matched.includes('address');
+      const visuallyVerified = parcelCheck?.passed === true;
       trace.push(`${a.method}:"${a.value}"→${candidates.length} cand, pick#${best.index}(${best.matched.join('+')})→${v.pageType}${openedViaResults}${consistent ? '' : ',ADDR-MISMATCH'} sample:${candidateSample}`);
-      if (v.reached && consistent) { picked = best; usedMethod = a.method; verifiedReached = true; break; }
+      if (v.reached && consistent && visuallyVerified) { picked = best; usedMethod = a.method; verifiedReached = true; break; }
       // else: wrong/unverified parcel — keep adapting (try the next method).
     }
 
@@ -619,6 +882,8 @@ async function runLandPortalAgentic(
       const diagNote = recoveryTrace.length
         ? ` Recovery was attempted (${recoveryTrace.join('; ')}) — the page was re-observed and re-verified after submitting, but no parcel detail page opened and verified.`
         : ` No result option could be confidently selected to open a parcel detail page; provide/confirm the exact parcel identifier.`;
+      ev.visualCheckpoints = checkpoints;
+      ev.captureVerdicts = captureVerdicts;
       ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${key.address || key.apn} (no weak-match, no false facts).${diagNote} Trace: ${trace.join(' | ')}`;
       rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, taskBoundary, used: true, navPatterns: trace.join(' | '), knownLimitations: ['no verified parcel consistent with the provided address'] });
       return ev;
@@ -639,13 +904,58 @@ async function runLandPortalAgentic(
       compRows: string[]; mapReached: boolean; capturedAtIso: string;
     } | null = null;
     let shot: Awaited<ReturnType<BrowserDriver['screenshot']>> | null = null;
+
+    // SCREENSHOT QUALITY CONTRACT. Every LandPortal capture is inspected after it
+    // is saved and is accepted ONLY when it actually proves its fact: correct
+    // parcel, boundary visible, intended map state, readable, unobstructed.
+    // An ineffective capture is rejected and never presented as evidence.
+    const captureIntent: CaptureIntent = {
+      provesFact: `The subject parcel ${key.apn ?? key.address ?? 'record'} as LandPortal renders it, with its boundary in context.`,
+      boundaryRequired: true,
+      // The verified record's own identifier counts as a subject identifier for
+      // capture judging — see verifiedParcelApn above.
+      subject: verifiedParcelApn
+        ? { ...subject, apnAlternates: [...(subject.apnAlternates ?? []), verifiedParcelApn] }
+        : subject,
+    };
+    // WHICH parcel the capture shows is read from the OPENED RECORD, not from the
+    // caller's input. An owner search legitimately starts with no APN at all, and
+    // judging the image against the input identifier rejected a perfectly good
+    // capture of the right parcel ("selected parcel is none"). The page's own
+    // parcel identifier is the only honest answer to "what is in this image?"; the
+    // input APN is a last-resort fallback.
+    const openedParcelApn = (): string | null =>
+      fieldLike(panelFields, /parcel id|parcel number|^apn$/i)
+      ?? fieldLike(obs.fields ?? {}, /parcel id|parcel number|^apn$/i)
+      ?? key.apn
+      ?? null;
+    // The agentic path's gate. It assesses, records the verdict for the operator,
+    // traces it, and pushes the image ONLY on acceptance — so this function and
+    // recordLandPortalCapture are the only two places in the module that can put a
+    // screenshot into the evidence set.
+    const acceptCapture = (shot: { path: string; capturedAtIso: string; purpose: string }, bytes: number | null): boolean => {
+      const verdict = assessScreenshotQuality(captureFrameFor(obs, openedParcelApn(), shot.path, bytes), captureIntent);
+      captureVerdicts.push({ purpose: shot.purpose, path: shot.path, result: verdict.result, reason: verdict.reason });
+      trace.push(`capture(${verdict.result})${verdict.result === 'accepted' ? '' : `: ${verdict.reason}`}`);
+      if (verdict.result !== 'accepted') return false;
+      ev.screenshots.push(shot);
+      return true;
+    };
+
     if (obs.url && /[?&]property=/.test(obs.url) && driver.captureLandPortalVisuals) {
       try {
         const v = await driver.captureLandPortalVisuals(obs.url, t());
         if (v.parcelShotPath || Object.keys(v.fields).length > 0) {
           lpVisuals = v;
           if (Object.keys(v.fields).length > Object.keys(panelFields).length) panelFields = { ...panelFields, ...v.fields };
-          if (v.parcelShotPath) ev.screenshots.push({ path: v.parcelShotPath, capturedAtIso: v.capturedAtIso, purpose: LANDPORTAL_SCREENSHOT_PURPOSE });
+          // Ineffective capture: drop it from the evidence set rather than
+          // presenting a blank/obstructed/wrong-parcel image as proof.
+          if (v.parcelShotPath && !acceptCapture(
+            { path: v.parcelShotPath, capturedAtIso: v.capturedAtIso, purpose: LANDPORTAL_SCREENSHOT_PURPOSE },
+            byteSize(v.parcelShotPath),
+          )) {
+            lpVisuals = { ...v, parcelShotPath: null };
+          }
           trace.push(`lpVisuals: fields=${Object.keys(v.fields).length} comps=${v.compRows.length} mapReached=${v.mapReached}`);
         }
       } catch { /* fall back below */ }
@@ -653,8 +963,8 @@ async function runLandPortalAgentic(
     if (!lpVisuals) {
       // Fallback (non-live/fake driver, or capture failed): working-tab parcel shot
       // + fresh-tab full field read. Never fabricate the rest.
-      shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { ...t(), fullPage: true });
-      ev.screenshots.push(shot);
+      const taken = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { ...t(), fullPage: true });
+      if (acceptCapture(taken, byteSize(taken.path))) shot = taken;
       if (obs.url && /[?&]property=/.test(obs.url) && driver.readFullPanel) {
         try {
           const full = await driver.readFullPanel(obs.url, t());
@@ -746,7 +1056,14 @@ async function runLandPortalAgentic(
     // LEARN: store the validated method + interaction strategy.
     const validatedStrategy = { method: (usedMethod as SearchMethod), steps: [{ action: 'select_method' as const, text: usedMethod }, { action: 'fill' as const, selector: box.selector }, { action: 'click' as const, text: 'typeahead high-confidence match' }], reason: `${usedMethod} search → typeahead → high-confidence parcel` };
     rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy, navPatterns: trace.join(' | '), authRequired: true, confidence: 'high', taskBoundary, used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
-    ev.note = `LandPortal (${understanding.platformClass}): ${usedMethod} search → selected high-confidence parcel → ${facts.length} verified fact(s) streamed with provenance. Trace: ${trace.join(' | ')}`;
+    // Operator transparency: name the visual checkpoints that were actually
+    // passed and every capture that was rejected, so "verified" is a claim the
+    // operator can audit rather than a word the agent chose.
+    const passedCheckpoints = checkpoints.filter((c) => c.passed).map((c) => c.kind);
+    const rejectedCaptures = captureVerdicts.filter((c) => c.result !== 'accepted');
+    ev.visualCheckpoints = checkpoints;
+    ev.captureVerdicts = captureVerdicts;
+    ev.note = `LandPortal (${understanding.platformClass}): ${usedMethod} search → visually verified [${passedCheckpoints.join(', ') || 'none'}] → selected high-confidence parcel → ${facts.length} verified fact(s) streamed with provenance.${rejectedCaptures.length ? ` ${rejectedCaptures.length} ineffective capture(s) rejected and not presented as evidence.` : ''} Trace: ${trace.join(' | ')}`;
     return ev;
   } catch (err) {
     ev.status = 'error';
@@ -884,8 +1201,15 @@ async function runLandPortalWorkflow(
     }
 
     // ── EXTRACT (verified record) + ONE screenshot ────────────────────────
+    // The capture passes the same screenshot-quality contract as the agentic
+    // path: an ineffective image is recorded as rejected, never presented.
     const shot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, t());
-    ev.screenshots.push(shot);
+    const openedApn = displayedParcelApn(obs.fields, input.searchKey);
+    recordLandPortalCapture(
+      ev, shot,
+      captureFrameFor(obs, openedApn, shot.path, byteSize(shot.path)),
+      parcelCaptureIntent(input.searchKey, openedApn),
+    );
     const method = `${strategy.method} search${interaction ? ` → ${interaction}` : ''} → verified record`;
     ev.fields = obs.fields;
     ev.facts = extractRecordFacts(obs.fields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' }).map((f) => ({ ...f, extractionMethod: method }));
@@ -916,7 +1240,27 @@ async function runLandPortalLegacy(input: BrowserWorkflowInput, driver: BrowserD
     const searchRead = await driver.search(term.term, { timeoutMs });
     const propRead = searchRead.url && /property|parcel|detail/i.test(searchRead.url) ? searchRead : await driver.readFields({ timeoutMs });
     if (propRead.url) ev.sourceUrls.push(propRead.url);
-    ev.screenshots.push(await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { timeoutMs }));
+    // Legacy drivers have no observe(), so the frame is built from the page READ.
+    // The contract still applies: an ineffective capture is never evidence.
+    const legacyShot = await driver.screenshot(LANDPORTAL_SCREENSHOT_PURPOSE, { timeoutMs });
+    const legacyApn = displayedParcelApn(propRead.fields, input.searchKey);
+    recordLandPortalCapture(
+      ev, legacyShot,
+      {
+        url: propRead.url ?? '',
+        parcelApn: legacyApn,
+        intendedOverlay: null,
+        activeOverlay: null,
+        // A legacy read that reached a parcel record page renders the subject
+        // boundary; a search or results page does not.
+        boundaryVisible: /property|parcel|detail/i.test(propRead.url ?? ''),
+        tilesLoaded: true,
+        obstructions: [],
+        bytes: byteSize(legacyShot.path),
+        screenshotPath: legacyShot.path,
+      },
+      parcelCaptureIntent(input.searchKey, legacyApn),
+    );
     const fullRead = await driver.readFields({ timeoutMs });
     const merged: BrowserPageRead = { url: fullRead.url || propRead.url, fields: { ...propRead.fields, ...fullRead.fields }, snippets: [] };
     const { patch, fields } = extractLandPortalFields(merged);
@@ -981,6 +1325,43 @@ async function runLandPortalWithLearning(
   return ev;
 }
 
+/**
+ * BROWSER LIFECYCLE. Wrap one LandPortal run in an owned-page scope so every page
+ * the job causes to exist — its own tabs, the comps map and parcel deep links the
+ * site opens, any viewer — is closed afterwards. Cleanup runs on success, partial
+ * completion, failure, timeout, cancellation, and visual-verification rejection
+ * alike. Pages that were already open belong to the operator and are preserved.
+ *
+ * Staying logged in is never a reason to keep a page: logging in again is cheap,
+ * an accumulating pile of authenticated LandPortal tabs is not.
+ */
+async function withOwnedPages(
+  driver: BrowserDriver,
+  run: () => Promise<BrowserEvidence>,
+): Promise<BrowserEvidence> {
+  if (!driver.beginOwnedPageScope || !driver.closeOwnedPageScope) return run();
+  let token: string | null = null;
+  try { token = await driver.beginOwnedPageScope(); } catch { token = null; }
+  let ev: BrowserEvidence;
+  try {
+    ev = await run();
+  } catch (err) {
+    if (token) { try { await driver.closeOwnedPageScope(token); } catch { /* cleanup never masks the error */ } }
+    throw err;
+  }
+  if (token) {
+    try {
+      const cleanup = await driver.closeOwnedPageScope(token);
+      ev.browserCleanup = cleanup;
+      ev.note = `${ev.note} [browser cleanup: ${cleanup.closed} page(s) closed, ${cleanup.preserved} operator page(s) preserved${cleanup.failed ? `, ${cleanup.failed} failed to close` : ''}]`;
+    } catch (err) {
+      ev.browserCleanup = { closed: 0, failed: -1, preserved: 0 };
+      ev.note = `${ev.note} [browser cleanup FAILED: ${(err as Error)?.message ?? 'unknown'}]`;
+    }
+  }
+  return ev;
+}
+
 export function makeLandPortalBrowser(deps: LandPortalBrowserDeps = {}): BrowserService {
   const driver = deps.driver ?? makeParkedDriver('landportal');
   const now = deps.now ?? (() => new Date().toISOString());
@@ -989,18 +1370,22 @@ export function makeLandPortalBrowser(deps: LandPortalBrowserDeps = {}): Browser
     label: 'LandPortal Browser (read-only property intelligence)',
     modes: ['workflow', 'ask'],
     configured() { return driver.configured(); },
-    runWorkflow(input, opts) { return runLandPortalWithLearning(input, driver, now, opts.timeoutMs, opts); },
+    runWorkflow(input, opts) {
+      return withOwnedPages(driver, () => runLandPortalWithLearning(input, driver, now, opts.timeoutMs, opts));
+    },
     async ask(question, ctx, opts) {
       // Ask mode: LandPortal shows the full property on one page, so any property
       // question is answered by running the property workflow and reading the
       // relevant field from the loaded page. The router records the intent.
       const route = routeBrowserQuestion(question, ctx);
-      const ev = await runLandPortalWorkflow({ searchKey: route.searchKey }, driver, now, opts.timeoutMs);
-      ev.mode = 'ask';
-      if (ev.status !== 'parked' && ev.status !== 'error') {
-        ev.note = `Asked: "${route.intent}". ${ev.note}`;
-      }
-      return ev;
+      return withOwnedPages(driver, async () => {
+        const ev = await runLandPortalWorkflow({ searchKey: route.searchKey }, driver, now, opts.timeoutMs);
+        ev.mode = 'ask';
+        if (ev.status !== 'parked' && ev.status !== 'error') {
+          ev.note = `Asked: "${route.intent}". ${ev.note}`;
+        }
+        return ev;
+      });
     },
   };
 }

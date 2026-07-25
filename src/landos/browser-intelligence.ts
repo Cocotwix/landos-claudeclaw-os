@@ -117,6 +117,12 @@ export interface BrowserSearchKey {
   county?: string;
   state?: string;
   zip?: string;
+  /** Already-confirmed subject measures, when the caller holds them (e.g. from an
+   *  official assessor record). They are never used to SEARCH — they are used to
+   *  cross-check that the parcel a site opened is actually the subject. */
+  acreage?: number | null;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface BrowserQuestionRoute {
@@ -229,6 +235,16 @@ export interface BrowserDriver {
   /** OBSERVE: rich page signals for Website Intelligence (title/headings/nav/
    *  search controls + select options/buttons/links/map/table/fields). Read-only. */
   observe?(opts: { timeoutMs: number }): Promise<unknown>;
+  /** BROWSER LIFECYCLE — open an owned-page scope. Everything the job causes to
+   *  exist from here on (tabs it opens, popups the site opens, viewers) is the
+   *  job's to close. Pages that were ALREADY open belong to the operator and are
+   *  recorded so they can never be closed. */
+  beginOwnedPageScope?(): Promise<string>;
+  /** Close every page that appeared during the scope, whatever the outcome —
+   *  success, partial, failure, timeout, cancellation, or a visual rejection.
+   *  Authentication is never a reason to keep a page open; logging in again is
+   *  cheap. Returns what was closed for the operator-facing cleanup record. */
+  closeOwnedPageScope?(token: string): Promise<{ closed: number; failed: number; preserved: number }>;
   /** Select an option (by visible text) in a select/dropdown — for a method
    *  selector (Address/APN/Owner). Read-only navigation. */
   selectByText?(selector: string, optionText: string, opts: { timeoutMs: number }): Promise<void>;
@@ -256,8 +272,21 @@ export interface BrowserDriver {
   selectMethod?(method: string, opts: { timeoutMs: number }): Promise<void>;
   /** Set scope filter dropdowns (e.g. State, then County) so a search resolves to
    *  a single jurisdiction. Drives standard Select2/native dropdowns. Read-only.
-   *  Returns the values it confirmed it set. */
+   *  Clears any stale selection first, waits for a DEPENDENT list (county) to be
+   *  populated by the parent selection, and returns only the values whose
+   *  rendered display it read back on screen. A value it could not see selected
+   *  is not returned — this method never reports a filter it did not apply. */
   setScope?(values: string[], opts: { timeoutMs: number }): Promise<string[]>;
+  /** READ the jurisdiction scope controls exactly as the page renders them.
+   *  This is the visual read the search-configuration checkpoint compares
+   *  against — never what the automation believes it set. `available` reports
+   *  whether the controls EXIST (so a surface with no county filter is not
+   *  faulted for lacking one), `state`/`county` are the displayed labels with
+   *  placeholders such as "Select Value" normalized to null, and `extras` are
+   *  any other filters still visibly applied. */
+  readScope?(opts: { timeoutMs: number }): Promise<{
+    available: boolean; state: string | null; county: string | null; extras: string[];
+  }>;
   /** Optional UI nudges — all read-only (zoom/pan/expand panels). */
   act?(action: ReadOnlyAction, arg?: string, opts?: { timeoutMs: number }): Promise<void>;
 }
@@ -324,6 +353,18 @@ export interface BrowserEvidence {
   note: string;
   /** Optional structured LandPortal inspection payload for persistence/reporting. */
   inspection?: PendingLandPortalInspectionRecord;
+  /** The visual checkpoints the run actually performed, in order — what was
+   *  looked at before each consequential action, what was confirmed, what the
+   *  page never displayed, and what blocked. "Verified" becomes auditable. */
+  visualCheckpoints?: Array<{
+    kind: string; passed: boolean; confirmed: string[]; blockers: string[]; unverified: string[]; screenshotPath: string | null;
+  }>;
+  /** Every capture verdict including rejections. A rejected capture is history,
+   *  never evidence. */
+  captureVerdicts?: Array<{ purpose: string; path: string | null; result: string; reason: string }>;
+  /** What the job's browser cleanup actually closed. `preserved` counts pages
+   *  that were already open — the operator's own tabs, never touched. */
+  browserCleanup?: { closed: number; failed: number; preserved: number };
 }
 
 /** Record a forbidden action as blocked (never performed). The single place a

@@ -838,6 +838,159 @@ export interface LiveDriverDeps extends SessionDeps {
   detectAuth?: boolean;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// JURISDICTION SCOPE CONTROLS (state / county filter dropdowns)
+//
+// These run INSIDE the page, so each one is self-contained — no closure over
+// anything in this module. They exist because a scope filter is only really
+// applied when the widget DISPLAYS the chosen value; clicking an option is not
+// the same thing, and treating it as the same is how a search got submitted with
+// both jurisdiction dropdowns still reading "Select Value".
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One scope dropdown exactly as the page renders it. */
+export interface ScopeControlView {
+  /** The control's own label (from its label element, aria-label, name or id). */
+  label: string;
+  /** The displayed selection, or null when it still shows a placeholder. */
+  selected: string | null;
+  /** True while the control is disabled — a dependent list that has not loaded. */
+  disabled: boolean;
+}
+
+/** Does a rendered dropdown label denote the wanted jurisdiction? Tolerates the
+ *  site's own wording ("Roane" vs "Roane County", "Tennessee" vs "TN"). */
+export function scopeLabelMatches(displayed: string, wanted: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/\bcount(y|ies)\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const a = norm(displayed), b = norm(wanted);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+// NOTE: each script below runs INSIDE the page, so it repeats its own container
+// lookup rather than calling a shared helper — a closure over module scope does
+// not exist in the browser. The lookup: the select2 widgets inside the search
+// scope wrapper when the surface has one, else every visible select2 widget in
+// document order.
+
+/** Read every scope dropdown's label, displayed selection and enabled state. */
+const SCOPE_CONTROLS_SCRIPT = ((): ScopeControlView[] => {
+  const PLACEHOLDER = /^(select(\s+(a\s+)?(value|option|one))?|choose(\s+(a\s+)?(value|option|one))?|--.*--|all|any|none|)$/i;
+  const containersOf = (): any[] => {
+    const root = (document.querySelector('.search-selects-wr') || document) as any;
+    return (Array.from(root.querySelectorAll('.select2-container')) as any[]).filter((c) => {
+      const r = c.getBoundingClientRect ? c.getBoundingClientRect() : null;
+      return !!c.querySelector('.select2-selection') && !!r && r.width > 0 && r.height > 0;
+    });
+  };
+  const labelOf = (container: any, hidden: any): string => {
+    const tag = container.parentElement ? container.parentElement.querySelector('label') : null;
+    const parts = [
+      tag ? tag.textContent : '',
+      hidden ? hidden.getAttribute('aria-label') : '',
+      hidden ? hidden.getAttribute('name') : '',
+      hidden ? hidden.getAttribute('id') : '',
+      container.getAttribute ? container.getAttribute('aria-label') : '',
+    ];
+    for (const p of parts) { const t = (p || '').replace(/\s+/g, ' ').trim(); if (t) return t; }
+    return '';
+  };
+  const out: ScopeControlView[] = [];
+  for (const c of containersOf()) {
+    const rendered = c.querySelector('.select2-selection__rendered');
+    const isPlaceholder = !!(rendered && rendered.querySelector('.select2-selection__placeholder'));
+    const text = ((rendered && rendered.textContent) || '').replace(/\s+/g, ' ').replace(/^\s*×\s*/, '').trim();
+    const prev = c.previousElementSibling;
+    const hidden = prev && prev.tagName === 'SELECT' ? prev : null;
+    out.push({
+      label: labelOf(c, hidden),
+      selected: isPlaceholder || PLACEHOLDER.test(text) ? null : text,
+      disabled: String(c.className || '').includes('disabled') || !!(hidden && hidden.disabled),
+    });
+  }
+  if (out.length) return out;
+  // Fallback: plain native selects used as scope filters.
+  const root = (document.querySelector('.search-selects-wr') || document) as any;
+  for (const el of Array.from(root.querySelectorAll('select')) as any[]) {
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    if (!r || r.width <= 0 || r.height <= 0) continue;
+    const opt = el.selectedOptions && el.selectedOptions[0];
+    const text = ((opt && opt.textContent) || '').replace(/\s+/g, ' ').trim();
+    out.push({ label: labelOf(el, el), selected: PLACEHOLDER.test(text) || !el.value ? null : text, disabled: !!el.disabled });
+  }
+  return out;
+}) as unknown as () => ScopeControlView[];
+
+/** Clear a stale selection so one property's scope can never narrow another's. */
+const CLEAR_SCOPE_SCRIPT = ((which: number): void => {
+  const root = (document.querySelector('.search-selects-wr') || document) as any;
+  const c = (Array.from(root.querySelectorAll('.select2-container')) as any[])
+    .filter((x) => { const r = x.getBoundingClientRect ? x.getBoundingClientRect() : null; return !!x.querySelector('.select2-selection') && !!r && r.width > 0 && r.height > 0; })[which];
+  if (!c) return;
+  const clear = c.querySelector('.select2-selection__clear');
+  if (clear) { clear.click(); return; }
+  const hidden = c.previousElementSibling;
+  if (hidden && hidden.tagName === 'SELECT') {
+    hidden.value = '';
+    hidden.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}) as unknown as () => void;
+
+/** Open one scope dropdown. */
+const OPEN_SCOPE_SCRIPT = ((which: number): boolean => {
+  const root = (document.querySelector('.search-selects-wr') || document) as any;
+  const c = (Array.from(root.querySelectorAll('.select2-container')) as any[])
+    .filter((x) => { const r = x.getBoundingClientRect ? x.getBoundingClientRect() : null; return !!x.querySelector('.select2-selection') && !!r && r.width > 0 && r.height > 0; })[which];
+  if (!c || String(c.className || '').includes('disabled')) return false;
+  const sel = c.querySelector('.select2-selection');
+  if (!sel) return false;
+  sel.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+  sel.click();
+  return true;
+}) as unknown as () => boolean;
+
+/** Type into the open dropdown's search field to filter its options. */
+const TYPE_SCOPE_SCRIPT = ((value: string): void => {
+  const sf = document.querySelector('.select2-search__field');
+  if (!sf) return;
+  sf.value = value;
+  sf.dispatchEvent(new Event('input', { bubbles: true }));
+  sf.dispatchEvent(new window.KeyboardEvent('keyup', { bubbles: true }));
+}) as unknown as () => void;
+
+/** Has the (possibly dependent, possibly async) option list produced the value?
+ *  Waiting on THIS instead of a fixed sleep is what stops an unloaded county
+ *  list from looking like "no such county". */
+const HAS_SCOPE_OPTION_SCRIPT = ((value: string): boolean => {
+  const want = String(value).toLowerCase();
+  return (Array.from(document.querySelectorAll('.select2-results__option')) as any[]).some((o) => {
+    const t = (o.textContent || '').trim().toLowerCase();
+    if (!t || /searching|loading|no results/.test(t)) return false;
+    return t === want || t.indexOf(want) >= 0 || want.indexOf(t) >= 0;
+  });
+}) as unknown as () => boolean;
+
+/** Click the matching option, preferring an exact label. */
+const PICK_SCOPE_SCRIPT = ((value: string): boolean => {
+  const want = String(value).toLowerCase();
+  const opts = Array.from(document.querySelectorAll('.select2-results__option')) as any[];
+  const text = (o: any) => (o.textContent || '').trim().toLowerCase();
+  const el = opts.find((o) => text(o) === want)
+    || opts.find((o) => text(o).replace(/\s+county$/, '') === want)
+    || opts.find((o) => text(o).indexOf(want) >= 0);
+  if (!el) return false;
+  el.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
+  el.click();
+  return true;
+}) as unknown as () => boolean;
+
+/** Close an open dropdown without selecting anything. */
+const CLOSE_SCOPE_SCRIPT = ((): void => {
+  const sf = document.querySelector('.select2-search__field') || document.body;
+  sf.dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, key: 'Escape', keyCode: 27 }));
+  document.body.click();
+}) as unknown as () => void;
+
 /**
  * A live, read-only BrowserDriver backed by the persistent session. configured()
  * is true only when the session is live. open/search/readFields navigate + read;
@@ -863,9 +1016,52 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     return { url: read.url, fields: read.fields, snippets: read.snippets };
   };
 
+  // ── OWNED-PAGE SCOPES ────────────────────────────────────────────────────
+  // A LandPortal job opens tabs of its own AND causes the site to open its own
+  // (a comps map, a parcel deep link, a viewer). Left behind, they accumulate
+  // authenticated pages across runs. A scope records the pages that already
+  // existed — those are the OPERATOR's and are never touched — and closes only
+  // what appeared while the job ran.
+  const ownedScopes = new Map<string, Set<PageLike>>();
+
   return {
     id,
     configured() { return browserSessionStatus() === 'live'; },
+    async beginOwnedPageScope() {
+      await ensureBrowserSession(deps);
+      const token = `lp-scope-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const preexisting = new Set<PageLike>();
+      try { for (const p of await state.browser!.pages()) preexisting.add(p); } catch { /* nothing open yet */ }
+      ownedScopes.set(token, preexisting);
+      return token;
+    },
+    async closeOwnedPageScope(token: string) {
+      const preexisting = ownedScopes.get(token);
+      ownedScopes.delete(token);
+      const result = { closed: 0, failed: 0, preserved: preexisting?.size ?? 0 };
+      if (!preexisting || !state.browser) return result;
+      let pages: PageLike[] = [];
+      try { pages = await state.browser.pages(); } catch { return result; }
+      for (const page of pages) {
+        // LandOS's own working tab is always LandOS-owned: it only ever exists
+        // because withWorkingPage created it (for the sign-in step or the search
+        // itself). It is closed even though it predates this scope — otherwise
+        // every run leaves one more authenticated LandPortal page behind, which
+        // is precisely the leak. Re-acquiring a working tab is cheap.
+        const landosOwned = page === state.workingPage;
+        // Any other tab that was already open is the operator's. Never touched.
+        if (preexisting.has(page) && !landosOwned) continue;
+        try {
+          if (landosOwned) state.workingPage = null;
+          await (page as unknown as { close?: () => Promise<void> }).close?.();
+          result.closed += 1;
+          if (preexisting.has(page)) result.preserved -= 1;
+        } catch {
+          result.failed += 1;
+        }
+      }
+      return result;
+    },
     async open(url, opts) { return nav(url, opts?.timeoutMs ?? timeoutDefault); },
     async search(query, opts) {
       await ensureBrowserSession(deps);
@@ -1531,33 +1727,102 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await page.evaluate(PICK as unknown as () => boolean, method);
       await new Promise((r) => setTimeout(r, 700));
     },
+    // ── JURISDICTION SCOPE ───────────────────────────────────────────────
+    // ROOT CAUSE THIS REPLACES: the previous implementation reported success
+    // whenever it managed to CLICK an option, never reading back what the widget
+    // then displayed. A dependent county list that had not finished loading, a
+    // still-disabled control, or a click the widget ignored all produced a
+    // "confirmed" scope while both dropdowns still displayed "Select Value" —
+    // and the search was submitted unscoped. It also addressed the dropdowns by
+    // their position among ALL select2 widgets on the page, and never cleared a
+    // selection left over from the previous property.
+    //
+    // Now: address the controls by their own labels, clear stale selections,
+    // wait for the DEPENDENT list to actually populate, and count a filter as
+    // applied only when the widget VISIBLY renders the chosen value.
     async setScope(values, opts) {
       const page = await getWorkingPage();
       const confirmed: string[] = [];
-      // Drive the search-scope dropdowns in order (e.g. State, then County). Works
-      // with Select2 widgets (open → type → click result) — a standard library.
+      const budget = Math.max(2000, Math.min(opts.timeoutMs, 15000));
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      // Read every scope control's rendered label + state, in page order. This is
+      // the single source of truth for "what is on screen" — used to wait, to
+      // decide whether to clear, and to confirm.
+      const readControls = (): Promise<ScopeControlView[]> => page.evaluate(SCOPE_CONTROLS_SCRIPT as unknown as () => ScopeControlView[]);
+
+      // Wait until `predicate` holds for the rendered controls, or the budget runs out.
+      const waitFor = async (predicate: (c: ScopeControlView[]) => boolean, ms: number): Promise<ScopeControlView[]> => {
+        const deadline = Date.now() + ms;
+        let view = await readControls();
+        while (!predicate(view) && Date.now() < deadline) {
+          await sleep(200);
+          view = await readControls();
+        }
+        return view;
+      };
+
       for (let i = 0; i < values.length; i++) {
         const val = values[i];
-        const opened = await page.evaluate(((w: number) => {
-          const conts = Array.from(document.querySelectorAll('.search-selects-wr .select2-container, .select2-container')) as any[];
-          const c = conts[w]; if (!c) return false;
-          if ((c.className || '').includes('disabled')) return false;
-          const sel = c.querySelector('.select2-selection'); if (!sel) return false;
-          sel.dispatchEvent(new (window as any).MouseEvent('mousedown', { bubbles: true })); sel.click(); return true;
-        }) as unknown as () => boolean, i);
+        // A DEPENDENT control (county) only becomes usable once its parent
+        // selection has loaded its option list. Wait for it instead of walking
+        // past a still-disabled widget and leaving the filter unset.
+        let view = await waitFor((c) => !!c[i] && !c[i].disabled, i === 0 ? 1500 : budget);
+        if (!view[i] || view[i].disabled) continue;
+
+        // Stale scope from a previous property is cleared before anything new is
+        // applied, so one property's county can never narrow another's search.
+        if (view[i].selected && view[i].selected!.toLowerCase() !== val.toLowerCase()) {
+          await page.evaluate(CLEAR_SCOPE_SCRIPT as unknown as () => void, i);
+          await sleep(250);
+        }
+
+        const opened = await page.evaluate(OPEN_SCOPE_SCRIPT as unknown as () => boolean, i);
         if (!opened) continue;
-        await new Promise((r) => setTimeout(r, 450));
-        await page.evaluate(((v: string) => { const sf = document.querySelector('.select2-search__field') as any; if (sf) { sf.value = v; sf.dispatchEvent(new Event('input', { bubbles: true })); sf.dispatchEvent(new (window as any).KeyboardEvent('keyup', { bubbles: true })); } }) as unknown as () => void, val);
-        await new Promise((r) => setTimeout(r, 900));
-        const picked = await page.evaluate(((v: string): boolean => {
-          const opts2 = Array.from(document.querySelectorAll('.select2-results__option')) as any[];
-          const el = opts2.find((o) => (o.textContent || '').trim().toLowerCase() === v.toLowerCase()) || opts2.find((o) => (o.textContent || '').trim().toLowerCase().includes(v.toLowerCase()));
-          if (el) { el.dispatchEvent(new (window as any).MouseEvent('mouseup', { bubbles: true })); el.click(); return true; } return false;
-        }) as unknown as () => boolean, val);
-        if (picked) confirmed.push(val);
-        await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 1200)));
+        await sleep(400);
+        await page.evaluate(TYPE_SCOPE_SCRIPT as unknown as () => void, val);
+
+        // Wait for the option list to actually contain the wanted value. A fixed
+        // sleep is what let an unloaded county list look like "no such county".
+        const listReady = await (async () => {
+          const deadline = Date.now() + budget;
+          while (Date.now() < deadline) {
+            if (await page.evaluate(HAS_SCOPE_OPTION_SCRIPT as unknown as () => boolean, val)) return true;
+            await sleep(200);
+          }
+          return false;
+        })();
+        if (!listReady) { await page.evaluate(CLOSE_SCOPE_SCRIPT as unknown as () => void); continue; }
+
+        await page.evaluate(PICK_SCOPE_SCRIPT as unknown as () => boolean, val);
+
+        // VISUAL CONFIRMATION. The widget must render the chosen value before we
+        // report the filter applied. Anything else and this returns nothing for
+        // this control, which is what blocks the search downstream.
+        view = await waitFor((c) => !!c[i]?.selected && scopeLabelMatches(c[i].selected!, val), budget);
+        if (view[i]?.selected && scopeLabelMatches(view[i].selected!, val)) confirmed.push(view[i].selected!);
       }
       return confirmed;
+    },
+    // The visual read the search-configuration checkpoint compares against.
+    async readScope() {
+      const page = await getWorkingPage();
+      const controls = await page.evaluate(SCOPE_CONTROLS_SCRIPT as unknown as () => ScopeControlView[]);
+      if (!controls.length) return { available: false, state: null, county: null, extras: [] };
+      const byRole = (rx: RegExp): ScopeControlView | undefined => controls.find((c) => rx.test(c.label));
+      // Prefer the control's own label; fall back to page order (state, county)
+      // only when the surface labels nothing.
+      const state = byRole(/state/i) ?? controls[0];
+      const county = byRole(/count(y|ies)/i) ?? controls[1];
+      const extras = controls
+        .filter((c) => c !== state && c !== county && c.selected)
+        .map((c) => `${c.label || 'filter'}: ${c.selected}`);
+      return {
+        available: true,
+        state: state?.selected ?? null,
+        county: county?.selected ?? null,
+        extras,
+      };
     },
     async screenshot(purpose, opts): Promise<BrowserScreenshot> {
       const page = await getWorkingPage();

@@ -199,7 +199,7 @@ import {
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
 import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, linkPropertyToDeal, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard, addPerson, linkPerson } from './deal-card.js';
-import { readPropertySummaryForDeal, synchronizePropertySummaryForDeal } from './property-summary-legacy-adapter.js';
+import { readPropertySummaryForDeal, synchronizePropertySummaryForDeal, reconcileCanonicalIdentity, reconcileAllPendingCanonicalIdentities } from './property-summary-legacy-adapter.js';
 import { readGovernmentRecordsForDeal, synchronizeGovernmentRecordsForDeal } from './government-records-legacy-adapter.js';
 import { resolveGovernmentRecordArtifactPage } from './government-records-operator.js';
 import { readZoningLandUseForDeal, synchronizeZoningLandUseForDeal } from './zoning-legacy-adapter.js';
@@ -1492,6 +1492,12 @@ export function registerLandosRoutes(app: Hono): void {
     researchMissionRecoveryScheduled = true;
     setTimeout(() => {
       for (const missionId of recoverableResearchMissionIds()) scheduleResearchMission(missionId);
+      // Startup reconciliation: a Deal Card confirmed by an older code path may
+      // have an accepted parcel identity with no versioned Property Summary,
+      // which made one panel say "confirmed 1.00" while another said the parcel
+      // was unverified and the pipeline was locked. Reconcile once at start so
+      // no GET ever has to write to make the card consistent.
+      try { reconcileAllPendingCanonicalIdentities(); } catch { /* recovery never blocks startup */ }
     }, 0);
   }
   app.get('/api/landos/overview', (c) => {
@@ -2824,7 +2830,7 @@ export function registerLandosRoutes(app: Hono): void {
       if (!existingCard) {
         try { linkPropertyToDeal({ dealCardId, cardId: card.id, role: 'subject' }); } catch { /* link is idempotent-best-effort */ }
       }
-      try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks */ }
+      try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks */ } try { reconcileCanonicalIdentity({ dealCardId, actor: 'parcel-confirmation', changeReason: 'Canonical parcel identity confirmed; versioned Property Summary built from the accepted identity.' }); } catch { /* reconciliation never blocks confirmation */ }
       try { attachCardActivity({ cardId: card.id, agentId: 'landos/intake-resolution', kind: 'parcel_resolution', summary: `Parcel confirmed from Smart Intake candidates via ${p.verificationSource ?? 'an approved parcel-level source'}; canonical identity promoted through the standard resolution path. Screenshot candidates themselves remain non-canonical evidence.`, ref: `intake-resolution:${dealCardId}` }); } catch { /* history is best-effort */ }
       return { canonicalPromotionApplied: true, cardId: card.id, note: `Canonical identity was promoted through the standard approved path from the ${p.verificationSource ?? 'approved parcel-level source'} record (never from screenshot text). Downstream research eligibility now follows the standard confirmed-parcel gate.` };
     } catch (error) {
@@ -5787,7 +5793,7 @@ export function registerLandosRoutes(app: Hono): void {
         const dealCardId = ensureDealCardForProperty({ cardId: card.id, entity, title: researchAddr });
         try { attachCardActivity({ cardId: card.id, agentId: 'acquire', kind: 'intake_attempt', summary: 'Property intake preserved for resolution.', ref: JSON.stringify({ rawInput: text, parsed: cls.parsedFields, resolutionStatus: resolution.resolutionStatus }) }); } catch { /* history is best-effort */ }
         // Persist the parcel-identity verdict (Phase 1: written, not yet read).
-        try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ }
+        try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ } try { reconcileCanonicalIdentity({ dealCardId, actor: 'parcel-confirmation', changeReason: 'Canonical parcel identity confirmed; versioned Property Summary built from the accepted identity.' }); } catch { /* reconciliation never blocks confirmation */ }
         // Capture the resolution trace so the Deal Card opens the Resolution view.
         try { writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(text.trim(), cls.parsedFields, resolution)); } catch { /* snapshot never blocks the card */ }
         // On a wrong-parcel conflict the FIRST next action is the hard-stop itself.
@@ -5886,7 +5892,7 @@ export function registerLandosRoutes(app: Hono): void {
     try { attachCardActivity({ cardId: card.id, agentId: 'acquire', kind: 'intake_attempt', summary: 'Property intake preserved for resolution.', ref: JSON.stringify({ rawInput: text, parsed: cls.parsedFields, resolutionStatus: resolution.resolutionStatus }) }); } catch { /* history is best-effort */ }
     // Persist the parcel-identity verdict (Phase 1: written, not yet read). This
     // is the single stored state that will replace the two divergent verdicts.
-    try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ }
+    try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks the card */ } try { reconcileCanonicalIdentity({ dealCardId, actor: 'parcel-confirmation', changeReason: 'Canonical parcel identity confirmed; versioned Property Summary built from the accepted identity.' }); } catch { /* reconciliation never blocks confirmation */ }
 
     // ── MANDATORY IDENTITY GATE ─────────────────────────────────────────────
     // Property Resolution is the gatekeeper. A property can be `matched` (credible)

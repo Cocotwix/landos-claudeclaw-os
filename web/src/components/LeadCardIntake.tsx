@@ -254,11 +254,18 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
   const [submissionKey, setSubmissionKey] = useState(() => globalThis.crypto?.randomUUID?.() ?? `intake-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const [viewerArtifact, setViewerArtifact] = useState<IntakeArtifact | null>(null);
   const [viewerActualSize, setViewerActualSize] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const withToken = (url: string) => token && url.startsWith('/api/')
     ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
     : url;
-  const load = () => apiGet<{ submissions: Submission[] }>(`/api/landos/deal-cards/${dealId}/intake`).then((result) => setSubmissions(result.submissions)).catch(() => setSubmissions([]));
+  // Retained originals are evidence. A failed reload must never blank them: an
+  // empty panel is indistinguishable from "this Deal Card never had a
+  // screenshot", which is exactly how retained evidence appears to go missing.
+  // On failure keep whatever is already on screen and say the reload failed.
+  const load = () => apiGet<{ submissions: Submission[] }>(`/api/landos/deal-cards/${dealId}/intake`)
+    .then((result) => { setSubmissions(result.submissions); setLoadError(''); })
+    .catch((error: Error) => setLoadError(`Retained Smart Intake evidence could not be reloaded (${error.message}). Nothing was deleted; reload the Deal Card to try again.`));
   useEffect(() => { void load(); }, [dealId]);
   useEffect(() => {
     setViewerArtifact(null);
@@ -363,11 +370,18 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
     finally { setBusy(false); }
   };
   return (
-    <section id="deal-card-smart-intake" data-testid="smart-intake" onPaste={handlePaste} class="scroll-mt-24 rounded-lg border-2 border-[var(--color-accent)] bg-[var(--color-card)] p-4 space-y-3 shadow-sm">
+    // RETAINED EVIDENCE FIRST. The compose controls are ordered LAST (see the
+    // order-last group below), so opening Smart Intake shows the exact original
+    // screenshot, its provenance and its editable candidates immediately —
+    // previously the retained original sat under the whole compose form, below
+    // the fold, which is how it read as missing from the Deal Card.
+    <section id="deal-card-smart-intake" data-testid="smart-intake" onPaste={handlePaste} class="scroll-mt-24 flex flex-col gap-3 rounded-lg border-2 border-[var(--color-accent)] bg-[var(--color-card)] p-4 shadow-sm">
       <div>
         <h3 class="text-[14px] font-semibold text-[var(--color-text)]">Smart Intake — update this Deal Card</h3>
         <div class="text-[11.5px] text-[var(--color-text-muted)]">Paste or type addresses, parcel IDs, seller or wholesaler details, notes, emails, and call transcripts. Paste screenshots with Ctrl+V, choose images, or drop PNG, JPG/JPEG, and WEBP files below. Text remains editable and nothing submits until you choose Save and organize.</div>
       </div>
+      {loadError && <div data-testid="smart-intake-load-error" class="rounded-md border border-[var(--color-status-warn,var(--color-border))] px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-300">{loadError}</div>}
+      <div class="order-last flex flex-col gap-3">
       <div class="flex gap-2 items-start flex-wrap">
         <select aria-label="Information type" class={`${inputClass} sm:w-44`} value={type} onChange={(event) => setType((event.target as HTMLSelectElement).value as 'general' | 'transcript')}>
           <option value="general">General information</option><option value="transcript">Call transcript</option>
@@ -387,6 +401,7 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
       <div class="flex items-center gap-3">
         <button type="button" data-testid="smart-intake-submit" disabled={busy || (!text.trim() && pendingImages.length === 0)} onClick={() => void submit()} class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-accent)] disabled:opacity-40">{busy ? 'Organizing…' : 'Save and organize'}</button>
         {message && <div data-testid="smart-intake-message" class="text-[11.5px] text-[var(--color-text-muted)]">{message}</div>}
+      </div>
       </div>
       {submissions.length > 0 && (() => {
         const latest = submissions[0];

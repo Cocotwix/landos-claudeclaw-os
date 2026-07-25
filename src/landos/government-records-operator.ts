@@ -20,6 +20,7 @@ import {
   type PropertyIdentityVersion,
   type PropertyIdentityVersionInput,
 } from './property-summary-slice.js';
+import { classifyParcelResearchAttempt } from './parcel-research-depth.js';
 import { landosArtifactPath } from './storage-profile.js';
 
 export interface GovernmentRecordArtifactInput {
@@ -507,12 +508,46 @@ function appendClaimEvidence(input: {
   return [rawEvidenceId, normalizedEvidenceId];
 }
 
+/**
+ * A collector may report a source as RETRIEVED only when it obtained something
+ * parcel-specific. Reaching an assessor/GIS/recorder/tax department page is a
+ * source lead, not a public-record fact about the parcel, and a `succeeded`
+ * status on nothing but department navigation reads to the operator as completed
+ * research. This downgrade is the enforcement point.
+ */
+function honestCollectorStatus(input: GovernmentRecordCollectorInput): {
+  status: GovernmentRecordCollectorInput['status'];
+  note: string | null;
+} {
+  if (input.status === 'blocked' || input.status === 'failed') return { status: input.status, note: null };
+  const parcelSpecificClaims = input.claims.filter((c) => c.association !== 'not_applicable').length;
+  const verdict = classifyParcelResearchAttempt({
+    sourceName: input.sourceJurisdiction || input.platform,
+    url: input.claims.find((c) => c.sourceUrl)?.sourceUrl ?? null,
+    parcelFactCount: parcelSpecificClaims,
+    retainedDocumentCount: input.artifacts.length,
+    // A collector that produced no parcel-specific claim and no artifact did not
+    // complete a parcel search unless a locator status says the source itself
+    // answered — "no matching record" is a completed search, not a missing one.
+    parcelSearchExecuted: input.claims.some((c) => c.locatorStatus === 'no_matching_record_found'),
+  });
+  if (verdict.parcelSpecific) return { status: input.status, note: null };
+  if (verdict.depth === 'general_link_only' && input.status === 'succeeded') {
+    return { status: 'partial', note: verdict.statement };
+  }
+  return { status: input.status, note: verdict.statement };
+}
+
 function finishCollector(input: GovernmentRecordCollectorInput & {
   jobId: number;
   attemptId: number;
   collectorInputHash: string;
 }): GovernmentRecordCollectorJobView {
   const db = getLandosDb();
+  const honest = honestCollectorStatus(input);
+  input = honest.status === input.status
+    ? input
+    : { ...input, status: honest.status, error: input.error ?? honest.note };
   const artifactMap = new Map<string, number>();
   for (const artifact of input.artifacts) {
     const retained = retainArtifact({

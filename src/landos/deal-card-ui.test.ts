@@ -54,7 +54,10 @@ describe('Deal Card — operator-language tabs (Property Intelligence Report)', 
 
   it('lands on the Overview (the memo read), not a worksheet', () => {
     expect(SRC).toMatch(/useState<DealTab>\('overview'\)/);
-    expect(SRC).toMatch(/setActiveTab\('overview'\)/);
+    // Opening a card restores that card's remembered workspace, which defaults to
+    // Overview. Reloading the SAME card no longer snaps the operator back.
+    expect(SRC).toMatch(/setActiveTabState\(restoreDealTab\(id\)\)/);
+    expect(SRC).toMatch(/return 'overview';/);
     expect(SRC).toMatch(/activeTab === 'overview'/);
     expect(SRC).toMatch(/<OverviewTab/);
   });
@@ -247,8 +250,15 @@ describe('Deal Card — Strategy answers "should I pursue this opportunity?"', (
   });
 
   it('does not duplicate parcel facts, imagery, or the valuation panel on Strategy', () => {
-    const strategyBlocks = SRC.split("activeTab === 'strategy'").slice(1).join(' ');
-    expect(strategyBlocks).not.toMatch(/<KeyFactsGrid|<PropertyHeaderSection|<HeroVisual|<ValuationPanel|<VisualIntelligencePanel/);
+    // Bound each Strategy block at the NEXT tab conditional. Joining everything
+    // after the first occurrence would sweep in other tabs' panels and fail on
+    // where the block sits in the file rather than on what Strategy renders.
+    const parts = SRC.split("activeTab === 'strategy'").slice(1);
+    for (const part of parts) {
+      const nextTab = part.search(/activeTab === '/);
+      const block = nextTab === -1 ? part : part.slice(0, nextTab);
+      expect(block).not.toMatch(/<KeyFactsGrid|<PropertyHeaderSection|<HeroVisual|<ValuationPanel|<VisualIntelligencePanel/);
+    }
   });
 
   it('the Seller tab shows the practical seller workspace without readiness UI', () => {
@@ -377,13 +387,13 @@ describe('Deal Card — non-regression: APN conflict hard stop', () => {
       SRC.indexOf('{/* Resolution view'),
       SRC.indexOf("{mode === 'view' && deal && !showResolution"),
     );
-    const confirmedBranch = SRC.slice(
-      SRC.indexOf("{mode === 'view' && deal && !showResolution"),
-      SRC.indexOf('{/* ══ OVERVIEW TAB'),
-    );
+    // The confirmed branch runs from its guard to the end of the component. The
+    // Smart Intake panel is docked at the END of that branch (below the tabbed
+    // workspace, mounted on every tab) rather than gated on one tab.
+    const confirmedBranch = SRC.slice(SRC.indexOf("{mode === 'view' && deal && !showResolution"));
     expect(resolutionBranch).toMatch(/!terminalParcel[\s\S]*<SmartIntakePanel/);
     expect(resolutionBranch).toMatch(/Smart Intake evidence and editable candidates remain available/);
-    expect(confirmedBranch).toMatch(/<SmartIntakePanel/);
+    expect(confirmedBranch).toMatch(/data-testid="smart-intake-dock"[\s\S]*<SmartIntakePanel/);
   });
 });
 
