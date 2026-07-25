@@ -206,3 +206,131 @@ describe('redactSecrets', () => {
     expect(redacted).toBe('line1\n[REDACTED]\nline3');
   });
 });
+
+// ── Raw registered-secret coverage ───────────────────────────────────
+//
+// The guard used to scan only the base64 and URL-encoded variants of a
+// registered value. That left the most likely leak — the credential in
+// plaintext — undetected whenever its shape matched none of the generic
+// patterns above. A native Telegram bot token and an opaque dashboard token
+// are exactly that case.
+//
+// Every secret below is SYNTHETIC.
+
+describe('scanForSecrets — raw registered values', () => {
+  // Shapeless on purpose: matches none of the built-in patterns, so only the
+  // registered-value path can catch it.
+  const SHAPELESS = 'zzzz-shapeless-registered-secret-zzzz';
+  const TELEGRAM = '123456789:AAFakeSyntheticTelegramTokenValue00000';
+  const DASHBOARD = 'synthetic-dashboard-token-8f3a1c7e9b2d4056';
+
+  it('blocks a raw synthetic secret that matches no generic pattern', () => {
+    const text = `here is the value ${SHAPELESS} in plain sight`;
+    // Baseline: without registration the guard has nothing to match on, which
+    // is precisely why the raw variant is needed.
+    expect(scanForSecrets(text)).toHaveLength(0);
+
+    const matches = scanForSecrets(text, [SHAPELESS]);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].type).toBe('env_value');
+    expect(matches[0].position).toBe(text.indexOf(SHAPELESS));
+    expect(matches[0].length).toBe(SHAPELESS.length);
+    expect(redactSecrets(text, matches)).not.toContain(SHAPELESS);
+  });
+
+  it('blocks a raw Telegram-shaped bot token', () => {
+    const text = `polling https://api.telegram.org/bot${TELEGRAM}/getUpdates`;
+    const matches = scanForSecrets(text, [TELEGRAM]);
+    expect(matches.some((m) => m.type === 'env_value')).toBe(true);
+    expect(redactSecrets(text, matches)).not.toContain(TELEGRAM);
+  });
+
+  it('blocks a raw dashboard token carried in a URL', () => {
+    const text = `GET /deals?token=${DASHBOARD}&tab=intel`;
+    const matches = scanForSecrets(text, [DASHBOARD]);
+    expect(matches).toHaveLength(1);
+    expect(redactSecrets(text, matches)).not.toContain(DASHBOARD);
+  });
+
+  it('still blocks the URL-encoded variant', () => {
+    const secret = 'synthetic value/with+special?chars=here';
+    const encoded = encodeURIComponent(secret);
+    expect(encoded).not.toBe(secret);
+    const text = `payload=${encoded}`;
+    const matches = scanForSecrets(text, [secret]);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].type).toBe('env_value');
+    expect(redactSecrets(text, matches)).not.toContain(encoded);
+  });
+
+  it('still blocks the base64 variant', () => {
+    const encoded = Buffer.from(SHAPELESS).toString('base64');
+    const text = `blob ${encoded} end`;
+    const matches = scanForSecrets(text, [SHAPELESS]);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].type).toBe('env_value');
+    expect(redactSecrets(text, matches)).not.toContain(encoded);
+  });
+
+  it('catches raw, base64 and URL-encoded forms present together', () => {
+    const b64 = Buffer.from(SHAPELESS).toString('base64');
+    const text = `raw=${SHAPELESS} b64=${b64}`;
+    const matches = scanForSecrets(text, [SHAPELESS]);
+    expect(matches).toHaveLength(2);
+    const redacted = redactSecrets(text, matches);
+    expect(redacted).not.toContain(SHAPELESS);
+    expect(redacted).not.toContain(b64);
+  });
+
+  it('handles multiple registered secrets in one payload', () => {
+    const text = `a=${SHAPELESS} b=${DASHBOARD} c=${TELEGRAM}`;
+    const matches = scanForSecrets(text, [SHAPELESS, DASHBOARD, TELEGRAM]);
+    const redacted = redactSecrets(text, matches);
+    for (const secret of [SHAPELESS, DASHBOARD, TELEGRAM]) {
+      expect(redacted).not.toContain(secret);
+    }
+    // Structure around the values survives.
+    expect(redacted).toContain('a=');
+    expect(redacted).toContain('b=');
+    expect(redacted).toContain('c=');
+  });
+
+  it('leaves ordinary non-secret text alone even with secrets registered', () => {
+    const text = 'Deal 32 identity confirmed for APN 073090 04200 in Roane County, TN.';
+    expect(scanForSecrets(text, [SHAPELESS, DASHBOARD, TELEGRAM])).toHaveLength(0);
+  });
+
+  it('does not fire on a partial or near-miss of a registered secret', () => {
+    // A prefix, a suffix and a one-character mutation must all stay clean:
+    // substring matching on secrets is how a guard starts eating real output.
+    const samples = [
+      SHAPELESS.slice(0, SHAPELESS.length - 1),
+      SHAPELESS.slice(1),
+      `${SHAPELESS.slice(0, -1)}Q`,
+      'zzzz-shapeless-registered-secretz-zzzz',
+    ];
+    for (const sample of samples) {
+      expect(scanForSecrets(`text ${sample} text`, [SHAPELESS])).toHaveLength(0);
+    }
+  });
+
+  it('does not fire on unrelated text that shares a common word', () => {
+    const secret = 'landos-production-signing-secret-4471';
+    const text = 'The landos production run finished; signing is disabled in this environment.';
+    expect(scanForSecrets(text, [secret])).toHaveLength(0);
+  });
+
+  it('still ignores registered values of 8 characters or fewer', () => {
+    // Short values collide with ordinary output; blanking them would corrupt
+    // legitimate responses.
+    const text = 'the shortpw token appears here';
+    expect(scanForSecrets(text, ['shortpw'])).toHaveLength(0);
+  });
+
+  it('reports every occurrence of a repeated raw secret', () => {
+    const text = `${SHAPELESS} ... and again ${SHAPELESS}`;
+    const matches = scanForSecrets(text, [SHAPELESS]);
+    expect(matches).toHaveLength(2);
+    expect(redactSecrets(text, matches)).not.toContain(SHAPELESS);
+  });
+});

@@ -1,7 +1,12 @@
 // Pass 2 upstream adopt (#51 security hardening, manual reimplementation):
-// constant-time dashboard-token comparison + opt-in CORS allowlist. Verifies the
-// auth gate still behaves (right token passes, wrong rejects incl. same-length)
-// and that the default CORS behavior is unchanged (back-compat).
+// constant-time dashboard-token comparison + CORS origin allowlist. Verifies the
+// auth gate still behaves (right token passes, wrong rejects incl. same-length).
+//
+// The CORS expectation here was DELIBERATELY changed in the Phase 2 security
+// pass. It used to assert the back-compat default of
+// `Access-Control-Allow-Origin: *`; that wildcard is now closed by default, so
+// the assertion asserts the denial instead. Full origin-policy coverage lives
+// in src/dashboard-cors.test.ts.
 
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import type { Hono } from 'hono';
@@ -32,8 +37,14 @@ describe('dashboard timing-safe token + CORS (upstream #51 adopt)', () => {
     expect(res.status).toBe(401);
   });
 
-  it('default CORS behavior is unchanged (Access-Control-Allow-Origin: *) when no allowlist set', async () => {
+  it('no longer answers a foreign origin with a wildcard', async () => {
     const res = await app.request('/api/health?token=' + TOKEN, { headers: { Origin: 'http://example.com' } });
-    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('still allows the local dashboard origin', async () => {
+    const res = await app.request('/api/health?token=' + TOKEN, { headers: { Origin: 'http://localhost:3141' } });
+    expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:3141');
+    expect(res.status).not.toBe(401);
   });
 });

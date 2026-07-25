@@ -66,6 +66,7 @@ Edit `warroom/voices.json` to map each agent to a Gemini Live voice name. Availa
 | `GOOGLE_API_KEY` | Yes (live mode) | Google AI key for Gemini Live |
 | `WARROOM_MODE` | No | `live` (default) or `legacy` |
 | `WARROOM_PORT` | No | WebSocket port (default: 7860) |
+| `WARROOM_BIND` | No | Bind address (default: `127.0.0.1`). The War Room socket has no connection-level auth of its own — the dashboard token only gates the Hono proxy, which a direct dial to this port bypasses. Loopback is the safe default; set this only to intentionally expose the War Room to your LAN. |
 | `WARROOM_LIVE_MODEL` | No | Gemini Live model id |
 | `WARROOM_LIVE_VOICE` | No | Default Gemini voice name (default: `Charon`) |
 | `DAILY_API_KEY` | Only for `meet` flow | Daily.co API key for video meetings |

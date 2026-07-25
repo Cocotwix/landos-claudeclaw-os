@@ -47,3 +47,28 @@ AGENT_VOICES = load_voices()
 
 # Default agent if routing can't determine who should respond
 DEFAULT_AGENT = "main"
+
+
+# ── Network bind ──────────────────────────────────────────────────────
+DEFAULT_WARROOM_BIND = "127.0.0.1"
+
+
+def resolve_bind() -> str:
+    """Resolve the War Room WebSocket bind address.
+
+    Loopback by DEFAULT. The War Room socket carries no connection-level
+    auth of its own: the dashboard token gates the Hono proxy in
+    src/dashboard.ts, and a client that dials this port directly bypasses
+    that proxy entirely. Binding 0.0.0.0 therefore published an
+    unauthenticated agent-control-and-microphone socket to every host that
+    could reach the machine.
+
+    The dashboard proxy already dials 127.0.0.1 (src/dashboard.ts), so a
+    normal install is unaffected. An operator who genuinely wants LAN
+    exposure opts in explicitly via WARROOM_BIND, mirroring DASHBOARD_BIND
+    on the dashboard side. A blank or whitespace-only value is treated as
+    unset so a stray `WARROOM_BIND=` in .env cannot silently produce a
+    bind-to-everything default.
+    """
+    raw = os.environ.get("WARROOM_BIND", "")
+    return raw.strip() or DEFAULT_WARROOM_BIND

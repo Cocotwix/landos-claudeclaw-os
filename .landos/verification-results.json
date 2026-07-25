@@ -1,23 +1,23 @@
 {
   "tests": {
     "status": "PASS",
-    "timestamp": "2026-07-25T01:54:23-04:00",
-    "summary": "321 files, 3963 tests, 0 failures (vitest run, full suite)"
+    "timestamp": "2026-07-25T14:06:45-04:00",
+    "summary": "325 files, 4117 tests, 0 failures (vitest run, full suite)"
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-07-25T01:55:10-04:00",
-    "summary": "tsc --noEmit (server). Frontend web/tsconfig.json is not green and has no npm script: 92 pre-existing errors, 35 in files this sprint never touched, 0 in changed regions"
+    "timestamp": "2026-07-25T14:07:20-04:00",
+    "summary": "tsc --noEmit (server). Frontend web/tsconfig.json is still not green and has no npm script: 92 pre-existing errors, 0 of them in files this phase touched; the authoritative build path passes"
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-07-25T01:56:02-04:00",
+    "timestamp": "2026-07-25T14:08:05-04:00",
     "summary": "server TypeScript build and Vite production bundle passed; Vite emitted only the existing large-chunk advisory"
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-07-25T01:56:20-04:00",
-    "pid": 71864,
+    "timestamp": "2026-07-25T14:09:22-04:00",
+    "pid": 8892,
     "url": "http://localhost:3141"
   }
 }

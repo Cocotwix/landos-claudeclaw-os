@@ -343,23 +343,73 @@ function claimBrowserPairing(code: string): BrowserPairing | null {
   return pairing && pairing.expiresAt > Date.now() ? pairing : null;
 }
 
-// Opt-in CORS origin allowlist (adopted from upstream security hardening #51).
-// Default is UNCHANGED ('*') for back-compat; set DASHBOARD_CORS_ORIGINS to a
-// comma-separated list to restrict Access-Control-Allow-Origin to those origins.
+// ── CORS origin policy ───────────────────────────────────────────────
+//
+// The default used to be a literal '*'. Nothing was directly exploitable
+// through it — every /api/ route requires either the master token or the
+// HttpOnly `SameSite=Strict` session cookie, and a browser refuses to expose a
+// credentialed response when the server answers `Access-Control-Allow-Origin: *`
+// (we never send Access-Control-Allow-Credentials). But a wildcard is a
+// standing footgun: it means the day any route answers without a credential,
+// every website the operator visits can read it, silently and retroactively.
+//
+// So the default is now a closed allowlist:
+//   - loopback origins on any port and scheme (the normal local dashboard),
+//   - the configured DASHBOARD_URL origin (the Cloudflare-tunnel install),
+//   - anything the operator names explicitly in DASHBOARD_CORS_ORIGINS.
+// Everything else gets no Access-Control-Allow-Origin header at all, which is
+// how a browser is told "no".
+//
+// This is layered ON TOP of the existing session model, not instead of it:
+// hashed browser sessions, the token gate and the CSRF origin check below are
+// all unchanged. Requests with no Origin header (same-origin fetches, curl,
+// the health probe, the managed runtime) are untouched.
 const DASHBOARD_CORS_ORIGINS = (process.env.DASHBOARD_CORS_ORIGINS ?? '')
   .split(',').map((s) => s.trim()).filter(Boolean);
-function resolveCorsOrigin(reqOrigin: string | undefined): string | null {
-  if (DASHBOARD_CORS_ORIGINS.length === 0) return '*'; // unchanged default
-  if (reqOrigin && DASHBOARD_CORS_ORIGINS.includes(reqOrigin)) return reqOrigin;
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
+
+/** Hostname of DASHBOARD_URL, when the operator has configured one. */
+function configuredDashboardHost(): string {
+  const raw = (DASHBOARD_URL || '').trim();
+  if (!raw) return '';
+  try { return new URL(raw).hostname; } catch { return ''; }
+}
+
+export function resolveCorsOrigin(
+  reqOrigin: string | undefined,
+  allowlist: string[] = DASHBOARD_CORS_ORIGINS,
+  dashboardHost: string = configuredDashboardHost(),
+): string | null {
+  // No Origin means this is not a cross-origin browser request. Same-origin
+  // fetches, curl and the health probe all land here; they need no header.
+  if (!reqOrigin) return null;
+
+  // Exact-origin allowlist entries win first — they are the operator's
+  // deliberate configuration.
+  if (allowlist.includes(reqOrigin)) return reqOrigin;
+
+  let host: string;
+  try {
+    host = new URL(reqOrigin).hostname;
+  } catch {
+    return null; // malformed Origin -> deny
+  }
+
+  if (LOOPBACK_HOSTS.has(host)) return reqOrigin;
+  if (dashboardHost && host === dashboardHost) return reqOrigin;
   return null; // not allowlisted -> omit the header (deny)
 }
 
 export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
 
-  // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
+  // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers).
+  // The allowed set is resolved per request, so `Vary: Origin` is required or a
+  // cache could hand one origin's response to another.
   app.use('*', async (c, next) => {
     const origin = resolveCorsOrigin(c.req.header('Origin'));
+    c.header('Vary', 'Origin');
     if (origin) c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type');

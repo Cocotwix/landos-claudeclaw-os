@@ -7,6 +7,31 @@ dist/
 # Environment — never commit API keys
 .env
 
+# Every other .env variant is ignored too, then the documented templates are
+# added back explicitly. Ignoring `.env` alone left the far more dangerous
+# files exposed: a credential-rotation script writes a FULL COPY of .env to
+# `.env.bak-rotate`, and `.env.local` / `.env.production` are equally live.
+# None of those were matched, so a single `git add .` would have staged them.
+# Deny-then-allow rather than enumerating backup suffixes: a suffix nobody
+# predicted is the one that leaks.
+.env*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
+
+# Credential-rotation and generic backup copies, wherever they land. Bare
+# patterns so they match in any directory, not just the repo root.
+*.bak
+*.bak-rotate
+*.bak.rotate
+*.backup
+
+# Deployment configuration filled in with live secrets (the counterpart of a
+# committed *.example). Bare pattern for the same reason as above.
+claudeclaw-deploy.conf
+landos-deploy.conf
+
 # Runtime data — NEVER commit. Contains WhatsApp/Slack messages,
 # session tokens, conversation logs, and database files.
 store/

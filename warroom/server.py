@@ -20,6 +20,9 @@ Usage:
 Environment variables:
     WARROOM_MODE         "live" (default) or "legacy"
     WARROOM_PORT         port to listen on (default: 7860)
+    WARROOM_BIND         bind address (default: 127.0.0.1, loopback only).
+                         Opt in to LAN exposure explicitly; the socket has no
+                         connection-level auth of its own.
     WARROOM_LIVE_MODEL   Gemini Live model id (default: whatever Pipecat ships)
     WARROOM_LIVE_VOICE   Gemini Live voice name (default: "Charon")
 
@@ -94,7 +97,7 @@ except ModuleNotFoundError as e:
     )
     sys.exit(1)
 
-from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT
+from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, resolve_bind
 
 
 logging.basicConfig(
@@ -135,8 +138,12 @@ def make_transport(port: int, audio_in_sr: int = 16000, audio_out_sr: int = 2400
     # first ("Sample rate changed from previously X to Y, which is not
     # supported"). Output stays at 24 kHz — Gemini Live emits 24 kHz audio
     # and Pipecat passes it through unchanged.
+    # Loopback by default. This socket has no connection-level auth of its
+    # own — the dashboard token gates the Hono proxy, which a direct dial to
+    # this port bypasses entirely. LAN exposure is opt-in via WARROOM_BIND.
+    # See config.resolve_bind().
     return WebsocketServerTransport(
-        host="0.0.0.0",
+        host=resolve_bind(),
         port=port,
         params=WebsocketServerParams(
             audio_in_enabled=True,
@@ -714,8 +721,9 @@ async def run_live_mode():
     print_ready(port, "live")
     runner = PipelineRunner(handle_sigterm=True)
     logger.info(
-        "War Room LIVE mode on ws://0.0.0.0:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
-        port, active_agent, active_mode, voice, model or "pipecat-default", len(standard_tools),
+        "War Room LIVE mode on ws://%s:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
+        resolve_bind(), port, active_agent, active_mode, voice,
+        model or "pipecat-default", len(standard_tools),
     )
     await runner.run(task)
     logger.info("War Room session ended.")
@@ -775,7 +783,7 @@ async def run_legacy_mode():
 
     print_ready(port, "legacy")
     runner = PipelineRunner(handle_sigterm=True)
-    logger.info("War Room LEGACY mode on ws://0.0.0.0:%d", port)
+    logger.info("War Room LEGACY mode on ws://%s:%d", resolve_bind(), port)
     await runner.run(task)
     logger.info("War Room session ended.")
 

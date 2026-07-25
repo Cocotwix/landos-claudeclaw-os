@@ -101,6 +101,13 @@ export function scanForSecrets(text: string, protectedValues?: string[]): Secret
       if (value.length <= 8) continue;
 
       const variants: Array<{ encoded: string; label: string }> = [
+        // RAW value first. A credential that leaks verbatim is the most likely
+        // and most damaging case, and it matches neither an encoded variant nor
+        // necessarily any generic shape above: a native Telegram bot token
+        // ("12345:AA...") and an opaque dashboard token have no pattern this
+        // guard recognises. Scanning only the encoded forms let the plaintext
+        // walk straight out.
+        { encoded: value, label: 'raw' },
         { encoded: Buffer.from(value).toString('base64'), label: 'base64' },
         { encoded: encodeURIComponent(value), label: 'url_encoded' },
       ];
