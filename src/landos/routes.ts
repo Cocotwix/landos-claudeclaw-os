@@ -140,6 +140,9 @@ import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialPar
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { launchPropertyIntelligenceMission } from './property-intelligence-mission.js';
+import { MissionGraphStore } from './mission-graph-store.js';
+import { launchFanOutMission, readFanOutMission } from './mission-graph-runner.js';
+import { propertyIntelligenceFanOutDefinition } from './property-intelligence-fanout.js';
 import { makeLivePropertyIntelligenceCollectors } from './property-intelligence-live.js';
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
 import { WindowsCredentialVault } from './windows-credential-vault.js';
@@ -7013,6 +7016,85 @@ export function registerLandosRoutes(app: Hono): void {
     completion.catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'property_intelligence_mission_failed'));
     if (wait) await completion;
     return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
+  });
+
+  // ── Native mission graph: parent mission → child missions → join ───────────
+  // One parent mission fans out to specialist CHILD missions, waits for every
+  // required child to reach a terminal state, and joins their structured
+  // handbacks. A failed, blocked or skipped child is always named in the parent
+  // outcome; it is never silently dropped.
+  const missionGraphStore = new MissionGraphStore();
+  const fanOutDefinition = propertyIntelligenceFanOutDefinition();
+
+  const missionGraphView = (dealCardId: number) => {
+    missionGraphStore.reclaimStaleMissions();
+    const view = readFanOutMission(fanOutDefinition, dealCardId, missionGraphStore);
+    return {
+      label: fanOutDefinition.label,
+      kind: fanOutDefinition.kind,
+      mission: view.mission
+        ? {
+            missionId: view.mission.missionId,
+            sequence: view.mission.sequence,
+            status: view.mission.status,
+            trigger: view.mission.trigger,
+            outcome: view.mission.outcome ?? view.join?.outcome ?? null,
+            startedAt: view.mission.startedAt,
+            completedAt: view.mission.completedAt,
+            error: view.mission.error,
+            failureCategory: view.mission.failureCategory,
+          }
+        : null,
+      children: view.children.map((child) => ({
+        key: child.key,
+        label: child.label,
+        purpose: child.purpose,
+        role: child.role,
+        dependsOn: child.dependsOn,
+        status: child.status,
+        summary: child.summary,
+        failureCategory: child.failureCategory,
+        failureMessage: child.failureMessage,
+        retryable: child.retryable,
+        result: child.result,
+        startedAt: child.startedAt,
+        completedAt: child.completedAt,
+        durationMs: child.durationMs,
+        attempt: child.attempt,
+      })),
+      join: view.join,
+      history: view.history,
+    };
+  };
+
+  // SELECT-only read of the parent mission and every child mission.
+  app.get('/api/landos/deal-cards/:id/mission-graph', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ missionGraph: missionGraphView(id) });
+  });
+
+  app.post('/api/landos/deal-cards/:id/mission-graph/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const wait = body.wait === true;
+
+    const { launch, completion } = launchFanOutMission({
+      definition: fanOutDefinition,
+      scopeId: id,
+      trigger: str(body.actor) ?? 'operator',
+      store: missionGraphStore,
+    });
+    if (launch.alreadyRunning) {
+      logger.info({ dealCardId: id, missionId: launch.missionId }, 'mission_graph_already_running');
+      return c.json({ launch, missionGraph: missionGraphView(id) });
+    }
+    completion.catch((err) => logger.warn({ err, dealCardId: id, missionId: launch.missionId }, 'mission_graph_fanout_failed'));
+    if (wait) await completion;
+    return c.json({ launch, missionGraph: missionGraphView(id) });
   });
 
   // ── Parallel parcel resolution (Official public + LandPortal, concurrent) ──

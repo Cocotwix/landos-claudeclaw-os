@@ -27,6 +27,7 @@ import {
   PropertyIntelligenceVisuals,
   PropertyIntelligenceEvidence,
 } from '@/components/PropertyIntelligencePanel';
+import { MissionGraphPanel } from '@/components/MissionGraphPanel';
 import { CompMap } from '@/components/landos/CompMap';
 import { PublicRecordsPanel, ResourcesContactsPanel, SmartIntakePanel } from '@/components/LeadCardIntake';
 import {
@@ -5167,6 +5168,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                   exactly what the operator needs to move the card forward. */}
               <PropertyIntelligenceLaunch state={propertyIntelligence} />
               <PropertyIntelligenceOverview snapshot={piSnapshot} />
+              <MissionGraphPanel dealId={deal.id} />
               <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
                 Smart Intake evidence and editable candidates remain available while parcel-specific intelligence stays withheld.
               </div>
@@ -5285,6 +5287,9 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
             <div class="space-y-3">
               <PropertyIntelligenceLaunch state={propertyIntelligence} />
               <PropertyIntelligenceOverview snapshot={piSnapshot} />
+              {/* Native parent/child mission orchestration: one parent mission
+                  fans out to specialist children and joins their handbacks. */}
+              <MissionGraphPanel dealId={deal.id} />
             </div>
           )}
           {activeTab === 'overview' && (
