@@ -18,6 +18,8 @@
     "landos:logs": "node scripts/runtime/landos-runtime.mjs logs",
     "landos:health": "node scripts/runtime/landos-runtime.mjs health",
     "landos:runtime:test": "node scripts/runtime/landos-runtime.test.mjs",
+    "landos:hive": "tsx src/hive-cli.ts",
+    "landos:mission": "tsx src/mission-cli.ts",
     "landos:memory:status": "node scripts/memory/landos-memory.mjs status",
     "landos:memory:audit": "node scripts/memory/landos-memory.mjs audit",
     "landos:memory:checkpoint": "node scripts/memory/landos-memory.mjs checkpoint",

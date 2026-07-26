@@ -33,6 +33,8 @@ interface MissionTask {
   completed_at: number | null;
   result: string | null;
   error: string | null;
+  /** Structured taxonomy for a terminal failure (auth, rate_limit, crash, ...). */
+  failure_category?: string | null;
 }
 
 interface Agent { id: string; name: string; description: string; running: boolean; }
@@ -1056,6 +1058,13 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
           {task.result}
         </div>
       )}
+      {/* The category tells an operator at a glance whether this was a provider
+          problem (auth / quota / rate_limit) or a real defect (crash). */}
+      {task.failure_category && (
+        <div class="mt-1.5 text-[10px] uppercase tracking-wide text-[var(--color-status-failed)] font-mono">
+          {task.failure_category}
+        </div>
+      )}
       {task.error && (
         <div class="mt-1.5 text-[10.5px] text-[var(--color-status-failed)] line-clamp-2 font-mono">
           {task.error}
@@ -1250,6 +1259,9 @@ function HistoryList() {
             <div class="text-[13px] text-[var(--color-text)] mb-1">{t.title}</div>
             {t.result && (
               <div class="text-[11.5px] text-[var(--color-text-muted)] whitespace-pre-wrap line-clamp-3 leading-relaxed">{t.result}</div>
+            )}
+            {t.failure_category && (
+              <div class="text-[10px] uppercase tracking-wide text-[var(--color-status-failed)] font-mono">{t.failure_category}</div>
             )}
             {t.error && (
               <div class="text-[11.5px] text-[var(--color-status-failed)] whitespace-pre-wrap line-clamp-2 font-mono">{t.error}</div>

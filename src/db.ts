@@ -77,7 +77,9 @@ function createSchema(database: Database.Database): void {
       last_run    INTEGER,
       last_result TEXT,
       status      TEXT NOT NULL DEFAULT 'active',
-      created_at  INTEGER NOT NULL
+      created_at  INTEGER NOT NULL,
+      -- Structured failure taxonomy for the last run (see failure-classification.ts).
+      last_failure_category TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON scheduled_tasks(status, next_run);
@@ -228,7 +230,11 @@ function createSchema(database: Database.Database): void {
       priority        INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL,
       started_at      INTEGER,
-      completed_at    INTEGER
+      completed_at    INTEGER,
+      -- Structured failure taxonomy (see failure-classification.ts). NULL for
+      -- queued/running/completed tasks; set on every terminal failure so an
+      -- operator can tell a provider auth problem from a real process crash.
+      failure_category TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
@@ -527,6 +533,11 @@ function runMigrations(database: Database.Database): void {
     database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN last_status TEXT`);
   }
 
+  // Structured failure taxonomy. Additive and nullable — existing rows keep
+  // their history and simply report an unknown category until their next run.
+  addColumnIfMissing(database, 'scheduled_tasks', 'last_failure_category', 'TEXT');
+  addColumnIfMissing(database, 'mission_tasks', 'failure_category', 'TEXT');
+
   // ── Memory V2 migration ──────────────────────────────────────────────
   // Detect old schema (has 'sector' column but no 'importance') and migrate.
   const memCols = database.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
@@ -759,14 +770,71 @@ function runMigrations(database: Database.Database): void {
   `);
 }
 
-/** @internal - for tests only. Creates a fresh in-memory database. */
-export function _initTestDatabase(): void {
+/**
+ * @internal - for tests only. Creates a fresh database.
+ *
+ * Defaults to `:memory:`. Pass an absolute file path to get a real on-disk
+ * store, which is the only way to exercise genuine multi-connection lock
+ * contention (an `:memory:` database is private to its own connection, so it
+ * can never produce SQLITE_BUSY).
+ */
+export function _initTestDatabase(dbPath = ':memory:'): void {
   // Use a test encryption key for field-level encryption
   encryptionKey = crypto.randomBytes(32);
-  db = new Database(':memory:');
+  db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Match initDatabase() so file-backed test databases behave like production.
+  db.pragma('busy_timeout = 5000');
   createSchema(db);
   runMigrations(db);
+}
+
+/** @internal - for tests only. Closes the active connection and releases its file handles. */
+export function _closeTestDatabase(): void {
+  try { db?.close(); } catch { /* already closed */ }
+}
+
+// ── SQLite write-contention helpers ─────────────────────────────────
+//
+// better-sqlite3 is synchronous, so a blocking sleep is the only way to back
+// off between retries. Atomics.wait parks the thread instead of busy-spinning.
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** True when an error is SQLite's "database is locked/busy" signal. */
+function isBusyError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code ?? '';
+  if (code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT') return true;
+  return /database is locked|database table is locked/i.test((err as Error)?.message ?? '');
+}
+
+/**
+ * Bounded retry around a synchronous write for SQLITE_BUSY.
+ *
+ * WAL + `busy_timeout = 5000` (initDatabase) already cover the common case, but
+ * they do NOT cover a lock UPGRADE: a DEFERRED transaction takes a read lock on
+ * its SELECT and, when the UPDATE needs a write lock, SQLite returns
+ * SQLITE_BUSY *immediately* without consulting busy_timeout (a deadlock is
+ * possible, so it refuses to wait). The IMMEDIATE transactions below remove
+ * that upgrade; this retry is a bounded backstop for pathological multi-writer
+ * bursts.
+ *
+ * Deliberately bounded (4 attempts, 40/80/160ms). A permanent failure still
+ * throws with its original error so operators see the real problem instead of
+ * an unbounded retry loop hiding it.
+ */
+export function withBusyRetry<T>(fn: () => T, attempts = 4): T {
+  let delay = 40;
+  for (let i = 0; ; i++) {
+    try {
+      return fn();
+    } catch (err) {
+      if (!isBusyError(err) || i >= attempts - 1) throw err;
+      sleepSync(delay);
+      delay *= 2;
+    }
+  }
 }
 
 /**
@@ -1261,6 +1329,8 @@ export interface ScheduledTask {
   agent_id: string;
   started_at: number | null;
   last_status: 'success' | 'failed' | 'timeout' | null;
+  /** Structured taxonomy for the last failure. See failure-classification.ts. */
+  last_failure_category: string | null;
 }
 
 export function createScheduledTask(
@@ -1305,15 +1375,38 @@ export function getAllScheduledTasks(agentId?: string): ScheduledTask[] {
  */
 export function markTaskRunning(id: string, tentativeNextRun?: number): void {
   const now = Math.floor(Date.now() / 1000);
-  if (tentativeNextRun !== undefined) {
-    db.prepare(
-      `UPDATE scheduled_tasks SET status = 'running', started_at = ?, next_run = ? WHERE id = ?`,
-    ).run(now, tentativeNextRun, id);
-  } else {
-    db.prepare(
+  withBusyRetry(() => {
+    if (tentativeNextRun !== undefined) {
+      return db.prepare(
+        `UPDATE scheduled_tasks SET status = 'running', started_at = ?, next_run = ? WHERE id = ?`,
+      ).run(now, tentativeNextRun, id);
+    }
+    return db.prepare(
       `UPDATE scheduled_tasks SET status = 'running', started_at = ? WHERE id = ?`,
     ).run(now, id);
-  }
+  });
+}
+
+/**
+ * Atomically claim a due scheduled task for execution.
+ *
+ * The `status = 'active'` predicate lives INSIDE the UPDATE, so the read and
+ * the write are a single statement and SQLite serializes them. Two schedulers
+ * (a second agent process, or a managed restart overlapping the old process)
+ * can both see the same row in getDueTasks(); only the one whose UPDATE reports
+ * `changes > 0` may execute it. The loser gets `false` and skips, which is what
+ * prevents duplicate execution of the same scheduled task.
+ *
+ * Returns true when this caller won the claim.
+ */
+export function claimScheduledTask(id: string, tentativeNextRun: number): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  return withBusyRetry(() =>
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'running', started_at = ?, next_run = ?
+       WHERE id = ? AND status = 'active'`,
+    ).run(now, tentativeNextRun, id).changes > 0,
+  );
 }
 
 export function updateTaskAfterRun(
@@ -1321,17 +1414,24 @@ export function updateTaskAfterRun(
   nextRun: number,
   result: string,
   lastStatus: 'success' | 'failed' | 'timeout' = 'success',
+  failureCategory?: string | null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `UPDATE scheduled_tasks SET status = 'active', last_run = ?, next_run = ?, last_result = ?, last_status = ?, started_at = NULL WHERE id = ?`,
-  ).run(now, nextRun, result.slice(0, 4000), lastStatus, id);
+  // Retried: losing this write would discard a successful run's output and
+  // strand the task in 'running' until the next restart sweep.
+  withBusyRetry(() =>
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'active', last_run = ?, next_run = ?, last_result = ?, last_status = ?, last_failure_category = ?, started_at = NULL WHERE id = ?`,
+    ).run(now, nextRun, result.slice(0, 4000), lastStatus, failureCategory ?? null, id),
+  );
 }
 
 export function resetStuckTasks(agentId: string): number {
-  const result = db.prepare(
-    `UPDATE scheduled_tasks SET status = 'active', started_at = NULL WHERE status = 'running' AND agent_id = ?`,
-  ).run(agentId);
+  const result = withBusyRetry(() =>
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'active', started_at = NULL WHERE status = 'running' AND agent_id = ?`,
+    ).run(agentId),
+  );
   return result.changes;
 }
 
@@ -2187,6 +2287,8 @@ export interface MissionTask {
   created_at: number;
   started_at: number | null;
   completed_at: number | null;
+  /** Structured failure taxonomy. See failure-classification.ts. */
+  failure_category: string | null;
 }
 
 export function createMissionTask(
@@ -2241,8 +2343,30 @@ export function getMissionTask(id: string): MissionTask | null {
   return (db.prepare('SELECT * FROM mission_tasks WHERE id = ?').get(id) as MissionTask) ?? null;
 }
 
+/**
+ * Atomically claim this agent's next queued mission task.
+ *
+ * Two things make this safe under concurrent writers:
+ *
+ * 1. The transaction runs IMMEDIATE. The old DEFERRED form took a read lock on
+ *    the SELECT and had to UPGRADE to a write lock on the UPDATE; SQLite fails
+ *    a lock upgrade with SQLITE_BUSY *immediately* and does not honor
+ *    busy_timeout, so under overlapping writes the poller threw on every tick
+ *    and the agent's queue stalled. BEGIN IMMEDIATE takes the write lock up
+ *    front, where busy_timeout does apply.
+ * 2. A one-running-per-agent guard. Tasks are marked 'running' at claim time
+ *    while execution is serialized per chat by the message queue, so without
+ *    the guard a later tick claims a second task and the store reports two
+ *    'running' rows for one agent. A stuck row cannot wedge the agent:
+ *    TASK_TIMEOUT_MS completes it and resetStuckMissionTasks clears it on boot.
+ */
 export function claimNextMissionTask(agentId: string): MissionTask | null {
   const txn = db.transaction(() => {
+    const running = db
+      .prepare(`SELECT 1 FROM mission_tasks WHERE assigned_agent = ? AND status = 'running' LIMIT 1`)
+      .get(agentId);
+    if (running) return null;
+
     const task = db
       .prepare(
         `SELECT * FROM mission_tasks
@@ -2252,12 +2376,13 @@ export function claimNextMissionTask(agentId: string): MissionTask | null {
       )
       .get(agentId) as MissionTask | undefined;
     if (!task) return null;
+    const startedAt = Math.floor(Date.now() / 1000);
     db.prepare(
       `UPDATE mission_tasks SET status = 'running', started_at = ? WHERE id = ?`,
-    ).run(Math.floor(Date.now() / 1000), task.id);
-    return { ...task, status: 'running' as const, started_at: Math.floor(Date.now() / 1000) };
+    ).run(startedAt, task.id);
+    return { ...task, status: 'running' as const, started_at: startedAt };
   });
-  return txn();
+  return withBusyRetry(() => txn.immediate());
 }
 
 export function completeMissionTask(
@@ -2265,17 +2390,24 @@ export function completeMissionTask(
   result: string | null,
   status: 'completed' | 'failed',
   error?: string,
+  failureCategory?: string | null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `UPDATE mission_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?`,
-  ).run(status, result, error ?? null, now, id);
+  // Retried: if this write lost the lock race the task stayed 'running' with no
+  // completed_at, and a successful task's output was discarded.
+  withBusyRetry(() =>
+    db.prepare(
+      `UPDATE mission_tasks SET status = ?, result = ?, error = ?, failure_category = ?, completed_at = ? WHERE id = ?`,
+    ).run(status, result, error ?? null, failureCategory ?? null, now, id),
+  );
 }
 
 export function cancelMissionTask(id: string): boolean {
-  const result = db.prepare(
-    `UPDATE mission_tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
-  ).run(Math.floor(Date.now() / 1000), id);
+  const result = withBusyRetry(() =>
+    db.prepare(
+      `UPDATE mission_tasks SET status = 'cancelled', failure_category = 'cancelled', completed_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
+    ).run(Math.floor(Date.now() / 1000), id),
+  );
   return result.changes > 0;
 }
 
@@ -2320,10 +2452,30 @@ export function getMissionTaskHistory(limit = 30, offset = 0): { tasks: MissionT
 }
 
 export function resetStuckMissionTasks(agentId: string): number {
-  const result = db.prepare(
-    `UPDATE mission_tasks SET status = 'queued', started_at = NULL WHERE status = 'running' AND assigned_agent = ?`,
-  ).run(agentId);
+  const result = withBusyRetry(() =>
+    db.prepare(
+      `UPDATE mission_tasks SET status = 'queued', started_at = NULL WHERE status = 'running' AND assigned_agent = ?`,
+    ).run(agentId),
+  );
   return result.changes;
+}
+
+/**
+ * Mission tasks that ended in a non-success terminal state, newest first.
+ * Powers `hive-cli failures` so an operator can see what is actually breaking
+ * and, via failure_category, whether it is a provider problem or a real crash.
+ */
+export function getRecentMissionFailures(limit = 20, agentId?: string): MissionTask[] {
+  const where = agentId ? ' AND assigned_agent = ?' : '';
+  const params: unknown[] = agentId ? [agentId, limit] : [limit];
+  return db
+    .prepare(
+      `SELECT * FROM mission_tasks
+       WHERE status IN ('failed', 'cancelled')${where}
+       ORDER BY COALESCE(completed_at, created_at) DESC
+       LIMIT ?`,
+    )
+    .all(...params) as MissionTask[];
 }
 
 // ── Meet Sessions (Pika video meeting skill) ────────────────────────

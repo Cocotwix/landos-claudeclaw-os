@@ -25,6 +25,8 @@ interface ScheduledTask {
   agent_id: string;
   started_at: number | null;
   last_status: 'success' | 'failed' | 'timeout' | null;
+  /** Structured taxonomy for the last failure (auth, rate_limit, crash, ...). */
+  last_failure_category?: string | null;
 }
 
 type ViewMode = 'cards' | 'list';
@@ -341,6 +343,11 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
                 last: {task.last_status}
               </Pill>
             )}
+            {/* Names WHY the last run failed: a provider problem (auth / quota /
+                rate_limit) reads very differently from a real crash. */}
+            {task.last_failure_category && (
+              <Pill tone="failed">{task.last_failure_category}</Pill>
+            )}
           </div>
         </div>
         <RowActions task={task} onAction={onAction} onDeleteRequest={onDeleteRequest} />
@@ -400,13 +407,25 @@ function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDelet
       <td class="px-3 py-2.5 text-[var(--color-text-faint)] tabular-nums whitespace-nowrap">
         {task.status === 'active' ? formatCountdown(task.next_run) : '—'}
       </td>
-      <td class="px-3 py-2.5 whitespace-nowrap">
-        <Pill tone={statusTone}>{task.status}</Pill>
-        {task.last_status && (
-          <Pill tone={task.last_status === 'success' ? 'done' : task.last_status === 'timeout' ? 'medium' : 'failed'}>
-            {task.last_status}
-          </Pill>
-        )}
+      {/* Pills wrap inside the cell rather than widening the column: a long
+          category like `provider_unavailable` would otherwise push the table
+          into a horizontal scroll. */}
+      <td class="px-3 py-2.5">
+        <div class="flex flex-wrap items-center gap-1">
+          <Pill tone={statusTone}>{task.status}</Pill>
+          {task.last_status && (
+            <Pill tone={task.last_status === 'success' ? 'done' : task.last_status === 'timeout' ? 'medium' : 'failed'}>
+              {task.last_status}
+            </Pill>
+          )}
+          {/* Without this the list view showed `failed` for an expired provider
+              login and for an unreachable provider identically — the exact
+              ambiguity the failure taxonomy exists to remove. The card view
+              already showed it; the two views must not disagree. */}
+          {task.last_failure_category && (
+            <Pill tone="failed">{task.last_failure_category}</Pill>
+          )}
+        </div>
       </td>
       <td class="px-3 py-2.5 font-mono text-[11px] text-[var(--color-text-muted)] whitespace-nowrap">
         @{task.agent_id}

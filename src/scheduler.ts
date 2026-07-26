@@ -5,7 +5,7 @@ import {
   getDueTasks,
   getSession,
   logConversationTurn,
-  markTaskRunning,
+  claimScheduledTask,
   updateTaskAfterRun,
   resetStuckTasks,
   claimNextMissionTask,
@@ -13,6 +13,7 @@ import {
   resetStuckMissionTasks,
   getMissionTask,
 } from './db.js';
+import { classifyExecution, formatOutcome, type ExecutionOutcome } from './failure-classification.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
@@ -75,11 +76,20 @@ async function runDueTasks(): Promise<void> {
       continue;
     }
 
-    // Compute next occurrence BEFORE executing so we can lock the task
-    // in the DB immediately, preventing re-fire on subsequent ticks.
+    // Compute next occurrence BEFORE executing so the claim can advance
+    // next_run in the same statement, preventing re-fire on subsequent ticks.
     const nextRun = computeNextRun(task.schedule);
+
+    // Atomic claim. getDueTasks() is a plain read, so a second scheduler (a
+    // sibling agent process, or an old process overlapping a managed restart)
+    // can see the same row. Only the caller whose UPDATE actually changed a row
+    // is allowed to execute it — this is what prevents duplicate execution
+    // across processes, where the in-memory runningTaskIds guard cannot help.
+    if (!claimScheduledTask(task.id, nextRun)) {
+      logger.warn({ taskId: task.id }, 'Task already claimed by another scheduler, skipping');
+      continue;
+    }
     runningTaskIds.add(task.id);
-    markTaskRunning(task.id, nextRun);
 
     logger.info({ taskId: task.id, prompt: task.prompt.slice(0, 60) }, 'Firing task');
 
@@ -99,9 +109,10 @@ async function runDueTasks(): Promise<void> {
         clearTimeout(timeout);
 
         if (result.aborted) {
-          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
+          const outcome = classifyExecution({ timedOut: true });
+          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout', outcome.category);
           await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-          logger.warn({ taskId: task.id }, 'Task timed out');
+          logger.warn({ taskId: task.id, category: outcome.category }, 'Task timed out');
           return;
         }
 
@@ -117,17 +128,30 @@ async function runDueTasks(): Promise<void> {
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
         }
 
-        updateTaskAfterRun(task.id, nextRun, text, 'success');
+        // A clean run that produced nothing is recorded as invalid_output, not
+        // as a success — the operator needs to be able to tell them apart.
+        const outcome = classifyExecution({ output: result.text, requireOutput: true });
+        updateTaskAfterRun(
+          task.id, nextRun, text,
+          outcome.ok ? 'success' : 'failed',
+          outcome.ok ? null : outcome.category,
+        );
 
-        logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
+        logger.info({ taskId: task.id, nextRun, category: outcome.category }, 'Task complete, next run scheduled');
       } catch (err) {
         clearTimeout(timeout);
-        const errMsg = err instanceof Error ? err.message : String(err);
-        updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+        // Classify before reporting: an expired provider login must not be
+        // written to the store as a crashed subprocess. detail is redacted.
+        const outcome = classifyExecution({
+          error: err,
+          cancelledByUser: false,
+          aborted: abortController.signal.aborted,
+        });
+        updateTaskAfterRun(task.id, nextRun, formatOutcome(outcome).slice(0, 500), 'failed', outcome.category);
 
-        logger.error({ err, taskId: task.id }, 'Scheduled task failed');
+        logger.error({ err, taskId: task.id, category: outcome.category }, 'Scheduled task failed');
         try {
-          await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
+          await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${formatOutcome(outcome).slice(0, 300)}`);
         } catch {
           // ignore send failure
         }
@@ -187,8 +211,11 @@ async function runDueMissionTasks(): Promise<void> {
         if (cancelledByUser) {
           logger.info({ missionId: mission.id }, 'Duke Report mission task cancelled by user');
         } else {
-          completeMissionTask(mission.id, res.summary, res.status, res.error);
-          logger.info({ missionId: mission.id, verified: res.verified, reportStatus: res.reportStatus }, 'Duke Report mission task finished');
+          const dukeOutcome: ExecutionOutcome = res.status === 'completed'
+            ? classifyExecution({ output: res.summary, requireOutput: true })
+            : classifyExecution({ error: res.error ?? 'Duke Report run failed' });
+          completeMissionTask(mission.id, res.summary, res.status, res.error, res.status === 'completed' && dukeOutcome.ok ? null : dukeOutcome.category);
+          logger.info({ missionId: mission.id, verified: res.verified, reportStatus: res.reportStatus, category: dukeOutcome.category }, 'Duke Report mission task finished');
           try {
             await sender('Duke Report "' + mission.title + '": ' + res.summary);
           } catch (sendErr) {
@@ -207,8 +234,9 @@ async function runDueMissionTasks(): Promise<void> {
           // Status is already 'cancelled' from the dashboard write — leave it.
           logger.info({ missionId: mission.id }, 'Mission task cancelled by user');
         } else {
-          completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
-          logger.warn({ missionId: mission.id }, 'Mission task timed out');
+          const outcome = classifyExecution({ timedOut: true });
+          completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes', outcome.category);
+          logger.warn({ missionId: mission.id, category: outcome.category }, 'Mission task timed out');
           try {
             await sender('Mission task timed out: "' + mission.title + '"');
           } catch (sendErr) {
@@ -219,8 +247,16 @@ async function runDueMissionTasks(): Promise<void> {
         }
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
-        completeMissionTask(mission.id, text, 'completed');
-        logger.info({ missionId: mission.id }, 'Mission task completed');
+        // A clean run with no output is invalid_output, not a completion. The
+        // text is still stored so nothing an agent produced is lost.
+        const outcome = classifyExecution({ output: result.text, requireOutput: true });
+        completeMissionTask(
+          mission.id, text,
+          outcome.ok ? 'completed' : 'failed',
+          outcome.ok ? undefined : outcome.message,
+          outcome.ok ? null : outcome.category,
+        );
+        logger.info({ missionId: mission.id, category: outcome.category }, 'Mission task finished');
 
         // Send result to Telegram
         for (const chunk of splitMessage(formatForTelegram(text))) {
@@ -237,12 +273,18 @@ async function runDueMissionTasks(): Promise<void> {
     } catch (err) {
       clearTimeout(timeout);
       clearInterval(cancelPoll);
-      const errMsg = err instanceof Error ? err.message : String(err);
+      const outcome = classifyExecution({
+        error: err,
+        cancelledByUser,
+        aborted: abortController.signal.aborted,
+      });
       if (cancelledByUser) {
         logger.info({ missionId: mission.id }, 'Mission task cancelled by user (threw on abort)');
       } else {
-        completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
-        logger.error({ err, missionId: mission.id }, 'Mission task failed');
+        // formatOutcome is redacted, so the persisted error is safe to show on
+        // the dashboard and in the CLI.
+        completeMissionTask(mission.id, null, 'failed', formatOutcome(outcome).slice(0, 500), outcome.category);
+        logger.error({ err, missionId: mission.id, category: outcome.category }, 'Mission task failed');
       }
     } finally {
       clearInterval(cancelPoll);

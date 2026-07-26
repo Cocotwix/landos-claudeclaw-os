@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ClaudeClaw Mission CLI
+ * LandOS Mission CLI
  *
  * Used by Claude assistants to create and manage one-shot mission tasks
  * that are picked up and executed by the target agent's scheduler.
@@ -10,6 +10,10 @@
  *   node dist/mission-cli.js list [--status queued]
  *   node dist/mission-cli.js result <id>
  *   node dist/mission-cli.js cancel <id>
+ *   node dist/mission-cli.js help
+ *
+ * Argument parsing lives in mission-cli-args.ts and runs BEFORE initDatabase(),
+ * so an invalid command line can never create, mutate or execute anything.
  */
 
 import { randomBytes } from 'crypto';
@@ -21,43 +25,25 @@ import {
   getMissionTask,
   cancelMissionTask,
 } from './db.js';
+import { parseMissionArgs, USAGE } from './mission-cli-args.js';
 
-initDatabase();
+// ── Parse first. No database, no side effects, until the args are valid. ──
+const parsed = parseMissionArgs(process.argv.slice(2));
+if (!parsed.ok) {
+  for (const line of parsed.failure.errors) console.error(line);
+  process.exit(parsed.failure.exitCode);
+}
+const { command, positionals, agent: targetAgent, title: titleArg, status: statusFilter, priority: priorityArg } = parsed.args;
 
-// Parse --agent flag (null = unassigned, use auto-assign on dashboard)
-const agentFlagIdx = process.argv.indexOf('--agent');
-const targetAgent = agentFlagIdx !== -1
-  ? process.argv[agentFlagIdx + 1] ?? null
-  : null;
-
-// Parse --title flag
-const titleFlagIdx = process.argv.indexOf('--title');
-const titleArg = titleFlagIdx !== -1
-  ? process.argv[titleFlagIdx + 1] ?? ''
-  : '';
-
-// Parse --status flag
-const statusFlagIdx = process.argv.indexOf('--status');
-const statusFilter = statusFlagIdx !== -1
-  ? process.argv[statusFlagIdx + 1] ?? undefined
-  : undefined;
-
-// Parse --priority flag
-const priorityFlagIdx = process.argv.indexOf('--priority');
-const priorityArg = priorityFlagIdx !== -1
-  ? parseInt(process.argv[priorityFlagIdx + 1] ?? '0', 10)
-  : 5;
+if (command === 'help') {
+  console.log(USAGE);
+  process.exit(0);
+}
 
 // Who created this task
 const createdBy = process.env.CLAUDECLAW_AGENT_ID ?? 'main';
 
-// Clean argv: remove all flag pairs
-const flagIndices = new Set<number>();
-[agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx].forEach(idx => {
-  if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
-});
-const cleanedArgv = process.argv.filter((_, i) => !flagIndices.has(i));
-const [, , command, ...rest] = cleanedArgv;
+initDatabase();
 
 function formatDate(unix: number | null): string {
   if (!unix) return '-';
@@ -69,7 +55,7 @@ function formatDate(unix: number | null): string {
 
 switch (command) {
   case 'create': {
-    const prompt = rest[0];
+    const prompt = positionals[0];
     if (!prompt) {
       console.error('Usage: mission-cli create --agent <id> --title "Label" "Full prompt text"');
       process.exit(1);
@@ -98,19 +84,23 @@ switch (command) {
       console.log(`  Title:   ${t.title}`);
       console.log(`  Created: ${formatDate(t.created_at)}`);
       if (t.completed_at) console.log(`  Done:    ${formatDate(t.completed_at)}`);
+      if (t.failure_category) console.log(`  Failure: ${t.failure_category}`);
       console.log();
     }
     break;
   }
 
   case 'result': {
-    const id = rest[0];
+    const id = positionals[0];
     if (!id) { console.error('Usage: mission-cli result <id>'); process.exit(1); }
     const task = getMissionTask(id);
     if (!task) { console.error(`Task not found: ${id}`); process.exit(1); }
     console.log(`Task:   ${task.id} [${task.status}]`);
     console.log(`Title:  ${task.title}`);
     console.log(`Agent:  ${task.assigned_agent}`);
+    // The category names WHY it failed: a provider auth problem reads very
+    // differently from a genuine process crash.
+    if (task.failure_category) console.log(`Failure: ${task.failure_category}`);
     if (task.result) {
       console.log(`\nResult:\n${task.result}`);
     } else if (task.error) {
@@ -122,14 +112,10 @@ switch (command) {
   }
 
   case 'cancel': {
-    const id = rest[0];
+    const id = positionals[0];
     if (!id) { console.error('Usage: mission-cli cancel <id>'); process.exit(1); }
     const ok = cancelMissionTask(id);
     console.log(ok ? `Cancelled task: ${id}` : `Could not cancel (may already be completed): ${id}`);
     break;
   }
-
-  default:
-    console.error('Commands: create | list | result | cancel');
-    process.exit(1);
 }
