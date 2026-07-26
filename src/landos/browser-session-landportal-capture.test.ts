@@ -59,3 +59,48 @@ describe('LandPortal visual capture contract', () => {
     expect(source).toContain('fs.statSync(parcelFile).size < 500_000');
   });
 });
+
+// ── The capture must never abort on an optional framing step ────────────────
+// Live finding on Deal 32: some Chrome/CDP builds reject the combined
+// "Shift+ArrowRight" chord with `Unknown key`. That throw propagated out of the
+// whole LandPortal capture, so the parcel screenshot, the sidebar comp rows AND
+// the entire "Show on Map" surface were lost — the run reported no comps at all
+// while the page was perfectly readable.
+
+describe('LandPortal capture resilience', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src/landos/browser-session.ts'), 'utf8');
+
+  it('treats map bearing rotation as optional, never fatal', () => {
+    const orient = source.slice(source.indexOf('orientRoadBelowParcel'));
+    const body = orient.slice(0, orient.indexOf('const zoomOutSteps'));
+    expect(body).toContain("page.keyboard.press('Shift+ArrowRight')");
+    // The chord attempt is guarded, has a non-chorded fallback, and finally
+    // degrades to "no rotation" instead of throwing.
+    expect(body).toMatch(/try\s*\{/);
+    expect(body).toContain("chorded.down('Shift')");
+    expect(body).toContain('bearing_rotation_unsupported');
+    expect(body).toContain('return 0;');
+  });
+
+  it('reads the Show-on-Map surface after clicking the comps control', () => {
+    expect(source).toContain('js-lp-estimate-show-on-map');
+    // Results are lazy-loaded: scroll passes run before the rows are read.
+    expect(source).toContain('SCROLL_RESULTS');
+    expect(source).toContain('MAP_ROWS');
+    const clickAt = source.indexOf('js-lp-estimate-show-on-map');
+    const scrollAt = source.indexOf('page.evaluate(SCROLL_RESULTS');
+    const readAt = source.indexOf('page.evaluate<string[]>(MAP_ROWS');
+    expect(scrollAt).toBeGreaterThan(clickAt);
+    expect(readAt).toBeGreaterThan(scrollAt);
+  });
+
+  it('captures each row with the page section label so status is never invented', () => {
+    // Both extractors emit "<section label><row text>".
+    expect(source).toContain('labelFor(el)');
+    expect(source).toContain('mapRows');
+  });
+
+  it('retains a screenshot of the expanded results list', () => {
+    expect(source).toContain('landportal-compslist-');
+  });
+});

@@ -798,6 +798,13 @@ export interface LandPortalVisualObservation {
 export interface LandPortalComparableRecord {
   rawText: string;
   sourceUrl: string;
+  /**
+   * Which LandPortal surface supplied this row: the parcel sidebar block, the
+   * expanded "Show on Map" results, or 'both' when the two corroborate the same
+   * property. Provenance is retained so a corroborated comp is visibly one
+   * record rather than two, and so the operator can see where a field came from.
+   */
+  surface?: 'sidebar' | 'map' | 'both';
   apn?: string | null;
   address?: string | null;
   saleDate?: string;

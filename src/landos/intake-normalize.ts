@@ -151,9 +151,14 @@ export function extractApnCandidates(text: string): ApnCandidates {
   // which corrupts the parcel identity and can raise a FALSE conflict when a
   // parcel-level source returns the full prefixed APN. Capture the optional
   // prefix here so the labeled APN is preserved whole.
+  // Trailing separators are sentence punctuation, never part of a parcel number.
+  // "Parcel: 015 027 04512 000 2026." must capture the APN, not "…2026." — the
+  // trailing period survives into the property card and then defeats the EXACT
+  // match an official county/state parcel layer requires, so a genuinely
+  // resolvable parcel silently stays provisional.
   const labeled = t.match(
     /\b(?:apn|parcel(?:\s*(?:id|no|no\.|number|#))?)[:\s]+((?:[A-Za-z]{1,4}\d{0,6}[ \t.\/\-]+)?[0-9][0-9 \t.\/\-]*)/i,
-  )?.[1]?.trim();
+  )?.[1]?.trim().replace(/[\s.\/\-]+$/, '');
   const labeledNorm = labeled ? normalizeApn(labeled) : null;
   if (labeledNorm) {
     // Drop the prefix-stripped fragment the span scanner produced (its digits are

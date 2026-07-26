@@ -342,6 +342,26 @@ describe('Tennessee multi-path parcel lookup keys (pure)', () => {
     expect(clauses.some((clause) => clause.where.includes("PARCELID = '07309004200'"))).toBe(true);
   });
 
+  // Live acceptance finding (Phase 3, new-intake condition): the TN layer PADS
+  // PARCELID ("015 027    04512 000 2026") while an operator paste collapses the
+  // run to a single space. Exact equality alone silently failed to resolve a
+  // real parcel and the lead sat provisional with no visible reason.
+  it('matches a padded PARCELID through a whitespace-insensitive ordered pattern', () => {
+    const clauses = tennesseeApnLookupClauses('015 027 04512 000 2026');
+    const wheres = clauses.map((clause) => clause.where);
+    expect(wheres.some((where) => where === "PARCELID LIKE '015%027%04512%000%2026'")).toBe(true);
+    expect(clauses.length).toBeLessThanOrEqual(8);
+  });
+
+  it('keeps the ordered-group pattern segment-ordered so it cannot match a different parcel', () => {
+    const clauses = tennesseeApnLookupClauses('015 027 04512 000 2026');
+    const pattern = clauses.find((clause) => clause.where.startsWith('PARCELID LIKE'))!.where;
+    // Segment order is preserved and the pattern is anchored at both ends, so a
+    // parcel with the same digits in a different order can never satisfy it.
+    expect(pattern).toBe("PARCELID LIKE '015%027%04512%000%2026'");
+    expect(pattern.endsWith("2026'")).toBe(true);
+  });
+
   it('reconciles conservative owner-name variants in both directions', () => {
     expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SACHAN DILEEP S')).toBe(true);
     expect(tennesseeOwnerNamesReconcile('SACHAN DILEEP S', 'SACHAN DILEEP')).toBe(true);

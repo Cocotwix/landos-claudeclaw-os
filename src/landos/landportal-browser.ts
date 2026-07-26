@@ -234,42 +234,67 @@ function normalizeOverlayName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
-function parseComparableCandidate(text: string, sourceUrl: string): LandPortalComparableRecord | null {
-  const raw = text.replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
+export function parseComparableCandidate(text: string, sourceUrl: string, surface: 'sidebar' | 'map' = 'sidebar'): LandPortalComparableRecord | null {
+  // The live capture prefixes each row with the page's own section heading
+  // ("<label><row>"). That label is where LandPortal states whether the
+  // block holds closed sales or asking prices; the row text never does.
+  const delimiter = text.indexOf('');
+  const sectionLabel = delimiter >= 0 ? text.slice(0, delimiter).replace(/\s+/g, ' ').trim() : '';
+  const rowText = delimiter >= 0 ? text.slice(delimiter + 1) : text;
+  let raw = rowText.replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
   if (!raw) return null;
+  // The map extractor appends the result's own link as "| URL: <href>".
+  const inlineUrl = raw.match(/\|\s*URL:\s*(https?:\/\/\S+)/i)?.[1] ?? null;
+  if (inlineUrl) raw = raw.replace(/\|\s*URL:\s*https?:\/\/\S+/i, '').trim();
+  // Status is read from the row first, then from the section label. Both are
+  // the page's own words; neither is inferred.
+  const statusText = `${raw} ${sectionLabel}`;
   const priceMatch = raw.match(/\$[\d,]+(?:\.\d+)?/);
   const acreMatch = raw.match(/(\d+(?:\.\d+)?)\s*ac\b/i) ?? raw.match(/\bacres?\s*:\s*(\d+(?:\.\d+)?)/i);
   const ppaMatch = raw.match(/\$([\d,]+(?:\.\d+)?)\s*\/\s*ac\b/i);
   const dateMatch = raw.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2}, \d{4}\b/i);
-  const apn = raw.match(/\bAPN\s*:\s*([A-Z0-9.\-]+)/i)?.[1] ?? null;
+  // A county APN routinely contains internal spaces ("115 02100"). Stopping at
+  // the first space truncated it to "115", which corrupts parcel identity and
+  // breaks comp dedupe. Capture the whole identifier, then drop any trailing
+  // separator the surrounding row text contributed.
+  const apn = raw.match(/\bAPN\s*:\s*([A-Z0-9][A-Z0-9.\- ]*)/i)?.[1]?.trim().replace(/[\s.\-]+$/, '') || null;
   const distanceMiles = asNumber(raw.match(/\b(\d+(?:\.\d+)?)\s*(?:mi|mile)s?\b/i)?.[1]);
   const addressCandidate = raw.match(/^(.+?)(?:\s+\$[\d,]+|\s+\|\s+APN:|\s+Acres?:)/i)?.[1]?.trim() ?? null;
   const address = addressCandidate && !/^\$|^acres?:|^apn:/i.test(addressCandidate) && /(\d+\s+\w+|road|rd|street|st|avenue|ave|drive|dr|lane|ln|boulevard|blvd|trail|trl|way|court|ct|place|pl|highway|hwy)/i.test(addressCandidate)
     ? addressCandidate
     : null;
+  // Status is read from the row text FIRST, then from the page's own section
+  // heading. Both are LandPortal's wording; neither is inferred from the mere
+  // presence of a price.
   let status: LandPortalComparableRecord['status'] =
-    /\bsold\b/i.test(raw) ? 'sold'
-      : /\bactive\b/i.test(raw) ? 'active'
-        : /\blisted?\b/i.test(raw) ? 'listed'
+    /\b(sold|sales)\b/i.test(statusText) ? 'sold'
+      : /\bactive\b/i.test(statusText) ? 'active'
+        : /\b(listed?|for sale)\b/i.test(statusText) ? 'listed'
           : 'unknown';
   const saleListIndicator: LandPortalComparableRecord['saleListIndicator'] =
-    /\bsold|sale\b/i.test(raw) ? 'sale'
-      : /\bactive|listed?|pending|for sale\b/i.test(raw) ? 'list'
+    /\b(sold|sales?)\b/i.test(statusText) ? 'sale'
+      : /\b(active|listed?|pending|for sale)\b/i.test(statusText) ? 'list'
         : 'unknown';
   const improvement: LandPortalComparableRecord['improvement'] =
-    /\b(home|house|residence|bed|bath|sq ?ft|building)\b/i.test(raw) ? 'improved'
-      : /\b(vacant|raw land|unimproved)\b/i.test(raw) ? 'vacant'
+    /\b(home|house|residence|bed|bath|sq ?ft|building)\b/i.test(statusText) ? 'improved'
+      : /\b(vacant|raw land|unimproved)\b/i.test(statusText) ? 'vacant'
         : 'unknown';
   const acres = acreMatch ? asNumber(acreMatch[1]) : null;
   const price = priceMatch ? asNumber(priceMatch[0]) : null;
   const ppa = ppaMatch ? asNumber(ppaMatch[1]) : null;
-  if (status === 'unknown' && price != null && acres != null) status = saleListIndicator === 'sale' ? 'sold' : 'listed';
+  // A row carrying a price and acreage but NO sale/list word is exactly that: a
+  // priced row of UNKNOWN status. The previous default stamped it 'listed',
+  // fabricating a listing status the page never stated — and that status decides
+  // whether the row prices the subject or merely competes with it. Unknown stays
+  // unknown; the comp source policy keeps such rows as market context only.
+  if (status === 'unknown' && saleListIndicator === 'sale') status = 'sold';
   const confidence: LandPortalComparableRecord['confidence'] =
     (price != null && acres != null) || (status !== 'unknown' && dateMatch) ? 'medium' : 'low';
   if (price == null && acres == null && !dateMatch && !apn && status === 'unknown') return null;
   return {
     rawText: raw,
-    sourceUrl,
+    sourceUrl: inlineUrl || sourceUrl,
+    surface,
     apn,
     address: address && !/^\$/.test(address) ? address : null,
     saleDate: dateMatch?.[0],
@@ -901,7 +926,7 @@ async function runLandPortalAgentic(
     let lpVisuals: {
       fields: Record<string, string>; parcelShotPath: string | null; compsMapShotPath: string | null;
       overlayShots?: Array<{ overlay: string; path: string; purpose: string }>; terrainShotPath?: string | null;
-      compRows: string[]; mapReached: boolean; capturedAtIso: string;
+      compRows: string[]; mapRows?: string[]; mapReached: boolean; capturedAtIso: string;
     } | null = null;
     let shot: Awaited<ReturnType<BrowserDriver['screenshot']>> | null = null;
 
@@ -1013,9 +1038,19 @@ async function runLandPortalAgentic(
         inspectionAssets.push({ key, label: ov.overlay, kind: 'overlay', purpose: ov.purpose, sourcePath: ov.path, timestamp: lpVisuals.capturedAtIso, overlay: ov.overlay, note: `${ov.overlay} overlay screenshot from LandPortal.` });
       }
       comparablesUrl = obs.url || null;
-      comparables = lpVisuals.compRows
-        .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE))
+      // TWO LandPortal surfaces feed one comparable set: the parcel sidebar
+      // block, and the expanded "Show on Map" results. The map surface carries
+      // street addresses and the page's own status wording, so its fields win on
+      // merge while the sidebar's full APN is preserved. Provenance is recorded
+      // on every row so the operator can see which surface supplied what.
+      const sidebarRows = lpVisuals.compRows
+        .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE, 'sidebar'))
         .filter((r): r is LandPortalComparableRecord => !!r);
+      const mapRows = (lpVisuals.mapRows ?? [])
+        .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE, 'map'))
+        .filter((r): r is LandPortalComparableRecord => !!r);
+      comparables = mergeLandPortalSurfaces(sidebarRows, mapRows);
+      trace.push(`landportal surfaces: sidebar=${sidebarRows.length} map=${mapRows.length} combined=${comparables.length}`);
       if (lpVisuals.compsMapShotPath && lpVisuals.mapReached) {
         inspectionAssets.push({ key: 'comparables_map', label: 'LandPortal Comps Map', kind: 'comparables_map', purpose: LANDPORTAL_COMPARABLES_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.compsMapShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal comps map — "Show on Map" clicked and confirmed.' });
       }
@@ -1397,4 +1432,86 @@ export function landPortalBlockedExample(): BrowserEvidence {
   recordBlocked(ev, 'paid_export', 'Paid export would incur cost — blocked.');
   ev.note = 'Read-only contract: credit/billing actions are recorded as blocked and never performed.';
   return ev;
+}
+
+
+/** Digits-only APN key. Never truncated at a space: "115 02100" -> "11502100". */
+function comparableApnKey(apn: string | null | undefined): string | null {
+  const digits = String(apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+  return digits.length >= 5 ? digits : null;
+}
+
+/** Normalized street address key for cross-surface matching. */
+function comparableAddressKey(address: string | null | undefined): string | null {
+  const value = String(address ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  return value.length >= 6 ? value : null;
+}
+
+/** Same closed transaction: price + acreage + date agree. */
+function comparableTransactionKey(row: LandPortalComparableRecord): string | null {
+  if (row.price == null || row.acres == null) return null;
+  return `${Math.round(row.price)}|${row.acres.toFixed(2)}|${(row.saleDate ?? '').slice(0, 10)}`;
+}
+
+/**
+ * Merge the LandPortal parcel-sidebar rows with the expanded Show-on-Map rows
+ * into ONE deduplicated comparable set.
+ *
+ * Matching runs strongest-identifier-first: full normalized APN, then exact
+ * normalized street address, then price+acreage+date transaction identity.
+ * Truncated APNs are never used as a key. When both surfaces describe the same
+ * property the richer field wins per-field (the map view supplies addresses and
+ * the page's own status wording; the sidebar supplies the full APN), and the
+ * row's provenance becomes 'both' so the operator can see it was corroborated —
+ * never counted twice.
+ */
+export function mergeLandPortalSurfaces(
+  sidebar: LandPortalComparableRecord[],
+  map: LandPortalComparableRecord[],
+): LandPortalComparableRecord[] {
+  const merged: LandPortalComparableRecord[] = sidebar.map((row) => ({ ...row, surface: 'sidebar' }));
+
+  const findMatch = (row: LandPortalComparableRecord): number => {
+    const apn = comparableApnKey(row.apn);
+    if (apn) {
+      const byApn = merged.findIndex((existing) => comparableApnKey(existing.apn) === apn);
+      if (byApn >= 0) return byApn;
+    }
+    const address = comparableAddressKey(row.address);
+    if (address) {
+      const byAddress = merged.findIndex((existing) => comparableAddressKey(existing.address) === address);
+      if (byAddress >= 0) return byAddress;
+    }
+    const transaction = comparableTransactionKey(row);
+    if (transaction) {
+      const byTransaction = merged.findIndex((existing) => comparableTransactionKey(existing) === transaction);
+      if (byTransaction >= 0) return byTransaction;
+    }
+    return -1;
+  };
+
+  for (const row of map) {
+    const index = findMatch(row);
+    if (index < 0) { merged.push({ ...row, surface: 'map' }); continue; }
+    const existing = merged[index];
+    merged[index] = {
+      ...existing,
+      // Richer field wins; a stated value never loses to an unknown one.
+      address: row.address ?? existing.address,
+      apn: existing.apn ?? row.apn,
+      acres: existing.acres ?? row.acres,
+      price: existing.price ?? row.price,
+      pricePerAcre: existing.pricePerAcre ?? row.pricePerAcre,
+      distanceMiles: existing.distanceMiles ?? row.distanceMiles,
+      saleDate: existing.saleDate ?? row.saleDate,
+      status: existing.status !== 'unknown' ? existing.status : row.status,
+      saleListIndicator: existing.saleListIndicator && existing.saleListIndicator !== 'unknown' ? existing.saleListIndicator : row.saleListIndicator,
+      improvement: existing.improvement !== 'unknown' ? existing.improvement : row.improvement,
+      confidence: existing.confidence === 'high' || row.confidence === 'high' ? 'high' : existing.confidence,
+      sourceUrl: existing.sourceUrl || row.sourceUrl,
+      rawText: existing.rawText === row.rawText ? existing.rawText : `${existing.rawText} || ${row.rawText}`,
+      surface: 'both',
+    };
+  }
+  return merged;
 }

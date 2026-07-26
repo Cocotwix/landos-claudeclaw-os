@@ -107,10 +107,13 @@ describe('every Deal Card tab exists and changes the rendered active panel', () 
 
 describe('no Deal Card tab renders an empty workspace', () => {
   it('Strategy says what is missing instead of rendering nothing before a report exists', () => {
-    // Live finding: Strategy is composed entirely from the Property Intelligence
-    // report, so on a card with no report the panel had zero height and zero
-    // content — indistinguishable from a broken tab.
-    expect(SRC).toMatch(/activeTab === 'strategy' && !report\?\.exists && \(/);
+    // Live finding: Strategy is composed entirely from Property Intelligence, so
+    // on a card with no result the panel had zero height and zero content —
+    // indistinguishable from a broken tab. The tab now always renders the joined
+    // snapshot panel (which carries its own honest empty state), and the legacy
+    // explainer only appears when neither a snapshot nor a report exists.
+    expect(SRC).toMatch(/activeTab === 'strategy' && <PropertyIntelligenceStrategy snapshot=\{piSnapshot\} \/>/);
+    expect(SRC).toMatch(/activeTab === 'strategy' && !piSnapshot && !report\?\.exists && \(/);
     expect(SRC).toMatch(/No strategy read yet/);
     expect(SRC).toMatch(/Run Property Intelligence from the/);
   });

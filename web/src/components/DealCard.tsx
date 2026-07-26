@@ -16,6 +16,17 @@ import {
   ReconciledLandScorePanel, OfficialRecordsPanel, DocumentUploadPanel,
 } from '@/components/DealCardPanels';
 import { TrashCardButton } from '@/components/TrashCardButton';
+import {
+  usePropertyIntelligence,
+  PropertyIntelligenceLaunch,
+  PropertyIntelligenceOverview,
+  PropertyIntelligenceProperty,
+  PropertyIntelligenceDueDiligence,
+  PropertyIntelligenceMarket,
+  PropertyIntelligenceStrategy,
+  PropertyIntelligenceVisuals,
+  PropertyIntelligenceEvidence,
+} from '@/components/PropertyIntelligencePanel';
 import { CompMap } from '@/components/landos/CompMap';
 import { PublicRecordsPanel, ResourcesContactsPanel, SmartIntakePanel } from '@/components/LeadCardIntake';
 import {
@@ -4098,6 +4109,11 @@ function OverviewTab({
 export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardId?: number; entity?: EntityFilter; onOpenDeal?: (id: number) => void }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
   const [spine, setSpine] = useState<BusinessSpineView | null>(null);
+  // Property Intelligence: ONE parent mission per Deal Card. The hook owns the
+  // launch, live specialist progress polling, and the joined snapshot every tab
+  // below reads, so no two tabs can tell different stories.
+  const propertyIntelligence = usePropertyIntelligence(deal?.id ?? dealCardId ?? null);
+  const piSnapshot = propertyIntelligence.view?.snapshot ?? null;
   const [resolution, setResolution] = useState<ResolutionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5144,6 +5160,13 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           )}
           {!terminalParcel && (
             <>
+              {/* Property Intelligence is what RESOLVES a parcel, so the launch
+                  control and its snapshot belong here too. On an unresolved card
+                  the snapshot withholds every parcel-specific conclusion and
+                  shows only identity state, blockers and next actions — which is
+                  exactly what the operator needs to move the card forward. */}
+              <PropertyIntelligenceLaunch state={propertyIntelligence} />
+              <PropertyIntelligenceOverview snapshot={piSnapshot} />
               <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
                 Smart Intake evidence and editable candidates remain available while parcel-specific intelligence stays withheld.
               </div>
@@ -5255,10 +5278,15 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
             class="space-y-3"
           >
 
-          {/* ══ OVERVIEW TAB ══ The Property Intelligence Report read: hero,
-              executive summary, key facts, what-the-facts-mean, risks/unknowns,
-              market + strategy + seller snapshots, source-labeled facts. The one
-              complete understanding of the opportunity. */}
+          {/* ══ OVERVIEW TAB ══ Property Intelligence first: ONE launch control,
+              live specialist progress, then the joined snapshot the operator
+              actually decides from. The legacy summary panels follow it. */}
+          {activeTab === 'overview' && (
+            <div class="space-y-3">
+              <PropertyIntelligenceLaunch state={propertyIntelligence} />
+              <PropertyIntelligenceOverview snapshot={piSnapshot} />
+            </div>
+          )}
           {activeTab === 'overview' && (
             <PropertySummarySnapshotPanel
               value={propertySummary}
@@ -5290,6 +5318,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               provider finding with evidence links, plus what remains unknown. */}
           {activeTab === 'diligence' && (
             <div class="space-y-3">
+              <PropertyIntelligenceDueDiligence snapshot={piSnapshot} />
               {operatorRecord && <RisksUnknownsPanel record={operatorRecord} />}
               <ZoningLandUsePanel
                 dealId={deal.id}
@@ -5314,6 +5343,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               LandPortal). */}
           {activeTab === 'visuals' && (
             <div class="space-y-4">
+              <PropertyIntelligenceVisuals snapshot={piSnapshot} />
               <RetainedLandPortalPanel inspection={report?.landportalInspection} token={dashboardToken} ownerName={seller?.name ?? prop?.owner} />
               {!report?.landportalInspection && <Placeholder text="No retained parcel visuals are available yet." />}
               {prop?.id && (
@@ -5343,6 +5373,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {activeTab === 'market' && (
             <div class="space-y-3">
               <div class="text-[14px] font-bold text-[var(--color-text)] px-1">Should I want land here?</div>
+              <PropertyIntelligenceMarket snapshot={piSnapshot} />
               <MarketResearchStrip analysis={ownerAnalysis} />
               <CompMap dealCardId={deal.id} />
               <LandPortalComparableTable inspection={report?.landportalInspection} />
@@ -5358,6 +5389,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {/* PROPERTY TAB — the versioned Property Summary is the canonical
               identity read; Overview and Property both open on it so identity is
               never asserted differently in two places. */}
+          {activeTab === 'property' && <PropertyIntelligenceProperty snapshot={piSnapshot} />}
+
           {activeTab === 'property' && (
             <PropertySummarySnapshotPanel
               value={propertySummary}
@@ -5386,15 +5419,19 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               Property Intelligence report, so before a report exists the tab
               rendered nothing at all and reading it as "the tabs do not work"
               was fair. Say what is missing and what unlocks it instead. */}
-          {activeTab === 'strategy' && !report?.exists && (
+          {/* The five approved strategies + the one recommendation, straight
+              from the joined Property Intelligence snapshot. */}
+          {activeTab === 'strategy' && <PropertyIntelligenceStrategy snapshot={piSnapshot} />}
+
+          {activeTab === 'strategy' && !piSnapshot && !report?.exists && (
             <Section title="Strategy">
               <div class="rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-2">
                 <div class="text-[13px] font-semibold text-[var(--color-text)]">No strategy read yet</div>
                 <div class="text-[12px] leading-relaxed text-[var(--color-text-muted)]">
-                  Exit strategy, pursuit posture, and the comp basis are all derived from the Property Intelligence report. None has been run for this Deal Card, so nothing is asserted here — a strategy without evidence would be a guess.
+                  Exit strategy, pursuit posture, and the comp basis are all derived from Property Intelligence. It has not been run for this Deal Card, so nothing is asserted here — a strategy without evidence would be a guess.
                 </div>
                 <div class="text-[12px] text-[var(--color-text-muted)]">
-                  Run Property Intelligence from the <span class="text-[var(--color-accent)]">Documents</span> tab to populate this workspace.
+                  Run Property Intelligence from the <span class="text-[var(--color-accent)]">Overview</span> tab to populate this workspace.
                 </div>
               </div>
             </Section>
@@ -5550,6 +5587,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               comp registry + cluster analysis above. */}
 
           {/* 8. Documents & quick actions → Documents (report controls above) */}
+          {activeTab === 'documents' && <PropertyIntelligenceEvidence snapshot={piSnapshot} />}
+
           {activeTab === 'documents' && (
             <GovernmentRecordsSnapshotPanel
               dealId={deal.id}

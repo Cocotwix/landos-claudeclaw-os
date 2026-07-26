@@ -159,15 +159,27 @@ function normalizeInspectionComparables(rows: LandPortalComparableRecord[]): Lan
     + (row.pricePerAcre ? 2 : 0)
     + (row.status !== 'unknown' ? 1 : 0);
   for (const row of normalized) {
-    const key = row.apn
-      ? `apn|${row.apn}`
-      : [row.sourceUrl, row.status, row.saleDate ?? '', row.acres ?? '', row.price ?? '', row.pricePerAcre ?? ''].join('|');
+    // Group on the APN's DIGITS so the same parcel written "115 02100" on one
+    // surface and "11502100" on another is one row, never two. A street address
+    // is the next strongest key — the Show-on-Map surface supplies addresses
+    // where the sidebar does not.
+    const apnDigits = (row.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+    const addressKey = (row.address ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    const key = apnDigits.length >= 5
+      ? `apn|${apnDigits}`
+      : addressKey.length >= 6
+        ? `addr|${addressKey}`
+        : [row.sourceUrl, row.status, row.saleDate ?? '', row.acres ?? '', row.price ?? '', row.pricePerAcre ?? ''].join('|');
     const existing = grouped.get(key);
     if (!existing || score(row) > score(existing)) grouped.set(key, row);
   }
   return [...grouped.values()].filter((row) => {
     if (row.pricePerAcre != null) return true;
     if (row.apn && row.price != null && row.acres != null) return true;
+    // An identifiable row (street address) with price and acreage is retained
+    // even when LandPortal states no sale/list status. Dropping it would hide a
+    // real candidate; the comp source policy holds it as context instead.
+    if (row.address && row.price != null && row.acres != null) return true;
     return row.price != null && row.acres != null && row.status !== 'unknown';
   });
 }

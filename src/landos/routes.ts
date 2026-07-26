@@ -137,6 +137,9 @@ import { normalizeParcelIdentifier, runPublicPropertyIntelligence, type PublicIn
 import { runPropertyIntelligenceOrchestrator, type OrchestratorRun } from './property-intelligence-orchestrator.js';
 import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters } from './public-property-intelligence-live.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
+import { PropertyIntelligenceStore } from './property-intelligence-store.js';
+import { launchPropertyIntelligenceMission } from './property-intelligence-mission.js';
+import { makeLivePropertyIntelligenceCollectors } from './property-intelligence-live.js';
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
 import { WindowsCredentialVault } from './windows-credential-vault.js';
 import { SqliteGovernmentAccountRepository } from './government-account-manager.js';
@@ -6425,6 +6428,14 @@ export function registerLandosRoutes(app: Hono): void {
     });
   });
 
+  // Official statewide parcel layers return the full parcel geometry, so a
+  // county-filtered query routinely takes 30-60s under normal load. The former
+  // 25s budget timed out on a healthy provider and the run then reported an
+  // UNRESOLVED parcel that was in fact resolvable — an honest message about the
+  // wrong thing. 60s still sits well inside the parcel-identity specialist's
+  // 180s budget, so a genuinely dead provider is still caught quickly.
+  const OFFICIAL_PARCEL_LOOKUP_TIMEOUT_MS = 60_000;
+
   const runPublicIntelligenceForDealCard = async (id: number, suppliedReportLanes?: ReportCompLanes | null): Promise<
     | { ok: true; saved: unknown; parcel: { address: string | null; county: string | null; state: string | null; apn: string | null; acres: number | null; sourceUrl: string | null } }
     | { ok: false; error: string; attempted?: unknown }
@@ -6447,7 +6458,7 @@ export function registerLandosRoutes(app: Hono): void {
     const lookup = await lookupOfficialParcel({
       address: str(property.active_input_address) ?? str(property.address),
       county: lookupCounty, state: str(property.state), apn: str(property.apn),
-    }, 25_000);
+    }, OFFICIAL_PARCEL_LOOKUP_TIMEOUT_MS);
     const reportLanes = suppliedReportLanes === undefined
       ? ((getDealCardReport(id).marketComps as unknown as ReportCompLanes) ?? null)
       : suppliedReportLanes;
@@ -6696,6 +6707,204 @@ export function registerLandosRoutes(app: Hono): void {
     if (!res.ok) return c.json({ error: res.error, attempted: res.attempted }, res.error === 'deal card not found' ? 404 : 409);
     return c.json({ publicIntelligence: res.saved, parcel: res.parcel });
   });
+
+  // ══ Property Intelligence: ONE operator action, ONE parent mission ═════════
+  // The operator clicks Run Property Intelligence on the Deal Card. This starts
+  // the parent mission, returns immediately with the run id, and the specialists
+  // continue in the background so progress is visible while it works. The joined
+  // snapshot is written back to THIS Deal Card and becomes the primary read.
+  const propertyIntelligenceStore = new PropertyIntelligenceStore();
+
+  const propertyIntelligenceCollectors = (dealCardId: number) => makeLivePropertyIntelligenceCollectors({
+    runPublicIntelligence: async (id) => {
+      const result = await runPublicIntelligenceForDealCard(id);
+      return result.ok ? { ok: true } : { ok: false, error: result.error };
+    },
+    captureZillowComps: async (input) => {
+      const result = await fetchZillowLandComps({
+        ...publicLocalityFallback(dealCardId, {
+          address: input.address ?? undefined,
+          city: input.city ?? undefined,
+          county: input.county ?? undefined,
+          state: input.state ?? undefined,
+          zip: input.zip ?? undefined,
+        }),
+        subjectAcres: input.subjectAcres,
+      });
+      return {
+        status: result.status,
+        note: result.note,
+        sold: result.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
+          address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
+          url: comp.url, status: comp.status, saleDate: comp.soldDate ?? null,
+        })),
+        active: result.comps.filter((comp) => comp.status !== 'sold').map((comp) => ({
+          address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
+          url: comp.url, status: comp.status, saleDate: comp.listingDate ?? null,
+        })),
+      };
+    },
+    captureRedfinComps: async (input) => {
+      const result = await fetchRedfinLandComps({
+        ...publicLocalityFallback(dealCardId, {
+          address: input.address ?? undefined,
+          city: input.city ?? undefined,
+          county: input.county ?? undefined,
+          state: input.state ?? undefined,
+          zip: input.zip ?? undefined,
+        }),
+        subjectAcres: input.subjectAcres,
+      });
+      return {
+        status: result.status,
+        note: result.note,
+        sold: result.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
+          address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
+          url: comp.url, status: comp.status, saleDate: comp.soldDate ?? null,
+        })),
+        active: result.comps.filter((comp) => comp.status !== 'sold').map((comp) => ({
+          address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
+          url: comp.url, status: comp.status, saleDate: comp.listingDate ?? null,
+        })),
+      };
+    },
+    // PRIMARY comp lane. Reads the authenticated LandPortal parcel page through
+    // the single-tab browser mission gate and persists the inspection with the
+    // existing cumulative (non-destructive) merge, so retained evidence and
+    // assets survive. Free visible rows only — no paid comp report is requested.
+    captureLandPortalInspection: async ({ cardId, searchKey }) => {
+      const readiness = await ensureLandPortalAuthenticated()
+        .then((value) => ({ authenticated: value.authenticated, phase: String(value.phase), detail: value.note || value.reason || '' }))
+        .catch((err) => ({ authenticated: false, phase: 'attach_failed', detail: (err as Error)?.message ?? String(err) }));
+      if (!readiness.authenticated) {
+        return {
+          ok: false,
+          comparableCount: 0,
+          note: `LandPortal session is ${readiness.phase} (${readiness.detail || 'not authenticated'}). Start Browser Intelligence so the parcel page can be read.`,
+        };
+      }
+      const result = await withBrowserMissionGate(() => runPropertyInspection({
+        cardId,
+        searchKey: {
+          address: searchKey.address ?? undefined,
+          apn: searchKey.apn ?? undefined,
+          county: searchKey.county ?? undefined,
+          state: searchKey.state ?? undefined,
+          city: searchKey.city ?? undefined,
+          owner: searchKey.owner ?? undefined,
+        },
+        mode: 'parcel_fact',
+        timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+      }, {
+        landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
+        countyRecordsBrowser: undefined,
+        googleVisualConfigured: false,
+      }));
+      persistPropertyInspection(cardId, result.inspection);
+      const landPortalRoute = result.routes.find((route) => route.provider === 'LandPortal');
+      const count = result.inspection.comparables?.length ?? 0;
+      return {
+        ok: landPortalRoute?.status === 'used' || count > 0,
+        comparableCount: count,
+        note: landPortalRoute?.note ?? 'LandPortal parcel read completed.',
+      };
+    },
+    captureMarketContext: async (id) => {
+      const deal = getDealCard(id);
+      const matrix = deal ? marketMatrixFor(deal) : null;
+      const facts = matrix
+        ? [{
+            key: 'market_matrix',
+            label: 'Market Matrix',
+            value: (matrix as unknown as { summaryLine?: string; headline?: string }).summaryLine
+              ?? (matrix as unknown as { headline?: string }).headline
+              ?? 'Assembled for the subject market.',
+            grade: 'likely_indication' as const,
+            source: 'LandOS Market Matrix',
+            sourceUrl: null,
+            retrievedAt: new Date().toISOString(),
+            note: null,
+          }]
+        : [];
+      return { facts, summary: matrix ? 'Market Matrix assembled for the subject market.' : 'No Market Matrix is available for this market yet.' };
+    },
+  });
+
+  const propertyIntelligenceView = (dealCardId: number) => {
+    propertyIntelligenceStore.reclaimStaleRuns();
+    const primary = propertyIntelligenceStore.primaryRun(dealCardId);
+    const latest = propertyIntelligenceStore.latestRun(dealCardId);
+    const progressRun = latest ?? primary;
+    return {
+      snapshot: primary?.snapshot ?? null,
+      run: progressRun
+        ? {
+            runId: progressRun.runId,
+            sequence: progressRun.sequence,
+            status: progressRun.status,
+            trigger: progressRun.trigger,
+            startedAt: progressRun.startedAt,
+            completedAt: progressRun.completedAt,
+            error: progressRun.error,
+            failureCategory: progressRun.failureCategory,
+            isPrimary: progressRun.isPrimary,
+          }
+        : null,
+      specialists: progressRun ? propertyIntelligenceStore.listSpecialists(progressRun.runId).map((row) => ({
+        id: row.id, label: row.label, role: row.role, status: row.status, summary: row.summary,
+        failureCategory: row.failureCategory, failureMessage: row.failureMessage, retryable: row.retryable,
+        evidenceCount: row.evidenceCount, startedAt: row.startedAt, completedAt: row.completedAt, durationMs: row.durationMs,
+      })) : [],
+      history: propertyIntelligenceStore.history(dealCardId, 10).map((row) => ({
+        runId: row.runId, sequence: row.sequence, status: row.status,
+        startedAt: row.startedAt, completedAt: row.completedAt, isPrimary: row.isPrimary,
+      })),
+    };
+  };
+
+  // Read the joined snapshot + live specialist progress. SELECT-only: opening a
+  // Deal Card never starts research, calls a provider, or writes evidence.
+  app.get('/api/landos/deal-cards/:id/property-intelligence', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ propertyIntelligence: propertyIntelligenceView(id) });
+  });
+
+  // Progress-only read for polling while a mission runs.
+  app.get('/api/landos/deal-cards/:id/property-intelligence/progress', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const view = propertyIntelligenceView(id);
+    return c.json({ run: view.run, specialists: view.specialists, snapshotStatus: view.snapshot?.status ?? null });
+  });
+
+  app.post('/api/landos/deal-cards/:id/property-intelligence/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const terminal = terminalParcelStatus(deal);
+    if (terminal) return c.json(terminalParcelError(terminal), 409);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const wait = body.wait === true;
+
+    const { launch, completion } = launchPropertyIntelligenceMission({
+      dealCardId: id,
+      trigger: str(body.actor) ?? 'operator',
+      collectors: propertyIntelligenceCollectors(id),
+      store: propertyIntelligenceStore,
+    });
+    if (launch.alreadyRunning) {
+      logger.info({ dealCardId: id, runId: launch.runId }, 'property_intelligence_already_running');
+      return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
+    }
+    completion.catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'property_intelligence_mission_failed'));
+    if (wait) await completion;
+    return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
+  });
+
   // ── Parallel parcel resolution (Official public + LandPortal, concurrent) ──
   // Tyler's non-negotiable shape: official public sources and LandPortal run as
   // PARALLEL primary evidence lanes, reconciled into one confirmation verdict.
@@ -6756,7 +6965,7 @@ export function registerLandosRoutes(app: Hono): void {
     const lookup = await lookupOfficialParcel({
       address: str(property.active_input_address) ?? str(property.address),
       county: str(property.county), state: str(property.state), apn: str(property.apn),
-    }, 25_000);
+    }, OFFICIAL_PARCEL_LOOKUP_TIMEOUT_MS);
     if (!lookup.parcel) return c.json({ error: 'no confirmed official parcel geometry for this card' }, 409);
     const parcel = lookup.parcel;
     const entry = await getOrBuildParcelOverlay(`card-${id}-${parcel.apn}`, {

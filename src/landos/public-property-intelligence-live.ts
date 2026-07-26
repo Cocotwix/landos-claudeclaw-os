@@ -335,6 +335,14 @@ export function tennesseeApnLookupClauses(
   const groups = apn.toUpperCase().split(/[^0-9A-Z]+/).filter(Boolean);
   if (groups.length >= 2) {
     push('GISLINK ordered-group pattern', groups.join(' '), `GISLINK LIKE '${sql(groups.join('%'))}%'`);
+    // Whitespace-insensitive PARCELID. The TN layer PADS PARCELID
+    // ("015 027    04512 000 2026") while an operator paste or an intake parser
+    // collapses that run to a single space. Same identifier, different spacing —
+    // exact string equality alone silently fails to resolve a real parcel, and
+    // the lead then sits provisional with no visible reason. The ordered-group
+    // pattern preserves segment ORDER, so it can never match a different parcel;
+    // the digit identity guard below still applies to every hit.
+    push('PARCELID ordered-group pattern', groups.join(' '), `PARCELID LIKE '${sql(groups.join('%'))}'`);
   }
   const digits = apn.replace(/\D/g, '');
   if (groups.length === 1 && digits.length >= 8) {
@@ -399,8 +407,16 @@ async function tennesseeLookup(
         // pattern can never substitute a different parcel.
         .filter((value) => {
           if (apnDigits.length < 7) return true;
-          const hitDigits = String(value.facts.gisLink ?? value.apn ?? '').replace(/\D/g, '');
-          return hitDigits === apnDigits || hitDigits.endsWith(apnDigits) || apnDigits.endsWith(hitDigits);
+          // Both indexes are checked. GISLINK is "county+map+parcel" and is a
+          // PREFIX of the fuller PARCELID "county map parcel interval year", so
+          // a supplied PARCELID-shaped APN legitimately CONTAINS the matched
+          // parcel's GISLINK digits. Checking only the suffix relation rejected
+          // a correct official match and left a resolvable parcel provisional.
+          const candidates = [value.facts.gisLink, value.apn]
+            .map((raw) => String(raw ?? '').replace(/\D/g, ''))
+            .filter((digits) => digits.length >= 5);
+          return candidates.some((hitDigits) =>
+            hitDigits === apnDigits || hitDigits.includes(apnDigits) || apnDigits.includes(hitDigits));
         });
       if (hits.length === 1) {
         return { parcel: hits[0], status: 'matched', note: `APN matched by ${clause.label} using variant "${clause.variant}"${county ? ` (county-filtered to ${county})` : ''}.` };

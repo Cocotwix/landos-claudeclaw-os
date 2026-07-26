@@ -1,0 +1,322 @@
+// LandPortal is the PRIMARY comparable lane.
+//
+// Live finding on Deal 32: the report path passed `landPortalBrowser: undefined`,
+// so the parcel page was never read, no comparable rows were ever persisted, and
+// the comp policy silently ran its "LandPortal empty" branch on every card. The
+// lane now reads the authenticated parcel page itself and consumes LandPortal's
+// STRUCTURED rows (status, sale/list indicator, improvement, distance) rather
+// than re-parsing raw text.
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { _initTestLandosDb } from './db.js';
+import { createDealCard } from './deal-card.js';
+import { upsertPropertyCard, savePropertyInspection, loadPropertyInspection } from './property-card.js';
+import { linkPropertyToDeal } from './deal-card.js';
+import { collectComparables } from './property-intelligence-live.js';
+import { applyCompSourcePolicy } from './comp-source-policy.js';
+import type { MissionContext } from './property-intelligence-mission.js';
+
+function seedCard(): { dealCardId: number; cardId: number } {
+  const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'LandPortal comp lane' });
+  const { card } = upsertPropertyCard({
+    entity: 'TY_LAND_BIZ',
+    activeInputAddress: 'OLD RIDGE RD',
+    county: 'Roane',
+    state: 'TN',
+    apn: '073090 04200',
+    owner: 'SACHAN DILEEP S',
+    acres: 12.28,
+    verified: true,
+    verificationSource: 'Tennessee Comptroller public parcel layer',
+    agentId: 'test',
+  } as Parameters<typeof upsertPropertyCard>[0]);
+  linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' } as Parameters<typeof linkPropertyToDeal>[0]);
+  return { dealCardId: deal.id, cardId: card.id };
+}
+
+function context(dealCardId: number): MissionContext {
+  return {
+    dealCardId,
+    runId: 'pi_test',
+    identity: {
+      identity: {
+        state: 'confirmed', normalizedAddress: 'OLD RIDGE RD', county: 'Roane', state_: 'TN',
+        apn: '073090 04200', apnVariants: ['073090 04200'], owner: 'SACHAN DILEEP S', ownerMailing: null,
+        situs: 'OLD RIDGE RD', acres: 12.28, acreageBasis: 'deeded', coordinates: null,
+        hasParcelGeometry: false, sourceConfidence: 'high', conflicts: [], explanation: 'Confirmed.',
+      },
+      facts: [],
+      subjectMarket: { state: 'TN', county: 'Roane', acres: 12.28 },
+      subjectAcres: 12.28,
+      acreageConflict: false,
+    },
+    comparables: null,
+  };
+}
+
+const SOLD_ROW = {
+  rawText: '$62,000 Acres: 10.5 · 120 Ridge Rd, Kingston, TN 37763',
+  sourceUrl: 'https://landportal.test/comp/1',
+  address: '120 Ridge Rd, Kingston, TN 37763',
+  apn: '073090 04100',
+  saleDate: '2025-03-14',
+  acres: 10.5,
+  price: 62_000,
+  pricePerAcre: 5905,
+  distanceMiles: 1.4,
+  status: 'sold' as const,
+  saleListIndicator: 'sale' as const,
+  improvement: 'vacant' as const,
+  confidence: 'high' as const,
+};
+
+const ACTIVE_ROW = {
+  ...SOLD_ROW,
+  rawText: '$79,900 Acres: 11.0 · 300 Ridge Rd, Kingston, TN 37763',
+  sourceUrl: 'https://landportal.test/comp/2',
+  address: '300 Ridge Rd, Kingston, TN 37763',
+  price: 79_900,
+  acres: 11,
+  status: 'active' as const,
+  saleListIndicator: 'list' as const,
+};
+
+const IMPROVED_ROW = {
+  ...SOLD_ROW,
+  rawText: '$210,000 Acres: 9.8 · 500 Ridge Rd, Kingston, TN 37763',
+  sourceUrl: 'https://landportal.test/comp/3',
+  address: '500 Ridge Rd, Kingston, TN 37763',
+  price: 210_000,
+  acres: 9.8,
+  improvement: 'improved' as const,
+};
+
+beforeEach(() => { _initTestLandosDb(); });
+
+describe('LandPortal primary comparable lane', () => {
+  it('reads the parcel page when no comparable rows are persisted yet', async () => {
+    const { dealCardId, cardId } = seedCard();
+    const seen: Array<{ cardId: number; searchKey: { apn: string | null } }> = [];
+    const capture = vi.fn(async (input: { cardId: number; searchKey: { apn: string | null } }) => {
+      seen.push(input);
+      savePropertyInspection(cardId, {
+        parcelUrl: 'https://landportal.test/parcel/073090-04200',
+        comparablesUrl: null, parcelFacts: {}, assets: [], overlays: [], visualObservations: [],
+        comparables: [SOLD_ROW], sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+      });
+      return { ok: true, note: 'LandPortal inspection captured.', comparableCount: 1 };
+    });
+
+    const outcome = await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: capture,
+    });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(seen[0].searchKey.apn).toBe('073090 04200');
+    const landPortal = outcome.data!.candidates.filter((c) => /landportal/i.test(c.provider));
+    expect(landPortal).toHaveLength(1);
+    expect(outcome.summary).toMatch(/paid comp report was never requested/);
+  });
+
+  it('does not re-read the parcel page when rows are already persisted', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [SOLD_ROW], sources: [], evidence: [],
+      discoveryQuestions: [], missingInformation: [],
+    });
+    const capture = vi.fn(async () => ({ ok: true, note: 'should not run', comparableCount: 0 }));
+    await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: capture,
+    });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('makes LandPortal the primary basis and routes its rows by structured status', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [SOLD_ROW, ACTIVE_ROW, IMPROVED_ROW],
+      sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    const policy = applyCompSourcePolicy({ state: 'TN', county: 'Roane', acres: 12.28 }, outcome.data!.candidates);
+
+    expect(policy.plan.landPortalUsable).toBe(true);
+    expect(policy.plan.caps).toEqual({ zillow: 2, redfin: 2 });
+    // The vacant closed sale prices the subject; the listing is competition; the
+    // improved row is held for Land-Home only.
+    expect(policy.acceptedSold.map((d) => d.candidate.addressDesc)).toEqual(['120 Ridge Rd, Kingston, TN 37763']);
+    expect(policy.acceptedSold[0].role).toBe('primary');
+    expect(policy.acceptedActive.map((d) => d.candidate.addressDesc)).toEqual(['300 Ridge Rd, Kingston, TN 37763']);
+    expect(policy.landHomeOnly.map((d) => d.candidate.addressDesc)).toEqual(['500 Ridge Rd, Kingston, TN 37763']);
+  });
+
+  it('carries the structured distance and sale date through to the candidate', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: null, comparablesUrl: null, parcelFacts: {}, assets: [], overlays: [], visualObservations: [],
+      comparables: [SOLD_ROW], sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    const row = outcome.data!.candidates.find((c) => /landportal/i.test(c.provider))!;
+    expect(row.distanceMiles).toBe(1.4);
+    expect(row.saleOrListDate).toBe('2025-03-14');
+    expect(row.apn).toBe('073090 04100');
+    expect(row.sourceUrl).toBe('https://landportal.test/comp/1');
+  });
+
+  it('falls back to the raw-text parser when a row loses its structured price', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: null, comparablesUrl: null, parcelFacts: {}, assets: [], overlays: [], visualObservations: [],
+      comparables: [{ ...SOLD_ROW, price: null, acres: null, pricePerAcre: null }],
+      sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    const row = outcome.data!.candidates.find((c) => /landportal/i.test(c.provider))!;
+    expect(row.price).toBe(62_000);
+    expect(row.acres).toBe(10.5);
+  });
+
+  it('reports an unavailable LandPortal session honestly instead of silently widening', async () => {
+    const { dealCardId } = seedCard();
+    const outcome = await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: async () => ({
+        ok: false,
+        note: 'LandPortal session is not_running (No reachable Chrome on the CDP endpoint). Start Browser Intelligence so the parcel page can be read.',
+        comparableCount: 0,
+      }),
+    });
+    expect(outcome.summary).toMatch(/LandPortal primary lane unavailable/);
+    expect(outcome.summary).toMatch(/Start Browser Intelligence/);
+    expect(outcome.data!.candidates.filter((c) => /landportal/i.test(c.provider))).toHaveLength(0);
+  });
+
+  it('says so plainly when no LandPortal reader is wired into the run', async () => {
+    const { dealCardId } = seedCard();
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    expect(outcome.summary).toMatch(/no LandPortal reader is wired into this run/);
+  });
+
+  it('persists the captured inspection so a rerun reuses it', async () => {
+    const { dealCardId, cardId } = seedCard();
+    await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: async () => {
+        savePropertyInspection(cardId, {
+          parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+          overlays: [], visualObservations: [], comparables: [SOLD_ROW], sources: [], evidence: [],
+          discoveryQuestions: [], missingInformation: [],
+        });
+        return { ok: true, note: 'captured', comparableCount: 1 };
+      },
+    });
+    expect((loadPropertyInspection(cardId)?.comparables ?? []).length).toBe(1);
+  });
+});
+
+// ── Status must never be invented ───────────────────────────────────────────
+// Live finding on Deal 32: LandPortal's parcel panel returns rows like
+// "$153,500 Acres: 13.10 | APN: 115 02100" with no sale/list word. The extractor
+// stamped them 'listed', which is a FABRICATED listing status — and that status
+// alone decides whether a row prices the subject or merely competes with it.
+
+const UNSTATED_ROW = {
+  rawText: '$153,500 Acres: 13.10 | APN: 115 02100',
+  sourceUrl: 'https://landportal.test/parcel/1',
+  address: null,
+  apn: '115 02100',
+  acres: 13.1,
+  price: 153_500,
+  pricePerAcre: 11_718,
+  distanceMiles: null,
+  status: 'unknown' as const,
+  saleListIndicator: 'unknown' as const,
+  improvement: 'unknown' as const,
+  confidence: 'medium' as const,
+};
+
+describe('a LandPortal row with no stated transaction type', () => {
+  it('never prices the subject and never counts as competition', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [UNSTATED_ROW], sources: [], evidence: [],
+      discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    const policy = applyCompSourcePolicy({ state: 'TN', county: 'Roane', acres: 12.28 }, outcome.data!.candidates);
+
+    expect(policy.acceptedSold).toHaveLength(0);
+    expect(policy.acceptedActive).toHaveLength(0);
+    expect(policy.plan.landPortalUsable).toBe(false);
+    const decision = policy.decisions.find((d) => d.family === 'landportal')!;
+    expect(decision.role).toBe('context_only');
+    expect(decision.fmvEligible).toBe(false);
+    expect(decision.reason).toMatch(/never says whether it is a closed sale or an asking price/);
+  });
+
+  it('counts the unstated rows in the operator-visible summary', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [UNSTATED_ROW, { ...UNSTATED_ROW, rawText: '$84,500 Acres: 9.61 | APN: 071 03100', apn: '071 03100', price: 84_500, acres: 9.61 }], sources: [], evidence: [],
+      discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    expect(outcome.summary).toMatch(/2 row\(s\) carry a price and acreage but no sale-or-listing status anywhere on either surface/);
+    // Both surfaces are always accounted for, even when one returns nothing.
+    expect(outcome.summary).toMatch(/Parcel sidebar returned 2 row\(s\)/);
+    expect(outcome.summary).toMatch(/"Show on Map" expanded view returned 0 row\(s\)/);
+  });
+
+  it('still accepts a row once LandPortal states it is a closed sale', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [{ ...UNSTATED_ROW, status: 'sold' as const, saleListIndicator: 'sale' as const, improvement: 'vacant' as const }],
+      sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    const policy = applyCompSourcePolicy({ state: 'TN', county: 'Roane', acres: 12.28 }, outcome.data!.candidates);
+    expect(policy.acceptedSold).toHaveLength(1);
+    expect(policy.acceptedSold[0].role).toBe('primary');
+  });
+});
+
+describe('stale LandPortal rows are re-read, not trusted forever', () => {
+  it('re-reads the parcel page when every retained row lacks a stated status', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [UNSTATED_ROW], sources: [], evidence: [],
+      discoveryQuestions: [], missingInformation: [],
+    });
+    const capture = vi.fn(async () => ({ ok: true, note: 're-read', comparableCount: 0 }));
+    await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: capture,
+    });
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-read once at least one row states a usable status', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [UNSTATED_ROW, SOLD_ROW], sources: [], evidence: [],
+      discoveryQuestions: [], missingInformation: [],
+    });
+    const capture = vi.fn(async () => ({ ok: true, note: 'should not run', comparableCount: 0 }));
+    await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: capture,
+    });
+    expect(capture).not.toHaveBeenCalled();
+  });
+});

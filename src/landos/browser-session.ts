@@ -1126,15 +1126,93 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         document.querySelectorAll('p,div,li').forEach((el: any) => { if (hidden(el)) return; const sp = el.querySelectorAll(':scope > span'); if (sp.length === 2) add(sp[0].textContent || '', sp[1].textContent || ''); });
         return { fields };
       };
+      // Each row is returned as "<section label><row text>". The section
+      // label is the page's OWN heading for the block the row sits in, and it is
+      // the only place LandPortal states whether these are closed sales or
+      // asking prices — the row text itself never says. Without it the parser
+      // had to guess, and a guessed transaction type decides the whole
+      // valuation. An empty label means the page did not say; that stays
+      // unknown rather than being defaulted.
       const COMP_ROWS = (): string[] => {
         const out: string[] = []; const seen = new Set<string>();
+        const labelFor = (el: any): string => {
+          let node: any = el;
+          for (let hop = 0; hop < 6 && node; hop += 1) {
+            let sib: any = node.previousElementSibling;
+            while (sib) {
+              const tag = (sib.tagName || '').toLowerCase();
+              const text = (sib.textContent || '').replace(/\s+/g, ' ').trim();
+              if (text && text.length < 120 && (/^h[1-6]$/.test(tag) || /title|heading|header|label/i.test(sib.className || ''))) return text;
+              sib = sib.previousElementSibling;
+            }
+            node = node.parentElement;
+          }
+          return '';
+        };
         document.querySelectorAll('*').forEach((el: any) => {
           if (el.children && el.children.length > 2) return;
           const t = (el.textContent || '').replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
-          if (/^\$[\d,]+\s+Acres?:\s*[\d.]+/i.test(t) && t.length < 90 && !seen.has(t)) { seen.add(t); out.push(t); }
+          if (/^\$[\d,]+\s+Acres?:\s*[\d.]+/i.test(t) && t.length < 90 && !seen.has(t)) {
+            seen.add(t);
+            out.push(labelFor(el) + '' + t);
+          }
         });
         return out.slice(0, 30);
       };
+      // Scroll the window AND every scrollable container so a lazy-loaded result
+      // list materialises. Pure navigation: no click, no write.
+      const SCROLL_RESULTS = (): void => {
+        window.scrollBy(0, Math.max(600, window.innerHeight));
+        document.querySelectorAll('*').forEach((el: any) => {
+          if (!el || typeof el.scrollHeight !== 'number') return;
+          if (el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 120) el.scrollTop = el.scrollTop + el.clientHeight;
+        });
+      };
+
+      // Read the expanded Show-on-Map result surface. A result is any compact
+      // element carrying a price plus either acreage, an APN, or a street-style
+      // address. Each row is returned as "<section label><row text>" so the
+      // parser can read the page's OWN wording for sold/active status instead of
+      // guessing. Any result link href is appended so the row keeps a source URL.
+      const MAP_ROWS = (): string[] => {
+        const out: string[] = []; const seen = new Set<string>();
+        const STREET = /(rd|road|st|street|ave|avenue|dr|drive|ln|lane|hwy|highway|blvd|trl|trail|way|ct|court|pl|place|cir|circle|pike|pkwy)/i;
+        const labelFor = (el: any): string => {
+          let node: any = el;
+          for (let hop = 0; hop < 6 && node; hop += 1) {
+            let sib: any = node.previousElementSibling;
+            while (sib) {
+              const tag = (sib.tagName || '').toLowerCase();
+              const text = (sib.textContent || '').replace(/\s+/g, ' ').trim();
+              if (text && text.length < 120 && (/^h[1-6]$/.test(tag) || /title|heading|header|label|tab/i.test(sib.className || ''))) return text;
+              sib = sib.previousElementSibling;
+            }
+            node = node.parentElement;
+          }
+          const region = el.closest ? el.closest('[aria-label]') : null;
+          return region ? String(region.getAttribute('aria-label') || '') : '';
+        };
+        const linkFor = (el: any): string => {
+          const a = el.querySelector ? el.querySelector('a[href]') : null;
+          const own = el.closest ? el.closest('a[href]') : null;
+          const href = (a && a.getAttribute('href')) || (own && own.getAttribute('href')) || '';
+          if (!href || /^javascript:/i.test(href)) return '';
+          try { return new URL(href, location.href).toString(); } catch { return ''; }
+        };
+        document.querySelectorAll('*').forEach((el: any) => {
+          if (!el || (el.querySelectorAll && el.querySelectorAll('*').length > 12)) return;
+          const t = (el.textContent || '').replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
+          if (!t || t.length > 260) return;
+          if (!/\$[\d,]+/.test(t)) return;
+          if (!(/acres?\s*:?\s*[\d.]/i.test(t) || /APN/i.test(t) || STREET.test(t))) return;
+          if (seen.has(t)) return;
+          seen.add(t);
+          const href = linkFor(el);
+          out.push(labelFor(el) + '' + t + (href ? ' | URL: ' + href : ''));
+        });
+        return out.slice(0, 60);
+      };
+
       try {
         try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
         await (page as unknown as { bringToFront?: () => Promise<void> }).bringToFront?.();
@@ -1267,11 +1345,33 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           // LandPortal uses Mapbox's 10-degree Shift+Arrow bearing step. The
           // subject's road is north of the mapped polygon; a 180-degree bearing
           // puts the road-side foreground at the bottom and the property above.
-          for (let step = 0; step < 18; step++) {
-            await page.keyboard.press('Shift+ArrowRight');
-            await sleep(90);
+          // Orientation is a framing nicety. Some Chrome/CDP builds reject the
+          // combined "Shift+ArrowRight" chord outright ("Unknown key"), and an
+          // unhandled throw here aborted the WHOLE capture — losing the parcel
+          // screenshot, the sidebar comp rows AND the Show-on-Map surface. Fall
+          // back to an explicit Shift down/up, then give up on rotation alone.
+          try {
+            for (let step = 0; step < 18; step++) {
+              await page.keyboard.press('Shift+ArrowRight');
+              await sleep(90);
+            }
+            return 180;
+          } catch {
+            const chorded = page.keyboard as unknown as { down?: (k: string) => Promise<void>; up?: (k: string) => Promise<void> };
+            try {
+              if (!chorded.down || !chorded.up) throw new Error('chorded keyboard unavailable');
+              await chorded.down('Shift');
+              for (let step = 0; step < 18; step++) {
+                await page.keyboard.press('ArrowRight');
+                await sleep(90);
+              }
+              await chorded.up('Shift');
+              return 180;
+            } catch {
+              logger.warn({ event: 'landportal_visual_orientation', reason: 'bearing_rotation_unsupported' }, 'landportal_visual_orientation');
+              return 0;
+            }
           }
-          return 180;
         };
         // The default parcel view fills the frame with the subject and hides the
         // surrounding road/neighbor context. Retain a deliberately wider view so
@@ -1358,8 +1458,23 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const mapReached = await page.evaluate<boolean>((() => { const a = (document.querySelector('a.js-lp-estimate-show-on-map') as any) || Array.from(document.querySelectorAll('a')).find((x: any) => /^show on map$/i.test((x.textContent || '').trim())); if (a) { a.scrollIntoView(); a.click(); return true; } return false; }) as unknown as () => boolean);
         await sleep(6000);
         let compsMapShotPath: string | null = null;
-        if (mapReached) { const compsFile = path.join(dir, `landportal-compsmap-${Date.now()}.png`); await page.screenshot({ path: compsFile }); compsMapShotPath = compsFile; }
-        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, terrainShotPath, compRows: compRows ?? [], mapReached, capturedAtIso: now() };
+        let mapRows: string[] = [];
+        if (mapReached) {
+          const compsFile = path.join(dir, `landportal-compsmap-${Date.now()}.png`);
+          await page.screenshot({ path: compsFile });
+          compsMapShotPath = compsFile;
+          // The expanded results view lazy-loads its result list. Scroll every
+          // scrollable container (and the window) a few times so rows below the
+          // fold enter the DOM before reading. Read-only: scrolling only.
+          for (let pass = 0; pass < 4; pass += 1) {
+            await page.evaluate(SCROLL_RESULTS as unknown as () => void);
+            await sleep(1400);
+          }
+          mapRows = await page.evaluate<string[]>(MAP_ROWS as unknown as () => string[]);
+          const listFile = path.join(dir, `landportal-compslist-${Date.now()}.png`);
+          try { await page.screenshot({ path: listFile }); } catch { /* screenshot is best-effort */ }
+        }
+        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, terrainShotPath, compRows: compRows ?? [], mapRows: mapRows ?? [], mapReached, capturedAtIso: now() };
       } catch (error) {
         logger.warn({ event: 'landportal_visual_capture_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_visual_capture_failed');
         return empty;

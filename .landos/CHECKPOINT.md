@@ -1,13 +1,13 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-26T00:51:57.954Z
-- **HEAD at generation:** `2c750d3`
-- **Worktree:** DIRTY; 20 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-25T16:49:28-04:00; 331 files, 4266 tests, 0 failures (vitest run, full suite).
-- **Latest typecheck:** PASS at 2026-07-25T16:45:40-04:00; tsc --noEmit (server) clean; frontend web/tsconfig.json stays pre-existing-red, see Known limitations.
-- **Latest production build:** PASS at 2026-07-25T16:45:55-04:00; vite build + tsc passed; Vite emitted only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy at 2026-07-25T16:46:20-04:00; PID 67292; http://localhost:3141.
+- **Generated:** 2026-07-26T05:46:32.316Z
+- **HEAD at generation:** `e9ce958`
+- **Worktree:** DIRTY; 40 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-07-26T01:41:11-04:00; 341 files, 4424 tests, 0 failures (vitest run, full suite)..
+- **Latest typecheck:** PASS at 2026-07-26T01:41:20-04:00; tsc --noEmit (server) clean; frontend web/tsconfig.json stays pre-existing-red at 92 TS6133 unused-declaration errors, unchanged from the pre-phase baseline.
+- **Latest production build:** PASS at 2026-07-26T01:38:00-04:00; vite build + tsc passed; Vite emitted only the existing large-chunk advisory.
+- **Managed runtime:** RUNNING healthy at 2026-07-26T01:42:05-04:00; PID 59264; http://localhost:3141.
 - **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
 - **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
@@ -18,81 +18,80 @@ without Tyler's go-ahead.
 
 ## Current objective and state
 
-Reliability and command-path hardening is COMPLETE and UNCOMMITTED on `main`
-(base `2c750d3`). No business behavior changed; Property Intelligence, Deal
-Cards, LandPortal, browser intelligence, personas and orchestration are
-untouched. Upstream v1.7.1 (`ff3d20f`, `31187ea`, `hive-cli.ts`) was a read-only
-reference; nothing merged or cherry-picked. Detail:
-`docs/landos/Reliability_Command_Path_Phase_2026-07-25.md`.
+Phase 3 Property Intelligence end to end is COMPLETE and UNCOMMITTED on `main`
+(base `e9ce958`). Detail: `docs/landos/Property_Intelligence_Phase3_2026-07-26.md`.
 
-1. SQLite root cause: `claimNextMissionTask` used a DEFERRED transaction, so its
-   read snapshot had to UPGRADE on the UPDATE. SQLite refuses that with
-   `SQLITE_BUSY_SNAPSHOT` at once, ignoring `busy_timeout` (measured 0 ms with
-   5000 ms set): claims threw every tick, and completions losing the race
-   stranded finished tasks in `running` and discarded output. Scheduled tasks
-   had a second hole: a plain read then `markTaskRunning()`.
-2. Repair: claim runs `txn.immediate()` plus a one-running-per-agent guard; new
-   `claimScheduledTask()` puts `status = 'active'` inside the UPDATE so only the
-   caller whose UPDATE changed a row executes; bounded `withBusyRetry`
-   (4 attempts, 40/80/160 ms, busy-only, rethrows the original) wraps
-   claim/complete/cancel/reset. SQLite retained, no destructive migration.
-3. Classification root cause: `classifyError` matched `exited with code 1`
-   BEFORE the message text, so an expired provider login was recorded as
-   `subprocess_crash` and retried. `src/failure-classification.ts` now reads
-   provider meaning FIRST, exit code only as fallback; 14 categories, all output
-   through `redactString`. Persisted as `mission_tasks.failure_category` and
-   `scheduled_tasks.last_failure_category` (additive nullable columns applied
-   live on restart); surfaced on Mission Control, Scheduled and both CLIs.
-4. `src/hive-cli.ts` (`npm run landos:hive`): store-aware via config.ts, never
-   cwd or a hardcoded path; `--store` override; reads path/status/agents/
-   missions/task/failures/scheduled/hive with `--json`; one append-only writer
-   (`log`); exit codes 0/1/2/3; never reads a token.
-5. `src/mission-cli-args.ts`: strict parser running BEFORE `initDatabase()`, so
-   a rejected command line never opens the store. Rejects unknown long/short
-   flags, misspellings, missing/repeated values, bad `--status`/`--priority`,
-   excess positionals and unknown commands; `--` still allows a dash-leading
-   prompt. No CLI framework added. 149 new cases in 6 new files.
+One operator action starts ONE parent mission: ten specialists in dependency
+waves with live status, classified failure and timing, joined into ONE snapshot
+driving every Deal Card tab, including on an unresolved card.
+
+LandPortal is the PRIMARY comp lane and reads BOTH surfaces live through the
+approved LandOS Chrome (CDP endpoint configured in `.env` only; a foreign Edge
+runtime stays rejected): the parcel sidebar block AND the expanded "Show on Map"
+results. Rows merge on full APN, then street address, then price+acreage+date,
+provenance sidebar/map/both; a truncated APN is never a dedupe key. Zillow/Redfin
+then supplement (2+2 with LandPortal, 5+5 without); Realie and HomeHarvest never
+price land.
+
+Deal 32 APN reconciliation PROVEN equivalent, canonical unchanged: the official
+TN layer returns ONE Roane parcel for both spellings — PARCELID
+`073 090    04200 000 2026`, GISLINK `073090    04200`, CMAP 090 / PARCEL 042.00,
+OWNER SACHAN DILEEP S. The state layer prefixes county NUMBER 073 onto the
+county-local `090 04200`; both forms retained.
+
+Deal 32 run #12: both surfaces reached; sidebar 6 rows, Show-on-Map 6, all 6
+corroborated and merged to 6 unique; 0 street addresses, 0 stated statuses; 1
+accepted sold comp (Redfin); 36 excluded/context-only each with a reason; 10
+retained images all loading. Deal 32 stays NOT priceable — correctly: no accepted
+closed sale carries acreage and LandPortal states no transaction type.
+
+Eleven live defects fixed this phase, all with regressions: APN trailing
+punctuation; padded TN PARCELID vs exact equality; an identity guard rejecting a
+correct match (GISLINK is a PREFIX of PARCELID); a 25s lookup timeout on a 30-60s
+provider; fabricated `listed` status; APN truncated at the first space; excluded
+rows vanishing from the operator view; stale captures never re-read;
+`Unknown key: Shift+ArrowRight` aborting the WHOLE capture; a stale "LandPortal
+empty" claim after it answered; and the redactor destroying legitimate `key=`
+asset URLs so no retained screenshot loaded.
 
 ## Prior committed work to preserve
 
-Phase 2 security hardening (`1b4f320`, pushed): War Room loopback-by-default
-bind, the single pino log-redaction chokepoint, raw-value exfiltration scanning,
-a fail-closed migration guard, 3 pins + 5 overrides (npm audit 26 -> 19,
-protobufjs CRITICAL RCE gone), `.gitignore` env-backup coverage, closed
-dashboard CORS allowlist. The 19 remaining advisories are deliberate and each
-needs a semver-MAJOR upgrade.
+Reliability + command-path hardening (`e9ce958`): immediate-transaction SQLite
+task claiming with a one-running-per-agent guard, `claimScheduledTask`, bounded
+`withBusyRetry`, provider-meaning-first failure classification, the store-aware
+`hive-cli`, strict mission-CLI parsing.
+
+Phase 2 security hardening (`1b4f320`, pushed): War Room loopback bind, the pino
+log-redaction chokepoint, exfiltration scanning, a fail-closed migration guard,
+3 pins + 5 overrides (npm audit 26 -> 19, protobufjs RCE gone), `.gitignore` env
+coverage, closed CORS allowlist. The 19 left need semver-MAJOR bumps.
 
 The LandPortal + Deal Card recovery sprint (`0fccf8b`) repaired the BROWSER AND
 DEAL CARD FOUNDATION only: mandatory visual checkpoints, jurisdiction filters
-read back off the page, owner ranking for surname-first and rural road-only
-situs, a screenshot-quality contract as the only route into the evidence set,
-operator-owned page preservation, canonical identity propagation with reads
-never writing, read-only Deal Card tabs, and duplicate protection across
-submissions, artifacts, candidates, identity versions and resources.
+read back off the page, owner ranking, a screenshot-quality contract as the only
+route into the evidence set, operator-owned page preservation, canonical identity
+propagation with reads never writing, read-only tabs, duplicate protection.
 
 ## Accepted property proof to preserve
 
-- Deal 32 (Roane County, TN): identity `confirmed` (1.0) on the official
-  Tennessee Comptroller parcel layer. APN `073090 04200` (GISLINK ordered-group
-  match, Roane-filtered), owner `SACHAN DILEEP S`, situs `OLD RIDGE RD`, 12.28
-  deeded acres, coordinates + source URL. One submission, one artifact (PNG
-  2,949,777 bytes, SHA-256
+- Deal 32 (Roane County, TN): identity `confirmed` on the official Tennessee
+  Comptroller parcel layer. APN `073090 04200`, owner `SACHAN DILEEP S`, situs
+  `OLD RIDGE RD`, 12.28 deeded acres, coordinates + source URL. One submission,
+  one artifact (PNG 2,949,777 bytes, SHA-256
   `df2e1d2c898c9726daca94fbdb0db600ced3a59339a4ca9d012fdbb850ea09f3`), nine
-  candidates, no duplicates through restart. Card 32 verified from the official
-  record, never screenshot text. Tests pin the wrong-road rejection (no Ridge
-  Trail Road) and the Davidson-county APN collision refusal.
-
+  candidates, no duplicates through restart. That artifact is SURFACED by
+  Property Intelligence, read append-only, and serves HTTP 200 unchanged.
 - Deal 31 verified control (identity/snapshot v1, 100%, nine immutable evidence
-  items) and Deal 10 unresolved control (imagery/comps/valuation/strategy
-  withheld) both persist through restart.
-- Deal 14 government record snapshot v5: identity v1, 60% screened, medium
-  confidence; deed/ownership complete, other lanes partial; seven retained pages
-  for instrument 1997O31519 with SHA-256 + official source.
+  items) and Deal 10 unresolved control both persist through restart. Deal 10
+  also has a `blocked_identity` Property Intelligence snapshot.
+- Deal 14 government record snapshot v5: identity v1, 60% screened; seven
+  retained pages for instrument 1997O31519 with SHA-256 + official source.
 
 ## Exclusions
 
-Never stage `.claude`, `.kilo`, debug scripts, `tmp_query*`,
-`verify-deal30.mjs` or `scripts/tmp-*`; unrelated artifacts stay uncommitted.
+Never stage `.claude`, `.kilo`, debug scripts, `tmp_query*`, `verify-deal30.mjs`
+or `scripts/tmp-*`. `scripts/data/` is gitignored; operational scripts live in
+`scripts/sprint/`.
 
 ## Required invariants
 
@@ -102,33 +101,35 @@ Never stage `.claude`, `.kilo`, debug scripts, `tmp_query*`,
 4. Operator corrections beat weaker automation.
 5. GET requests perform no provider work or reconciliation writes.
 6. Collector failures are isolated and restart-resumable.
-7. Unresolved identity cannot show parcel-specific imagery, ranked comps, FMV or
+7. Unresolved identity cannot show parcel-specific imagery, comps, FMV or
    actionable strategy.
 8. Screenshot text/geometry never establishes official identity or boundaries.
-9. Lead/seller/wholesaler identity need not match screenshot owner.
+9. Lead/seller identity need not match screenshot owner.
+10. A missing specialist result is always visible; completeness is never claimed
+    over a failed, blocked or skipped contribution.
+11. APN formatting differences (spaces, dashes, leading zeros, trailing
+    punctuation, county prefix) never create a false parcel conflict.
+12. Transaction type is never inferred from the presence of a price.
 
 ## Known limitations and next action
 
-- Property Intelligence end to end, LandPortal comps, government records and
-  full Deal Card research are NOT finished.
-- Redaction covers `logger.*` and the failure classifier. Raw `console.*` in
-  CLI paths bypasses the chokepoint by design.
-- Frontend `web/tsconfig.json` is not green, no npm script: 92 pre-existing
-  errors. The authoritative path (`vite build && tsc`) passes.
-- Reliability phase IS visually verified: Mission Control cards + history and
-  Scheduled card + list views, live at 1280/1440/1600/1707 wide. That check
-  found and fixed a real defect (list view showed only `last_status`, so auth
-  and provider_unavailable looked identical), pinned by
-  `failure-category-ui.test.ts`. Phase 2 stays visually unverified.
-- The screenshot contract judges parcel identity, boundary visibility, tile
-  load, byte size and obstruction, not zoom framing.
-- LandPortal's collapsed parcel panel shows no county, state or coordinates;
-  `readScope` reads select2 and native selects, so a bespoke dropdown
-  downgrades filter checks to unverified.
-- `/overlay/aerial` returns an honest 502 for Roane (no county aerial overlay
-  configured); it surfaces once a parcel is confirmed.
-- Deal 30 still needs a valid authenticated LandPortal 2D replacement image.
-- Professional deed/title/lien, tax, zoning, access, septic, utility and split
+- LandPortal's two surfaces supply price + acreage + full APN but NO street
+  address and NO sale/list status, so its rows cannot establish closed-sale FMV.
+  Making Deal 32 priceable needs a source that states transaction type, or
+  acreage on the accepted Redfin sale.
+- Government records reached 50% with 0 retained artifacts; zoning could not be
+  established from the official sources searched. Deed, tax, survey, lien and
+  zoning retrieval remain unfinished.
+- Frontend `web/tsconfig.json` is not green: 92 pre-existing TS6133 errors,
+  unchanged. The authoritative path (`vite build && tsc`) passes.
+- Property Intelligence IS visually verified in Chrome across all seven tabs,
+  launch, progress, rerun and unresolved-card behaviour. Panels clean at
+  1280/1440/1600/1699 with zero page overflow; the maximized window would not
+  resize below 1699, so narrower widths were checked by container constraint and
+  breakpoint switching was not exercised. Phase 2 stays visually unverified.
+- Redaction covers `logger.*`, the failure classifier and the PI store; only
+  secret-shaped query keys redact. Raw `console.*` in CLI paths bypasses it.
+- `/overlay/aerial` returns an honest 502 for Roane.
+- Professional deed/title/lien, tax, zoning, access, septic and utility
   verification remain required before relying on those conclusions.
-- Next: the reliability phase awaits Tyler's commit review. Nothing committed,
-  nothing pushed.
+- Next: Phase 3 awaits Tyler's commit review. Nothing committed, nothing pushed.

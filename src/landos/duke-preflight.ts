@@ -256,8 +256,12 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // never matches) — this preserves the prefix instead of starting at the first
   // bare digit run and dropping it (a truncated APN corrupts identity and can
   // raise a FALSE conflict when a source returns the full prefixed APN).
+  // A trailing separator is sentence punctuation, never part of the parcel
+  // number. Left in place it reaches the property card and then defeats the
+  // EXACT match an official county/state parcel layer requires, so a genuinely
+  // resolvable parcel silently stays provisional with no visible reason.
   const apnKw = text.match(/\bapn[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?[0-9][0-9A-Za-z./\-]*(?:[^\S\n]+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
-    ?.replace(/[^\S\n]+/g, ' ').trim();
+    ?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '');
   if (apnKw) {
     const state = extractState(text);
     const fips = extractLabeledFips(text);

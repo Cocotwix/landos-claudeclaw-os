@@ -1,0 +1,315 @@
+{
+  "10": {
+    "runId": "pi_ms1824nx_5gxsyn",
+    "sequence": 1,
+    "status": "blocked_identity",
+    "identity": {
+      "state": "unresolved",
+      "apn": null,
+      "apnVariants": [],
+      "owner": null,
+      "acres": null,
+      "conflicts": []
+    },
+    "confidence": "none",
+    "specialists": [
+      "parcel_identity=blocked",
+      "government_records=skipped",
+      "zoning_land_use=skipped",
+      "environmental_terrain=skipped",
+      "access_utilities=skipped",
+      "comparables=partial",
+      "market_intelligence=completed",
+      "valuation_strategy=partial",
+      "evidence_visuals=blocked",
+      "synthesis_review=partial"
+    ],
+    "comps": {
+      "policy": "LandPortal returned no usable vacant-land comparables, so the search widened to up to 5 Zillow and up to 5 Redfin rows.",
+      "landPortalUsable": false,
+      "sold": 0,
+      "active": 0,
+      "landHomeOnly": 0,
+      "excluded": 0
+    },
+    "valuation": {
+      "priceable": false,
+      "range": null,
+      "notPriceableReason": "Parcel identity is unresolved, so no value may be attached to this record. A price on an unidentified parcel is a guess.",
+      "nextActionToPrice": "Confirm the subject parcel against the official county/state parcel layer, then re-run Property Intelligence."
+    },
+    "recommendation": {
+      "preferredStrategy": null,
+      "why": "Parcel identity is unresolved. No strategy is recommended on a parcel that has not been identified against an official record.",
+      "whatWouldChangeIt": [
+        "A confirmed official parcel match (APN, owner, acreage and situs agreeing on the county or state parcel layer)."
+      ],
+      "posture": "hold",
+      "postureWhy": "Hold. Identity work is the only productive next step; every downstream conclusion inherits this gap."
+    },
+    "evidenceCount": 0,
+    "governmentRecords": 0,
+    "dueDiligence": 0,
+    "blockers": [
+      "The subject parcel has not been identified against an official record. No official parcel record has matched this intake.",
+      "Parcel identity is unresolved, so no value may be attached to this record. A price on an unidentified parcel is a guess."
+    ],
+    "nextActions": [
+      "Resolve parcel identity against the official county/state parcel layer before relying on any parcel-specific conclusion.",
+      "Confirm the subject parcel against the official county/state parcel layer, then re-run Property Intelligence."
+    ]
+  },
+  "32": {
+    "runId": "pi_ms1d7alo_6h65l5",
+    "sequence": 12,
+    "status": "complete",
+    "identity": {
+      "state": "confirmed",
+      "apn": "073090 04200",
+      "apnVariants": [
+        "073090 04200"
+      ],
+      "owner": "SACHAN DILEEP S",
+      "acres": 12.28,
+      "conflicts": []
+    },
+    "confidence": "medium",
+    "specialists": [
+      "parcel_identity=completed",
+      "government_records=partial",
+      "zoning_land_use=partial",
+      "environmental_terrain=completed",
+      "access_utilities=partial",
+      "comparables=completed",
+      "market_intelligence=completed",
+      "valuation_strategy=partial",
+      "evidence_visuals=completed",
+      "synthesis_review=completed"
+    ],
+    "comps": {
+      "policy": "LandPortal was read and returned 6 comparable row(s), but none qualify as a vacant-land closed sale (see the excluded list for the exact reason on each). The search therefore widened to up to 5 Zillow and up to 5 Redfin rows.",
+      "landPortalUsable": false,
+      "landPortalRowsSeen": 6,
+      "sold": 1,
+      "active": 0,
+      "landHomeOnly": 0,
+      "excluded": 36
+    },
+    "valuation": {
+      "priceable": false,
+      "range": null,
+      "notPriceableReason": "Accepted closed sales carry no usable acreage, so a price-per-acre basis cannot be computed.",
+      "nextActionToPrice": "Retrieve acreage for the accepted closed sales (county record or listing detail) and re-run Property Intelligence."
+    },
+    "recommendation": {
+      "preferredStrategy": null,
+      "why": "No strategy can be recommended without a value basis. Accepted closed sales carry no usable acreage, so a price-per-acre basis cannot be computed.",
+      "whatWouldChangeIt": [
+        "Retrieve acreage for the accepted closed sales (county record or listing detail) and re-run Property Intelligence.",
+        "Any local closed land sale the operator can supply directly."
+      ],
+      "posture": "hold",
+      "postureWhy": "Hold. The parcel is identified but not priceable, so an offer would be a guess."
+    },
+    "evidenceCount": 17,
+    "governmentRecords": 2,
+    "dueDiligence": 6,
+    "blockers": [
+      "Accepted closed sales carry no usable acreage, so a price-per-acre basis cannot be computed."
+    ],
+    "nextActions": [
+      "Retrieve acreage for the accepted closed sales (county record or listing detail) and re-run Property Intelligence."
+    ]
+  },
+  "_note": "Phase 3 acceptance evidence. Deal 10 and Deal 32 are the operator's real cards and are read live below. Deal 36 and Deal 37 were TEMPORARY acceptance cards created to exercise the new-resolvable and new-unresolved conditions; they were purged after acceptance, so their entries are the recorded outcomes at the time they ran and no longer correspond to live records.",
+  "36 (temporary, purged)": {
+    "runId": "pi_ms179c1q_n2igp5",
+    "sequence": 2,
+    "status": "blocked_identity",
+    "identity": {
+      "state": "unresolved",
+      "apn": null,
+      "owner": "Unknown caller. Property address: 00000 Nonexistent Qa Fixture Rd",
+      "acres": null,
+      "conflicts": []
+    },
+    "confidence": "none",
+    "confidenceWhy": "Parcel identity is unresolved, so no parcel-specific conclusion carries confidence. No official parcel record has matched this intake.",
+    "specialists": [
+      "parcel_identity=blocked",
+      "government_records=skipped",
+      "zoning_land_use=skipped",
+      "environmental_terrain=skipped",
+      "access_utilities=skipped",
+      "comparables=completed",
+      "market_intelligence=completed",
+      "valuation_strategy=partial",
+      "evidence_visuals=blocked",
+      "synthesis_review=partial"
+    ],
+    "comps": {
+      "policy": "LandPortal returned no usable vacant-land comparables, so the search widened to up to 5 Zillow and up to 5 Redfin rows.",
+      "landPortalUsable": false,
+      "caps": {
+        "zillow": 5,
+        "redfin": 5
+      },
+      "sold": 0,
+      "active": 8,
+      "landHomeOnly": 0,
+      "rejected": 0
+    },
+    "valuation": {
+      "priceable": false,
+      "range": null,
+      "pricePerAcre": null,
+      "likelyRetail": null,
+      "disposition": null,
+      "confidence": "none",
+      "basis": "No value basis — parcel identity is not confirmed.",
+      "notPriceableReason": "Parcel identity is unresolved, so no value may be attached to this record. A price on an unidentified parcel is a guess."
+    },
+    "strategies": [
+      "Cash Flip=blocked",
+      "Novation or Double Close=blocked",
+      "Subdivide or Minor Split=blocked",
+      "Land-Home Package=blocked",
+      "Improvement Then Flip=blocked"
+    ],
+    "recommendation": {
+      "preferredStrategy": null,
+      "why": "Parcel identity is unresolved. No strategy is recommended on a parcel that has not been identified against an official record.",
+      "whatWouldChangeIt": [
+        "A confirmed official parcel match (APN, owner, acreage and situs agreeing on the county or state parcel layer)."
+      ],
+      "posture": "hold",
+      "postureWhy": "Hold. Identity work is the only productive next step; every downstream conclusion inherits this gap."
+    },
+    "evidenceCount": 0,
+    "governmentRecords": 0,
+    "dueDiligence": 0,
+    "blockers": [
+      "The subject parcel has not been identified against an official record. No official parcel record has matched this intake.",
+      "Parcel identity is unresolved, so no value may be attached to this record. A price on an unidentified parcel is a guess."
+    ],
+    "nextActions": [
+      "Resolve parcel identity against the official county/state parcel layer before relying on any parcel-specific conclusion.",
+      "Confirm the subject parcel against the official county/state parcel layer, then re-run Property Intelligence."
+    ],
+    "missingInformation": [
+      "Parcel identity: blocked — No official parcel record has matched this intake.",
+      "Government records: skipped — Skipped because parcel identity is unresolved. This lane produces parcel-specific findings that would be unsupported without a confirmed parcel.",
+      "Zoning and land use: skipped — Skipped because parcel identity is unresolved. This lane produces parcel-specific findings that would be unsupported without a confirmed parcel.",
+      "Environmental and terrain: skipped — Skipped because parcel identity is unresolved. This lane produces parcel-specific findings that would be unsupported without a confirmed parcel.",
+      "Access, frontage and utilities: skipped — Skipped because parcel identity is unresolved. This lane produces parcel-specific findings that would be unsupported without a confirmed parcel.",
+      "Valuation and strategy: partial result — Not priceable: Parcel identity is unresolved, so no value may be attached to this record. A price on an unidentified parcel is a guess.",
+      "Evidence and visuals: blocked — No screenshots, documents or source links have been retained for this parcel yet.",
+      "Synthesis and quality review: partial result — Joined the available results; 6 required contribution(s) are missing: Parcel identity, Government records, Zoning and land use, Environmental and terrain, Access, frontage and utilities, Evidence and visuals.",
+      "Official parcel identity has not been established."
+    ]
+  },
+  "37 (temporary, purged)": {
+    "runId": "pi_ms17v0fo_yohi9f",
+    "sequence": 4,
+    "status": "complete",
+    "identity": {
+      "state": "confirmed",
+      "apn": "015027 04512",
+      "owner": "JOINES TRAVIS",
+      "acres": 5.82,
+      "conflicts": []
+    },
+    "confidence": "high",
+    "confidenceWhy": "Parcel identity is confirmed, 9 of 9 required specialists delivered, and a defensible value basis exists.",
+    "specialists": [
+      "parcel_identity=completed",
+      "government_records=partial",
+      "zoning_land_use=partial",
+      "environmental_terrain=completed",
+      "access_utilities=partial",
+      "comparables=completed",
+      "market_intelligence=completed",
+      "valuation_strategy=completed",
+      "evidence_visuals=completed",
+      "synthesis_review=completed"
+    ],
+    "comps": {
+      "policy": "LandPortal returned no usable vacant-land comparables, so the search widened to up to 5 Zillow and up to 5 Redfin rows.",
+      "landPortalUsable": false,
+      "caps": {
+        "zillow": 5,
+        "redfin": 5
+      },
+      "sold": 1,
+      "active": 10,
+      "landHomeOnly": 0,
+      "rejected": 0
+    },
+    "valuation": {
+      "priceable": true,
+      "range": {
+        "low": 67000,
+        "high": 113000
+      },
+      "pricePerAcre": {
+        "low": 11500,
+        "high": 19500
+      },
+      "likelyRetail": {
+        "low": 85000,
+        "high": 113000
+      },
+      "disposition": {
+        "low": 51000,
+        "high": 90000
+      },
+      "confidence": "low",
+      "basis": "1 accepted vacant-land closed sale (0 LandPortal primary, 1 marketplace supplement) normalized to price per acre, applied to 5.82 governing acres. 10 active listings tracked separately as competition and excluded from the value basis.",
+      "notPriceableReason": null
+    },
+    "strategies": [
+      "Cash Flip=conditional",
+      "Novation or Double Close=blocked",
+      "Subdivide or Minor Split=blocked",
+      "Land-Home Package=blocked",
+      "Improvement Then Flip=applicable"
+    ],
+    "recommendation": {
+      "preferredStrategy": "Improvement Then Flip",
+      "why": "Spend selectively to remove the specific unknown or defect the market is discounting, then resell into the retail band. Discoverable value gaps a buyer would discount for: access, utilities, wetland delineation, flood documentation.",
+      "whatWouldChangeIt": [
+        "Cash Flip would become preferred if: its conditional evidence is proven.",
+        "Resolving Utilities, Zoning could change the ranking.",
+        "A stronger comp set would raise or lower the value band materially."
+      ],
+      "posture": "renegotiate",
+      "postureWhy": "Renegotiate. Improvement Then Flip is the best available path, but 2 mapped risk(s) should move the acquisition price before commitment: Septic Outlook: Poor; Road Proximity & Access: Non-public road proximity only."
+    },
+    "evidenceCount": 6,
+    "governmentRecords": 2,
+    "dueDiligence": 6,
+    "blockers": [],
+    "nextActions": [
+      "Price the specific cure for: access. Compare it to the discount the market is applying."
+    ],
+    "missingInformation": [
+      "Government records: partial result — Recorded-government screening 50% complete across 5 domains; 0 official artifact(s) retained. Missing: deed_ownership, surveys_plats, recorded_encumbrances, property_tax, lien_judgment.",
+      "Zoning and land use: partial result — Zoning district could not be established from the official sources searched.",
+      "Access, frontage and utilities: partial result — Road proximity only to a road of unknown ownership: ~396 ft of Baysinger Rd centerline falls within 25 meters of the mapped parcel boundary. Ownership is not established (it may be public, private, or unclassified); recorded private-road rights would only be required if a road is confirmed private, which is unconfirmed. Utilities: Not screened",
+      "Road Proximity & Access: Parcel–road boundary contact unresolved",
+      "Road Proximity & Access: Public right-of-way contact unresolved",
+      "Road Proximity & Access: Mapped frontage unresolved (proximity method does not measure frontage)",
+      "Road Proximity & Access: Physical / driveway access unresolved",
+      "Road Proximity & Access: Legal access unresolved (recorded instruments control)",
+      "Road Proximity & Access: Road maintenance responsibility unresolved",
+      "Road Proximity & Access: Legal access is established by a recorded instrument, not by mapped road proximity.",
+      "Utilities: Utilities has not been screened against a public source.",
+      "Zoning: The zoning district has not been confirmed on the official zoning map.",
+      "Zoning: zoning district has not been retrieved from an official source.",
+      "Zoning: zoning ordinance has not been retrieved from an official source.",
+      "Zoning: permitted uses has not been retrieved from an official source.",
+      "Zoning: dimensional standards has not been retrieved from an official source.",
+      "1 accepted comp(s) have no verified sale date."
+    ]
+  }
+}

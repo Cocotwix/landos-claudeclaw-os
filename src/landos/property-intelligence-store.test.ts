@@ -1,0 +1,217 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { _initTestLandosDb } from './db.js';
+import {
+  PropertyIntelligenceStore,
+  redactPropertyIntelligence,
+  resetPropertyIntelligenceStoreCache,
+} from './property-intelligence-store.js';
+import { initialSpecialistRecords, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
+
+function snapshot(overrides: Partial<PropertyIntelligenceSnapshot> = {}): PropertyIntelligenceSnapshot {
+  return {
+    snapshotVersion: 1,
+    dealCardId: 32,
+    runId: 'pi_1',
+    sequence: 1,
+    isPrimary: true,
+    status: 'complete',
+    startedAt: '2026-07-25T00:00:00.000Z',
+    completedAt: '2026-07-25T00:05:00.000Z',
+    durationMs: 300_000,
+    identity: {
+      state: 'confirmed', normalizedAddress: 'OLD RIDGE RD', county: 'Roane', state_: 'TN',
+      apn: '073090 04200', apnVariants: ['073090 04200'], owner: 'SACHAN DILEEP S', ownerMailing: null,
+      situs: 'OLD RIDGE RD', acres: 12.28, acreageBasis: 'deeded', coordinates: null,
+      hasParcelGeometry: false, sourceConfidence: 'high', conflicts: [], explanation: 'Confirmed.',
+    },
+    facts: [], governmentRecords: [], dueDiligence: [],
+    comps: { policyExplanation: '', landPortalUsable: false, landPortalRowsSeen: 0, caps: { zillow: 5, redfin: 5 }, sold: [], active: [], landHomeOnly: [], rejected: [], duplicatesMerged: 0, summaryLine: '' },
+    valuation: { priceable: false, range: null, pricePerAcreRange: null, likelyRetail: null, dispositionRange: null, basis: '', adjustments: [], confidence: 'none', uncertainty: [], materialGaps: [], notPriceableReason: 'No comps.', nextActionToPrice: 'Widen the search.' },
+    strategies: [],
+    recommendation: { preferredStrategy: null, why: '', whatWouldChangeIt: [], posture: 'undetermined', postureWhy: '' },
+    evidence: [], specialists: [],
+    headline: { keyOpportunity: '', topRisks: [], confidence: 'low', confidenceWhy: '' },
+    blockers: [], missingInformation: [], nextActions: [],
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  _initTestLandosDb();
+  resetPropertyIntelligenceStoreCache();
+});
+
+describe('PropertyIntelligenceStore run lifecycle', () => {
+  it('creates a run with every specialist queued', () => {
+    const store = new PropertyIntelligenceStore();
+    const run = store.createRun({ runId: 'pi_a', dealCardId: 32, trigger: 'operator', startedAt: '2026-07-25T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    expect(run.sequence).toBe(1);
+    expect(run.status).toBe('running');
+    expect(run.isPrimary).toBe(false);
+
+    const specialists = store.listSpecialists('pi_a');
+    expect(specialists).toHaveLength(initialSpecialistRecords().length);
+    expect(specialists.every((s) => s.status === 'queued')).toBe(true);
+    expect(specialists.every((s) => s.dealCardId === 32)).toBe(true);
+  });
+
+  it('rejects a run without a valid Deal Card', () => {
+    const store = new PropertyIntelligenceStore();
+    expect(() => store.createRun({ runId: 'bad', dealCardId: 0, trigger: 'operator', startedAt: 'now', specialists: [] }))
+      .toThrow(/valid Deal Card/);
+  });
+
+  it('records specialist progress and classified failures', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_b', dealCardId: 7, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.updateSpecialist({ runId: 'pi_b', specialistId: 'parcel_identity', status: 'running', startedAt: '2026-07-25T00:00:01.000Z' });
+    store.updateSpecialist({
+      runId: 'pi_b', specialistId: 'government_records', status: 'failed',
+      summary: 'County host refused the request.', failureCategory: 'provider_unavailable',
+      failureMessage: 'HTTP 503 from the county record host.', retryable: true,
+      completedAt: '2026-07-25T00:00:20.000Z', durationMs: 19_000,
+    });
+    const rows = store.listSpecialists('pi_b');
+    const identity = rows.find((r) => r.id === 'parcel_identity')!;
+    const gov = rows.find((r) => r.id === 'government_records')!;
+    expect(identity.status).toBe('running');
+    expect(gov.status).toBe('failed');
+    expect(gov.failureCategory).toBe('provider_unavailable');
+    expect(gov.retryable).toBe(true);
+    expect(gov.durationMs).toBe(19_000);
+  });
+
+  it('promotes the completed run to primary for its Deal Card only', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_c1', dealCardId: 10, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_c1', dealCardId: 10, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 10, runId: 'pi_c1' }) });
+
+    store.createRun({ runId: 'pi_other', dealCardId: 11, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_other', dealCardId: 11, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 11, runId: 'pi_other' }) });
+
+    expect(store.primaryRun(10)?.runId).toBe('pi_c1');
+    expect(store.primaryRun(11)?.runId).toBe('pi_other');
+  });
+
+  it('a rerun creates a new sequence and demotes only the prior snapshot for that card', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_d1', dealCardId: 32, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_d1', dealCardId: 32, status: 'complete', completedAt: 'later', snapshot: snapshot({ runId: 'pi_d1', sequence: 1 }) });
+    const second = store.createRun({ runId: 'pi_d2', dealCardId: 32, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    expect(second.sequence).toBe(2);
+    // While the rerun is in flight the previous snapshot stays primary.
+    expect(store.primaryRun(32)?.runId).toBe('pi_d1');
+
+    store.completeRun({ runId: 'pi_d2', dealCardId: 32, status: 'complete_with_gaps', completedAt: 'later', snapshot: snapshot({ runId: 'pi_d2', sequence: 2, status: 'complete_with_gaps' }) });
+    expect(store.primaryRun(32)?.runId).toBe('pi_d2');
+
+    const history = store.history(32);
+    expect(history.map((r) => r.runId)).toEqual(['pi_d2', 'pi_d1']);
+    // The prior snapshot is retained, not overwritten.
+    expect(history[1].snapshot?.runId).toBe('pi_d1');
+  });
+
+  it('a failed rerun never displaces the last good snapshot', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_e1', dealCardId: 5, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_e1', dealCardId: 5, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 5, runId: 'pi_e1' }) });
+    store.createRun({ runId: 'pi_e2', dealCardId: 5, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_e2', dealCardId: 5, status: 'failed', completedAt: 'later', snapshot: null, error: 'boom', failureCategory: 'crash' });
+
+    expect(store.primaryRun(5)?.runId).toBe('pi_e1');
+    expect(store.latestRun(5)?.runId).toBe('pi_e2');
+    expect(store.latestRun(5)?.failureCategory).toBe('crash');
+  });
+
+  it('tracks the in-flight run and clears it on completion', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_f', dealCardId: 3, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    expect(store.activeRun(3)?.runId).toBe('pi_f');
+    store.completeRun({ runId: 'pi_f', dealCardId: 3, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 3, runId: 'pi_f' }) });
+    expect(store.activeRun(3)).toBeNull();
+  });
+
+  it('reclaims runs stranded by a restart', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_g', dealCardId: 9, trigger: 'operator', startedAt: '2020-01-01T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    const reclaimed = store.reclaimStaleRuns(60_000, Date.parse('2026-07-25T00:00:00.000Z'));
+    expect(reclaimed).toBe(1);
+    const run = store.getRun('pi_g')!;
+    expect(run.status).toBe('failed');
+    expect(run.failureCategory).toBe('crash');
+    expect(store.listSpecialists('pi_g').every((s) => s.status === 'failed')).toBe(true);
+  });
+
+  it('never leaks a snapshot onto another Deal Card', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_h', dealCardId: 20, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_h', dealCardId: 20, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 20, runId: 'pi_h' }) });
+    expect(store.primaryRun(21)).toBeNull();
+    expect(store.latestRun(21)).toBeNull();
+    expect(store.listSpecialists('pi_h').every((s) => s.dealCardId === 20)).toBe(true);
+  });
+
+  it('deletes only the target card when acceptance data is cleaned up', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_i', dealCardId: 40, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.createRun({ runId: 'pi_j', dealCardId: 41, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.deleteForDealCard(40);
+    expect(store.latestRun(40)).toBeNull();
+    expect(store.latestRun(41)?.runId).toBe('pi_j');
+    expect(store.listSpecialists('pi_i')).toHaveLength(0);
+    expect(store.listSpecialists('pi_j').length).toBeGreaterThan(0);
+  });
+});
+
+describe('redactPropertyIntelligence', () => {
+  it('strips secret-bearing keys and query parameters', () => {
+    const redacted = redactPropertyIntelligence({
+      password: 'REDACTION-FIXTURE-NOT-A-CREDENTIAL',
+      apiKey: 'abc',
+      nested: { authorization: 'Bearer x', url: 'https://x.test/a?token=zzz&ok=1' },
+      safe: 'kept',
+    }) as Record<string, unknown>;
+    expect(redacted.password).toBe('[redacted]');
+    expect(redacted.apiKey).toBe('[redacted]');
+    const nested = redacted.nested as Record<string, unknown>;
+    expect(nested.authorization).toBe('[redacted]');
+    expect(nested.url).toBe('https://x.test/a?token=[redacted]&ok=1');
+    expect(redacted.safe).toBe('kept');
+  });
+
+  it('redacts specialist results before they reach the store', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_k', dealCardId: 2, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.updateSpecialist({ runId: 'pi_k', specialistId: 'parcel_identity', status: 'completed', result: { password: 'REDACTION-FIXTURE-NOT-A-CREDENTIAL', apn: '073090 04200' } });
+    const row = store.listSpecialists('pi_k').find((r) => r.id === 'parcel_identity')!;
+    expect((row.result as Record<string, unknown>).password).toBe('[redacted]');
+    expect((row.result as Record<string, unknown>).apn).toBe('073090 04200');
+  });
+});
+
+describe('redaction must not break legitimate asset URLs', () => {
+  it('keeps a non-secret `key=` parameter intact', () => {
+    // Live finding on Deal 32: every retained LandPortal screenshot 404'd
+    // because the stored viewUrl had been rewritten to key=[redacted].
+    const redacted = redactPropertyIntelligence({
+      viewUrl: '/api/landos/inspection/image?cardId=32&key=parcel_page',
+    }) as Record<string, string>;
+    expect(redacted.viewUrl).toBe('/api/landos/inspection/image?cardId=32&key=parcel_page');
+  });
+
+  it('still redacts secret-shaped key parameters', () => {
+    const redacted = redactPropertyIntelligence({
+      a: 'https://x.test/a?api_key=abc123',
+      b: 'https://x.test/b?apiKey=abc123',
+      c: 'https://x.test/c?access_key=abc123',
+      d: 'https://x.test/d?token=abc123',
+      e: 'https://x.test/e?secret_key=abc123',
+    }) as Record<string, string>;
+    expect(redacted.a).toBe('https://x.test/a?api_key=[redacted]');
+    expect(redacted.b).toBe('https://x.test/b?apiKey=[redacted]');
+    expect(redacted.c).toBe('https://x.test/c?access_key=[redacted]');
+    expect(redacted.d).toBe('https://x.test/d?token=[redacted]');
+    expect(redacted.e).toBe('https://x.test/e?secret_key=[redacted]');
+  });
+});

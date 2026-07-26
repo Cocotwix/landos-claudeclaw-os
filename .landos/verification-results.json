@@ -1,23 +1,112 @@
 {
   "tests": {
     "status": "PASS",
-    "timestamp": "2026-07-25T16:49:28-04:00",
-    "summary": "331 files, 4266 tests, 0 failures (vitest run, full suite)"
+    "timestamp": "2026-07-26T01:41:11-04:00",
+    "summary": "341 files, 4424 tests, 0 failures (vitest run, full suite)."
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-07-25T16:45:40-04:00",
-    "summary": "tsc --noEmit (server) clean; frontend web/tsconfig.json stays pre-existing-red, see Known limitations"
+    "timestamp": "2026-07-26T01:41:20-04:00",
+    "summary": "tsc --noEmit (server) clean; frontend web/tsconfig.json stays pre-existing-red at 92 TS6133 unused-declaration errors, unchanged from the pre-phase baseline"
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-07-25T16:45:55-04:00",
+    "timestamp": "2026-07-26T01:38:00-04:00",
     "summary": "vite build + tsc passed; Vite emitted only the existing large-chunk advisory"
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-07-25T16:46:20-04:00",
-    "pid": 67292,
-    "url": "http://localhost:3141"
+    "timestamp": "2026-07-26T01:42:05-04:00",
+    "pid": 59264,
+    "url": "http://localhost:3141",
+    "summary": "landos:restart then landos:health; root HTTP 200, health HTTP 200 (36ms). The browser CDP endpoint is configured in .env only."
+  },
+  "regressions": {
+    "status": "PASS",
+    "timestamp": "2026-07-25T23:18:27-04:00",
+    "summary": "Telegram bot, file-send integration, message classifier, failure classification, SQLite concurrency, mission CLI, mission CLI arg parsing and hive CLI: 8 files, 194 tests, 0 failures"
+  },
+  "propertyIntelligenceAcceptance": {
+    "status": "PASS",
+    "timestamp": "2026-07-25T23:12:00-04:00",
+    "summary": "All four required conditions exercised live in Chrome against the managed runtime. Evidence: docs/landos/phase3-acceptance-snapshots-2026-07-26.json",
+    "conditions": {
+      "existingVerifiedDealCard": {
+        "dealCardId": 32,
+        "result": "complete",
+        "detail": "Identity confirmed on the Tennessee Comptroller parcel layer; 10/10 specialists settled; 30 Realie rows excluded from FMV with a stated policy reason; 1 accepted Redfin closed sale; honest not-priceable refusal because the accepted sale carries no acreage; retained intake screenshot surfaced (SHA-256 df2e1d2c..., 2,949,777 bytes, HTTP 200)"
+      },
+      "existingUnresolvedDealCard": {
+        "dealCardId": 10,
+        "result": "blocked_identity",
+        "detail": "Parcel-specific specialists skipped with the reason surfaced; no value, no strategy recommendation; blockers and next actions stated"
+      },
+      "newIntakeThatResolves": {
+        "dealCardId": "temporary (purged after acceptance)",
+        "result": "complete",
+        "detail": "Manual-lead intake to confirmed parcel (JOINES TRAVIS, 5.82 ac, Cocke County TN); 9/9 required specialists delivered; value band $67,000-$113,000 at $11,500-$19,500/ac, low confidence on one accepted comp; recommendation Improvement Then Flip, posture renegotiate"
+      },
+      "newIntakeThatStaysUnresolved": {
+        "dealCardId": "temporary (purged after acceptance)",
+        "result": "blocked_identity",
+        "detail": "No official parcel matched; confidence none; every parcel-specific lane skipped; active listings retained as market context only"
+      }
+    }
+  },
+  "browserVerification": {
+    "status": "PASS",
+    "timestamp": "2026-07-25T23:14:00-04:00",
+    "summary": "Live Chrome against http://localhost:3141. Launch, live specialist progress, completed snapshot, Overview/Property/Due Diligence/Market/Strategy/Visuals/Documents tabs, rerun, unresolved-card behaviour and restart persistence all inspected directly.",
+    "layout": "Every Property Intelligence panel measured clean at 1280 / 1440 / 1600 / 1699 CSS px with zero page-level horizontal overflow; wide tables scroll inside their own containers. The maximized browser window would not resize below 1699 CSS px, so the three narrower widths were exercised by constraining the workspace container rather than by a true viewport resize.",
+    "consoleErrors": 0,
+    "badgeApiParity": "Status, confidence, identity state, recommended strategy, posture and value band in the UI all matched the API payload exactly; no stale failure text after a successful rerun"
+  },
+  "memoryAudit": {
+    "status": "PASS",
+    "timestamp": "2026-07-25T23:22:10-04:00",
+    "summary": "npm run landos:memory:audit — AUDIT PASS, ~7185 tokens against a 10000 soft budget"
+  },
+  "secretScan": {
+    "status": "PASS",
+    "timestamp": "2026-07-26T01:43:00-04:00",
+    "summary": "Pattern scan over every changed path: clean."
+  },
+  "landPortalTwoSurfaceWorkflow": {
+    "status": "PASS",
+    "timestamp": "2026-07-26T01:37:00-04:00",
+    "summary": "Deal 32 run #12: both LandPortal surfaces reached live through the approved LandOS Chrome on CDP 9224.",
+    "cdp": {
+      "resolved": "configured in .env (loopback CDP endpoint); resolved by the managed runtime at start",
+      "sessionStatus": "live",
+      "port9224": "Chrome/150.0.7871.129, LandOS profile (dedicated .landos-chrome user-data-dir)",
+      "port9222": "Edg/146.0.3856.109 - correctly rejected as a foreign runtime"
+    },
+    "apnReconciliation": {
+      "result": "EQUIVALENT - one official parcel answers both spellings",
+      "landosCanonical": "073090 04200",
+      "landPortalDisplayed": "090 04200",
+      "officialParcel": "PARCELID 073 090 04200 000 2026, GISLINK 073090 04200, CMAP 090, PARCEL 042.00, OWNER SACHAN DILEEP S, Roane County",
+      "rule": "The Tennessee statewide layer prefixes the county NUMBER (073) onto the county-local map+parcel identifier LandPortal displays. Both forms retained; the canonical APN was never replaced."
+    },
+    "surfaces": {
+      "sidebarRows": 6,
+      "showOnMapRows": 6,
+      "corroboratedByBoth": 6,
+      "combinedUnique": 6,
+      "streetAddressesSupplied": 0,
+      "statedStatuses": 0
+    },
+    "acceptance": {
+      "acceptedSold": 1,
+      "acceptedSoldSource": "Redfin supplement",
+      "activeCompetition": 0,
+      "excludedOrContextOnly": 36,
+      "zillowSupplements": 0,
+      "redfinSupplements": 1
+    },
+    "priceable": false,
+    "refusalReason": "Accepted closed sales carry no usable acreage, so a price-per-acre basis cannot be computed. LandPortal supplied price and acreage for 6 rows but states no sale-or-listing status on either surface, so none can establish closed-sale FMV.",
+    "nextAction": "Retrieve acreage for the accepted closed sales (county record or listing detail) and re-run Property Intelligence.",
+    "evidence": "Retained: LandPortal parcel view, comps map, comps result list, 3D/terrain and 5 overlays (10 images, all loading), plus the original intake screenshot."
   }
 }
