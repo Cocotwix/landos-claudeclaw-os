@@ -22,6 +22,7 @@ interface OpportunityCard {
   county: string;
   state: string;
   owner: string;
+  leadContact: string;
   acres: number | null;
   duplicateCandidates: Array<{ opportunityId: number; dealCardId: number; title: string }>;
 }
@@ -109,7 +110,15 @@ function OpportunityPipelineCard({ card, statuses, moving, onOpen, onMoveStart, 
       <div class="truncate text-[12.5px] font-semibold text-[var(--color-text)]">{card.title}</div>
       <div class="truncate text-[11px] text-[var(--color-text-muted)]">{identity}</div>
       {place && <div class="flex items-center gap-1 truncate text-[10px] text-[var(--color-text-faint)]"><MapPin size={9} />{place}</div>}
-      <div class="mt-1 text-[10.5px] text-[var(--color-text-muted)]">{card.owner || 'Seller/owner not identified'}{card.acres ? ` · ${card.acres} ac` : ''}</div>
+      {/* The lead CONTACT and the owner OF RECORD are different facts and are
+          never merged: a name the operator was given proves nothing about who
+          owns the parcel. */}
+      <div class="mt-1 text-[10.5px] text-[var(--color-text-muted)]">
+        {card.leadContact ? `Lead: ${card.leadContact}` : 'Lead contact not identified'}
+        {' · '}
+        {card.owner ? `Owner of record: ${card.owner}` : 'Owner of record not confirmed'}
+        {card.acres ? ` · ${card.acres} ac` : ''}
+      </div>
       {card.duplicateCandidates.length > 0 && <div data-testid="duplicate-candidate-warning" class="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-800 dark:text-amber-200">Possible duplicate ({card.duplicateCandidates.length}) — review before merging. Distinct parcels remain separate.</div>}
       <div class="mt-2 flex items-center gap-1 text-[10.5px] text-[var(--color-text-muted)]"><ArrowRight size={11} class="text-[var(--color-accent)]" />Open Lead Workspace</div>
     </button>

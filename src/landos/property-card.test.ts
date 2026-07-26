@@ -103,6 +103,34 @@ describe('Property Card identity rules', () => {
   it('normalizeAddressKey collapses case and punctuation', () => {
     expect(normalizeAddressKey('83 Bub Wise Rd., Swansea SC')).toBe('83 bub wise rd swansea sc');
   });
+
+  // Operator acceptance regression: a raw intake address was stored as its own
+  // key, so the same property re-entered with a spelled-out suffix forked into a
+  // second, unrelated lead.
+  it('normalizeAddressKey canonicalizes street suffixes and directionals', () => {
+    expect(normalizeAddressKey('4713 Sinking Creek Road, London KY'))
+      .toBe(normalizeAddressKey('4713 sinking creek rd, London KY'));
+    expect(normalizeAddressKey('1200 North Main Street'))
+      .toBe(normalizeAddressKey('1200 N Main St'));
+  });
+
+  it('does not merge genuinely different addresses', () => {
+    expect(normalizeAddressKey('4713 Sinking Creek Rd')).not.toBe(normalizeAddressKey('4714 Sinking Creek Rd'));
+    expect(normalizeAddressKey('4713 Sinking Creek Rd')).not.toBe(normalizeAddressKey('4713 Sinking Creek Dr'));
+  });
+
+  it('resolves a suffix-spelling variant back to the same lead card', () => {
+    const first = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '4713 sinking creek rd, London KY',
+      city: 'London', state: 'KY', verified: false,
+    });
+    const again = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: '4713 Sinking Creek Road, London KY',
+      city: 'London', state: 'KY', verified: false,
+    });
+    expect(again.created).toBe(false);
+    expect(again.card.id).toBe(first.card.id);
+  });
 });
 
 describe('Strong identity enforcement', () => {

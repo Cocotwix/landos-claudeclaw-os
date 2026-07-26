@@ -139,7 +139,12 @@ export function OperatorCrmHeader({ record, stage, sellerLead, heroSrc, heroHref
       <div class="flex flex-col lg:flex-row">
         <div class="flex-1 p-4 space-y-3 min-w-0">
           <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span class="text-[22px] font-bold tracking-tight text-[var(--color-text)]">{id.situsAddress}</span>
+            {/* An unidentified lead says so plainly. It never shows an internal
+                storage handle, and never borrows the Deal Card title — the
+                title is a label, not a claim about where the property is. */}
+            <span class={`text-[22px] font-bold tracking-tight ${id.situsAddress ? 'text-[var(--color-text)]' : 'text-[var(--color-text-muted)]'}`}>
+              {id.situsAddress || 'Property not yet identified'}
+            </span>
             <span class="text-[13.5px] text-[var(--color-text-muted)]">{localityLine}</span>
             {badges}
           </div>

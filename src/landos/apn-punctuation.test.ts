@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { extractApnCandidates } from './intake-normalize.js';
 import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
 import { apnEquivalent, distinctApnIdentities, jurisdictionPrefixBetween, normalizeApn } from './property-intelligence-snapshot.js';
+import { extractPropertyArgs } from './duke-preflight.js';
 
 describe('labeled APN capture strips trailing sentence punctuation', () => {
   it('drops a trailing period from a labeled parcel number', () => {
@@ -94,5 +95,79 @@ describe('jurisdiction-prefix APN equivalence', () => {
 
   it('still separates two genuinely distinct parcels in one lead', () => {
     expect(distinctApnIdentities(['073090 04200', '073090 04300'])).toHaveLength(2);
+  });
+});
+
+// Operator acceptance regression: a Tennessee map/group/parcel number
+// ("073009G B 03600") was truncated to its first group by a digits-only
+// scanner. A truncated parcel number is a DIFFERENT parcel, not a partial one.
+describe('alphanumeric parcel numbers with a letter group code', () => {
+  it('keeps the whole labeled parcel number', () => {
+    expect(extractApnCandidates('APN 073009G B 03600, Roane County, Tennessee').primary)
+      .toBe('073009G B 03600');
+    expect(extractApnCandidates('Parcel ID: 073 009G B 03600').primary)
+      .toBe('073 009G B 03600');
+  });
+
+  it('still keeps purely numeric formats intact', () => {
+    expect(extractApnCandidates('APN 073090 04200, Roane County TN').primary).toBe('073090 04200');
+    expect(extractApnCandidates('apn 015 027 04512 000 2026').primary).toBe('015 027 04512 000 2026');
+    expect(extractApnCandidates('APN: 123-45-678').primary).toBe('123-45-678');
+  });
+
+  it('never reads a street address, a phone number or prose as a parcel number', () => {
+    expect(extractApnCandidates('4713 Sinking Creek Rd, London KY').primary).toBeUndefined();
+    expect(extractApnCandidates('12345 Main St, Somewhere TX').primary).toBeUndefined();
+    expect(extractApnCandidates('Call Maria at 704 555 0182').primary).toBeUndefined();
+    expect(extractApnCandidates('Lot 54 B of the recorded plat').primary).toBeUndefined();
+  });
+});
+
+// ── The APN the OPERATOR route actually stores ──────────────────────────────
+//
+// Recovery acceptance finding: proving `extractApnCandidates` keeps a parcel
+// number proves nothing about the New Lead route. `fieldsFromArgs` resolves
+// `a.apn ?? intake.apn ?? apnCands.primary`, so the value from
+// `extractPropertyArgs` OUTRANKS the correct one. Its digits-only token class
+// truncated "073 090 04200 A-1" to "073 090 04200" and missed "R1234-567A"
+// entirely, and the Deal Card then displayed a DIFFERENT parcel number than
+// the operator supplied. These assert the route, not the helper.
+describe('New Lead intake preserves a complete APN end to end', () => {
+  const routeApn = (raw: string) => parseConversationalLeadIntake(raw).apn;
+
+  it('keeps a trailing alphanumeric group', () => {
+    expect(extractPropertyArgs('parcel 073 090 04200 A-1, Roane County, TN')?.apn).toBe('073 090 04200 A-1');
+    expect(routeApn('Marcia Alvarez-Doyle, parcel 073 090 04200 A-1, Roane County, Tennessee.')).toBe('073 090 04200 A-1');
+    expect(routeApn('APN 073 090 04200 A-1, Roane County, TN')).toBe('073 090 04200 A-1');
+  });
+
+  it('keeps a district letter that OPENS the parcel number', () => {
+    expect(extractPropertyArgs('parcel R1234-567A, Laurel County, KY')?.apn).toBe('R1234-567A');
+    expect(routeApn('Owner Bob Reyes, parcel R1234-567A, Laurel County, Kentucky')).toBe('R1234-567A');
+  });
+
+  it('keeps a letter group code BETWEEN numeric groups under either label', () => {
+    expect(routeApn('Dana Kirk, APN 073009G B 03600, Roane County, TN')).toBe('073009G B 03600');
+    expect(routeApn('Dana Kirk, parcel 073009G B 03600, Roane County, TN')).toBe('073009G B 03600');
+  });
+
+  it('still refuses to read a street address as a parcel number', () => {
+    // The token class now admits letters, so the street-name guard is the only
+    // thing standing between "Parcel: 12 Oak Street" and a corrupt parcel id.
+    expect(routeApn('Seller Ann, 4713 Sinking Creek Rd, London, Kentucky')).toBeNull();
+    expect(routeApn('Address: 731 Filter Plant Rd, Kingston, TN')).toBeNull();
+    expect(routeApn('Parcel: 12 Oak Street, Somewhere, TN')).toBeNull();
+    expect(extractPropertyArgs('Address: 731 Filter Plant Rd, Kingston, TN')?.apn).toBeUndefined();
+  });
+
+  it('does not alter an APN that ends a sentence', () => {
+    // A trailing period defeats the EXACT match an official parcel layer needs.
+    expect(routeApn('Parcel: 015 027 04512 000 2026.')).toBe('015 027 04512 000 2026');
+    expect(extractPropertyArgs('Parcel: 015 027 04512 000 2026.')?.apn).toBe('015 027 04512 000 2026');
+  });
+
+  it('leaves established numeric and dotted formats untouched', () => {
+    expect(routeApn('Parcel ID: 094-020.08 in Scott County')).toBe('094-020.08');
+    expect(routeApn('APN 073090 04200, Roane County TN')).toBe('073090 04200');
   });
 });

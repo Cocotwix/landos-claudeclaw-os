@@ -39,6 +39,7 @@ import {
   NEARBY_REFERENCE_RELATIONSHIPS,
   NEARBY_REFERENCE_LABEL,
 } from './db.js';
+import { normalizeAddressMatchKey } from './address-normalize.js';
 import { filterEligibleAssetMap, type VisualAssociation } from './visual-eligibility.js';
 import { classifySource, evaluateFact, type SourceType } from './source-evidence.js';
 import {
@@ -89,15 +90,14 @@ export function hasStrongParcelIdentity(input: {
   return false;
 }
 
-/** Normalize an address into a stable matching key. Lowercase, collapse
- *  whitespace, strip punctuation. Used ONLY for exact-ish address matching of
- *  unverified leads — never for proximity/fuzzy nearest-parcel matching. */
+/** Normalize an address into a stable matching key. Case, whitespace and
+ *  punctuation are collapsed, and street suffixes/directionals are canonicalized
+ *  through the shared address normalizer, so "4713 Sinking Creek Road" and
+ *  "4713 Sinking Creek Rd" are one lead instead of two. Used ONLY for exact-ish
+ *  address matching of unverified leads — never for proximity/fuzzy
+ *  nearest-parcel matching. */
 export function normalizeAddressKey(address: string): string {
-  return (address ?? '')
-    .toLowerCase()
-    .replace(/[.,#]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeAddressMatchKey(address);
 }
 
 export interface PropertyCardRow {

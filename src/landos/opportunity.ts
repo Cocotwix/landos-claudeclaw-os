@@ -346,7 +346,10 @@ export interface OpportunityBoardCard extends OpportunityRecord {
   city: string;
   county: string;
   state: string;
+  /** Owner OF RECORD, from an official source only. Blank until one confirms it. */
   owner: string;
+  /** The seller/lead CONTACT the operator is working. Never an ownership claim. */
+  leadContact: string;
   acres: number | null;
   duplicateCandidates: Array<{ opportunityId: number; dealCardId: number; title: string }>;
 }
@@ -361,7 +364,13 @@ export function listOpportunityBoardCards(entity?: LandosEntity): OpportunityBoa
   if (entity) args.push(entity);
   const rows = getLandosDb().prepare(`
     SELECT o.*, d.deleted_at, p.active_input_address, p.address_key, p.apn,
-           p.city, p.county, p.state, p.owner, p.acres
+           p.city, p.county, p.state, p.owner, p.acres,
+           (SELECT per.name FROM landos_person_link pl
+              JOIN landos_person per ON per.id = pl.person_id
+             WHERE pl.deal_card_id = o.legacy_deal_card_id
+               AND pl.role IN ('seller','lead_contact')
+             ORDER BY CASE WHEN pl.role = 'seller' THEN 0 ELSE 1 END, pl.id
+             LIMIT 1) AS lead_contact
     FROM landos_opportunity o
     JOIN landos_deal_card d ON d.id = o.legacy_deal_card_id
     LEFT JOIN landos_property_card p ON p.id = o.primary_property_card_id
@@ -370,7 +379,7 @@ export function listOpportunityBoardCards(entity?: LandosEntity): OpportunityBoa
   `).all(...args) as Array<OpportunityDbRow & {
     active_input_address: string | null; address_key: string | null; apn: string | null;
     city: string | null; county: string | null; state: string | null; owner: string | null;
-    acres: number | null;
+    acres: number | null; lead_contact: string | null;
   }>;
   return rows.map((row) => {
     const duplicates = rows.filter((other) => other.id !== row.id && (
@@ -380,7 +389,8 @@ export function listOpportunityBoardCards(entity?: LandosEntity): OpportunityBoa
     return {
       ...mapRow(row), dealCardId: row.legacy_deal_card_id!,
       address: row.active_input_address ?? '', apn: row.apn ?? '', city: row.city ?? '',
-      county: row.county ?? '', state: row.state ?? '', owner: row.owner ?? '', acres: row.acres,
+      county: row.county ?? '', state: row.state ?? '', owner: row.owner ?? '',
+      leadContact: row.lead_contact ?? '', acres: row.acres,
       duplicateCandidates: duplicates.map((other) => ({ opportunityId: other.id, dealCardId: other.legacy_deal_card_id!, title: other.title })),
     };
   });

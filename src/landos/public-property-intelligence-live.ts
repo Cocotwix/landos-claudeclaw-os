@@ -166,6 +166,36 @@ export async function lookupOfficialParcel(
   return { parcel: null, status: 'unavailable', attempted };
 }
 
+/**
+ * What LandOS can currently do for a jurisdiction, BEFORE any lookup runs.
+ *
+ * An operator escalation that only says "confirm the parcel" hides which of the
+ * two very different situations applies: LandOS not knowing WHERE the parcel is
+ * (no county), versus LandOS knowing exactly where it is but having no tested
+ * official source for that place. Naming the real blocker is the difference
+ * between a next action the operator can take and a dead end.
+ */
+export function officialParcelSourceCoverage(
+  input: Pick<ParsedIntakeFields, 'address' | 'county' | 'state' | 'apn' | 'apnAlternates' | 'owner'>,
+): { available: boolean; sources: string[]; reason: string } {
+  const sources = applicableParcelStrategies(input, 1).map((strategy) => strategy.source);
+  if (sources.length) return { available: true, sources, reason: `${sources.length} official parcel source(s) apply to this jurisdiction.` };
+  const state = stateCode(input.state);
+  if (!state) return { available: false, sources, reason: 'No state is known for this lead, so no official parcel source can be selected.' };
+  if (!input.county) {
+    return {
+      available: false,
+      sources,
+      reason: `No county is known for this ${state} lead. Official parcel sources are selected by county, so none can be applied until the county is established.`,
+    };
+  }
+  return {
+    available: false,
+    sources,
+    reason: `No tested official parcel source is configured for ${input.county} County, ${state}${input.apn ? '' : ', and no APN was supplied'}. This is a missing LandOS source configuration, NOT evidence that the parcel does not exist.`,
+  };
+}
+
 function cancelledLookup(attempted: OfficialParcelAttempt[], remaining: number): OfficialParcelLookupResult {
   attempted.push({
     source: OFFICIAL_LOOKUP_SOURCE,

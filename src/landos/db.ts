@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { countPdfPages } from './pdf-text.js';
+import { normalizeAddressMatchKey } from './address-normalize.js';
 import { getLandosStorageProfile } from './storage-profile.js';
 
 export type LandosEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';
@@ -321,6 +322,31 @@ export function isProhibitedActionType(actionType: string): boolean {
 let landosDb: Database.Database | null = null;
 
 const inList = (vals: readonly string[]): string => vals.map((v) => `'${v}'`).join(',');
+
+/**
+ * One-time derived-index correction for property cards: recompute `address_key`
+ * under the canonical address normalizer (street suffixes and directionals
+ * canonicalized), so a card stored before the change still matches a later
+ * "Road"/"Rd" spelling of the same lead instead of forking into a duplicate.
+ *
+ * `address_key` is PURELY DERIVED from `active_input_address`, which is not
+ * touched. No accepted identity, evidence, owner, or verification record moves.
+ * Exported for direct regression testing.
+ */
+export function recomputePropertyCardAddressKeys(
+  db: Database.Database,
+  normalize: (address: string) => string = normalizeAddressMatchKey,
+): number {
+  const rows = db.prepare('SELECT id, active_input_address, address_key FROM landos_property_card').all() as
+    Array<{ id: number; active_input_address: string; address_key: string }>;
+  const update = db.prepare('UPDATE landos_property_card SET address_key = ? WHERE id = ?');
+  let corrected = 0;
+  for (const row of rows) {
+    const next = normalize(row.active_input_address ?? '');
+    if (next !== (row.address_key ?? '')) { update.run(next, row.id); corrected += 1; }
+  }
+  return corrected;
+}
 
 /**
  * One-time derived-metadata correction for retained zoning ordinance PDFs:
@@ -2555,6 +2581,18 @@ function createLandosSchema(db: Database.Database): void {
     'Recompute honest page counts for retained zoning ordinance PDFs (derived metadata only; bytes and hashes untouched).',
   );
   if (zoningPageCountFix.changes > 0) recomputeZoningArtifactPdfPageCounts(db);
+  // Derived-index correction (operator acceptance finding: a fresh Kentucky
+  // lead was stored under a raw, un-normalized address key). Recompute
+  // address_key under the canonical normalizer so suffix/directional spellings
+  // of the same address resolve to one lead. Purely derived; no accepted
+  // identity, evidence, or address text changes.
+  const addressKeyCanonicalization = db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260726_009_property_card_canonical_address_key',
+    'sha256:5b7c1e9d3a6f80b24c8e0d5a7f1b3c9e6d2a4f8b0c6e1d3a5f7b9c2e4d6a8f01',
+    'Recompute the derived property-card address_key under the canonical address normalizer (derived index only; addresses and identity untouched).',
+  );
+  if (addressKeyCanonicalization.changes > 0) recomputePropertyCardAddressKeys(db);
 
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead
   // opportunity, including soft-deleted/research cards. We deliberately retain

@@ -65,6 +65,15 @@ export function normalizeAddress(raw: string): string {
   return out.join(' ');
 }
 
+/**
+ * The stable matching key for an address. ONE definition, so the schema-owner
+ * backfill and the runtime lookup can never drift apart and silently start
+ * creating duplicate leads for the same property.
+ */
+export function normalizeAddressMatchKey(address: string): string {
+  return normalizeAddress(address ?? '').toLowerCase();
+}
+
 /** Clean a ZIP to a 5-digit form (or '' when not derivable). */
 export function normalizeZip(raw?: string): string {
   const m = (raw ?? '').match(/\d{5}/);

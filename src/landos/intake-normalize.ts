@@ -73,7 +73,12 @@ export function normalizeApn(raw: string | null | undefined): NormalizedApn | nu
   if (PHONE_RE.test(canonical)) return null;
   const digits = canonical.replace(/[^0-9A-Za-z]/g, '');
   if (canonical.replace(/[^0-9]/g, '').length < 5) return null;
-  const hasSep = /[-./]/.test(canonical) || /\d\s+\d/.test(canonical);
+  // A separator proves this is a segmented parcel number rather than a house
+  // number or a year. The third clause admits alphanumeric parcel formats whose
+  // groups are separated by a LETTER group ("073009G B 03600"), which neither of
+  // the first two clauses can see. It requires the WHOLE string to be parcel
+  // shaped, so "12345 Main St" is still rejected.
+  const hasSep = /[-./]/.test(canonical) || /\d\s+\d/.test(canonical) || APN_SHAPE_RE.test(canonical);
   if (!hasSep) return null;
 
   const segments = canonical.split(/[\s.\/\-]+/).filter(Boolean);
@@ -105,10 +110,22 @@ export interface ApnCandidates {
   normalized: NormalizedApn[];
 }
 
-// Digits + parcel separators only (never letters/street names). Two shapes:
-//  - multi-segment with a separator: "094-020.08", "094 02008 000", "16 038 07 001"
-//  - a single decimal parcel: "051.05"
-const APN_TOKEN_RE = /\b\d{2,6}(?:[ \t]*[.\/\-][ \t]*\d{1,6}|[ \t]+\d{1,6}){1,5}\b/g;
+// Parcel-number shapes. Numeric groups, an OPTIONAL one/two-letter group code
+// between them, and an optional trailing letter on a group — because plenty of
+// jurisdictions issue alphanumeric parcel numbers (Tennessee's map/group/parcel
+// "073009G B 03600" is one). A purely numeric scanner truncated those to their
+// first group, which is a DIFFERENT, wrong parcel identifier, not a missing one.
+//
+// A letter-only segment must be followed by a numeric group, which is what keeps
+// ordinary prose and street names ("4713 Sinking Creek Rd") from matching.
+const APN_SEPARATOR = '(?:[ \\t]*[.\\/\\-][ \\t]*|[ \\t]+)';
+const APN_NUMERIC_GROUP = '\\d{1,6}[A-Za-z]?';
+// Middle segments may be numeric OR a short group code, but the token must END
+// with a numeric group — that terminator is what stops prose ("Lot 54 B of the
+// recorded plat") and street names from ever matching.
+const APN_TOKEN_SOURCE = `\\d{2,6}[A-Za-z]?(?:${APN_SEPARATOR}(?:[A-Za-z]{1,2}|${APN_NUMERIC_GROUP})){0,5}${APN_SEPARATOR}${APN_NUMERIC_GROUP}`;
+const APN_TOKEN_RE = new RegExp(`\\b${APN_TOKEN_SOURCE}\\b`, 'g');
+const APN_SHAPE_RE = new RegExp(`^${APN_TOKEN_SOURCE}$`);
 const APN_DECIMAL_RE = /\b\d{2,6}\.\d{1,4}\b/g;
 
 /**
@@ -157,7 +174,7 @@ export function extractApnCandidates(text: string): ApnCandidates {
   // match an official county/state parcel layer requires, so a genuinely
   // resolvable parcel silently stays provisional.
   const labeled = t.match(
-    /\b(?:apn|parcel(?:\s*(?:id|no|no\.|number|#))?)[:\s]+((?:[A-Za-z]{1,4}\d{0,6}[ \t.\/\-]+)?[0-9][0-9 \t.\/\-]*)/i,
+    new RegExp(`\\b(?:apn|parcel(?:\\s*(?:id|no|no\\.|number|#))?)[:\\s]+((?:[A-Za-z]{1,4}\\d{0,6}[ \\t.\\/\\-]+)?${APN_TOKEN_SOURCE})`, 'i'),
   )?.[1]?.trim().replace(/[\s.\/\-]+$/, '');
   const labeledNorm = labeled ? normalizeApn(labeled) : null;
   if (labeledNorm) {

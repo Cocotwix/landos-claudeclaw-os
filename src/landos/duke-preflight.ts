@@ -161,16 +161,55 @@ function pickApnShape(raw: string | null | undefined): string | undefined {
 }
 
 /**
+ * Trim a labeled capture down to the leading run of PARCEL-shaped tokens.
+ *
+ * Letters have to be allowed in the token class so a district prefix or a
+ * trailing group ("A-1") survives, but that alone would let a street name
+ * ("Parcel: 12 Oak Street") ride along and be stored as a parcel number. A
+ * token earns its place only by carrying a digit, or by being the one/two
+ * letter group code that sits BETWEEN numeric groups ("073009G B 03600").
+ * The first ordinary word ends the run, and a dangling group code is dropped
+ * so the value never ends on a separator-less letter.
+ */
+function apnTokenRun(raw: string | null | undefined): string | undefined {
+  const v = (raw ?? '').trim();
+  if (!v) return undefined;
+  const kept: string[] = [];
+  for (const token of v.split(/\s+/)) {
+    if (/\d/.test(token)) kept.push(token);
+    else if (/^[A-Za-z]{1,2}$/.test(token)) kept.push(token);
+    else break;
+  }
+  while (kept.length && !/\d/.test(kept[kept.length - 1])) kept.pop();
+  if (!kept.length) return undefined;
+  // Same trailing-separator rule the labeled "APN:" path already applies. A
+  // sentence period is not part of the parcel number, and an official layer
+  // matches a parcel EXACTLY, so carrying it through silently defeats the
+  // lookup and leaves a resolvable parcel provisional with no visible reason.
+  return kept.join(' ').replace(/[\s./\-]+$/, '') || undefined;
+}
+
+/**
  * Extract a parcel-number-shaped APN even when it is labeled "Address:"/"Parcel:"
  * or appears bare, and the dash-only patterns above did not catch it. The live
  * dashboard sends the APN under an "Address:" label (e.g. "Address: 051   012.05").
- * Digits/separators only (no letters) so a street name is never captured.
+ * A parcel token may contain letters, digits, spaces and punctuation, since real
+ * parcel numbers open with a district letter, carry a letter group code, or close
+ * with an alphanumeric group. `apnTokenRun` is what keeps an ordinary street name
+ * from being captured: it ends the run at the first word that is neither
+ * digit-bearing nor a one/two-letter group code.
  */
 function extractApnShaped(text: string): string | undefined {
-  // Prefer an explicitly-labeled value; the class is digits + separators only, so
-  // a label followed by a street ("Address: 731 Filter Plant Rd") stops at the
-  // street name and is then rejected by pickApnShape (too few digits / no sep).
-  const labeled = text.match(/\b(?:address|parcel(?:\s*(?:id|no|number|#))?)[:\s]+([0-9][0-9 .\/\-]*)/i)?.[1];
+  // Prefer an explicitly-labeled value. The token class admits letters, because
+  // a real parcel number may open with a district letter ("R1234-567A") or close
+  // with an alphanumeric group ("073 090 04200 A-1"); a digits-only class
+  // silently returned a DIFFERENT, shorter parcel number, or none at all.
+  // `apnTokenRun` is what still stops the capture at a street name, so
+  // "Address: 731 Filter Plant Rd" keeps ending at "731" and is then rejected by
+  // pickApnShape for having too few digits and no parcel separator.
+  const labeled = apnTokenRun(
+    text.match(/\b(?:address|parcel(?:\s*(?:id|no|number|#))?)[:\s]+((?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z .\/\-]*)/i)?.[1],
+  );
   // Accept mixed parcel separators (dash / dot / slash / space) so a bare
   // map-block-parcel APN like "094-020.08" is captured WHOLE, not truncated to
   // its decimal tail "020.08". Separators are [ \t] only (never \s) so the token
@@ -260,7 +299,16 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // number. Left in place it reaches the property card and then defeats the
   // EXACT match an official county/state parcel layer requires, so a genuinely
   // resolvable parcel silently stays provisional with no visible reason.
-  const apnKw = text.match(/\bapn[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?[0-9][0-9A-Za-z./\-]*(?:[^\S\n]+[0-9][0-9A-Za-z./\-]*)*)/i)?.[1]
+  // `(?:[A-Za-z]{1,2}[^\S\n]+)?` admits a one/two-letter GROUP CODE between
+  // numeric groups ("073009G B 03600"). Without it the match stopped at the
+  // letter and handed back a truncated — that is, a different — parcel number.
+  // Each parcel token may OPEN with a letter (e.g. "R1234-567A") and may CLOSE
+  // with an alphanumeric group ("073 090 04200 A-1"), so the token class is
+  // alphanumeric and only the "contains a digit" lookahead separates a parcel
+  // token from an English word. Requiring a leading [0-9] truncated a
+  // letter-led APN to nothing and dropped a trailing letter group — either one
+  // hands back a DIFFERENT parcel number than the operator supplied.
+  const apnKw = text.match(/\bapn[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*(?:[^\S\n]+(?:[A-Za-z]{1,2}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*)*)/i)?.[1]
     ?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '');
   if (apnKw) {
     const state = extractState(text);

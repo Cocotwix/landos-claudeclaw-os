@@ -1,8 +1,11 @@
 import { buildSmartIntake, type DealIntelItem, type SmartIntake } from './smart-intake.js';
+import { extractSellerIdentity, formatAddressLabel, sanitizeLocalityCandidate } from './lead-identity.js';
 
 export interface ConversationalLeadIntake {
   rawInput: string;
   sellerName: string | null;
+  /** Why that text was read as the seller/lead contact (operator-visible). */
+  sellerNameBasis: string | null;
   phone: string | null;
   email: string | null;
   leadSource: string;
@@ -50,24 +53,41 @@ function extractAcreage(raw: string): number | null {
 export function parseConversationalLeadIntake(rawInput: string): ConversationalLeadIntake {
   const smartIntake = buildSmartIntake(rawInput);
   const fields = smartIntake.fields;
-  const sellerName = labeledValue(rawInput, ['seller', 'seller name', 'lead', 'lead name', 'contact', 'contact name', 'owner'])
-    ?? oneLine(fields.owner);
+  // The seller/lead CONTACT. Labels are honored first; an unlabeled paste
+  // ("Davan Smith - 4713 Sinking Creek Rd, London Kentucky") is read by the
+  // shared person-name reader rather than being dropped on the floor. A parser
+  // that read `fields.owner` as the seller conflated a seller-stated contact
+  // with the owner of record — those stay separate everywhere.
+  const seller = extractSellerIdentity(rawInput);
+  const sellerName = seller?.name ?? oneLine(fields.owner);
+  const sellerNameBasis = seller?.basis
+    ?? (oneLine(fields.owner) ? 'Read from an owner/seller field in the structured paste.' : null);
   const leadSource = labeledValue(rawInput, ['lead source', 'source', 'came from']) ?? 'manual';
-  const address = oneLine(fields.address);
+  // Canonical operator-facing casing for the address the OPERATOR typed. The
+  // exact raw input is still preserved verbatim on the card as the source of
+  // truth; this only stops "4713 sinking creek rd" from becoming the label
+  // every downstream surface repeats.
+  const address = oneLine(fields.address) ? formatAddressLabel(oneLine(fields.address)!) : null;
   const apn = oneLine(fields.apn);
-  const locality = [fields.city, fields.state].filter(Boolean).join(', ');
+  // A locality candidate is kept only when it is locality shaped. A parser
+  // fragment ("NC. APN may") would otherwise be persisted as the city and then
+  // scope every jurisdiction lookup to a place that does not exist.
+  const city = sanitizeLocalityCandidate(oneLine(fields.city));
+  const county = sanitizeLocalityCandidate(oneLine(fields.county));
+  const locality = [city, fields.state].filter(Boolean).join(', ');
   const propertyLabel = address || (apn ? `Parcel ${apn}` : locality || 'Unresolved property');
 
   return {
     rawInput,
     sellerName,
+    sellerNameBasis,
     phone: extractPhone(rawInput),
     email: extractEmail(rawInput),
     leadSource,
     address,
     apn,
-    city: oneLine(fields.city),
-    county: oneLine(fields.county),
+    city,
+    county,
     state: oneLine(fields.state),
     acreage: extractAcreage(rawInput),
     propertyLabel,

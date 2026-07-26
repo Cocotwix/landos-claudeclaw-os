@@ -349,3 +349,57 @@ describe('gated-off screening run contributes nothing', () => {
     expect(gated.researchCompleteness.complete).toBe(empty.researchCompleteness.complete);
   });
 });
+
+// Operator acceptance regression (fresh Kentucky lead). The card's situs field
+// once fell back to the Deal Card TITLE, so an unresolved lead rendered
+// "Unidentified seller — 4713 sinking creek rd" as the property AND quoted it
+// back to the seller as the road to the property. The narrative separately
+// composed "parcel on <city>", describing a town as if it were a road.
+describe('unresolved lead copy never invents a road', () => {
+  const unresolved: OperatorRecordContext = {
+    situsAddress: '4713 Sinking Creek Rd',
+    city: 'London',
+    county: null,
+    state: 'KY',
+    apn: null,
+    owner: null,
+    assessedAcres: null,
+    coordinates: null,
+    parcelVerified: false,
+    verificationSource: null,
+    compCount: 0,
+    valuationReady: false,
+    marketPulseAvailable: false,
+    visualsCaptured: 0,
+    landPortalCaptured: false,
+    deedRetrieved: false,
+  };
+
+  it('quotes the real road in the access question', () => {
+    const record = buildOperatorPropertyRecord(null, unresolved);
+    const access = record.sellerQuestions.find((q) => /how do you physically get to the property/i.test(q))!;
+    expect(access).toContain('directly from Sinking Creek Rd');
+    expect(access).not.toMatch(/unidentified/i);
+  });
+
+  it('never quotes a composed card label as a road', () => {
+    const record = buildOperatorPropertyRecord(null, {
+      ...unresolved,
+      situsAddress: 'Unidentified seller — 4713 sinking creek rd',
+    });
+    const access = record.sellerQuestions.find((q) => /how do you physically get to the property/i.test(q))!;
+    expect(access).not.toMatch(/unidentified|—/);
+    expect(access).toMatch(/^How do you physically get to the property today\?/);
+  });
+
+  it('places an acreage-unconfirmed parcel IN a town, not ON one', () => {
+    const record = buildOperatorPropertyRecord(null, { ...unresolved, situsAddress: '' });
+    expect(record.description).toContain('Acreage-unconfirmed parcel in London');
+    expect(record.description).not.toContain('parcel on London');
+  });
+
+  it('keeps the state in the description even when the county is unknown', () => {
+    const record = buildOperatorPropertyRecord(null, unresolved);
+    expect(record.description).toContain('KY');
+  });
+});

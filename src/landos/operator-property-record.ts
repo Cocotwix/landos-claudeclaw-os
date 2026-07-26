@@ -9,6 +9,7 @@
 
 import { sanitizeAccessLanguage } from './evidence-language.js';
 import { formatCountyLabel } from './fact-format.js';
+import { streetReferenceFrom } from './lead-identity.js';
 import { computePricingGate, type PricingGate } from './strategy-readiness.js';
 import { buildAcreageBasis, checkOverlayConsistency, pinOverlayAcresToGeometry, type AcreageReconciliation } from './acreage-basis.js';
 import { computeResearchCompleteness, type LaneSignal, type ResearchCompleteness } from './research-completeness.js';
@@ -777,7 +778,15 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   // never "?" while a numeric acreage drives comps and valuation elsewhere.
   const descAcres = baseAcres != null ? `${baseAcres}-acre` : 'Acreage-unconfirmed';
   const countyLabel = formatCountyLabel(context.county);
-  descriptionParts.push(`${descAcres} ${landUseClass ? `${landUseClass.toLowerCase()} ` : ''}parcel${locality ? ` on ${locality}` : ''}${countyLabel ? `, ${countyLabel}, ${context.state ?? ''}` : ''}.`.replace(/\s+,/g, ','));
+  // A parcel sits ON a road and IN a town. `locality` is a place name, so the
+  // old unconditional "parcel on {locality}" produced "parcel on London" for a
+  // city. Use the road only when a real street reference exists.
+  const descRoad = streetReferenceFrom(context.situsAddress);
+  const placement = descRoad ? ` on ${descRoad}` : locality ? ` in ${locality}` : '';
+  const jurisdiction = countyLabel
+    ? `, ${countyLabel}, ${context.state ?? ''}`
+    : context.state ? `, ${context.state}` : '';
+  descriptionParts.push(`${descAcres} ${landUseClass ? `${landUseClass.toLowerCase()} ` : ''}parcel${placement}${jurisdiction}.`.replace(/\s+,/g, ','));
   if (zoning?.zoningCode) descriptionParts.push(`Zoned ${zoning.zoningName ?? zoning.zoningCode}${zoning.overlayDistricts.length ? ` inside the ${zoning.overlayDistricts.join(' and ')}` : ''}.`);
   if (slope) {
     // Terrain wording derives from the sampled slope — never a hardcoded
@@ -878,7 +887,10 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   // utilities, title — with the parcel's own specifics (road name, acreage,
   // county) woven in. Generic filler only where no specific fact applies.
   const sellerQuestions: string[] = [];
-  const situsStreet = (context.situsAddress ?? '').split(',')[0]?.replace(/^\s*\d+\s*/, '').trim() || null;
+  // Only a value that is genuinely street-address shaped may be quoted back to a
+  // seller as "the road". Splitting whatever text happened to be in the situs
+  // field is how a Deal Card label ended up inside an access question.
+  const situsStreet = streetReferenceFrom(context.situsAddress);
   sellerQuestions.push('Why are you selling, and what timeline are you working toward?');
   sellerQuestions.push('Do you have a price in mind, and who else is involved in the decision?');
   const isTrustOwner = /trustee|trust\b/i.test(ownerText ?? '');

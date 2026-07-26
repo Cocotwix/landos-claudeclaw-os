@@ -119,6 +119,7 @@ import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from 
 import { extractZipCandidate, extractApnCandidates } from './intake-normalize.js';
 import { buildSmartIntake } from './smart-intake.js';
 import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
+import { buildLeadCardTitle, streetReferenceFrom, unresolvedLeadStorageLabel, isPlaceholderPropertyLabel } from './lead-identity.js';
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import { apnSearchVariants, ownerSearchVariants } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
@@ -135,7 +136,7 @@ import { getCountySources } from './county-source-map.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
 import { normalizeParcelIdentifier, runPublicPropertyIntelligence, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
 import { runPropertyIntelligenceOrchestrator, type OrchestratorRun } from './property-intelligence-orchestrator.js';
-import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters } from './public-property-intelligence-live.js';
+import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { launchPropertyIntelligenceMission } from './property-intelligence-mission.js';
@@ -359,6 +360,11 @@ const meaningfulStr = (v: unknown): string | undefined => {
 };
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
+/** A stored address only counts as the property's address when it is not a
+ *  LandOS placeholder handle for an unidentified lead. */
+const nonPlaceholderAddress = (v: string | undefined | null): string | null =>
+  (v && !isPlaceholderPropertyLabel(v) ? v : null);
+
 function entityParam(raw: string | undefined): string | undefined {
   if (!raw || raw === 'all') return undefined;
   return (LANDOS_ENTITIES as readonly string[]).includes(raw) ? raw : undefined;
@@ -449,15 +455,54 @@ function scheduleResearchMission(missionId: number): void {
       const intakeZip = extractZipCandidate(opportunity.rawInput)
         ?? extractZipCandidate(str(prop.active_input_address));
       const storedCounty = resolveCountyRefByZip(intakeZip, mission.constraints.state ?? str(prop.state));
+      // A lead with a street address, city and state but NO ZIP had no county
+      // path at all: the ZIP lane above was the only one, so the county stayed
+      // empty, the jurisdiction filters were never scoped, and every official
+      // parcel adapter (which is selected BY county) was inapplicable. Derive
+      // the administrative county from the free, keyless Census geocoder.
+      //
+      // This is SUPPORTING GEOGRAPHY used to scope an exact lookup — it is
+      // never parcel identity, never a boundary, and never a verification
+      // source. The identity gate below is unchanged.
+      const derivationState = mission.constraints.state ?? meaningfulStr(prop.state);
+      const derivationAddress = mission.constraints.address ?? meaningfulStr(prop.active_input_address);
+      const needsCountyDerivation = !mission.constraints.county
+        && !meaningfulStr(prop.county)
+        && !storedCounty
+        && !!derivationAddress
+        && !!derivationState;
+      const derivedCounty = needsCountyDerivation
+        ? await deriveCounty({
+          address: derivationAddress,
+          city: mission.constraints.city ?? meaningfulStr(prop.city),
+          state: derivationState,
+          zip: intakeZip ?? undefined,
+        }).catch(() => null)
+        : null;
+      const countyDerivationTrace: Array<Record<string, unknown>> = [];
+      if (needsCountyDerivation) {
+        countyDerivationTrace.push({
+          provider: 'US Census geocoder',
+          stage: 'county_derivation',
+          status: derivedCounty ? 'derived' : 'no_match',
+          url: null,
+          note: derivedCounty
+            ? `Derived administrative county "${derivedCounty.county}" (FIPS ${derivedCounty.fips ?? 'n/a'}) for ${derivationAddress}, ${derivationState}. Supporting geography used to scope official lookups; it is not parcel identity and confirms nothing about the parcel.`
+            : `The Census geocoder returned no county for ${derivationAddress}, ${derivationState}. The county remains unknown, so county-scoped official parcel sources cannot be selected.`,
+        });
+      }
       const scopedCounty = mission.constraints.county
         ?? meaningfulStr(prop.county)
         ?? storedCounty?.countyName
+        ?? derivedCounty?.county
         ?? undefined;
       const scopedState = mission.constraints.state
         ?? meaningfulStr(prop.state)
         ?? storedCounty?.state
+        ?? derivedCounty?.state
         ?? undefined;
-      if (storedCounty && (!meaningfulStr(prop.county) || !meaningfulStr(prop.fips))) {
+      const scopedFips = storedCounty?.fips ?? derivedCounty?.fips ?? undefined;
+      if ((storedCounty || derivedCounty) && (!meaningfulStr(prop.county) || !meaningfulStr(prop.fips))) {
         upsertPropertyCard({
           entity: running.entity,
           cardId: running.primaryPropertyCardId,
@@ -465,7 +510,7 @@ function scheduleResearchMission(missionId: number): void {
           city: mission.constraints.city ?? meaningfulStr(prop.city),
           county: scopedCounty,
           state: scopedState,
-          fips: storedCounty.fips,
+          fips: scopedFips,
           apn: meaningfulStr(prop.apn),
           owner: meaningfulStr(prop.owner),
           acres: typeof prop.acres === 'number' && prop.acres > 0 ? prop.acres : undefined,
@@ -473,6 +518,14 @@ function scheduleResearchMission(missionId: number): void {
           verificationSource: meaningfulStr(prop.verification_source),
           agentId: 'property-research-agent',
         });
+        if (derivedCounty) {
+          attachCardActivity({
+            cardId: running.primaryPropertyCardId,
+            kind: 'county_derived',
+            agentId: 'property-research-agent',
+            summary: `Administrative county derived as ${derivedCounty.county}${derivedCounty.fips ? ` (FIPS ${derivedCounty.fips})` : ''} from the US Census geocoder. Supporting geography only — it scopes official lookups and asserts nothing about the parcel.`,
+          });
+        }
       }
       // First quarantine any previously retained inspection that conflicts with
       // the immutable operator constraints. Nothing is deleted.
@@ -506,13 +559,31 @@ function scheduleResearchMission(missionId: number): void {
       });
       persistPropertyInspection(running.primaryPropertyCardId, result.inspection);
       const verification = verifyInspectionIdentity(mission.constraints, result.inspection);
-      const toolTrace = [...mission.toolTrace, ...result.routes.map((route) => ({
+      const toolTrace = [...mission.toolTrace, ...countyDerivationTrace, ...result.routes.map((route) => ({
         provider: route.provider, stage: route.stage, status: route.status,
         confidence: route.confidence, url: route.url ?? null, note: route.note,
       }))];
       if (!verification.accepted) {
         quarantineLatestPropertyInspection(running.id, running.primaryPropertyCardId, verification);
         const discoveryPackage = buildOpportunityDiscoveryPackage(opportunity.id, { persist: true, actor: 'property-research-agent' });
+        // Name the ACTUAL blocker. "Confirm the parcel" is not an action when
+        // the reason nothing resolved is that LandOS could not determine the
+        // county, or has no official source configured for the one it did.
+        const coverage = officialParcelSourceCoverage({
+          address: mission.constraints.address ?? undefined,
+          county: scopedCounty,
+          state: scopedState,
+          apn: mission.constraints.apn ?? undefined,
+        });
+        // A failed county derivation is decision-relevant even when a statewide
+        // source did apply: the lookup ran unscoped, which is why a street-name
+        // match can come back ambiguous.
+        const countyGap = needsCountyDerivation && !derivedCounty
+          ? ' The county could not be derived from the street address, so the lookup could not be scoped to one jurisdiction.'
+          : '';
+        const escalation = coverage.available
+          ? `${discoveryPackage.callPrep.nextResearchActions[0] ?? 'Confirm the parcel/APN and retry research.'}${countyGap}`
+          : `${coverage.reason}${countyGap} Supply the APN (or the county, if unknown) on this card and re-run research, or ask the seller for the parcel number from their tax bill or deed.`;
         updateOpportunityDiscoveryStatus(opportunity.id, 'brief_ready', {
           actor: 'property-research-agent',
           note: 'Pre-call research is incomplete: conflicting parcel evidence was quarantined and identity questions are available.',
@@ -523,8 +594,8 @@ function scheduleResearchMission(missionId: number): void {
         });
         finishResearchMission(mission.id, {
           status: 'quarantined',
-          summary: `No parcel evidence was promoted. ${verification.reasons.join('; ')}`,
-          safeNextAction: discoveryPackage.callPrep.nextResearchActions[0] ?? 'Confirm the parcel/APN and retry research.',
+          summary: `No parcel evidence was promoted. ${verification.reasons.join('; ')}${coverage.available ? '' : ` ${coverage.reason}`}`,
+          safeNextAction: escalation,
           verification, toolTrace,
         });
         attachCardActivity({
@@ -1602,7 +1673,10 @@ export function registerLandosRoutes(app: Hono): void {
     const city = parsed?.city ?? (str(body.city)?.trim() || null);
     const county = parsed?.county ?? (str(body.county)?.trim() || null);
     const state = parsed?.state ?? (str(body.state)?.trim() || null);
-    const storageLabel = propertyLabel === 'Unresolved property' ? `Unresolved property lead ${Date.now()}` : propertyLabel;
+    // A lead with no property reference still needs its OWN property card, so
+    // the placeholder carries a unique suffix. It is an internal storage handle;
+    // `isPlaceholderPropertyLabel` keeps it off every owner-facing surface.
+    const storageLabel = propertyLabel === 'Unresolved property' ? unresolvedLeadStorageLabel(Date.now()) : propertyLabel;
     const property = upsertPropertyCard({
       entity,
       activeInputAddress: storageLabel,
@@ -1610,7 +1684,10 @@ export function registerLandosRoutes(app: Hono): void {
       county: county ?? undefined,
       state: state ?? undefined,
       apn: apn ?? undefined,
-      owner: sellerName ?? undefined,
+      // The seller/lead name is NEVER written here. `owner` is the owner OF
+      // RECORD, established only by an official source; seeding it from an
+      // operator paste would silently satisfy the seller-authority name match
+      // whose entire job is to catch a seller who is not the record owner.
       acres: Number.isFinite(acresRaw) && acresRaw > 0 ? acresRaw : undefined,
       verified: false,
       summary: rawInput,
@@ -1619,11 +1696,35 @@ export function registerLandosRoutes(app: Hono): void {
     const profile = getLandosStorageProfile();
     const deal = createDealCard({
       entity,
-      title: `${sellerName || 'Unidentified seller'} — ${propertyLabel}`,
+      // PROPERTY-FIRST title. A card is named by the property it concerns, not
+      // by whether a seller name could be read out of the paste. The old
+      // `${seller} — ${label}` shape produced "Unidentified seller — …" titles
+      // that downstream surfaces then quoted back as if they were addresses.
+      title: buildLeadCardTitle({ address, apn, city, county, state }),
       sellerNotes: rawInput,
       leadType: profile.syntheticOnly ? 'test' : 'manual',
     });
     linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' });
+    // The seller/lead becomes a real person record with UNKNOWN authority, so
+    // "Seller / Lead" is populated everywhere it is read and no signing
+    // authority is implied by intake alone.
+    if (sellerName) {
+      const personId = addPerson({
+        entity,
+        name: sellerName,
+        phone: parsed?.phone ?? (str(body.phone)?.trim() || undefined),
+        email: parsed?.email ?? (str(body.email)?.trim() || undefined),
+        notes: parsed?.sellerNameBasis ?? 'Seller/lead contact supplied at intake; not verified against the owner of record.',
+      });
+      linkPerson({
+        personId,
+        dealCardId: deal.id,
+        cardId: property.id,
+        role: 'seller',
+        authorityStatus: 'unknown',
+        note: 'Seller-stated contact from lead intake. Authority to sell and the owner-of-record match are unverified.',
+      });
+    }
     let opportunity = ensureOpportunityForLegacyDealCard(deal.id);
     getLandosDb().prepare(`
       UPDATE landos_opportunity SET source = ?, raw_input = ?, research_status = 'queued', pipeline_stage = 'researching', updated_at = unixepoch()
@@ -4126,12 +4227,21 @@ export function registerLandosRoutes(app: Hono): void {
         : null;
 
     const operatorRecord = buildOperatorPropertyRecord(publicRun, {
-      situsAddress: String(fact('situsAddress') ?? dealRecord.title ?? ''),
-      city: str(prop0.city) ?? (fact('city') as string | null) ?? (dealRecord.city as string | null),
-      county: (fact('county') as string | null) ?? (dealRecord.county as string | null),
-      state: (fact('state') as string | null) ?? (dealRecord.state as string | null),
-      apn: (fact('apn') as string | null) ?? (dealRecord.apn as string | null),
-      owner: (fact('owner') as string | null) ?? (dealRecord.owner as string | null),
+      // The SUBJECT PROPERTY CARD is the identity of record for this Deal Card.
+      // The deal TITLE is a human label and is never an address: falling back to
+      // it put "Unidentified seller — 4713 sinking creek rd" in the situs field,
+      // where the header printed it as the property and the seller-question
+      // builder quoted it back as the road to the property.
+      situsAddress: String(fact('situsAddress') ?? nonPlaceholderAddress(str(prop0.active_input_address)) ?? ''),
+      city: str(prop0.city) ?? (fact('city') as string | null),
+      // county/state/apn/owner previously read `dealRecord`, which has no such
+      // columns — so a known jurisdiction on the property card was silently
+      // dropped and the card showed a blank county/state for a lead that had
+      // both. Every locality field now reads the same record `city` does.
+      county: (fact('county') as string | null) ?? str(prop0.county) ?? null,
+      state: (fact('state') as string | null) ?? str(prop0.state) ?? null,
+      apn: (fact('apn') as string | null) ?? str(prop0.apn) ?? null,
+      owner: (fact('owner') as string | null) ?? str(prop0.owner) ?? null,
       // Shared acreage parser: "1.15 ac" is a value, never NaN → "? ac".
       assessedAcres: parseAcresValue(fact('acres')) ?? subjectAcres,
       acreageDisputed: !!report.reconciliation?.acreage?.conflict,

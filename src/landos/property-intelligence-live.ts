@@ -20,6 +20,7 @@ import { documentRegistryForCard } from './deal-card-canonical.js';
 import { listComps } from './comps.js';
 import { getLandosDb } from './db.js';
 import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvidenceItem, type SnapshotFact, type SnapshotIdentity } from './property-intelligence-snapshot.js';
+import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import type {
   AccessUtilitiesContribution,
   ComparablesContribution,
@@ -205,7 +206,16 @@ export async function collectParcelIdentity(
         ? `Conflicting parcel evidence is attached to this Deal Card.${liveNote}`
         : state === 'provisional'
           ? `A parcel identifier exists but has not been confirmed against an official record.${liveNote}`
-          : `No official parcel record has matched this intake.${liveNote}`,
+          // An unresolved identity must say WHY it is unresolved. "No record
+          // matched" reads as an answer about the parcel; a missing county or a
+          // jurisdiction with no configured source is a LandOS coverage gap and
+          // establishes nothing about whether the parcel exists.
+          : `No official parcel record has matched this intake. ${officialParcelSourceCoverage({
+            address: str(property.active_input_address) ?? undefined,
+            county: str(property.county) ?? undefined,
+            state: str(property.state) ?? undefined,
+            apn: str(property.apn) ?? undefined,
+          }).reason}${liveNote}`,
   };
 
   const facts: SnapshotFact[] = [];
