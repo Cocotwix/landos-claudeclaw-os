@@ -1,9 +1,9 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-27T02:09:28.461Z
-- **HEAD at generation:** `58673e0`
-- **Worktree:** DIRTY; 23 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Generated:** 2026-07-27T03:06:59.543Z
+- **HEAD at generation:** `26f4e0e`
+- **Worktree:** DIRTY; 2 modified/untracked paths at refresh time. Preserve unrelated changes.
 - **Latest tests:** PASS at 2026-07-26T21:30:07-04:00; 351 files, 4605 tests, 0 failures (full vitest run).
 - **Latest typecheck:** PASS at 2026-07-26T21:31:40-04:00; server clean; frontend pre-existing-red at 92 TS6133, none in a changed file.
 - **Latest production build:** PASS at 2026-07-26T21:27:30-04:00; vite build + tsc; only the existing large-chunk advisory.
@@ -17,9 +17,9 @@ Detail: `docs/landos/`. Do not push without go-ahead.
 
 ## State
 
-Phase 4 Items 14-17 are COMPLETE. Item 14 is PUBLISHED at `fde34e1`; Items 15-17 are
-committed LOCALLY and NOT pushed. Phase 5 has NOT started; it is the next approved
-phase. No build is in flight.
+Phase 4 Items 14-17 are COMPLETE and PUBLISHED: `main` and `origin/main` SYNCHRONIZED
+at `26f4e0e` (identity, acceptance, provider routing) over `fde34e1` (Item 14), working
+tree clean. Phase 5 has NOT started; it is the next approved phase.
 
 An unauthorized Phase 4 gov-records build was removed from `main` and NEVER pushed.
 Preserved LOCALLY ONLY on rescue branches at `f1641a2`:
@@ -48,15 +48,14 @@ scope+scope_id; re-runs keep prior missions readable.
 ## Mission acceptance evidence
 
 - Item 14 in Chrome: Deal 52 (Knox) JOINED 3/3; Deal 47 (Roane) JOINED WITH GAPS naming
-  its blocked child. Both survived refresh and restart, no contamination.
+  its blocked child; both survived refresh and restart.
 - Items 15-17 in Chrome: fresh New Lead intake for 3129 Old Walland Highway, Walland TN
   37886, Blount County (Deal 53; Blount absent beforehand). Mission #1 JOINED 3/3,
   1 accepted + 2 incomplete, 3/3 routed, every lane deterministic. Each child showed
-  parent, group, role, roster specialist, slot, provider and acceptance, including while
-  QUEUED. Survived refresh and managed restart; Deals 47/52/53 isolated. Do NOT delete
-  Deal 53.
+  parent, group, role, roster specialist, slot, provider and acceptance, incl. while
+  QUEUED. Survived refresh and restart; Deals 47/52/53 isolated. Do NOT delete Deal 53.
 - Legacy Item 14 rows render with declared identity and honest `not_evaluated` /
-  `0 accepted`; no verdict was fabricated.
+  `0 accepted`; no verdict fabricated.
 
 ## Prior committed work to preserve
 
@@ -114,7 +113,7 @@ Throwaway scripts use `scripts/_*` (gitignored); operational ones `scripts/sprin
 ## Known limitations and next action
 
 - The New Lead parser stored "9.4 acres of vacant land on Hardin Valley Rd" as an
-  address (Deal 52). PRE-EXISTING; deliberately NOT fixed in Phase 4.
+  address (Deal 52). PRE-EXISTING; NOT fixed in Phase 4.
 - Children run in-process in the parent's wave loop. No external worker is wired;
   Phase 4 does not require one.
 - Every representative lane is deterministic, so `model_routed` execution is proven by
@@ -129,4 +128,4 @@ Throwaway scripts use `scripts/_*` (gitignored); operational ones `scripts/sprin
   Raw `console.*` in CLI paths bypasses the redactor.
 - Professional deed/title/lien, tax, zoning, access, septic and utility checks remain
   required.
-- Next: publish Phase 4 on Tyler's go, then Phase 5.
+- Next: Phase 5. Phase 4 is published and needs no further work.

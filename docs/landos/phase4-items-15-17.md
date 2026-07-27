@@ -1,7 +1,10 @@
 # Phase 4 Items 15-17 — agent identity, mission acceptance, provider routing
 
-Status: COMPLETE. Committed locally on top of `58673e0`, NOT pushed. Item 14 remains
-complete and published at `fde34e1`. Phase 5 has not started.
+Status: COMPLETE and PUBLISHED at
+`26f4e0e54d1f36ba809738c2d86089edae5180c6`. `main` and `origin/main` are synchronized
+at that commit and the working tree is clean. Item 14 remains complete and published
+at `fde34e1`, so Phase 4 Items 14 through 17 are fully published. Phase 5 has not
+started.
 
 This record documents the design as implemented. It does not change the approved
 roadmap.
