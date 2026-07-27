@@ -167,6 +167,10 @@ export interface PiSnapshot {
   blockers: string[];
   missingInformation: string[];
   nextActions: string[];
+  /** The parent mission this snapshot was assembled from. */
+  missionId?: string | null;
+  /** What the run did with the browser pages it opened. */
+  browserCleanup?: { before: number; after: number; closed: number; note: string } | null;
 }
 
 export interface PiSpecialist {
@@ -196,8 +200,56 @@ export interface PiRun {
   isPrimary: boolean;
 }
 
+/** One child mission of the parent Deal Intelligence mission. */
+export interface PiMissionChild {
+  key: string;
+  label: string;
+  role: 'required' | 'supporting';
+  group: string;
+  assignedRole: string;
+  agentName: string;
+  agentKey: string | null;
+  contributionSlot: string;
+  status: string;
+  summary: string;
+  dependsOn: string[];
+  acceptance: { state: string; reason: string } | null;
+  provider: { mode: string; providerLabel: string | null; reason: string } | null;
+  failureCategory: string | null;
+  durationMs: number | null;
+}
+
+export interface PiMissionView {
+  label: string;
+  kind: string;
+  mission: {
+    missionId: string;
+    sequence: number;
+    status: string;
+    trigger: string;
+    outcome: string | null;
+    startedAt: string;
+    completedAt: string | null;
+    error: string | null;
+    failureCategory: string | null;
+  };
+  children: PiMissionChild[];
+  join: {
+    status: string;
+    outcome: string;
+    contributed: string[];
+    accepted: string[];
+    incomplete: string[];
+    requiredGaps: Array<{ key: string; label: string; status: string; reason: string }>;
+    allTerminal: boolean;
+  } | null;
+  history: Array<{ missionId: string; sequence: number; status: string; startedAt: string; completedAt: string | null }>;
+}
+
 export interface PropertyIntelligenceView {
   snapshot: PiSnapshot | null;
+  /** The parent mission behind the snapshot and the run in flight. */
+  mission: PiMissionView | null;
   run: PiRun | null;
   specialists: PiSpecialist[];
   history: Array<{ runId: string; sequence: number; status: string; startedAt: string; completedAt: string | null; isPrimary: boolean }>;
@@ -357,6 +409,87 @@ function NoSnapshot({ label }: { label: string }) {
 
 // ── Launch + progress ───────────────────────────────────────────────────────
 
+const ACCEPTANCE_TONE: Record<string, string> = {
+  accepted: 'border-emerald-500/40 text-emerald-400',
+  incomplete: 'border-amber-500/40 text-amber-400',
+  blocked: 'border-orange-500/40 text-orange-400',
+  rejected: 'border-rose-500/40 text-rose-400',
+  failed: 'border-rose-500/40 text-rose-400',
+  not_evaluated: 'border-zinc-500/40 text-zinc-400',
+};
+
+/**
+ * The parent mission behind the snapshot.
+ *
+ * Shown so the operator can see that Run Property Intelligence started ONE
+ * parent mission with named specialist children, and exactly which handback each
+ * child routed into the snapshot — rather than having to trust that it did.
+ */
+function ParentMissionPanel({ mission }: { mission: PiMissionView | null }) {
+  if (!mission) {
+    return (
+      <div data-testid="pi-parent-mission-empty" class="mt-3 text-[11px] text-[var(--color-text-faint)]">
+        No parent mission has run for this Deal Card yet, so no child mission has been dispatched.
+      </div>
+    );
+  }
+  const { children, join } = mission;
+  const settled = children.filter((child) => !['queued', 'running'].includes(child.status)).length;
+  return (
+    <div data-testid="pi-parent-mission" class="mt-3 rounded border border-[var(--color-border)] p-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <Tag tone={mission.mission.status === 'joined' ? STATUS_TONE.completed : mission.mission.status === 'failed' ? STATUS_TONE.failed : mission.mission.status === 'running' ? STATUS_TONE.running : STATUS_TONE.partial}>
+          {mission.mission.status.replace(/_/g, ' ')}
+        </Tag>
+        <span class="text-[11px] font-semibold text-[var(--color-text)]">Parent mission #{mission.mission.sequence}</span>
+        <span class="font-mono text-[10px] text-[var(--color-text-faint)]">{mission.mission.missionId}</span>
+        <span class="text-[10px] text-[var(--color-text-faint)]">{settled}/{children.length} child missions settled</span>
+        {join && (
+          <span class="text-[10px] text-[var(--color-text-faint)]">
+            {join.accepted.length} accepted · {join.incomplete.length} incomplete
+          </span>
+        )}
+      </div>
+      {(mission.mission.outcome || join?.outcome) && (
+        <div data-testid="pi-mission-outcome" class="mt-1 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+          {mission.mission.outcome ?? join?.outcome}
+        </div>
+      )}
+      <div data-testid="pi-mission-children" class="mt-2 space-y-1">
+        {children.map((child) => (
+          <div key={child.key} data-testid={`pi-mission-child-${child.key}`} class="rounded border border-[var(--color-border)] px-2 py-1">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <Tag tone={STATUS_TONE[child.status as PiSpecialist['status']] ?? STATUS_TONE.queued}>{child.status}</Tag>
+              <span class="text-[11px] font-semibold text-[var(--color-text)]">{child.label}</span>
+              {child.role === 'supporting' && <Tag tone="border-zinc-500/40 text-zinc-400">supporting</Tag>}
+              <Tag tone={ACCEPTANCE_TONE[child.acceptance?.state ?? 'not_evaluated']}>
+                {(child.acceptance?.state ?? 'not evaluated').replace(/_/g, ' ')}
+              </Tag>
+            </div>
+            <div class="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-[var(--color-text-faint)]">
+              <span>group: {child.group}</span>
+              <span>specialist: {child.agentName}</span>
+              <span>slot: {child.contributionSlot}</span>
+              <span>provider: {child.provider?.providerLabel ?? child.provider?.mode ?? 'not resolved'}</span>
+              {child.dependsOn.length > 0 && <span>needs: {child.dependsOn.join(', ')}</span>}
+              {child.durationMs != null && <span>{(child.durationMs / 1000).toFixed(1)}s</span>}
+            </div>
+            <div class="mt-0.5 text-[10.5px] leading-relaxed text-[var(--color-text-muted)]">
+              {child.acceptance?.state === 'rejected' ? child.acceptance.reason : child.summary}
+            </div>
+          </div>
+        ))}
+      </div>
+      {join && join.requiredGaps.length > 0 && (
+        <div class="mt-2">
+          <div class="text-[9px] font-semibold uppercase tracking-wide text-amber-400">Required contributions missing</div>
+          <Bullets rows={join.requiredGaps.map((gap) => `${gap.label} (${gap.status}): ${gap.reason}`)} tone="text-amber-300" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntelligenceState }) {
   const { view, running, launching, error, launch } = state;
   const run = view?.run ?? null;
@@ -369,8 +502,10 @@ export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntellige
         <div class="min-w-0">
           <div class="text-[12px] font-semibold text-[var(--color-text)]">Property Intelligence</div>
           <div class="text-[11px] leading-relaxed text-[var(--color-text-muted)]">
-            One action runs the full parcel workflow: identity, government records, zoning, environmental,
-            access and utilities, comparables, valuation and the five approved strategies.
+            One action starts ONE parent mission that dispatches the specialist child missions:
+            parcel and LandPortal subject research, government records, zoning, environmental screening,
+            utilities and access, comparable sales, Market Pulse, evidence, valuation, and the five
+            approved strategies. Their accepted handbacks assemble one current snapshot.
           </div>
         </div>
         <button
@@ -421,6 +556,8 @@ export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntellige
           Not run yet for this Deal Card. Nothing is asserted until it runs.
         </div>
       )}
+
+      <ParentMissionPanel mission={view?.mission ?? null} />
     </div>
   );
 }
@@ -455,6 +592,20 @@ export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapsho
           <Field label="Value band" value={valuation.priceable ? range(valuation.range) : 'Not priceable'} />
         </dl>
         <div class="mt-2 text-[11px] leading-relaxed text-[var(--color-text-muted)]">{headline.confidenceWhy}</div>
+        {/* Provenance: which parent mission produced the snapshot the card is
+            reading. Without it, "the Deal Card reads the current snapshot" is a
+            claim the operator has to take on trust. */}
+        <div data-testid="pi-snapshot-source" class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--color-text-faint)]">
+          <span>Current snapshot · run #{snapshot.sequence}</span>
+          {snapshot.missionId && <span class="font-mono">parent mission {snapshot.missionId}</span>}
+          <span>{snapshot.isPrimary ? 'primary read for this Deal Card' : 'historical attempt — not the current read'}</span>
+          {snapshot.completedAt && <span>completed {snapshot.completedAt.slice(0, 19).replace('T', ' ')}</span>}
+        </div>
+        {snapshot.browserCleanup && (
+          <div data-testid="pi-browser-cleanup" class="mt-1 text-[10px] leading-relaxed text-[var(--color-text-faint)]">
+            Browser cleanup: {snapshot.browserCleanup.note}
+          </div>
+        )}
       </Card>
 
       <Card title="Key opportunity">

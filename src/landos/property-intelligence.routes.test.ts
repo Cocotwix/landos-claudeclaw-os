@@ -13,6 +13,8 @@ import { _initTestLandosDb } from './db.js';
 import { createDealCard } from './deal-card.js';
 import { PropertyIntelligenceStore, resetPropertyIntelligenceStoreCache } from './property-intelligence-store.js';
 import { initialSpecialistRecords, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
+import { DEAL_INTELLIGENCE_CHILDREN, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE } from './deal-intelligence-mission.js';
+import { MissionGraphStore } from './mission-graph-store.js';
 
 const TOKEN = 'test-contract-token';
 
@@ -145,6 +147,43 @@ describe('Property Intelligence API', () => {
     const body = await res.json() as { launch: { alreadyRunning: boolean; runId: string } };
     expect(body.launch.alreadyRunning).toBe(true);
     expect(body.launch.runId).toBe('pi_http_3');
+  });
+
+  it('exposes the parent Deal Intelligence mission on the snapshot read', async () => {
+    // Phase 5 Item 18: the operator control creates ONE parent mission on the
+    // native mission graph. Before any run there is no mission, and the read
+    // says so rather than implying one exists.
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'PI mission card' });
+    const res = await app.request(withToken(`/api/landos/deal-cards/${deal.id}/property-intelligence`));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { propertyIntelligence: { mission: unknown } };
+    expect(body.propertyIntelligence).toHaveProperty('mission');
+    expect(body.propertyIntelligence.mission).toBeNull();
+  });
+
+  it('the operator run control creates a parent mission with every specialist child', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'PI launch card' });
+    const res = await app.request(withToken(`/api/landos/deal-cards/${deal.id}/property-intelligence/run`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { launch: { runId: string; missionId: string; childCount: number; alreadyRunning: boolean } };
+    expect(body.launch.alreadyRunning).toBe(false);
+    // One id for the parent mission AND the versioned snapshot run.
+    expect(body.launch.missionId).toBe(body.launch.runId);
+    expect(body.launch.childCount).toBe(DEAL_INTELLIGENCE_CHILDREN.length);
+
+    const store = new MissionGraphStore();
+    const mission = store.latestMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, deal.id)!;
+    expect(mission.missionId).toBe(body.launch.missionId);
+    const children = store.listChildren(mission.missionId);
+    expect(children.map((child) => child.key)).toEqual(DEAL_INTELLIGENCE_CHILDREN.map((spec) => spec.key));
+    // Declared identity is written WITH the child row, before the lane runs.
+    const strategy = children.find((child) => child.key === 'strategy')!;
+    expect(strategy.identity.agentName).toBeTruthy();
+    expect(strategy.identity.contributionSlot).toBe('strategy');
   });
 
   it('never serves one Deal Card the other card snapshot', async () => {

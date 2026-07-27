@@ -132,7 +132,7 @@ import { listNavigationModels } from './browser-navigation-model.js';
 import { listSitePlaybooks } from './browser-learning.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
-import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds } from './browser-session.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds, closeSurplusSessionPages } from './browser-session.js';
 import { getCountySources } from './county-source-map.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
 import { normalizeParcelIdentifier, runPublicPropertyIntelligence, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
@@ -140,7 +140,9 @@ import { runPropertyIntelligenceOrchestrator, type OrchestratorRun } from './pro
 import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
-import { launchPropertyIntelligenceMission } from './property-intelligence-mission.js';
+import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
+import type { SnapshotFact } from './property-intelligence-snapshot.js';
+import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE } from './deal-intelligence-mission.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { launchFanOutMission, readFanOutMission } from './mission-graph-runner.js';
 import { propertyIntelligenceFanOutDefinition } from './property-intelligence-fanout.js';
@@ -3394,10 +3396,12 @@ export function registerLandosRoutes(app: Hono): void {
   // (Census growth when the free key is configured), what land goes for per acre
   // in the county / near the ZIP (from retained comps), and a plain-English read.
   // Area-level context: works even when the parcel is unverified. No paid call.
-  app.get('/api/landos/deal-cards/:id/market-pulse', async (c) => {
-    const id = Number(c.req.param('id'));
+  // The Market Pulse read, extracted so the Deal Intelligence mission's Market
+  // Pulse child runs the SAME code the operator's Market tab reads. Two
+  // implementations would be free to quote two different county $/ac.
+  const marketPulseForDeal = async (id: number): Promise<{ marketPulse: unknown; parcelConfirmed: boolean } | null> => {
     const deal = getDealCard(id);
-    if (!deal) return c.json({ error: 'not found' }, 404);
+    if (!deal) return null;
     const cards = (Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>;
     const subj = (cards.find((x) => x.role === 'subject') ?? cards[0]) as Record<string, unknown> | undefined;
     const dd = getDealCardDd(id);
@@ -3466,7 +3470,14 @@ export function registerLandosRoutes(app: Hono): void {
         `Only ${bandCount} closed land sale(s) validated so far — not enough to quote a county price; comp research continues.`,
       );
     }
-    return c.json({ marketPulse, parcelConfirmed: !!confirmed });
+    return { marketPulse, parcelConfirmed: !!confirmed };
+  };
+
+  app.get('/api/landos/deal-cards/:id/market-pulse', async (c) => {
+    const id = Number(c.req.param('id'));
+    const result = await marketPulseForDeal(id);
+    if (!result) return c.json({ error: 'not found' }, 404);
+    return c.json(result);
   });
 
   // ── Market Scan: Data Center Watch + land-relevant growth signals ─────────
@@ -4637,14 +4648,18 @@ export function registerLandosRoutes(app: Hono): void {
     });
   });
 
-  app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
-    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  // ── The LandPortal + county subject-research workflow ──────────────────────
+  // Phase 5 no longer treats this as the operator's Property Intelligence
+  // action. It is a CAPABILITY: the parent Deal Intelligence mission's subject-
+  // research child invokes it, and the legacy /report/run route still exposes it
+  // directly. Extracted verbatim so there is exactly one implementation — a
+  // second copy would be free to drift from the one the mission actually runs.
+  type ReportWorkflowResult = { status: 200 | 404 | 409; body: Record<string, unknown> };
+  const runDealCardReportWorkflow = async (id: number, body: Record<string, unknown>): Promise<ReportWorkflowResult> => {
     const dealBeforeRun = getDealCard(id);
     const terminalStatus = terminalParcelStatus(dealBeforeRun);
-    if (terminalStatus) return c.json(terminalParcelError(terminalStatus), 409);
-    if (!dealBeforeRun) return c.json({ error: 'deal card not found' }, 404);
+    if (terminalStatus) return { status: 409, body: terminalParcelError(terminalStatus) as unknown as Record<string, unknown> };
+    if (!dealBeforeRun) return { status: 404, body: { error: 'deal card not found' } };
     const cardIdBeforeRun = subjectCardId(dealBeforeRun);
     if (cardIdBeforeRun) {
       const prop = (dealBeforeRun.propertyCards?.[0] ?? {}) as {
@@ -4712,7 +4727,7 @@ export function registerLandosRoutes(app: Hono): void {
       compResearchDriver: makeLiveBrowserDriver('comp_research'),
     };
     let result = await runDealCardReport(id, reportRunOptions);
-    if (!result) return c.json({ error: 'deal card not found' }, 404);
+    if (!result) return { status: 404, body: { error: 'deal card not found' } };
     // The normal Property Intelligence action awaits the same canonical public
     // orchestration used by the dedicated route. This prevents the Deal Card
     // report from returning while its persisted orchestration/registry view is
@@ -4725,7 +4740,7 @@ export function registerLandosRoutes(app: Hono): void {
       logger.warn({ dealCardId: id, error: canonicalPropertyIntelligence.error }, 'canonical_property_intelligence_blocked_after_report');
     }
     const deal = getDealCard(id);
-    if (!deal) return c.json({ error: 'deal card not found after report run' }, 404);
+    if (!deal) return { status: 404, body: { error: 'deal card not found after report run' } };
     const cardId = deal ? subjectCardId(deal) : undefined;
     const publicRunAfter = new PublicIntelligenceStore().load(id)?.run;
     const runProjection = projectCanonicalReport({ id, deal, report: result.report, publicRun: publicRunAfter, cardId: cardId ?? null, growthSummary: null });
@@ -4823,10 +4838,20 @@ export function registerLandosRoutes(app: Hono): void {
           hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
         });
         const briefing2 = buildDiscoveryBriefing(repaired.report, readiness2, sellerSummary);
-        return c.json({ ...repaired, executiveSummary: executiveSummary2, ownerAnalysis: ownerAnalysis2, discoveryReport: discoveryReport2, marketMatrix, growthSummary, readiness: readiness2, briefing: briefing2, preCallIntelligence, propertyType, govDd: repaired.report.govDd, browserMarketIntel, pursuit, orchestration: { ...orchestration, repairAttempted }, canonicalPropertyIntelligence, parcelRoster: parcelRosterFor(deal ?? {}) });
+        return { status: 200, body: { ...repaired, executiveSummary: executiveSummary2, ownerAnalysis: ownerAnalysis2, discoveryReport: discoveryReport2, marketMatrix, growthSummary, readiness: readiness2, briefing: briefing2, preCallIntelligence, propertyType, govDd: repaired.report.govDd, browserMarketIntel, pursuit, orchestration: { ...orchestration, repairAttempted }, canonicalPropertyIntelligence, parcelRoster: parcelRosterFor(deal ?? {}) } };
       }
     }
-    return c.json({ ...result, executiveSummary, ownerAnalysis, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, govDd: result.report.govDd, browserMarketIntel, pursuit, orchestration: { ...orchestration, repairAttempted }, canonicalPropertyIntelligence, parcelRoster: parcelRosterFor(deal ?? {}) });
+    return { status: 200, body: { ...result, executiveSummary, ownerAnalysis, discoveryReport, marketMatrix, growthSummary, readiness, briefing, preCallIntelligence, propertyType, govDd: result.report.govDd, browserMarketIntel, pursuit, orchestration: { ...orchestration, repairAttempted }, canonicalPropertyIntelligence, parcelRoster: parcelRosterFor(deal ?? {}) } };
+  };
+
+  // The legacy direct route. It stays available so nothing that already calls it
+  // regresses, but it is no longer what the visible operator control invokes.
+  app.post('/api/landos/deal-cards/:id/report/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const result = await runDealCardReportWorkflow(id, body);
+    return c.json(result.body, result.status as 200);
   });
 
   // ── Reconcile Deal Card (in-place, idempotent migration) ─────────────────
@@ -6968,6 +6993,141 @@ export function registerLandosRoutes(app: Hono): void {
     },
   });
 
+  // ── The Deal Intelligence parent mission (Phase 5) ─────────────────────────
+  // ONE operator action creates ONE parent mission on the Phase 4 mission graph.
+  // Its children reuse the collectors and research systems that already work;
+  // its join is assembled and analysed into ONE current snapshot.
+  const dealIntelligenceCapabilities = (dealCardId: number) => ({
+    collectors: propertyIntelligenceCollectors(dealCardId),
+    // The existing LandPortal + county subject-research system, reused as a
+    // child-mission capability. Phase 5 does not rebuild it.
+    subjectResearch: async (id: number) => {
+      const result = await runDealCardReportWorkflow(id, { actor: 'deal-intelligence' });
+      if (result.status !== 200) {
+        return { ok: false, note: `Subject research did not run: ${String((result.body as { error?: unknown }).error ?? `status ${result.status}`)}.` };
+      }
+      return {
+        ok: true,
+        note: 'LandPortal and county subject research completed; the Deal Card projection was refreshed from the same evidence set.',
+      };
+    },
+    // Market Matrix + Market Pulse, read through the same code the Market tab uses.
+    marketPulse: async (id: number) => {
+      const deal = getDealCard(id);
+      const matrix = deal ? marketMatrixFor(deal) : null;
+      const pulseResult = await marketPulseForDeal(id).catch(() => null);
+      const pulse = pulseResult?.marketPulse ?? null;
+      const now = new Date().toISOString();
+      const facts: SnapshotFact[] = [];
+      if (matrix) {
+        const view = matrix as unknown as { summaryLine?: string; headline?: string; title?: string };
+        facts.push({
+          key: 'market_matrix',
+          label: 'Market Matrix',
+          value: view.summaryLine ?? view.headline ?? view.title ?? 'Resolved for the subject market.',
+          grade: 'likely_indication',
+          source: 'LandOS Market Matrix',
+          sourceUrl: null,
+          retrievedAt: now,
+          note: null,
+        });
+      }
+      if (pulse) {
+        const view = pulse as unknown as { plainEnglish?: string; countyPricePerAcre?: { medianPpa?: number | null; sampleSize?: number | null; source?: string | null } };
+        facts.push({
+          key: 'market_pulse',
+          label: 'Market Pulse',
+          value: view.plainEnglish ?? 'Market Pulse assembled for the subject market.',
+          grade: 'likely_indication',
+          source: 'LandOS Market Pulse',
+          sourceUrl: null,
+          retrievedAt: now,
+          note: pulseResult?.parcelConfirmed
+            ? 'Parcel-attributed: the subject parcel is confirmed.'
+            : 'Area context only: the subject parcel is not confirmed, so this is not parcel-attributed market data.',
+        });
+        const ppa = view.countyPricePerAcre;
+        if (ppa?.medianPpa != null) {
+          facts.push({
+            key: 'market_pulse_ppa',
+            label: 'County median $/acre',
+            value: `$${Number(ppa.medianPpa).toLocaleString()}/acre from ${ppa.sampleSize ?? 0} closed sale(s)`,
+            grade: 'likely_indication',
+            source: ppa.source ?? 'LandOS Market Pulse',
+            sourceUrl: null,
+            retrievedAt: now,
+            note: 'Market context only. Whether a valuation basis exists is decided by the value lane, never by a computable median.',
+          });
+        }
+      }
+      return {
+        marketMatrix: matrix ?? null,
+        marketPulse: pulse,
+        facts,
+        summary: matrix && pulse
+          ? 'Market Matrix and Market Pulse assembled for the subject market.'
+          : matrix
+            ? 'Market Matrix assembled; no Market Pulse could be read for this market.'
+            : pulse
+              ? 'Market Pulse assembled; no Market Matrix resolved for this market.'
+              : 'Neither a Market Matrix nor a Market Pulse could be assembled for this market. This is a LandOS coverage gap, not evidence that the market has no activity.',
+      };
+    },
+  });
+
+  const dealIntelligenceShape = dealIntelligenceDefinitionShape();
+
+  /** SELECT-only read of the parent Deal Intelligence mission and its children. */
+  const dealIntelligenceMissionView = (dealCardId: number) => {
+    const view = readFanOutMission(dealIntelligenceShape, dealCardId, missionGraphStore);
+    if (!view.mission) return null;
+    return {
+      label: dealIntelligenceShape.label,
+      kind: DEAL_INTELLIGENCE_KIND,
+      scope: DEAL_INTELLIGENCE_SCOPE,
+      mission: {
+        missionId: view.mission.missionId,
+        sequence: view.mission.sequence,
+        status: view.mission.status,
+        trigger: view.mission.trigger,
+        outcome: view.mission.outcome ?? view.join?.outcome ?? null,
+        startedAt: view.mission.startedAt,
+        completedAt: view.mission.completedAt,
+        error: view.mission.error,
+        failureCategory: view.mission.failureCategory,
+      },
+      children: view.children.map((child) => ({
+        key: child.key,
+        label: child.label,
+        purpose: child.purpose,
+        role: child.role,
+        dependsOn: child.dependsOn,
+        missionId: child.identity.missionId,
+        group: child.identity.group,
+        assignedRole: child.identity.assignedRole,
+        agentKey: child.identity.agentKey,
+        agentName: child.identity.agentName,
+        agentGroup: child.identity.agentGroup,
+        agentRole: child.identity.agentRole,
+        implAgentId: child.identity.implAgentId,
+        contributionSlot: child.identity.contributionSlot,
+        acceptance: child.acceptance,
+        provider: child.provider,
+        status: child.status,
+        summary: child.summary,
+        failureCategory: child.failureCategory,
+        failureMessage: child.failureMessage,
+        retryable: child.retryable,
+        startedAt: child.startedAt,
+        completedAt: child.completedAt,
+        durationMs: child.durationMs,
+        attempt: child.attempt,
+      })),
+      join: view.join,
+      history: view.history,
+    };
+  };
+
   const propertyIntelligenceView = (dealCardId: number) => {
     propertyIntelligenceStore.reclaimStaleRuns();
     const primary = propertyIntelligenceStore.primaryRun(dealCardId);
@@ -6975,6 +7135,10 @@ export function registerLandosRoutes(app: Hono): void {
     const progressRun = latest ?? primary;
     return {
       snapshot: primary?.snapshot ?? null,
+      // The parent mission the CURRENT snapshot was assembled from, alongside the
+      // one in flight. Shown so the operator can see the snapshot is driven by a
+      // real mission rather than a report that happened to run.
+      mission: dealIntelligenceMissionView(dealCardId),
       run: progressRun
         ? {
             runId: progressRun.runId,
@@ -7028,17 +7192,22 @@ export function registerLandosRoutes(app: Hono): void {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const wait = body.wait === true;
 
-    const { launch, completion } = launchPropertyIntelligenceMission({
+    // ONE operator action → ONE parent mission on the native mission graph.
+    const { launch, completion } = launchDealIntelligenceMission({
       dealCardId: id,
       trigger: str(body.actor) ?? 'operator',
-      collectors: propertyIntelligenceCollectors(id),
-      store: propertyIntelligenceStore,
+      capabilities: dealIntelligenceCapabilities(id),
+      missionStore: missionGraphStore,
+      snapshotStore: propertyIntelligenceStore,
+      // The operator's Chrome belongs to the operator: cleanup closes only the
+      // pages this workflow opened and never the browser itself.
+      browserCleanup: () => closeSurplusSessionPages(),
     });
     if (launch.alreadyRunning) {
-      logger.info({ dealCardId: id, runId: launch.runId }, 'property_intelligence_already_running');
+      logger.info({ dealCardId: id, runId: launch.runId, missionId: launch.missionId }, 'deal_intelligence_already_running');
       return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
     }
-    completion.catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'property_intelligence_mission_failed'));
+    completion.catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_mission_failed'));
     if (wait) await completion;
     return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
   });

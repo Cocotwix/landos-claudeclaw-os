@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { _initTestLandosDb } from './db.js';
+import { _initTestLandosDb, getLandosDb } from './db.js';
 import {
   PropertyIntelligenceStore,
   redactPropertyIntelligence,
@@ -40,6 +40,67 @@ function snapshot(overrides: Partial<PropertyIntelligenceSnapshot> = {}): Proper
 beforeEach(() => {
   _initTestLandosDb();
   resetPropertyIntelligenceStoreCache();
+});
+
+describe('PropertyIntelligenceStore snapshot precedence', () => {
+  const open = (store: PropertyIntelligenceStore, runId: string) =>
+    store.createRun({ runId, dealCardId: 32, trigger: 'operator', startedAt: '2026-07-25T00:00:00.000Z', specialists: initialSpecialistRecords() });
+
+  it('an OLDER attempt that finishes last never overrides the newer snapshot', () => {
+    // Two runs can genuinely overlap: a slow one started first, a re-run finished
+    // first. Without a precedence guard the straggler would demote the newer
+    // result purely by finishing last, and the operator would silently lose the
+    // more recent read.
+    const store = new PropertyIntelligenceStore();
+    const older = open(store, 'pi_older');
+    const newer = open(store, 'pi_newer');
+    expect(older.sequence).toBe(1);
+    expect(newer.sequence).toBe(2);
+
+    store.completeRun({ runId: 'pi_newer', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:05:00.000Z', snapshot: snapshot({ runId: 'pi_newer', sequence: 2 }) });
+    store.completeRun({ runId: 'pi_older', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:09:00.000Z', snapshot: snapshot({ runId: 'pi_older', sequence: 1 }) });
+
+    const primary = store.primaryRun(32)!;
+    expect(primary.runId).toBe('pi_newer');
+    expect(primary.sequence).toBe(2);
+    // The late straggler is still stored in full, simply not the current read.
+    const stored = store.getRun('pi_older')!;
+    expect(stored.isPrimary).toBe(false);
+    expect(stored.snapshot).toBeTruthy();
+  });
+
+  it('a newer attempt DOES take over from an older one', () => {
+    const store = new PropertyIntelligenceStore();
+    open(store, 'pi_1');
+    store.completeRun({ runId: 'pi_1', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:05:00.000Z', snapshot: snapshot({ runId: 'pi_1', sequence: 1 }) });
+    open(store, 'pi_2');
+    store.completeRun({ runId: 'pi_2', dealCardId: 32, status: 'complete_with_gaps', completedAt: '2026-07-25T00:15:00.000Z', snapshot: snapshot({ runId: 'pi_2', sequence: 2 }) });
+
+    expect(store.primaryRun(32)!.runId).toBe('pi_2');
+    expect(store.getRun('pi_1')!.isPrimary).toBe(false);
+  });
+
+  it('a failed attempt never demotes the current snapshot', () => {
+    const store = new PropertyIntelligenceStore();
+    open(store, 'pi_good');
+    store.completeRun({ runId: 'pi_good', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:05:00.000Z', snapshot: snapshot({ runId: 'pi_good', sequence: 1 }) });
+    open(store, 'pi_bad');
+    store.completeRun({ runId: 'pi_bad', dealCardId: 32, status: 'failed', completedAt: '2026-07-25T00:15:00.000Z', snapshot: null, error: 'LandPortal unreachable', failureCategory: 'network' });
+
+    expect(store.primaryRun(32)!.runId).toBe('pi_good');
+    expect(store.latestRun(32)!.runId).toBe('pi_bad');
+  });
+
+  it('keeps precedence per Deal Card, never across cards', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_32', dealCardId: 32, trigger: 'operator', startedAt: '2026-07-25T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    store.createRun({ runId: 'pi_47', dealCardId: 47, trigger: 'operator', startedAt: '2026-07-25T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_47', dealCardId: 47, status: 'complete', completedAt: '2026-07-25T00:05:00.000Z', snapshot: snapshot({ dealCardId: 47, runId: 'pi_47', sequence: 1 }) });
+    store.completeRun({ runId: 'pi_32', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:09:00.000Z', snapshot: snapshot({ dealCardId: 32, runId: 'pi_32', sequence: 1 }) });
+
+    expect(store.primaryRun(32)!.runId).toBe('pi_32');
+    expect(store.primaryRun(47)!.runId).toBe('pi_47');
+  });
 });
 
 describe('PropertyIntelligenceStore run lifecycle', () => {
@@ -132,15 +193,60 @@ describe('PropertyIntelligenceStore run lifecycle', () => {
     expect(store.activeRun(3)).toBeNull();
   });
 
+  /** Age a run's rows so they model a process that died rather than one still working. */
+  function ageRun(runId: string, stampIso: string): void {
+    const db = getLandosDb();
+    db.prepare('UPDATE landos_property_intelligence_run SET updated_at = ? WHERE run_id = ?').run(stampIso, runId);
+    db.prepare('UPDATE landos_property_intelligence_specialist SET updated_at = ? WHERE run_id = ?').run(stampIso, runId);
+  }
+
   it('reclaims runs stranded by a restart', () => {
     const store = new PropertyIntelligenceStore();
     store.createRun({ runId: 'pi_g', dealCardId: 9, trigger: 'operator', startedAt: '2020-01-01T00:00:00.000Z', specialists: initialSpecialistRecords() });
-    const reclaimed = store.reclaimStaleRuns(60_000, Date.parse('2026-07-25T00:00:00.000Z'));
+    // A dead process stops touching its rows. That, not elapsed time, is what
+    // makes a run stranded.
+    ageRun('pi_g', '2020-01-01T00:00:00.000Z');
+    const reclaimed = store.reclaimStaleRuns(60_000, Date.parse('2026-07-25T00:00:00.000Z'), '2019-01-01T00:00:00.000Z');
     expect(reclaimed).toBe(1);
     const run = store.getRun('pi_g')!;
     expect(run.status).toBe('failed');
     expect(run.failureCategory).toBe('crash');
     expect(store.listSpecialists('pi_g').every((s) => s.status === 'failed')).toBe(true);
+  });
+
+  it('reclaims a run orphaned by a restart at once, without waiting out the window', () => {
+    // Until it does, the Deal Card refuses a new launch for up to half an hour
+    // against a mission that nothing is executing.
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_orphan', dealCardId: 12, trigger: 'operator', startedAt: '2026-07-27T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    store.updateSpecialist({ runId: 'pi_orphan', specialistId: 'parcel_identity', status: 'running' });
+    expect(store.activeRun(12)?.runId).toBe('pi_orphan');
+
+    // The process restarted one second later: nothing here can still be running.
+    const reclaimed = store.reclaimStaleRuns(30 * 60_000, Date.parse('2026-07-27T00:00:05.000Z'), '2026-07-27T00:00:01.000Z');
+    expect(reclaimed).toBe(1);
+    expect(store.activeRun(12)).toBeNull();
+    expect(store.getRun('pi_orphan')!.status).toBe('failed');
+  });
+
+  it('never reclaims a long-running mission whose specialists are still settling', () => {
+    // A subject-research lane that reuses the full LandPortal/county research
+    // system legitimately runs for many minutes. The reclaimer is consulted on
+    // every operator poll, so aborting on elapsed time alone would reliably kill
+    // a healthy mission mid-flight.
+    const store = new PropertyIntelligenceStore();
+    // Started inside THIS process, so it is not orphaned — only its run row is
+    // old, because the run row is written once and the specialists carry progress.
+    const startedAt = new Date().toISOString();
+    store.createRun({ runId: 'pi_long', dealCardId: 11, trigger: 'operator', startedAt, specialists: initialSpecialistRecords() });
+    ageRun('pi_long', '2020-01-01T00:00:00.000Z');
+    // One specialist reports progress right now.
+    store.updateSpecialist({ runId: 'pi_long', specialistId: 'parcel_identity', status: 'running', summary: 'Reading the LandPortal parcel page.' });
+
+    const reclaimed = store.reclaimStaleRuns(60_000, Date.now(), '2019-01-01T00:00:00.000Z');
+    expect(reclaimed).toBe(0);
+    expect(store.getRun('pi_long')!.status).toBe('running');
+    expect(store.activeRun(11)?.runId).toBe('pi_long');
   });
 
   it('never leaks a snapshot onto another Deal Card', () => {

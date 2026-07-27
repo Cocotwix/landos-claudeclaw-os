@@ -337,6 +337,61 @@ export function resetWorkingPage(): void {
   if (page?.close) void page.close().catch(() => { /* already gone */ });
 }
 
+export interface SessionPageCleanup {
+  /** Pages open in the connected browser before cleanup ran. */
+  before: number;
+  /** Pages still open afterwards. */
+  after: number;
+  closed: number;
+  /** Stated whenever cleanup could not run, so a skipped cleanup is never
+   *  reported as a clean one. */
+  note: string;
+}
+
+/**
+ * Close pages a workflow opened, leaving the operator's own tabs alone.
+ *
+ * The persistent Chrome belongs to the operator, so this NEVER closes the
+ * browser and never closes the first tab or the shared working tab. It closes
+ * only the surplus pages a research run left behind, which is what stops a long
+ * mission from accumulating dead parcel/comp tabs across re-runs.
+ *
+ * Reports honestly when there was no live session to clean.
+ */
+export async function closeSurplusSessionPages(): Promise<SessionPageCleanup> {
+  const browser = state.browser;
+  if (!browser || !browser.isConnected()) {
+    return { before: 0, after: 0, closed: 0, note: 'No live browser session was connected, so no workflow page needed closing.' };
+  }
+  let pages: PageLike[];
+  try {
+    pages = await browser.pages();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { before: 0, after: 0, closed: 0, note: `The browser session could not be inspected (${message}), so page cleanup was NOT performed.` };
+  }
+  const keep = new Set<PageLike>();
+  if (pages[0]) keep.add(pages[0]);
+  if (state.workingPage) keep.add(state.workingPage as unknown as PageLike);
+  let closed = 0;
+  for (const page of pages) {
+    if (keep.has(page)) continue;
+    const closable = page as unknown as { close?: () => Promise<void> };
+    if (typeof closable.close !== 'function') continue;
+    try { await closable.close(); closed += 1; } catch { /* already gone */ }
+  }
+  let after = pages.length - closed;
+  try { after = (await browser.pages()).length; } catch { /* keep the computed count */ }
+  return {
+    before: pages.length,
+    after,
+    closed,
+    note: closed === 0
+      ? `No surplus page was open: the workflow left ${after} tab(s), all of which belong to the operator's session.`
+      : `Closed ${closed} page(s) the workflow opened; ${after} operator tab(s) were left untouched. The browser itself was never closed.`,
+  };
+}
+
 /** Disconnect (NOT close) — the operator's browser stays open all day. */
 export async function disconnectBrowserSession(): Promise<void> {
   try { if (state.browser) await state.browser.disconnect(); } catch { /* ignore */ }

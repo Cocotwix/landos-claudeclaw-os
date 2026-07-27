@@ -24,7 +24,20 @@ import {
 } from './property-intelligence-specialists.js';
 import type { FailureCategory } from '../failure-classification.js';
 
-export const PROPERTY_INTELLIGENCE_SNAPSHOT_VERSION = 1;
+/**
+ * Snapshot format version. MONOTONIC — it may never go backwards.
+ *
+ * Snapshots already persisted on live Deal Cards carry version 2, while this
+ * constant still read 1; a newly written snapshot would therefore have declared
+ * an OLDER format than the one it replaced, and any reader keying on the version
+ * would have treated the newest result as the stale one.
+ *
+ * Phase 5 also genuinely extends the shape: a snapshot now names the parent
+ * mission it was assembled from (`missionId`) and what the run did with the
+ * browser pages it opened (`browserCleanup`). Version 3 is both the honest
+ * format number and strictly greater than anything already stored.
+ */
+export const PROPERTY_INTELLIGENCE_SNAPSHOT_VERSION = 3;
 
 /** How strongly a stated item is supported. Never widened by an agent. */
 export type EvidenceGrade =
@@ -247,6 +260,18 @@ export interface PropertyIntelligenceSnapshot {
   blockers: string[];
   missingInformation: string[];
   nextActions: string[];
+
+  /** The parent mission this snapshot was assembled from. Null on a snapshot
+   *  produced before the run became a native parent mission. */
+  missionId?: string | null;
+  /**
+   * What the run did with the browser pages it opened.
+   *
+   * Recorded on the snapshot because "the workflow cleaned up after itself" is
+   * an operator-visible outcome, not a log line — and an uncleaned run must be
+   * visible rather than assumed clean. Absent on pre-Phase-5 snapshots.
+   */
+  browserCleanup?: { before: number; after: number; closed: number; note: string } | null;
 }
 
 // ── Join ─────────────────────────────────────────────────────────────────────

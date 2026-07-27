@@ -18,7 +18,13 @@ export type SpecialistId =
   | 'market_intelligence'
   | 'valuation_strategy'
   | 'evidence_visuals'
-  | 'synthesis_review';
+  | 'synthesis_review'
+  // Phase 5 splits valuation and strategy into separate mission lanes so a
+  // strategy can wait on a finished valuation without the two sharing one
+  // status. The catalog below is unchanged; these ids belong to the Deal
+  // Intelligence mission definition, which declares its own lanes.
+  | 'valuation'
+  | 'strategy';
 
 export type SpecialistStatus =
   | 'queued'

@@ -32,7 +32,19 @@ import {
 import type { MissionAcceptanceVerdict } from './mission-acceptance.js';
 import type { MissionProviderAssignment } from './mission-provider-routing.js';
 
-let ensured = false;
+/**
+ * Which database the additive DDL has been applied to.
+ *
+ * Keyed on the CONNECTION, not a bare boolean. A plain flag records "the tables
+ * exist" as a fact about the process rather than about the database, so a
+ * reopened or swapped connection inherits a belief that no longer holds and
+ * every read fails on a missing table. Comparing identity costs nothing and
+ * makes the DDL re-run exactly when the connection actually changes.
+ */
+let ensuredDb: unknown = null;
+
+/** When THIS process started. See reclaimStaleMissions. */
+const PROCESS_STARTED_AT = new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString();
 
 /**
  * Identity, acceptance and provider columns added after the first missions were
@@ -67,8 +79,9 @@ function migrateChildColumns(db: ReturnType<typeof getLandosDb>): void {
 }
 
 function ensureTables(): void {
-  if (ensured) return;
-  getLandosDb().exec(`
+  const active = getLandosDb();
+  if (ensuredDb === active) return;
+  active.exec(`
     CREATE TABLE IF NOT EXISTS landos_mission (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       mission_id TEXT NOT NULL UNIQUE,
@@ -130,13 +143,13 @@ function ensureTables(): void {
     CREATE INDEX IF NOT EXISTS idx_landos_mission_child_scope
       ON landos_mission_child(scope, scope_id, updated_at DESC);
   `);
-  migrateChildColumns(getLandosDb());
-  ensured = true;
+  migrateChildColumns(active);
+  ensuredDb = active;
 }
 
 /** Test seam: force the next call to re-run the additive DDL. */
 export function resetMissionGraphStoreCache(): void {
-  ensured = false;
+  ensuredDb = null;
 }
 
 export interface MissionRow {
@@ -543,12 +556,23 @@ export class MissionGraphStore {
    * resumable in place, so it is closed honestly as failed rather than shown to
    * the operator as though it were still making progress.
    */
-  reclaimStaleMissions(olderThanMs = 30 * 60 * 1000, nowMs = Date.now()): number {
+  reclaimStaleMissions(
+    olderThanMs = 30 * 60 * 1000,
+    nowMs = Date.now(),
+    processStartedAt = PROCESS_STARTED_AT,
+  ): number {
     const cutoff = new Date(nowMs - olderThanMs).toISOString();
     const db = this.db;
+    // A mission that STARTED before this process did cannot be running inside
+    // it — the process that owned it is gone. That is reclaimed at once rather
+    // than after an elapsed-time window, because until it is, the scope row
+    // refuses new launches against a mission nothing is executing.
     const stale = db
-      .prepare(`SELECT mission_id FROM landos_mission WHERE status = 'running' AND updated_at < ?`)
-      .all(cutoff) as Array<{ mission_id: string }>;
+      .prepare(
+        `SELECT mission_id FROM landos_mission
+         WHERE status = 'running' AND (started_at < ? OR updated_at < ?)`,
+      )
+      .all(processStartedAt, cutoff) as Array<{ mission_id: string }>;
     if (stale.length === 0) return 0;
     const completedAt = new Date(nowMs).toISOString();
     for (const row of stale) {

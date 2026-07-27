@@ -1,0 +1,1281 @@
+// The Deal Intelligence parent mission — Phase 5, Items 18 and 19.
+//
+// ONE operator action ("Run Property Intelligence") creates ONE parent mission
+// on the Phase 4 native mission graph. The parent fans out to specialist CHILD
+// missions, waits for them in dependency waves, and hands its joined result to
+// the Operator/Analyst assembly stage (deal-intelligence-assembly.ts and
+// deal-intelligence-analysis.ts), which persists ONE current snapshot.
+//
+// What this module is, and is NOT:
+//   • It IS the mission DEFINITION: which specialists exist, who owns each lane,
+//     what each must deliver to be accepted, and what each waits for.
+//   • It is NOT a new research system. Every lane delegates to a collector that
+//     already works (property-intelligence-live.ts) or to an injected capability
+//     that already works (the LandPortal/county subject research, Market Pulse).
+//     Phase 5 reuses those; it does not rebuild them.
+//
+// Two rules from the Phase 5 brief are encoded structurally rather than left to
+// good intentions:
+//
+//   1. "Missing information ... must not automatically block valuation, downgrade
+//      the entire recommendation, or place the whole deal on hold."
+//      Lanes that merely INFORM a conclusion are declared with `awaits`, not
+//      `dependsOn`. A blocked zoning lane orders valuation after it but never
+//      cancels it; the gap is disclosed in the conclusion it actually affects.
+//      Only a lane a child genuinely cannot work without is a hard `dependsOn`.
+//
+//   2. "Do not perform assessor, recorder, deed, parcel, or other government-record
+//      verification on comps."
+//      The comparables lane declares `governmentVerificationPerformed` and a
+//      REQUIRED acceptance check refuses any handback that reports otherwise or
+//      that names a government source. The rule fails the lane rather than
+//      passing quietly.
+
+import { applyCompSourcePolicy } from './comp-source-policy.js';
+import { compsSection } from './property-intelligence-mission.js';
+import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
+import { buildPropertyIntelligenceValuation } from './property-intelligence-valuation.js';
+import { APPROVED_STRATEGIES } from './strategy-readiness.js';
+import { scopeIntegrityCheck, type MissionAcceptanceCheckSpec } from './mission-acceptance.js';
+import type { MissionChildSpec } from './mission-graph.js';
+import type { MissionProviderPolicy } from './mission-provider-routing.js';
+import type { FanOutMissionDefinition, MissionChildContext, MissionChildOutcome } from './mission-graph-runner.js';
+import type {
+  MissionContext,
+  PropertyIntelligenceCollectors,
+  SpecialistOutcome,
+} from './property-intelligence-mission.js';
+import type {
+  PropertyIntelligenceSnapshot,
+  SnapshotComps,
+  SnapshotDueDiligenceItem,
+  SnapshotEvidenceItem,
+  SnapshotFact,
+  SnapshotIdentity,
+  SnapshotRecommendation,
+  SnapshotStrategy,
+  SnapshotValuation,
+} from './property-intelligence-snapshot.js';
+import type { SpecialistId } from './property-intelligence-specialists.js';
+import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
+
+export const DEAL_INTELLIGENCE_KIND = 'deal_intelligence';
+export const DEAL_INTELLIGENCE_SCOPE = 'deal_card';
+
+/** Mission groups. Each holds more than one lane where that is truthful, so a
+ *  group is a real grouping rather than a synonym for a child key. */
+export const DEAL_INTELLIGENCE_GROUPS = {
+  subjectIdentity: 'subject_identity',
+  officialRecord: 'official_record',
+  siteConstraints: 'site_constraints',
+  marketEvidence: 'market_evidence',
+  retainedEvidence: 'retained_evidence',
+  dealAnalysis: 'deal_analysis',
+} as const;
+
+/** Child keys. They double as the snapshot's specialist ids, so the operator
+ *  reads ONE set of lane names across the mission panel and the snapshot. */
+export const DEAL_INTELLIGENCE_CHILD_KEYS = [
+  'parcel_identity',
+  'deal_card_projection',
+  'government_records',
+  'zoning_land_use',
+  'environmental_terrain',
+  'access_utilities',
+  'comparables',
+  'market_intelligence',
+  'evidence_visuals',
+  'valuation',
+  'strategy',
+] as const;
+
+export type DealIntelligenceChildKey = (typeof DEAL_INTELLIGENCE_CHILD_KEYS)[number];
+
+/** Every lane here runs deterministic LandOS code over persisted evidence and
+ *  approved free sources. None routes to a model, so each declares that plainly
+ *  instead of naming a provider it never engages. */
+const DETERMINISTIC = (what: string): MissionProviderPolicy => ({
+  mode: 'deterministic',
+  rationale: `${what} is produced by deterministic LandOS code over retained evidence and approved sources. No model is engaged and no credit is spent.`,
+});
+
+/** Applied to every lane: a handback that names a Deal Card must name THIS one. */
+const SCOPE: MissionAcceptanceCheckSpec = scopeIntegrityCheck('dealCardId');
+
+/** Sources the comparable lane is allowed to use. Discovery-stage market
+ *  evidence only — never a government record pulled on someone else's parcel. */
+export const APPROVED_COMP_SOURCE_PATTERNS = [/landportal/i, /zillow/i, /redfin/i, /persisted/i, /operator/i];
+
+/**
+ * PROVIDER names that would mean a government record was pulled for a comp.
+ *
+ * Scope is deliberately narrow, and the narrowness matters as much as the rule:
+ *
+ *   • Matched ONLY against `handback.sources`, which is built from each
+ *     candidate's PROVIDER name. The check never reads a comp's apn, county,
+ *     sourceUrl, or any other field, so a perfectly good Zillow or Redfin row
+ *     that happens to carry a parcel number or a link to a county map viewer is
+ *     untouched. Incidental identifiers on a marketplace record are not
+ *     government-record research.
+ *   • It asks one question: did this lane go to an assessor / recorder / deed /
+ *     parcel-record system to establish or corroborate a COMP's transaction?
+ *     That is the Phase 5 prohibition, and nothing else here is.
+ *   • It is NOT a completeness gate. A comp missing acreage, a sale date or a
+ *     price is judged by the comp source policy and the valuation lane, never
+ *     rejected here.
+ *   • It is NOT a source-governance gate. Which marketplaces are preferred is an
+ *     `expected` check below, so an unexpected provider degrades the verdict to
+ *     incomplete instead of erasing the lane's whole contribution.
+ */
+export const FORBIDDEN_COMP_SOURCE_PATTERNS = [/assessor/i, /recorder/i, /\bdeed\b/i, /\bparcel\s*(layer|record)/i, /comptroller/i, /county\s+record/i, /\bgis\b/i, /\btax\s*roll/i];
+
+// ── Handback shapes ─────────────────────────────────────────────────────────
+// Every handback carries `dealCardId` so the scope-integrity check can refuse a
+// result that belongs to another Deal Card, and a `summary` the operator reads.
+
+export interface SubjectResearchHandback {
+  dealCardId: number;
+  identityState: SnapshotIdentity['state'];
+  address: string | null;
+  apn: string | null;
+  county: string | null;
+  state: string | null;
+  owner: string | null;
+  acres: number | null;
+  identity: SnapshotIdentity;
+  facts: SnapshotFact[];
+  subjectMarket: SubjectMarket;
+  subjectAcres: number | null;
+  acreageConflict: boolean;
+  summary: string;
+}
+
+/** The supporting lane that refreshes the legacy Deal Card projections. */
+export interface DealCardProjectionHandback {
+  dealCardId: number;
+  ran: boolean;
+  ok: boolean;
+  note: string;
+}
+
+export interface GovernmentRecordsHandback {
+  dealCardId: number;
+  /** Government-record research is SUBJECT-ONLY. Stated on the handback so the
+   *  scope of the lane is visible, not merely intended. */
+  appliesTo: 'subject_property';
+  recordCount: number;
+  records: SnapshotFact[];
+  evidence: SnapshotEvidenceItem[];
+  summary: string;
+}
+
+export interface ZoningHandback {
+  dealCardId: number;
+  zoningKnown: boolean;
+  zoning: string | null;
+  items: SnapshotDueDiligenceItem[];
+  facts: SnapshotFact[];
+  summary: string;
+}
+
+export interface EnvironmentalHandback {
+  dealCardId: number;
+  screenedLaneCount: number;
+  items: SnapshotDueDiligenceItem[];
+  constraints: string[];
+  summary: string;
+}
+
+export interface UtilitiesAccessHandback {
+  dealCardId: number;
+  accessStatus: 'public_road_proximity' | 'private_road_only' | 'no_mapped_contact' | 'unknown';
+  utilitiesKnown: boolean;
+  utilitiesSummary: string | null;
+  items: SnapshotDueDiligenceItem[];
+  summary: string;
+}
+
+export interface ComparablesHandback {
+  dealCardId: number;
+  sources: string[];
+  candidateCount: number;
+  candidates: CompRegistryCandidate[];
+  duplicatesMerged: number;
+  /** Always false. Comps are discovery-stage market evidence; no government
+   *  record is pulled for a comparable property. */
+  governmentVerificationPerformed: false;
+  summary: string;
+}
+
+export interface MarketPulseHandback {
+  dealCardId: number;
+  marketMatrix: unknown;
+  marketPulse: unknown;
+  marketMatrixAvailable: boolean;
+  marketPulseAvailable: boolean;
+  facts: SnapshotFact[];
+  summary: string;
+}
+
+export interface EvidenceHandback {
+  dealCardId: number;
+  evidenceCount: number;
+  screenshotCount: number;
+  documentCount: number;
+  sourceLinkCount: number;
+  evidence: SnapshotEvidenceItem[];
+  summary: string;
+}
+
+export interface ValuationHandback {
+  dealCardId: number;
+  priceable: boolean;
+  valuation: SnapshotValuation;
+  comps: SnapshotComps;
+  acceptedSoldCount: number;
+  activeListingCount: number;
+  landHomeCompCount: number;
+  summary: string;
+}
+
+export interface StrategyHandback {
+  dealCardId: number;
+  strategyCount: number;
+  strategies: SnapshotStrategy[];
+  recommendation: SnapshotRecommendation;
+  /** Lanes that were missing when strategy ran, so the operator can see exactly
+   *  which conclusions were formed without them. */
+  informedBy: string[];
+  missingInputs: string[];
+  summary: string;
+}
+
+// ── Injected capabilities ───────────────────────────────────────────────────
+
+export interface DealIntelligenceCapabilities {
+  /** The EXISTING live collectors. Phase 5 reuses them unchanged. */
+  collectors: PropertyIntelligenceCollectors;
+  /**
+   * The existing Deal Card report workflow, reused as a child-mission capability
+   * rather than rebuilt. Drives the SUPPORTING `deal_card_projection` lane only,
+   * so a slow or failing refresh never gates the snapshot.
+   */
+  subjectResearch?: (dealCardId: number) => Promise<{ ok: boolean; note: string }>;
+  /** Market Matrix + Market Pulse for the subject market. */
+  marketPulse?: (dealCardId: number) => Promise<{
+    marketMatrix: unknown;
+    marketPulse: unknown;
+    facts: SnapshotFact[];
+    summary: string;
+  }>;
+  now?: () => string;
+}
+
+// ── Child specs ─────────────────────────────────────────────────────────────
+
+export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
+  {
+    key: 'parcel_identity',
+    label: 'Parcel and LandPortal subject research',
+    purpose: 'Research the subject parcel on LandPortal and the official parcel sources, then reconcile one accepted identity: address, county, state, APN, owner and acreage.',
+    role: 'required',
+    dependsOn: [],
+    // Identity resolution only: the official parcel lookup and the reconciled
+    // subject identity. The heavy legacy Deal Card report refresh is a SEPARATE,
+    // supporting lane (`deal_card_projection`) rather than part of this one.
+    //
+    // Measured live on Deal 32, running the full report inside this child kept a
+    // REQUIRED ROOT lane busy for over fifteen minutes, and every other lane sat
+    // queued behind it. A slow refresh of secondary projections must never gate
+    // the mission — that is the same rule Phase 5 states about missing lanes,
+    // applied to slow ones.
+    timeoutMs: 300_000,
+    group: DEAL_INTELLIGENCE_GROUPS.subjectIdentity,
+    assignedRole: 'Subject parcel identity of record',
+    agentKey: 'dd_bot',
+    contributionSlot: 'identity',
+    provider: DETERMINISTIC('The reconciled subject parcel identity'),
+    acceptance: {
+      requiredFields: ['identityState', 'identity.state', 'identity.explanation'],
+      checks: [
+        SCOPE,
+        {
+          id: 'parcel_named',
+          requirement: 'The identity names the subject parcel by address or APN.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<SubjectResearchHandback>;
+            const named = [row.address, row.apn].filter((value) => typeof value === 'string' && value.trim().length > 0);
+            return {
+              passed: named.length > 0,
+              detail: named.length > 0
+                ? `Named by ${named.join(' / ')}.`
+                : 'Neither an address nor an APN is carried, so no parcel is named.',
+            };
+          },
+        },
+        {
+          id: 'identity_confirmed',
+          requirement: 'The subject parcel identity is confirmed against an official record.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const state = (handback as Partial<SubjectResearchHandback>).identityState;
+            return {
+              passed: state === 'confirmed',
+              detail: state === 'confirmed'
+                ? 'Confirmed against an official parcel record.'
+                : `Identity is "${String(state)}", so parcel-specific conclusions stay qualified.`,
+            };
+          },
+        },
+      ],
+      expectedFields: ['county', 'state'],
+    },
+  },
+  {
+    key: 'deal_card_projection',
+    label: 'Deal Card projection refresh',
+    purpose: 'Re-run the existing LandPortal and county subject-research workflow so the Deal Card projections that predate the snapshot stay current.',
+    // SUPPORTING on purpose. This lane refreshes secondary projections; the
+    // snapshot never depends on it. It is also the slowest thing in the mission,
+    // so making it required would mean one slow refresh could put the whole deal
+    // on hold — exactly what Phase 5 forbids.
+    role: 'supporting',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 1_200_000,
+    group: DEAL_INTELLIGENCE_GROUPS.subjectIdentity,
+    assignedRole: 'Legacy Deal Card projection refresh',
+    agentKey: 'dd_bot',
+    contributionSlot: 'deal_card_projection',
+    provider: DETERMINISTIC('The Deal Card projection refresh'),
+    acceptance: {
+      requiredFields: ['ran'],
+      checks: [
+        SCOPE,
+        {
+          id: 'refresh_outcome_stated',
+          requirement: 'The lane states whether the refresh succeeded.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as { ran?: unknown; ok?: unknown; note?: unknown };
+            const stated = typeof row.ran === 'boolean' && typeof row.ok === 'boolean';
+            return {
+              passed: stated,
+              detail: stated ? `Refresh ran=${row.ran}, ok=${row.ok}. ${String(row.note ?? '')}`.trim() : 'The lane stated no refresh outcome.',
+            };
+          },
+        },
+        {
+          id: 'refresh_succeeded',
+          requirement: 'The Deal Card projections were refreshed.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const ok = (handback as { ok?: unknown }).ok === true;
+            return {
+              passed: ok,
+              detail: ok
+                ? 'The Deal Card projections were refreshed from this run.'
+                : 'The projections were NOT refreshed; the Deal Card keeps the values from its previous refresh. The snapshot is unaffected.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'government_records',
+    label: 'Government records (subject property)',
+    purpose: 'Retrieve the recorded assessor, deed, ownership, legal-description and tax evidence for the SUBJECT parcel only, at discovery-stage depth.',
+    role: 'required',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 300_000,
+    group: DEAL_INTELLIGENCE_GROUPS.officialRecord,
+    assignedRole: 'Recorded government evidence for the subject parcel',
+    agentKey: 'dd_bot',
+    contributionSlot: 'government_records',
+    provider: DETERMINISTIC('Recorded government evidence for the subject parcel'),
+    acceptance: {
+      requiredFields: ['appliesTo', 'recordCount'],
+      checks: [
+        SCOPE,
+        {
+          id: 'subject_only',
+          requirement: 'Government-record research covers the SUBJECT property only.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const scope = (handback as Partial<GovernmentRecordsHandback>).appliesTo;
+            return {
+              passed: scope === 'subject_property',
+              detail: scope === 'subject_property'
+                ? 'Scoped to the subject parcel.'
+                : `The lane reports its scope as "${String(scope)}"; only subject-property government research is permitted.`,
+            };
+          },
+        },
+        {
+          id: 'records_present',
+          requirement: 'At least one recorded fact was retrieved for the subject parcel.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const count = Number((handback as Partial<GovernmentRecordsHandback>).recordCount ?? 0);
+            return {
+              passed: count > 0,
+              detail: count > 0
+                ? `${count} recorded fact(s) retrieved.`
+                : 'No recorded fact was retrieved, so nothing is asserted from the official record.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'zoning_land_use',
+    label: 'Zoning',
+    purpose: 'Establish the governing zoning district, overlays and the development rules that decide what may be built.',
+    role: 'required',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.siteConstraints,
+    assignedRole: 'Zoning and land-use determination',
+    agentKey: 'dd_bot',
+    contributionSlot: 'zoning',
+    provider: DETERMINISTIC('The governing zoning determination'),
+    acceptance: {
+      // `zoningKnown` may legitimately be false. What the lane must deliver is a
+      // STATED answer, never a particular one: "not established" is a real
+      // discovery-stage finding, and rejecting it would push the mission to
+      // invent a district it never confirmed.
+      requiredFields: ['zoningKnown'],
+      checks: [
+        SCOPE,
+        {
+          id: 'zoning_stated',
+          requirement: 'The lane states a zoning finding, even when the district is not established.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<ZoningHandback>;
+            const stated = typeof row.zoningKnown === 'boolean' && Array.isArray(row.items) && row.items.length > 0;
+            return {
+              passed: stated,
+              detail: stated
+                ? row.zoningKnown ? `Zoning district: ${String(row.zoning)}.` : 'Stated: the zoning district is not established from the official sources searched.'
+                : 'The lane returned no zoning finding at all, so nothing is stated about zoning.',
+            };
+          },
+        },
+        {
+          id: 'zoning_established',
+          requirement: 'The governing zoning district is established.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const known = (handback as Partial<ZoningHandback>).zoningKnown === true;
+            return {
+              passed: known,
+              detail: known
+                ? 'The governing district is established.'
+                : 'The district is not established; conclusions that depend on zoning are qualified accordingly.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'environmental_terrain',
+    label: 'Environmental screening',
+    purpose: 'Screen floodplain, wetlands, soils and septic suitability, slope and mapped water features against public sources.',
+    role: 'required',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.siteConstraints,
+    assignedRole: 'Environmental and terrain screening',
+    agentKey: 'dd_bot',
+    contributionSlot: 'environmental',
+    provider: DETERMINISTIC('The public environmental screening'),
+    acceptance: {
+      requiredFields: ['screenedLaneCount'],
+      checks: [
+        SCOPE,
+        {
+          id: 'screening_stated',
+          requirement: 'The lane states which environmental questions it screened.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const items = (handback as Partial<EnvironmentalHandback>).items;
+            return {
+              passed: Array.isArray(items),
+              detail: Array.isArray(items)
+                ? `${items.length} environmental finding(s) stated.`
+                : 'No environmental finding list was returned, so nothing is stated about the site.',
+            };
+          },
+        },
+        {
+          id: 'screening_performed',
+          requirement: 'At least one environmental lane was actually screened.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const count = Number((handback as Partial<EnvironmentalHandback>).screenedLaneCount ?? 0);
+            return {
+              passed: count > 0,
+              detail: count > 0 ? `${count} lane(s) screened.` : 'No environmental lane was screened.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'access_utilities',
+    label: 'Utilities and access',
+    purpose: 'Determine road frontage and physical access, discoverable easements, and utility availability at discovery-stage depth.',
+    role: 'required',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.siteConstraints,
+    assignedRole: 'Access, frontage and utility availability',
+    agentKey: 'dd_bot',
+    contributionSlot: 'access_utilities',
+    provider: DETERMINISTIC('The access and utility screening'),
+    acceptance: {
+      requiredFields: ['accessStatus', 'utilitiesKnown'],
+      checks: [
+        SCOPE,
+        {
+          id: 'access_stated',
+          requirement: 'The lane states an access status, including "unknown" when nothing is mapped.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const status = (handback as Partial<UtilitiesAccessHandback>).accessStatus;
+            const allowed = ['public_road_proximity', 'private_road_only', 'no_mapped_contact', 'unknown'];
+            return {
+              passed: typeof status === 'string' && allowed.includes(status),
+              detail: typeof status === 'string' && allowed.includes(status)
+                ? `Access status: ${status.replace(/_/g, ' ')}.`
+                : `Access status is ${String(status)}, which is not a stated finding.`,
+            };
+          },
+        },
+        {
+          id: 'utilities_established',
+          requirement: 'Utility availability is established.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const known = (handback as Partial<UtilitiesAccessHandback>).utilitiesKnown === true;
+            return {
+              passed: known,
+              detail: known ? 'Utility availability is established.' : 'Utility availability was not established at discovery stage.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'comparables',
+    label: 'Comparable sales and active competition',
+    purpose: 'Collect vacant-land comparable sales and active competition directly from LandPortal, Zillow and Redfin.',
+    role: 'required',
+    dependsOn: ['parcel_identity'],
+    // AWAITS the projection refresh. Both lanes drive the operator's single
+    // Chrome working tab, which is serialized by one in-process gate, so running
+    // them together does not make them concurrent — it makes this one sit in the
+    // gate queue until its own budget expires (observed live on Deal 32).
+    //
+    // Ordering after the refresh also removes duplicated work: that lane has
+    // just captured the LandPortal inspection and the Zillow/Redfin passes, so
+    // this lane reads rows that are already fresh. It AWAITS rather than depends
+    // on it — a failed refresh still leaves this lane free to run.
+    awaits: ['deal_card_projection'],
+    timeoutMs: 900_000,
+    group: DEAL_INTELLIGENCE_GROUPS.marketEvidence,
+    assignedRole: 'Comparable sales and active competition',
+    agentKey: 'dd_bot',
+    contributionSlot: 'comparables',
+    provider: DETERMINISTIC('The approved comparable sources'),
+    acceptance: {
+      requiredFields: ['candidateCount', 'governmentVerificationPerformed'],
+      checks: [
+        SCOPE,
+        {
+          id: 'no_government_comp_verification',
+          requirement: 'No assessor, recorder, deed or other government record was pulled for a comparable property.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<ComparablesHandback>;
+            if (row.governmentVerificationPerformed !== false) {
+              return {
+                passed: false,
+                detail: 'The lane reports that government-record verification was performed on comparables. Comps are discovery-stage market evidence; that verification is out of scope and the result is not accepted.',
+              };
+            }
+            const sources = Array.isArray(row.sources) ? row.sources : [];
+            const forbidden = sources.filter((source) => FORBIDDEN_COMP_SOURCE_PATTERNS.some((pattern) => pattern.test(source)));
+            return {
+              passed: forbidden.length === 0,
+              detail: forbidden.length === 0
+                ? `Sources used: ${sources.length ? sources.join(', ') : 'none reached'}. No government record was consulted for a comparable.`
+                : `Government-record source(s) named on comparables: ${forbidden.join(', ')}. That verification is out of scope for comps.`,
+            };
+          },
+        },
+        {
+          id: 'approved_comp_sources',
+          // EXPECTED, not required. The live comp lane also re-screens rows
+          // already persisted on this card, which carry their original provider
+          // name (e.g. realie, homeharvest). Those are comp data providers, not
+          // government records — the rule Phase 5 actually sets is the one above.
+          //
+          // Rejecting the whole lane over them would throw away every real comp
+          // it did collect and leave the property unpriceable, which is the
+          // over-blocking Phase 5 forbids. The comp SOURCE POLICY already decides
+          // which rows may price the subject and shows the rest as excluded with
+          // reasons; this check reports the deviation rather than erasing the lane.
+          requirement: 'Comparables are collected directly from the approved marketplaces: LandPortal, Zillow and Redfin.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const sources = (handback as Partial<ComparablesHandback>).sources ?? [];
+            const other = sources.filter((source) => !APPROVED_COMP_SOURCE_PATTERNS.some((pattern) => pattern.test(source)));
+            return {
+              passed: other.length === 0,
+              detail: other.length === 0
+                ? `Every source is an approved marketplace${sources.length ? `: ${sources.join(', ')}` : ' (no source returned a row)'}.`
+                : `Also carries row(s) previously persisted on this card from ${other.join(', ')}. They are re-screened by the comp source policy and are not collected fresh from an approved marketplace.`,
+            };
+          },
+        },
+        {
+          id: 'comparables_found',
+          requirement: 'At least one comparable candidate was collected.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const count = Number((handback as Partial<ComparablesHandback>).candidateCount ?? 0);
+            return {
+              passed: count > 0,
+              detail: count > 0 ? `${count} candidate(s) collected.` : 'No comparable candidate was returned by any approved source.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'market_intelligence',
+    label: 'Market Pulse and Market Matrix',
+    purpose: 'Assemble the Market Matrix and the Market Pulse read for the subject market.',
+    role: 'supporting',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.marketEvidence,
+    assignedRole: 'Subject-market pulse and matrix',
+    agentKey: 'market_bot',
+    contributionSlot: 'market',
+    provider: DETERMINISTIC('The subject-market pulse and matrix'),
+    acceptance: {
+      requiredFields: ['marketMatrixAvailable', 'marketPulseAvailable'],
+      checks: [
+        SCOPE,
+        {
+          id: 'market_read_stated',
+          requirement: 'The lane states whether a Market Matrix and a Market Pulse exist for this market.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<MarketPulseHandback>;
+            const stated = typeof row.marketMatrixAvailable === 'boolean' && typeof row.marketPulseAvailable === 'boolean';
+            return {
+              passed: stated,
+              detail: stated
+                ? `Market Matrix ${row.marketMatrixAvailable ? 'available' : 'not available'}; Market Pulse ${row.marketPulseAvailable ? 'available' : 'not available'}.`
+                : 'The lane stated no answer about market coverage.',
+            };
+          },
+        },
+        {
+          id: 'market_read_present',
+          requirement: 'Both the Market Matrix and the Market Pulse resolved for the subject market.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const row = handback as Partial<MarketPulseHandback>;
+            const both = row.marketMatrixAvailable === true && row.marketPulseAvailable === true;
+            return {
+              passed: both,
+              detail: both
+                ? 'Both the Market Matrix and the Market Pulse resolved.'
+                : `Market coverage is partial: matrix ${row.marketMatrixAvailable ? 'yes' : 'no'}, pulse ${row.marketPulseAvailable ? 'yes' : 'no'}.`,
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'evidence_visuals',
+    label: 'Evidence and property screenshots',
+    purpose: 'Gather the retained parcel screenshots, official documents and source links that support every conclusion in this run.',
+    role: 'required',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.retainedEvidence,
+    assignedRole: 'Retained evidence and visuals',
+    agentKey: 'dd_bot',
+    contributionSlot: 'evidence',
+    provider: DETERMINISTIC('The retained evidence trail'),
+    acceptance: {
+      requiredFields: ['evidenceCount'],
+      checks: [
+        SCOPE,
+        {
+          id: 'evidence_listed',
+          requirement: 'The lane returns the evidence list it counted.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<EvidenceHandback>;
+            const consistent = Array.isArray(row.evidence) && row.evidence.length === Number(row.evidenceCount ?? -1);
+            return {
+              passed: consistent,
+              detail: consistent
+                ? `${row.evidence!.length} evidence item(s) listed.`
+                : 'The stated evidence count does not match the returned list, so the evidence trail is not trustworthy as delivered.',
+            };
+          },
+        },
+        {
+          id: 'screenshot_retained',
+          requirement: 'At least one property screenshot was retained.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const count = Number((handback as Partial<EvidenceHandback>).screenshotCount ?? 0);
+            return {
+              passed: count > 0,
+              detail: count > 0 ? `${count} screenshot(s) retained.` : 'No property screenshot was retained by this run.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'valuation',
+    label: 'Valuation',
+    purpose: 'Apply the comp source policy and produce a defensible value band, or state exactly why the property is not priceable.',
+    role: 'required',
+    // Identity is the only HARD input: without an identified parcel there is no
+    // subject to value. Comparables and the constraint lanes are AWAITED — a
+    // missing comp lane produces an honest "not priceable, and here is why",
+    // which is a real valuation answer, not a cancelled one.
+    dependsOn: ['parcel_identity'],
+    awaits: ['comparables', 'environmental_terrain', 'zoning_land_use', 'access_utilities'],
+    timeoutMs: 120_000,
+    group: DEAL_INTELLIGENCE_GROUPS.dealAnalysis,
+    assignedRole: 'Defensible value conclusion',
+    agentKey: 'uw_bot',
+    contributionSlot: 'valuation',
+    provider: DETERMINISTIC('The value conclusion'),
+    acceptance: {
+      requiredFields: ['priceable', 'valuation.basis', 'valuation.confidence'],
+      checks: [
+        SCOPE,
+        {
+          id: 'value_or_reason',
+          requirement: 'The lane returns either a value band or a stated reason the property is not priceable.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<ValuationHandback>;
+            if (row.priceable === true) {
+              const band = row.valuation?.range;
+              const usable = !!band && Number.isFinite(band.low) && Number.isFinite(band.high) && band.high >= band.low;
+              return {
+                passed: usable,
+                detail: usable
+                  ? `Value band $${band!.low.toLocaleString()}–$${band!.high.toLocaleString()}.`
+                  : 'The lane reports the property as priceable but returned no usable value band.',
+              };
+            }
+            const reason = row.valuation?.notPriceableReason;
+            const stated = typeof reason === 'string' && reason.trim().length > 0;
+            return {
+              passed: stated,
+              detail: stated
+                ? `Not priceable, with the reason stated: ${reason}`
+                : 'The lane reports the property as not priceable but states no reason, so the operator cannot act on it.',
+            };
+          },
+        },
+        {
+          id: 'priceable',
+          requirement: 'A defensible value band exists.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const priceable = (handback as Partial<ValuationHandback>).priceable === true;
+            return {
+              passed: priceable,
+              detail: priceable ? 'A value band was produced.' : 'No value band exists yet; the stated reason travels with the snapshot.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'strategy',
+    label: 'Five-strategy analysis',
+    purpose: 'Evaluate the five approved LandOS strategies against the finished valuation and the research that landed, and recommend one path.',
+    role: 'required',
+    // Strategy WAITS for the required research and the valuation. Only the
+    // valuation is a hard input: a strategy cannot be evaluated without a value
+    // conclusion (priceable or not). The research lanes are awaited so strategy
+    // runs last and sees everything that landed, while a single missing lane
+    // qualifies the strategies it affects instead of cancelling the analysis.
+    // The identity is a HARD input as well as the valuation: strategies are
+    // parcel-specific, and a lane that cannot read the accepted identity would
+    // fall back to "unresolved" and blame identity work on a confirmed parcel —
+    // which is exactly the misleading output this dependency prevents. It costs
+    // no extra ordering: valuation already depends on identity.
+    dependsOn: ['valuation', 'parcel_identity'],
+    awaits: ['government_records', 'zoning_land_use', 'environmental_terrain', 'access_utilities', 'comparables', 'market_intelligence'],
+    timeoutMs: 120_000,
+    group: DEAL_INTELLIGENCE_GROUPS.dealAnalysis,
+    assignedRole: 'Five-strategy evaluation and recommendation',
+    agentKey: 'research_bot',
+    contributionSlot: 'strategy',
+    provider: DETERMINISTIC('The five approved strategy evaluations'),
+    acceptance: {
+      requiredFields: ['strategyCount', 'recommendation.posture'],
+      checks: [
+        SCOPE,
+        {
+          id: 'five_approved_strategies',
+          requirement: 'All five approved LandOS strategies are evaluated, and no new strategy type is introduced.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const rows = (handback as Partial<StrategyHandback>).strategies ?? [];
+            const names = rows.map((row) => row.strategy);
+            const missing = APPROVED_STRATEGY_NAMES.filter((name) => !names.includes(name));
+            const extra = names.filter((name) => !APPROVED_STRATEGY_NAMES.includes(name));
+            return {
+              passed: missing.length === 0 && extra.length === 0,
+              detail: missing.length === 0 && extra.length === 0
+                ? `All five approved strategies evaluated: ${names.join(', ')}.`
+                : `${missing.length ? `Missing: ${missing.join(', ')}. ` : ''}${extra.length ? `Unapproved strategy type(s): ${extra.join(', ')}.` : ''}`,
+            };
+          },
+        },
+        {
+          id: 'recommendation_reasoned',
+          requirement: 'The recommendation states why, including when no path is recommended.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const why = (handback as Partial<StrategyHandback>).recommendation?.why;
+            const stated = typeof why === 'string' && why.trim().length > 0;
+            return {
+              passed: stated,
+              detail: stated ? 'The recommendation states its reasoning.' : 'The recommendation carries no reasoning.',
+            };
+          },
+        },
+        {
+          id: 'strategy_actionable',
+          requirement: 'A preferred strategy is identified.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const preferred = (handback as Partial<StrategyHandback>).recommendation?.preferredStrategy;
+            const named = typeof preferred === 'string' && preferred.trim().length > 0;
+            return {
+              passed: named,
+              detail: named ? `Preferred path: ${preferred}.` : 'No strategy is applicable yet on what has been established.',
+            };
+          },
+        },
+      ],
+    },
+  },
+];
+
+/**
+ * The five approved strategies, bound to the EXISTING canonical list rather than
+ * re-declared here. Phase 5 adds none and removes none, and a copy of the list
+ * would be free to drift from the one the rest of LandOS enforces.
+ *
+ * Note on naming: the roadmap calls the first strategy "Quick Flip"; LandOS's
+ * canonical name for that same strategy is "Cash Flip" (strategy-readiness.ts).
+ * Renaming it is a system-wide change with no Phase 5 purpose, so the canonical
+ * name stands.
+ */
+export const APPROVED_STRATEGY_NAMES: readonly string[] = APPROVED_STRATEGIES;
+
+const CHILD_BY_KEY = new Map(DEAL_INTELLIGENCE_CHILDREN.map((spec) => [spec.key, spec]));
+
+export function dealIntelligenceChildSpec(key: string): MissionChildSpec {
+  const spec = CHILD_BY_KEY.get(key);
+  if (!spec) throw new Error(`Unknown Deal Intelligence child mission: ${key}`);
+  return spec;
+}
+
+// ── Executors ───────────────────────────────────────────────────────────────
+
+const dealScoped = (ctx: MissionChildContext): MissionContext => ({
+  dealCardId: ctx.scopeId,
+  runId: ctx.missionId,
+  identity: null,
+  comparables: null,
+});
+
+/** Read an upstream handback the runner already validated as contributing. */
+function upstream<T>(ctx: MissionChildContext, key: DealIntelligenceChildKey): T | null {
+  const value = ctx.upstream[key];
+  return value && typeof value === 'object' ? (value as T) : null;
+}
+
+/**
+ * Map a collector outcome onto a child outcome.
+ *
+ * A collector that reports `blocked` stays blocked: the child's own status must
+ * say what actually happened. The parent join is what decides whether that gap
+ * matters, and `awaits` is what stops it from cancelling unrelated lanes.
+ */
+function childStatusFor(outcome: SpecialistOutcome<unknown>): MissionChildOutcome['status'] {
+  return outcome.status;
+}
+
+export function dealIntelligenceExecutors(
+  capabilities: DealIntelligenceCapabilities,
+): Record<string, (ctx: MissionChildContext) => Promise<MissionChildOutcome>> {
+  const { collectors } = capabilities;
+
+  return {
+    // ── Parcel and LandPortal subject research ────────────────────────────
+    // Resolves the subject parcel against the official sources and the
+    // authenticated LandPortal record. This is the mission's root lane, so it
+    // does ONLY the work the rest of the mission genuinely needs.
+    parcel_identity: async (ctx) => {
+      const outcome = await collectors.parcel_identity(dealScoped(ctx));
+      const data = outcome.data;
+      if (!data) {
+        return { status: 'blocked', summary: outcome.summary };
+      }
+      const identity = data.identity;
+      const handback: SubjectResearchHandback = {
+        dealCardId: ctx.scopeId,
+        identityState: identity.state,
+        address: identity.normalizedAddress ?? identity.situs,
+        apn: identity.apn,
+        county: identity.county,
+        state: identity.state_,
+        owner: identity.owner,
+        acres: identity.acres,
+        identity,
+        facts: data.facts,
+        subjectMarket: data.subjectMarket,
+        subjectAcres: data.subjectAcres,
+        acreageConflict: data.acreageConflict,
+        summary: outcome.summary,
+      };
+      return { status: childStatusFor(outcome), summary: handback.summary, result: handback };
+    },
+
+    // ── Deal Card projection refresh (supporting) ─────────────────────────
+    // The existing report workflow, reused as a capability. It is the slowest
+    // thing in the mission and it feeds only secondary projections, so it runs
+    // beside the research lanes and can never hold the mission up.
+    deal_card_projection: async (ctx) => {
+      if (!capabilities.subjectResearch) {
+        return {
+          status: 'blocked',
+          summary: 'No Deal Card projection refresh capability is wired into this run, so the legacy Deal Card projections were left at their previous values. The snapshot is unaffected.',
+          result: { dealCardId: ctx.scopeId, ran: false, ok: false, note: 'No refresh capability is wired into this run.' },
+        };
+      }
+      try {
+        const result = await capabilities.subjectResearch(ctx.scopeId);
+        return {
+          status: result.ok ? 'completed' : 'partial',
+          summary: result.note,
+          result: { dealCardId: ctx.scopeId, ran: true, ok: result.ok, note: result.note },
+        };
+      } catch (error) {
+        const note = `The Deal Card projection refresh errored (${(error as Error)?.message ?? String(error)}). The Deal Card keeps its previous projection values; the snapshot is unaffected.`;
+        return {
+          status: 'partial',
+          summary: note,
+          result: { dealCardId: ctx.scopeId, ran: true, ok: false, note },
+        };
+      }
+    },
+
+    // ── Government records (subject property only) ────────────────────────
+    government_records: async (ctx) => {
+      const outcome = await collectors.government_records(dealScoped(ctx));
+      const handback: GovernmentRecordsHandback = {
+        dealCardId: ctx.scopeId,
+        appliesTo: 'subject_property',
+        recordCount: outcome.data?.records.length ?? 0,
+        records: outcome.data?.records ?? [],
+        evidence: outcome.evidence ?? [],
+        summary: outcome.summary,
+      };
+      return { status: childStatusFor(outcome), summary: outcome.summary, result: handback };
+    },
+
+    // ── Zoning ────────────────────────────────────────────────────────────
+    zoning_land_use: async (ctx) => {
+      const outcome = await collectors.zoning_land_use(dealScoped(ctx));
+      const data = outcome.data;
+      const handback: ZoningHandback = {
+        dealCardId: ctx.scopeId,
+        zoningKnown: data?.zoningKnown ?? false,
+        zoning: data?.zoning ?? null,
+        items: data?.items ?? [],
+        facts: data?.facts ?? [],
+        summary: outcome.summary,
+      };
+      // A lane that established nothing but SAID so has still delivered a real
+      // discovery-stage finding. It contributes as `partial` so the gap travels
+      // into the snapshot instead of the whole zoning contribution vanishing.
+      const status = outcome.status === 'blocked' && handback.items.length > 0 ? 'partial' : childStatusFor(outcome);
+      return { status, summary: outcome.summary, result: handback };
+    },
+
+    // ── Environmental screening ───────────────────────────────────────────
+    environmental_terrain: async (ctx) => {
+      const outcome = await collectors.environmental_terrain(dealScoped(ctx));
+      const data = outcome.data;
+      const handback: EnvironmentalHandback = {
+        dealCardId: ctx.scopeId,
+        screenedLaneCount: data?.items.length ?? 0,
+        items: data?.items ?? [],
+        constraints: data?.constraints ?? [],
+        summary: outcome.summary,
+      };
+      return { status: childStatusFor(outcome), summary: outcome.summary, result: handback };
+    },
+
+    // ── Utilities and access ──────────────────────────────────────────────
+    access_utilities: async (ctx) => {
+      const outcome = await collectors.access_utilities(dealScoped(ctx));
+      const data = outcome.data;
+      const handback: UtilitiesAccessHandback = {
+        dealCardId: ctx.scopeId,
+        accessStatus: data?.accessStatus ?? 'unknown',
+        utilitiesKnown: data?.utilitiesKnown ?? false,
+        utilitiesSummary: data?.utilitiesSummary ?? null,
+        items: data?.items ?? [],
+        summary: outcome.summary,
+      };
+      return { status: childStatusFor(outcome), summary: outcome.summary, result: handback };
+    },
+
+    // ── Comparable sales (LandPortal, Zillow, Redfin — no gov verification) ─
+    comparables: async (ctx) => {
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      const context: MissionContext = {
+        ...dealScoped(ctx),
+        identity: identity
+          ? {
+              identity: identity.identity,
+              facts: identity.facts,
+              subjectMarket: identity.subjectMarket,
+              subjectAcres: identity.subjectAcres,
+              acreageConflict: identity.acreageConflict,
+            }
+          : null,
+      };
+      const outcome = await collectors.comparables(context);
+      const candidates = outcome.data?.candidates ?? [];
+      const sources = [...new Set(candidates.map((candidate) => candidate.provider).filter(Boolean))];
+      const handback: ComparablesHandback = {
+        dealCardId: ctx.scopeId,
+        sources,
+        candidateCount: candidates.length,
+        candidates,
+        duplicatesMerged: outcome.data?.duplicatesMerged ?? 0,
+        governmentVerificationPerformed: false,
+        summary: outcome.summary,
+      };
+      return { status: childStatusFor(outcome), summary: outcome.summary, result: handback };
+    },
+
+    // ── Market Pulse and Market Matrix ────────────────────────────────────
+    market_intelligence: async (ctx) => {
+      if (!capabilities.marketPulse) {
+        const outcome = await collectors.market_intelligence(dealScoped(ctx));
+        const facts = outcome.data?.facts ?? [];
+        const handback: MarketPulseHandback = {
+          dealCardId: ctx.scopeId,
+          marketMatrix: null,
+          marketPulse: null,
+          marketMatrixAvailable: facts.some((fact) => fact.key === 'market_matrix'),
+          marketPulseAvailable: false,
+          facts,
+          summary: `${outcome.summary} No Market Pulse reader is wired into this run.`.trim(),
+        };
+        return { status: childStatusFor(outcome), summary: handback.summary, result: handback };
+      }
+      const context = await capabilities.marketPulse(ctx.scopeId);
+      const handback: MarketPulseHandback = {
+        dealCardId: ctx.scopeId,
+        marketMatrix: context.marketMatrix ?? null,
+        marketPulse: context.marketPulse ?? null,
+        marketMatrixAvailable: context.marketMatrix != null,
+        marketPulseAvailable: context.marketPulse != null,
+        facts: context.facts,
+        summary: context.summary,
+      };
+      const status: MissionChildOutcome['status'] =
+        handback.marketMatrixAvailable && handback.marketPulseAvailable ? 'completed'
+          : handback.marketMatrixAvailable || handback.marketPulseAvailable ? 'partial'
+            : 'blocked';
+      return { status, summary: context.summary, result: handback };
+    },
+
+    // ── Evidence and property screenshots ─────────────────────────────────
+    evidence_visuals: async (ctx) => {
+      const outcome = await collectors.evidence_visuals(dealScoped(ctx));
+      const evidence = outcome.evidence ?? [];
+      const handback: EvidenceHandback = {
+        dealCardId: ctx.scopeId,
+        evidenceCount: evidence.length,
+        screenshotCount: evidence.filter((item) => item.kind === 'screenshot' || item.kind === 'map' || item.kind === 'overlay').length,
+        documentCount: evidence.filter((item) => item.kind === 'document' || item.kind === 'record').length,
+        sourceLinkCount: evidence.filter((item) => item.kind === 'source_link').length,
+        evidence,
+        summary: outcome.summary,
+      };
+      return { status: childStatusFor(outcome), summary: outcome.summary, result: handback };
+    },
+
+    // ── Valuation ─────────────────────────────────────────────────────────
+    valuation: async (ctx) => {
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      const comparables = upstream<ComparablesHandback>(ctx, 'comparables');
+      const environmental = upstream<EnvironmentalHandback>(ctx, 'environmental_terrain');
+      const zoning = upstream<ZoningHandback>(ctx, 'zoning_land_use');
+      const access = upstream<UtilitiesAccessHandback>(ctx, 'access_utilities');
+
+      const subjectMarket: SubjectMarket = identity?.subjectMarket ?? {};
+      const policy = applyCompSourcePolicy(subjectMarket, comparables?.candidates ?? []);
+      const comps = compsSection(policy, comparables?.duplicatesMerged ?? 0);
+      const dueDiligence = [...(zoning?.items ?? []), ...(environmental?.items ?? []), ...(access?.items ?? [])];
+
+      const valuation = buildPropertyIntelligenceValuation({
+        identityState: identity?.identity.state ?? 'unresolved',
+        subjectAcres: identity?.subjectAcres ?? null,
+        acreageConflict: identity?.acreageConflict ?? false,
+        policy,
+        constraints: environmental?.constraints ?? [],
+        hardRisks: dueDiligence.filter((item) => item.verdict === 'risk').map((item) => `${item.label}: ${item.headline}`),
+      });
+
+      const handback: ValuationHandback = {
+        dealCardId: ctx.scopeId,
+        priceable: valuation.priceable,
+        valuation,
+        comps,
+        acceptedSoldCount: policy.acceptedSold.length,
+        activeListingCount: policy.acceptedActive.length,
+        landHomeCompCount: policy.landHomeOnly.length,
+        summary: valuation.priceable
+          ? `Value band $${valuation.range!.low.toLocaleString()}–$${valuation.range!.high.toLocaleString()} (${valuation.confidence} confidence) from ${policy.acceptedSold.length} accepted closed sale(s) and ${policy.acceptedActive.length} active listing(s).`
+          : `Not priceable: ${valuation.notPriceableReason}`,
+      };
+      // A stated, defensible "not priceable" is a real valuation answer, so the
+      // lane contributes as partial. It is never reported as a full result.
+      return { status: valuation.priceable ? 'completed' : 'partial', summary: handback.summary, result: handback };
+    },
+
+    // ── Five-strategy analysis ────────────────────────────────────────────
+    strategy: async (ctx) => {
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      const valuationHandback = upstream<ValuationHandback>(ctx, 'valuation');
+      if (!valuationHandback) {
+        return {
+          status: 'blocked',
+          summary: 'The valuation lane produced no result, so the five strategies cannot be evaluated against a value conclusion.',
+        };
+      }
+      const zoning = upstream<ZoningHandback>(ctx, 'zoning_land_use');
+      const environmental = upstream<EnvironmentalHandback>(ctx, 'environmental_terrain');
+      const access = upstream<UtilitiesAccessHandback>(ctx, 'access_utilities');
+      const government = upstream<GovernmentRecordsHandback>(ctx, 'government_records');
+      const market = upstream<MarketPulseHandback>(ctx, 'market_intelligence');
+
+      const informedBy: string[] = [];
+      const missingInputs: string[] = [];
+      const note = (present: unknown, label: string): void => {
+        if (present) informedBy.push(label);
+        else missingInputs.push(`${label} did not contribute, so any strategy that turns on it is qualified rather than asserted.`);
+      };
+      note(zoning, 'Zoning');
+      note(environmental, 'Environmental screening');
+      note(access, 'Utilities and access');
+      note(government, 'Government records');
+      note(market, 'Market Pulse');
+
+      const dueDiligence = [...(zoning?.items ?? []), ...(environmental?.items ?? []), ...(access?.items ?? [])];
+      const { strategies, recommendation } = buildPropertyIntelligenceStrategies({
+        identityState: identity?.identity.state ?? 'unresolved',
+        subjectAcres: identity?.subjectAcres ?? null,
+        valuation: valuationHandback.valuation,
+        dueDiligence,
+        zoning: zoning?.zoning ?? null,
+        zoningKnown: zoning?.zoningKnown ?? false,
+        utilitiesKnown: access?.utilitiesKnown ?? false,
+        utilitiesSummary: access?.utilitiesSummary ?? null,
+        accessStatus: access?.accessStatus ?? 'unknown',
+        landHomeCompCount: valuationHandback.landHomeCompCount,
+        acceptedSoldCount: valuationHandback.acceptedSoldCount,
+        activeListingCount: valuationHandback.activeListingCount,
+        // Missing research is disclosed to the strategy analysis, but it is NOT
+        // passed as a mission blocker: a gap qualifies the strategies it bears
+        // on, and never places the whole deal on hold.
+        missionBlockers: [],
+      });
+
+      const handback: StrategyHandback = {
+        dealCardId: ctx.scopeId,
+        strategyCount: strategies.length,
+        strategies,
+        recommendation,
+        informedBy,
+        missingInputs,
+        summary: recommendation.preferredStrategy
+          ? `${strategies.length} approved strategies evaluated; recommended path: ${recommendation.preferredStrategy} (posture: ${recommendation.posture}).`
+          : `${strategies.length} approved strategies evaluated; no path is applicable yet (posture: ${recommendation.posture}). ${recommendation.why}`,
+      };
+      // Strategy formed without every research lane is a real, usable answer —
+      // reported as partial so the qualification travels with it.
+      return { status: missingInputs.length === 0 ? 'completed' : 'partial', summary: handback.summary, result: handback };
+    },
+  };
+}
+
+/** The mission definition the route layer launches for one operator action. */
+export function dealIntelligenceMissionDefinition(
+  capabilities: DealIntelligenceCapabilities,
+): FanOutMissionDefinition {
+  return {
+    kind: DEAL_INTELLIGENCE_KIND,
+    label: 'Deal Intelligence',
+    scope: DEAL_INTELLIGENCE_SCOPE,
+    children: DEAL_INTELLIGENCE_CHILDREN,
+    executors: dealIntelligenceExecutors(capabilities),
+  };
+}
+
+/** Read-only view of the definition, for the SELECT-only mission read path. */
+export function dealIntelligenceDefinitionShape(): Pick<FanOutMissionDefinition, 'kind' | 'scope' | 'label' | 'children'> {
+  return {
+    kind: DEAL_INTELLIGENCE_KIND,
+    scope: DEAL_INTELLIGENCE_SCOPE,
+    label: 'Deal Intelligence',
+    children: DEAL_INTELLIGENCE_CHILDREN,
+  };
+}
+
+/** The child key set, typed as snapshot specialist ids. */
+export function dealIntelligenceSpecialistIds(): SpecialistId[] {
+  return DEAL_INTELLIGENCE_CHILDREN.map((spec) => spec.key as SpecialistId);
+}
+
+/** Convenience for readers that need the snapshot type without importing it. */
+export type DealIntelligenceSnapshot = PropertyIntelligenceSnapshot;

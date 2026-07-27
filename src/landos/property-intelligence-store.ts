@@ -40,6 +40,17 @@ export function redactPropertyIntelligence(value: unknown, key = ''): unknown {
 
 let ensured = false;
 
+/**
+ * When THIS process started.
+ *
+ * A run that began before this process did cannot be executing inside it — the
+ * process that owned it is gone. That is a fact, not a heuristic, so such a run
+ * is reclaimed immediately instead of waiting out an elapsed-time window. Without
+ * it, a restart mid-run leaves the Deal Card refusing new launches ("a mission is
+ * already running") for up to half an hour, against a mission nothing is running.
+ */
+const PROCESS_STARTED_AT = new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString();
+
 function ensureTables(): void {
   if (ensured) return;
   getLandosDb().exec(`
@@ -303,7 +314,20 @@ export class PropertyIntelligenceStore {
     const now = new Date().toISOString();
     // A run that produced a snapshot becomes the primary read, even when it
     // completed with gaps: gaps are reported, not hidden behind a stale success.
-    const promote = input.snapshot != null && input.status !== 'failed';
+    const usable = input.snapshot != null && input.status !== 'failed';
+    // An OLDER attempt may never override a newer accepted snapshot. Two runs can
+    // overlap (a slow one started first, a re-run finished first); without this
+    // guard the straggler would demote the newer result simply by finishing last.
+    // It is still recorded in full and stays readable as history.
+    const newer = usable
+      ? (db.prepare(`
+          SELECT MAX(sequence) AS seq FROM landos_property_intelligence_run
+          WHERE deal_card_id = ? AND run_id <> ? AND snapshot_json IS NOT NULL AND status <> 'failed'
+        `).get(input.dealCardId, input.runId) as { seq?: number | null } | undefined)?.seq ?? null
+      : null;
+    const thisSequence = (db.prepare('SELECT sequence FROM landos_property_intelligence_run WHERE run_id = ?')
+      .get(input.runId) as { sequence?: number } | undefined)?.sequence ?? 0;
+    const promote = usable && (newer == null || Number(thisSequence) >= Number(newer));
     const snapshotJson = input.snapshot == null
       ? null
       : JSON.stringify(redactPropertyIntelligence({ ...input.snapshot, isPrimary: promote }));
@@ -378,8 +402,17 @@ export class PropertyIntelligenceStore {
     return rows.map(runFromRow).filter((row): row is PropertyIntelligenceRunRow => row != null);
   }
 
-  /** Release a run left `running` by a process that died. Restart-safe. */
-  reclaimStaleRuns(olderThanMs = 30 * 60_000, nowMs = Date.now()): number {
+  /**
+   * Release a run left `running` by a process that died. Restart-safe.
+   *
+   * Staleness means NOTHING HAS MOVED, not "started a while ago". A run whose
+   * specialists are still settling is making progress however long it has been
+   * going, and killing it on elapsed time alone would abort a healthy mission
+   * mid-flight — this read runs on every operator poll, so it would abort it
+   * reliably. A genuinely dead run stops updating its specialists and is still
+   * reclaimed on the same window.
+   */
+  reclaimStaleRuns(olderThanMs = 30 * 60_000, nowMs = Date.now(), processStartedAt = PROCESS_STARTED_AT): number {
     ensureTables();
     const cutoff = new Date(nowMs - olderThanMs).toISOString();
     const result = getLandosDb().prepare(`
@@ -389,8 +422,21 @@ export class PropertyIntelligenceStore {
           failure_category = 'crash',
           completed_at = ?,
           updated_at = ?
-      WHERE status = 'running' AND started_at < ?
-    `).run(new Date(nowMs).toISOString(), new Date(nowMs).toISOString(), cutoff);
+      WHERE status = 'running'
+        AND (
+          -- Orphaned by a restart: nothing in this process can be running it.
+          started_at < ?
+          -- Or genuinely stalled: nothing about it has moved inside the window.
+          OR (
+            started_at < ?
+            AND updated_at < ?
+            AND NOT EXISTS (
+              SELECT 1 FROM landos_property_intelligence_specialist s
+              WHERE s.run_id = landos_property_intelligence_run.run_id AND s.updated_at >= ?
+            )
+          )
+        )
+    `).run(new Date(nowMs).toISOString(), new Date(nowMs).toISOString(), processStartedAt, cutoff, cutoff, cutoff);
     const changed = Number(result.changes ?? 0);
     if (changed > 0) {
       getLandosDb().prepare(`

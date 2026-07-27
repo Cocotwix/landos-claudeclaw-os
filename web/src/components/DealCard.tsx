@@ -4255,35 +4255,58 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
     }
   }
 
-  // Run the operational report. After it completes, re-load the report AND the
-  // three worksheets (the workflow updates them) so the panel shows exactly what
-  // persisted. Never spends a comp credit; the backend enforces that.
+  // Run Property Intelligence — ONE operator action, ONE parent mission.
+  //
+  // Phase 5: this no longer calls the report endpoint directly. It launches the
+  // parent Deal Intelligence mission, which fans out to the specialist children
+  // (subject research, government records, zoning, environmental, utilities and
+  // access, comparables, Market Pulse, evidence, valuation, strategy) and
+  // assembles ONE current snapshot. The subject-research child still runs the
+  // existing report workflow, so every legacy panel stays populated — it is now
+  // a child capability rather than the orchestrator.
+  //
+  // The launch returns as soon as the mission exists; the Property Intelligence
+  // hook polls it, and the effect below reloads the projections the moment it
+  // settles. So the operator watches real per-specialist progress instead of one
+  // opaque spinner.
   async function runReport() {
     if (!deal) return;
     setReportRunning(true);
     setReportError(null);
     setReportWarnings([]);
     try {
-      const res = await apiPost<{ report: ReportView; warnings: string[]; executiveSummary?: ExecSummaryView; ownerAnalysis?: OwnerAnalysisView; discoveryReport?: DiscoveryReportView; propertyType?: PropertyTypeView; pursuit?: PursuitView; parcelRoster?: ParcelRosterEntryView[] }>(`/api/landos/deal-cards/${deal.id}/report/run`, {});
-      setReport(res.report);
-      setExecSummary(res.executiveSummary ?? null);
-      setOwnerAnalysis(res.ownerAnalysis ?? null);
-      setDiscoveryReport(res.discoveryReport ?? null);
-      setPropertyType(res.propertyType ?? null);
-      setPursuit(res.pursuit ?? null);
-      setParcelRoster(res.parcelRoster ?? null);
-      setReportWarnings(Array.isArray(res.warnings) ? res.warnings : []);
-      await loadDd(deal.id);
-      await loadStrategy(deal.id);
-      await loadMarket(deal.id);
-      // The run response has no operator record; the GET projection builds it.
-      await Promise.all([loadReport(deal.id), loadPropertySummary(deal.id), loadGovernmentRecords(deal.id)]);
+      await propertyIntelligence.launch();
     } catch (err: any) {
       setReportError(err?.message || String(err));
     } finally {
       setReportRunning(false);
     }
   }
+
+  // The visible control stays disabled for as long as the PARENT MISSION is in
+  // flight, not just while the launch request is open. Re-enabling the moment
+  // the launch returned would invite a second click on a mission that is still
+  // running — which the backend refuses anyway, but which reads as a dead button.
+  const missionBusy = reportRunning || propertyIntelligence.launching || propertyIntelligence.running;
+
+  // Reload every projection the moment the parent mission settles. Watching the
+  // falling edge (running → not running) means one reload per run, and it fires
+  // for a mission started from ANY control on the card.
+  const missionWasRunning = useRef(false);
+  useEffect(() => {
+    const running = propertyIntelligence.running;
+    if (running) { missionWasRunning.current = true; return; }
+    if (!missionWasRunning.current || !deal) return;
+    missionWasRunning.current = false;
+    const id = deal.id;
+    void (async () => {
+      await Promise.all([loadDd(id), loadStrategy(id), loadMarket(id)]);
+      await Promise.all([loadReport(id), loadPropertySummary(id), loadGovernmentRecords(id)]);
+    })();
+    // `deal` is intentionally read through its id only; reloading is keyed on the
+    // mission finishing, not on unrelated Deal Card state changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyIntelligence.running, deal?.id]);
 
   // Explicit per-property visual capture (one Google call). After capture, reload
   // the report so the freshly-stored images render inline.
@@ -5312,7 +5335,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               seller={seller}
               token={dashboardToken}
               runReport={() => void runReport()}
-              reportRunning={reportRunning}
+              reportRunning={missionBusy}
               pursuit={pursuit}
               onPublicIntelligenceUpdated={() => void Promise.all([loadReport(deal.id), loadPropertySummary(deal.id)])}
               record={operatorRecord}
@@ -5658,7 +5681,7 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                 <button
                   type="button"
                   onClick={() => void runReport()}
-                  disabled={reportRunning}
+                  disabled={missionBusy}
                   class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-elevated)] disabled:opacity-40"
                 >
                   {reportRunning ? 'Running Property Intelligence...' : report?.exists ? 'Re-run Property Intelligence' : 'Run Property Intelligence'}

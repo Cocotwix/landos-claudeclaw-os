@@ -1,8 +1,8 @@
 // The native fan-out runner: parent mission → child missions → join.
 //
 // One operator action starts ONE parent mission. The parent creates every child
-// mission row up front, dispatches them in dependency waves, and joins their
-// structured handbacks once every child has reached a terminal state.
+// mission row up front, dispatches each one as soon as its own dependencies
+// have settled, and joins their structured handbacks once every child is terminal.
 //
 // Guarantees this runner enforces:
 //   • A second launch while a mission is in flight returns the SAME mission.
@@ -10,10 +10,12 @@
 //   • Every child settles. A throw, a timeout, an unmet dependency and a
 //     provider refusal each produce a DIFFERENT terminal state with a stated
 //     reason — none of them leave a child stranded, and none read as success.
+//   • A child waits for exactly what it consumes — never for an unrelated lane
+//     that happens to sit in the same dependency layer.
 //   • The parent does not complete until every child is terminal. If a child is
-//     still outstanding when the wave loop returns (because another worker
-//     claimed it), the parent waits, and on deadline it reports the outstanding
-//     child explicitly instead of joining over it.
+//     still outstanding when dispatch returns (because another worker claimed
+//     it), the parent waits, and on deadline it reports the outstanding child
+//     explicitly instead of joining over it.
 //   • The join is the ONLY thing that may declare the mission finished.
 //
 // Executors are injected, so the orchestration is testable without a browser,
@@ -27,6 +29,7 @@ import {
   initialMissionChildren,
   isTerminalMissionChildStatus,
   joinMissionChildren,
+  missionChildPredecessors,
   missionChildStatusForAcceptance,
   normalizeStoredMissionJoin,
   overlayDeclaredIdentity,
@@ -208,6 +211,7 @@ export function launchFanOutMission(options: LaunchFanOutOptions): {
 async function executeFanOut(
   options: LaunchFanOutOptions & { store: MissionGraphStore; now: () => string },
   missionId: string,
+  /** Validated layout. Dispatch schedules per child; this proves the graph is legal. */
   waves: string[][],
 ): Promise<MissionJoin> {
   const { store, now, definition } = options;
@@ -383,10 +387,33 @@ async function executeFanOut(
     }
   };
 
-  // ── Fan-out: a wave runs concurrently; the next starts once it has settled ──
-  for (const wave of waves) {
-    await Promise.all(wave.map((key) => runChild(key)));
-  }
+  // ── Fan-out: each child starts as soon as ITS OWN predecessors are terminal ──
+  //
+  // Not a wave barrier. Waves are still computed up front to VALIDATE the graph
+  // (unknown dependency, cycle, duplicate slot), but dispatching strictly
+  // wave-by-wave would make every child wait for the slowest unrelated child in
+  // the wave above it. Observed live: one slow supporting refresh lane held back
+  // valuation and strategy, which depend on nothing it produces.
+  //
+  // Scheduling on each child's own predecessors gives the same ordering
+  // guarantee the contract states — a child never runs before what it consumes
+  // has settled — without coupling lanes that have no relationship.
+  void waves;
+  const scheduled = new Map<string, Promise<void>>();
+  const runWhenReady = (key: string): Promise<void> => {
+    const existing = scheduled.get(key);
+    if (existing) return existing;
+    const spec = specByKey.get(key)!;
+    // Safe from infinite recursion: planMissionWaves already refused a cycle
+    // before anything was written.
+    const promise = (async () => {
+      await Promise.all(missionChildPredecessors(spec).map((dep) => runWhenReady(dep)));
+      await runChild(key);
+    })();
+    scheduled.set(key, promise);
+    return promise;
+  };
+  await Promise.all(definition.children.map((spec) => runWhenReady(spec.key)));
 
   // ── Gather: read every child back from the store, not from local memory ────
   // A child another worker claimed is only visible in the store, and the store

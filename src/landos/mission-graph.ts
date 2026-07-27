@@ -63,8 +63,22 @@ export interface MissionChildSpec {
   /** One line the operator reads on the mission panel. */
   purpose: string;
   role: MissionChildRole;
-  /** Children whose handbacks this one consumes. */
+  /** Children whose handbacks this one REQUIRES. If one of them did not
+   *  contribute, this child is skipped: it cannot do its job without them. */
   dependsOn: string[];
+  /**
+   * Children this one must WAIT for but does not require.
+   *
+   * Ordering only. An awaited child that failed, blocked or was rejected does
+   * NOT skip this one — the lane still runs and discloses what it could not
+   * take into account. This is what keeps one missing research lane from
+   * silently putting the whole mission on hold: a gap may change a conclusion,
+   * but it may not cancel every conclusion that does not depend on it.
+   *
+   * Awaited handbacks that DID contribute are still handed to the executor
+   * through `upstream`, so a lane can use whatever actually arrived.
+   */
+  awaits?: string[];
   timeoutMs: number;
 
   // ── Identity, role and relationship (declared) ─────────────────────────────
@@ -266,6 +280,12 @@ export function missionContributionSlot(spec: MissionChildSpec): string {
   return spec.contributionSlot ?? spec.key;
 }
 
+/** Everything a child must WAIT for: what it requires plus what it only orders after. */
+export function missionChildPredecessors(spec: MissionChildSpec): string[] {
+  const seen = new Set<string>([...spec.dependsOn, ...(spec.awaits ?? [])]);
+  return [...seen];
+}
+
 /**
  * Validate a mission definition and lay its children out in execution waves.
  *
@@ -274,6 +294,8 @@ export function missionContributionSlot(spec: MissionChildSpec): string {
  * a mission that cannot be laid out must never launch and then silently strand
  * children in `queued`, and a duplicated slot would mean one child's handback
  * silently overwrote another's.
+ *
+ * Waves order on `dependsOn` AND `awaits`; only `dependsOn` can skip a child.
  */
 export function planMissionWaves(specs: MissionChildSpec[]): string[][] {
   if (specs.length === 0) throw new Error('A mission definition must declare at least one child.');
@@ -284,7 +306,7 @@ export function planMissionWaves(specs: MissionChildSpec[]): string[][] {
     byKey.set(spec.key, spec);
   }
   for (const spec of specs) {
-    for (const dep of spec.dependsOn) {
+    for (const dep of missionChildPredecessors(spec)) {
       if (!byKey.has(dep)) {
         throw new Error(`Mission child "${spec.key}" depends on unknown child "${dep}".`);
       }
@@ -318,7 +340,9 @@ export function planMissionWaves(specs: MissionChildSpec[]): string[][] {
   const pending = new Set<string>(specs.map((spec) => spec.key));
 
   while (pending.size > 0) {
-    const wave = [...pending].filter((key) => byKey.get(key)!.dependsOn.every((dep) => settled.has(dep)));
+    const wave = [...pending].filter((key) =>
+      missionChildPredecessors(byKey.get(key)!).every((dep) => settled.has(dep)),
+    );
     if (wave.length === 0) {
       throw new Error(`Mission child graph has a dependency cycle among: ${[...pending].join(', ')}.`);
     }
@@ -374,13 +398,20 @@ export function dependencyBlock(
   return `Skipped because an upstream contribution this child consumes is missing: ${named}. Nothing is asserted from this lane.`;
 }
 
-/** Handbacks from the children this spec depends on, keyed by child. */
+/**
+ * Handbacks from the children this spec waited on, keyed by child.
+ *
+ * Includes AWAITED children as well as required ones: a lane that merely orders
+ * after another still needs whatever that lane actually produced. Only children
+ * that genuinely contributed appear, so an absent key means "this lane delivered
+ * nothing", never "this lane delivered nothing useful".
+ */
 export function upstreamContributions(
   spec: MissionChildSpec,
   children: Map<string, MissionChildState>,
 ): Record<string, unknown> {
   const upstream: Record<string, unknown> = {};
-  for (const dep of spec.dependsOn) {
+  for (const dep of missionChildPredecessors(spec)) {
     const child = children.get(dep);
     if (child && contributedMissionResult(child.status)) upstream[dep] = child.result;
   }
