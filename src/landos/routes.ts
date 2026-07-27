@@ -56,7 +56,8 @@ import { MODEL_CAPABILITIES, CAPABILITY_DIMENSIONS, getCapabilityEntry } from '.
 import { sourcedProfileFor } from './capability-scoring.js';
 import { buildProviderRegistry } from './provider-registry.js';
 import { buildRegistryFromConfig } from './model-router-service.js';
-import { resolveLiveRouting, resolveOllamaHost, setLiveRouting, setOllamaHost } from './router-runtime-config.js';
+import { resolveHermesUrl, resolveLiveRouting, resolveOllamaHost, setLiveRouting, setOllamaHost } from './router-runtime-config.js';
+import { describeMissionProviderCatalog } from './mission-provider-routing.js';
 import { GRUNT_HELPERS } from './grunt-helpers.js';
 import { computeDealLane, type DealLaneSnapshot } from './deal-lane.js';
 import { underwriteConfirmedParcel, blockedUnderwriting, type UnderwritingStrategyLane } from './underwriting-agent.js';
@@ -2005,6 +2006,30 @@ export function registerLandosRoutes(app: Hono): void {
       ollamaHostSource: ollama.source,
       environments: registry.describe(),
       helpers: GRUNT_HELPERS,
+    });
+  });
+
+  // Mission provider catalog: for every provider this repository supports, WHETHER
+  // a native mission child can route a model call to it right now, and whether the
+  // upstream provider engine can drive an agent session on it. The two are
+  // reported separately and neither is inferred from the other. Read-only; no
+  // secret values (only configured/enabled booleans).
+  app.get('/api/landos/model-router/mission-providers', (c) => {
+    const registry = buildRegistryFromConfig();
+    const catalog = describeMissionProviderCatalog({ registry });
+    const hermes = resolveHermesUrl();
+    return c.json({
+      liveRouting: resolveLiveRouting().enabled,
+      // Hermes is OPTIONAL by construction: unconfigured is the normal state and
+      // native mission operation does not depend on it.
+      hermes: {
+        configured: !!hermes.url,
+        source: hermes.source,
+        optional: true,
+        note: 'Optional. Native LandOS missions run fully without a Hermes endpoint; nothing requires it.',
+      },
+      missionRoutable: catalog.filter((entry) => entry.missionRoutable).map((entry) => entry.id),
+      catalog,
     });
   });
 
@@ -7051,6 +7076,21 @@ export function registerLandosRoutes(app: Hono): void {
         purpose: child.purpose,
         role: child.role,
         dependsOn: child.dependsOn,
+        // Identity: which parent, which group, which assigned role, which
+        // specialist agent, and where this child's handback belongs.
+        missionId: child.identity.missionId,
+        group: child.identity.group,
+        assignedRole: child.identity.assignedRole,
+        agentKey: child.identity.agentKey,
+        agentName: child.identity.agentName,
+        agentGroup: child.identity.agentGroup,
+        agentRole: child.identity.agentRole,
+        implAgentId: child.identity.implAgentId,
+        contributionSlot: child.identity.contributionSlot,
+        // Acceptance: what the delivered result was judged against.
+        acceptance: child.acceptance,
+        // Provider assignment: 'deterministic' means no provider is engaged.
+        provider: child.provider,
         status: child.status,
         summary: child.summary,
         failureCategory: child.failureCategory,

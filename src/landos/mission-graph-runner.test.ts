@@ -251,7 +251,22 @@ describe('the parent never completes before its children are terminal', () => {
       missionId: launch.missionId,
       status: 'joined',
       outcome: 'premature',
-      join: { status: 'joined', contributions: {}, contributed: [], gaps: [], requiredGaps: [], outstanding: [], allTerminal: true, allRequiredTerminal: true, outcome: 'premature' },
+      join: {
+        status: 'joined',
+        contributions: {},
+        contributionsBySlot: {},
+        routing: [],
+        contributed: [],
+        accepted: [],
+        incomplete: [],
+        gaps: [],
+        requiredGaps: [],
+        outstanding: [],
+        allTerminal: true,
+        allRequiredTerminal: true,
+        allRequiredAccepted: true,
+        outcome: 'premature',
+      },
       completedAt: '2026-07-26T00:00:00.000Z',
     });
     expect(refused.completed).toBe(false);

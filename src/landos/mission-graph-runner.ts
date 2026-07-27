@@ -27,12 +27,21 @@ import {
   initialMissionChildren,
   isTerminalMissionChildStatus,
   joinMissionChildren,
+  missionChildStatusForAcceptance,
+  normalizeStoredMissionJoin,
+  overlayDeclaredIdentity,
   planMissionWaves,
   upstreamContributions,
   type MissionChildSpec,
   type MissionChildState,
   type MissionJoin,
 } from './mission-graph.js';
+import { evaluateMissionAcceptance, type MissionAcceptanceVerdict } from './mission-acceptance.js';
+import {
+  resolveMissionProviderAssignment,
+  type MissionProviderAssignment,
+  type MissionProviderDeps,
+} from './mission-provider-routing.js';
 
 export interface MissionChildContext {
   missionId: string;
@@ -40,6 +49,8 @@ export interface MissionChildContext {
   scopeId: number;
   /** Structured handbacks from the children this one depends on. */
   upstream: Record<string, unknown>;
+  /** The provider this lane was assigned. `deterministic` means none is engaged. */
+  provider: MissionProviderAssignment;
 }
 
 export interface MissionChildOutcome {
@@ -77,6 +88,8 @@ export interface LaunchFanOutOptions {
   /** How long the parent waits for a child another worker claimed. */
   joinDeadlineMs?: number;
   joinPollMs?: number;
+  /** Provider registry / live-routing injection for model-routed children. */
+  providerDeps?: MissionProviderDeps;
 }
 
 export interface FanOutLaunch {
@@ -205,7 +218,7 @@ async function executeFanOut(
   // with the store so wave dispatch can read upstream handbacks without a
   // re-query per child.
   const local = new Map<string, MissionChildState>(
-    initialMissionChildren(definition.children).map((child) => [child.key, child]),
+    initialMissionChildren(definition.children, missionId).map((child) => [child.key, child]),
   );
 
   const settle = (
@@ -229,6 +242,8 @@ async function executeFanOut(
       status,
       summary,
       result: next.result,
+      acceptance: next.acceptance,
+      provider: next.provider,
       failureCategory: next.failureCategory,
       failureMessage: next.failureMessage,
       retryable: next.retryable,
@@ -238,24 +253,62 @@ async function executeFanOut(
     options.onProgress?.(next);
   };
 
+  const acceptanceContext = (spec: MissionChildSpec) => ({
+    scope: definition.scope,
+    scopeId: options.scopeId,
+    childKey: spec.key,
+    childLabel: spec.label,
+  });
+
   const runChild = async (key: string): Promise<void> => {
     const spec = specByKey.get(key)!;
     const startMs = clockMs();
+
+    // Resolve the provider assignment FIRST, so every child carries a visible
+    // assignment even when it is later skipped or has no executor. A
+    // deterministic lane resolves to "no provider, no spend" and touches nothing.
+    let provider: MissionProviderAssignment | null = null;
+    try {
+      provider = await resolveMissionProviderAssignment(spec.provider, options.providerDeps);
+    } catch (error) {
+      // Provider resolution must never take a lane down: record the gap and let
+      // the lane run (a deterministic lane does not need a provider at all).
+      const message = error instanceof Error ? error.message : String(error);
+      provider = {
+        mode: spec.provider?.mode ?? 'deterministic',
+        providerId: null,
+        providerLabel: null,
+        modelId: null,
+        environmentId: null,
+        source: 'unavailable',
+        available: false,
+        liveRouting: false,
+        reason: `The provider assignment for this lane could not be resolved (${message}), so no provider is claimed for it.`,
+      };
+    }
+    local.set(key, { ...local.get(key)!, provider });
 
     // An unmet dependency SKIPS the child. It never ran, so calling it a
     // failure would misreport where the mission actually broke.
     const blocked = dependencyBlock(spec, local);
     if (blocked) {
-      settle(key, 'skipped', blocked, { durationMs: 0 });
+      settle(key, 'skipped', blocked, {
+        durationMs: 0,
+        // Nothing was delivered, so there is nothing to evaluate. Saying so is
+        // not the same as saying the result was acceptable.
+        acceptance: { state: 'not_evaluated', reason: blocked, checks: [] },
+      });
       return;
     }
 
     const executor = definition.executors[key];
     if (!executor) {
-      settle(key, 'failed', `No executor is registered for child mission "${key}".`, {
+      const message = `No executor is registered for child mission "${key}".`;
+      settle(key, 'failed', message, {
         failureCategory: 'configuration',
-        failureMessage: `No executor is registered for child mission "${key}".`,
+        failureMessage: message,
         durationMs: 0,
+        acceptance: { state: 'failed', reason: message, checks: [] },
       });
       return;
     }
@@ -263,10 +316,15 @@ async function executeFanOut(
     // Independent claim. If another worker already took this child, leave it
     // alone — the join below waits for whatever that worker records.
     const startedAt = now();
-    if (!store.claimChild(missionId, key, startedAt)) {
+    if (!store.claimChild(missionId, key, startedAt, provider)) {
       return;
     }
-    const claimed: MissionChildState = { ...local.get(key)!, status: 'running', startedAt, attempt: local.get(key)!.attempt + 1 };
+    const claimed: MissionChildState = {
+      ...local.get(key)!,
+      status: 'running',
+      startedAt,
+      attempt: local.get(key)!.attempt + 1,
+    };
     local.set(key, claimed);
     options.onProgress?.(claimed);
 
@@ -279,20 +337,42 @@ async function executeFanOut(
           scope: definition.scope,
           scopeId: options.scopeId,
           upstream: upstreamContributions(spec, local),
+          provider,
         }),
         timer.promise,
       ]);
-      settle(key, outcome.status, outcome.summary, {
+
+      // ── ACCEPTANCE ────────────────────────────────────────────────────────
+      // The executor reports what it believes happened; the acceptance contract
+      // decides what the mission records. A lane that returned without throwing
+      // but handed back nothing usable is REJECTED here, not joined.
+      const verdict = evaluateMissionAcceptance(
+        spec.acceptance,
+        { kind: 'returned', reported: outcome.status, summary: outcome.summary, result: outcome.result ?? null },
+        acceptanceContext(spec),
+      );
+      const status = missionChildStatusForAcceptance(verdict.state, outcome.status);
+
+      settle(key, status, verdict.state === 'rejected' ? verdict.reason : outcome.summary, {
+        // The handback is retained on a rejection for diagnosis. It is never
+        // joined: a rejected child does not contribute.
         result: outcome.result ?? null,
+        acceptance: verdict,
         durationMs: clockMs() - startMs,
-        failureCategory: null,
-        failureMessage: null,
+        failureCategory: verdict.state === 'rejected' ? 'unacceptable_result' : null,
+        failureMessage: verdict.state === 'rejected' ? verdict.reason : null,
         retryable: false,
       });
     } catch (error) {
       const failure = classifyFailure(error);
+      const verdict: MissionAcceptanceVerdict = evaluateMissionAcceptance(
+        spec.acceptance,
+        { kind: 'threw', summary: failure.message },
+        acceptanceContext(spec),
+      );
       settle(key, 'failed', failure.message, {
         result: null,
+        acceptance: verdict,
         durationMs: clockMs() - startMs,
         failureCategory: failure.category,
         failureMessage: failure.message,
@@ -374,11 +454,20 @@ export function readFanOutMission(
   history: Array<{ missionId: string; sequence: number; status: string; startedAt: string; completedAt: string | null }>;
 } {
   const mission = store.latestMission(definition.kind, definition.scope, scopeId);
-  const children = mission ? store.listChildren(mission.missionId) : [];
+  // Declared identity is overlaid on the stored rows so a mission written before
+  // the identity layer existed still reads with its group, role, specialist and
+  // contribution slot instead of showing blanks.
+  const children = mission
+    ? overlayDeclaredIdentity(definition.children, store.listChildren(mission.missionId))
+    : [];
   // A running mission has no stored join yet — compute the live one so the
-  // operator sees honest in-flight progress instead of an empty panel.
+  // operator sees honest in-flight progress instead of an empty panel. A join
+  // STORED before the identity/acceptance fields existed is normalized, so every
+  // reader gets the full shape and a pre-existing mission still renders.
   const join = mission
-    ? mission.join ?? joinMissionChildren({ specs: definition.children, children })
+    ? mission.join
+      ? normalizeStoredMissionJoin(mission.join, definition.children, children)
+      : joinMissionChildren({ specs: definition.children, children })
     : null;
   const history = store
     .listMissions(definition.kind, definition.scope, scopeId)

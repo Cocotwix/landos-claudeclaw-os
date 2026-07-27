@@ -106,6 +106,97 @@ describe('representative Property Intelligence fan-out mission', () => {
     expect(context.hasVerifiedProperty).toBe(true);
   });
 
+  // ── Item 15/16 on the REPRESENTATIVE mission ────────────────────────────────
+
+  it('gives every child a group, an assigned role, a roster specialist and a slot', () => {
+    const children = propertyIntelligenceFanOutDefinition().children;
+    const byKey = new Map(children.map((child) => [child.key, child]));
+
+    expect(byKey.get('parcel_identity')).toMatchObject({
+      group: 'subject_identity',
+      assignedRole: 'Subject parcel identity of record',
+      agentKey: 'dd_bot',
+      contributionSlot: 'identity',
+    });
+    expect(byKey.get('deal_context')).toMatchObject({ group: 'deal_intelligence', agentKey: 'success_bot' });
+    expect(byKey.get('market_coverage')).toMatchObject({ group: 'deal_intelligence', agentKey: 'market_bot' });
+
+    // Every lane declares an acceptance contract and a deterministic provider
+    // policy: none of them calls a model, so none may imply spend.
+    for (const child of children) {
+      expect(child.acceptance).toBeDefined();
+      expect(child.provider!.mode).toBe('deterministic');
+    }
+  });
+
+  it('accepts a verified parcel and routes each handback to its declared slot', async () => {
+    const dealId = seedDeal({
+      address: 'OLD RIDGE RD', county: 'Knox', state: 'TN', apn: '073090 04200',
+      owner: 'SACHAN DILEEP S', acres: 12.28, verified: true,
+    });
+    const store = new MissionGraphStore();
+    const { launch, completion } = launchFanOutMission({
+      definition: propertyIntelligenceFanOutDefinition(), scopeId: dealId, store,
+    });
+    const join = await completion;
+
+    expect(join!.accepted).toContain('parcel_identity');
+    expect(Object.keys(join!.contributionsBySlot).sort()).toEqual(['deal_context', 'identity', 'market_coverage']);
+    expect((join!.contributionsBySlot.identity as IdentityHandback).apn).toBe('073090 04200');
+
+    const children = store.listChildren(launch.missionId);
+    const identity = children.find((child) => child.key === 'parcel_identity')!;
+    expect(identity.acceptance!.state).toBe('accepted');
+    expect(identity.identity.agentName).toBe('Property Research Agent');
+    expect(identity.provider!.mode).toBe('deterministic');
+    expect(identity.provider!.providerId).toBeNull();
+  });
+
+  it('reports an unverified lead as INCOMPLETE, never as an accepted identity', async () => {
+    const dealId = seedDeal({ address: '9.4 ACRES HARDIN VALLEY RD', county: 'Knox', state: 'TN' });
+    const store = new MissionGraphStore();
+    const { launch, completion } = launchFanOutMission({
+      definition: propertyIntelligenceFanOutDefinition(), scopeId: dealId, store,
+    });
+    const join = await completion;
+
+    const identity = store.listChildren(launch.missionId).find((child) => child.key === 'parcel_identity')!;
+    expect(identity.status).toBe('partial');
+    expect(identity.acceptance!.state).toBe('incomplete');
+    expect(identity.acceptance!.checks.find((check) => check.id === 'identity_confirmed')!.passed).toBe(false);
+    expect(join!.accepted).not.toContain('parcel_identity');
+    expect(join!.incomplete).toContain('parcel_identity');
+    expect(join!.allRequiredAccepted).toBe(false);
+  });
+
+  it('REJECTS a lane that exits cleanly with an unusable handback on this mission', async () => {
+    const dealId = seedDeal({
+      address: 'OLD RIDGE RD', county: 'Knox', state: 'TN', apn: '073090 04200', verified: true,
+    });
+    const base = propertyIntelligenceFanOutDefinition();
+    const store = new MissionGraphStore();
+    const { launch, completion } = launchFanOutMission({
+      definition: {
+        ...base,
+        // Same mission, same contract; only the lane's delivery is swapped for one
+        // that returns success with nothing the parent can use.
+        executors: { ...base.executors, parcel_identity: async () => ({ status: 'completed', summary: 'identity read', result: null }) },
+      },
+      scopeId: dealId,
+      store,
+    });
+    const join = await completion;
+
+    const identity = store.listChildren(launch.missionId).find((child) => child.key === 'parcel_identity')!;
+    expect(identity.status).toBe('rejected');
+    expect(identity.acceptance!.state).toBe('rejected');
+    expect(join!.status).toBe('failed');
+    expect(join!.contributionsBySlot.identity).toBeUndefined();
+    expect(join!.outcome).toMatch(/did NOT meet their acceptance requirement/i);
+    // The dependants were skipped, not blamed.
+    expect(store.listChildren(launch.missionId).find((child) => child.key === 'deal_context')!.status).toBe('skipped');
+  });
+
   it('blocks market coverage honestly for a county LandOS has not seeded', async () => {
     // Roane County, TN is a real county with no seeded LandOS market reference.
     const dealId = seedDeal({

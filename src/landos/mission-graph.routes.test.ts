@@ -15,7 +15,25 @@ import { createDealCard, linkPropertyToDeal } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
 import { resetMissionGraphStoreCache } from './mission-graph-store.js';
 import { resetPropertyIntelligenceStoreCache } from './property-intelligence-store.js';
+import type { MissionAcceptanceVerdict } from './mission-acceptance.js';
+import type { MissionProviderAssignment } from './mission-provider-routing.js';
 import type { MissionChildState, MissionJoin, MissionStatus } from './mission-graph.js';
+
+/** The route FLATTENS a child's identity onto the row, so the operator surface can
+ *  read it without walking a nested object. Mirrors MissionGraphPanel.tsx. */
+type MissionChildRow = Omit<MissionChildState, 'identity' | 'acceptance' | 'provider'> & {
+  missionId: string;
+  group: string;
+  assignedRole: string;
+  agentKey: string | null;
+  agentName: string;
+  agentGroup: string | null;
+  agentRole: string | null;
+  implAgentId: string | null;
+  contributionSlot: string;
+  acceptance: MissionAcceptanceVerdict | null;
+  provider: MissionProviderAssignment | null;
+};
 
 /** The JSON shape the route returns. Mirrors web/src/components/MissionGraphPanel.tsx. */
 interface MissionGraphView {
@@ -32,7 +50,7 @@ interface MissionGraphView {
     error: string | null;
     failureCategory: string | null;
   } | null;
-  children: MissionChildState[];
+  children: MissionChildRow[];
   join: MissionJoin | null;
   history: Array<{ missionId: string; sequence: number; status: string; startedAt: string; completedAt: string | null }>;
 }
@@ -190,6 +208,59 @@ describe('POST /api/landos/deal-cards/:id/mission-graph/run', () => {
     expect((roaneView.join!.contributions.parcel_identity as Record<string, unknown>).apn).toBe('073090 04200');
     expect(knoxView.mission!.status).toBe('joined');
     expect(roaneView.mission!.status).toBe('joined_with_gaps');
+  });
+
+  it('exposes each child"s parent, group, role, specialist, provider and acceptance', async () => {
+    const dealId = seedDeal({ address: 'OLD RIDGE RD', county: 'Knox', state: 'TN', apn: '073090 04200', verified: true });
+    const view = await runMission(dealId);
+    const identity = view.children.find((child) => child.key === 'parcel_identity')!;
+
+    expect(identity.missionId).toBe(view.mission!.missionId);
+    expect(identity.group).toBe('subject_identity');
+    expect(identity.assignedRole).toBe('Subject parcel identity of record');
+    expect(identity.agentKey).toBe('dd_bot');
+    expect(identity.agentName).toBe('Property Research Agent');
+    expect(identity.contributionSlot).toBe('identity');
+    expect(identity.acceptance!.state).toBe('accepted');
+    // Provider selection is visible, and a deterministic lane says so plainly.
+    expect(identity.provider!.mode).toBe('deterministic');
+    expect(identity.provider!.providerId).toBeNull();
+
+    // Handbacks reach the parent under their declared slot.
+    expect(Object.keys(view.join!.contributionsBySlot).sort()).toEqual(['deal_context', 'identity', 'market_coverage']);
+    expect(view.join!.routing.find((route) => route.childKey === 'parcel_identity')!.slot).toBe('identity');
+  });
+
+  it('keeps identity, acceptance and provider through an independent re-read', async () => {
+    const dealId = seedDeal({ address: 'OLD RIDGE RD', county: 'Knox', state: 'TN', apn: '073090 04200', verified: true });
+    await runMission(dealId);
+    resetMissionGraphStoreCache();
+    const view = await readMission(dealId);
+    const market = view.children.find((child) => child.key === 'market_coverage')!;
+    expect(market.agentName).toBe('Market Research Agent');
+    expect(market.contributionSlot).toBe('market_coverage');
+    expect(market.acceptance!.state).toBe('accepted');
+    expect(market.provider!.mode).toBe('deterministic');
+  });
+
+  it('reports the mission provider catalog, with Hermes optional and not required', async () => {
+    const res = await app.request(withToken('/api/landos/model-router/mission-providers'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      hermes: { configured: boolean; optional: boolean };
+      missionRoutable: string[];
+      catalog: Array<{ id: string; surface: string; missionRoutable: boolean; optional: boolean; detail: string }>;
+    };
+
+    expect(body.hermes.optional).toBe(true);
+    const hermes = body.catalog.find((entry) => entry.id === 'hermes')!;
+    expect(hermes.optional).toBe(true);
+    // Claude is the safe-mode target and must remain routable without Hermes.
+    expect(body.missionRoutable).toContain('claude');
+    expect(body.missionRoutable).not.toContain('codex');
+    const codex = body.catalog.find((entry) => entry.id === 'codex')!;
+    expect(codex.surface).toBe('agent_session');
+    expect(codex.missionRoutable).toBe(false);
   });
 
   it('leaves the existing Property Intelligence surface working', async () => {

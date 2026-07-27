@@ -12,6 +12,7 @@ export type ExecutionEnvironmentKind =
   | 'openrouter'  // cloud aggregator (OpenAI-compatible)
   | 'lmstudio'    // local server (OpenAI-compatible)
   | 'vllm'        // local/self-hosted high-throughput server
+  | 'hermes'      // OPTIONAL Hermes-style OpenAI-compatible endpoint
   | 'mcp';        // models exposed via an MCP server
 
 export interface ExecutionEnvironment {
@@ -30,6 +31,10 @@ export const EXECUTION_ENVIRONMENTS: readonly ExecutionEnvironment[] = [
   { id: 'openrouter', kind: 'openrouter', label: 'OpenRouter', execution: 'cloud' },
   { id: 'lmstudio', kind: 'lmstudio', label: 'LM Studio', execution: 'local' },
   { id: 'vllm', kind: 'vllm', label: 'vLLM', execution: 'local' },
+  // OPTIONAL. Present as a selectable environment so an operator CAN point a
+  // Hermes-style OpenAI-compatible endpoint at LandOS. Nothing requires it: with
+  // no endpoint configured the provider is simply not installed.
+  { id: 'hermes', kind: 'hermes', label: 'Hermes (optional, OpenAI-compatible)', execution: 'local' },
   { id: 'mcp', kind: 'mcp', label: 'MCP', execution: 'cloud' },
 ];
 

@@ -19,14 +19,52 @@ import { getLandosDb } from './db.js';
 import { redactPropertyIntelligence } from './property-intelligence-store.js';
 import {
   isTerminalMissionChildStatus,
+  missionChildIdentity,
+  missionContributionSlot,
+  UNASSIGNED_AGENT_NAME,
+  type MissionChildIdentity,
   type MissionChildSpec,
   type MissionChildState,
   type MissionChildStatus,
   type MissionJoin,
   type MissionStatus,
 } from './mission-graph.js';
+import type { MissionAcceptanceVerdict } from './mission-acceptance.js';
+import type { MissionProviderAssignment } from './mission-provider-routing.js';
 
 let ensured = false;
+
+/**
+ * Identity, acceptance and provider columns added after the first missions were
+ * already stored. Added with ALTER TABLE so existing mission rows survive: a
+ * pre-existing child keeps its recorded result and simply reports no stored
+ * identity, which the read path fills from the current definition.
+ *
+ * `group` is a SQL keyword, hence `group_key`.
+ */
+const ADDITIVE_CHILD_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
+  { name: 'group_key', ddl: 'TEXT' },
+  { name: 'assigned_role', ddl: 'TEXT' },
+  { name: 'agent_key', ddl: 'TEXT' },
+  { name: 'agent_name', ddl: 'TEXT' },
+  { name: 'agent_group', ddl: 'TEXT' },
+  { name: 'agent_role', ddl: 'TEXT' },
+  { name: 'impl_agent_id', ddl: 'TEXT' },
+  { name: 'contribution_slot', ddl: 'TEXT' },
+  { name: 'acceptance_json', ddl: 'TEXT' },
+  { name: 'provider_json', ddl: 'TEXT' },
+];
+
+/** Add any missing additive column. Never drops or rewrites an existing one. */
+function migrateChildColumns(db: ReturnType<typeof getLandosDb>): void {
+  const existing = new Set(
+    (db.prepare('PRAGMA table_info(landos_mission_child)').all() as Array<{ name: string }>).map((row) => row.name),
+  );
+  for (const column of ADDITIVE_CHILD_COLUMNS) {
+    if (existing.has(column.name)) continue;
+    db.exec(`ALTER TABLE landos_mission_child ADD COLUMN ${column.name} ${column.ddl}`);
+  }
+}
 
 function ensureTables(): void {
   if (ensured) return;
@@ -64,6 +102,16 @@ function ensureTables(): void {
       purpose TEXT NOT NULL,
       role TEXT NOT NULL,
       depends_on TEXT NOT NULL,
+      group_key TEXT,
+      assigned_role TEXT,
+      agent_key TEXT,
+      agent_name TEXT,
+      agent_group TEXT,
+      agent_role TEXT,
+      impl_agent_id TEXT,
+      contribution_slot TEXT,
+      acceptance_json TEXT,
+      provider_json TEXT,
       status TEXT NOT NULL,
       summary TEXT NOT NULL,
       failure_category TEXT,
@@ -82,6 +130,7 @@ function ensureTables(): void {
     CREATE INDEX IF NOT EXISTS idx_landos_mission_child_scope
       ON landos_mission_child(scope, scope_id, updated_at DESC);
   `);
+  migrateChildColumns(getLandosDb());
   ensured = true;
 }
 
@@ -137,6 +186,34 @@ function missionFromRow(row: unknown): MissionRow | null {
   };
 }
 
+const nullableText = (value: unknown): string | null => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  return raw.length > 0 ? raw : null;
+};
+
+/**
+ * Identity as STORED. A pre-existing row carries none of it, which is reported
+ * honestly as unassigned; the read path then fills the declared identity from the
+ * current mission definition (see overlayDeclaredIdentity).
+ */
+function identityFromRow(record: Record<string, unknown>): MissionChildIdentity {
+  return {
+    missionId: String(record.mission_id ?? ''),
+    group: nullableText(record.group_key) ?? 'ungrouped',
+    assignedRole: nullableText(record.assigned_role) ?? '',
+    agentKey: nullableText(record.agent_key),
+    agentName: nullableText(record.agent_name) ?? UNASSIGNED_AGENT_NAME,
+    agentGroup: nullableText(record.agent_group),
+    agentRole: nullableText(record.agent_role),
+    implAgentId: nullableText(record.impl_agent_id),
+    // Deliberately EMPTY when the column was never written, rather than falling
+    // back to the child key. A fabricated fallback would look like a stored slot
+    // and mask the slot the definition actually declares.
+    contributionSlot: nullableText(record.contribution_slot) ?? '',
+  };
+}
+
 function childFromRow(row: unknown): MissionChildState | null {
   if (!row || typeof row !== 'object') return null;
   const record = row as Record<string, unknown>;
@@ -146,6 +223,9 @@ function childFromRow(row: unknown): MissionChildState | null {
     purpose: String(record.purpose),
     role: String(record.role) === 'supporting' ? 'supporting' : 'required',
     dependsOn: parseJson<string[]>(record.depends_on) ?? [],
+    identity: identityFromRow(record),
+    acceptance: parseJson<MissionAcceptanceVerdict>(record.acceptance_json),
+    provider: parseJson<MissionProviderAssignment>(record.provider_json),
     status: String(record.status) as MissionChildStatus,
     summary: String(record.summary ?? ''),
     failureCategory: record.failure_category == null ? null : String(record.failure_category),
@@ -194,12 +274,18 @@ export class MissionGraphStore {
          VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
       ).run(input.missionId, input.kind, input.scope, input.scopeId, sequence, input.trigger, input.startedAt, input.startedAt);
 
+      // Identity is DECLARED, so it is written with the child row up front. The
+      // operator can see who owns a lane and where its result belongs before the
+      // lane has run, not only after it settles.
       const insertChild = db.prepare(
         `INSERT INTO landos_mission_child
-           (mission_id, scope, scope_id, child_key, label, purpose, role, depends_on, status, summary, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+           (mission_id, scope, scope_id, child_key, label, purpose, role, depends_on,
+            group_key, assigned_role, agent_key, agent_name, agent_group, agent_role, impl_agent_id, contribution_slot,
+            status, summary, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
       );
       for (const spec of input.children) {
+        const identity = missionChildIdentity(spec, input.missionId);
         insertChild.run(
           input.missionId,
           input.scope,
@@ -209,6 +295,14 @@ export class MissionGraphStore {
           spec.purpose,
           spec.role,
           JSON.stringify(spec.dependsOn),
+          identity.group,
+          identity.assignedRole,
+          identity.agentKey,
+          identity.agentName,
+          identity.agentGroup,
+          identity.agentRole,
+          identity.implAgentId,
+          missionContributionSlot(spec),
           spec.purpose,
           input.startedAt,
         );
@@ -282,16 +376,25 @@ export class MissionGraphStore {
    * uses it: a read lock that must upgrade to a write lock fails SQLITE_BUSY
    * immediately and does not honor busy_timeout.
    */
-  claimChild(missionId: string, childKey: string, startedAt: string): boolean {
+  claimChild(
+    missionId: string,
+    childKey: string,
+    startedAt: string,
+    provider?: MissionProviderAssignment | null,
+  ): boolean {
     const db = this.db;
+    const providerJson = provider ? JSON.stringify(provider) : null;
     const claim = db.transaction(() => {
+      // The provider assignment is written WITH the claim so the operator can see
+      // where a running lane's work was sent while it is still in flight.
       const result = db
         .prepare(
           `UPDATE landos_mission_child
-           SET status = 'running', started_at = ?, attempt = attempt + 1, updated_at = ?
+           SET status = 'running', started_at = ?, attempt = attempt + 1,
+               provider_json = COALESCE(?, provider_json), updated_at = ?
            WHERE mission_id = ? AND child_key = ? AND status = 'queued'`,
         )
-        .run(startedAt, startedAt, missionId, childKey);
+        .run(startedAt, providerJson, startedAt, missionId, childKey);
       return result.changes > 0;
     });
     return claim.immediate();
@@ -304,6 +407,10 @@ export class MissionGraphStore {
     status: MissionChildStatus;
     summary: string;
     result?: unknown;
+    /** The verdict this status was decided from. Persisted so the operator can
+     *  see WHICH requirement a rejected result failed, not just that it failed. */
+    acceptance?: MissionAcceptanceVerdict | null;
+    provider?: MissionProviderAssignment | null;
     failureCategory?: string | null;
     failureMessage?: string | null;
     retryable?: boolean;
@@ -314,10 +421,17 @@ export class MissionGraphStore {
       input.result === undefined || input.result === null
         ? null
         : JSON.stringify(redactPropertyIntelligence(input.result));
+    // The verdict travels through the same redactor as the handback: a check
+    // detail quotes handback values, so it must never become a secret leak.
+    const acceptanceJson = input.acceptance
+      ? JSON.stringify(redactPropertyIntelligence(input.acceptance))
+      : null;
     this.db
       .prepare(
         `UPDATE landos_mission_child
-         SET status = ?, summary = ?, result_json = ?, failure_category = ?, failure_message = ?,
+         SET status = ?, summary = ?, result_json = ?, acceptance_json = ?,
+             provider_json = COALESCE(?, provider_json),
+             failure_category = ?, failure_message = ?,
              retryable = ?, completed_at = ?, duration_ms = ?, updated_at = ?
          WHERE mission_id = ? AND child_key = ?`,
       )
@@ -325,6 +439,8 @@ export class MissionGraphStore {
         input.status,
         input.summary,
         resultJson,
+        acceptanceJson,
+        input.provider ? JSON.stringify(input.provider) : null,
         input.failureCategory ?? null,
         input.failureMessage ?? null,
         input.retryable ? 1 : 0,

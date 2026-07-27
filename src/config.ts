@@ -283,6 +283,9 @@ export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || envConfig.OP
 export const OLLAMA_HOST = process.env.OLLAMA_HOST || envConfig.OLLAMA_HOST || '';
 export const LM_STUDIO_URL = process.env.LM_STUDIO_URL || envConfig.LM_STUDIO_URL || '';
 export const VLLM_URL = process.env.VLLM_URL || envConfig.VLLM_URL || '';
+// OPTIONAL Hermes-style OpenAI-compatible endpoint. Empty by default: Hermes is
+// never a dependency, and native LandOS runs identically with it unset.
+export const HERMES_URL = process.env.HERMES_URL || envConfig.HERMES_URL || '';
 const _anthropicApiKey = process.env.ANTHROPIC_API_KEY || envConfig.ANTHROPIC_API_KEY || '';
 const _oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
 

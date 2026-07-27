@@ -113,6 +113,8 @@ export function buildProviderRegistry(clients: {
   openrouter?: ModelClient;
   lmstudio?: ModelClient;
   vllm?: ModelClient;
+  /** OPTIONAL. Omit it and native LandOS behaves exactly as it does without it. */
+  hermes?: ModelClient;
 } = {}): ProviderRegistry {
   const providers: ProviderDescriptor[] = [
     { id: 'ollama', environmentId: 'local-ollama', kind: 'local-http', label: 'Ollama (local Gemma + open models)', execution: 'local', servesModels: ['gemma-4-e4b', 'gemma-4-12b-q4'], client: clients.ollama },
@@ -122,6 +124,11 @@ export function buildProviderRegistry(clients: {
     { id: 'openai', environmentId: 'cloud', kind: 'api', label: 'OpenAI', execution: 'cloud', servesModels: ['gpt'], client: clients.openai },
     { id: 'google', environmentId: 'cloud', kind: 'api', label: 'Google (Gemini) — also the War Room voice provider', execution: 'cloud', servesModels: ['gemini'], client: clients.google },
     { id: 'openrouter', environmentId: 'openrouter', kind: 'openai-compat', label: 'OpenRouter', execution: 'cloud', servesModels: ['gpt'], client: clients.openrouter },
+    // OPTIONAL Hermes endpoint. It serves the SAME local open-model ids the other
+    // OpenAI-compatible local servers serve, so no new model id is invented and
+    // routing logic is untouched. With no client injected it is "not installed"
+    // and every routing decision behaves as though it did not exist.
+    { id: 'hermes', environmentId: 'hermes', kind: 'openai-compat', label: 'Hermes (optional, OpenAI-compatible)', execution: 'local', servesModels: ['gemma-4-e4b', 'gemma-4-12b-q4'], client: clients.hermes },
   ];
   return new ProviderRegistry(providers);
 }

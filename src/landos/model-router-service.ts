@@ -26,7 +26,7 @@ import {
 } from './model-execution.js';
 import { resolveOverride, type OverrideStore } from './model-override.js';
 import { telemetryFromDecision, recordRouterDecision, InMemoryTelemetrySink, type TelemetrySink } from './router-telemetry.js';
-import { resolveLiveRouting, resolveOllamaHost, resolveOllamaModelMap } from './router-runtime-config.js';
+import { resolveLiveRouting, resolveOllamaHost, resolveOllamaModelMap, resolveHermesUrl } from './router-runtime-config.js';
 
 /** Effective live-routing flag: persisted operator setting wins, else the env
  *  flag (see router-runtime-config.ts). Single source of truth for the dashboard
@@ -62,6 +62,9 @@ export function buildRegistryFromConfig(claudeRunner: ClaudeRunner = defaultClau
   // internal id. An empty host means the provider is simply not installed.
   const ollamaHost = resolveOllamaHost().host;
   const ollamaModelMap = resolveOllamaModelMap();
+  // OPTIONAL: only constructed when an endpoint is configured. Unset (the
+  // default) means the provider is simply absent and nothing else changes.
+  const hermesUrl = resolveHermesUrl().url;
   return buildProviderRegistry({
     anthropic: new ClaudeClient(claudeRunner),
     openai: OPENAI_API_KEY ? new OpenAICompatibleClient({ provider: 'openai', apiKey: OPENAI_API_KEY, serves: ['gpt'] }) : undefined,
@@ -70,6 +73,7 @@ export function buildRegistryFromConfig(claudeRunner: ClaudeRunner = defaultClau
     ollama: ollamaHost ? new OllamaClient({ host: ollamaHost, modelMap: ollamaModelMap }) : undefined,
     lmstudio: LM_STUDIO_URL ? new OpenAICompatibleClient({ provider: 'lmstudio', baseURL: LM_STUDIO_URL, local: true, serves: ['gemma-4-e4b', 'gemma-4-12b-q4'] }) : undefined,
     vllm: VLLM_URL ? new OpenAICompatibleClient({ provider: 'vllm', baseURL: VLLM_URL, local: true, serves: ['gemma-4-e4b', 'gemma-4-12b-q4'] }) : undefined,
+    hermes: hermesUrl ? new OpenAICompatibleClient({ provider: 'hermes', baseURL: hermesUrl, local: true, serves: ['gemma-4-e4b', 'gemma-4-12b-q4'] }) : undefined,
   });
 }
 

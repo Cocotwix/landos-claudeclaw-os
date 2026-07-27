@@ -20,11 +20,36 @@
 import { getDealCard } from './deal-card.js';
 import { getPropertyCard } from './property-card.js';
 import { SEED_COUNTY_REF, SEEDED_REF_STATES } from './market-county-ref.js';
+import {
+  anyFieldPresentCheck,
+  fieldEqualsCheck,
+  scopeIntegrityCheck,
+  type MissionAcceptanceCheckSpec,
+} from './mission-acceptance.js';
 import type { MissionChildSpec } from './mission-graph.js';
+import type { MissionProviderPolicy } from './mission-provider-routing.js';
 import type { FanOutMissionDefinition, MissionChildContext, MissionChildOutcome } from './mission-graph-runner.js';
 
 export const PROPERTY_INTELLIGENCE_FANOUT_KIND = 'property_intelligence_fanout';
 export const PROPERTY_INTELLIGENCE_FANOUT_SCOPE = 'deal_card';
+
+/** Mission groups. `deal_intelligence` deliberately holds more than one lane, so
+ *  the grouping is a real grouping and not a synonym for the child key. */
+export const PROPERTY_INTELLIGENCE_FANOUT_GROUPS = {
+  subjectIdentity: 'subject_identity',
+  dealIntelligence: 'deal_intelligence',
+} as const;
+
+/** Every lane in this mission READS accepted LandOS data with deterministic code.
+ *  No lane calls a model, so each carries an explicit deterministic assignment
+ *  rather than a provider it never uses. */
+const READ_ONLY_LANE = (what: string): MissionProviderPolicy => ({
+  mode: 'deterministic',
+  rationale: `${what} is answered by reading already-accepted LandOS records.`,
+});
+
+/** Applied to EVERY lane: a handback that names a Deal Card must name this one. */
+const SCOPE_INTEGRITY: MissionAcceptanceCheckSpec = scopeIntegrityCheck('dealCardId');
 
 export const PROPERTY_INTELLIGENCE_FANOUT_CHILDREN: MissionChildSpec[] = [
   {
@@ -34,6 +59,33 @@ export const PROPERTY_INTELLIGENCE_FANOUT_CHILDREN: MissionChildSpec[] = [
     role: 'required',
     dependsOn: [],
     timeoutMs: 30_000,
+    group: PROPERTY_INTELLIGENCE_FANOUT_GROUPS.subjectIdentity,
+    assignedRole: 'Subject parcel identity of record',
+    agentKey: 'dd_bot',
+    contributionSlot: 'identity',
+    provider: READ_ONLY_LANE('The accepted parcel identity'),
+    acceptance: {
+      // A lane that returns an identity naming no parcel at all has not
+      // delivered an identity, whatever status it reported.
+      requiredFields: ['subjectCardId', 'identityState', 'verificationStatus'],
+      checks: [
+        SCOPE_INTEGRITY,
+        anyFieldPresentCheck({
+          id: 'parcel_named',
+          fields: ['address', 'apn'],
+          severity: 'required',
+          requirement: 'The identity names the parcel by address or APN.',
+        }),
+        fieldEqualsCheck({
+          id: 'identity_confirmed',
+          field: 'identityState',
+          allowed: ['confirmed'],
+          severity: 'expected',
+          requirement: 'The parcel identity is confirmed, not provisional.',
+        }),
+      ],
+      expectedFields: ['county', 'state'],
+    },
   },
   {
     key: 'deal_context',
@@ -42,6 +94,31 @@ export const PROPERTY_INTELLIGENCE_FANOUT_CHILDREN: MissionChildSpec[] = [
     role: 'required',
     dependsOn: ['parcel_identity'],
     timeoutMs: 30_000,
+    group: PROPERTY_INTELLIGENCE_FANOUT_GROUPS.dealIntelligence,
+    assignedRole: 'Deal Card context rollup',
+    agentKey: 'success_bot',
+    contributionSlot: 'deal_context',
+    provider: READ_ONLY_LANE('The Deal Card context rollup'),
+    acceptance: {
+      requiredFields: ['propertyCount'],
+      checks: [
+        SCOPE_INTEGRITY,
+        {
+          id: 'context_has_substance',
+          requirement: 'The Deal Card carries retained evidence or comps to give the identity context.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const row = handback as { retainedEvidenceCount?: unknown; compCount?: unknown };
+            const evidence = Number(row.retainedEvidenceCount ?? 0);
+            const comps = Number(row.compCount ?? 0);
+            return {
+              passed: evidence > 0 || comps > 0,
+              detail: `${evidence} retained evidence item(s) and ${comps} comp(s) exist on this Deal Card.`,
+            };
+          },
+        },
+      ],
+    },
   },
   {
     key: 'market_coverage',
@@ -50,6 +127,32 @@ export const PROPERTY_INTELLIGENCE_FANOUT_CHILDREN: MissionChildSpec[] = [
     role: 'supporting',
     dependsOn: ['parcel_identity'],
     timeoutMs: 30_000,
+    group: PROPERTY_INTELLIGENCE_FANOUT_GROUPS.dealIntelligence,
+    assignedRole: 'County market reference coverage',
+    agentKey: 'market_bot',
+    contributionSlot: 'market_coverage',
+    provider: READ_ONLY_LANE('Seeded county market reference coverage'),
+    acceptance: {
+      // `seededCountyCoverage` is a boolean that may legitimately be false, so
+      // presence is what is required — never a particular answer.
+      requiredFields: ['county', 'state'],
+      checks: [
+        {
+          id: 'coverage_answer_present',
+          requirement: 'The lane states whether seeded county coverage exists.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const value = (handback as { seededCountyCoverage?: unknown }).seededCountyCoverage;
+            return {
+              passed: typeof value === 'boolean',
+              detail: typeof value === 'boolean'
+                ? `Coverage answer: ${value}.`
+                : `"seededCountyCoverage" is ${value === undefined ? 'absent' : String(value)}, so the lane stated no answer.`,
+            };
+          },
+        },
+      ],
+    },
   },
 ];
 

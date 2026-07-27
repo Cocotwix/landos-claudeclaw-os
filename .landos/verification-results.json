@@ -1,30 +1,48 @@
 {
   "tests": {
     "status": "PASS",
-    "timestamp": "2026-07-26T01:41:11-04:00",
-    "summary": "341 files, 4424 tests, 0 failures (vitest run, full suite)."
+    "timestamp": "2026-07-26T21:30:07-04:00",
+    "summary": "351 files, 4605 tests, 0 failures (full vitest run)"
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-07-26T01:41:20-04:00",
-    "summary": "tsc --noEmit (server) clean; frontend web/tsconfig.json stays pre-existing-red at 92 TS6133 unused-declaration errors, unchanged from the pre-phase baseline"
+    "timestamp": "2026-07-26T21:31:40-04:00",
+    "summary": "server clean; frontend pre-existing-red at 92 TS6133, none in a changed file"
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-07-26T01:38:00-04:00",
-    "summary": "vite build + tsc passed; Vite emitted only the existing large-chunk advisory"
+    "timestamp": "2026-07-26T21:27:30-04:00",
+    "summary": "vite build + tsc; only the existing large-chunk advisory"
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-07-26T01:42:05-04:00",
-    "pid": 59264,
+    "timestamp": "2026-07-26T21:34:00-04:00",
+    "pid": 85780,
     "url": "http://localhost:3141",
-    "summary": "landos:restart then landos:health; root HTTP 200, health HTTP 200 (36ms). The browser CDP endpoint is configured in .env only."
+    "summary": "landos:restart then landos:health; root and health HTTP 200"
+  },
+  "missionGraphIdentityAcceptance": {
+    "status": "PASS",
+    "timestamp": "2026-07-26T21:22:00-04:00",
+    "summary": "Phase 4 Items 15-17 accepted live in Chrome against the managed runtime on a FRESH address created through New Lead intake.",
+    "freshLead": {
+      "dealCardId": 53,
+      "input": "3129 Old Walland Highway, Walland, TN 37886, Blount County, Tennessee (no APN supplied)",
+      "note": "Blount County TN was absent from LandOS before this run. Address, county and state parsed correctly; the pre-existing acreage-phrasing intake defect was not triggered and was deliberately not fixed."
+    },
+    "parentMission": "property_intelligence_fanout mission #1, JOINED, 3/3 children settled, 1 accepted, 2 incomplete",
+    "identity": "Every child carried its parent mission id, mission group (subject_identity / deal_intelligence), assigned role, roster specialist (dd_bot Property Research Agent, success_bot CRM Success Manager, market_bot Market Research Agent) and contribution slot - visible while still QUEUED, before any lane ran",
+    "acceptance": "parcel_identity INCOMPLETE naming the unmet expected term (identityState provisional, not confirmed); deal_context INCOMPLETE naming 0 retained evidence and 0 comps; market_coverage ACCEPTED (seeded Blount County reference, FIPS 47009)",
+    "handbackRouting": "3/3 routed; parcel_identity -> identity, deal_context -> deal_context, market_coverage -> market_coverage, each with its acceptance state stated",
+    "providers": "All three lanes show 'deterministic (no provider, no spend)'. Live catalog reports missionRoutable = claude, google, ollama; codex has its CLI on PATH but is reported agent_session and NOT mission-routable; Hermes configured=false, optional=true and the mission ran fully without it",
+    "persistence": "Identical after page refresh and after a full managed restart (landos:restart), including mission id, acceptance verdicts, provider assignments, routing and joined handbacks",
+    "crossDealContamination": "None. Deal 53 shows only Blount TN, Deal 52 only Knox TN (FIPS 47093), Deal 47 only Roane TN; three distinct mission ids",
+    "item14Regression": "Deal 52 still JOINED and Deal 47 still JOINED WITH GAPS with its blocked child named. Both pre-existing missions keep their stored results and report acceptance as 'not evaluated' / '0 accepted' rather than claiming acceptance they never had."
   },
   "regressions": {
     "status": "PASS",
-    "timestamp": "2026-07-25T23:18:27-04:00",
-    "summary": "Telegram bot, file-send integration, message classifier, failure classification, SQLite concurrency, mission CLI, mission CLI arg parsing and hive CLI: 8 files, 194 tests, 0 failures"
+    "timestamp": "2026-07-26T22:11:05-04:00",
+    "summary": "Focused mission-graph regression set (identity, acceptance, provider routing, representative fan-out, routes, graph contract, runner): 7 files, 128 tests, 0 failures. Includes permanent coverage for legacy Item 14 rows and stored joins that predate the identity/acceptance fields"
   },
   "propertyIntelligenceAcceptance": {
     "status": "PASS",
@@ -63,13 +81,13 @@
   },
   "memoryAudit": {
     "status": "PASS",
-    "timestamp": "2026-07-25T23:22:10-04:00",
-    "summary": "npm run landos:memory:audit — AUDIT PASS, ~7185 tokens against a 10000 soft budget"
+    "timestamp": "2026-07-26T22:10:40-04:00",
+    "summary": "npm run landos:memory:audit — AUDIT PASS, ~7075 tokens against a 10000 soft budget, 0 content warnings. Checkpoint 7750/8192 bytes LF and 7882 bytes CRLF (310 bytes CRLF headroom); memory-bootstrap + checkpoint-integration 32/32"
   },
   "secretScan": {
     "status": "PASS",
-    "timestamp": "2026-07-26T01:43:00-04:00",
-    "summary": "Pattern scan over every changed path: clean."
+    "timestamp": "2026-07-26T21:36:00-04:00",
+    "summary": "Pattern scan over all 21 changed paths: clean. No secret-shaped literal, no credential-named literal outside the pre-existing test fixture token, and no new raw-secret read (the added HERMES_URL is an endpoint URL defaulting to empty, never a credential)."
   },
   "landPortalTwoSurfaceWorkflow": {
     "status": "PASS",

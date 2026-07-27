@@ -13,7 +13,7 @@
 // Ollama", so the dashboard status, the live execution path, and the grunt path
 // can never disagree. No secret values are read or returned here.
 
-import { OLLAMA_HOST, LANDOS_LIVE_ROUTING } from '../config.js';
+import { OLLAMA_HOST, LANDOS_LIVE_ROUTING, HERMES_URL } from '../config.js';
 import { getDashboardSetting as dbGet, setDashboardSetting as dbSet } from '../db.js';
 
 /** Persisted dashboard_settings keys (KV; no schema change). */
@@ -21,6 +21,7 @@ export const ROUTER_RUNTIME_KEYS = {
   liveRouting: 'landos.router.live_routing',
   ollamaHost: 'landos.router.ollama_host',
   ollamaModelMap: 'landos.router.ollama_model_map',
+  hermesUrl: 'landos.router.hermes_url',
 } as const;
 
 /** Internal model id -> Ollama tag. Internal ids are LandOS-stable; the Ollama
@@ -93,6 +94,23 @@ export function resolveOllamaModelMap(s?: SettingsStore): Record<string, string>
   return map;
 }
 
+export interface HermesUrlResolution { url: string; source: RuntimeSource }
+
+/**
+ * Effective Hermes endpoint: persisted setting wins, else env HERMES_URL, else ''.
+ *
+ * OPTIONAL BY CONSTRUCTION. An empty string means the Hermes provider is not
+ * installed, which is the default on every machine that has not configured one.
+ * Nothing in LandOS treats its absence as a failure, and no routing decision
+ * changes because of it.
+ */
+export function resolveHermesUrl(s?: SettingsStore): HermesUrlResolution {
+  const v = (read(s, ROUTER_RUNTIME_KEYS.hermesUrl) ?? '').trim();
+  if (v) return { url: v, source: 'setting' };
+  if (HERMES_URL) return { url: HERMES_URL, source: 'env' };
+  return { url: '', source: 'default' };
+}
+
 // ── Setters (operator controls; persist to dashboard_settings) ────────────────
 
 export function setLiveRouting(enabled: boolean, s?: SettingsStore): void {
@@ -105,4 +123,9 @@ export function setOllamaHost(host: string, s?: SettingsStore): void {
 
 export function setOllamaModelMap(map: Record<string, string>, s?: SettingsStore): void {
   store(s).setDashboardSetting(ROUTER_RUNTIME_KEYS.ollamaModelMap, JSON.stringify(map));
+}
+
+/** Set (or clear, with '') the optional Hermes endpoint. */
+export function setHermesUrl(url: string, s?: SettingsStore): void {
+  store(s).setDashboardSetting(ROUTER_RUNTIME_KEYS.hermesUrl, (url ?? '').trim());
 }
