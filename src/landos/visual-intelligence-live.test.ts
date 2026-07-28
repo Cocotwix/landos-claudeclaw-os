@@ -9,6 +9,18 @@ import { runVisualIntelligence, blockedAsset, type VisualCaptureContext, type Vi
 
 const TS = '2026-07-09T00:00:00.000Z';
 const ctx: VisualCaptureContext = { cardId: 7, address: '50 nelson rd', lat: 32.87, lng: -85.86, landPortalUrl: 'https://landportal.com/p/1' };
+const fullLandPortalShots = {
+  parcelShotPath: '/tmp/lp-parcel.png',
+  terrainShotPath: '/tmp/lp-3d.png',
+  compsMapShotPath: '/tmp/lp-comps.png',
+  overlayShots: [
+    { overlay: 'FEMA Floodplain', path: '/tmp/lp-fema.png', purpose: 'landportal_overlay_fema_floodplain' },
+    { overlay: 'Wetlands', path: '/tmp/lp-wetlands.png', purpose: 'landportal_overlay_wetlands' },
+    { overlay: 'Soil', path: '/tmp/lp-soils.png', purpose: 'landportal_overlay_soil' },
+    { overlay: 'Contour Lines', path: '/tmp/lp-contours.png', purpose: 'landportal_overlay_contour_lines' },
+  ],
+  overlayMisses: [],
+};
 
 function makeDeps(status: LiveSessionStatus, over: Partial<LiveVisualDeps> = {}): { deps: LiveVisualDeps; pages: string[] } {
   const pages: string[] = [];
@@ -16,9 +28,10 @@ function makeDeps(status: LiveSessionStatus, over: Partial<LiveVisualDeps> = {})
     ensureSession: async () => status,
     landPortalAuthed: async () => true,
     capturePage: async (url, _out) => { pages.push(url); return true; },
-    captureLandPortal: async () => ({ parcelShotPath: '/tmp/lp-parcel.png', terrainShotPath: '/tmp/lp-3d.png' }),
+    captureLandPortal: async () => fullLandPortalShots,
     storeCopy: (_src, cardId, source) => `/store/visuals/vi_${cardId}_${source}.png`,
-    fileSize: () => 20 * 1024,
+    fileSize: () => 700 * 1024,
+    fileSha256: (p) => `sha:${p}`,
     now: () => TS,
     tmpDir: '/tmp',
     ...over,
@@ -27,12 +40,20 @@ function makeDeps(status: LiveSessionStatus, over: Partial<LiveVisualDeps> = {})
 }
 
 describe('Visual Intelligence live — capture when a session exists', () => {
-  it('captures LandPortal parcel + 3D while canonical Google assets stay on the verified Static API path', async () => {
+  it('captures the parcel, 3D, comps map, and distinct overlays from one LandPortal pass', async () => {
     const { deps, pages } = makeDeps('live');
     const caps = makeLiveVisualCapturers(deps);
     const r = await runVisualIntelligence(ctx, caps, { now: () => TS });
     const get = (s: string) => r.sources.find((x) => x.source === s)!;
-    for (const s of ['landportal', 'landportal_3d']) {
+    for (const s of [
+      'landportal',
+      'landportal_3d',
+      'landportal_comps',
+      'landportal_fema',
+      'landportal_wetlands',
+      'landportal_soils',
+      'landportal_contours',
+    ]) {
       expect(get(s).state, `${s} should be captured`).toBe('captured');
       expect(get(s).imageRoute).toContain('/api/landos/visual-intelligence/image');
     }
@@ -50,9 +71,24 @@ describe('Visual Intelligence live — capture when a session exists', () => {
 
   it('drives LandPortal only once for parcel + 3D (one navigation pass)', async () => {
     let lpCalls = 0;
-    const { deps } = makeDeps('live', { captureLandPortal: async () => { lpCalls++; return { parcelShotPath: '/tmp/p.png', terrainShotPath: '/tmp/3d.png' }; } });
+    const { deps } = makeDeps('live', { captureLandPortal: async () => { lpCalls++; return fullLandPortalShots; } });
     await runVisualIntelligence(ctx, makeLiveVisualCapturers(deps), { now: () => TS });
     expect(lpCalls).toBe(1);
+  });
+
+  it('never reuses a cached LandPortal pass for a different Deal subject', async () => {
+    const opened: string[] = [];
+    const { deps } = makeDeps('live', {
+      captureLandPortal: async (url) => { opened.push(url); return fullLandPortalShots; },
+    });
+    const capturers = makeLiveVisualCapturers(deps);
+    await runVisualIntelligence(ctx, capturers, { now: () => TS });
+    await runVisualIntelligence(
+      { ...ctx, cardId: 8, landPortalUrl: 'https://landportal.com/p/2' },
+      capturers,
+      { now: () => TS },
+    );
+    expect(opened).toEqual(['https://landportal.com/p/1', 'https://landportal.com/p/2']);
   });
 
   it('does not launch browser-rendered Google imagery when lat/lng are absent', async () => {
@@ -69,6 +105,43 @@ describe('Visual Intelligence live — capture when a session exists', () => {
     const r = await runVisualIntelligence(ctx, makeLiveVisualCapturers(deps), { now: () => TS });
     expect(r.sources.find((s) => s.source === 'landportal')?.state).toBe('captured');
     expect(r.sources.find((s) => s.source === 'landportal_3d')?.blocker).toMatch(/control not found/i);
+  });
+
+  it('preserves the exact browser-proven reason when an overlay is unavailable', async () => {
+    const { deps } = makeDeps('live', {
+      captureLandPortal: async () => ({
+        ...fullLandPortalShots,
+        overlayShots: fullLandPortalShots.overlayShots.filter((shot) => !/wetland/i.test(shot.overlay)),
+        overlayMisses: [{ overlay: 'Wetlands', reason: 'the layer toggle never reported an enabled state.' }],
+      }),
+    });
+    const r = await runVisualIntelligence(ctx, makeLiveVisualCapturers(deps), { now: () => TS });
+    const wetlands = r.sources.find((s) => s.source === 'landportal_wetlands')!;
+    expect(wetlands.state).toBe('unavailable');
+    expect(wetlands.blocker).toMatch(/toggle never reported an enabled state/i);
+    expect(wetlands.storedPath).toBeUndefined();
+  });
+
+  it('rejects a relabeled overlay when its bytes are identical to the base parcel frame', async () => {
+    const { deps } = makeDeps('live', {
+      fileSha256: (p) => /lp-parcel|lp-fema/.test(p) ? 'same-image' : `sha:${p}`,
+    });
+    const r = await runVisualIntelligence(ctx, makeLiveVisualCapturers(deps), { now: () => TS });
+    const fema = r.sources.find((s) => s.source === 'landportal_fema')!;
+    expect(fema.state).toBe('unavailable');
+    expect(fema.blocker).toMatch(/byte-identical.*base map/i);
+    expect(fema.storedPath).toBeUndefined();
+  });
+
+  it('rejects an undersized parcel shell instead of promoting it as the subject view', async () => {
+    const { deps } = makeDeps('live', {
+      fileSize: (p) => /lp-parcel/.test(p) ? 12_000 : 700 * 1024,
+    });
+    const r = await runVisualIntelligence(ctx, makeLiveVisualCapturers(deps), { now: () => TS });
+    const parcel = r.sources.find((s) => s.source === 'landportal')!;
+    expect(parcel.state).toBe('unavailable');
+    expect(parcel.blocker).toMatch(/at least 500,000 bytes/i);
+    expect(parcel.storedPath).toBeUndefined();
   });
 
   it('County GIS reports the exact implementation gap', async () => {

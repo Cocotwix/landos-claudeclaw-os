@@ -57,11 +57,14 @@ describe('official public identity handoff into Deal Card report orchestration',
     expect(verification?.coordinates?.lat).toBeCloseTo(36.0225, 4);
   });
 
-  it('never promotes a provisional key and wires the retained official match into /report/run', () => {
+  it('never promotes a provisional key and wires retained official identity into the canonical collector', () => {
     expect(verificationFromStoredPublicIntelligence({ ...storedOfficial(), parcelKey: 'unresolved:02704512' })).toBeUndefined();
-    expect(ROUTES).toMatch(/prefetchedVerification:[\s\S]*loadLatestResolved\(id\)/);
+    expect(ROUTES).toMatch(
+      /const propertyIntelligenceCollectors = \(dealCardId: number\) => makeLivePropertyIntelligenceCollectors\(\{[\s\S]{0,220}runPublicIntelligence: async \(id\) => \{[\s\S]{0,160}runPublicIntelligenceForDealCard\(id\)/,
+    );
+    expect(ROUTES).toMatch(/const retainedResolved = new PublicIntelligenceStore\(\)\.loadLatestResolved\(id\)/);
     expect(ROUTES).toMatch(/if \(retainedResolved && retainedVerification\?\.identity\)/);
-    expect(ROUTES).toMatch(/agentId: 'public-property-intelligence'[\s\S]*verified: true|verified: true[\s\S]*agentId: 'public-property-intelligence'/);
+    expect(ROUTES).toMatch(/saved: retainedResolved,[\s\S]{0,300}apn: retainedVerification\.identity\.apn/);
   });
 
   it('does not promote a broader Census county subdivision as the parcel city', () => {

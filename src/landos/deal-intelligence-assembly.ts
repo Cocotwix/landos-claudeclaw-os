@@ -101,6 +101,16 @@ export const NO_RECOMMENDATION: SnapshotRecommendation = {
   whatWouldChangeIt: ['A completed strategy lane on a finished valuation.'],
   posture: 'undetermined',
   postureWhy: 'No posture is asserted while the strategy evaluation is missing.',
+  shouldPursue: 'undetermined',
+  worth: null,
+  targetBuyRange: null,
+  bestExit: null,
+  dealKillers: [],
+  nextConfirmations: ['Complete the valuation and five-strategy lanes.'],
+  juiceWorthSqueeze: {
+    answer: 'undetermined',
+    why: 'The valuation and strategy evidence needed to compare effort with upside is missing.',
+  },
 };
 
 /** A lane that did not contribute, in the operator's words. */

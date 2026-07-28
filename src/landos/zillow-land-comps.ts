@@ -116,7 +116,11 @@ export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[]
 
 /** Normalize + filter raw listings to same-acreage-band, sane-priced land comps,
  *  deduped by address. Never fabricates; drops rows without a price+address. */
-export function normalizeZillowListings(raw: RawZillowListing[], subjectAcres: number | null): ZillowLandComp[] {
+export function normalizeZillowListings(
+  raw: RawZillowListing[],
+  subjectAcres: number | null,
+  mode: 'sold' | 'active' = 'active',
+): ZillowLandComp[] {
   const band = subjectAcres != null && subjectAcres > 0
     ? { lo: Math.max(0.05, subjectAcres * 0.5), hi: subjectAcres * 2.5 }
     : { lo: 0.1, hi: 1.0 };
@@ -125,14 +129,20 @@ export function normalizeZillowListings(raw: RawZillowListing[], subjectAcres: n
   for (const r of raw) {
     const price = typeof r.price === 'number' ? r.price : null;
     if (!r.address || price == null || price <= 0) continue;
-    if (price < 3000 || price > 150000) continue; // land-price sanity band
+    if (price < 1000 || price > 5_000_000) continue; // broad land-price sanity band
     const acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
     if (acres != null && (acres < band.lo || acres > band.hi)) continue;
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
-    const status = r.status ? parseListingStatus(r.status) : 'active'; // public land search defaults to for-sale
-    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status: status === 'unknown' ? 'active' : status, url: r.url ?? null, source: 'Zillow' });
+    const parsed = r.status ? parseListingStatus(r.status) : 'unknown';
+    // The active board itself establishes "for sale"; the sold board does not
+    // establish that every returned card closed. Zillow can leak active cards
+    // into a recently-sold result, so sold mode accepts only a stated sold row.
+    const status: CompStatus = parsed === 'unknown' && mode === 'active' ? 'active' : parsed;
+    if (mode === 'sold' && status !== 'sold') continue;
+    if (mode === 'active' && status === 'sold') continue;
+    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status, url: r.url ?? null, source: 'Zillow' });
   }
   return out.slice(0, 8);
 }
@@ -297,10 +307,12 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
       const verifiedGeo = verifyZillowResolvedGeography(input, route, pageGeo, raw);
       if (!verifiedGeo.valid) { failedGeographies.push(`${route.label}: ${verifiedGeo.reason}`); continue; }
       const structured = read?.nextData ? parseZillowStructured(read.nextData, input.subjectAcres ?? null) : [];
+      const mode = input.mode ?? 'active';
       const normalized = structured.length
-        ? structured.map((s) => ({ address: s.address ?? '', price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' ? ((input.mode === 'sold' ? 'sold' : 'active') as CompStatus) : s.status, url: s.url, source: 'Zillow' as const })).filter((c) => c.address)
-        : normalizeZillowListings(raw, input.subjectAcres ?? null);
-      if (input.mode === 'sold') for (const comp of normalized) if (comp.status === 'active' || comp.status === 'unknown') comp.status = 'sold';
+        ? structured
+          .map((s) => ({ address: s.address ?? '', price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status, url: s.url, source: 'Zillow' as const }))
+          .filter((c) => c.address && (mode === 'sold' ? c.status === 'sold' : c.status !== 'sold'))
+        : normalizeZillowListings(raw, input.subjectAcres ?? null, mode);
       const expectedState = state.toUpperCase();
       const comps = normalized.filter((comp) => addressStateCode(comp.address) === expectedState);
       const rejectedOutsideMarket = normalized.length - comps.length;

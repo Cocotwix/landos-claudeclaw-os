@@ -1,130 +1,186 @@
 {
-  "tests": {
+  "schema": 1,
+  "recordedAt": "2026-07-27T19:56:38.4523774-04:00",
+  "headUnderReview": "c3158f6",
+  "commitState": "UNCOMMITTED",
+  "operatorAcceptance": {
     "status": "PASS",
-    "timestamp": "2026-07-26T21:30:07-04:00",
-    "summary": "351 files, 4605 tests, 0 failures (full vitest run)"
-  },
-  "typecheck": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T21:31:40-04:00",
-    "summary": "server clean; frontend pre-existing-red at 92 TS6133, none in a changed file"
-  },
-  "build": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T21:27:30-04:00",
-    "summary": "vite build + tsc; only the existing large-chunk advisory"
-  },
-  "runtime": {
-    "status": "RUNNING healthy",
-    "timestamp": "2026-07-26T21:34:00-04:00",
-    "pid": 85780,
-    "url": "http://localhost:3141",
-    "summary": "landos:restart then landos:health; root and health HTTP 200"
-  },
-  "missionGraphIdentityAcceptance": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T21:22:00-04:00",
-    "summary": "Phase 4 Items 15-17 accepted live in Chrome against the managed runtime on a FRESH address created through New Lead intake.",
+    "workflow": "canonical ten-tab Deal Card",
+    "url": "http://localhost:3141/dept/acquisitions?deal=58",
     "freshLead": {
-      "dealCardId": 53,
-      "input": "3129 Old Walland Highway, Walland, TN 37886, Blount County, Tennessee (no APN supplied)",
-      "note": "Blount County TN was absent from LandOS before this run. Address, county and state parsed correctly; the pre-existing acreage-phrasing intake defect was not triggered and was deliberately not fixed."
-    },
-    "parentMission": "property_intelligence_fanout mission #1, JOINED, 3/3 children settled, 1 accepted, 2 incomplete",
-    "identity": "Every child carried its parent mission id, mission group (subject_identity / deal_intelligence), assigned role, roster specialist (dd_bot Property Research Agent, success_bot CRM Success Manager, market_bot Market Research Agent) and contribution slot - visible while still QUEUED, before any lane ran",
-    "acceptance": "parcel_identity INCOMPLETE naming the unmet expected term (identityState provisional, not confirmed); deal_context INCOMPLETE naming 0 retained evidence and 0 comps; market_coverage ACCEPTED (seeded Blount County reference, FIPS 47009)",
-    "handbackRouting": "3/3 routed; parcel_identity -> identity, deal_context -> deal_context, market_coverage -> market_coverage, each with its acceptance state stated",
-    "providers": "All three lanes show 'deterministic (no provider, no spend)'. Live catalog reports missionRoutable = claude, google, ollama; codex has its CLI on PATH but is reported agent_session and NOT mission-routable; Hermes configured=false, optional=true and the mission ran fully without it",
-    "persistence": "Identical after page refresh and after a full managed restart (landos:restart), including mission id, acceptance verdicts, provider assignments, routing and joined handbacks",
-    "crossDealContamination": "None. Deal 53 shows only Blount TN, Deal 52 only Knox TN (FIPS 47093), Deal 47 only Roane TN; three distinct mission ids",
-    "item14Regression": "Deal 52 still JOINED and Deal 47 still JOINED WITH GAPS with its blocked child named. Both pre-existing missions keep their stored results and report acceptance as 'not evaluated' / '0 accepted' rather than claiming acceptance they never had."
-  },
-  "regressions": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T22:11:05-04:00",
-    "summary": "Focused mission-graph regression set (identity, acceptance, provider routing, representative fan-out, routes, graph contract, runner): 7 files, 128 tests, 0 failures. Includes permanent coverage for legacy Item 14 rows and stored joins that predate the identity/acceptance fields"
-  },
-  "propertyIntelligenceAcceptance": {
-    "status": "PASS",
-    "timestamp": "2026-07-25T23:12:00-04:00",
-    "summary": "All four required conditions exercised live in Chrome against the managed runtime. Evidence: docs/landos/phase3-acceptance-snapshots-2026-07-26.json",
-    "conditions": {
-      "existingVerifiedDealCard": {
-        "dealCardId": 32,
-        "result": "complete",
-        "detail": "Identity confirmed on the Tennessee Comptroller parcel layer; 10/10 specialists settled; 30 Realie rows excluded from FMV with a stated policy reason; 1 accepted Redfin closed sale; honest not-priceable refusal because the accepted sale carries no acreage; retained intake screenshot surfaced (SHA-256 df2e1d2c..., 2,949,777 bytes, HTTP 200)"
+      "dealCardId": 58,
+      "input": "350 Old Hen Valley Rd, Oliver Springs, TN 37840",
+      "automaticLaunch": true,
+      "identity": {
+        "state": "confirmed",
+        "apn": "004 031.00",
+        "ownerOfRecord": "MORGAN BRANDON",
+        "acres": 8.4
       },
-      "existingUnresolvedDealCard": {
-        "dealCardId": 10,
-        "result": "blocked_identity",
-        "detail": "Parcel-specific specialists skipped with the reason surfaced; no value, no strategy recommendation; blockers and next actions stated"
+      "valuation": {
+        "supportedRange": {
+          "low": 145000,
+          "high": 196000
+        },
+        "workingValue": 170500,
+        "targetAcquisitionRange": {
+          "low": 68000,
+          "high": 102500
+        }
       },
-      "newIntakeThatResolves": {
-        "dealCardId": "temporary (purged after acceptance)",
-        "result": "complete",
-        "detail": "Manual-lead intake to confirmed parcel (JOINES TRAVIS, 5.82 ac, Cocke County TN); 9/9 required specialists delivered; value band $67,000-$113,000 at $11,500-$19,500/ac, low confidence on one accepted comp; recommendation Improvement Then Flip, posture renegotiate"
+      "strategy": {
+        "recommendation": "Improvement Then Flip",
+        "posture": "RENEGOTIATE"
       },
-      "newIntakeThatStaysUnresolved": {
-        "dealCardId": "temporary (purged after acceptance)",
-        "result": "blocked_identity",
-        "detail": "No official parcel matched; confidence none; every parcel-specific lane skipped; active listings retained as market context only"
+      "visuals": {
+        "distinctCount": 6,
+        "loadedCount": 6,
+        "width": 1600,
+        "height": 1000
+      },
+      "tabsVerified": [
+        "Overview",
+        "Property",
+        "Due Diligence",
+        "Market",
+        "Strategy",
+        "Visuals",
+        "Seller",
+        "Documents",
+        "Activity",
+        "Smart Intake"
+      ],
+      "historyPreserved": {
+        "run3": "CURRENT",
+        "run2": "COMPLETE",
+        "run1": "FAILED"
       }
+    },
+    "persistence": {
+      "refresh": "PASS",
+      "managedRestart": "PASS",
+      "browserCleanup": "PASS",
+      "crossDealIsolation": "PASS"
+    },
+    "postCleanupReadback": {
+      "status": "NOT RUN",
+      "reason": "The ChatGPT Chrome Extension was absent from Default and Profile 1, and the native-host registry key was missing.",
+      "acceptanceAuthority": "The previously completed full operator walkthrough remains authoritative because repository cleanup did not invalidate its accepted business evidence.",
+      "missionsRerun": false
+    },
+    "crossDealChecks": {
+      "deal32": {
+        "status": "PASS",
+        "apn": "073090 04200",
+        "ownerOfRecord": "SACHAN DILEEP S",
+        "acres": 12.28
+      },
+      "deal54": {
+        "status": "PASS",
+        "apn": "001003 01205",
+        "ownerOfRecord": "STARDUST RIDGE LLC",
+        "acres": 12.06,
+        "marketConclusion": "not priceable",
+        "posture": "HOLD"
+      }
+    },
+    "compPolicy": {
+      "currentSources": [
+        "LandPortal",
+        "Zillow",
+        "Redfin"
+      ],
+      "excludedFromExecutionCountsRenderingAndValuation": [
+        "HomeHarvest",
+        "Realie"
+      ],
+      "workingSets": "capped and deduplicated",
+      "governmentVerificationOfComparables": false
+    },
+    "identitySeparation": "owner of record remains separate from seller and lead identity",
+    "diligenceDisclosure": "unresolved professional diligence remains visible; no unsupported legal or completeness claim",
+    "runtimeAtRecordTime": {
+      "status": "RUNNING healthy",
+      "pid": 43836,
+      "httpStatus": 200,
+      "url": "http://localhost:3141"
     }
   },
-  "browserVerification": {
+  "integrationVerification": {
     "status": "PASS",
-    "timestamp": "2026-07-25T23:14:00-04:00",
-    "summary": "Live Chrome against http://localhost:3141. Launch, live specialist progress, completed snapshot, Overview/Property/Due Diligence/Market/Strategy/Visuals/Documents tabs, rerun, unresolved-card behaviour and restart persistence all inspected directly.",
-    "layout": "Every Property Intelligence panel measured clean at 1280 / 1440 / 1600 / 1699 CSS px with zero page-level horizontal overflow; wide tables scroll inside their own containers. The maximized browser window would not resize below 1699 CSS px, so the three narrower widths were exercised by constraining the workspace container rather than by a true viewport resize.",
-    "consoleErrors": 0,
-    "badgeApiParity": "Status, confidence, identity state, recommended strategy, posture and value band in the UI all matched the API payload exactly; no stale failure text after a successful rerun"
+    "reason": "All integrated test, build, policy, static-scan, artifact, secret, memory, checkpoint, diff, and managed-health gates passed.",
+    "fullRepositorySuite": {
+      "status": "PASS",
+      "summary": "360 files, 4,718 tests, 0 failures."
+    },
+    "serverTypecheck": {
+      "status": "PASS"
+    },
+    "frontendBaselineCheck": {
+      "status": "PASS",
+      "summary": "The two DealCard diagnostics were fixed. Zero diagnostics remain in changed web files; only unchanged baseline files report diagnostics."
+    },
+    "productionBuild": {
+      "status": "PASS",
+      "summary": "Production build completed; 1,976 modules transformed."
+    },
+    "obsoleteRouteRuntimeCoverage": {
+      "status": "PASS",
+      "summary": "All 11 obsolete method/path pairs return 404; route test set 63/63."
+    },
+    "canonicalRegressionCoverage": {
+      "status": "PASS",
+      "summary": "Focused canonical regressions 52/52; stale-contract repair set 80/80."
+    },
+    "checkpointTests": {
+      "status": "PASS",
+      "summary": "2 files, 32 tests, 0 failures."
+    },
+    "memoryAudit": {
+      "status": "PASS",
+      "checkpoint": "fresh",
+      "contentWarnings": 0,
+      "codingAgentBootstrapApproxTokens": 4587,
+      "largestProfileApproxTokens": 6693,
+      "budget": "PASS"
+    },
+    "diffCheck": {
+      "status": "PASS",
+      "summary": "git diff --check clean."
+    },
+    "secretScan": {
+      "status": "PASS",
+      "envModified": false,
+      "summary": "No secret value found. The deliberate synthetic redaction test fixture is explicitly allowlisted."
+    },
+    "artifactScan": {
+      "status": "PASS",
+      "summary": "No database, browser profile, screenshot, runtime, temporary probe, or machine-local artifact is included."
+    },
+    "obsoleteRuntimeStaticScans": {
+      "status": "PASS",
+      "summary": "Obsolete route, dead Deal Card declaration, and legacy projection-load scans are clean."
+    },
+    "managedHealth": {
+      "status": "PASS",
+      "pid": 43836,
+      "rootHttpStatus": 200,
+      "healthHttpStatus": 200,
+      "summary": "Health OK."
+    }
   },
-  "memoryAudit": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T22:10:40-04:00",
-    "summary": "npm run landos:memory:audit — AUDIT PASS, ~7075 tokens against a 10000 soft budget, 0 content warnings. Checkpoint 7750/8192 bytes LF and 7882 bytes CRLF (310 bytes CRLF headroom); memory-bootstrap + checkpoint-integration 32/32"
-  },
-  "secretScan": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T21:36:00-04:00",
-    "summary": "Pattern scan over all 21 changed paths: clean. No secret-shaped literal, no credential-named literal outside the pre-existing test fixture token, and no new raw-secret read (the added HERMES_URL is an endpoint URL defaulting to empty, never a credential)."
-  },
-  "landPortalTwoSurfaceWorkflow": {
-    "status": "PASS",
-    "timestamp": "2026-07-26T01:37:00-04:00",
-    "summary": "Deal 32 run #12: both LandPortal surfaces reached live through the approved LandOS Chrome on CDP 9224.",
-    "cdp": {
-      "resolved": "configured in .env (loopback CDP endpoint); resolved by the managed runtime at start",
-      "sessionStatus": "live",
-      "port9224": "Chrome/150.0.7871.129, LandOS profile (dedicated .landos-chrome user-data-dir)",
-      "port9222": "Edg/146.0.3856.109 - correctly rejected as a foreign runtime"
-    },
-    "apnReconciliation": {
-      "result": "EQUIVALENT - one official parcel answers both spellings",
-      "landosCanonical": "073090 04200",
-      "landPortalDisplayed": "090 04200",
-      "officialParcel": "PARCELID 073 090 04200 000 2026, GISLINK 073090 04200, CMAP 090, PARCEL 042.00, OWNER SACHAN DILEEP S, Roane County",
-      "rule": "The Tennessee statewide layer prefixes the county NUMBER (073) onto the county-local map+parcel identifier LandPortal displays. Both forms retained; the canonical APN was never replaced."
-    },
-    "surfaces": {
-      "sidebarRows": 6,
-      "showOnMapRows": 6,
-      "corroboratedByBoth": 6,
-      "combinedUnique": 6,
-      "streetAddressesSupplied": 0,
-      "statedStatuses": 0
-    },
-    "acceptance": {
-      "acceptedSold": 1,
-      "acceptedSoldSource": "Redfin supplement",
-      "activeCompetition": 0,
-      "excludedOrContextOnly": 36,
-      "zillowSupplements": 0,
-      "redfinSupplements": 1
-    },
-    "priceable": false,
-    "refusalReason": "Accepted closed sales carry no usable acreage, so a price-per-acre basis cannot be computed. LandPortal supplied price and acreage for 6 rows but states no sale-or-listing status on either surface, so none can establish closed-sale FMV.",
-    "nextAction": "Retrieve acreage for the accepted closed sales (county record or listing detail) and re-run Property Intelligence.",
-    "evidence": "Retained: LandPortal parcel view, comps map, comps result list, 3D/terrain and 5 overlays (10 images, all loading), plus the original intake screenshot."
+  "artifactPolicy": {
+    "envModified": false,
+    "secretsAllowed": false,
+    "excludedPaths": [
+      ".claude/settings.local.json",
+      "databases",
+      "browser profiles",
+      "screenshots",
+      "runtime files",
+      "temporary probes",
+      "machine-local artifacts"
+    ],
+    "pushAuthorized": false
   }
 }

@@ -46,6 +46,7 @@ export function synchronizePropertySummaryForDeal(input: {
   dealCardId: number;
   actor: string;
   changeReason: string;
+  allowAcceptedSupersession?: boolean;
 }): PropertySummaryReadModel {
   const deal = getDealCard(input.dealCardId);
   if (!deal) throw new Error('Deal Card not found.');
@@ -132,6 +133,7 @@ export function synchronizePropertySummaryForDeal(input: {
     sourceRefs: [...sourceRefs],
     changeReason: input.changeReason,
     createdBy: input.actor,
+    allowAcceptedSupersession: input.allowAcceptedSupersession,
   };
 
   return synchronizePropertySummarySlice({

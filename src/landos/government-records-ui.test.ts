@@ -13,14 +13,11 @@ const ROUTES = readSource('src/landos/routes.ts');
 const ANALYST = readSource('src/landos/government-records-analyst.ts');
 
 describe('Government Records Deal Card UI and architecture contract', () => {
-  it('25. Deal Card loads persisted screening and never calls rebuild while opening', () => {
-    expect(DEAL_CARD).toContain('loadGovernmentRecords(id)');
-    expect(DEAL_CARD).toContain('/government-records`');
-    expect(DEAL_CARD).toContain('/government-records/rebuild');
-    const loadBody = DEAL_CARD.match(/async function loadGovernmentRecords[\s\S]*?\n  }\n/)?.[0] ?? '';
-    expect(loadBody).toContain('apiGet');
-    expect(loadBody).not.toContain('apiPost');
-    expect(DEAL_CARD).toContain('<GovernmentRecordsSnapshotPanel');
+  it('25. Deal Card does not mount or independently load the legacy screening panel', () => {
+    expect(DEAL_CARD).not.toContain('loadGovernmentRecords(id)');
+    expect(DEAL_CARD).not.toContain('<GovernmentRecordsSnapshotPanel');
+    expect(DEAL_CARD).not.toContain('/government-records/rebuild');
+    expect(DEAL_CARD).toContain('<PropertyIntelligenceDueDiligence snapshot={piSnapshot}');
   });
 
   it('renders every requested business section and retained document visuals', () => {

@@ -13,7 +13,7 @@
 // which states/counties were expanded so a resumed run continues where the
 // last one stopped. Diagnostics stay in landos_mr_collection_run (internal).
 
-import { withWorkingPage, ensureBrowserSession, resetWorkingPage, type PageLike } from './browser-session.js';
+import { withWorkingPage, ensureBrowserSession, resetWorkingPage, browserSpawnedInBackground, type PageLike } from './browser-session.js';
 import {
   LP, withArgs, readLoginLike, clickExactText, setSelect, gridDataReady,
   expandIfCollapsed, collapseIfExpanded, countRows, dismissDialogs,
@@ -1108,7 +1108,11 @@ async function doVerifySweep(opts: VerifySweepOptions): Promise<VerifySweepResul
         return false;
       })(30 * 60 * 1000);
       if (!settled) { dlog('grid never settled within 30 minutes'); return { stalled: true } as const; }
-      await (page.bringToFront?.() ?? Promise.resolve()).catch(() => { /* best effort */ });
+      // Activate the tab only inside the LandOS-spawned offscreen window; a
+      // visible pre-existing Chrome is never raised over the operator's work.
+      if (browserSpawnedInBackground()) {
+        await (page.bringToFront?.() ?? Promise.resolve()).catch(() => { /* best effort */ });
+      }
 
       let visited = 0;
       for (const st of targetStates) {

@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestLandosDb } from './db.js';
+import { autoLaunchDealIntelligenceForIntake, researchStatusForOutcome, type IntakeLifecycleHooks } from './deal-intelligence-intake.js';
 import { runDealIntelligenceMission, launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { DEAL_INTELLIGENCE_CHILDREN, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
 import { MissionGraphStore, resetMissionGraphStoreCache } from './mission-graph-store.js';
 import { PropertyIntelligenceStore, resetPropertyIntelligenceStoreCache } from './property-intelligence-store.js';
-import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-mission.js';
+import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-collector-types.js';
 import type { SnapshotIdentity } from './property-intelligence-snapshot.js';
 
 const CONFIRMED: SnapshotIdentity = {
@@ -68,7 +69,6 @@ function collectors(overrides: Partial<PropertyIntelligenceCollectors> = {}): Pr
 function caps(overrides: Partial<DealIntelligenceCapabilities> = {}): DealIntelligenceCapabilities {
   return {
     collectors: collectors(),
-    subjectResearch: async () => ({ ok: true, note: 'LandPortal and county subject research completed.' }),
     marketPulse: async () => ({
       marketMatrix: { summaryLine: 'Roane TN sold band resolved.' },
       marketPulse: { plainEnglish: 'Land is moving in Roane County.' },
@@ -83,6 +83,15 @@ function caps(overrides: Partial<DealIntelligenceCapabilities> = {}): DealIntell
 }
 
 const RUN_OPTS = { timeoutMsOverride: 10_000, joinPollMs: 5, joinDeadlineMs: 5_000 };
+
+/** Poll a condition with real timers; the mission children settle asynchronously. */
+async function until(check: () => boolean, timeoutMs = 8_000): Promise<void> {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) throw new Error('condition not met in time');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 beforeEach(() => {
   _initTestLandosDb();
@@ -301,9 +310,10 @@ describe('Deal Intelligence run lifecycle', () => {
     expect(comps.acceptance!.state).toBe('incomplete');
   });
 
-  it('REJECTS comps pulled from a government record, and never joins them', async () => {
-    // Phase 5 forbids assessor/recorder/deed verification on comparable
-    // properties. The rule fails the lane rather than passing quietly.
+  it('drops government-record comp candidates before the current handback', async () => {
+    // Government-record research is subject-only. A comp candidate carrying a
+    // government provider is removed before the current mission handback so the
+    // forbidden provider never reaches the snapshot or UI.
     const store = new PropertyIntelligenceStore();
     const missionStore = new MissionGraphStore();
     await runDealIntelligenceMission({
@@ -324,17 +334,217 @@ describe('Deal Intelligence run lifecycle', () => {
     });
     const mission = missionStore.latestMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, 32)!;
     const comps = missionStore.listChildren(mission.missionId).find((child) => child.key === 'comparables')!;
-    expect(comps.status).toBe('rejected');
-    expect(comps.acceptance!.reason).toMatch(/Assessor/);
+    expect(comps.status).toBe('partial');
+    expect(comps.acceptance!.state).toBe('incomplete');
+    expect(JSON.stringify(comps.result)).not.toMatch(/Assessor/);
 
     const snapshot = store.primaryRun(32)!.snapshot!;
-    // Nothing from the rejected lane is asserted.
+    // Nothing from the filtered candidate is asserted.
     expect(snapshot.comps.sold).toHaveLength(0);
     expect(snapshot.comps.active).toHaveLength(0);
     expect(snapshot.valuation.priceable).toBe(false);
-    expect(snapshot.blockers.join(' ')).toMatch(/Comparable sales/i);
+    expect(snapshot.blockers.join(' ')).toMatch(/No usable comparable/i);
     // The valuation and strategy lanes still RAN — a rejected comp lane changes
     // what can be concluded, it does not cancel the rest of the mission.
     expect(snapshot.strategies).toHaveLength(5);
+  });
+});
+
+describe('Progressive updates while the mission runs', () => {
+  it('persists a preliminary partial as children settle, and NEVER promotes it', async () => {
+    const store = new PropertyIntelligenceStore();
+    const missionStore = new MissionGraphStore();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+
+    const { launch, completion } = launchDealIntelligenceMission({
+      dealCardId: 32,
+      snapshotStore: store,
+      missionStore,
+      capabilities: caps({
+        collectors: collectors({
+          comparables: async () => {
+            await gate;
+            return ok({
+              candidates: [
+                { provider: 'LandPortal visible', lane: 'landportal', addressDesc: '100 Ridge Rd', state: 'TN', price: 60_000, priceKind: 'sold', saleOrListDate: '2026-01-10', acres: 10, pricePerAcre: 6_000, sourceUrl: 'https://landportal.com/x', compClass: 'vacant_land' },
+              ] as never,
+              duplicatesMerged: 0,
+            });
+          },
+        }),
+      }),
+      ...RUN_OPTS,
+    });
+
+    // Mid-flight: the identity lane settles while comparables is still gated.
+    await until(() => (store.getRun(launch.runId)?.progress?.settled ?? []).includes('parcel_identity'));
+
+    const midFlight = store.getRun(launch.runId)!;
+    const progress = midFlight.progress!;
+    // The partial is clearly preliminary and never claims completion.
+    expect(progress.preliminary).toBe(true);
+    expect(progress.snapshot.preliminary).toBe(true);
+    expect(progress.snapshot.isPrimary).toBe(false);
+    expect(progress.snapshot.status).toBe('running');
+    expect(progress.snapshot.completedAt).toBeNull();
+    // Settled content is already visible: the confirmed identity from the lane.
+    expect(progress.snapshot.identity.apn).toBe('073090 04200');
+    expect(progress.snapshot.identity.state).toBe('confirmed');
+    // The gated lane is honestly outstanding, worded as in flight, not failed.
+    expect(progress.outstanding).toContain('comparables');
+    expect(progress.snapshot.missingInformation.join(' ')).toMatch(/still in flight/);
+    // Nothing preliminary is promoted: no primary read exists yet, and the run
+    // row carries no snapshot.
+    expect(store.primaryRun(32)).toBeNull();
+    expect(midFlight.snapshot).toBeNull();
+    expect(midFlight.isPrimary).toBe(false);
+
+    release();
+    const finalSnapshot = await completion;
+
+    // Join behaviour is unchanged: ONE promoted snapshot, and the in-flight
+    // content is cleared so a finished run never serves stale mid-flight data.
+    expect(finalSnapshot).toBeTruthy();
+    expect(finalSnapshot!.preliminary).toBeUndefined();
+    const finished = store.getRun(launch.runId)!;
+    expect(finished.progress).toBeNull();
+    expect(finished.isPrimary).toBe(true);
+    expect(store.primaryRun(32)!.runId).toBe(launch.runId);
+    expect(store.primaryRun(32)!.snapshot!.preliminary).toBeUndefined();
+  });
+
+  it('a rerun in flight never displaces the promoted snapshot with its partial', async () => {
+    const store = new PropertyIntelligenceStore();
+    await runDealIntelligenceMission({ dealCardId: 32, capabilities: caps(), snapshotStore: store, ...RUN_OPTS });
+    const good = store.primaryRun(32)!;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const rerun = launchDealIntelligenceMission({
+      dealCardId: 32,
+      snapshotStore: store,
+      capabilities: caps({
+        collectors: collectors({
+          comparables: async () => { await gate; return ok({ candidates: [] as never, duplicatesMerged: 0 }); },
+        }),
+      }),
+      ...RUN_OPTS,
+    });
+
+    await until(() => (store.getRun(rerun.launch.runId)?.progress?.settled ?? []).length > 0);
+    // The promoted read is still the finished run, untouched by the partial.
+    expect(store.primaryRun(32)!.runId).toBe(good.runId);
+    expect(store.primaryRun(32)!.snapshot!.preliminary).toBeUndefined();
+
+    release();
+    await rerun.completion;
+    expect(store.primaryRun(32)!.runId).toBe(rerun.launch.runId);
+  });
+});
+
+describe('Automatic launch from New Lead intake', () => {
+  function recordingHooks(): { hooks: IntakeLifecycleHooks; research: Array<{ opportunityId: number; status: string; note: string }>; briefs: number[] } {
+    const research: Array<{ opportunityId: number; status: string; note: string }> = [];
+    const briefs: number[] = [];
+    return {
+      research,
+      briefs,
+      hooks: {
+        research: (opportunityId, status, note) => { research.push({ opportunityId, status, note }); },
+        discoveryBrief: (opportunityId) => { briefs.push(opportunityId); },
+      },
+    };
+  }
+
+  it('launches ONE parent mission fire-and-forget and advances the opportunity lifecycle', async () => {
+    const store = new PropertyIntelligenceStore();
+    const missionStore = new MissionGraphStore();
+    const { hooks, research, briefs } = recordingHooks();
+
+    const launch = autoLaunchDealIntelligenceForIntake({
+      dealCardId: 32,
+      opportunityId: 7,
+      capabilities: caps(),
+      snapshotStore: store,
+      missionStore,
+      hooks,
+      ...RUN_OPTS,
+    });
+
+    // The launch returns immediately with the mission identity; nothing awaited.
+    expect(launch).toBeTruthy();
+    expect(launch!.alreadyRunning).toBe(false);
+    expect(launch!.missionId).toBe(launch!.runId);
+    expect(research[0]).toMatchObject({ opportunityId: 7, status: 'running' });
+
+    await until(() => research.some((entry) => ['complete', 'partial', 'failed'].includes(entry.status)));
+    await until(() => store.primaryRun(32) != null);
+
+    const mission = missionStore.latestMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, 32)!;
+    expect(mission.missionId).toBe(launch!.missionId);
+    expect(mission.trigger).toBe('automatic_manual_intake');
+    expect(missionStore.listChildren(mission.missionId)).toHaveLength(DEAL_INTELLIGENCE_CHILDREN.length);
+
+    const terminal = research[research.length - 1];
+    expect(['complete', 'partial']).toContain(terminal.status);
+    // A usable outcome builds the discovery brief, exactly once.
+    expect(briefs).toEqual([7]);
+  });
+
+  it('a duplicate submission returns the run in flight and never starts a second mission', async () => {
+    const store = new PropertyIntelligenceStore();
+    const missionStore = new MissionGraphStore();
+    const { hooks, research } = recordingHooks();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gatedCaps = caps({
+      collectors: collectors({
+        parcel_identity: async () => { await gate; return ok({ identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false }); },
+      }),
+    });
+
+    const first = autoLaunchDealIntelligenceForIntake({ dealCardId: 32, opportunityId: 7, capabilities: gatedCaps, snapshotStore: store, missionStore, hooks, ...RUN_OPTS });
+    const second = autoLaunchDealIntelligenceForIntake({ dealCardId: 32, opportunityId: 7, capabilities: gatedCaps, snapshotStore: store, missionStore, hooks, ...RUN_OPTS });
+
+    expect(first!.alreadyRunning).toBe(false);
+    expect(second!.alreadyRunning).toBe(true);
+    expect(second!.missionId).toBe(first!.missionId);
+    // The lifecycle advanced ONCE: the duplicate wrote no second running status.
+    expect(research.filter((entry) => entry.status === 'running')).toHaveLength(1);
+    expect(missionStore.listMissions(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, 32)).toHaveLength(1);
+
+    release();
+    await until(() => research.some((entry) => ['complete', 'partial', 'failed'].includes(entry.status)));
+  });
+
+  it('a mission that cannot establish the subject reads as FAILED research, with no discovery brief', async () => {
+    const store = new PropertyIntelligenceStore();
+    const { hooks, research, briefs } = recordingHooks();
+
+    autoLaunchDealIntelligenceForIntake({
+      dealCardId: 32,
+      opportunityId: 7,
+      capabilities: caps({ collectors: collectors({ parcel_identity: async () => { throw new Error('LandPortal unreachable'); } }) }),
+      snapshotStore: store,
+      hooks,
+      ...RUN_OPTS,
+    });
+
+    await until(() => research.some((entry) => ['complete', 'partial', 'failed'].includes(entry.status)));
+    expect(research[research.length - 1].status).toBe('failed');
+    expect(briefs).toHaveLength(0);
+    // The failed attempt is recorded; nothing was promoted.
+    expect(store.primaryRun(32)).toBeNull();
+    expect(store.latestRun(32)!.status).toBe('failed');
+  });
+
+  it('maps run outcomes to research statuses without ever reading failure as success', () => {
+    const base = { status: 'complete' } as never;
+    expect(researchStatusForOutcome(null, null)).toBe('failed');
+    expect(researchStatusForOutcome(base, 'failed')).toBe('failed');
+    expect(researchStatusForOutcome({ status: 'complete' } as never, 'complete')).toBe('complete');
+    expect(researchStatusForOutcome({ status: 'complete_with_gaps' } as never, 'complete_with_gaps')).toBe('partial');
+    expect(researchStatusForOutcome({ status: 'blocked_identity' } as never, 'failed')).toBe('failed');
   });
 });

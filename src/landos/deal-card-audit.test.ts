@@ -78,8 +78,8 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
     const a = auditDealCardCoherence({
       report: cleanReport,
       executiveSummary: {
-        strongestStrategy: { strategy: 'Cash Flip' },
-        strategyRanking: [{ strategy: 'Subdivide' }, { strategy: 'Cash Flip' }],
+        strongestStrategy: { strategy: 'Quick Flip' },
+        strategyRanking: [{ strategy: 'Subdivide' }, { strategy: 'Quick Flip' }],
       },
       subjectCardId: 15,
     });
@@ -95,7 +95,7 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
       executiveSummary: {
         strongestStrategy: { strategy: 'No acquisition strategy is ready' },
         strategyRanking: [
-          { strategy: 'Cash Flip', viability: 'not_viable' },
+          { strategy: 'Quick Flip', viability: 'not_viable' },
           { strategy: 'Land-Home Package', viability: 'not_viable' },
         ],
       },
@@ -107,7 +107,7 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
     const a = auditDealCardCoherence({
       report: cleanReport,
       executiveSummary: cleanEs,
-      pursuit: { recommended: { strategy: 'Subdivide' }, runnerUps: [{ strategy: 'Cash Flip' }] },
+      pursuit: { recommended: { strategy: 'Subdivide' }, runnerUps: [{ strategy: 'Quick Flip' }] },
       subjectCardId: 15,
     });
     const c = a.checks.find((x) => x.id === 'strategy_single_story')!;
@@ -197,21 +197,21 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
   it('fails strategy_five_approved on fewer than five or Pass-as-strategy', () => {
     const four = auditDealCardCoherence({
       report: cleanReport, executiveSummary: cleanEs, subjectCardId: 15,
-      strategyReadiness: { strategies: [{ strategy: 'Cash Flip' }, { strategy: 'Novation or Double Close' }, { strategy: 'Subdivide or Minor Split' }, { strategy: 'Land-Home Package' }], pricingAllowed: true },
+      strategyReadiness: { strategies: [{ strategy: 'Quick Flip' }, { strategy: 'Novation or Double Close' }, { strategy: 'Subdivide or Minor Split' }, { strategy: 'Land-Home Package' }], pricingAllowed: true },
     });
     expect(four.checks.find((x) => x.id === 'strategy_five_approved')!.pass).toBe(false);
     const withPass = auditDealCardCoherence({
       report: cleanReport, executiveSummary: cleanEs, subjectCardId: 15,
-      strategyReadiness: { strategies: [{ strategy: 'Cash Flip' }, { strategy: 'Novation or Double Close' }, { strategy: 'Subdivide or Minor Split' }, { strategy: 'Land-Home Package' }, { strategy: 'Pass' }], pricingAllowed: true },
+      strategyReadiness: { strategies: [{ strategy: 'Quick Flip' }, { strategy: 'Novation or Double Close' }, { strategy: 'Subdivide or Minor Split' }, { strategy: 'Land-Home Package' }, { strategy: 'Pass' }], pricingAllowed: true },
     });
     expect(withPass.checks.find((x) => x.id === 'strategy_five_approved')!.pass).toBe(false);
   });
 
-  it('recognizes Cash Flip as the approved quick-flip strategy', () => {
+  it('recognizes Quick Flip as the approved quick-flip strategy', () => {
     const a = auditDealCardCoherence({
       report: cleanReport, executiveSummary: cleanEs, subjectCardId: 15,
       strategyReadiness: { strategies: [
-        { strategy: 'Cash Flip' },
+        { strategy: 'Quick Flip' },
         { strategy: 'Novation or Double Close' },
         { strategy: 'Subdivide or Minor Split' },
         { strategy: 'Land-Home Package' },
@@ -225,7 +225,7 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
     const a = auditDealCardCoherence({
       report: cleanReport, executiveSummary: cleanEs, subjectCardId: 15,
       strategyReadiness: { strategies: [], pricingAllowed: false },
-      pursuit: { recommended: { strategy: 'Cash Flip' }, runnerUps: [], attractiveAcquisition: null },
+      pursuit: { recommended: { strategy: 'Quick Flip' }, runnerUps: [], attractiveAcquisition: null },
     });
     expect(a.checks.find((x) => x.id === 'pricing_gate_agreement')!.pass).toBe(false);
   });
@@ -268,7 +268,7 @@ describe('auditDealCardCoherence — the orchestrator gate', () => {
 
 // ── Unified readiness agreement (the WS3 disagreement gate) ───────────────────
 
-const blockedFive = ['Cash Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land-Home Package', 'Improvement Then Flip']
+const blockedFive = ['Quick Flip', 'Novation or Double Close', 'Subdivide or Minor Split', 'Land-Home Package', 'Improvement Then Flip']
   .map((strategy) => ({ strategy, status: 'blocked' }));
 
 const coherentUnified = {

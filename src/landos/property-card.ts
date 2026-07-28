@@ -816,6 +816,54 @@ export interface LandPortalComparableRecord {
   saleListIndicator?: 'sale' | 'list' | 'unknown';
   improvement: 'vacant' | 'improved' | 'unknown';
   confidence: 'high' | 'medium' | 'low';
+
+  // ── Two-surface fields (Phase 5 comp correction) ──────────────────────────
+  /**
+   * Where the transaction status came from. LandPortal publishes it as a card
+   * ATTRIBUTE and again on the comp's own parcel page; the row text never says.
+   * Recording the origin is what stops a stated status from being quietly
+   * downgraded to 'unknown' by a later normalization step.
+   */
+  statusSource?: 'card_attribute' | 'detail_surface' | 'row_text' | 'section_label' | null;
+  /** LandPortal's own identity for the comp, from the comparable card. */
+  landPortalPropertyId?: string | null;
+  fips?: string | null;
+  mlsPropertyId?: string | null;
+  /** Detail-surface locality. */
+  city?: string | null;
+  county?: string | null;
+  state?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  /** Assessor parcel acreage from the detail surface, which is NOT always the
+   *  MLS acreage the comparable row was priced on. */
+  parcelAcres?: number | null;
+  /** Improvement evidence from the detail surface. A structure with a nominal
+   *  improvement value is a land sale; a material one is not. */
+  buildingSqft?: number | null;
+  improvementValue?: number | null;
+  useDescription?: string | null;
+  landMarketValue?: number | null;
+  totalMarketValue?: number | null;
+  /**
+   * True when the row acreage and the detail parcel acreage cannot be
+   * reconciled (the live case: a row reading "17.75 ac" whose parcel page is
+   * 574 acres). Such a row can never carry a price-per-acre.
+   */
+  acreageConflict?: boolean;
+  /** The comp's own LandPortal parcel URL — the second surface actually read. */
+  detailUrl?: string | null;
+  /**
+   * When the capture that produced this row ran.
+   *
+   * Property inspection is CUMULATIVE, which is right for evidence and wrong for
+   * "what are this parcel's comparables right now": a provider's comparable set
+   * changes between runs, so rows from superseded captures kept reappearing in
+   * the operator's current comp set — unenriched, status-unknown, and no longer
+   * part of what the provider returns. Stamping the generation lets the current
+   * set be read without deleting the history.
+   */
+  capturedAtIso?: string | null;
 }
 
 export interface PropertyInspectionSource {
@@ -917,6 +965,47 @@ function nonBlank(value: unknown): boolean {
   return typeof value === 'string' ? value.trim().length > 0 : value != null;
 }
 
+/**
+ * Collapse comparable rows across cumulative inspections, newest read winning.
+ *
+ * Comparables are identified by the PARCEL, not by the URL that happened to
+ * supply the row. A later, enriched capture of the same comp carries a different
+ * source URL (the comp's own parcel page) and a street address the earlier row
+ * lacked, so a URL/address/price key let the stale, status-unknown copy survive
+ * beside its corrected replacement and doubled the operator's comp count.
+ *
+ * APN alone is not enough either: an extractor that mis-assigns one APN to
+ * several rows would silently delete real comps. So two rows are the same comp
+ * when they share an APN AND do not state two DIFFERENT addresses. That merges
+ * "no address yet" with "address now known" while keeping genuinely distinct
+ * properties apart.
+ */
+function mergeComparableRows(rows: LandPortalComparableRecord[]): LandPortalComparableRecord[] {
+  const normApn = (value: unknown): string => String(value ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+  const normAddress = (value: unknown): string => String(value ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+  const merged = new Map<string, LandPortalComparableRecord>();
+  for (const row of rows) {
+    const apn = normApn(row.apn);
+    const address = normAddress(row.address);
+    let key: string;
+    if (apn.length >= 5) {
+      // Reuse the APN slot only when the addresses do not contradict.
+      const existingKey = [...merged.keys()].find((candidate) => {
+        if (!candidate.startsWith(`apn:${apn}|`)) return false;
+        const held = merged.get(candidate)!;
+        const heldAddress = normAddress(held.address);
+        return !heldAddress || !address || heldAddress === address;
+      });
+      key = existingKey ?? `apn:${apn}|${address}`;
+    } else {
+      key = `${row.sourceUrl ?? ''}|${row.address ?? ''}|${row.acres ?? ''}|${row.price ?? ''}`;
+    }
+    if (!key) continue;
+    merged.set(key, row);
+  }
+  return [...merged.values()];
+}
+
 function mergeUniqueBy<T>(rows: T[], keyOf: (row: T) => string): T[] {
   const merged = new Map<string, T>();
   for (const row of rows) {
@@ -953,7 +1042,7 @@ export function mergePropertyInspections(records: Array<PropertyInspectionRecord
     assets: mergeUniqueBy(all((r) => r.assets), (row) => row.key || row.storedPath),
     overlays: mergeUniqueBy(all((r) => r.overlays), (row) => `${row.overlay}|${row.screenshotKey ?? ''}`),
     visualObservations: mergeUniqueBy(all((r) => r.visualObservations), (row) => `${row.label}|${row.detail}|${row.evidence}`),
-    comparables: mergeUniqueBy(all((r) => r.comparables), (row) => `${row.sourceUrl ?? ''}|${row.address ?? ''}|${row.acres ?? ''}|${row.price ?? ''}`),
+    comparables: mergeComparableRows(all((r) => r.comparables)),
     sources: mergeUniqueBy(all((r) => r.sources ?? []), (row) => `${row.provider}|${row.stage}|${row.url ?? ''}`),
     evidence: mergeUniqueBy(all((r) => r.evidence ?? []), (row) => `${row.label}|${row.source ?? ''}|${row.url ?? ''}|${row.detail}`),
     discoveryQuestions: [...new Set(all((r) => r.discoveryQuestions ?? []).filter(nonBlank))],
@@ -987,6 +1076,31 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
     summary: `Captured property inspection (${assets.length} image(s), ${payload.comparables.length} comparable row(s)).`,
     ref: JSON.stringify(payload),
   });
+}
+
+/**
+ * The comparable rows belonging to the CURRENT capture generation.
+ *
+ * Cumulative inspection keeps every comparable ever read, which is correct for
+ * evidence. It is not the answer to "what are this parcel's comparables now":
+ * a provider's comparable set changes between runs, and rows from superseded
+ * captures were resurfacing in the operator's working set carrying none of the
+ * status, address or date the current capture establishes.
+ *
+ * Rows stamped with the newest capture time are the current set. When nothing is
+ * stamped at all — only pre-stamping history exists — every row is returned, so
+ * an older card never loses its comps to this rule.
+ */
+export function currentComparables(
+  inspection: PropertyInspectionRecord | null | undefined,
+): LandPortalComparableRecord[] {
+  const rows = inspection?.comparables ?? [];
+  const stamps = rows
+    .map((row) => (typeof row.capturedAtIso === 'string' ? row.capturedAtIso : null))
+    .filter((value): value is string => !!value);
+  if (!stamps.length) return rows;
+  const newest = stamps.reduce((a, b) => (a > b ? a : b));
+  return rows.filter((row) => row.capturedAtIso === newest);
 }
 
 /** Load the cumulative, non-destructive property inspection for a card. */

@@ -88,7 +88,7 @@ describe('Visual Intelligence — hero priority & static-map fallback doctrine',
 });
 
 describe('Visual Intelligence — default (persistence-derived) capturers', () => {
-  const bigFile = 20 * 1024;
+  const bigFile = 700 * 1024;
   const readers = {
     loadGoogleVisuals: () => ({
       street_view_static: { storedPath: '/store/visuals/sv.png', timestamp: TS },
@@ -137,6 +137,27 @@ describe('Visual Intelligence — default (persistence-derived) capturers', () =
     expect(r.sources.find((s) => s.source === 'landportal_comps')?.storedPath).toBe('/store/visuals/lpcomps.png');
   });
 
+  it('uses the newest persisted overlay and rejects a relabeled duplicate of the parcel base', async () => {
+    const overlayReaders = {
+      ...readers,
+      loadInspectionAssets: () => [
+        { key: 'parcel_page', label: 'LandPortal Parcel View', kind: 'parcel_page', storedPath: '/store/visuals/base.png', timestamp: '2026-07-09T00:00:00.000Z' },
+        { key: 'fema-old', label: 'FEMA Floodplain', kind: 'overlay', overlay: 'FEMA Floodplain', storedPath: '/store/visuals/fema-old.png', timestamp: '2026-07-09T00:01:00.000Z' },
+        { key: 'fema-new', label: 'FEMA Floodplain', kind: 'overlay', overlay: 'FEMA Floodplain', storedPath: '/store/visuals/fema-new.png', timestamp: '2026-07-09T00:02:00.000Z' },
+        { key: 'wetlands', label: 'Wetlands', kind: 'overlay', overlay: 'Wetlands', storedPath: '/store/visuals/wetlands.png', timestamp: '2026-07-09T00:03:00.000Z' },
+      ],
+      fileSha256: (p: string) => /base|wetlands/.test(p) ? 'same-base-frame' : `sha:${p}`,
+    };
+    const r = await runVisualIntelligence(ctx, defaultCapturers(overlayReaders), { now });
+    const fema = r.sources.find((s) => s.source === 'landportal_fema')!;
+    const wetlands = r.sources.find((s) => s.source === 'landportal_wetlands')!;
+    expect(fema.state).toBe('captured');
+    expect(fema.storedPath).toBe('/store/visuals/fema-new.png');
+    expect(wetlands.state).toBe('unavailable');
+    expect(wetlands.blocker).toMatch(/byte-identical.*base map/i);
+    expect(wetlands.storedPath).toBeUndefined();
+  });
+
   it('marks Street View unavailable (not blocked) when Google has no street asset', async () => {
     const noStreet = { ...readers, loadGoogleVisuals: () => ({ maps_static: { storedPath: '/store/visuals/map.png', timestamp: TS } }) };
     const r = await runVisualIntelligence(ctx, defaultCapturers(noStreet), { now });
@@ -181,7 +202,7 @@ describe('Visual Intelligence — live capturer merge & card driver', () => {
       {
         loadGoogleVisuals: () => ({ street_view_static: { storedPath: '/store/visuals/sv.png', timestamp: TS }, maps_static: { storedPath: '/store/visuals/map.png', timestamp: TS } }),
         loadInspectionAssets: () => [{ key: 'lp-sat', label: 'LandPortal satellite', kind: 'satellite', storedPath: '/store/visuals/lp.png', timestamp: TS }],
-        fileSize: () => 20 * 1024,
+        fileSize: () => 700 * 1024,
         analyze: async (images) => { analyzed.push(images); return analysis; },
         persist: (_id, r) => { persisted = r; },
         now,

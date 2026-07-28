@@ -77,6 +77,19 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
     expect(r.comps).toHaveLength(0);
   });
 
+  it('never relabels active or ambiguous sold-board rows as closed sales', async () => {
+    const mixed: RawZillowListing[] = [
+      { ...rawListings[0], status: 'for sale' },
+      { address: '1812 Wells AVE, LEHIGH ACRES, FL 33972', price: 28_000, acres: 0.4, url: 'u', status: null },
+      { address: '1814 Wells AVE, LEHIGH ACRES, FL 33972', price: 27_000, acres: 0.45, url: 's', status: 'sold' },
+    ];
+    const result = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
+      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(mixed) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+    });
+    expect(result.comps.map((comp) => comp.address)).toEqual(['1814 Wells AVE, LEHIGH ACRES, FL 33972']);
+    expect(result.comps.every((comp) => comp.status === 'sold')).toBe(true);
+  });
+
   it('is disabled without a locality (no city/state)', async () => {
     const r = await fetchZillowLandComps({ subjectAcres: 0.25 }, { force: true, resolveChrome: chrome, connect: (async () => null) as never });
     expect(r.status).toBe('disabled');

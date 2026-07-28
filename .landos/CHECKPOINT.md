@@ -1,128 +1,104 @@
 # LandOS Current Checkpoint
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-27T05:53:03.121Z
-- **HEAD at generation:** `7b94d81`
-- **Worktree:** DIRTY; 21 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-07-26T21:30:07-04:00; 351 files, 4605 tests, 0 failures (full vitest run).
-- **Latest typecheck:** PASS at 2026-07-26T21:31:40-04:00; server clean; frontend pre-existing-red at 92 TS6133, none in a changed file.
-- **Latest production build:** PASS at 2026-07-26T21:27:30-04:00; vite build + tsc; only the existing large-chunk advisory.
-- **Managed runtime:** RUNNING healthy at 2026-07-26T21:34:00-04:00; PID 85780; http://localhost:3141.
-- **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); 3/3 accepted, 0 QA-passed; current workstream none in flight; 0 open QA findings.
-- **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
+- **Generated:** 2026-07-27T19:56:38.4523774-04:00
+- **HEAD at generation:** `c3158f6`
+- **Worktree:** DIRTY; 94 modified/untracked paths at record time. Canonical Deal Card consolidation is accepted in the live operator workflow and undergoing final policy checks before local commit.
+- **Latest full suite:** PASS; 360 files, 4,718 tests, 0 failures after integrated cleanup.
+- **Latest typecheck/build:** PASS; server typecheck clean; frontend has zero diagnostics in changed web files (unchanged baseline files only); production build compiled 1,976 modules.
+- **Managed runtime:** RUNNING healthy at 2026-07-27T19:56:38-04:00; PID 43836; root and health HTTP 200; Health OK at http://localhost:3141.
+- **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); preserve its ledger and proof report at `.landos/sprints/sprint-2026-07-24-zoning-land-use/`.
 <!-- DERIVED:END -->
 
-Live repository, runtime and owner-visible behavior override anything written here.
-Detail: `docs/landos/`. Do not push without go-ahead.
+Live disk, managed runtime, database, and personally observed owner-facing behavior
+override anything written here. Detailed history is under `docs/landos/`. Do not
+stage machine-local artifacts or push without explicit approval.
 
-## State
+## Current state
 
-Phase 5 is PARTIAL and must NOT be marked complete. Items 18, 19 and 20 are COMPLETE
-and committed locally as a verified partial increment (NOT pushed). Item 21 is PARTIAL:
-15 of its 16 golden-path requirements are satisfied; the outstanding one is a supported
-Deal 32 valuation. Phase 5 completes only when Deal 32 is rerun successfully WITH that
-valuation. Phase 6 is untouched and is the next approved phase.
+The canonical ten-tab Deal Card consolidation is COMPLETE and operator-accepted in
+the working tree and UNCOMMITTED after all repository verification gates passed.
+Obsolete routes and source paths were removed. The canonical intake, parallel mission
+graph, progressive result, versioned snapshot, and Deal Card workspace are the
+current operating path. Historical deal data, evidence, documents, and mission
+history must remain readable.
 
-Run Property Intelligence now creates ONE parent mission (`deal_intelligence`, 11
-children) on the Phase 4 graph; its join is assembled by the Operator, evaluated by
-the Analyst and persisted as ONE versioned snapshot (v3) the Deal Card reads.
+Deal 58 was created through New Lead for 350 Old Hen Valley Rd, Oliver Springs, TN.
+Its automatic first mission failed identity resolution and remains visible as
+history. Operator reconciliation against the official Tennessee property record
+established APN `004 031.00`, owner `MORGAN BRANDON`, and 8.40 acres. The corrected
+mission completed and persisted after refresh and managed restart.
 
-An unauthorized Phase 4 gov-records build was removed from `main` and NEVER pushed.
-Preserved LOCALLY ONLY on rescue branches at `f1641a2`:
-`rescue/unauthorized-phase4-with-intake`, `rescue/fresh-lead-intake-fix`. Never delete
-or push them.
+## Deal 58 accepted owner output
 
-## Phase 4 mission graph (Items 14-17, published)
+- Ten tabs personally exercised: Overview, Property, Due Diligence, Market,
+  Strategy, Visuals, Seller, Documents, Activity, and Smart Intake.
+- Supported value range `$145,000-$196,000`; working value `$170,500`; target
+  acquisition range `$68,000-$102,500`.
+- Recommendation `Improvement Then Flip`; posture `RENEGOTIATE`.
+- Six distinct retained visuals loaded at 1600x1000.
+- LandPortal is the primary comp lane; Zillow and Redfin are permitted supplements.
+  HomeHarvest and Realie do not execute, count, render, or affect the current comp
+  workflow. Sold and active working sets remain capped and deduplicated.
+- Unresolved zoning, access, utilities, flood, site-specific soils, title, lien,
+  septic, and other professional diligence remain stated as gaps. No comparable
+  property receives government-record verification.
+- Owner of record remains separate from seller/lead identity; no contact data was
+  invented.
+- Activity preserves current corrected Run 3, complete Run 2, failed Run 1, and the
+  8.40-acre operator correction. Browser cleanup preserved only the deliverable
+  LandOS tab.
 
-Detail: `docs/landos/phase4-items-15-17.md`. Tables `landos_mission` +
-`landos_mission_child`: additive DDL, scoped by scope+scope_id; re-runs keep prior
-missions readable. Durable parent + child rows up front, atomic child claim (BEGIN
-IMMEDIATE), join only once every child is terminal. A child declares group,
-assignedRole, agentKey (validated against AGENT_ROSTER) and contributionSlot, written
-WITH the row. `mission-acceptance.ts` decides pass/fail, never process exit.
+## Cross-deal persistence
 
-Phase 5 additions: `awaits` (ordering WITHOUT skip), per-child dispatch instead of a
-wave barrier, and restart-orphan reclamation keyed on process start.
-
-## Acceptance evidence
-
-- **Phase 5, Chrome.** Deal 32 (Roane) run #25 and Deal 54 (Anderson, created fresh
-  through New Lead intake) both JOINED 11/11, identity CONFIRMED on the TN Comptroller
-  layer. The Deal Card reads the current snapshot and shows its parent mission id.
-  Comps 1 sold / 48 and 54 active; neither priceable (see the Item 21 gap). Browser
-  cleanup recorded on the snapshot. Survived refresh AND managed restart, cards stayed
-  isolated. Deal 54 proved lead identity SEPARATE from owner of record: lead Marcus
-  Ellery (test contact), owner STARDUST RIDGE LLC. Do NOT delete Deal 54.
-- Failed runs #18-#21 are retained as history and NEVER demoted the good snapshot.
-- **Phase 4, Chrome.** Deal 52 JOINED 3/3; Deal 47 JOINED WITH GAPS naming its blocked
-  child; Deal 53 fresh intake JOINED 3/3. Do NOT delete Deal 53.
-
-## Prior committed work to preserve
-
-Pushed, still required; detail in git and `docs/landos/`. `f1beeff` lead identity
-SEPARATE from owner of record. `179cd12` Phase 3 ten-specialist mission; LandPortal
-sidebar + Show-on-Map is the PRIMARY comp lane through approved LandOS Chrome (CDP in
-`.env`; foreign Edge rejected). `e9ce958` immediate-transaction claiming. `1b4f320`
-War Room loopback bind, pino redaction chokepoint, fail-closed migration guard, closed
-CORS allowlist.
-
-## Accepted property proof to preserve
-
-- Deal 32 (Roane TN): identity `confirmed` on the official TN Comptroller layer. APN
-  `073090 04200`, owner `SACHAN DILEEP S`, situs `OLD RIDGE RD`, 12.28 acres, coords +
-  source URL. One artifact (PNG 2,949,777 bytes, SHA-256 `df2e1d2c...ea09f3`). APN
-  reconciliation PROVEN equivalent: the layer returns ONE Roane parcel for both
-  spellings; the state prefixes county NUMBER 073 onto county-local `090 04200`.
-- Deal 31 verified (snapshot v1, nine evidence items), Deal 10 unresolved, Deal 14
-  gov-record snapshot v5 (instrument 1997O31519). All persist through restart.
-
-## Exclusions
-
-Never stage `.claude`, `.kilo`, debug scripts, `tmp_query*`, `scripts/_*` or
-`verify-deal30.mjs`. Operational scripts go in `scripts/sprint/`.
+- Deal 32 remains isolated: APN `073090 04200`, owner `SACHAN DILEEP S`, situs
+  `OLD RIDGE RD`, 12.28 acres. Its retained evidence and mission history remain.
+- Deal 54 remains isolated: APN `001003 01205`, owner `STARDUST RIDGE LLC`, 12.06
+  acres. Market output remains honestly unpriceable with a HOLD posture; its lead
+  identity remains separate from owner of record.
+- Refresh and the accepted managed restart preserved Deals 32, 54, and 58 without
+  cross-deal contamination.
 
 ## Required invariants
 
-1. One accepted identity version is current; candidate and confirmed cannot coexist.
-2. Accepted facts link to evidence and the researched identity version; operator
-   corrections beat weaker automation.
-3. GET performs no provider work or reconciliation writes; collector failures are
-   isolated and restart-resumable.
-4. Unresolved identity cannot show parcel-specific imagery, comps, FMV or strategy.
-5. Screenshot text/geometry never establishes official identity; the lead contact is
-   never written into owner of record.
-6. A missing specialist result is always visible; completeness is never claimed over a
-   failed, blocked or skipped contribution.
-7. APN formatting never creates a false conflict; a complete APN reaches the card
-   unaltered; transaction type is never inferred from a price.
-8. A parent never completes while a child is non-terminal, and never reports success
-   over a failed, blocked, skipped, rejected or outstanding child.
-9. A child passes only on its ACCEPTANCE verdict, never on process exit. A
-   deterministic lane never names a provider or implies spend; Hermes is never required.
-10. Phase 5: a missing or slow lane never cancels a conclusion that does not consume
-    it, and no government record is pulled for a comparable property.
+1. One accepted identity version is current; candidate and confirmed identity cannot
+   coexist. Operator-verified corrections supersede weaker automation through a new
+   version without deleting history.
+2. Accepted facts link to evidence and the researched identity version. GET performs
+   no provider work or reconciliation writes; failures are isolated and resumable.
+3. Unresolved identity cannot show parcel-specific imagery, comps, FMV, or strategy.
+   Screenshot text or geometry never establishes official identity.
+4. A parent cannot complete while a child is non-terminal and cannot claim success
+   over failed, blocked, skipped, rejected, or outstanding work.
+5. Missing specialist output remains visible. Preliminary/progressive output is not
+   promoted as the current snapshot before the join.
+6. The lead/contact is never written into owner of record. APN formatting cannot
+   create a false conflict; transaction type is never inferred from price.
+7. Current comps use only LandPortal, Zillow, and Redfin. HomeHarvest/Realie are not
+   current sources. Comparable properties never trigger government-record research.
+8. No completeness score, readiness gate, legal-proof requirement, or unrelated
+   governance may block or embellish the operator workflow.
+9. Background browser work remains isolated from the operator window and its owned
+   pages are cleaned up without closing another lane's live page.
 
-## Known limitations and next action
+## Final repository gates
 
-- **Item 21 gap — the one blocker to completing Phase 5:** no genuinely closed, in-band
-  land comp currently carries usable acreage through the approved workflow. Probed live
-  on Kingston/Roane: every approved sold row inside the 6.14-30.7ac band has no lot size
-  at source, and every sold row that DOES carry acreage is a 0.32-1.0ac residential lot.
-  Deal 32 run #25 produced 1 sold / 48 active and no value band. Closing this needs lot
-  size read from the Redfin DETAIL page = Phase 6 comp extraction.
-- Phase 6 defects logged while probing: the sold board is never requested from either
-  provider; Zillow's sold mode RELABELS active rows as sold (unreachable today — never
-  enable without fixing); a Redfin row with unknown acreage bypasses the acreage band.
-  Detail: `docs/landos/phase5-items-18-21.md`.
-- Comparables `awaits` the projection refresh: both drive the ONE Chrome tab.
-- The New Lead parser stored "9.4 acres of vacant land on Hardin Valley Rd" as an
-  address (Deal 52). PRE-EXISTING; deliberately NOT fixed in Phase 4 or 5.
-- Children run in-process; no external worker is wired. Every representative lane is
-  deterministic, so `model_routed` is proven by tests with injected clients, not a paid
-  live model call. `extractApnCandidates` misses a letter-led APN (`R1234-567A`).
-- No zoning/future-land-use/utility adapter for Roane, Anderson or Fayette; per-county
-  source config is the largest open gap. Laurel County KY has no tested parcel source.
-- Phase 2 visually unverified; `/overlay/aerial` 502s for Roane. Raw `console.*` in CLI
-  paths bypasses the redactor. 19 npm audit findings need MAJOR bumps. Professional
-  deed/title/lien, tax, zoning, access, septic and utility checks remain required.
-- Next: Phase 6 (comp rebuild) — it owns the Item 21 valuation gap above.
+Integrated verification passed: full suite 360 files/4,718 tests; server typecheck;
+frontend changed-file baseline check; production build (1,976 modules); obsolete
+route runtime 404 coverage for 11 method/path pairs with route tests 63/63; canonical
+regressions 52/52; and stale-contract repairs 80/80. Managed root and health returned
+HTTP 200 on PID 43836. Checkpoint tests passed 2 files/32 tests. Memory audit passed
+fresh with 0 content warnings; coding-agent bootstrap was about 4,587 tokens and the
+largest profile about 6,693, both under budget. Diff, secret, artifact, obsolete-route,
+dead-declaration, and legacy-load static scans passed. `.env` is unchanged; the only
+allowlisted secret-shaped value is the deliberate synthetic redaction test fixture.
+
+A narrow Chrome readback was not executed because the ChatGPT Chrome Extension was
+absent from Default and Profile 1 and the native-host registry key was missing. The
+previous personally completed full operator walkthrough remains acceptance authority;
+no research mission was rerun.
+
+Exclude `.claude/settings.local.json`, databases, browser profiles, screenshots,
+runtime files, temporary probes, secrets, and all machine-local artifacts. `.env`
+is read-only and must remain unmodified. Commit locally only after every gate passes;
+never push without explicit approval.

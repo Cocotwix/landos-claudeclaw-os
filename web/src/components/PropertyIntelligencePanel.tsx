@@ -54,6 +54,8 @@ export interface PiDueDiligenceItem {
 
 export interface PiComp {
   key: string;
+  /** The comp's assessor parcel number, exactly as the source stated it. */
+  apn?: string | null;
   address: string | null;
   lane: 'sold' | 'active';
   source: string;
@@ -111,6 +113,12 @@ export interface PiSnapshot {
     rejected: Array<{ address: string | null; source: string; price: number | null; reason: string }>;
     duplicatesMerged: number;
     summaryLine: string;
+    /** Priced rows whose publisher never stated whether they closed. */
+    askingReferences?: PiComp[];
+    /** Held-back rows as counts + one reason each, never one line per row. */
+    evidenceBuckets?: Array<{ reason: string; count: number; sources: string[] }>;
+    totalCollected?: number;
+    conclusion?: 'sold_supported' | 'asking_indication' | 'not_priceable';
   };
   valuation: {
     priceable: boolean;
@@ -125,6 +133,10 @@ export interface PiSnapshot {
     materialGaps: string[];
     notPriceableReason: string | null;
     nextActionToPrice: string | null;
+    /** The one number to work from inside the supported range. */
+    workingValue?: number | null;
+    /** One line naming the comps the conclusion actually rests on. */
+    primaryBasis?: string | null;
   };
   strategies: Array<{
     strategy: string;
@@ -143,6 +155,16 @@ export interface PiSnapshot {
     whatWouldChangeIt: string[];
     posture: 'pursue' | 'hold' | 'renegotiate' | 'reject' | 'undetermined';
     postureWhy: string;
+    shouldPursue?: 'yes' | 'with_conditions' | 'no' | 'undetermined';
+    worth?: { low: number; high: number; workingValue: number } | null;
+    targetBuyRange?: { low: number; high: number; basis: string } | null;
+    bestExit?: string | null;
+    dealKillers?: string[];
+    nextConfirmations?: string[];
+    juiceWorthSqueeze?: {
+      answer: 'yes' | 'conditional' | 'no' | 'undetermined';
+      why: string;
+    };
   };
   evidence: Array<{
     id: string;
@@ -171,6 +193,20 @@ export interface PiSnapshot {
   missionId?: string | null;
   /** What the run did with the browser pages it opened. */
   browserCleanup?: { before: number; after: number; closed: number; note: string } | null;
+  /** True only on the in-flight progressive assembly. Never on a promoted snapshot. */
+  preliminary?: boolean;
+}
+
+/** In-flight progressive content: the partial assembly built as children settle. */
+export interface PiProgressive {
+  preliminary: true;
+  runId: string;
+  dealCardId: number;
+  sequence: number;
+  updatedAt: string;
+  settled: string[];
+  outstanding: string[];
+  snapshot: PiSnapshot;
 }
 
 export interface PiSpecialist {
@@ -248,6 +284,8 @@ export interface PiMissionView {
 
 export interface PropertyIntelligenceView {
   snapshot: PiSnapshot | null;
+  /** In-flight progressive content while a run is running; null otherwise. */
+  progressive?: PiProgressive | null;
   /** The parent mission behind the snapshot and the run in flight. */
   mission: PiMissionView | null;
   run: PiRun | null;
@@ -407,6 +445,23 @@ function NoSnapshot({ label }: { label: string }) {
   );
 }
 
+/**
+ * Preliminary marking for in-flight progressive content. Rendered at the top of
+ * every section fed by a partial assembly, so mid-flight data is never mistaken
+ * for the joined snapshot.
+ */
+function PreliminaryNotice({ snapshot }: { snapshot: PiSnapshot }) {
+  if (!snapshot.preliminary) return null;
+  return (
+    <div data-testid="pi-preliminary" class="rounded-md border border-sky-500/40 bg-sky-500/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-sky-300">
+      <span class="font-semibold uppercase tracking-wide">Preliminary</span> — the mission is still
+      running. Only the specialist lanes that have settled so far are shown; lanes still in flight are
+      listed under missing information. The final snapshot replaces this view when the mission joins,
+      and nothing shown here is promoted until then.
+    </div>
+  );
+}
+
 // ── Launch + progress ───────────────────────────────────────────────────────
 
 const ACCEPTANCE_TONE: Record<string, string> = {
@@ -562,6 +617,33 @@ export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntellige
   );
 }
 
+export function PropertyIntelligenceHistory({ view }: { view: PropertyIntelligenceView | null }) {
+  const rows = view?.history ?? [];
+  return (
+    <Card title="Property Intelligence run history" right={<Tag tone="border-zinc-500/40 text-zinc-400">{rows.length}</Tag>}>
+      {rows.length ? (
+        <div data-testid="pi-run-history" class="space-y-1">
+          {rows.map((row) => (
+            <div key={row.runId} class="flex flex-wrap items-center gap-2 rounded border border-[var(--color-border)] px-2 py-1 text-[11px]">
+              <Tag tone={row.isPrimary ? STATUS_TONE.completed : row.status === 'failed' ? STATUS_TONE.failed : STATUS_TONE.partial}>
+                {row.isPrimary ? 'current' : row.status.replace(/_/g, ' ')}
+              </Tag>
+              <span class="font-semibold text-[var(--color-text)]">Run #{row.sequence}</span>
+              <span class="font-mono text-[10px] text-[var(--color-text-faint)]">{row.runId}</span>
+              <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">
+                {row.completedAt ? row.completedAt.slice(0, 19).replace('T', ' ') : `started ${row.startedAt.slice(0, 19).replace('T', ' ')}`}
+              </span>
+            </div>
+          ))}
+          <div class="text-[10px] leading-relaxed text-[var(--color-text-faint)]">
+            Historical attempts remain audit records. Only the row marked current drives the Deal Card.
+          </div>
+        </div>
+      ) : <Empty text="No Property Intelligence run has been recorded for this Deal Card." />}
+    </Card>
+  );
+}
+
 // ── Overview ────────────────────────────────────────────────────────────────
 
 export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapshot | null }) {
@@ -569,6 +651,7 @@ export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapsho
   const { identity, headline, recommendation, valuation } = snapshot;
   return (
     <div data-testid="pi-overview" class="space-y-3">
+      <PreliminaryNotice snapshot={snapshot} />
       <Card
         title="Property Intelligence"
         right={
@@ -596,9 +679,9 @@ export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapsho
             reading. Without it, "the Deal Card reads the current snapshot" is a
             claim the operator has to take on trust. */}
         <div data-testid="pi-snapshot-source" class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--color-text-faint)]">
-          <span>Current snapshot · run #{snapshot.sequence}</span>
+          <span>{snapshot.preliminary ? 'Preliminary assembly' : 'Current snapshot'} · run #{snapshot.sequence}</span>
           {snapshot.missionId && <span class="font-mono">parent mission {snapshot.missionId}</span>}
-          <span>{snapshot.isPrimary ? 'primary read for this Deal Card' : 'historical attempt — not the current read'}</span>
+          <span>{snapshot.preliminary ? 'in-flight partial — never promoted' : snapshot.isPrimary ? 'primary read for this Deal Card' : 'historical attempt — not the current read'}</span>
           {snapshot.completedAt && <span>completed {snapshot.completedAt.slice(0, 19).replace('T', ' ')}</span>}
         </div>
         {snapshot.browserCleanup && (
@@ -656,6 +739,7 @@ export function PropertyIntelligenceProperty({ snapshot }: { snapshot: PiSnapsho
   const { identity } = snapshot;
   return (
     <div data-testid="pi-property" class="space-y-3">
+      <PreliminaryNotice snapshot={snapshot} />
       <Card
         title="Parcel identity"
         right={<Tag tone={identity.state === 'confirmed' ? VERDICT_TONE.good : identity.state === 'provisional' ? VERDICT_TONE.caution : VERDICT_TONE.risk}>{identity.state}</Tag>}
@@ -718,10 +802,18 @@ function FactTable({ facts }: { facts: PiFact[] }) {
 export function PropertyIntelligenceDueDiligence({ snapshot }: { snapshot: PiSnapshot | null }) {
   if (!snapshot) return <NoSnapshot label="due diligence" />;
   if (!snapshot.dueDiligence.length) {
-    return <Empty text="No due-diligence lane produced a finding in this run. Nothing is claimed as screened." />;
+    return (
+      <div class="space-y-2">
+        <PreliminaryNotice snapshot={snapshot} />
+        <Empty text={snapshot.preliminary
+          ? 'No due-diligence lane has settled with a finding yet. Nothing is claimed as screened while the mission runs.'
+          : 'No due-diligence lane produced a finding in this run. Nothing is claimed as screened.'} />
+      </div>
+    );
   }
   return (
     <div data-testid="pi-diligence" class="space-y-2">
+      <PreliminaryNotice snapshot={snapshot} />
       {snapshot.dueDiligence.map((item) => (
         <div key={item.key} data-testid={`pi-dd-${item.key}`} class="rounded-md border border-[var(--color-border)] p-3">
           <div class="flex flex-wrap items-center gap-2">
@@ -751,6 +843,7 @@ export function PropertyIntelligenceMarket({ snapshot }: { snapshot: PiSnapshot 
   const { comps, valuation } = snapshot;
   return (
     <div data-testid="pi-market" class="space-y-3">
+      <PreliminaryNotice snapshot={snapshot} />
       <Card
         title="Comp source policy"
         right={
@@ -769,26 +862,50 @@ export function PropertyIntelligenceMarket({ snapshot }: { snapshot: PiSnapshot 
         <div class="mt-1 text-[11px] text-[var(--color-text-faint)]">{comps.summaryLine}</div>
       </Card>
 
+      {/* THE valuation. This card is the only place on the Deal Card a value is
+          asserted, and it is derived from the comps listed directly below it, so
+          the page can never show "not priceable" beside a definitive number. */}
       <Card title="Valuation" right={<Tag tone={valuation.priceable ? STATUS_TONE.completed : STATUS_TONE.failed}>{valuation.priceable ? `${valuation.confidence} confidence` : 'not priceable'}</Tag>}>
         {valuation.priceable ? (
           <div class="space-y-2">
+            {valuation.workingValue != null && (
+              <div class="flex items-baseline gap-2">
+                <span class="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">Working value</span>
+                <span data-testid="pi-working-value" class="text-[18px] font-bold text-[var(--color-text)]">{money(valuation.workingValue)}</span>
+              </div>
+            )}
             <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-4">
-              <Field label="Value band" value={range(valuation.range)} />
+              <Field label="Supported range" value={range(valuation.range)} />
               <Field label="Per acre" value={range(valuation.pricePerAcreRange)} />
               <Field label="Likely retail" value={range(valuation.likelyRetail)} />
               <Field label="Disposition" value={range(valuation.dispositionRange)} />
             </dl>
             <div class="text-[11px] leading-relaxed text-[var(--color-text-muted)]">{valuation.basis}</div>
+            {valuation.primaryBasis && (
+              <div class="text-[10px] leading-relaxed text-[var(--color-text-faint)]">{valuation.primaryBasis}</div>
+            )}
             {valuation.adjustments.length > 0 && (
               <div><div class="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">Adjustments</div><Bullets rows={valuation.adjustments} /></div>
             )}
             {valuation.uncertainty.length > 0 && (
-              <div><div class="text-[9px] font-semibold uppercase tracking-wide text-amber-400">Uncertainty</div><Bullets rows={valuation.uncertainty} tone="text-amber-300" /></div>
+              <div><div class="text-[9px] font-semibold uppercase tracking-wide text-amber-400">Material limitations</div><Bullets rows={valuation.uncertainty} tone="text-amber-300" /></div>
+            )}
+            {valuation.materialGaps.length > 0 && (
+              <div><div class="text-[9px] font-semibold uppercase tracking-wide text-amber-400">Gaps affecting value</div><Bullets rows={valuation.materialGaps} tone="text-amber-300" /></div>
             )}
           </div>
         ) : (
           <div class="space-y-1.5">
             <div data-testid="pi-not-priceable" class="text-[11px] leading-relaxed text-rose-300">{valuation.notPriceableReason}</div>
+            {/* An asking-market indication is still shown when one exists — it is
+                explicitly NOT a closed-sale value, and is labelled as such. */}
+            {valuation.pricePerAcreRange && (
+              <div class="space-y-1 rounded border border-amber-500/30 bg-amber-500/5 p-2">
+                <div class="text-[9px] font-semibold uppercase tracking-wide text-amber-400">Asking-market indication only</div>
+                <Field label="Asking per acre" value={range(valuation.pricePerAcreRange)} />
+                <div class="text-[10px] leading-relaxed text-[var(--color-text-muted)]">{valuation.basis}</div>
+              </div>
+            )}
             {valuation.nextActionToPrice && <div class="text-[11px] leading-relaxed text-[var(--color-text-muted)]">Next action: {valuation.nextActionToPrice}</div>}
           </div>
         )}
@@ -804,6 +921,17 @@ export function PropertyIntelligenceMarket({ snapshot }: { snapshot: PiSnapshot 
           : <Empty text="No active vacant-land listing was found in the subject market." />}
       </Card>
 
+      {/* Priced rows whose publisher never stated whether they closed. A
+          first-class lane, never counted as sold evidence. */}
+      {(comps.askingReferences?.length ?? 0) > 0 && (
+        <Card title="Asking-market references (status not stated)" right={<Tag tone={STATUS_TONE.partial}>{comps.askingReferences!.length}</Tag>}>
+          <div class="mb-1.5 text-[10px] leading-relaxed text-amber-300">
+            The source published a price and acreage but never said whether these closed. They are shown as asking-market context and are never counted as sold evidence.
+          </div>
+          <CompTable rows={comps.askingReferences!} />
+        </Card>
+      )}
+
       {comps.landHomeOnly.length > 0 && (
         <Card title="Improved sales (Land-Home Package only)" right={<Tag tone={STATUS_TONE.partial}>{comps.landHomeOnly.length}</Tag>}>
           <div class="mb-1.5 text-[10px] leading-relaxed text-amber-300">
@@ -813,7 +941,28 @@ export function PropertyIntelligenceMarket({ snapshot }: { snapshot: PiSnapshot 
         </Card>
       )}
 
-      {comps.rejected.length > 0 && (
+      {/* Held-back rows as COUNTS with one reason each. Printing a rejection
+          sentence per row is how eighty-nine of them reached the primary view. */}
+      {(comps.evidenceBuckets?.length ?? 0) > 0 ? (
+        <Card
+          title="Rows held back as evidence"
+          right={<Tag tone="border-zinc-500/40 text-zinc-400">{comps.evidenceBuckets!.reduce((sum, b) => sum + b.count, 0)}</Tag>}
+        >
+          <div class="space-y-1.5">
+            {comps.evidenceBuckets!.map((bucket, index) => (
+              <div key={index} class="flex gap-2 border-b border-[var(--color-border)] pb-1.5 last:border-0 last:pb-0">
+                <span class="shrink-0 text-[11px] font-semibold tabular-nums text-[var(--color-text)]">{bucket.count}</span>
+                <span class="min-w-0 flex-1 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+                  {bucket.reason}
+                  {bucket.sources.length > 0 && (
+                    <span class="text-[var(--color-text-faint)]"> ({bucket.sources.join(', ')})</span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : comps.rejected.length > 0 && (
         <Card title="Excluded candidates" right={<Tag tone="border-zinc-500/40 text-zinc-400">{comps.rejected.length}</Tag>}>
           <div class="overflow-x-auto">
             <table class="w-full min-w-[520px] border-collapse text-[11px]">
@@ -855,6 +1004,7 @@ function CompTable({ rows }: { rows: PiComp[] }) {
             <tr key={row.key} class="border-b border-[var(--color-border)] last:border-0 align-top">
               <td class="py-1.5 pr-2 text-[var(--color-text)]">
                 {row.address ?? '—'}
+                {row.apn && <div class="text-[10px] tabular-nums text-[var(--color-text-muted)]">APN {row.apn}</div>}
                 <div class="text-[10px] leading-relaxed text-[var(--color-text-faint)]">{row.whyUseful}</div>
                 {row.differences.length > 0 && <div class="text-[10px] leading-relaxed text-amber-400/80">{row.differences.join(' ')}</div>}
               </td>
@@ -882,8 +1032,9 @@ export function PropertyIntelligenceStrategy({ snapshot }: { snapshot: PiSnapsho
   const { recommendation, strategies } = snapshot;
   return (
     <div data-testid="pi-strategy" class="space-y-3">
+      <PreliminaryNotice snapshot={snapshot} />
       <Card
-        title="Recommended path"
+        title="Operator recommendation"
         right={<Tag tone={recommendation.posture === 'pursue' ? STATUS_TONE.completed : recommendation.posture === 'reject' ? STATUS_TONE.failed : STATUS_TONE.partial}>{recommendation.posture}</Tag>}
       >
         {recommendation.preferredStrategy ? (
@@ -899,6 +1050,44 @@ export function PropertyIntelligenceStrategy({ snapshot }: { snapshot: PiSnapsho
           <div class="mt-2">
             <div class="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">What would change this</div>
             <Bullets rows={recommendation.whatWouldChangeIt} />
+          </div>
+        )}
+        <dl class="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--color-border)] pt-3 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Should we pursue it?" value={(recommendation.shouldPursue ?? recommendation.posture).replace(/_/g, ' ')} />
+          <Field
+            label="What is it worth?"
+            value={recommendation.worth
+              ? `${money(recommendation.worth.low)}–${money(recommendation.worth.high)} · work from ${money(recommendation.worth.workingValue)}`
+              : 'Not established'}
+          />
+          <Field
+            label="What should we try to buy it for?"
+            value={recommendation.targetBuyRange
+              ? `${money(recommendation.targetBuyRange.low)}–${money(recommendation.targetBuyRange.high)}`
+              : 'Not established'}
+          />
+          <Field label="Best exit" value={recommendation.bestExit ?? recommendation.preferredStrategy ?? 'Not established'} />
+          <Field
+            label="Is the juice worth the squeeze?"
+            value={(recommendation.juiceWorthSqueeze?.answer ?? 'undetermined').replace(/_/g, ' ')}
+          />
+        </dl>
+        {recommendation.targetBuyRange?.basis && (
+          <div class="mt-2 text-[10px] leading-relaxed text-[var(--color-text-faint)]">{recommendation.targetBuyRange.basis}</div>
+        )}
+        {recommendation.juiceWorthSqueeze?.why && (
+          <div class="mt-1 text-[11px] leading-relaxed text-[var(--color-text-muted)]">{recommendation.juiceWorthSqueeze.why}</div>
+        )}
+        {(recommendation.dealKillers?.length ?? 0) > 0 && (
+          <div class="mt-2">
+            <div class="text-[9px] font-semibold uppercase tracking-wide text-rose-400">What could kill the deal</div>
+            <Bullets rows={recommendation.dealKillers!} tone="text-rose-300" />
+          </div>
+        )}
+        {(recommendation.nextConfirmations?.length ?? 0) > 0 && (
+          <div class="mt-2">
+            <div class="text-[9px] font-semibold uppercase tracking-wide text-amber-400">What must be confirmed next</div>
+            <Bullets rows={recommendation.nextConfirmations!} tone="text-amber-300" />
           </div>
         )}
       </Card>
@@ -937,6 +1126,7 @@ export function PropertyIntelligenceVisuals({ snapshot }: { snapshot: PiSnapshot
   const links = snapshot.evidence.filter((item) => item.kind === 'source_link');
   return (
     <div data-testid="pi-visuals" class="space-y-3">
+      <PreliminaryNotice snapshot={snapshot} />
       <Card title="Retained imagery" right={<Tag tone="border-zinc-500/40 text-zinc-400">{visuals.length}</Tag>}>
         {visuals.length ? (
           <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -981,6 +1171,7 @@ export function PropertyIntelligenceEvidence({ snapshot }: { snapshot: PiSnapsho
   const documents = snapshot.evidence.filter((item) => item.kind === 'document' || item.kind === 'record');
   return (
     <div data-testid="pi-evidence" class="space-y-3">
+      <PreliminaryNotice snapshot={snapshot} />
       <Card title="Retained records and documents" right={<Tag tone="border-zinc-500/40 text-zinc-400">{documents.length}</Tag>}>
         {documents.length ? (
           <div class="overflow-x-auto">

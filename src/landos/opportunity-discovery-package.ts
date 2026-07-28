@@ -57,7 +57,7 @@ export interface DiscoveryPackageVisual {
 
 export interface RankedDiscoveryStrategy {
   rank: 1 | 2;
-  name: 'Cash Flip' | 'Subdivide or Minor Split' | 'Novation or Double Close' | 'Land-Home Package' | 'Improvement Then Flip';
+  name: 'Quick Flip' | 'Subdivide or Minor Split' | 'Novation or Double Close' | 'Land-Home Package' | 'Improvement Then Flip';
   fit: string;
   opportunityLogic: string;
   unknowns: string[];
@@ -169,7 +169,7 @@ const confidence = (value: unknown, fallback: PackageConfidence = 'low'): Packag
   value === 'high' || value === 'medium' || value === 'low' || value === 'none' ? value : fallback;
 
 function canonicalStrategyName(name: string): RankedDiscoveryStrategy['name'] | null {
-  if (/cash|quick flip/i.test(name)) return 'Cash Flip';
+  if (/cash|quick flip/i.test(name)) return 'Quick Flip';
   if (/subdiv|minor split/i.test(name)) return 'Subdivide or Minor Split';
   if (/novation|double close/i.test(name)) return 'Novation or Double Close';
   if (/land.?home|manufactured/i.test(name)) return 'Land-Home Package';
@@ -391,7 +391,7 @@ function strategyGuidance(discovery: DiscoveryCallReport, gaps: string[], suppor
     .filter((row): row is typeof row & { name: RankedDiscoveryStrategy['name'] } => !!row.name)
     .sort((a, b) => (potentialRank.get(b.strategy.potential) ?? 0) - (potentialRank.get(a.strategy.potential) ?? 0) || a.index - b.index)
     .slice(0, 2);
-  const fallbackNames: RankedDiscoveryStrategy['name'][] = ['Cash Flip', 'Subdivide or Minor Split'];
+  const fallbackNames: RankedDiscoveryStrategy['name'][] = ['Quick Flip', 'Subdivide or Minor Split'];
   while (candidates.length < 2) candidates.push({ strategy: discovery.strategyEvaluation[candidates.length]!, index: candidates.length, name: fallbackNames[candidates.length] });
   return candidates.map((row, index) => ({
     rank: (index + 1) as 1 | 2,

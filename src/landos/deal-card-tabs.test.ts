@@ -19,6 +19,10 @@ import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 const SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/components/DealCard.tsx'), 'utf8');
+const PI_SRC = fs.readFileSync(
+  path.join(process.cwd(), 'web/src/components/PropertyIntelligencePanel.tsx'),
+  'utf8',
+);
 
 const REQUIRED_TABS: Array<{ id: string; label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -28,17 +32,20 @@ const REQUIRED_TABS: Array<{ id: string; label: string }> = [
   { id: 'strategy', label: 'Strategy' },
   { id: 'visuals', label: 'Visuals' },
   { id: 'seller', label: 'Seller' },
-  { id: 'resources', label: 'Resources' },
   { id: 'documents', label: 'Documents' },
   { id: 'activity', label: 'Activity' },
   { id: 'intake', label: 'Smart Intake' },
 ];
 
 describe('every Deal Card tab exists and changes the rendered active panel', () => {
-  it('declares all eleven canonical tabs, including Smart Intake', () => {
+  it('declares exactly the ten canonical tabs, including Smart Intake and no Resources', () => {
+    const declared = [...SRC.matchAll(/\{ id: '([^']+)', label: '([^']+)' \}/g)]
+      .map((match) => ({ id: match[1], label: match[2] }));
+    expect(declared).toEqual(REQUIRED_TABS);
     for (const tab of REQUIRED_TABS) {
       expect(SRC.includes(`{ id: '${tab.id}', label: '${tab.label}' }`), `missing tab ${tab.label}`).toBe(true);
     }
+    expect(SRC).not.toMatch(/\{ id: 'resources', label: 'Resources' \}/);
   });
 
   it('every tab has a panel gated on the active tab', () => {
@@ -71,37 +78,44 @@ describe('every Deal Card tab exists and changes the rendered active panel', () 
     expect(SRC).toMatch(/type="button"/);
   });
 
-  it('Smart Intake has its own tab, and selecting it brings the docked panel to the top', () => {
+  it('Smart Intake is dedicated to its tab and is not mounted beside other workspaces', () => {
     // CORRECTED CONTRACT. Smart Intake gets a tab, but the panel itself is NOT
     // gated on that tab: retained originals are Deal Card evidence and stay
     // mounted on every tab (see the retention suite). Selecting the tab reorders
     // the docked panel to the top of the workspace — it never re-mounts it.
     expect(SRC).toMatch(/data-testid="smart-intake-dock"/);
-    expect(SRC).toMatch(/class=\{activeTab === 'intake' \? 'order-first' : ''\}/);
+    expect(SRC).toMatch(/activeTab === 'intake' && \(\s*<div data-testid="smart-intake-dock"[^>]*>\s*<SmartIntakePanel/);
+    expect(SRC).not.toMatch(/class=\{activeTab === 'intake' \? 'order-first' : ''\}/);
     // The header button opens the tab rather than scrolling down a long page.
     expect(SRC).toMatch(/data-testid="open-smart-intake"/);
     expect(SRC).toMatch(/selectTab\('intake'\)/);
   });
 
-  it('Government Records, Zoning, Documents and Smart Intake all remain reachable', () => {
-    expect(SRC).toMatch(/activeTab === 'documents' && \(\s*<GovernmentRecordsSnapshotPanel/);
-    expect(SRC).toMatch(/<ZoningLandUsePanel/);
-    expect(SRC).toMatch(/activeTab === 'diligence'/);
-    expect(SRC).toMatch(/<DocumentRegistryPanel/);
-    expect(SRC).toMatch(/<SmartIntakePanel/);
+  it('Due Diligence, Documents and Smart Intake remain reachable in their one-purpose tabs', () => {
+    expect(SRC).toMatch(
+      /activeTab === 'diligence' && \([\s\S]{0,220}<PropertyIntelligenceDueDiligence snapshot=\{piSnapshot\}/,
+    );
+    const documents = SRC.slice(
+      SRC.indexOf("{activeTab === 'documents' && <PropertyIntelligenceEvidence"),
+      SRC.indexOf("{activeTab === 'activity'", SRC.indexOf("{activeTab === 'documents' && (")),
+    );
+    expect(documents).toMatch(/<PropertyIntelligenceEvidence snapshot=\{piSnapshot\}/);
+    expect(documents).toMatch(/<DocumentRegistryPanel/);
+    expect(documents).toMatch(/<DocumentUploadPanel/);
+    expect(SRC).toMatch(/activeTab === 'intake' && \([\s\S]{0,300}<SmartIntakePanel/);
   });
 
-  it('no panel renders above the tabs competing with the selected workspace', () => {
+  it('no legacy summary or permanently docked intake panel competes with the selected workspace', () => {
     // The Property Summary is pinned only on an UNRESOLVED card, where it is the
     // whole story. On a tabbed card it belongs to Overview and Property.
-    const pinned = SRC.match(/showResolution && \(\s*<PropertySummarySnapshotPanel/);
-    expect(pinned).not.toBeNull();
-    expect(SRC).toMatch(/activeTab === 'overview' && \(\s*<PropertySummarySnapshotPanel/);
-    expect(SRC).toMatch(/activeTab === 'property' && \(\s*<PropertySummarySnapshotPanel/);
+    const workspaceStart = SRC.indexOf('role="tabpanel"');
+    const workspaceEnd = SRC.indexOf("{activeTab === 'intake'", workspaceStart);
+    const workspace = SRC.slice(workspaceStart, workspaceEnd);
+    expect(workspace).not.toMatch(/<OverviewTab\b|<PropertySummarySnapshotPanel\b/);
     // Smart Intake sits BELOW the workspace in the document (its dock follows the
     // tabpanel), so it no longer competes with the selected tab for the viewport;
     // selecting its tab reorders it visually rather than moving it in the DOM.
-    expect(SRC.indexOf('data-testid="smart-intake-dock"')).toBeGreaterThan(SRC.indexOf('role="tabpanel"'));
+    expect(workspace).not.toMatch(/data-intake-active=\{activeTab/);
   });
 });
 
@@ -110,16 +124,21 @@ describe('no Deal Card tab renders an empty workspace', () => {
     // Live finding: Strategy is composed entirely from Property Intelligence, so
     // on a card with no result the panel had zero height and zero content —
     // indistinguishable from a broken tab. The tab now always renders the joined
-    // snapshot panel (which carries its own honest empty state), and the legacy
-    // explainer only appears when neither a snapshot nor a report exists.
+    // snapshot panel (which carries its own honest empty state), and the
+    // explainer appears only while the canonical snapshot is absent.
     expect(SRC).toMatch(/activeTab === 'strategy' && <PropertyIntelligenceStrategy snapshot=\{piSnapshot\} \/>/);
-    expect(SRC).toMatch(/activeTab === 'strategy' && !piSnapshot && !report\?\.exists && \(/);
+    expect(SRC).toMatch(/activeTab === 'strategy' && !piSnapshot && \(/);
     expect(SRC).toMatch(/No strategy read yet/);
     expect(SRC).toMatch(/Run Property Intelligence from the/);
+    expect(PI_SRC).toMatch(/if \(!snapshot\) return <NoSnapshot label="strategy" \/>/);
   });
 
   it('Visuals and Documents already carry their own honest empty states', () => {
-    expect(SRC).toMatch(/No retained parcel visuals are available yet/);
+    expect(SRC).toMatch(/<PropertyIntelligenceVisuals snapshot=\{piSnapshot\} \/>/);
+    expect(SRC).toMatch(/<PropertyIntelligenceEvidence snapshot=\{piSnapshot\} \/>/);
+    expect(PI_SRC).toMatch(/if \(!snapshot\) return <NoSnapshot label="retained imagery" \/>/);
+    expect(PI_SRC).toMatch(/if \(!snapshot\) return <NoSnapshot label="retained evidence" \/>/);
+    expect(PI_SRC).toMatch(/No Property Intelligence snapshot exists for this Deal Card yet/);
     expect(SRC).toMatch(/No report generated yet/);
   });
 });

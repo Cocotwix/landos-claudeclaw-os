@@ -167,7 +167,14 @@ function strategyInput(overrides: Partial<StrategySynthesisInput> = {}): Strateg
 describe('buildPropertyIntelligenceStrategies', () => {
   it('emits exactly the five approved strategies in order and never wholesaling', () => {
     const { strategies } = buildPropertyIntelligenceStrategies(strategyInput());
-    expect(strategies.map((s) => s.strategy)).toEqual([...APPROVED_STRATEGIES]);
+    expect(strategies.map((s) => s.strategy)).toEqual([
+      'Quick Flip',
+      'Novation or Double Close',
+      'Subdivide or Minor Split',
+      'Land-Home Package',
+      'Improvement Then Flip',
+    ]);
+    expect(APPROVED_STRATEGIES).toHaveLength(5);
     expect(strategies.some((s) => /wholesal/i.test(s.strategy))).toBe(false);
   });
 
@@ -191,6 +198,13 @@ describe('buildPropertyIntelligenceStrategies', () => {
     expect(APPROVED_STRATEGIES).toContain(recommendation.preferredStrategy as never);
     expect(recommendation.posture).toBe('pursue');
     expect(recommendation.why.length).toBeGreaterThan(10);
+    expect(recommendation.shouldPursue).toBe('yes');
+    expect(recommendation.worth?.workingValue).toBeGreaterThan(0);
+    expect(recommendation.targetBuyRange?.low).toBeGreaterThan(0);
+    expect(recommendation.bestExit).toBe('Quick Flip');
+    expect(recommendation.dealKillers).toEqual([]);
+    expect(recommendation.nextConfirmations?.length).toBeGreaterThan(0);
+    expect(recommendation.juiceWorthSqueeze?.answer).toBe('yes');
   });
 
   it('recommends nothing and holds when identity is unresolved', () => {
@@ -210,6 +224,11 @@ describe('buildPropertyIntelligenceStrategies', () => {
     expect(recommendation.preferredStrategy).toBeNull();
     expect(recommendation.posture).toBe('hold');
     expect(recommendation.why).toMatch(/without a value basis/);
+    expect(recommendation.shouldPursue).toBe('undetermined');
+    expect(recommendation.worth).toBeNull();
+    expect(recommendation.targetBuyRange).toBeNull();
+    expect(recommendation.bestExit).toBeNull();
+    expect(recommendation.juiceWorthSqueeze?.answer).toBe('undetermined');
   });
 
   it('rules out a split on a parcel too small for it', () => {

@@ -26,6 +26,7 @@ import {
   type VisionSourceImage,
   type VisualObservation,
 } from './browser-vision.js';
+import { assessParcelVisualCapture, fileSha256, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
 
 // Status-panel order (requirement: GE, GE 3D, Street View, LandPortal, LP 3D,
 // County GIS) plus the static-map fallback pinned last.
@@ -36,6 +37,10 @@ export type VisualSourceKind =
   | 'landportal'
   | 'landportal_3d'
   | 'landportal_comps'
+  | 'landportal_fema'
+  | 'landportal_wetlands'
+  | 'landportal_soils'
+  | 'landportal_contours'
   | 'county_gis'
   | 'static_map';
 
@@ -48,6 +53,10 @@ export const VISUAL_SOURCE_ORDER: VisualSourceKind[] = [
   'landportal',
   'landportal_3d',
   'landportal_comps',
+  'landportal_fema',
+  'landportal_wetlands',
+  'landportal_soils',
+  'landportal_contours',
   'county_gis',
   'static_map',
 ];
@@ -74,6 +83,10 @@ export const VISUAL_SOURCE_LABEL: Record<VisualSourceKind, string> = {
   landportal: 'LandPortal Parcel + Neighbor Context',
   landportal_3d: 'LandPortal 3D',
   landportal_comps: 'LandPortal comps map',
+  landportal_fema: 'FEMA floodplain overlay',
+  landportal_wetlands: 'Wetlands overlay',
+  landportal_soils: 'Soils overlay',
+  landportal_contours: 'Contours / terrain overlay',
   county_gis: 'County GIS',
   static_map: 'Static map (fallback)',
 };
@@ -237,8 +250,9 @@ export async function runVisualIntelligence(
 
 export interface PersistedVisualReaders {
   loadGoogleVisuals: (cardId: number) => Record<string, { storedPath: string; timestamp: string }>;
-  loadInspectionAssets: (cardId: number) => Array<{ key: string; label: string; kind: string; storedPath: string; timestamp?: string }>;
+  loadInspectionAssets: (cardId: number) => Array<{ key: string; label: string; kind: string; storedPath: string; timestamp?: string; overlay?: string; note?: string }>;
   fileSize: (p: string) => number;
+  fileSha256?: (p: string) => string;
   now?: () => string;
 }
 
@@ -258,6 +272,11 @@ function classifyGoogleService(service: string): VisualSourceKind | null {
 /** Build the default (persistence-derived) capturer set for a card. */
 export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceCapturer[] {
   const now = readers.now;
+  // Per-run accepted hashes. Inspection capturers execute in source order, so a
+  // later thematic layer must differ from the parcel base and every earlier
+  // accepted layer. This catches legacy relabeled duplicates at read time even
+  // when they predate the live capture gate.
+  const acceptedInspectionShasByCard = new Map<number, Set<string>>();
   const usable = (p: string): boolean => {
     try { return readers.fileSize(p) >= MIN_USEFUL_BYTES; } catch { return false; }
   };
@@ -297,7 +316,34 @@ export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceC
     async capture(ctx): Promise<VisualAssetMeta> {
       const ts = nowIso(now);
       const subject: VisualSubject = { address: ctx.address ?? null, lat: ctx.lat ?? null, lng: ctx.lng ?? null };
-      const shot = readers.loadInspectionAssets(ctx.cardId).find((a) => pick(a.kind) && a.storedPath && usable(a.storedPath));
+      const acceptedInspectionShas = acceptedInspectionShasByCard.get(ctx.cardId) ?? new Set<string>();
+      acceptedInspectionShasByCard.set(ctx.cardId, acceptedInspectionShas);
+      const candidates = readers.loadInspectionAssets(ctx.cardId)
+        .filter((a) => pick(`${a.kind} ${a.key} ${a.label} ${a.overlay ?? ''}`) && a.storedPath && usable(a.storedPath))
+        .sort((a, b) => String(b.timestamp ?? '').localeCompare(String(a.timestamp ?? '')));
+      let qualityFailure: string | null = null;
+      let shot: (typeof candidates)[number] | undefined;
+      for (const candidate of candidates) {
+        const captureKind: ParcelVisualCaptureKind =
+          source === 'landportal' ? 'parcel_context'
+          : source === 'landportal_comps' ? 'comps_map'
+          : source === 'landportal_3d' ? 'terrain'
+          : 'overlay';
+        let sha: string | null = null;
+        try { sha = (readers.fileSha256 ?? fileSha256)(candidate.storedPath); } catch { sha = null; }
+        const quality = assessParcelVisualCapture({
+          kind: captureKind,
+          bytes: readers.fileSize(candidate.storedPath),
+          sha256: sha,
+          priorSha256s: acceptedInspectionShas,
+        });
+        if (quality.accepted) {
+          if (sha) acceptedInspectionShas.add(sha);
+          shot = candidate;
+          break;
+        }
+        qualityFailure = quality.reason;
+      }
       if (shot) {
         return {
           source, label: VISUAL_SOURCE_LABEL[source], state: 'captured',
@@ -305,8 +351,13 @@ export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceC
           url: ctx.landPortalUrl ?? undefined, timestamp: shot.timestamp || ts, subject,
         };
       }
-      const reason = ctx.landPortalUrl ? notYet : 'No LandPortal URL on this card — cannot capture this LandPortal visual.';
-      return blockedAsset(source, source === 'landportal_3d' ? 'unavailable' : 'blocked', reason, subject, ts);
+      const reason = qualityFailure ?? (ctx.landPortalUrl ? notYet : 'No LandPortal URL on this card — cannot capture this LandPortal visual.');
+      const unavailable = source === 'landportal_3d'
+        || source === 'landportal_fema'
+        || source === 'landportal_wetlands'
+        || source === 'landportal_soils'
+        || source === 'landportal_contours';
+      return blockedAsset(source, unavailable ? 'unavailable' : 'blocked', reason, subject, ts);
     },
   });
   const isOverlay = (k: string) => /^overlay/i.test(k);
@@ -332,6 +383,10 @@ export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceC
     fromInspection('landportal', (k) => !is3d(k) && !isComps(k) && !isOverlay(k), 'LandPortal parcel screenshot not captured yet — run Property Intelligence (authenticated session required).'),
     fromInspection('landportal_3d', (k) => is3d(k), 'LandPortal 3D/terrain not captured yet — the 3D control may not exist on this parcel, or Property Intelligence has not run.'),
     fromInspection('landportal_comps', (k) => isComps(k), 'LandPortal comps map not captured yet — run Property Intelligence (free "Show on Map"; never the paid comp report).'),
+    fromInspection('landportal_fema', (k) => /overlay.*fema|fema.*overlay|floodplain/i.test(k), 'FEMA overlay unavailable — the layer control was absent, its tiles did not paint, or the resulting frame was not distinct from the base parcel map.'),
+    fromInspection('landportal_wetlands', (k) => /overlay.*wetland|wetland.*overlay/i.test(k), 'Wetlands overlay unavailable — the layer control was absent, its tiles did not paint, or the resulting frame was not distinct from the base parcel map.'),
+    fromInspection('landportal_soils', (k) => /overlay.*soil|soil.*overlay/i.test(k), 'Soils overlay unavailable — the layer control was absent, its tiles did not paint, or the resulting frame was not distinct from the base parcel map.'),
+    fromInspection('landportal_contours', (k) => /overlay.*contour|contour.*overlay/i.test(k), 'Contours overlay unavailable — the layer control was absent, its tiles did not paint, or the resulting frame was not distinct from the base parcel map.'),
     liveOnly('county_gis'),
     fromGoogle('static_map', (s) => { const k = classifyGoogleService(s); return k === 'static_map'; }, (svc) => `/api/landos/visual/image?cardId=CARD&service=${encodeURIComponent(svc)}`),
   ];
@@ -341,7 +396,7 @@ export function defaultCapturers(readers: PersistedVisualReaders): VisualSourceC
 
 export interface VisualIntelligenceCardDeps {
   loadGoogleVisuals: (cardId: number) => Record<string, { storedPath: string; timestamp: string }>;
-  loadInspectionAssets: (cardId: number) => Array<{ key: string; label: string; kind: string; storedPath: string; timestamp?: string }>;
+  loadInspectionAssets: (cardId: number) => Array<{ key: string; label: string; kind: string; storedPath: string; timestamp?: string; overlay?: string; note?: string }>;
   fileSize: (p: string) => number;
   analyze: (images: VisionSourceImage[], ctx: { address?: string; county?: string; state?: string }) => Promise<VisionAnalysis>;
   persist: (cardId: number, record: VisualIntelligenceRecord) => void;
@@ -432,7 +487,7 @@ function assetEligible(a: VisualAssetMeta, stores: SanitizeStores): boolean {
     // from a LandPortal parcel page. A capture whose URL is some other site
     // (e.g. a county office homepage the workflow landed on) is not parcel
     // evidence and must not render — let alone become the hero.
-    if ((a.source === 'landportal' || a.source === 'landportal_3d' || a.source === 'landportal_comps') && a.url) {
+    if (a.source.startsWith('landportal') && a.url) {
       try {
         return new URL(a.url).hostname.endsWith('landportal.com');
       } catch {

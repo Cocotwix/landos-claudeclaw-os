@@ -14,6 +14,10 @@ const MAP_SRC = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/landos/CompMap.tsx', import.meta.url)),
   'utf-8',
 );
+const PI_SRC = fs.readFileSync(
+  fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
+  'utf-8',
+);
 
 describe('Deal Card Market — registry + clusters, not a worksheet', () => {
   it('removed the manual market research worksheet', () => {
@@ -26,17 +30,24 @@ describe('Deal Card Market — registry + clusters, not a worksheet', () => {
   });
 
   it('renders retained LandPortal asking references and the reconciled valuation', () => {
-    expect(SRC).toMatch(/<LandPortalComparableTable inspection=\{report\?\.landportalInspection\}/);
-    expect(SRC).toMatch(/report\?\.valuation\?\.primary && <ValuationPanel val=\{report\.valuation\}/);
-    expect(SRC).toMatch(/Average LandPortal comp price per acre/);
-    expect(SRC).toMatch(/Rough offer range \(40%–60% of FMV\)/);
-    expect(SRC).not.toMatch(/Median accepted sold price per acre/);
+    const marketTab = SRC.match(/\{activeTab === 'market'[\s\S]*?\n          \)\}/)?.[0] ?? '';
+    expect(marketTab).toMatch(/<PropertyIntelligenceMarket snapshot=\{piSnapshot\}/);
+    expect(marketTab).not.toMatch(/<LandPortalComparableTable\b/);
+    expect(marketTab).not.toMatch(/<ValuationPanel\b/);
+    expect(PI_SRC).toMatch(/LandPortal primary/);
+    expect(PI_SRC).toMatch(/LandPortal read .*none priceable/);
+    expect(PI_SRC).toMatch(/data-testid="pi-working-value"/);
+    expect(PI_SRC).toMatch(/<Field label="Supported range"/);
+    expect(PI_SRC).toMatch(/<Field label="Disposition"/);
+    expect(PI_SRC).toMatch(/Asking-market indication only/);
+    expect(PI_SRC).not.toMatch(/Average LandPortal comp price per acre|Rough offer range \(40%|Median accepted sold price per acre/);
   });
 
   it('keeps the retained LandPortal artifact and renders the live comparable-property map', () => {
-    expect(SRC).toMatch(/<LandPortalCompMapEvidence inspection=\{report\.landportalInspection\}/);
-    expect(SRC).toMatch(/<CompMap dealCardId=/);
-    expect(SRC).not.toMatch(/provider attempts|attempt count|evidence count/i);
+    const marketTab = SRC.match(/\{activeTab === 'market'[\s\S]*?\n          \)\}/)?.[0] ?? '';
+    expect(marketTab).not.toMatch(/<LandPortalCompMapEvidence\b/);
+    expect(marketTab).not.toMatch(/<CompMap\b/);
+    expect(marketTab).not.toMatch(/provider attempts|attempt count|evidence count/i);
   });
 
   it('explains clusters and unresolved source locations in owner language', () => {

@@ -73,7 +73,7 @@ function persistDefensibleReport(dealCardId: number): void {
       deal_card_id, report_status, parcel_verification_status, parcel_verified,
       dd_summary, market_summary, strategy_summary, most_viable_strategy,
       offer_readiness, report_json, updated_by
-    ) VALUES (?, 'complete_with_gaps', ?, 1, '', '', '', 'Cash Flip', 'needs_confirmation', ?, 'Property Research Agent')
+    ) VALUES (?, 'complete_with_gaps', ?, 1, '', '', '', 'Quick Flip', 'needs_confirmation', ?, 'Property Research Agent')
   `).run(dealCardId, report.parcelVerificationStatus, JSON.stringify(report));
 }
 

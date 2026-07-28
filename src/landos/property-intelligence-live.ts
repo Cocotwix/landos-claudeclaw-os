@@ -9,7 +9,7 @@
 // browser comp captures) are injected by the route layer so this module stays
 // independently testable and free of route wiring.
 
-import { getPropertyCard, loadPropertyInspection } from './property-card.js';
+import { currentComparables, getPropertyCard, loadPropertyInspection } from './property-card.js';
 import { getDealCard } from './deal-card.js';
 import { PublicIntelligenceStore } from './public-intelligence-store.js';
 import { buildOperatorPropertyRecord, type OperatorPropertyRecord } from './operator-property-record.js';
@@ -33,12 +33,13 @@ import type {
   PropertyIntelligenceCollectors,
   SpecialistOutcome,
   ZoningContribution,
-} from './property-intelligence-mission.js';
+} from './property-intelligence-collector-types.js';
 import type { CompRegistryCandidate } from './comp-registry.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
 
 export interface LandMarketplaceComp {
+  providerId?: string | null;
   address: string | null;
   price: number | null;
   acres: number | null;
@@ -47,6 +48,8 @@ export interface LandMarketplaceComp {
   status?: string | null;
   saleDate?: string | null;
   distanceMiles?: number | null;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface LandMarketplaceResult {
@@ -553,6 +556,7 @@ function marketplaceCandidates(
 ): CompRegistryCandidate[] {
   if (!result) return [];
   const map = (rows: LandMarketplaceComp[], lane: 'sold' | 'active'): CompRegistryCandidate[] => rows.map((row) => ({
+    id: row.providerId ?? null,
     provider,
     lane,
     addressDesc: row.address ?? null,
@@ -564,6 +568,8 @@ function marketplaceCandidates(
     pricePerAcre: row.pricePerAcre ?? null,
     sourceUrl: row.url ?? null,
     distanceMiles: row.distanceMiles ?? null,
+    lat: row.lat ?? null,
+    lng: row.lng ?? null,
     compClass: 'vacant_land',
   } as CompRegistryCandidate));
   return [...map(result.sold ?? [], 'sold'), ...map(result.active ?? [], 'active')];
@@ -594,8 +600,15 @@ export async function collectComparables(
   // no sale-or-listing status are not usable evidence, and skipping the read
   // merely because SOME rows exist would pin the card to a stale capture
   // forever — including one taken before an extractor fix.
-  const usableRows = (inspection?.comparables ?? []).filter((row) => {
+  //
+  // An UNSTAMPED row is exactly such a capture: it predates the two-surface
+  // read, so it carries no capture generation, no comp-page enrichment and no
+  // stated status source. Treating it as usable is what kept superseded rows in
+  // front of the operator indefinitely, because the very gate that would refresh
+  // them was satisfied by them. One re-read per card retires them for good.
+  const usableRows = currentComparables(inspection).filter((row) => {
     const record = row as unknown as Record<string, unknown>;
+    if (!str(record.capturedAtIso)) return false;
     const st = str(record.status) ?? 'unknown';
     const ind = str(record.saleListIndicator) ?? 'unknown';
     return ind === 'sale' || st === 'sold' || ind === 'list' || st === 'active' || st === 'listed';
@@ -619,7 +632,11 @@ export async function collectComparables(
     }
   }
 
-  const landPortalRecords = (inspection?.comparables ?? []) as unknown as Array<Record<string, unknown>>;
+  // Only the CURRENT capture generation prices the subject. Earlier captures
+  // stay stored as evidence but no longer describe what LandPortal returns for
+  // this parcel, and resurfacing them put stale status-unknown rows in front of
+  // the operator beside the freshly enriched ones.
+  const landPortalRecords = currentComparables(inspection) as unknown as Array<Record<string, unknown>>;
   let landPortalAccepted = 0;
   for (const record of landPortalRecords) {
     const status = str(record.status) ?? 'unknown';
@@ -648,25 +665,35 @@ export async function collectComparables(
         address ??= parsed.address ?? null;
       }
     }
+    // The comp's own parcel page (the second surface) is where the acreage the
+    // row was priced on can be checked against the assessor parcel acreage. When
+    // the two cannot be reconciled the row carries no defensible price-per-acre,
+    // so it is passed through WITHOUT acreage rather than with a false one.
+    const acreageConflict = record.acreageConflict === true;
     candidates.push({
+      id: str(record.propertyId) ?? str(record.mlsPropertyId) ?? str(record.providerId),
       provider: 'LandPortal visible',
       lane: kindStated ? (isActive ? 'active' : 'landportal') : 'unknown',
       addressDesc: address,
       apn: str(record.apn),
-      state,
+      state: str(record.state) ?? state,
       price,
       priceKind: kindStated ? (isActive ? 'list' : 'sold') : null,
       saleOrListDate: date,
-      acres,
-      pricePerAcre,
+      acres: acreageConflict ? null : acres,
+      pricePerAcre: acreageConflict ? null : pricePerAcre,
       distanceMiles: num(record.distanceMiles),
-      sourceUrl: str(record.sourceUrl) ?? inspection?.parcelUrl ?? null,
+      lat: num(record.lat),
+      lng: num(record.lng),
+      sourceUrl: str(record.detailUrl) ?? str(record.sourceUrl) ?? inspection?.parcelUrl ?? null,
       // LandPortal states whether the comparable carries an improvement. An
       // improved row is routed to the Land-Home lane by the source policy, never
       // into vacant-land FMV; an unknown row is left for the classifier.
       compClass: improvement === 'vacant' ? 'vacant_land' : improvement === 'improved' ? 'residential' : null,
+      acreageConflict,
+      statusSource: str(record.statusSource),
     } as CompRegistryCandidate);
-    if (isSold && improvement !== 'improved') landPortalAccepted += 1;
+    if (isSold && improvement !== 'improved' && !acreageConflict) landPortalAccepted += 1;
   }
 
   if (landPortalRecords.length > 0) {
@@ -734,9 +761,15 @@ export async function collectComparables(
   if (redfin) notes.push(`Redfin: ${redfin.status} (${(redfin.sold?.length ?? 0)} sold, ${(redfin.active?.length ?? 0)} active).`);
 
   // ── Persisted rows already accepted onto this card ───────────────────────
-  // Realie/HomeHarvest rows are retained here so the policy can show WHY they
-  // are excluded rather than making them silently vanish.
-  const persisted = listComps({ dealCardId: ctx.dealCardId });
+  // Historical rows remain intact in SQLite, but only the three currently
+  // approved marketplaces enter this mission handback. Disabled aggregators
+  // and county-sale rows therefore cannot execute, count, map, render, or value
+  // the subject while their stored history remains available for audit.
+  const persisted = listComps({ dealCardId: ctx.dealCardId }).filter((row) => {
+    const source = `${row.canonical_source ?? ''} ${row.source_label ?? ''}`;
+    if (/home\s*harvest|homeharvest|realtor|realie|really\.?ai/i.test(source)) return false;
+    return /landportal|zillow|redfin/i.test(source);
+  });
   for (const row of persisted) {
     candidates.push({
       id: row.id,

@@ -14,7 +14,7 @@
 // Pure + deterministic. No I/O.
 
 export const APPROVED_STRATEGIES = [
-  'Cash Flip',
+  'Quick Flip',
   'Novation or Double Close',
   'Subdivide or Minor Split',
   'Land-Home Package',
@@ -163,9 +163,9 @@ export function buildStrategyReadiness(i: StrategyReadinessInputs): StrategyRead
     };
   }
 
-  // Cash Flip — needs a value basis + marketable parcel.
+  // Quick Flip — needs a value basis + marketable parcel.
   strategies.push(entry(
-    'Cash Flip',
+    'Quick Flip',
     pricingAllowed ? (wetHeavy || floodHeavy ? 'weak' : 'viable') : 'blocked',
     pricingAllowed
       ? (wetHeavy || floodHeavy ? 'A value basis exists, but heavy wetland/flood coverage narrows the resale buyer pool.' : 'A validated sold-comp basis exists — buy-low resale spread can be evaluated.')

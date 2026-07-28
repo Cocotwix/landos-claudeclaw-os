@@ -16,6 +16,10 @@ const PANEL = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
   'utf-8',
 );
+const CANONICAL_WORKSPACE = DEAL_CARD.slice(
+  DEAL_CARD.indexOf('role="tabpanel"'),
+  DEAL_CARD.indexOf("{activeTab === 'intake'", DEAL_CARD.indexOf('role="tabpanel"')),
+);
 
 describe('Property Intelligence launch surface', () => {
   it('mounts one launch control that starts the parent mission', () => {
@@ -24,9 +28,26 @@ describe('Property Intelligence launch surface', () => {
     expect(DEAL_CARD).toMatch(/<PropertyIntelligenceLaunch state=\{propertyIntelligence\}/);
   });
 
-  it('drives the whole Deal Card from ONE snapshot', () => {
+  it('drives the whole Deal Card from ONE snapshot, preferring the promoted read', () => {
     expect(DEAL_CARD).toMatch(/const propertyIntelligence = usePropertyIntelligence\(/);
-    expect(DEAL_CARD).toMatch(/const piSnapshot = propertyIntelligence\.view\?\.snapshot \?\? null;/);
+    // The promoted snapshot always wins; the progressive partial is only the
+    // fallback while a run is in flight and no promoted snapshot exists yet.
+    expect(DEAL_CARD).toMatch(/const piSnapshot = propertyIntelligence\.view\?\.snapshot\s*\n?\s*\?\? \(propertyIntelligence\.running \? propertyIntelligence\.view\?\.progressive\?\.snapshot \?\? null : null\);/);
+  });
+
+  it('renders progressive content clearly marked preliminary, never as the promoted read', () => {
+    // Every tab-level section mounts the preliminary notice.
+    expect(PANEL).toMatch(/data-testid="pi-preliminary"/);
+    expect(PANEL).toMatch(/nothing shown here is promoted until then/i);
+    const sections = ['pi-overview', 'pi-property', 'pi-market', 'pi-strategy', 'pi-visuals', 'pi-evidence'];
+    for (const id of sections) {
+      const start = PANEL.indexOf(`data-testid="${id}"`);
+      expect(start, `section ${id} must exist`).toBeGreaterThan(-1);
+      const nearby = PANEL.slice(start, start + 220);
+      expect(nearby.includes('<PreliminaryNotice snapshot={snapshot} />'), `section ${id} must mount PreliminaryNotice`).toBe(true);
+    }
+    // The notice renders nothing on a promoted (non-preliminary) snapshot.
+    expect(PANEL).toMatch(/if \(!snapshot\.preliminary\) return null;/);
   });
 
   it('renders live specialist progress with classified failures', () => {
@@ -45,7 +66,10 @@ describe('Property Intelligence launch surface', () => {
 describe('Property Intelligence tab coverage', () => {
   const mounts: Array<[string, RegExp]> = [
     ['Overview', /<PropertyIntelligenceOverview snapshot=\{piSnapshot\} \/>/],
-    ['Property', /activeTab === 'property' && <PropertyIntelligenceProperty snapshot=\{piSnapshot\} \/>/],
+    [
+      'Property',
+      /activeTab === 'property'[\s\S]{0,500}<PropertyIntelligenceProperty snapshot=\{piSnapshot\} \/>[\s\S]{0,500}<PropertyIdentityControl/,
+    ],
     ['Due Diligence', /<PropertyIntelligenceDueDiligence snapshot=\{piSnapshot\} \/>/],
     ['Market', /<PropertyIntelligenceMarket snapshot=\{piSnapshot\} \/>/],
     ['Strategy', /activeTab === 'strategy' && <PropertyIntelligenceStrategy snapshot=\{piSnapshot\} \/>/],
@@ -59,6 +83,50 @@ describe('Property Intelligence tab coverage', () => {
     });
   }
 
+  it('mounts exactly one snapshot slice in each intelligence-bearing tab', () => {
+    const components = [
+      'PropertyIntelligenceOverview',
+      'PropertyIntelligenceProperty',
+      'PropertyIntelligenceDueDiligence',
+      'PropertyIntelligenceMarket',
+      'PropertyIntelligenceStrategy',
+      'PropertyIntelligenceVisuals',
+      'PropertyIntelligenceEvidence',
+    ];
+    for (const component of components) {
+      const mounts = CANONICAL_WORKSPACE.match(new RegExp(`<${component}\\b`, 'g')) ?? [];
+      expect(mounts, `${component} must mount exactly once in the canonical workspace`).toHaveLength(1);
+    }
+  });
+
+  it('keeps verified identity correction beside the canonical Property snapshot', () => {
+    const propertyStart = CANONICAL_WORKSPACE.indexOf("{activeTab === 'property'");
+    const propertyEnd = CANONICAL_WORKSPACE.indexOf("{activeTab === 'strategy'", propertyStart);
+    const propertyWorkspace = CANONICAL_WORKSPACE.slice(propertyStart, propertyEnd);
+
+    expect(propertyStart).toBeGreaterThan(-1);
+    expect(propertyWorkspace).toMatch(/<PropertyIntelligenceProperty snapshot=\{piSnapshot\} \/>/);
+    expect(propertyWorkspace).toMatch(/<PropertyIdentityControl/);
+    expect(propertyWorkspace).toMatch(/onSaved=\{\(\) => load\(deal\.id\)\}/);
+  });
+
+  it('never mounts proof or legacy comp, map, valuation and report panels in the canonical workspace', () => {
+    for (const legacy of [
+      'MissionGraphPanel',
+      'CompMap',
+      'LandPortalComparableTable',
+      'LandPortalCompMapEvidence',
+      'SoldCompValuationPanel',
+      'ValuationPanel',
+      'BestCompsPanel',
+      'OverviewTab',
+    ]) {
+      expect(CANONICAL_WORKSPACE, `${legacy} must not compete with the current snapshot`).not.toMatch(
+        new RegExp(`<${legacy}\\b`),
+      );
+    }
+  });
+
   it('no longer sends the operator to the Documents tab to run the workflow', () => {
     expect(DEAL_CARD).not.toMatch(/Run Property Intelligence from the <span class="text-\[var\(--color-accent\)\]">Documents<\/span> tab/);
     expect(DEAL_CARD).toMatch(/Run Property Intelligence from the <span class="text-\[var\(--color-accent\)\]">Overview<\/span> tab/);
@@ -66,6 +134,16 @@ describe('Property Intelligence tab coverage', () => {
 });
 
 describe('Property Intelligence honesty rules in the UI', () => {
+  it('does not expose removed current providers in the snapshot UI', () => {
+    expect(PANEL).not.toMatch(/HomeHarvest|Realie/i);
+    expect(CANONICAL_WORKSPACE).not.toMatch(/HomeHarvest|Realie/i);
+  });
+
+  it('renders one recommendation card and the strategy array once', () => {
+    expect(PANEL.match(/title="Operator recommendation"/g) ?? []).toHaveLength(1);
+    expect(PANEL.match(/strategies\.length \? strategies\.map/g) ?? []).toHaveLength(1);
+  });
+
   it('shows an explicit empty state rather than an implied complete one', () => {
     expect(PANEL).toMatch(/No Property Intelligence snapshot exists for this Deal Card yet/);
     expect(PANEL).toMatch(/Not run yet for this Deal Card\. Nothing is asserted until it runs\./);

@@ -93,7 +93,11 @@ export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; da
 
 /** Normalize + filter raw listings to same-acreage-band, sane-priced LAND comps,
  *  dropping residential homes and deduping by address. Never fabricates. */
-export function normalizeRedfinListings(raw: RawRedfinListing[], subjectAcres: number | null): RedfinLandComp[] {
+export function normalizeRedfinListings(
+  raw: RawRedfinListing[],
+  subjectAcres: number | null,
+  mode: 'sold' | 'active' = 'active',
+): RedfinLandComp[] {
   const band = subjectAcres != null && subjectAcres > 0
     ? { lo: Math.max(0.05, subjectAcres * 0.5), hi: subjectAcres * 2.5 }
     : { lo: 0.1, hi: 1.0 };
@@ -103,14 +107,20 @@ export function normalizeRedfinListings(raw: RawRedfinListing[], subjectAcres: n
     if (r.residential) continue; // never compare vacant land against homes
     const price = typeof r.price === 'number' ? r.price : null;
     if (!r.address || price == null || price <= 0) continue;
-    if (price < 3000 || price > 150000) continue; // land-price sanity band
+    if (price < 1000 || price > 5_000_000) continue; // broad land-price sanity band
     let acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
     if (acres == null && typeof r.sqftLot === 'number' && r.sqftLot > 0) acres = Math.round((r.sqftLot / 43560) * 100) / 100;
     if (acres != null && (acres < band.lo || acres > band.hi)) continue;
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
-    const status = r.status ? parseListingStatus(r.status) : 'unknown';
+    const parsed = r.status ? parseListingStatus(r.status) : 'unknown';
+    const status: CompStatus = parsed === 'unknown' && mode === 'active' ? 'active' : parsed;
+    // A sold-filter URL is a search request, not transaction evidence. Redfin
+    // sometimes returns an active or unlabeled card on that page; neither may
+    // be relabeled as a closed sale.
+    if (mode === 'sold' && status !== 'sold') continue;
+    if (mode === 'active' && status === 'sold') continue;
     out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status, url: r.url ?? null, source: 'Redfin' });
   }
   return out.slice(0, 8);
@@ -342,8 +352,7 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
       const pageGeo = (await page.evaluate<{ url: string; text: string }>(READ_PAGE_GEOGRAPHY as unknown as () => { url: string; text: string }).catch(() => null)) ?? { url: landUrl, text: '' };
       const verifiedGeo = verifyRedfinResolvedGeography(input, query, resolvedPath, pageGeo, rawList ?? []);
       if (!verifiedGeo.valid) { failedGeographies.push(`${query.label}: ${verifiedGeo.reason}`); continue; }
-      const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null)
-        .map((cmp) => ({ ...cmp, status: cmp.status === 'unknown' ? ((sold ? 'sold' : 'active') as CompStatus) : cmp.status }));
+      const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null, sold ? 'sold' : 'active');
       if (!comps.length) continue;
       return {
         status: 'retrieved', comps,

@@ -108,6 +108,34 @@ export interface FanOutLaunch {
 
 const DEFAULT_JOIN_DEADLINE_MS = 120_000;
 const DEFAULT_JOIN_POLL_MS = 250;
+/** Grace added on top of the largest child budget when deriving the deadline:
+ *  covers claim/settle bookkeeping around the child's own timeout. */
+const JOIN_DEADLINE_MARGIN_MS = 60_000;
+
+/**
+ * The join deadline actually applied.
+ *
+ * An explicit `joinDeadlineMs` always wins (tests and callers that know their
+ * children are fast rely on it). Otherwise the deadline is DERIVED from the
+ * mission's own budgets: the largest child budget plus a margin, floored at the
+ * old default. A flat 120s deadline was fine for the children this process runs
+ * itself — dispatch already awaits those for their full budgets — but it chopped
+ * the one case the join wait exists for: a child another worker claimed whose
+ * OWN budget is larger (the 20-minute projection refresh). The parent would give
+ * up while that lane was still legitimately inside its budget, resolve with a
+ * non-terminal join, and leave the mission row `running` over work that was
+ * about to land. A deadline no shorter than any child's legal running time
+ * cannot misreport a slow-but-healthy lane; a genuinely dead one is still
+ * closed honestly, by this same deadline and by restart reclamation.
+ */
+function effectiveJoinDeadlineMs(options: LaunchFanOutOptions): number {
+  if (options.joinDeadlineMs !== undefined) return options.joinDeadlineMs;
+  const maxChildBudget = Math.max(
+    0,
+    ...options.definition.children.map((spec) => options.timeoutMsOverride ?? spec.timeoutMs),
+  );
+  return Math.max(DEFAULT_JOIN_DEADLINE_MS, maxChildBudget + JOIN_DEADLINE_MARGIN_MS);
+}
 
 function defaultMissionId(kind: string): string {
   return `${kind.slice(0, 12)}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -400,6 +428,39 @@ async function executeFanOut(
   // has settled — without coupling lanes that have no relationship.
   void waves;
   const scheduled = new Map<string, Promise<void>>();
+  /**
+   * A predecessor promise can resolve without settling when ANOTHER worker won
+   * its atomic claim. In that case this runner's local mirror still says
+   * queued/running. A dependent must wait for the durable row to become
+   * terminal and then consume that stored handback; treating "claim lost" as
+   * "predecessor finished" skips hard dependants and starts awaited lanes too
+   * early.
+   *
+   * Each branch waits independently, so a foreign-claimed lane delays only the
+   * children that actually declare it as a predecessor. Unrelated branches
+   * continue concurrently.
+   */
+  const awaitStoredPredecessors = async (spec: MissionChildSpec): Promise<boolean> => {
+    const predecessors = new Set(missionChildPredecessors(spec));
+    if (predecessors.size === 0) return true;
+    const deadlineMs = effectiveJoinDeadlineMs(options);
+    const pollMs = options.joinPollMs ?? DEFAULT_JOIN_POLL_MS;
+    const start = clockMs();
+
+    for (;;) {
+      for (const child of store.listChildren(missionId)) {
+        if (predecessors.has(child.key)) local.set(child.key, child);
+      }
+      if ([...predecessors].every((key) => isTerminalMissionChildStatus(local.get(key)?.status ?? 'queued'))) {
+        return true;
+      }
+      // Leave this child queued when its predecessor remains non-terminal. The
+      // final join will name both outstanding rows; it may never manufacture a
+      // skip over work that is still legitimately running elsewhere.
+      if (clockMs() - start >= deadlineMs) return false;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  };
   const runWhenReady = (key: string): Promise<void> => {
     const existing = scheduled.get(key);
     if (existing) return existing;
@@ -408,6 +469,7 @@ async function executeFanOut(
     // before anything was written.
     const promise = (async () => {
       await Promise.all(missionChildPredecessors(spec).map((dep) => runWhenReady(dep)));
+      if (!(await awaitStoredPredecessors(spec))) return;
       await runChild(key);
     })();
     scheduled.set(key, promise);
@@ -456,7 +518,7 @@ async function awaitChildren(
   options: LaunchFanOutOptions,
   clockMs: () => number,
 ): Promise<MissionChildState[]> {
-  const deadlineMs = options.joinDeadlineMs ?? DEFAULT_JOIN_DEADLINE_MS;
+  const deadlineMs = effectiveJoinDeadlineMs(options);
   const pollMs = options.joinPollMs ?? DEFAULT_JOIN_POLL_MS;
   const start = clockMs();
 

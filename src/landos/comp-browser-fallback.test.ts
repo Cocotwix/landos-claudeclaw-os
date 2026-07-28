@@ -12,6 +12,7 @@ const read = (rel: string) => fs.readFileSync(fileURLToPath(new URL(rel, import.
 const REPORT = read('./deal-card-report.ts');
 const ROUTES = read('./routes.ts');
 const DEALCARD = read('../../web/src/components/DealCard.tsx');
+const PI_PANEL = read('../../web/src/components/PropertyIntelligencePanel.tsx');
 
 describe('browser comp fallback is wired into the comp chain', () => {
   it('the comp chain runs the Zillow/Redfin researcher when configured providers are thin', () => {
@@ -39,24 +40,29 @@ describe('browser comp fallback is wired into the comp chain', () => {
 });
 
 describe('Deal Card Market section renders comp-source search status', () => {
-  it('renders the Zillow & Redfin browser research panel', () => {
-    expect(DEALCARD).toMatch(/function CompResearchPanel/);
-    expect(DEALCARD).toMatch(/<CompResearchPanel research=\{mc\.research\}/);
-    expect(DEALCARD).toContain('Zillow &amp; Redfin browser research');
+  it('renders the canonical comparable snapshot without a legacy research panel', () => {
+    expect(DEALCARD).toMatch(/<PropertyIntelligenceMarket snapshot=\{piSnapshot\}/);
+    expect(DEALCARD).not.toMatch(/function CompResearchPanel|<CompResearchPanel/);
+    expect(PI_PANEL).toMatch(/title="Comp source policy"/);
+    expect(PI_PANEL).toMatch(/title="Accepted sold comps"/);
+    expect(PI_PANEL).toMatch(/title="Active competition"/);
   });
 
-  it('shows sources attempted/succeeded/failed, counts, filters, expansion, strength, and search path', () => {
-    expect(DEALCARD).toMatch(/srcLine\('zillow'\)/);
-    expect(DEALCARD).toMatch(/srcLine\('redfin'\)/);
-    expect(DEALCARD).toMatch(/acreage expanded/);
-    expect(DEALCARD).toMatch(/geography expanded/);
-    expect(DEALCARD).toMatch(/comps: \{research\.strength\}/);
-    expect(DEALCARD).toMatch(/Filters:/);
-    expect(DEALCARD).toMatch(/Search path \(/);
-    expect(DEALCARD).toMatch(/screenshot captured/);
+  it('shows source-linked accepted rows and explicit held-back reasons', () => {
+    expect(PI_PANEL).toMatch(/<CompTable rows=\{comps\.sold\}/);
+    expect(PI_PANEL).toMatch(/<CompTable rows=\{comps\.active\}/);
+    expect(PI_PANEL).toMatch(/row\.sourceUrl \? <a href=\{row\.sourceUrl\}/);
+    expect(PI_PANEL).toMatch(/\{row\.source\}/);
+    expect(PI_PANEL).toMatch(/title="Rows held back as evidence"/);
+    expect(PI_PANEL).toMatch(/\{bucket\.reason\}/);
   });
 
-  it('types the research field on the market comps view', () => {
-    expect(DEALCARD).toMatch(/research\?: CompResearchView \| null/);
+  it('types the canonical provider caps, deduplicated sets and exclusions', () => {
+    expect(PI_PANEL).toMatch(/caps: \{ zillow: number; redfin: number \}/);
+    expect(PI_PANEL).toMatch(/sold: PiComp\[\]/);
+    expect(PI_PANEL).toMatch(/active: PiComp\[\]/);
+    expect(PI_PANEL).toMatch(/duplicatesMerged: number/);
+    expect(PI_PANEL).toMatch(/rejected: Array/);
+    expect(DEALCARD).not.toMatch(/CompResearchView/);
   });
 });

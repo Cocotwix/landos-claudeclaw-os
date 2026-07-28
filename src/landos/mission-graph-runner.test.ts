@@ -131,6 +131,54 @@ describe('gather + join', () => {
     }).completion;
     expect(maxInFlight).toBe(2);
   });
+
+  it('waits for a foreign-claimed predecessor and consumes its stored handback', async () => {
+    const store = new MissionGraphStore();
+    let contextStarted = false;
+    const { launch, completion } = launchFanOutMission({
+      definition: definition({
+        // This executor must never run: the test worker below wins the claim.
+        identity: async () => {
+          throw new Error('the local runner must not execute a foreign-claimed lane');
+        },
+        context: async (ctx) => {
+          contextStarted = true;
+          return {
+            status: 'completed',
+            summary: 'context consumed the late identity',
+            result: { sawUpstream: ctx.upstream },
+          };
+        },
+      }),
+      scopeId: 32,
+      store,
+      joinDeadlineMs: 1_000,
+      joinPollMs: 5,
+      missionIdFactory: () => 'mg_foreign_predecessor',
+    });
+
+    // Simulate another worker atomically claiming the root before this runner.
+    expect(store.claimChild(launch.missionId, 'identity', '2026-07-26T00:00:00.000Z')).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(contextStarted).toBe(false);
+    expect(store.listChildren(launch.missionId).find((child) => child.key === 'context')!.status).toBe('queued');
+
+    store.settleChild({
+      missionId: launch.missionId,
+      childKey: 'identity',
+      status: 'completed',
+      summary: 'identity settled by another worker',
+      result: { apn: '073090 04200', worker: 'foreign' },
+      completedAt: '2026-07-26T00:00:01.000Z',
+    });
+
+    const join = await completion;
+    expect(contextStarted).toBe(true);
+    expect(join!.allTerminal).toBe(true);
+    expect((join!.contributions.context as { sawUpstream: unknown }).sawUpstream).toEqual({
+      identity: { apn: '073090 04200', worker: 'foreign' },
+    });
+  });
 });
 
 describe('a failed, blocked or skipped child produces an explicit parent outcome', () => {
@@ -299,6 +347,100 @@ describe('the parent never completes before its children are terminal', () => {
     expect(join!.outstanding.map((g) => g.key)).toEqual(['market']);
     expect(join!.outcome).toMatch(/cannot complete yet/i);
     // The parent row is NOT completed while a child is outstanding.
+    expect(store.getMission(launch.missionId)!.status).toBe('running');
+    expect(store.getMission(launch.missionId)!.completedAt).toBeNull();
+  });
+});
+
+describe('the join deadline honors every child budget', () => {
+  // REGRESSION: the default deadline was a flat 120s while the Deal Intelligence
+  // projection refresh carries a 20-minute budget. For a child ANOTHER worker
+  // claimed, the parent gave up mid-budget: it resolved with a running join and
+  // left the mission row `running` over a lane that was still legitimately
+  // inside its own time budget. The default deadline is now derived from the
+  // mission's largest child budget, so it can never be shorter than any child's
+  // legal running time. An explicit joinDeadlineMs still wins (previous test).
+  const SLOW_CHILDREN: MissionChildSpec[] = [
+    { key: 'identity', label: 'Identity', purpose: 'root lane', role: 'required', dependsOn: [], timeoutMs: 5_000 },
+    { key: 'slow_refresh', label: 'Slow refresh', purpose: 'long-budget supporting lane', role: 'supporting', dependsOn: [], timeoutMs: 300_000 },
+  ];
+  const slowDefinition = (): FanOutMissionDefinition => ({
+    kind: 'test_fanout',
+    label: 'Test fan-out',
+    scope: 'deal_card',
+    children: SLOW_CHILDREN,
+    executors: {
+      identity: async () => ({ status: 'completed', summary: 'identity ok', result: { apn: '073090 04200' } }),
+      slow_refresh: async () => ({ status: 'completed', summary: 'refresh ok', result: { ran: true } }),
+    },
+  });
+
+  it('keeps waiting past the old flat default while a foreign-claimed lane is inside its budget, then joins its late result', async () => {
+    const store = new MissionGraphStore();
+    let nowMs = 0;
+    const { launch, completion } = launchFanOutMission({
+      definition: slowDefinition(),
+      scopeId: 32,
+      store,
+      joinPollMs: 5,
+      clockMs: () => nowMs,
+      missionIdFactory: () => 'mg_slow_budget',
+    });
+    // Another worker claims the slow lane before this runner can, so this
+    // parent can only wait for whatever that worker records.
+    expect(store.claimChild('mg_slow_budget', 'slow_refresh', '2026-07-26T00:00:00.000Z')).toBe(true);
+
+    // Let dispatch finish and the join wait capture its start at t=0, THEN move
+    // the clock past the old 120s flat deadline but well inside the lane's 300s
+    // budget: the parent must STILL be waiting, not resolved with a running join.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    nowMs = 200_000;
+    const settledEarly = await Promise.race([
+      completion.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 80)),
+    ]);
+    expect(settledEarly).toBe(false);
+    expect(store.getMission(launch.missionId)!.status).toBe('running');
+
+    // The foreign worker lands the result inside the lane's budget; the parent
+    // joins it instead of having already given up.
+    store.settleChild({
+      missionId: 'mg_slow_budget',
+      childKey: 'slow_refresh',
+      status: 'completed',
+      summary: 'refresh landed late but inside its budget',
+      result: { ran: true, late: true },
+      completedAt: '2026-07-26T00:04:00.000Z',
+    });
+    const join = await completion;
+    expect(join!.allTerminal).toBe(true);
+    expect(join!.status).toBe('joined');
+    expect(join!.contributions.slow_refresh).toEqual({ ran: true, late: true });
+    expect(store.getMission(launch.missionId)!.status).toBe('joined');
+  });
+
+  it('still gives up once the DERIVED deadline (largest budget + margin) passes, naming the outstanding child', async () => {
+    const store = new MissionGraphStore();
+    let nowMs = 0;
+    const { launch, completion } = launchFanOutMission({
+      definition: slowDefinition(),
+      scopeId: 32,
+      store,
+      joinPollMs: 5,
+      clockMs: () => nowMs,
+      missionIdFactory: () => 'mg_slow_orphan',
+    });
+    expect(store.claimChild('mg_slow_orphan', 'slow_refresh', '2026-07-26T00:00:00.000Z')).toBe(true);
+
+    // Let dispatch settle and the join wait begin before the clock moves, then
+    // jump past 300s budget + 60s margin. Nothing ever lands for the lane.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    nowMs = 400_000;
+    const join = await completion;
+    expect(join!.status).toBe('running');
+    expect(join!.allTerminal).toBe(false);
+    expect(join!.outstanding.map((g) => g.key)).toEqual(['slow_refresh']);
+    // The parent is NEVER completed over a non-terminal child.
     expect(store.getMission(launch.missionId)!.status).toBe('running');
     expect(store.getMission(launch.missionId)!.completedAt).toBeNull();
   });

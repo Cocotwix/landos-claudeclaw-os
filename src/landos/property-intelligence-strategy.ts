@@ -97,7 +97,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
 
   const strategies: SnapshotStrategy[] = [];
 
-  // ── 1. Cash Flip (buy at a discount, resell as-is) ────────────────────────
+  // ── 1. Quick Flip (buy at a discount, resell as-is) ───────────────────────
   {
     const blockers = [...baseBlockers];
     if (accessUnknown) blockers.push('Legal and physical access is not established; an inaccessible parcel does not resell quickly.');
@@ -105,7 +105,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
     if (!blockers.length && input.acceptedSoldCount < 3) applicability = 'conditional';
     if (!blockers.length && risks.length > 0) applicability = worst(applicability, 'conditional');
     strategies.push({
-      strategy: 'Cash Flip',
+      strategy: 'Quick Flip',
       applicability,
       supportingFacts: [
         priceable && input.valuation.dispositionRange
@@ -252,26 +252,28 @@ function recommend(
   const identityConfirmed = input.identityState === 'confirmed';
 
   if (!identityConfirmed) {
-    return {
+    const whatWouldChangeIt = ['A confirmed official parcel match (APN, owner, acreage and situs agreeing on the county or state parcel layer).'];
+    return withOperatorAnswers({
       preferredStrategy: null,
       why: `Parcel identity is ${input.identityState}. No strategy is recommended on a parcel that has not been identified against an official record.`,
-      whatWouldChangeIt: ['A confirmed official parcel match (APN, owner, acreage and situs agreeing on the county or state parcel layer).'],
+      whatWouldChangeIt,
       posture: 'hold',
       postureWhy: 'Hold. Identity work is the only productive next step; every downstream conclusion inherits this gap.',
-    };
+    }, input, strategies, risks, unknowns, 'undetermined', 'undetermined');
   }
 
   if (!input.valuation.priceable) {
-    return {
+    const whatWouldChangeIt = [
+      input.valuation.nextActionToPrice ?? 'An accepted vacant-land closed sale in the subject market.',
+      'Any local closed land sale the operator can supply directly.',
+    ];
+    return withOperatorAnswers({
       preferredStrategy: null,
       why: `No strategy can be recommended without a value basis. ${input.valuation.notPriceableReason ?? ''}`.trim(),
-      whatWouldChangeIt: [
-        input.valuation.nextActionToPrice ?? 'An accepted vacant-land closed sale in the subject market.',
-        'Any local closed land sale the operator can supply directly.',
-      ],
+      whatWouldChangeIt,
       posture: 'hold',
       postureWhy: 'Hold. The parcel is identified but not priceable, so an offer would be a guess.',
-    };
+    }, input, strategies, risks, unknowns, 'undetermined', 'undetermined');
   }
 
   const rank: Record<StrategyApplicability, number> = { applicable: 0, conditional: 1, blocked: 2, not_applicable: 3 };
@@ -279,13 +281,14 @@ function recommend(
   const winner = ranked[0];
 
   if (winner.applicability === 'blocked' || winner.applicability === 'not_applicable') {
-    return {
+    const whatWouldChangeIt = [...new Set(strategies.flatMap((s) => s.blockers))].slice(0, 5);
+    return withOperatorAnswers({
       preferredStrategy: null,
       why: 'Every approved strategy is currently blocked. The blockers, not the strategy choice, are the work.',
-      whatWouldChangeIt: [...new Set(strategies.flatMap((s) => s.blockers))].slice(0, 5),
+      whatWouldChangeIt,
       posture: 'hold',
       postureWhy: 'Hold. Clear the named blockers before committing to a path.',
-    };
+    }, input, strategies, risks, unknowns, 'no', 'no');
   }
 
   const runnerUp = ranked[1];
@@ -306,11 +309,67 @@ function recommend(
     ...(input.valuation.confidence === 'low' ? ['A stronger comp set would raise or lower the value band materially.'] : []),
   ];
 
-  return {
+  return withOperatorAnswers({
     preferredStrategy: winner.strategy,
     why: `${winner.valueCreationPath} ${winner.supportingFacts[0] ?? ''}`.trim(),
     whatWouldChangeIt: [...new Set(whatWouldChangeIt)].filter(Boolean).slice(0, 6),
     posture,
     postureWhy,
+  }, input, strategies, risks, unknowns, posture === 'pursue' ? 'yes' : 'with_conditions',
+  posture === 'pursue' && winner.applicability === 'applicable' ? 'yes' : 'conditional');
+}
+
+function withOperatorAnswers(
+  recommendation: Pick<SnapshotRecommendation, 'preferredStrategy' | 'why' | 'whatWouldChangeIt' | 'posture' | 'postureWhy'>,
+  input: StrategySynthesisInput,
+  strategies: SnapshotStrategy[],
+  risks: string[],
+  unknowns: string[],
+  shouldPursue: NonNullable<SnapshotRecommendation['shouldPursue']>,
+  juiceAnswer: NonNullable<SnapshotRecommendation['juiceWorthSqueeze']>['answer'],
+): SnapshotRecommendation {
+  const valuation = input.valuation;
+  const range = valuation.priceable ? valuation.range : null;
+  const workingValue = valuation.priceable && range
+    ? Math.round((valuation.workingValue ?? ((range.low + range.high) / 2)) / 500) * 500
+    : null;
+  const worth = range && workingValue != null
+    ? { low: range.low, high: range.high, workingValue }
+    : null;
+  const targetBuyRange = workingValue != null
+    ? {
+        low: Math.round((workingValue * 0.4) / 500) * 500,
+        high: Math.round((workingValue * 0.6) / 500) * 500,
+        basis: `40-60% of the $${workingValue.toLocaleString()} working value. Pre-call acquisition guidance, not an approved offer.`,
+      }
+    : null;
+  const best = recommendation.preferredStrategy
+    ? strategies.find((strategy) => strategy.strategy === recommendation.preferredStrategy) ?? null
+    : null;
+  const dealKillers = [...new Set([...risks, ...input.missionBlockers])].filter(Boolean).slice(0, 8);
+  const nextConfirmations = [...new Set([
+    ...(best ? [best.nextVerificationStep] : []),
+    ...unknowns.map((lane) => `Confirm ${lane.toLowerCase()}.`),
+    ...valuation.materialGaps,
+    ...recommendation.whatWouldChangeIt,
+  ])].filter(Boolean).slice(0, 8);
+
+  const juiceWhy = juiceAnswer === 'yes'
+    ? `${best?.strategy ?? 'The preferred exit'} is applicable on the current evidence, a supported value range exists, and no deal-killer-class risk is open.`
+    : juiceAnswer === 'conditional'
+      ? `${best?.strategy ?? 'The best available exit'} has a measurable value basis, but the named risks and confirmations must clear before the effort is justified.`
+      : juiceAnswer === 'no'
+        ? 'Every approved exit is blocked or not applicable on the current evidence, so the expected upside does not justify proceeding.'
+        : 'The parcel does not yet have enough confirmed value and exit evidence to judge the effort against the likely upside.';
+
+  return {
+    ...recommendation,
+    shouldPursue,
+    worth,
+    targetBuyRange,
+    bestExit: recommendation.preferredStrategy,
+    dealKillers,
+    nextConfirmations,
+    juiceWorthSqueeze: { answer: juiceAnswer, why: juiceWhy },
   };
 }

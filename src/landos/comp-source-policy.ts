@@ -40,6 +40,16 @@ export type CompPolicyRole =
   | 'context_only'
   /** Improved/manufactured — Land-Home Package input only. */
   | 'land_home_only'
+  /**
+   * A disabled aggregator row (Realie / HomeHarvest-Realtor.com). Retained as
+   * stored historical evidence and NEVER part of the current working comp set:
+   * not an accepted sale, not active competition, not a map pin, not a count.
+   *
+   * Distinct from `context_only`, which still surfaces as current market
+   * context. Collapsing the two is what previously let a residential-feed row
+   * appear in "active competition" for a vacant-land subject.
+   */
+  | 'legacy_evidence'
   /** Rejected outright. */
   | 'rejected';
 
@@ -84,6 +94,11 @@ export interface CompSourcePolicyResult {
   landHomeOnly: CompPolicyDecision[];
   /** Everything excluded, each with its reason. */
   rejected: CompPolicyDecision[];
+  /**
+   * Disabled aggregator rows (Realie / HomeHarvest-Realtor.com). Stored history,
+   * never part of the current working comp set or any current count.
+   */
+  legacyEvidence: CompPolicyDecision[];
   /** Candidates ready to hand to buildCompRegistry for dedupe + validation. */
   registryCandidates: CompRegistryCandidate[];
   /** Reasons FMV cannot be established from this set, if any. */
@@ -265,6 +280,16 @@ export function applyCompSourcePolicy(
     const { candidate, family, lane, compClass } = row;
     const displayFamily = familyDisplayName(family);
 
+    // The disabled aggregators are decided FIRST and unconditionally. Their rows
+    // are historical evidence only: whatever else is true of the row — land
+    // class, price, status, market — it never joins the current working set.
+    if (FMV_EXCLUDED_FAMILIES.includes(family)) {
+      return {
+        candidate, family, role: 'legacy_evidence', lane, fmvEligible: false, compClass,
+        reason: `${displayFamily} is disabled for the current comparable workflow. The row is retained as stored historical evidence and never appears in the accepted sales, the active competition, the comp map, the counts, or the valuation.`,
+      };
+    }
+
     const marketProblem = wrongMarketReason(candidate, subject);
     if (marketProblem) {
       return { candidate, family, role: 'rejected', lane, fmvEligible: false, compClass, reason: marketProblem };
@@ -351,8 +376,8 @@ export function applyCompSourcePolicy(
 
     if (family === 'county') {
       return {
-        candidate, family, role: 'supplement', lane, fmvEligible: true, compClass,
-        reason: 'Official county recorded vacant-land sale — accepted alongside the LandPortal basis.',
+        candidate, family, role: 'context_only', lane, fmvEligible: false, compClass,
+        reason: 'County transaction research is outside the current comparable workflow. Government-record research applies to the subject property only; this row cannot price a comparable parcel.',
       };
     }
 
@@ -363,9 +388,15 @@ export function applyCompSourcePolicy(
   });
 
   const acceptedSold = decisions.filter((d) => d.fmvEligible && d.lane === 'sold');
-  const acceptedActive = decisions.filter((d) => d.role === 'context_only' && d.lane === 'active' && isRawLandClass(d.compClass));
+  const acceptedActive = decisions.filter((d) =>
+    d.role === 'context_only'
+    && d.lane === 'active'
+    && isRawLandClass(d.compClass)
+    && (d.family === 'landportal' || d.family === 'zillow' || d.family === 'redfin'));
   const landHomeOnly = decisions.filter((d) => d.role === 'land_home_only');
   const rejected = decisions.filter((d) => d.role === 'rejected');
+  /** Disabled aggregator rows, kept visible as history and counted separately. */
+  const legacyEvidence = decisions.filter((d) => d.role === 'legacy_evidence');
 
   // Registry candidates keep the accepted FMV set and the active-competition
   // set. Everything else stays out of the deduped registry so it can never
@@ -392,7 +423,9 @@ export function applyCompSourcePolicy(
     + `(${decisions.filter((d) => d.role === 'primary').length} LandPortal primary, ${decisions.filter((d) => d.role === 'supplement').length} supplement), `
     + `${acceptedActive.length} active listing${acceptedActive.length === 1 ? '' : 's'} tracked separately, `
     + `${landHomeOnly.length} improved row${landHomeOnly.length === 1 ? '' : 's'} held for Land-Home only, `
-    + `${rejected.length} rejected.`;
+    + `${rejected.length} rejected`
+    + (legacyEvidence.length ? `, ${legacyEvidence.length} disabled aggregator row(s) kept as history only` : '')
+    + '.';
 
-  return { plan, decisions, acceptedSold, acceptedActive, landHomeOnly, rejected, registryCandidates, valuationBlockers, summaryLine };
+  return { plan, decisions, acceptedSold, acceptedActive, landHomeOnly, rejected, legacyEvidence, registryCandidates, valuationBlockers, summaryLine };
 }

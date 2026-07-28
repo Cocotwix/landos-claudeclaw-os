@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
   APPROVED_STRATEGY_NAMES,
@@ -16,7 +16,7 @@ import {
 import { evaluateMissionAcceptance } from './mission-acceptance.js';
 import { missionChildIdentity, planMissionWaves, upstreamContributions, type MissionChildState } from './mission-graph.js';
 import type { MissionChildContext } from './mission-graph-runner.js';
-import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-mission.js';
+import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-collector-types.js';
 import type { SnapshotIdentity } from './property-intelligence-snapshot.js';
 
 const CONFIRMED_IDENTITY: SnapshotIdentity = {
@@ -101,9 +101,8 @@ describe('Deal Intelligence mission definition', () => {
     }
     // Valuation orders after comparables even though it does not REQUIRE them.
     expect(waveOf('comparables')).toBeLessThan(waveOf('valuation'));
-    // Comparables orders after the projection refresh: both drive the single
-    // browser tab, so overlapping them only queues one behind the other.
-    expect(waveOf('deal_card_projection')).toBeLessThan(waveOf('comparables'));
+    // Comparables starts with the other identity-dependent research lanes.
+    expect(waveOf('comparables')).toBe(waveOf('government_records'));
   });
 
   it('declares comparables and the constraint lanes as awaited, never required, by valuation and strategy', () => {
@@ -117,6 +116,13 @@ describe('Deal Intelligence mission definition', () => {
     const strategy = dealIntelligenceChildSpec('strategy');
     expect(strategy.dependsOn).toEqual(['valuation', 'parcel_identity']);
     expect(strategy.awaits).toEqual(expect.arrayContaining(['zoning_land_use', 'government_records', 'access_utilities']));
+    // Strategy awaits ONLY lanes its executor actually reads. Comp evidence
+    // reaches it through the valuation handback, and valuation already awaits
+    // comparables, so a direct edge would be ordering nothing consumes.
+    expect(strategy.awaits ?? []).not.toContain('comparables');
+    for (const awaited of strategy.awaits ?? []) {
+      expect(['government_records', 'zoning_land_use', 'environmental_terrain', 'access_utilities', 'market_intelligence']).toContain(awaited);
+    }
   });
 
   it('hands an awaited child the handbacks that actually landed', () => {
@@ -139,58 +145,6 @@ describe('Deal Intelligence mission definition', () => {
     // A blocked lane contributed nothing, so it is ABSENT rather than present
     // and empty. Absent means "delivered nothing", which is the honest reading.
     expect(upstream).not.toHaveProperty('environmental_terrain');
-  });
-
-  it('never lets a slow supporting lane gate an unrelated one', async () => {
-    // Regression: dispatching strictly wave-by-wave made valuation and strategy
-    // wait for the slow Deal Card projection refresh, which they consume nothing
-    // from. A child must wait for exactly what it consumes.
-    const { launchFanOutMission } = await import('./mission-graph-runner.js');
-    const { MissionGraphStore, resetMissionGraphStoreCache } = await import('./mission-graph-store.js');
-    const { _initTestLandosDb } = await import('./db.js');
-    _initTestLandosDb();
-    resetMissionGraphStoreCache();
-
-    let releaseSlow: () => void = () => {};
-    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
-    const finished: string[] = [];
-
-    const definition = dealIntelligenceMissionDefinition(caps({
-      // The slow supporting lane blocks until released.
-      subjectResearch: async () => { await slowGate; return { ok: true, note: 'slow refresh done' }; },
-    }));
-    const instrumented = {
-      ...definition,
-      executors: Object.fromEntries(
-        Object.entries(definition.executors).map(([key, fn]) => [key, async (c: MissionChildContext) => {
-          const out = await fn(c);
-          finished.push(key);
-          return out;
-        }]),
-      ),
-    };
-
-    const { completion } = launchFanOutMission({
-      definition: instrumented,
-      scopeId: 32,
-      store: new MissionGraphStore(),
-      joinPollMs: 5,
-      joinDeadlineMs: 5_000,
-    });
-
-    // The lanes that consume nothing from the refresh must all settle while it
-    // is still held: only the comparables chain deliberately orders after it.
-    await vi.waitFor(() => {
-      for (const key of ['government_records', 'zoning_land_use', 'environmental_terrain', 'access_utilities', 'market_intelligence', 'evidence_visuals']) {
-        expect(finished).toContain(key);
-      }
-    }, { timeout: 5_000, interval: 10 });
-    expect(finished).not.toContain('deal_card_projection');
-    expect(finished).not.toContain('comparables');
-
-    releaseSlow();
-    const join = await completion;
-    expect(join!.allTerminal).toBe(true);
   });
 
   it('assigns every child a roster specialist, a group and a unique contribution slot', () => {
@@ -380,34 +334,12 @@ describe('Deal Intelligence acceptance contracts', () => {
 });
 
 describe('Deal Intelligence executors', () => {
-  it('resolves the subject identity without waiting on the slow projection refresh', async () => {
-    // The root lane must do ONLY what the rest of the mission needs. The legacy
-    // report refresh is a separate supporting lane, so it can never gate this one.
-    let refreshCalls = 0;
-    const executors = dealIntelligenceExecutors(caps({
-      subjectResearch: async () => { refreshCalls += 1; return { ok: true, note: 'refresh ran' }; },
-    }));
+  it('resolves the subject identity in the canonical root lane', async () => {
+    const executors = dealIntelligenceExecutors(caps());
     const result = await executors.parcel_identity(ctx());
-    expect(refreshCalls).toBe(0);
     const handback = result.result as SubjectResearchHandback;
     expect(handback.apn).toBe('073090 04200');
     expect(handback.dealCardId).toBe(32);
-  });
-
-  it('reports a failed projection refresh as PARTIAL, never as a mission failure', async () => {
-    const executors = dealIntelligenceExecutors(caps({
-      subjectResearch: async () => { throw new Error('LandPortal timed out'); },
-    }));
-    const result = await executors.deal_card_projection(ctx());
-    expect(result.status).toBe('partial');
-    expect(result.summary).toMatch(/LandPortal timed out/);
-    expect((result.result as { ok: boolean }).ok).toBe(false);
-  });
-
-  it('declares the projection refresh as SUPPORTING so a slow refresh cannot hold the deal', () => {
-    const spec = dealIntelligenceChildSpec('deal_card_projection');
-    expect(spec.role).toBe('supporting');
-    expect(spec.dependsOn).toEqual(['parcel_identity']);
   });
 
   it('never claims government verification on comparables', async () => {

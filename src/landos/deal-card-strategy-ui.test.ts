@@ -18,11 +18,13 @@ describe('Deal Card Strategy — shared readiness record, not a worksheet', () =
   });
 
   it('renders the pursuit and exit analysis without readiness panels', () => {
-    expect(SRC).toMatch(/<PursuitPanel pursuit=\{pursuit\}/);
-    expect(SRC).toMatch(/<OwnerStrategiesPanel analysis=\{ownerAnalysis\}/);
+    const strategyTab = SRC.match(/\{activeTab === 'strategy'[\s\S]*?\n          \)\}/)?.[0] ?? '';
+    expect(strategyTab).toMatch(/<PropertyIntelligenceStrategy snapshot=\{piSnapshot\}/);
+    expect(strategyTab).not.toMatch(/<PursuitPanel\b/);
+    expect(strategyTab).not.toMatch(/<OwnerStrategiesPanel\b/);
     expect(SRC).not.toMatch(/<StrategyReadinessPanel\b/);
     expect(SRC).not.toMatch(/<RemainingBlockersPanel\b/);
-    expect(SRC).not.toMatch(/report\?\.valuation\?\.conflict/);
+    expect(strategyTab).not.toMatch(/report\?\.valuation\?\.conflict/);
   });
 
   it('uses no coordinate/map-pin identity language', () => {

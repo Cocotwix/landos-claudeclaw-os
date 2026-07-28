@@ -198,6 +198,18 @@ describe('ensureLandPortalAuthenticated — hidden modal login form (2026-07 UI)
   });
 });
 
+describe('ensureLandPortalAuthenticated — concurrent lanes (auth gate)', () => {
+  it('two concurrent lanes produce exactly ONE login attempt; the second reuses the fresh cache', async () => {
+    let logins = 0;
+    const pup = fakeController({ loginLikeSeq: [true, false], loginCode: 'submitted', onLogin: () => { logins++; } });
+    const d = deps(pup);
+    const [a, b] = await Promise.all([ensureLandPortalAuthenticated(d), ensureLandPortalAuthenticated(d)]);
+    expect(a.phase).toBe('authenticated');
+    expect(b.phase).toBe('authenticated');
+    expect(logins).toBe(1); // the queued lane never re-drove the login form
+  });
+});
+
 describe('readLandPortalCreds', () => {
   it('reports both missing var names from an empty env', () => {
     const { creds, missing } = readLandPortalCreds({});

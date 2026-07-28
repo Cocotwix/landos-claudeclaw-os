@@ -108,9 +108,13 @@ export interface SnapshotDueDiligenceItem {
 
 export interface SnapshotComp {
   key: string;
+  /** The comp's assessor parcel number, exactly as the source stated it. */
+  apn?: string | null;
   address: string | null;
   lane: 'sold' | 'active';
   source: string;
+  /** Every marketplace that corroborated this physical property/event. */
+  providerAttributions?: string[];
   sourceUrl: string | null;
   status: string;
   dateIso: string | null;
@@ -131,6 +135,16 @@ export interface SnapshotRejectedComp {
   reason: string;
 }
 
+/** Rows held back from the working set, counted rather than listed one by one. */
+export interface SnapshotCompEvidenceBucket {
+  reason: string;
+  count: number;
+  sources: string[];
+}
+
+/** The ONE conclusion the comp evidence supports. Never two at once. */
+export type SnapshotCompConclusion = 'sold_supported' | 'asking_indication' | 'not_priceable';
+
 export interface SnapshotComps {
   policyExplanation: string;
   landPortalUsable: boolean;
@@ -144,6 +158,23 @@ export interface SnapshotComps {
   rejected: SnapshotRejectedComp[];
   duplicatesMerged: number;
   summaryLine: string;
+
+  // ── Phase 5 comp correction ───────────────────────────────────────────────
+  /**
+   * Priced rows whose publisher never stated whether they closed.
+   *
+   * A first-class lane, not a gap: LandPortal publishes priced acreage rows with
+   * no sale-or-list wording, and they are frequently the closest acreage matches
+   * available. They are shown prominently as an ASKING-market reference and are
+   * never counted as sold evidence.
+   */
+  askingReferences?: SnapshotComp[];
+  /** Held-back rows as counts + reasons, so the operator view is not flooded. */
+  evidenceBuckets?: SnapshotCompEvidenceBucket[];
+  /** Total rows collected before selection. */
+  totalCollected?: number;
+  /** Which of the three conclusions the evidence supports. */
+  conclusion?: SnapshotCompConclusion;
 }
 
 export interface SnapshotValuation {
@@ -162,6 +193,14 @@ export interface SnapshotValuation {
   /** Populated when not priceable: exactly what is missing and what to do. */
   notPriceableReason: string | null;
   nextActionToPrice: string | null;
+  /**
+   * The single number to work from inside the supported range. A range answers
+   * "what is defensible"; the operator still has to act on one figure, and
+   * leaving them to pick it silently is how two people work from two values.
+   */
+  workingValue?: number | null;
+  /** One line naming the comps the conclusion actually rests on. */
+  primaryBasis?: string | null;
 }
 
 export type StrategyApplicability = 'applicable' | 'conditional' | 'blocked' | 'not_applicable';
@@ -186,6 +225,20 @@ export interface SnapshotRecommendation {
   whatWouldChangeIt: string[];
   posture: OpportunityPosture;
   postureWhy: string;
+  /**
+   * Explicit operator answers added in snapshot v3. Optional so historical
+   * snapshots remain readable without a migration or destructive rewrite.
+   */
+  shouldPursue?: 'yes' | 'with_conditions' | 'no' | 'undetermined';
+  worth?: { low: number; high: number; workingValue: number } | null;
+  targetBuyRange?: { low: number; high: number; basis: string } | null;
+  bestExit?: string | null;
+  dealKillers?: string[];
+  nextConfirmations?: string[];
+  juiceWorthSqueeze?: {
+    answer: 'yes' | 'conditional' | 'no' | 'undetermined';
+    why: string;
+  };
 }
 
 export interface SnapshotEvidenceItem {
@@ -265,6 +318,14 @@ export interface PropertyIntelligenceSnapshot {
    *  produced before the run became a native parent mission. */
   missionId?: string | null;
   /**
+   * True ONLY on an in-flight progressive assembly built from the children that
+   * have settled so far. A preliminary snapshot is never promoted to primary,
+   * never claims completion (its status stays `running`), and is replaced by the
+   * real joined snapshot the moment the parent mission joins. Absent (never
+   * false-but-present) on every promoted snapshot.
+   */
+  preliminary?: boolean;
+  /**
    * What the run did with the browser pages it opened.
    *
    * Recorded on the snapshot because "the workflow cleaned up after itself" is
@@ -272,6 +333,33 @@ export interface PropertyIntelligenceSnapshot {
    * visible rather than assumed clean. Absent on pre-Phase-5 snapshots.
    */
   browserCleanup?: { before: number; after: number; closed: number; note: string } | null;
+}
+
+/**
+ * In-flight progressive content for ONE running Deal Intelligence run.
+ *
+ * Persisted on the RUN row (a separate column, never `snapshot_json`) so the
+ * operator's poll can render the lanes that have settled while the mission is
+ * still running. It is explicitly NOT the promoted read:
+ *   • `snapshot.preliminary` is true and `snapshot.isPrimary` is false.
+ *   • `snapshot.status` is `running` — completeness is never claimed while any
+ *     lane is outstanding.
+ *   • Promotion still happens only at join, in `completeRun`, which also clears
+ *     this content so a finished run can never serve stale mid-flight data.
+ */
+export interface PropertyIntelligenceProgress {
+  preliminary: true;
+  runId: string;
+  dealCardId: number;
+  sequence: number;
+  /** When this partial assembly was built. */
+  updatedAt: string;
+  /** Child keys that have reached a terminal state so far. */
+  settled: string[];
+  /** Child keys still queued or running. */
+  outstanding: string[];
+  /** The partial assembly, in the exact shape every Deal Card tab reads. */
+  snapshot: PropertyIntelligenceSnapshot;
 }
 
 // ── Join ─────────────────────────────────────────────────────────────────────
@@ -354,6 +442,28 @@ export function jurisdictionPrefixBetween(a: string | null | undefined, b: strin
     return prefix;
   }
   return null;
+}
+
+/**
+ * The county-local search spelling the jurisdiction-prefix rule implies for a
+ * state-form APN. Tennessee's statewide layer prefixes the 3-digit county
+ * NUMBER onto the county-local "map + parcel" identifier that LandPortal
+ * displays and indexes (proven live on Deal 32: 073090 04200 ↔ 090 04200), so
+ * a subject search that only tries the confirmed state form finds nothing on
+ * LandPortal — which is exactly what blocked Deal 57's parcel visuals and
+ * comps. Deliberately conservative: only a 3-digit prefix on a first token of
+ * six or more digits is stripped, and the result is emitted only when
+ * `jurisdictionPrefixBetween` confirms the two spellings denote ONE parcel, so
+ * a variant can never name a different parcel than the input.
+ */
+export function jurisdictionLocalApnVariants(apn: string | null | undefined): string[] {
+  const original = (apn ?? '').trim();
+  if (!original) return [];
+  const tokens = original.split(/\s+/);
+  const first = tokens[0] ?? '';
+  if (!/^\d{6,}$/.test(first)) return [];
+  const local = [first.slice(3), ...tokens.slice(1)].join(' ');
+  return jurisdictionPrefixBetween(original, local) ? [local] : [];
 }
 
 /** True when two APN spellings denote the same parcel identifier. */

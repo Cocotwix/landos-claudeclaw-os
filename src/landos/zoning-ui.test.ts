@@ -14,22 +14,23 @@ const PANEL = readSource('web/src/components/ZoningLandUsePanel.tsx');
 const ROUTES = readSource('src/landos/routes.ts');
 
 describe('Zoning & Land Use Deal Card UI contract', () => {
-  it('the Deal Card loads the persisted zoning snapshot with GET only and never rebuilds while opening', () => {
-    expect(DEAL_CARD).toContain('loadZoningLandUse(id)');
-    expect(DEAL_CARD).toContain('/zoning-land-use`');
-    expect(DEAL_CARD).toContain('/zoning-land-use/rebuild');
-    const loadBody = DEAL_CARD.match(/async function loadZoningLandUse[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
-    expect(loadBody).toContain('apiGet');
-    expect(loadBody).not.toContain('apiPost');
-    expect(DEAL_CARD).toContain('<ZoningLandUsePanel');
+  it('the Deal Card no longer loads or mounts the retired zoning projection', () => {
+    expect(DEAL_CARD).not.toMatch(/loadZoningLandUse|rebuildZoningLandUse/);
+    expect(DEAL_CARD).not.toMatch(/\/zoning-land-use(?:\/rebuild)?/);
+    expect(DEAL_CARD).not.toMatch(/<ZoningLandUsePanel|from '@\/components\/ZoningLandUsePanel'/);
+    expect(DEAL_CARD).toMatch(
+      /activeTab === 'diligence'[\s\S]{0,220}<PropertyIntelligenceDueDiligence snapshot=\{piSnapshot\}/,
+    );
   });
 
-  it('rebuild is an explicit operator command bound to the POST route', () => {
-    const rebuildBody = DEAL_CARD.match(/async function rebuildZoningLandUse[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
-    expect(rebuildBody).toContain('apiPost');
-    expect(rebuildBody).toContain('/zoning-land-use/rebuild');
+  it('zoning runs as a named specialist behind the one canonical mission action', () => {
+    expect(DEAL_CARD).toMatch(/<PropertyIntelligenceLaunch state=\{propertyIntelligence\}/);
+    const piPanel = readSource('web/src/components/PropertyIntelligencePanel.tsx');
+    expect(piPanel).toMatch(/parcel and LandPortal subject research, government records, zoning, environmental screening/);
+    expect(piPanel).toMatch(/export function PropertyIntelligenceDueDiligence/);
+    expect(piPanel).toMatch(/snapshot\.dueDiligence\.map/);
     expect(PANEL).toContain('data-testid="zoning-rebuild"');
-    expect(PANEL).toContain('onClick={props.onRebuild}');
+    expect(DEAL_CARD).not.toContain('data-testid="zoning-rebuild"');
   });
 
   it('renders every requested operator-facing section', () => {

@@ -38,6 +38,7 @@ describe('Deal Card activity timeline (backend)', () => {
 
 describe('Deal Card completion standard (DealCard.tsx source)', () => {
   const SRC = fs.readFileSync(path.resolve(__dirname, '../../web/src/components/DealCard.tsx'), 'utf8');
+  const PI_SRC = fs.readFileSync(path.resolve(__dirname, '../../web/src/components/PropertyIntelligencePanel.tsx'), 'utf8');
 
   it('Activity tab renders the real ActivityTimeline, not a dead placeholder', () => {
     expect(SRC).toMatch(/<ActivityTimeline dealId=\{deal\.id\}/);
@@ -55,8 +56,10 @@ describe('Deal Card completion standard (DealCard.tsx source)', () => {
   });
 
   it('Strategy still excludes neighbor sale as an acquisition strategy', () => {
-    expect(SRC).toMatch(/Neighbor sale is NOT an acquisition strategy/i);
-    expect(SRC).toMatch(/\/neighbor\/i/);
+    expect(SRC).toMatch(/<PropertyIntelligenceStrategy snapshot=\{piSnapshot\}/);
+    expect(PI_SRC).toMatch(/strategies\.length \? strategies\.map/);
+    expect(PI_SRC).toMatch(/recommendation\.preferredStrategy/);
+    expect(PI_SRC).not.toMatch(/neighbor sale|neighbor strategy/i);
   });
 
   it('Visual Intelligence panel is present with static-map-fallback hero doctrine intact', () => {

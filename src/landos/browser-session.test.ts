@@ -11,10 +11,12 @@ const LIVE: BrowserSessionConfig = { enabled: true, cdpUrl: 'http://127.0.0.1:92
 
 // Fake page: evaluate(fn, query) → SUBMIT(true); evaluate(fn) → canned extraction.
 function fakePage(canned: { url: string; fields: Record<string, string>; snippets?: string[]; loginLike?: boolean }) {
-  const state = { url: '', gotos: 0, shots: 0 };
-  const page: PageLike & { _state: typeof state } = {
+  const state = { url: '', gotos: 0, shots: 0, closed: 0 };
+  const page: PageLike & { _state: typeof state; close(): Promise<void> } = {
     _state: state,
     async goto(u: string) { state.url = u; state.gotos += 1; },
+    async close() { state.closed += 1; },
+    isClosed() { return state.closed > 0; },
     url() { return state.url || canned.url; },
     async evaluate<T>(_fn: unknown, ...args: unknown[]): Promise<T> {
       if (args.length && typeof args[0] === 'string') return true as unknown as T; // SUBMIT / SELECT / CLICK
@@ -35,17 +37,20 @@ function fakePage(canned: { url: string; fields: Record<string, string>; snippet
 
 function fakePuppeteer(canned: Parameters<typeof fakePage>[0]) {
   const counts = { connect: 0, disconnect: 0, newPage: 0 };
+  // pages[0] models the pre-existing (operator-visible) first tab; every
+  // newPage() call mints a DISTINCT page, exactly like real Chrome.
   const page = fakePage(canned);
+  const created: Array<ReturnType<typeof fakePage>> = [];
   let connected = true;
   const browser: BrowserLike = {
     async version() { return 'HeadlessChrome/1'; },
-    async pages() { return [page]; },
-    async newPage() { counts.newPage += 1; return page; },
+    async pages() { return [page, ...created.filter((p) => p._state.closed === 0)]; },
+    async newPage() { counts.newPage += 1; const p = fakePage(canned); created.push(p); return p; },
     isConnected() { return connected; },
     async disconnect() { counts.disconnect += 1; connected = false; },
   };
-  const pup: PuppeteerLike & { _counts: typeof counts; _page: typeof page } = {
-    _counts: counts, _page: page,
+  const pup: PuppeteerLike & { _counts: typeof counts; _page: typeof page; _created: typeof created } = {
+    _counts: counts, _page: page, _created: created,
     async connect() { counts.connect += 1; return browser; },
   };
   return pup;
@@ -181,6 +186,42 @@ describe('live BrowserDriver (read-only)', () => {
     expect(browserSessionStatus()).toBe('auth_needed');
   });
 
+  it('ISOLATION: two lane drivers browse on DISTINCT pages concurrently (no shared-tab chokepoint)', async () => {
+    const pup = fakePuppeteer(LP_FIELDS);
+    await ensureBrowserSession({ config: LIVE, puppeteer: pup });
+    const comps = makeLiveBrowserDriver('comp_research', { config: LIVE, puppeteer: pup });
+    const projection = makeLiveBrowserDriver('landportal', { config: LIVE, puppeteer: pup });
+    await Promise.all([
+      comps.open('https://one.example/comps', { timeoutMs: 1000 }),
+      projection.open('https://two.example/projection', { timeoutMs: 1000 }),
+    ]);
+    expect(pup._counts.newPage).toBe(2);
+    const [pa, pb] = pup._created;
+    expect(pa).not.toBe(pb);
+    // Each lane's navigation landed on its OWN page — neither clobbered the other.
+    expect([pa._state.url, pb._state.url].sort()).toEqual(['https://one.example/comps', 'https://two.example/projection']);
+    // Later reads REUSE each driver's own page — no extra tab, no cross-talk.
+    await comps.readFields({ timeoutMs: 1000 });
+    await projection.readFields({ timeoutMs: 1000 });
+    expect(pup._counts.newPage).toBe(2);
+  }, 15_000);
+
+  it('CLEANUP: closeOwnedPageScope closes the lane page, never the pre-existing operator tab', async () => {
+    const pup = fakePuppeteer(LP_FIELDS);
+    await ensureBrowserSession({ config: LIVE, puppeteer: pup });
+    const driver = makeLiveBrowserDriver('landportal', { config: LIVE, puppeteer: pup });
+    const token = await driver.beginOwnedPageScope!();
+    await driver.open('https://landportal.com/?property=abc', { timeoutMs: 1000 });
+    const lane = pup._created[0];
+    const cleanup = await driver.closeOwnedPageScope!(token);
+    expect(lane._state.closed).toBe(1);      // the lane page is gone
+    expect(pup._page._state.closed).toBe(0); // the operator's first tab is untouched
+    expect(cleanup.closed).toBe(1);
+    // The driver recovers with a FRESH page on next use (stale handle dropped).
+    await driver.open('https://landportal.com/next', { timeoutMs: 1000 });
+    expect(pup._counts.newPage).toBe(2);
+  }, 15_000);
+
   it('the live driver exposes ONLY read-only methods (no write/purchase/export)', () => {
     const driver = makeLiveBrowserDriver('landportal', { config: LIVE });
     const keys = Object.keys(driver);
@@ -239,6 +280,44 @@ describe('Start Browser Intelligence (launch + connect, Chrome only)', () => {
     expect(args).toContain('--remote-debugging-port=9222');
     expect(args).toContain('--user-data-dir=');
     expect(calls[0].cmd.toLowerCase()).not.toContain('edge'); // Chrome, not Edge
+  });
+
+  it('spawns the LandOS Chrome OFFSCREEN with anti-throttle flags by default (never over the operator)', async () => {
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    let up = false;
+    const spawn: SpawnLike = (cmd, args) => { up = true; calls.push({ cmd, args }); };
+    const base = fakePuppeteer(LP_FIELDS);
+    const pup: PuppeteerLike = { async connect(o) { if (!up) throw new Error('not up'); return base.connect(o); } };
+    const r = await startBrowserSession({ config: { ...LIVE, chromePath: process.execPath }, puppeteer: pup, spawn, maxPolls: 5, pollMs: 1 });
+    expect(r.launched).toBe(true);
+    const args = calls[0].args.join(' ');
+    expect(args).toContain('--window-position=-32000,-32000');
+    expect(args).toContain('--window-size=1920,1080');
+    expect(args).toContain('--disable-backgrounding-occluded-windows');
+    expect(args).toContain('--disable-background-timer-throttling');
+    expect(args).toContain('--disable-renderer-backgrounding');
+    // Never headless: LandPortal's login + map painting are proven on a real
+    // HEADED session, and the persistent profile keeps its cookies either way.
+    expect(args).not.toContain('--headless');
+  });
+
+  it('BROWSER_INTEL_FOREGROUND opts back into a visible window (no offscreen flags)', async () => {
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    let up = false;
+    const spawn: SpawnLike = (cmd, args) => { up = true; calls.push({ cmd, args }); };
+    const base = fakePuppeteer(LP_FIELDS);
+    const pup: PuppeteerLike = { async connect(o) { if (!up) throw new Error('not up'); return base.connect(o); } };
+    const r = await startBrowserSession({ config: { ...LIVE, chromePath: process.execPath, foreground: true }, puppeteer: pup, spawn, maxPolls: 5, pollMs: 1 });
+    expect(r.launched).toBe(true);
+    const args = calls[0].args.join(' ');
+    expect(args).not.toContain('--window-position');
+    expect(args).not.toContain('--disable-backgrounding-occluded-windows');
+    expect(args).toContain('--remote-debugging-port=9222'); // core flags intact
+  });
+
+  it('background is the DEFAULT: foreground only via BROWSER_INTEL_FOREGROUND', () => {
+    expect(readSessionConfig({ BROWSER_INTEL_LIVE: '1' }).foreground).toBe(false);
+    expect(readSessionConfig({ BROWSER_INTEL_LIVE: '1', BROWSER_INTEL_FOREGROUND: '1' }).foreground).toBe(true);
   });
 
   it('reports the exact issue when Chrome is not found at any path', async () => {

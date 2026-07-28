@@ -87,6 +87,16 @@ describe('applyCompSourcePolicy — no LandPortal branch', () => {
 });
 
 describe('applyCompSourcePolicy — excluded valuation sources', () => {
+  it('never government-verifies or accepts a county transaction for a comparable parcel', () => {
+    const result = applyCompSourcePolicy(SUBJECT, [
+      comp({ provider: 'County records', compClass: 'vacant_land' }),
+    ]);
+    expect(result.acceptedSold).toHaveLength(0);
+    expect(result.decisions[0].family).toBe('county');
+    expect(result.decisions[0].fmvEligible).toBe(false);
+    expect(result.decisions[0].reason).toMatch(/subject property only/);
+  });
+
   it('keeps Realie and HomeHarvest comps out of the FMV set', () => {
     const result = applyCompSourcePolicy(SUBJECT, [
       comp({ provider: 'Realie' }),
@@ -97,31 +107,44 @@ describe('applyCompSourcePolicy — excluded valuation sources', () => {
     const hh = result.decisions.find((d) => d.family === 'homeharvest')!;
     expect(realie.fmvEligible).toBe(false);
     expect(hh.fmvEligible).toBe(false);
-    expect(realie.role).toBe('context_only');
-    expect(hh.role).toBe('context_only');
-    expect(realie.reason).toMatch(/excluded from the accepted vacant-land valuation workflow/);
+    // Disabled, not merely FMV-ineligible. `context_only` still surfaces as
+    // CURRENT market context, which is how residential-feed rows previously
+    // reached the operator's active-competition lane for a vacant-land subject.
+    expect(realie.role).toBe('legacy_evidence');
+    expect(hh.role).toBe('legacy_evidence');
+    expect(realie.reason).toMatch(/disabled for the current comparable workflow/);
     expect(result.acceptedSold.every((d) => d.family !== 'realie' && d.family !== 'homeharvest')).toBe(true);
     expect(result.registryCandidates.every((c) => !/realie|homeharvest/i.test(c.provider))).toBe(true);
   });
 
-  it('names the policy exclusion even when the row type is unknown', () => {
-    // Live finding on Deal 32: 30 Realie rows carried no usable property type,
-    // so the operator only saw "type could not be established" and never the
-    // load-bearing fact that Realie comps cannot price land at all.
+  it('keeps a disabled aggregator out of the ACTIVE competition lane too', () => {
+    // The operator-visible defect: a Realie/HomeHarvest land row counted as
+    // current competition and inflated the active count on the Deal Card.
     const result = applyCompSourcePolicy(SUBJECT, [
-      comp({ provider: 'realie', compClass: 'unknown', addressDesc: '700 Lakeview Dr, Loudon, TN 37774' }),
+      comp({ provider: 'realie', lane: 'active', priceKind: 'list', compClass: 'vacant_land' }),
+      comp({ provider: 'homeharvest', lane: 'active', priceKind: 'list', compClass: 'vacant_land' }),
+      comp({ provider: 'Zillow', lane: 'active', priceKind: 'list', compClass: 'vacant_land', addressDesc: '4 Real Rd, Kingston, TN 37763' }),
     ]);
-    const row = result.decisions[0];
-    expect(row.fmvEligible).toBe(false);
-    expect(row.reason).toMatch(/excluded from the accepted vacant-land valuation workflow/);
-    expect(row.reason).toMatch(/property type could not be established/);
+    expect(result.acceptedActive).toHaveLength(1);
+    expect(result.acceptedActive[0].family).toBe('zillow');
+    expect(result.legacyEvidence).toHaveLength(2);
   });
 
-  it('names the policy exclusion on an improved row from an excluded source', () => {
-    const result = applyCompSourcePolicy(SUBJECT, [comp({ provider: 'homeharvest', compClass: 'residential' })]);
-    expect(result.landHomeOnly).toHaveLength(1);
-    expect(result.landHomeOnly[0].reason).toMatch(/Land-Home Package strategy only/);
-    expect(result.landHomeOnly[0].reason).toMatch(/also excluded from the accepted vacant-land valuation workflow/);
+  it('disables an aggregator row whatever its property type says', () => {
+    // Live finding on Deal 32: 30 Realie rows carried no usable property type.
+    // The load-bearing fact is the source, not the type — an unknown-type row
+    // and an improved row from a disabled source are both history only.
+    const result = applyCompSourcePolicy(SUBJECT, [
+      comp({ provider: 'realie', compClass: 'unknown', addressDesc: '700 Lakeview Dr, Loudon, TN 37774' }),
+      comp({ provider: 'homeharvest', compClass: 'residential' }),
+    ]);
+    expect(result.legacyEvidence).toHaveLength(2);
+    expect(result.landHomeOnly).toHaveLength(0);
+    for (const row of result.decisions) {
+      expect(row.fmvEligible).toBe(false);
+      expect(row.reason).toMatch(/disabled for the current comparable workflow/);
+      expect(row.reason).toMatch(/retained as stored historical evidence/);
+    }
   });
 });
 

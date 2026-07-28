@@ -37,6 +37,18 @@ export interface CompRegistryCandidate {
   /** Persisted status from landos_comp ('rejected' rows stay rejected). */
   persistedStatus?: string | null;
   compClass?: string | null;
+  /**
+   * True when the row's priced acreage and the parcel's own acreage cannot be
+   * reconciled. Such a row carries no defensible price-per-acre and must never
+   * silently pick one of the two figures.
+   */
+  acreageConflict?: boolean;
+  /**
+   * Where the transaction status was established. A status read from the
+   * provider's own attribute or detail page is stated evidence, not an
+   * assumption, and must not be downgraded to 'unknown' downstream.
+   */
+  statusSource?: string | null;
 }
 
 export interface SubjectMarket {

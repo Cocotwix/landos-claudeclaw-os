@@ -19,7 +19,8 @@ describe('LandPortal visible comps → Market pipeline (extraction)', () => {
 
 describe('LandPortal comps Market wiring (source lock)', () => {
   const REPORT = fs.readFileSync(path.resolve(__dirname, 'deal-card-report.ts'), 'utf8');
-  const UI = fs.readFileSync(path.resolve(__dirname, '../../web/src/components/DealCard.tsx'), 'utf8');
+  const DEAL_CARD = fs.readFileSync(path.resolve(__dirname, '../../web/src/components/DealCard.tsx'), 'utf8');
+  const UI = fs.readFileSync(path.resolve(__dirname, '../../web/src/components/PropertyIntelligencePanel.tsx'), 'utf8');
 
   it('report build parses visible LandPortal rows and never runs the paid comp report', () => {
     expect(REPORT).toMatch(/parseLandPortalCompRows/);
@@ -34,10 +35,13 @@ describe('LandPortal comps Market wiring (source lock)', () => {
     expect(REPORT).toMatch(/paid comp report was not run/i);
   });
 
-  it('Market panel renders a LandPortal comps + source-status block', () => {
-    expect(UI).toMatch(/function LandPortalCompsPanel/);
-    expect(UI).toMatch(/<LandPortalCompsPanel lpc=\{mc\.landportalComps\}/);
-    expect(UI).toMatch(/landportalComps\?:/); // present on the view type
-    expect(UI).toMatch(/no paid report/i);
+  it('Market renders LandPortal status and rows through the canonical snapshot', () => {
+    expect(DEAL_CARD).toMatch(/<PropertyIntelligenceMarket snapshot=\{piSnapshot\}/);
+    expect(DEAL_CARD).not.toMatch(/function LandPortalCompsPanel|<LandPortalCompsPanel/);
+    expect(UI).toMatch(/title="Comp source policy"/);
+    expect(UI).toMatch(/LandPortal primary/);
+    expect(UI).toMatch(/LandPortal read .*none priceable/);
+    expect(UI).toMatch(/<CompTable rows=\{comps\.sold\}/);
+    expect(UI).toMatch(/row\.sourceUrl \? <a href=\{row\.sourceUrl\}/);
   });
 });

@@ -1,0 +1,753 @@
+// The operator-facing comp working set — Phase 5 comp correction.
+//
+// The Deal Card was rendering four comp pipelines at once: the current snapshot,
+// the legacy comp-map registry, the raw LandPortal table and an ownerAnalysis
+// "fair market value". They disagreed on accepted counts, on active counts and
+// on whether the parcel was priceable at all. This module produces the ONE set
+// the operator reads, so the snapshot can be the single answer.
+//
+// What it decides, and nothing else:
+//   • which comps are the working set (at most five sold, at most five active),
+//   • which rows are evidence-only, with a COUNT and a reason instead of a wall
+//     of rejection text,
+//   • how a LandPortal row is classified when the source never stated a status,
+//   • which of the three valuation conclusions the evidence actually supports.
+//
+// It does NOT collect, score value, or decide strategy. Pure: no I/O, no clock.
+//
+// Two rules are structural rather than advisory:
+//   1. Only LandPortal, Zillow and Redfin may enter the current handback.
+//      HomeHarvest and Realie stay in historical storage only; they never enter
+//      current counts, maps, snapshots, rendering, or valuation.
+//   2. Nothing here consults an assessor, recorder, deed or parcel record. A
+//      comp's status comes from the marketplace that published it.
+
+import type { CompSourcePolicyResult } from './comp-source-policy.js';
+import type {
+  SnapshotComp, SnapshotComps, SnapshotRejectedComp, SnapshotValuation,
+} from './property-intelligence-snapshot.js';
+
+/** At most this many rows in each operator-facing lane. */
+export const WORKING_SET_LIMIT = 5;
+
+/** Marketplaces whose rows may price or compete with the subject. */
+export const WORKING_SET_SOURCES = [/landportal/i, /zillow/i, /redfin/i];
+
+/** Aggregators retained as evidence only. They never enter the working set. */
+export const EVIDENCE_ONLY_SOURCES = [/homeharvest/i, /realtor/i, /realie/i];
+
+export function isWorkingSetSource(source: string | null | undefined): boolean {
+  const value = (source ?? '').trim();
+  if (!value) return false;
+  if (EVIDENCE_ONLY_SOURCES.some((pattern) => pattern.test(value))) return false;
+  return WORKING_SET_SOURCES.some((pattern) => pattern.test(value));
+}
+
+export function isEvidenceOnlySource(source: string | null | undefined): boolean {
+  return EVIDENCE_ONLY_SOURCES.some((pattern) => pattern.test((source ?? '').trim()));
+}
+
+/**
+ * How a comp row's transaction status was established.
+ *
+ * `unconfirmed` is a first-class answer, not a missing value: LandPortal
+ * publishes priced rows with no sale-or-list wording anywhere on the row or its
+ * section heading, and calling those "sold" would invent the one fact that
+ * decides whether they may price the subject.
+ */
+export type CompStatusBasis = 'closed_sale' | 'active_listing' | 'unconfirmed';
+
+export interface CompCandidateRow {
+  key: string;
+  /** Provider-owned property/listing identifier, when exposed. */
+  providerId?: string | null;
+  /** The comp's assessor parcel number, exactly as the source stated it. */
+  apn?: string | null;
+  address: string | null;
+  source: string;
+  sourceUrl: string | null;
+  price: number | null;
+  acres: number | null;
+  pricePerAcre: number | null;
+  dateIso: string | null;
+  distanceMiles: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  /** Vacant land, improved, or unknown. */
+  landClass: 'vacant_land' | 'improved' | 'unknown';
+  statusBasis: CompStatusBasis;
+  /** Locality the row sits in, for same-market scoring. */
+  locality: string | null;
+  /**
+   * The comp source policy's stated reason this row may not enter the working
+   * set — a wrong-market rejection, or a sold row the policy did not accept
+   * (an over-cap supplement, for instance). Selection buckets the row under
+   * this reason; without it, a policy-rejected row with in-band acreage would
+   * re-enter the very set the policy excluded it from.
+   */
+  policyExcluded?: string | null;
+  /** Priced acreage irreconcilable with the parcel record; carries no acreage. */
+  acreageConflict?: boolean;
+  /** All marketplaces that corroborated this physical property/event. */
+  providerAttributions?: string[];
+  /** Optional normalized (0-1) subject-similarity signals. Missing is neutral. */
+  accessSimilarity?: number | null;
+  terrainSimilarity?: number | null;
+  utilitiesSimilarity?: number | null;
+  developmentContextSimilarity?: number | null;
+}
+
+export interface CompSelectionSubject {
+  acres: number | null;
+  locality: string | null;
+  county: string | null;
+}
+
+export interface CompEvidenceBucket {
+  reason: string;
+  count: number;
+  sources: string[];
+}
+
+export interface CompWorkingSet {
+  sold: SnapshotComp[];
+  active: SnapshotComp[];
+  /** Close-acreage rows whose status the source never stated. Shown prominently
+   *  as an asking-market reference, never as sold evidence. */
+  askingReferences: SnapshotComp[];
+  evidence: CompEvidenceBucket[];
+  duplicatesRemoved: number;
+  totalCollected: number;
+  /** The ONE conclusion the evidence supports. */
+  conclusion: CompConclusion;
+}
+
+export type CompConclusion =
+  /** Usable in-band closed sales exist; a value band may be stated from them. */
+  | 'sold_supported'
+  /** Only active or status-unconfirmed references support a range. */
+  | 'asking_indication'
+  /** Neither is adequate. */
+  | 'not_priceable';
+
+// ── Acreage comparability ───────────────────────────────────────────────────
+
+/** The band a row must sit in to compete with or price the subject. */
+export function acreageBand(subjectAcres: number | null): { lo: number; hi: number } | null {
+  if (subjectAcres == null || !(subjectAcres > 0)) return null;
+  return { lo: subjectAcres * 0.5, hi: subjectAcres * 2.5 };
+}
+
+/**
+ * 1 when the acreage matches the subject exactly, falling off with the ratio.
+ *
+ * Scored on the RATIO, not the difference: a 2-acre gap is decisive on a
+ * 3-acre subject and irrelevant on a 300-acre one.
+ */
+export function acreageSimilarity(subjectAcres: number | null, acres: number | null): number {
+  if (subjectAcres == null || acres == null || subjectAcres <= 0 || acres <= 0) return 0;
+  const ratio = acres > subjectAcres ? acres / subjectAcres : subjectAcres / acres;
+  return 1 / ratio;
+}
+
+function recencyScore(dateIso: string | null, nowMs: number): number {
+  if (!dateIso) return 0;
+  const stamp = Date.parse(dateIso);
+  if (!Number.isFinite(stamp)) return 0;
+  const months = (nowMs - stamp) / (1000 * 60 * 60 * 24 * 30.4);
+  if (months <= 0) return 1;
+  // Halves roughly every year; a two-year-old sale still counts, faintly.
+  return 1 / (1 + months / 12);
+}
+
+function localityScore(subject: CompSelectionSubject, row: CompCandidateRow): number {
+  const norm = (value: string | null): string => (value ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  const rowLocality = norm(row.locality) || norm(row.address);
+  if (!rowLocality) return 0;
+  if (subject.locality && rowLocality.includes(norm(subject.locality))) return 1;
+  if (subject.county && rowLocality.includes(norm(subject.county))) return 0.5;
+  return 0;
+}
+
+function distanceScore(distanceMiles: number | null): number {
+  if (distanceMiles == null || !Number.isFinite(distanceMiles)) return 0;
+  return 1 / (1 + Math.max(0, distanceMiles) / 10);
+}
+
+/**
+ * Practical comparability, deliberately NOT distance alone.
+ *
+ * Acreage dominates because it is what makes a row a comparable at all: in a
+ * market that sells both half-acre lake lots and 40-acre tracts, the nearest row
+ * is routinely the least comparable one.
+ */
+export function comparabilityScore(
+  subject: CompSelectionSubject,
+  row: CompCandidateRow,
+  nowMs: number,
+): number {
+  const acreage = acreageSimilarity(subject.acres, row.acres);
+  const land = row.landClass === 'vacant_land' ? 1 : row.landClass === 'unknown' ? 0.4 : 0;
+  const bounded = (value: number | null | undefined): number =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  return (
+    acreage * 5 +
+    land * 3 +
+    localityScore(subject, row) * 2 +
+    recencyScore(row.dateIso, nowMs) * 2 +
+    distanceScore(row.distanceMiles) * 1 +
+    bounded(row.accessSimilarity) * 0.75 +
+    bounded(row.terrainSimilarity) * 0.75 +
+    bounded(row.utilitiesSimilarity) * 0.5 +
+    bounded(row.developmentContextSimilarity) * 0.5
+  );
+}
+
+// ── Deduplication ───────────────────────────────────────────────────────────
+
+const normAddress = (value: string | null): string =>
+  (value ?? '').toLowerCase().replace(/\b(lot|unit|#)\s*[\w-]+/g, '').replace(/[^a-z0-9]/g, '');
+
+/**
+ * A stable identity for one physical property.
+ *
+ * Address first. When a row carries no address — LandPortal publishes priced
+ * rows identified only by APN — price and acreage identify it instead.
+ */
+export function compIdentity(row: CompCandidateRow): string {
+  const apn = (row.apn ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (apn) return `apn:${apn}`;
+  if (row.providerId) return `provider:${row.source.toLowerCase()}:${row.providerId.trim().toLowerCase()}`;
+  const address = normAddress(row.address);
+  if (address) return `addr:${address}`;
+  if (typeof row.lat === 'number' && typeof row.lng === 'number') {
+    return `coord:${row.lat.toFixed(5)}:${row.lng.toFixed(5)}`;
+  }
+  const price = row.price != null ? Math.round(row.price) : 'x';
+  const acres = row.acres != null ? row.acres.toFixed(2) : 'x';
+  return `event:${row.statusBasis}:${price}:${acres}:${row.dateIso ?? 'undated'}`;
+}
+
+/** The price+acreage signature, when the row carries both. */
+function priceAcreKey(row: CompCandidateRow): string | null {
+  if (row.price == null || row.acres == null) return null;
+  return `pa:${Math.round(row.price)}:${row.acres.toFixed(2)}`;
+}
+
+function normalizedApn(value: string | null | undefined): string | null {
+  const normalized = (value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return normalized.length >= 4 ? normalized : null;
+}
+
+function sameCoordinates(a: CompCandidateRow, b: CompCandidateRow): boolean {
+  if (typeof a.lat !== 'number' || typeof a.lng !== 'number'
+    || typeof b.lat !== 'number' || typeof b.lng !== 'number') return false;
+  if (![a.lat, a.lng, b.lat, b.lng].every(Number.isFinite)) return false;
+  // Roughly 55 m latitude; longitude is tighter away from the equator.
+  return Math.abs(a.lat - b.lat) <= 0.0005 && Math.abs(a.lng - b.lng) <= 0.0005;
+}
+
+function sameSaleEvent(a: CompCandidateRow, b: CompCandidateRow): boolean {
+  if (priceAcreKey(a) == null || priceAcreKey(a) !== priceAcreKey(b)) return false;
+  const sameDatedEvent = !!a.dateIso && !!b.dateIso
+    && a.dateIso.slice(0, 10) === b.dateIso.slice(0, 10)
+    && a.statusBasis === b.statusBasis;
+  if (sameDatedEvent) return true;
+  // LandPortal can expose an address-less priced row whose status is unstated;
+  // merge it into a corroborating marketplace event only when the exact price
+  // and acreage match and the anonymous row carries no conflicting identifier.
+  const oneAnonymous = !normAddress(a.address) || !normAddress(b.address);
+  const oneUnconfirmed = a.statusBasis === 'unconfirmed' || b.statusBasis === 'unconfirmed';
+  return oneAnonymous && oneUnconfirmed && a.source.toLowerCase() !== b.source.toLowerCase();
+}
+
+function samePhysicalProperty(a: CompCandidateRow, b: CompCandidateRow): boolean {
+  const aApn = normalizedApn(a.apn);
+  const bApn = normalizedApn(b.apn);
+  if (aApn && bApn && aApn === bApn) return true;
+  if (a.providerId && b.providerId
+    && a.source.toLowerCase() === b.source.toLowerCase()
+    && a.providerId.trim().toLowerCase() === b.providerId.trim().toLowerCase()) return true;
+  const aAddress = normAddress(a.address);
+  const bAddress = normAddress(b.address);
+  if (aAddress && bAddress && aAddress === bAddress) return true;
+  return sameCoordinates(a, b) || sameSaleEvent(a, b);
+}
+
+/**
+ * Collapse duplicates within and across sources.
+ *
+ * Two rows are the same property when they share a normalized address OR the
+ * same price-and-acreage signature. The second test is what recognises a row
+ * across marketplaces: LandPortal publishes "$100,000 Acres: 10.30" with no
+ * address at all, and Redfin publishes the same parcel as 117 Hensley Rd. On
+ * address alone they would both survive and the operator would see one property
+ * twice — once as an asking reference and once as a closed sale.
+ *
+ * The kept row has the strongest status basis, then the most complete data, so
+ * a confirmed sale always beats an identical row of unstated status. Facts the
+ * loser carried are merged in; none are invented.
+ */
+export function dedupeCompRows(rows: CompCandidateRow[]): { rows: CompCandidateRow[]; removed: number } {
+  const basisRank: Record<CompStatusBasis, number> = { closed_sale: 3, active_listing: 2, unconfirmed: 1 };
+  const completeness = (row: CompCandidateRow): number =>
+    (row.acres != null ? 2 : 0) + (row.dateIso ? 1 : 0) + (row.address ? 1 : 0) + (row.sourceUrl ? 1 : 0);
+
+  const kept: CompCandidateRow[] = [];
+  let removed = 0;
+
+  for (const row of rows) {
+    const slot = kept.findIndex((held) => samePhysicalProperty(held, row));
+
+    if (slot < 0) {
+      kept.push({
+        ...row,
+        providerAttributions: [...new Set(row.providerAttributions ?? [row.source])],
+      });
+      continue;
+    }
+
+    removed += 1;
+    const held = kept[slot];
+    const winner = basisRank[row.statusBasis] !== basisRank[held.statusBasis]
+      ? (basisRank[row.statusBasis] > basisRank[held.statusBasis] ? row : held)
+      : (completeness(row) > completeness(held) ? row : held);
+    const loser = winner === row ? held : row;
+    const merged: CompCandidateRow = {
+      ...winner,
+      providerId: winner.providerId ?? loser.providerId,
+      acres: winner.acres ?? loser.acres,
+      dateIso: winner.dateIso ?? loser.dateIso,
+      address: winner.address ?? loser.address,
+      apn: winner.apn ?? loser.apn,
+      pricePerAcre: winner.pricePerAcre ?? loser.pricePerAcre,
+      distanceMiles: winner.distanceMiles ?? loser.distanceMiles,
+      sourceUrl: winner.sourceUrl ?? loser.sourceUrl,
+      lat: winner.lat ?? loser.lat,
+      lng: winner.lng ?? loser.lng,
+      providerAttributions: [...new Set([
+        ...(winner.providerAttributions ?? [winner.source]),
+        ...(loser.providerAttributions ?? [loser.source]),
+      ])],
+    };
+    kept[slot] = merged;
+  }
+  return { rows: kept, removed };
+}
+
+// ── Selection ───────────────────────────────────────────────────────────────
+
+function toSnapshotComp(row: CompCandidateRow, lane: 'sold' | 'active', why: string): SnapshotComp {
+  const ppa = row.pricePerAcre
+    ?? (row.price != null && row.acres != null && row.acres > 0 ? Math.round(row.price / row.acres) : null);
+  const similarities: string[] = [];
+  const differences: string[] = [];
+  if (row.acres != null) similarities.push(`${row.acres.toFixed(2)} ac`);
+  if (row.distanceMiles != null) similarities.push(`${row.distanceMiles.toFixed(1)} mi from the subject`);
+  if (row.acres == null) differences.push('No acreage on the row.');
+  if (!row.dateIso) differences.push('No transaction date published.');
+  if (row.statusBasis === 'unconfirmed') differences.push('The source did not state whether this is a sale or an asking price.');
+  return {
+    key: row.key,
+    apn: row.apn ?? null,
+    address: row.address,
+    lane,
+    source: [...new Set(row.providerAttributions ?? [row.source])].join(' + '),
+    providerAttributions: [...new Set(row.providerAttributions ?? [row.source])],
+    sourceUrl: row.sourceUrl,
+    status: row.statusBasis === 'closed_sale' ? 'Closed sale'
+      : row.statusBasis === 'active_listing' ? 'Active listing'
+        : 'Asking price, status unconfirmed',
+    dateIso: row.dateIso,
+    price: row.price,
+    acres: row.acres,
+    pricePerAcre: ppa,
+    distanceMiles: row.distanceMiles,
+    whyUseful: why,
+    similarities,
+    differences,
+  };
+}
+
+function bucketEvidence(buckets: Map<string, CompEvidenceBucket>, reason: string, source: string): void {
+  const held = buckets.get(reason);
+  if (held) {
+    held.count += 1;
+    if (!held.sources.includes(source)) held.sources.push(source);
+    return;
+  }
+  buckets.set(reason, { reason, count: 1, sources: [source] });
+}
+
+/**
+ * Build the operator-facing working set.
+ *
+ * Everything not selected is counted into an evidence bucket with ONE reason
+ * line, because printing a rejection sentence per row is how eighty-nine of them
+ * ended up in the operator's primary view.
+ */
+export function selectWorkingComps(input: {
+  subject: CompSelectionSubject;
+  rows: CompCandidateRow[];
+  nowMs: number;
+  sourceCaps?: { zillow: number; redfin: number };
+}): CompWorkingSet {
+  const { subject, nowMs } = input;
+  // Disabled historical aggregators are not part of any current count. Direct
+  // callers may still pass them for audit classification, but they do not
+  // inflate the current collected/selected totals.
+  const totalCollected = input.rows.filter((row) => !isEvidenceOnlySource(row.source)).length;
+  const buckets = new Map<string, CompEvidenceBucket>();
+
+  const approved: CompCandidateRow[] = [];
+  for (const row of input.rows) {
+    if (isEvidenceOnlySource(row.source)) {
+      // Keep one generic archival bucket without serializing the disabled
+      // provider name into a current snapshot/UI handback.
+      bucketEvidence(
+        buckets,
+        'Aggregator row from a historical disabled provider is retained for database integrity only; it never executes, counts, maps, renders, prices, or competes with the subject.',
+        'Historical disabled provider',
+      );
+      continue;
+    }
+    if (!isWorkingSetSource(row.source)) {
+      bucketEvidence(buckets, 'Source is not one of the approved comparable marketplaces (LandPortal, Zillow, Redfin).', row.source || 'unknown');
+      continue;
+    }
+    if (row.policyExcluded) {
+      bucketEvidence(buckets, row.policyExcluded, row.source);
+      continue;
+    }
+    approved.push(row);
+  }
+
+  const { rows: unique, removed } = dedupeCompRows(approved);
+
+  const band = acreageBand(subject.acres);
+  const inBand = (acres: number | null): boolean => {
+    if (band == null || acres == null) return false;
+    return acres >= band.lo && acres <= band.hi;
+  };
+
+  const soldPool: CompCandidateRow[] = [];
+  const activePool: CompCandidateRow[] = [];
+  const askingPool: CompCandidateRow[] = [];
+
+  for (const row of unique) {
+    if (row.price == null || row.price <= 0) {
+      bucketEvidence(buckets, 'No usable price on the row.', row.source);
+      continue;
+    }
+    if (row.landClass === 'improved') {
+      bucketEvidence(buckets, 'Improved property — never a vacant-land value basis.', row.source);
+      continue;
+    }
+    if (row.acres == null) {
+      bucketEvidence(buckets, row.acreageConflict === true
+        ? 'Priced acreage conflicts with the parcel record and cannot be reconciled, so the row carries no defensible per-acre figure.'
+        : 'No acreage available from the provider, so the row cannot be compared on a per-acre basis.', row.source);
+      continue;
+    }
+    if (!inBand(row.acres)) {
+      bucketEvidence(buckets, band
+        ? `Acreage outside the subject's comparable band (${band.lo.toFixed(2)}-${band.hi.toFixed(2)} ac).`
+        : 'Subject acreage is unknown, so no comparable band can be applied.', row.source);
+      continue;
+    }
+    if (row.statusBasis === 'closed_sale') soldPool.push(row);
+    else if (row.statusBasis === 'active_listing') activePool.push(row);
+    else askingPool.push(row);
+  }
+
+  const rank = (rows: CompCandidateRow[]): CompCandidateRow[] =>
+    [...rows].sort((a, b) => comparabilityScore(subject, b, nowMs) - comparabilityScore(subject, a, nowMs));
+
+  const sourceCaps = input.sourceCaps ?? { zillow: WORKING_SET_LIMIT, redfin: WORKING_SET_LIMIT };
+  const applySourceCaps = (rows: CompCandidateRow[], laneLabel: string): CompCandidateRow[] => {
+    const accepted: CompCandidateRow[] = [];
+    const used = { zillow: 0, redfin: 0 };
+    for (const row of rank(rows)) {
+      const family = /zillow/i.test(row.source) ? 'zillow' : /redfin/i.test(row.source) ? 'redfin' : null;
+      if (family && used[family] >= sourceCaps[family]) {
+        bucketEvidence(buckets, `${family === 'zillow' ? 'Zillow' : 'Redfin'} ${laneLabel} supplement cap is ${sourceCaps[family]}.`, row.source);
+        continue;
+      }
+      if (family) used[family] += 1;
+      accepted.push(row);
+    }
+    return accepted;
+  };
+
+  const rankedSold = applySourceCaps(soldPool, 'closed-sale');
+  const rankedActive = applySourceCaps(activePool, 'active-competition');
+  const rankedAsking = applySourceCaps(askingPool, 'asking-reference');
+
+  for (const row of rankedSold.slice(WORKING_SET_LIMIT)) {
+    bucketEvidence(buckets, `Beyond the ${WORKING_SET_LIMIT} most comparable closed sales.`, row.source);
+  }
+  for (const row of rankedActive.slice(WORKING_SET_LIMIT)) {
+    bucketEvidence(buckets, `Beyond the ${WORKING_SET_LIMIT} most comparable active listings.`, row.source);
+  }
+  for (const row of rankedAsking.slice(WORKING_SET_LIMIT)) {
+    bucketEvidence(buckets, `Beyond the ${WORKING_SET_LIMIT} most comparable asking references.`, row.source);
+  }
+
+  const sold = rankedSold.slice(0, WORKING_SET_LIMIT).map((row) =>
+    toSnapshotComp(row, 'sold', `Closed vacant-land sale at ${row.acres!.toFixed(2)} ac, inside the subject's comparable acreage band.`));
+  const active = rankedActive.slice(0, WORKING_SET_LIMIT).map((row) =>
+    toSnapshotComp(row, 'active', `Active vacant-land listing at ${row.acres!.toFixed(2)} ac — what the subject competes against today.`));
+  const askingReferences = rankedAsking.slice(0, WORKING_SET_LIMIT).map((row) =>
+    toSnapshotComp(row, 'active', `${row.source} asking-market reference at ${row.acres!.toFixed(2)} ac. The source did not state whether it closed, so it is NOT sold evidence.`));
+
+  const conclusion: CompConclusion = sold.length > 0
+    ? 'sold_supported'
+    : (askingReferences.length > 0 || active.length > 0) ? 'asking_indication' : 'not_priceable';
+
+  return {
+    sold,
+    active,
+    askingReferences,
+    evidence: [...buckets.values()].sort((a, b) => b.count - a.count),
+    duplicatesRemoved: removed,
+    totalCollected,
+    conclusion,
+  };
+}
+
+// ── Bridge from the source policy ───────────────────────────────────────────
+
+/**
+ * Turn the comp source policy's decisions into working-set candidate rows.
+ *
+ * The policy decides which SOURCES may speak; this module decides which ROWS the
+ * operator actually reads. Keeping them separate is what lets a LandPortal row
+ * be simultaneously an approved source and a rejected comparable, with a stated
+ * reason for each, instead of one opaque verdict.
+ *
+ * Disabled historical aggregator rows are deliberately omitted here. Their DB
+ * records remain intact, but a current snapshot handback must not name, count,
+ * map, render, or value them.
+ */
+export function candidateRowsFromPolicy(policy: CompSourcePolicyResult): CompCandidateRow[] {
+  return policy.decisions
+    .filter((decision) => decision.role !== 'legacy_evidence')
+    .map((decision, index): CompCandidateRow => {
+    const c = decision.candidate;
+    const kind = String(c.priceKind ?? '').toLowerCase();
+    // A status is 'stated' only when the provider said so. `laneOf` in the
+    // policy defaults an unstated row to the sold lane for its own bookkeeping;
+    // treating that default as evidence here would price the subject on a guess.
+    const statusBasis: CompStatusBasis =
+      kind === 'sold' || kind === 'sale' ? 'closed_sale'
+        : kind === 'list' || kind === 'active' ? 'active_listing'
+          : 'unconfirmed';
+    const landClass: CompCandidateRow['landClass'] =
+      decision.compClass === 'vacant_land' || decision.compClass === 'farm' ? 'vacant_land'
+        : decision.compClass === 'residential' || decision.compClass === 'manufactured' || decision.compClass === 'commercial' ? 'improved'
+          : 'unknown';
+    // A row whose priced acreage cannot be reconciled with its parcel acreage
+    // carries no defensible per-acre figure, so it enters with none.
+    const acres = c.acreageConflict === true ? null : (typeof c.acres === 'number' ? c.acres : null);
+    // The policy's verdict travels WITH the row. A rejected row (wrong market,
+    // non-market transfer) and a sold row the policy did not accept (an
+    // over-cap Zillow/Redfin supplement) must both stay out of the working
+    // set; without this, an in-band rejected row re-entered it and the
+    // two-supplement cap was bypassed for sold rows beyond the cap.
+    const policyExcluded =
+      decision.role === 'rejected' ? decision.reason
+        : statusBasis === 'closed_sale' && !decision.fmvEligible ? decision.reason
+          : null;
+    return {
+      key: `${decision.family}:${c.apn ?? c.addressDesc ?? c.sourceUrl ?? index}`,
+      apn: c.apn ?? null,
+      address: c.addressDesc ?? null,
+      source: c.provider,
+      sourceUrl: c.sourceUrl ?? null,
+      price: typeof c.price === 'number' ? c.price : null,
+      acres,
+      pricePerAcre: c.acreageConflict === true ? null : (typeof c.pricePerAcre === 'number' ? c.pricePerAcre : null),
+      dateIso: c.saleOrListDate ?? null,
+      distanceMiles: typeof c.distanceMiles === 'number' ? c.distanceMiles : null,
+      landClass,
+      statusBasis,
+      locality: c.addressDesc ?? null,
+      policyExcluded,
+      acreageConflict: c.acreageConflict === true,
+      providerId: c.id == null ? null : String(c.id),
+      lat: typeof c.lat === 'number' ? c.lat : null,
+      lng: typeof c.lng === 'number' ? c.lng : null,
+      providerAttributions: [c.provider],
+    };
+    });
+}
+
+// ── Valuation ───────────────────────────────────────────────────────────────
+
+const median = (values: number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+};
+
+/**
+ * The ONE valuation conclusion, derived from the working set that is on screen.
+ *
+ * The page must never show "not priceable" beside a definitive number, so this
+ * is the only place a value is formed and it reads the same comps the operator
+ * sees. Three outcomes, never two at once:
+ *
+ *   sold_supported ..... a value band from closed sales, with a working value.
+ *   asking_indication .. an ASKING-market indication only. Explicitly not an
+ *                        FMV: asking prices say what sellers want, not what
+ *                        buyers paid.
+ *   not_priceable ...... stated plainly, with what would unblock it.
+ */
+export function valuationFromWorkingSet(
+  subject: CompSelectionSubject,
+  set: CompWorkingSet,
+  context: { constraints?: string[]; hardRisks?: string[] } = {},
+): SnapshotValuation {
+  const acres = subject.acres != null && subject.acres > 0 ? subject.acres : null;
+  const ppaOf = (comps: SnapshotComp[]): number[] => comps
+    .map((comp) => comp.pricePerAcre)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
+
+  const uncertainty: string[] = [];
+  const materialGaps: string[] = [];
+  if (acres == null) materialGaps.push('The subject acreage is unknown, so no per-acre conclusion can be scaled to this parcel.');
+  if (set.duplicatesRemoved > 0) uncertainty.push(`${set.duplicatesRemoved} duplicate row(s) across providers were merged into single properties before valuing.`);
+
+  if (set.conclusion === 'sold_supported' && acres != null) {
+    const ppa = ppaOf(set.sold);
+    if (ppa.length) {
+      const observedLow = Math.min(...ppa);
+      const observedHigh = Math.max(...ppa);
+      const mid = median(ppa);
+      const thinWidening = set.sold.length === 1 ? 0.15 : set.sold.length === 2 ? 0.08 : 0;
+      const constraintCount = context.constraints?.length ?? 0;
+      const constraintFactor = Math.max(0.7, 1 - 0.08 * constraintCount);
+      const low = observedLow * (1 - thinWidening) * constraintFactor;
+      const high = observedHigh * (1 + thinWidening) * constraintFactor;
+      const round = (value: number): number => Math.round(value / 500) * 500;
+      const adjustedMid = mid * constraintFactor;
+      const sources = [...new Set(set.sold.map((comp) => comp.source))].join(', ');
+      if (set.sold.length < 3) uncertainty.push(`Only ${set.sold.length} closed sale(s) support this band; a wider comp set would tighten it.`);
+      const undated = set.sold.filter((comp) => !comp.dateIso).length;
+      if (undated) uncertainty.push(`${undated} of the selected sale(s) carry no published transaction date.`);
+      if (set.askingReferences.length) {
+        uncertainty.push(`${set.askingReferences.length} priced row(s) of unstated status are shown separately as asking references and are NOT in this band.`);
+      }
+      if (context.hardRisks?.length) {
+        uncertainty.push(`Open risk(s) that could move value or kill the deal: ${context.hardRisks.join('; ')}.`);
+      }
+      const adjustments = constraintCount
+        ? [`${constraintCount} mapped physical constraint(s) reduce the supported band ${Math.round((1 - constraintFactor) * 100)}%: ${context.constraints!.join('; ')}.`]
+        : ['No mapped physical constraint adjustment was applied.'];
+      const baseConfidence: SnapshotValuation['confidence'] =
+        set.sold.length >= 4 ? 'high' : set.sold.length >= 2 ? 'medium' : 'low';
+      const confidence: SnapshotValuation['confidence'] = context.hardRisks?.length
+        ? baseConfidence === 'high' ? 'medium' : 'low'
+        : baseConfidence;
+      return {
+        priceable: true,
+        range: { low: round(low * acres), high: round(high * acres) },
+        pricePerAcreRange: { low: Math.round(low), high: Math.round(high) },
+        likelyRetail: { low: round(adjustedMid * acres), high: round(high * acres) },
+        dispositionRange: { low: round(low * acres * 0.7), high: round(adjustedMid * acres * 0.85) },
+        basis: `${set.sold.length} closed vacant-land sale(s) inside the subject's comparable acreage band, from ${sources}, at $${Math.round(low).toLocaleString()}–$${Math.round(high).toLocaleString()} per acre applied to ${acres.toFixed(2)} acres.`,
+        primaryBasis: `Closed sales: ${set.sold.map((comp) => `${comp.address ?? comp.source} ${comp.acres != null ? `${comp.acres.toFixed(2)}ac` : ''} @ $${(comp.pricePerAcre ?? 0).toLocaleString()}/ac`).join('; ')}.${thinWidening ? ` The supported range is widened ${Math.round(thinWidening * 100)}% for thin-market uncertainty.` : ''}`,
+        workingValue: round(adjustedMid * acres),
+        adjustments,
+        // Confidence follows the evidence count, never the desire for a number.
+        confidence,
+        uncertainty,
+        materialGaps,
+        notPriceableReason: null,
+        nextActionToPrice: null,
+      };
+    }
+  }
+
+  if ((set.conclusion === 'asking_indication' || set.sold.length === 0) && acres != null) {
+    const references = [...set.askingReferences, ...set.active];
+    const ppa = ppaOf(references);
+    if (ppa.length) {
+      const low = Math.min(...ppa);
+      const high = Math.max(...ppa);
+      const round = (value: number): number => Math.round(value / 500) * 500;
+      return {
+        priceable: false,
+        range: null,
+        pricePerAcreRange: { low: Math.round(low), high: Math.round(high) },
+        likelyRetail: null,
+        dispositionRange: null,
+        basis: `Asking-market indication only: ${references.length} priced row(s) at $${Math.round(low).toLocaleString()}–$${Math.round(high).toLocaleString()} per acre (about $${round(low * acres).toLocaleString()}–$${round(high * acres).toLocaleString()} across ${acres.toFixed(2)} acres). These are what sellers ASK, not what buyers paid.`,
+        primaryBasis: 'No closed sale supports a value band; the figures shown are asking prices and unconfirmed-status rows.',
+        workingValue: null,
+        adjustments: [],
+        confidence: 'low',
+        uncertainty: [...uncertainty, 'No closed sale is available, so no fair market value is asserted.'],
+        materialGaps,
+        notPriceableReason: 'No accepted closed vacant-land sale inside the subject acreage band, so a fair market value cannot be stated. An asking-market indication is shown instead.',
+        nextActionToPrice: 'Confirm a closed sale price and date for at least one in-band comparable.',
+      };
+    }
+  }
+
+  return {
+    priceable: false,
+    range: null,
+    pricePerAcreRange: null,
+    likelyRetail: null,
+    dispositionRange: null,
+    basis: 'No comparable evidence survived selection.',
+    primaryBasis: null,
+    workingValue: null,
+    adjustments: [],
+    confidence: 'none',
+    uncertainty,
+    materialGaps,
+    notPriceableReason: acres == null
+      ? 'The subject acreage is unknown, so no per-acre conclusion can be applied to this parcel.'
+      : `No usable comparable survived selection from ${set.totalCollected} collected row(s). Every held-back row carries a stated reason in the evidence list.`,
+    nextActionToPrice: 'Re-run comparable research, or record a closed in-band vacant-land sale manually.',
+  };
+}
+
+/** Render the working set into the snapshot's comps section. */
+export function workingSetToSnapshotComps(
+  set: CompWorkingSet,
+  plan: { policyExplanation: string; landPortalUsable: boolean; landPortalRowsSeen: number; caps: { zillow: number; redfin: number } },
+): SnapshotComps {
+  // `rejected` stays populated for readers that predate the evidence buckets,
+  // but as ONE line per reason rather than one per row.
+  const rejected: SnapshotRejectedComp[] = set.evidence.map((bucket) => ({
+    address: null,
+    source: bucket.sources.join(', '),
+    price: null,
+    reason: `${bucket.count} row(s): ${bucket.reason}`,
+  }));
+  const summary =
+    `${set.sold.length} accepted sold comp(s), ${set.active.length} active competitor(s) and ` +
+    `${set.askingReferences.length} asking-market reference(s) shown from ${set.totalCollected} collected row(s); ` +
+    `${set.duplicatesRemoved} duplicate(s) merged. Remaining rows are retained as evidence with a stated reason.`;
+  return {
+    policyExplanation: plan.policyExplanation,
+    landPortalUsable: plan.landPortalUsable,
+    landPortalRowsSeen: plan.landPortalRowsSeen,
+    caps: plan.caps,
+    sold: set.sold,
+    active: set.active,
+    // Improved rows never reach the working set, so this legacy lane stays empty
+    // rather than being reused for something it does not mean.
+    landHomeOnly: [],
+    rejected,
+    duplicatesMerged: set.duplicatesRemoved,
+    summaryLine: summary,
+    askingReferences: set.askingReferences,
+    evidenceBuckets: set.evidence,
+    totalCollected: set.totalCollected,
+    conclusion: set.conclusion,
+  };
+}

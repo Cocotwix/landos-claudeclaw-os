@@ -26,6 +26,10 @@ const DEAL_CARD_SRC = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/DealCard.tsx', import.meta.url)),
   'utf-8',
 );
+const PI_PANEL_SRC = fs.readFileSync(
+  fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
+  'utf-8',
+);
 const ROUTES_SRC = fs.readFileSync(
   fileURLToPath(new URL('./routes.ts', import.meta.url)),
   'utf-8',
@@ -102,11 +106,14 @@ describe('F8 — downloadable report consumes the shared strategy/readiness reco
 // ── F9: the executive summary renders on record-bearing Overviews ─────────────
 
 describe('F9 — executive summary is visible without internal readiness surfaces', () => {
-  it('the record branch of OverviewTab renders OverviewSummary', () => {
-    const branchStart = DEAL_CARD_SRC.indexOf('if (record) {');
-    expect(branchStart).toBeGreaterThan(-1);
-    const branch = DEAL_CARD_SRC.slice(branchStart, branchStart + 2000);
-    expect(branch).toContain('<OverviewSummary es={es} report={report} />');
+  it('the canonical Overview renders the promoted snapshot summary', () => {
+    expect(DEAL_CARD_SRC).toMatch(
+      /activeTab === 'overview'[\s\S]{0,220}<PropertyIntelligenceOverview snapshot=\{piSnapshot\}/,
+    );
+    expect(PI_PANEL_SRC).toMatch(/export function PropertyIntelligenceOverview/);
+    expect(PI_PANEL_SRC).toMatch(/\{headline\.keyOpportunity\}/);
+    expect(PI_PANEL_SRC).toMatch(/<Field label="Value band"/);
+    expect(PI_PANEL_SRC).toMatch(/recommendation\.preferredStrategy/);
   });
 
   it('OverviewSummary does not expose the shared readiness summary line', () => {

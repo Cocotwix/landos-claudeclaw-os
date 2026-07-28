@@ -610,17 +610,17 @@ describe('every LandPortal job closes every browser resource it opened', () => {
     for (const tab of operatorTabs) expect(closed).not.toContain(tab);
   });
 
-  it("LandOS's own working tab is closed even though it predates the scope", () => {
-    // Live finding: the sign-in step creates the working tab BEFORE the workflow
-    // opens its scope, so treating "already open" as "the operator's" left one
-    // more authenticated LandPortal page behind on every single run. The working
-    // tab only ever exists because LandOS created it, so it is always LandOS's
-    // to close; every other pre-existing tab is the operator's and is preserved.
+  it("a lane closes only its registered page, never another lane or the shared auth tab", () => {
+    // The old global ownership check closed every registered lane page and the
+    // shared auth tab. With genuinely concurrent children that let one lane
+    // interrupt another mid-CDP call. Ownership is now per driver instance:
+    // only an exact lane-owner match is closable, and unknown/shared pages are
+    // preserved.
     const source = readFileSync(new URL('./browser-session.ts', import.meta.url), 'utf8');
     const scope = source.slice(source.indexOf('async closeOwnedPageScope'), source.indexOf('async open(url, opts)'));
-    expect(scope).toMatch(/const landosOwned = page === state\.workingPage/);
-    expect(scope).toMatch(/if \(preexisting\.has\(page\) && !landosOwned\) continue/);
-    expect(scope).toMatch(/if \(landosOwned\) state\.workingPage = null/);
+    expect(scope).toMatch(/if \(lanePageRegistry\.get\(page\)\?\.lane !== laneOwner\) continue/);
+    expect(scope).not.toMatch(/page === state\.workingPage/);
+    expect(scope).toMatch(/lanePageRegistry\.delete\(page\)/);
   });
 
   it('an abandoned resource whose runtime handle is gone is closed out honestly', async () => {

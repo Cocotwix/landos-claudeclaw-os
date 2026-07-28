@@ -234,6 +234,189 @@ function normalizeOverlayName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
+/**
+ * Parse a structured LandPortal comparable CARD.
+ *
+ * The card is the sidebar surface read as data instead of as text. It supplies
+ * the canonical APN, the price and acreage the comp was estimated on, and —
+ * critically — LandPortal's own `data-mlsstatus`, which is the ONLY place the
+ * sidebar states whether the comp closed. The row's visible text never does, and
+ * reading text alone is what previously turned every LandPortal comp into a
+ * status-unknown row that could not price the subject.
+ */
+export function parseComparableCard(raw: string, fallbackUrl: string): LandPortalComparableRecord | null {
+  let card: {
+    text?: string; sectionLabel?: string; mlsStatus?: string | null; propertyId?: string | null;
+    fips?: string | null; apn?: string | null; mlsPropertyId?: string | null;
+  };
+  try { card = JSON.parse(raw) as typeof card; } catch { return null; }
+  const text = String(card.text ?? '').replace(/\s+/g, ' ').replace(/[›»]/g, '').trim();
+  if (!text) return null;
+
+  const base = parseComparableCandidate(
+    card.sectionLabel ? `${card.sectionLabel}${text}` : text,
+    fallbackUrl,
+    'sidebar',
+  );
+  if (!base) return null;
+
+  // The card's APN keeps LandPortal's own spacing ("115    02100"); collapse the
+  // run of spaces without joining the two halves, so the county-local identifier
+  // stays intact and comparable across surfaces.
+  const cardApn = card.apn ? String(card.apn).replace(/\s+/g, ' ').trim() : null;
+
+  const stated = String(card.mlsStatus ?? '').trim().toLowerCase();
+  const statusFromAttribute: LandPortalComparableRecord['status'] | null =
+    stated === 'sold' ? 'sold'
+      : stated === 'active' ? 'active'
+        : stated === 'listed' || stated === 'for sale' ? 'listed'
+          : null;
+
+  return {
+    ...base,
+    apn: cardApn || base.apn,
+    landPortalPropertyId: card.propertyId ?? null,
+    fips: card.fips ?? null,
+    mlsPropertyId: card.mlsPropertyId ?? null,
+    status: statusFromAttribute ?? base.status,
+    saleListIndicator: statusFromAttribute
+      ? (statusFromAttribute === 'sold' ? 'sale' : 'list')
+      : base.saleListIndicator,
+    statusSource: statusFromAttribute ? 'card_attribute' : (base.status !== 'unknown' ? 'row_text' : null),
+    confidence: statusFromAttribute && base.price != null && base.acres != null ? 'medium' : base.confidence,
+  };
+}
+
+/** Money/number text off the detail surface ("$91,600.00", "1,120", "-"). */
+function detailNumber(value: string | undefined): number | null {
+  if (!value) return null;
+  const cleaned = value.replace(/[$,\s]/g, '');
+  if (!cleaned || cleaned === '-') return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** LandPortal writes dates as MM-DD-YYYY on the detail surface. */
+function detailDateIso(value: string | undefined): string | null {
+  if (!value) return null;
+  const m = value.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (m) return `${m[3]}-${m[1]}-${m[2]}`;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : null;
+}
+
+/**
+ * Apply a comparable's OWN parcel page onto its sidebar row.
+ *
+ * This is the second half of the two-surface workflow. The sidebar supplies
+ * identity (APN), price and acreage; the comp's parcel page supplies the street
+ * address, the sale date, the page's own Listing Status, and the land-versus-
+ * improvement facts. Merging is keyed on the sidebar APN, which is canonical.
+ *
+ * Two facts are established here rather than guessed downstream:
+ *   • improvement — a structure with a NOMINAL improvement value is still a land
+ *     sale; a material improvement value is not.
+ *   • acreageConflict — when the priced row acreage and the parcel acreage
+ *     cannot be reconciled (live case: a "17.75 ac" row whose parcel is 574
+ *     acres), the row can never carry a defensible price-per-acre.
+ */
+export function applyComparableDetail(
+  row: LandPortalComparableRecord,
+  detail: { sourceUrl?: string; facts: Record<string, string> },
+): LandPortalComparableRecord {
+  const f = detail.facts ?? {};
+  const address = (f['Parcel Address'] ?? '').trim() || null;
+  const mlsAcres = detailNumber(f['MLS Acres']);
+  const parcelAcres = detailNumber(f['Acres']);
+  const buildingSqft = detailNumber(f['Building SqFt']);
+  const improvementValue = detailNumber(f['Improvement Value']);
+  const landMarketValue = detailNumber(f['Land Market Value']);
+  const totalMarketValue = detailNumber(f['Total Market Value']);
+  const useDescription = (f['Parcel Use Description'] ?? '').trim() || null;
+
+  const listingStatus = (f['Listing Status'] ?? '').trim().toLowerCase();
+  const statusFromDetail: LandPortalComparableRecord['status'] | null =
+    listingStatus === 'sold' ? 'sold'
+      : listingStatus === 'active' ? 'active'
+        : listingStatus === 'listed' || listingStatus === 'for sale' ? 'listed'
+          : null;
+
+  // The comp's own page outranks the card attribute: the live set contains a row
+  // whose card said "sold" while its parcel page shows an ACTIVE $5.95M listing.
+  const status = statusFromDetail ?? row.status;
+  const saleDate = detailDateIso(f['Last Sold Date']) ?? detailDateIso(f['Last Sale Date']) ?? row.saleDate ?? undefined;
+
+  // Improvement: material value or real living area means the price bought more
+  // than dirt. A token assessor figure on a derelict structure does not.
+  const MATERIAL_IMPROVEMENT_VALUE = 10_000;
+  const landShare = totalMarketValue && totalMarketValue > 0 && landMarketValue != null
+    ? landMarketValue / totalMarketValue
+    : null;
+  const improvement: LandPortalComparableRecord['improvement'] =
+    improvementValue != null && improvementValue >= MATERIAL_IMPROVEMENT_VALUE ? 'improved'
+      : landShare != null && landShare < 0.8 ? 'improved'
+        : (buildingSqft != null && improvementValue != null) || landShare != null ? 'vacant'
+          : row.improvement;
+
+  // Acreage: the row was priced on the MLS acreage. A parcel acreage that
+  // disagrees by more than a rounding margin is a genuine conflict, not a
+  // correction — neither figure may silently win.
+  const priced = row.acres ?? mlsAcres ?? null;
+  const acreageConflict = priced != null && parcelAcres != null && parcelAcres > 0
+    ? Math.abs(parcelAcres - priced) / Math.max(parcelAcres, priced) > 0.25
+    : false;
+
+  return {
+    ...row,
+    address: address ?? row.address ?? null,
+    city: (f['Parcel Address City'] ?? '').trim() || null,
+    state: (f['Parcel Address State'] ?? '').trim() || null,
+    county: (f['Parcel Address County'] ?? '').trim() || null,
+    lat: detailNumber(f['Centroid Latitude']),
+    lng: detailNumber(f['Centroid Longitude']),
+    acres: row.acres ?? mlsAcres ?? null,
+    parcelAcres,
+    buildingSqft,
+    improvementValue,
+    landMarketValue,
+    totalMarketValue,
+    useDescription,
+    acreageConflict,
+    improvement,
+    status,
+    saleDate,
+    saleListIndicator: status === 'sold' ? 'sale' : status === 'unknown' ? row.saleListIndicator : 'list',
+    statusSource: statusFromDetail ? 'detail_surface' : row.statusSource ?? null,
+    detailUrl: detail.sourceUrl ?? null,
+    surface: 'both',
+    confidence: statusFromDetail && row.price != null && row.acres != null && !acreageConflict ? 'high' : row.confidence,
+    rawText: row.rawText,
+  };
+}
+
+/**
+ * Merge the comp detail reads onto the sidebar card rows, keyed on APN.
+ *
+ * The sidebar APN is the canonical identity, exactly as the operator workflow
+ * describes: one enriched record per comparable, never one per surface.
+ */
+export function mergeComparableDetails(
+  rows: LandPortalComparableRecord[],
+  details: Array<{ apn?: string | null; sourceUrl?: string; facts: Record<string, string> }>,
+): LandPortalComparableRecord[] {
+  if (!details.length) return rows;
+  const byApn = new Map<string, { sourceUrl?: string; facts: Record<string, string> }>();
+  for (const detail of details) {
+    const key = comparableApnKey(detail.apn);
+    if (key) byApn.set(key, { sourceUrl: detail.sourceUrl, facts: detail.facts });
+  }
+  return rows.map((row) => {
+    const key = comparableApnKey(row.apn);
+    const detail = key ? byApn.get(key) : undefined;
+    return detail ? applyComparableDetail(row, detail) : row;
+  });
+}
+
 export function parseComparableCandidate(text: string, sourceUrl: string, surface: 'sidebar' | 'map' = 'sidebar'): LandPortalComparableRecord | null {
   // The live capture prefixes each row with the page's own section heading
   // ("<label><row>"). That label is where LandPortal states whether the
@@ -925,8 +1108,10 @@ async function runLandPortalAgentic(
     let panelFields: Record<string, string> = obs.fields;
     let lpVisuals: {
       fields: Record<string, string>; parcelShotPath: string | null; compsMapShotPath: string | null;
-      overlayShots?: Array<{ overlay: string; path: string; purpose: string }>; terrainShotPath?: string | null;
-      compRows: string[]; mapRows?: string[]; mapReached: boolean; capturedAtIso: string;
+      overlayShots?: Array<{ overlay: string; path: string; purpose: string }>;
+      overlayMisses?: Array<{ overlay: string; reason: string }>; terrainShotPath?: string | null;
+      compRows: string[]; compCards?: string[]; compDetails?: string[];
+      mapRows?: string[]; mapReached: boolean; capturedAtIso: string;
     } | null = null;
     let shot: Awaited<ReturnType<BrowserDriver['screenshot']>> | null = null;
 
@@ -1028,7 +1213,7 @@ async function runLandPortalAgentic(
     let comparables: LandPortalComparableRecord[] = [];
     if (lpVisuals) {
       if (lpVisuals.parcelShotPath) {
-        inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel + Neighbor Context', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 2D parcel view fitted to the subject and zoomed out five steps to retain the road-side foreground, subject boundary, and broader neighboring-area context.' });
+        inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel + Neighbor Context', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 2D parcel view at parcel-context scale: fitted to the subject then stepped out just enough to keep the complete subject boundary centered with the immediately surrounding parcels and fronting road readable.' });
       }
       if (lpVisuals.terrainShotPath) {
         inspectionAssets.push({ key: 'parcel_3d', label: 'LandPortal 3D / terrain view', kind: 'parcel_3d', purpose: LANDPORTAL_3D_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.terrainShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 3D or terrain view screenshot when available.' });
@@ -1043,14 +1228,40 @@ async function runLandPortalAgentic(
       // street addresses and the page's own status wording, so its fields win on
       // merge while the sidebar's full APN is preserved. Provenance is recorded
       // on every row so the operator can see which surface supplied what.
-      const sidebarRows = lpVisuals.compRows
+      // The structured comparable cards are the sidebar surface read as DATA:
+      // they carry LandPortal's own `data-mlsstatus` and its identity triple.
+      // The text rows remain the fallback for a layout without those cards.
+      const cardRows = (lpVisuals.compCards ?? [])
+        .map((raw) => parseComparableCard(raw, obs.url || LANDPORTAL_BROWSER_BASE))
+        .filter((r): r is LandPortalComparableRecord => !!r);
+      const textRows = lpVisuals.compRows
         .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE, 'sidebar'))
         .filter((r): r is LandPortalComparableRecord => !!r);
+      const sidebarRows = cardRows.length ? cardRows : textRows;
       const mapRows = (lpVisuals.mapRows ?? [])
         .map((txt) => parseComparableCandidate(txt, obs.url || LANDPORTAL_BROWSER_BASE, 'map'))
         .filter((r): r is LandPortalComparableRecord => !!r);
-      comparables = mergeLandPortalSurfaces(sidebarRows, mapRows);
-      trace.push(`landportal surfaces: sidebar=${sidebarRows.length} map=${mapRows.length} combined=${comparables.length}`);
+      const surfaceMerged = mergeLandPortalSurfaces(sidebarRows, mapRows);
+      // Second surface: each comparable's own parcel page, merged on the sidebar
+      // APN. This is where the address, the sale date and the land-versus-
+      // improvement facts come from; the sidebar row carries none of them.
+      const details: Array<{ apn?: string | null; sourceUrl?: string; facts: Record<string, string> }> = [];
+      for (const raw of lpVisuals.compDetails ?? []) {
+        try {
+          const parsed = JSON.parse(raw) as { apn?: string | null; sourceUrl?: string; facts?: Record<string, string> };
+          if (parsed && parsed.facts) details.push({ apn: parsed.apn ?? null, sourceUrl: parsed.sourceUrl, facts: parsed.facts });
+        } catch { /* one unreadable detail never drops the whole comp set */ }
+      }
+      // Stamp the capture generation. Inspection is cumulative, so without this
+      // the rows a superseded run read stay indistinguishable from the set the
+      // provider returns today.
+      comparables = mergeComparableDetails(surfaceMerged, details)
+        .map((row) => ({ ...row, capturedAtIso: lpVisuals!.capturedAtIso }));
+      const stated = comparables.filter((row) => row.status !== 'unknown').length;
+      trace.push(
+        `landportal surfaces: sidebar=${sidebarRows.length} (cards=${cardRows.length}) map=${mapRows.length} `
+        + `detail=${details.length} combined=${comparables.length} statusStated=${stated}`,
+      );
       if (lpVisuals.compsMapShotPath && lpVisuals.mapReached) {
         inspectionAssets.push({ key: 'comparables_map', label: 'LandPortal Comps Map', kind: 'comparables_map', purpose: LANDPORTAL_COMPARABLES_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.compsMapShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal comps map — "Show on Map" clicked and confirmed.' });
       }
@@ -1076,6 +1287,19 @@ async function runLandPortalAgentic(
     for (const asset of overlayResult.assets) {
       if (!inspectionAssets.some((a) => a.key === asset.key)) inspectionAssets.push(asset);
     }
+    // Overlays the one-pass capture ATTEMPTED but could not render distinctly
+    // are recorded as absent — never a relabeled copy of the base map. The
+    // operator sees exactly which thematic layer is unavailable and why.
+    const overlayObservations: LandPortalOverlayObservation[] = [...overlayResult.overlays];
+    for (const miss of lpVisuals?.overlayMisses ?? []) {
+      if (overlayObservations.some((o) => o.overlay === miss.overlay)) continue;
+      overlayObservations.push({
+        overlay: miss.overlay,
+        status: 'not_found',
+        note: `${miss.overlay} overlay unavailable on LandPortal for this parcel: ${miss.reason}`,
+        confidence: 'low',
+      });
+    }
     const terrainAsset = inspectionAssets.some((a) => a.kind === 'parcel_3d') ? null : await captureParcel3dView(driver, obsv, timeoutMs).catch(() => null);
     if (terrainAsset) inspectionAssets.push(terrainAsset);
     ev.inspection = {
@@ -1083,7 +1307,7 @@ async function runLandPortalAgentic(
       comparablesUrl,
       parcelFacts: cleanedFields,
       assets: inspectionAssets,
-      overlays: overlayResult.overlays,
+      overlays: overlayObservations,
       visualObservations: deriveVisualObservations(cleanedFields, key),
       comparables,
     };

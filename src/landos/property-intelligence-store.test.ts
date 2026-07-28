@@ -6,7 +6,7 @@ import {
   redactPropertyIntelligence,
   resetPropertyIntelligenceStoreCache,
 } from './property-intelligence-store.js';
-import { initialSpecialistRecords, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
+import { initialSpecialistRecords, type PropertyIntelligenceProgress, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
 
 function snapshot(overrides: Partial<PropertyIntelligenceSnapshot> = {}): PropertyIntelligenceSnapshot {
   return {
@@ -267,6 +267,103 @@ describe('PropertyIntelligenceStore run lifecycle', () => {
     expect(store.latestRun(41)?.runId).toBe('pi_j');
     expect(store.listSpecialists('pi_i')).toHaveLength(0);
     expect(store.listSpecialists('pi_j').length).toBeGreaterThan(0);
+  });
+});
+
+describe('PropertyIntelligenceStore progressive content', () => {
+  function progressFor(runId: string, dealCardId: number): PropertyIntelligenceProgress {
+    return {
+      preliminary: true,
+      runId,
+      dealCardId,
+      sequence: 1,
+      updatedAt: '2026-07-27T00:00:10.000Z',
+      settled: ['parcel_identity'],
+      outstanding: ['comparables', 'valuation'],
+      snapshot: {
+        ...snapshot({ dealCardId, runId, status: 'running', completedAt: null, isPrimary: false }),
+        preliminary: true,
+      },
+    };
+  }
+
+  it('stores progressive content on a running run WITHOUT touching promotion', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_prog', dealCardId: 60, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+
+    const wrote = store.updateProgress({ runId: 'pi_prog', dealCardId: 60, progress: progressFor('pi_prog', 60) });
+    expect(wrote).toBe(true);
+
+    const run = store.getRun('pi_prog')!;
+    expect(run.progress).toBeTruthy();
+    expect(run.progress!.preliminary).toBe(true);
+    expect(run.progress!.settled).toEqual(['parcel_identity']);
+    expect(run.progress!.snapshot.preliminary).toBe(true);
+    expect(run.progress!.snapshot.isPrimary).toBe(false);
+    // The run itself is unchanged: still running, no snapshot, never promoted.
+    expect(run.status).toBe('running');
+    expect(run.isPrimary).toBe(false);
+    expect(run.snapshot).toBeNull();
+    expect(store.primaryRun(60)).toBeNull();
+  });
+
+  it('preliminary content never displaces the prior promoted snapshot', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_prog_a', dealCardId: 61, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_prog_a', dealCardId: 61, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 61, runId: 'pi_prog_a' }) });
+
+    store.createRun({ runId: 'pi_prog_b', dealCardId: 61, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.updateProgress({ runId: 'pi_prog_b', dealCardId: 61, progress: progressFor('pi_prog_b', 61) });
+
+    // The promoted read is untouched by any number of progressive writes.
+    expect(store.primaryRun(61)!.runId).toBe('pi_prog_a');
+    expect(store.primaryRun(61)!.snapshot).toBeTruthy();
+    expect(store.activeRun(61)!.progress!.runId).toBe('pi_prog_b');
+  });
+
+  it('refuses progressive content on a run that is no longer running', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_prog_done', dealCardId: 62, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.completeRun({ runId: 'pi_prog_done', dealCardId: 62, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 62, runId: 'pi_prog_done' }) });
+
+    const wrote = store.updateProgress({ runId: 'pi_prog_done', dealCardId: 62, progress: progressFor('pi_prog_done', 62) });
+    expect(wrote).toBe(false);
+    expect(store.getRun('pi_prog_done')!.progress).toBeNull();
+  });
+
+  it('completion clears progressive content so a finished run never serves stale mid-flight data', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_prog_clear', dealCardId: 63, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    store.updateProgress({ runId: 'pi_prog_clear', dealCardId: 63, progress: progressFor('pi_prog_clear', 63) });
+    expect(store.getRun('pi_prog_clear')!.progress).toBeTruthy();
+
+    store.completeRun({ runId: 'pi_prog_clear', dealCardId: 63, status: 'complete', completedAt: 'later', snapshot: snapshot({ dealCardId: 63, runId: 'pi_prog_clear' }) });
+    const run = store.getRun('pi_prog_clear')!;
+    expect(run.progress).toBeNull();
+    expect(run.snapshot).toBeTruthy();
+    expect(run.isPrimary).toBe(true);
+  });
+
+  it('a reclaimed (crashed) run loses its progressive content too', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_prog_crash', dealCardId: 64, trigger: 'operator', startedAt: '2020-01-01T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    store.updateProgress({ runId: 'pi_prog_crash', dealCardId: 64, progress: progressFor('pi_prog_crash', 64) });
+
+    const reclaimed = store.reclaimStaleRuns(60_000, Date.parse('2026-07-25T00:00:00.000Z'), '2021-01-01T00:00:00.000Z');
+    expect(reclaimed).toBe(1);
+    const run = store.getRun('pi_prog_crash')!;
+    expect(run.status).toBe('failed');
+    expect(run.progress).toBeNull();
+  });
+
+  it('redacts secrets inside progressive content before it is stored', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_prog_redact', dealCardId: 65, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    const progress = progressFor('pi_prog_redact', 65);
+    (progress.snapshot as unknown as Record<string, unknown>).apiKey = 'REDACTION-FIXTURE-NOT-A-CREDENTIAL';
+    store.updateProgress({ runId: 'pi_prog_redact', dealCardId: 65, progress });
+    const stored = store.getRun('pi_prog_redact')!.progress!;
+    expect((stored.snapshot as unknown as Record<string, unknown>).apiKey).toBe('[redacted]');
   });
 });
 

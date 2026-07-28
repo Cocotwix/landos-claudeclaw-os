@@ -216,8 +216,20 @@ export interface BrowserDriver {
     parcelShotPath: string | null;
     compsMapShotPath: string | null;
     overlayShots?: Array<{ overlay: string; path: string; purpose: string }>;
+    /** Overlays that were ATTEMPTED but produced no distinct rendered image
+     *  (control absent, layer never painted, or capture identical to the base
+     *  map). Recorded honestly as unavailable — never substituted. */
+    overlayMisses?: Array<{ overlay: string; reason: string }>;
     terrainShotPath?: string | null;
     compRows: string[];
+    /** Structured comparable cards (JSON strings). These carry LandPortal's own
+     *  `data-mlsstatus` and its identity triple (propertyid + fips + apn); the
+     *  row text states neither, so a text-only read loses the sold status. */
+    compCards?: string[];
+    /** Per-comparable reads of that comp's OWN parcel page (JSON strings) —
+     *  the second surface, supplying address, sale date and improvement facts. */
+    compDetails?: string[];
+    mapRows?: string[];
     mapReached: boolean;
     capturedAtIso: string;
   }>;
@@ -235,15 +247,15 @@ export interface BrowserDriver {
   /** OBSERVE: rich page signals for Website Intelligence (title/headings/nav/
    *  search controls + select options/buttons/links/map/table/fields). Read-only. */
   observe?(opts: { timeoutMs: number }): Promise<unknown>;
-  /** BROWSER LIFECYCLE — open an owned-page scope. Everything the job causes to
-   *  exist from here on (tabs it opens, popups the site opens, viewers) is the
-   *  job's to close. Pages that were ALREADY open belong to the operator and are
-   *  recorded so they can never be closed. */
+  /** BROWSER LIFECYCLE — open an owned-page scope for this driver instance.
+   *  The driver's registered lane pages are its to close. Pages owned by other
+   *  lanes and pages with unknown provenance are preserved, regardless of when
+   *  they appeared. */
   beginOwnedPageScope?(): Promise<string>;
-  /** Close every page that appeared during the scope, whatever the outcome —
-   *  success, partial, failure, timeout, cancellation, or a visual rejection.
-   *  Authentication is never a reason to keep a page open; logging in again is
-   *  cheap. Returns what was closed for the operator-facing cleanup record. */
+  /** Close this driver's registered pages, whatever the outcome — success,
+   *  partial, failure, timeout, cancellation, or a visual rejection. Never
+   *  closes another lane's page or an operator page. Returns what was closed
+   *  for the operator-facing cleanup record. */
   closeOwnedPageScope?(token: string): Promise<{ closed: number; failed: number; preserved: number }>;
   /** Select an option (by visible text) in a select/dropdown — for a method
    *  selector (Address/APN/Owner). Read-only navigation. */

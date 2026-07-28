@@ -14,7 +14,7 @@
 // Additive schema only. No destructive migration.
 
 import { getLandosDb } from './db.js';
-import type { PropertyIntelligenceSnapshot, SnapshotSpecialistRecord, SnapshotStatus } from './property-intelligence-snapshot.js';
+import type { PropertyIntelligenceProgress, PropertyIntelligenceSnapshot, SnapshotSpecialistRecord, SnapshotStatus } from './property-intelligence-snapshot.js';
 import type { SpecialistId, SpecialistStatus } from './property-intelligence-specialists.js';
 import type { FailureCategory } from '../failure-classification.js';
 
@@ -38,7 +38,13 @@ export function redactPropertyIntelligence(value: unknown, key = ''): unknown {
   return value;
 }
 
-let ensured = false;
+/**
+ * Keyed by DB connection identity, not a boolean, for the same reason as
+ * mission-graph-store: a reopened or swapped connection (the test DB re-init)
+ * would otherwise inherit a belief that no longer holds and every read fails on
+ * a missing table. The DDL re-runs exactly when the connection actually changes.
+ */
+let ensuredDb: unknown = null;
 
 /**
  * When THIS process started.
@@ -52,8 +58,9 @@ let ensured = false;
 const PROCESS_STARTED_AT = new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString();
 
 function ensureTables(): void {
-  if (ensured) return;
-  getLandosDb().exec(`
+  const active = getLandosDb();
+  if (ensuredDb === active) return;
+  active.exec(`
     CREATE TABLE IF NOT EXISTS landos_property_intelligence_run (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id TEXT NOT NULL UNIQUE,
@@ -100,12 +107,21 @@ function ensureTables(): void {
     CREATE INDEX IF NOT EXISTS idx_landos_pi_specialist_deal
       ON landos_property_intelligence_specialist(deal_card_id, updated_at DESC);
   `);
-  ensured = true;
+  // Additive column for in-flight progressive content (Phase 5 progressive
+  // updates). A database created before this column exists gets it here;
+  // nothing is dropped or rewritten.
+  const runColumns = active
+    .prepare('PRAGMA table_info(landos_property_intelligence_run)')
+    .all() as Array<{ name?: string }>;
+  if (!runColumns.some((column) => column.name === 'progress_json')) {
+    active.exec('ALTER TABLE landos_property_intelligence_run ADD COLUMN progress_json TEXT');
+  }
+  ensuredDb = active;
 }
 
 /** Test seam: force the next call to re-run the additive DDL. */
 export function resetPropertyIntelligenceStoreCache(): void {
-  ensured = false;
+  ensuredDb = null;
 }
 
 export interface PropertyIntelligenceRunRow {
@@ -118,6 +134,8 @@ export interface PropertyIntelligenceRunRow {
   startedAt: string;
   completedAt: string | null;
   snapshot: PropertyIntelligenceSnapshot | null;
+  /** In-flight progressive content. Non-null only while the run is `running`. */
+  progress: PropertyIntelligenceProgress | null;
   error: string | null;
   failureCategory: FailureCategory | null;
   updatedAt: string;
@@ -148,6 +166,7 @@ function runFromRow(row: unknown): PropertyIntelligenceRunRow | null {
     startedAt: String(record.started_at),
     completedAt: record.completed_at == null ? null : String(record.completed_at),
     snapshot: parseJson<PropertyIntelligenceSnapshot>(record.snapshot_json),
+    progress: parseJson<PropertyIntelligenceProgress>(record.progress_json),
     error: record.error == null ? null : String(record.error),
     failureCategory: record.failure_category == null ? null : String(record.failure_category) as FailureCategory,
     updatedAt: String(record.updated_at),
@@ -231,10 +250,37 @@ export class PropertyIntelligenceStore {
       startedAt: input.startedAt,
       completedAt: null,
       snapshot: null,
+      progress: null,
       error: null,
       failureCategory: null,
       updatedAt: now,
     };
+  }
+
+  /**
+   * Persist the in-flight progressive assembly for a RUNNING run.
+   *
+   * Deliberately narrow:
+   *   • It writes ONLY `progress_json`. The snapshot column, promotion flag and
+   *     status are untouched, so preliminary content can never become the
+   *     promoted read — promotion happens only in `completeRun`, at join.
+   *   • It refuses a run that is no longer running, so a straggler settle
+   *     callback can never resurrect mid-flight content on a finished run.
+   */
+  updateProgress(input: { runId: string; dealCardId: number; progress: PropertyIntelligenceProgress }): boolean {
+    ensureTables();
+    const now = new Date().toISOString();
+    const result = getLandosDb().prepare(`
+      UPDATE landos_property_intelligence_run
+      SET progress_json = ?, updated_at = ?
+      WHERE run_id = ? AND deal_card_id = ? AND status = 'running'
+    `).run(
+      JSON.stringify(redactPropertyIntelligence(input.progress)),
+      now,
+      input.runId,
+      input.dealCardId,
+    );
+    return Number(result.changes ?? 0) > 0;
   }
 
   updateSpecialist(input: {
@@ -337,9 +383,12 @@ export class PropertyIntelligenceStore {
         db.prepare('UPDATE landos_property_intelligence_run SET is_primary = 0, updated_at = ? WHERE deal_card_id = ?')
           .run(now, input.dealCardId);
       }
+      // A finished run has no in-flight content: the real snapshot (or the
+      // recorded failure) supersedes it, and clearing it here means no reader
+      // can ever serve stale mid-flight data for a completed run.
       db.prepare(`
         UPDATE landos_property_intelligence_run SET
-          status = ?, completed_at = ?, snapshot_json = ?, error = ?, failure_category = ?, is_primary = ?, updated_at = ?
+          status = ?, completed_at = ?, snapshot_json = ?, error = ?, failure_category = ?, is_primary = ?, progress_json = NULL, updated_at = ?
         WHERE run_id = ? AND deal_card_id = ?
       `).run(
         input.status,
@@ -421,6 +470,7 @@ export class PropertyIntelligenceStore {
           error = 'The Property Intelligence mission did not finish before the service restarted. Re-run it to continue.',
           failure_category = 'crash',
           completed_at = ?,
+          progress_json = NULL,
           updated_at = ?
       WHERE status = 'running'
         AND (

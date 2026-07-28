@@ -90,7 +90,7 @@ describe('strategy readiness — property-specific blockers', () => {
 
   it('quick flip becomes weak (not viable-promoted) under heavy wetlands even when priced', () => {
     const r = buildStrategyReadiness(inputs({ validatedSoldComps: 4, valuationReady: true, acreageConflict: false, wetlandsPct: 40 }));
-    const qf = r.strategies.find((s) => s.strategy === 'Cash Flip')!;
+    const qf = r.strategies.find((s) => s.strategy === 'Quick Flip')!;
     expect(qf.status).toBe('weak');
   });
 });

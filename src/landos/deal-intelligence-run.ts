@@ -23,6 +23,12 @@
 
 import { logger } from '../logger.js';
 import { classifyExecution } from '../failure-classification.js';
+import {
+  closeSurplusSessionPages,
+  createBrowserWorkflowScope,
+  runInBrowserWorkflowScope,
+  type BrowserWorkflowScope,
+} from './browser-session.js';
 import { analyseDealIntelligence } from './deal-intelligence-analysis.js';
 import { assembleDealIntelligencePackage, mapChildStatus } from './deal-intelligence-assembly.js';
 import {
@@ -32,6 +38,7 @@ import {
   dealIntelligenceMissionDefinition,
   type DealIntelligenceCapabilities,
 } from './deal-intelligence-mission.js';
+import { assembleProgressiveDealIntelligence, isSettledChildStatus } from './deal-intelligence-progressive.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { launchFanOutMission } from './mission-graph-runner.js';
 import {
@@ -155,6 +162,7 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
 
   // ONE id for the parent mission AND the versioned snapshot run.
   const runId = (options.runIdFactory ?? defaultRunId)();
+  const browserScope = createBrowserWorkflowScope(runId);
   const startedAt = now();
   const created = snapshotStore.createRun({
     runId,
@@ -168,19 +176,19 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
 
   let launched: ReturnType<typeof launchFanOutMission>;
   try {
-    launched = launchFanOutMission({
-      definition,
-      scopeId: dealCardId,
-      trigger: options.trigger ?? 'operator',
-      store: missionStore,
-      now,
-      clockMs: options.clockMs,
-      timeoutMsOverride: options.timeoutMsOverride,
-      missionIdFactory: () => runId,
-      joinDeadlineMs: options.joinDeadlineMs,
-      joinPollMs: options.joinPollMs,
-      providerDeps: options.providerDeps,
-      onProgress: (child) => {
+    launched = runInBrowserWorkflowScope(browserScope, () => launchFanOutMission({
+        definition,
+        scopeId: dealCardId,
+        trigger: options.trigger ?? 'operator',
+        store: missionStore,
+        now,
+        clockMs: options.clockMs,
+        timeoutMsOverride: options.timeoutMsOverride,
+        missionIdFactory: () => runId,
+        joinDeadlineMs: options.joinDeadlineMs,
+        joinPollMs: options.joinPollMs,
+        providerDeps: options.providerDeps,
+        onProgress: (child) => {
         // Mirror live child state onto the snapshot run's specialist rows so the
         // existing operator progress panel shows the real mission, not a copy of
         // it that could drift.
@@ -200,9 +208,30 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
         } catch (err) {
           logger.warn({ err, dealCardId, runId, child: child.key }, 'deal_intelligence_progress_mirror_failed');
         }
-        options.onProgress?.(child);
-      },
-    });
+        // Progressive content, assembled at WRITE time on each child SETTLE —
+        // never on a poll GET. The partial is stored on the run row, clearly
+        // preliminary, and can never touch the promoted snapshot: promotion
+        // stays a completeRun decision made only at join. Synchronous on
+        // purpose: the last child's partial is written before the join path
+        // clears progressive content, so there is no post-completion write.
+        if (isSettledChildStatus(child.status)) {
+          try {
+            const progress = assembleProgressiveDealIntelligence({
+              dealCardId,
+              runId,
+              sequence: created.sequence,
+              startedAt,
+              children: missionStore.listChildren(runId),
+              now,
+            });
+            snapshotStore.updateProgress({ runId, dealCardId, progress });
+          } catch (err) {
+            logger.warn({ err, dealCardId, runId, child: child.key }, 'deal_intelligence_progressive_assembly_failed');
+          }
+        }
+          options.onProgress?.(child);
+        },
+      }));
   } catch (error) {
     // The definition could not even be laid out. The run is closed as failed so
     // the operator never sees a run stuck at "running" with no mission behind it.
@@ -230,6 +259,7 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
     runId,
     sequence: created.sequence,
     startedAt,
+    browserScope,
     missionCompletion: launched.completion,
   });
 
@@ -261,6 +291,7 @@ async function finishDealIntelligenceRun(input: {
   runId: string;
   sequence: number;
   startedAt: string;
+  browserScope: BrowserWorkflowScope;
   missionCompletion: Promise<MissionJoin | null>;
 }): Promise<PropertyIntelligenceSnapshot | null> {
   const { options, missionStore, snapshotStore, now, runId, sequence, startedAt } = input;
@@ -277,7 +308,21 @@ async function finishDealIntelligenceRun(input: {
   // Browser cleanup runs whatever happened. A failed mission leaves tabs behind
   // just as readily as a good one, and the operator's Chrome is theirs.
   let cleanup: BrowserCleanupResult | null = null;
-  if (options.browserCleanup) {
+  try {
+    cleanup = await closeSurplusSessionPages(input.browserScope);
+  } catch (error) {
+    cleanup = {
+      before: 0,
+      after: 0,
+      closed: 0,
+      note: `Browser page cleanup could not run (${(error as Error)?.message ?? String(error)}). Pages this run opened may still be open.`,
+    };
+  }
+  // Backward-compatible injected cleanup remains useful for tests and non-live
+  // callers. It is invoked only when no connected browser existed for the
+  // canonical scoped cleanup; production callbacks without a scope can never
+  // perform a global page reap.
+  if (options.browserCleanup && cleanup.before === 0) {
     try {
       cleanup = await options.browserCleanup();
     } catch (error) {

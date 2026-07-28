@@ -153,15 +153,40 @@ describe('LandOS routes - Phase 1B owner identity controls', () => {
     const priorRawInput = opportunity.rawInput;
     const response = await post(`/api/landos/property-cards/${property.id}/verified-parcel-reconciliation`, {
       address: 'TALLEY RD, Newport, TN 37843', city: 'Newport', county: 'Cocke', state: 'TN',
-      apn: '015 027 04512 000 2026', owner: 'JOINES TRAVIS',
+      apn: '015 027 04512 000 2026', owner: 'JOINES TRAVIS', acres: 5.82,
       sourceUrl: 'https://tnmap.tn.gov/assessment/', sourceLabel: 'Tennessee Comptroller public parcel layer',
       confirmAcceptedIdentityReplacement: true,
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as any;
     expect(body.card.active_input_address).toBe('TALLEY RD, Newport, TN 37843');
+    expect(body.card.acres).toBe(5.82);
     expect(body.dealCard.title).toBe('TALLEY RD, Newport, TN 37843');
     expect(body.opportunity).toMatchObject({ id: opportunity.id, title: 'TALLEY RD, Newport, TN 37843', rawInput: priorRawInput });
+    const resolution = ((await (await get(`/api/landos/deal-cards/${deal.id}/resolution`)).json()) as any).parcelIdentity;
+    expect(resolution).toMatchObject({
+      subjectCardId: property.id,
+      state: 'confirmed',
+      confidence: 1,
+      confirmedBy: 'owner-verified-parcel-reconciliation',
+    });
+    const summary = ((await (await get(`/api/landos/deal-cards/${deal.id}/property-summary`)).json()) as any).propertySummary;
+    expect(summary.identity).toMatchObject({
+      propertyCardId: property.id,
+      status: 'confirmed',
+      apn: '015 027 04512 000 2026',
+      owner: 'JOINES TRAVIS',
+      acreage: 5.82,
+    });
+    const acreageCorrection = await post(`/api/landos/property-cards/${property.id}/verified-parcel-reconciliation`, {
+      address: 'TALLEY RD, Newport, TN 37843', city: 'Newport', county: 'Cocke', state: 'TN',
+      apn: '015 027 04512 000 2026', owner: 'JOINES TRAVIS', acres: 6.1,
+      sourceUrl: 'https://tnmap.tn.gov/assessment/', sourceLabel: 'Tennessee Comptroller public parcel layer',
+      confirmAcceptedIdentityReplacement: true,
+    });
+    expect(acreageCorrection.status).toBe(200);
+    const correctedSummary = ((await (await get(`/api/landos/deal-cards/${deal.id}/property-summary`)).json()) as any).propertySummary;
+    expect(correctedSummary.identity).toMatchObject({ status: 'confirmed', acreage: 6.1 });
 
     const history = listOpportunityHistory(opportunity.id);
     expect(history.some((event) => event.eventType === 'canonical_identity_updated' && /1023 Baysinger Rd/.test(event.note))).toBe(true);
@@ -748,29 +773,6 @@ describe('LandOS routes — Duke property data (propertyid + FIPS, non-comp)', (
     expect(fetchCalls.some((u) => /comp_report|comp-report|lp_comp/.test(u))).toBe(false);
   });
 
-  it('from-verification (verified parcel) launches the PRODUCTION DD pipeline (runDealCardReport), never legacy property-analysis', async () => {
-    // A verified parcel creates a Deal Card AND populates it via runDealCardReport.
-    const created = await post('/api/landos/deal-cards/from-verification', { text: 'propertyid 173393466, FIPS 47031', entity: 'TY_LAND_BIZ' });
-    const cbody = (await created.json()) as any;
-    expect(cbody.created).toBe(true);
-    expect(cbody.parcelVerified).toBe(true);
-    expect(cbody.dealCardId).toBeGreaterThan(0);
-    // The populated Deal Card report carries the CURRENT pipeline shape — Realie
-    // provider chain, Zillow supplemental, gov DD, Pre-Call Intelligence — and
-    // NONE of the legacy PropertyAnalysisResult shape.
-    const rpt = (await (await get(`/api/landos/deal-cards/${cbody.dealCardId}/report`)).json()) as any;
-    expect(rpt.report.marketComps).toBeDefined();
-    expect(rpt.report.marketComps).toHaveProperty('providerChain');     // Realie-first provider chain
-    expect(rpt.report.marketComps).toHaveProperty('supplementalSold');  // Zillow supplemental lane
-    expect(rpt.govDd).toBeDefined();                                    // FEMA/NWI/USGS lane
-    expect(rpt.preCallIntelligence).toBeDefined();                      // Pre-Call Intelligence
-    expect(rpt.report).not.toHaveProperty('redfinComps');              // no legacy comp shape
-    expect(rpt.report).not.toHaveProperty('strategyMatrix');           // no legacy strategy shape
-    // Acquisitions section is available for the same Deal Card (CRM-independent layer).
-    const acq = (await (await get(`/api/landos/deal-cards/${cbody.dealCardId}/acquisition`)).json()) as any;
-    expect(acq.acquisition).toBeDefined();
-    expect(acq.playbook.status).toBe('foundational');
-  });
 });
 
 describe('LandOS routes — offer scenarios', () => {
@@ -861,133 +863,38 @@ describe('LandOS routes — Deal Card create/edit/save/reload/update', () => {
   });
 });
 
-describe('LandOS routes — Deal Card DD/Research worksheet', () => {
-  async function put(path: string, body: unknown) {
-    return app.request(path + (path.includes('?') ? '&' : '?') + 'token=' + TOKEN, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  }
-  async function newDealId(): Promise<number> {
-    const create = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'DD route deal' });
-    return ((await create.json()) as any).dealCard.id;
-  }
-
-  it('GET returns an honest empty worksheet plus label vocab', async () => {
-    const id = await newDealId();
-    const res = await get(`/api/landos/deal-cards/${id}/dd`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.dd.exists).toBe(false);
-    expect(body.dd.parcelIdentityStatus).toBe('local_area_context_not_verified');
-    expect(body.fieldLabels).toContain('Local Area Context, Not Parcel Verified');
-    expect(Array.isArray(body.parcelIdentityStatuses)).toBe(true);
-  });
-
-  it('PUT saves DD fields and a reload recovers them (persistence)', async () => {
-    const id = await newDealId();
-    const save = await put(`/api/landos/deal-cards/${id}/dd`, {
-      apn: '555-001', apnLabel: 'Seller stated',
-      county: 'Sample County', state: 'TX', acreage: 35,
-      dataGaps: ['Confirm access'], riskFlags: ['No survey'],
-    });
-    expect(save.status).toBe(200);
-
-    const reload = await get(`/api/landos/deal-cards/${id}/dd`);
-    const dd = ((await reload.json()) as any).dd;
-    expect(dd.exists).toBe(true);
-    expect(dd.apn).toBe('555-001');
-    expect(dd.apnLabel).toBe('Seller stated');
-    expect(dd.acreage).toBe(35);
-    expect(dd.dataGaps).toEqual(['Confirm access']);
-    expect(dd.riskFlags).toEqual(['No survey']);
-  });
-
-  it('PUT enforces the Verified-needs-a-source guardrail and returns a warning', async () => {
-    const id = await newDealId();
-    const save = await put(`/api/landos/deal-cards/${id}/dd`, { apn: '9', apnLabel: 'Verified' });
-    const body = (await save.json()) as any;
-    expect(body.dd.apnLabel).toBe('Needs verification');
-    expect(body.warnings.length).toBeGreaterThan(0);
-  });
-
-  it('GET/PUT on a missing deal card returns 404', async () => {
-    const g = await get('/api/landos/deal-cards/999999/dd');
-    expect(g.status).toBe(404);
-    const p = await put('/api/landos/deal-cards/999999/dd', { apn: 'x' });
-    expect(p.status).toBe(404);
-  });
-});
-
-describe('LandOS routes — Deal Card Market Research worksheet', () => {
-  async function put(path: string, body: unknown) {
-    return app.request(path + (path.includes('?') ? '&' : '?') + 'token=' + TOKEN, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  }
-  async function newDealId(): Promise<number> {
-    const create = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Market route deal' });
-    return ((await create.json()) as any).dealCard.id;
-  }
-
-  it('GET returns an honest empty worksheet plus label vocab', async () => {
-    const id = await newDealId();
-    const res = await get(`/api/landos/deal-cards/${id}/market`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.market.exists).toBe(false);
-    expect(body.market.marketReviewStatus).toBe('not_reviewed');
-    expect(body.demandLabels).toContain('strong_demand');
-    expect(body.demandLabels).toContain('needs_research');
-    expect(Array.isArray(body.sourceConfidenceLabels)).toBe(true);
-  });
-
-  it('PUT saves Market fields and a reload recovers them (persistence)', async () => {
-    const id = await newDealId();
-    const save = await put(`/api/landos/deal-cards/${id}/market`, {
-      marketReviewStatus: 'moderate_demand',
-      targetAreaLabel: 'Sample submarket',
-      buyerDemandNotes: 'Active local buyers per manual review',
-      buyerDemandLabel: 'strong_demand',
-      dataGaps: ['Confirm absorption'], riskFlags: ['Thin sold data'],
-    });
-    expect(save.status).toBe(200);
-
-    const reload = await get(`/api/landos/deal-cards/${id}/market`);
-    const market = ((await reload.json()) as any).market;
-    expect(market.exists).toBe(true);
-    expect(market.targetAreaLabel).toBe('Sample submarket');
-    expect(market.buyerDemandLabel).toBe('strong_demand');
-    expect(market.dataGaps).toEqual(['Confirm absorption']);
-    expect(market.riskFlags).toEqual(['Thin sold data']);
-  });
-
-  it('PUT downgrades a demand rating with no supporting note and returns a warning', async () => {
-    const id = await newDealId();
-    const save = await put(`/api/landos/deal-cards/${id}/market`, {
-      subdivisionDemandLabel: 'strong_demand',
-    });
-    const body = (await save.json()) as any;
-    expect(body.market.subdivisionDemandLabel).toBe('needs_research');
-    expect(body.warnings.length).toBeGreaterThan(0);
-  });
-
-  it('PUT downgrades source confidence high without a source link', async () => {
-    const id = await newDealId();
-    const save = await put(`/api/landos/deal-cards/${id}/market`, { sourceConfidence: 'high' });
-    const body = (await save.json()) as any;
-    expect(body.market.sourceConfidence).toBe('needs_research');
-    expect(body.warnings.length).toBeGreaterThan(0);
-  });
-
-  it('GET/PUT on a missing deal card returns 404', async () => {
-    const g = await get('/api/landos/deal-cards/999999/market');
-    expect(g.status).toBe(404);
-    const p = await put('/api/landos/deal-cards/999999/market', { targetAreaLabel: 'x' });
-    expect(p.status).toBe(404);
+describe('LandOS routes — removed Deal Card compatibility endpoints', () => {
+  it('leaves every obsolete worksheet, report, Acquire, and Public Intelligence route non-callable', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Canonical route fixture' });
+    const id = ((await created.json()) as any).dealCard.id as number;
+    const canonical = await get(`/api/landos/deal-cards/${id}/property-intelligence`);
+    expect(canonical.status).toBe(200);
+    const canonicalBody = (await canonical.json()) as any;
+    expect(canonicalBody.propertyIntelligence).toBeDefined();
+    expect(canonicalBody.documentRegistry).toBeDefined();
+    expect(canonicalBody.parcelRoster).toEqual([]);
+    const request = (path: string, method: 'GET' | 'POST' | 'PUT') =>
+      app.request(`${path}?token=${TOKEN}`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: method === 'GET' ? undefined : '{}',
+      });
+    const removed: Array<[string, 'GET' | 'POST' | 'PUT']> = [
+      [`/api/landos/deal-cards/${id}/dd`, 'GET'],
+      [`/api/landos/deal-cards/${id}/dd`, 'PUT'],
+      [`/api/landos/deal-cards/${id}/strategy`, 'GET'],
+      [`/api/landos/deal-cards/${id}/strategy`, 'PUT'],
+      [`/api/landos/deal-cards/${id}/market`, 'GET'],
+      [`/api/landos/deal-cards/${id}/market`, 'PUT'],
+      [`/api/landos/deal-cards/${id}/report`, 'GET'],
+      [`/api/landos/deal-cards/${id}/report/run`, 'POST'],
+      ['/api/landos/acquire/run', 'POST'],
+      [`/api/landos/deal-cards/${id}/public-intelligence`, 'GET'],
+      [`/api/landos/deal-cards/${id}/public-intelligence/run`, 'POST'],
+    ];
+    for (const [path, method] of removed) {
+      expect((await request(path, method)).status, `${method} ${path}`).toBe(404);
+    }
   });
 });
 
@@ -1027,202 +934,6 @@ describe('LandOS routes — knowledge layer + data providers (presence-only)', (
     expect(b.scorecard.version).toBe(1);
     expect(Array.isArray(b.scorecard.counties)).toBe(true);
   });
-});
-
-describe('LandOS routes — Mission Control runs the PRODUCTION DD pipeline (not legacy)', () => {
-  // A verified resolver result for 388 Gilstrap Road (named source + coordinates).
-  function verifiedGilstrapResolve() {
-    return async () => {
-      const ps = emptyLpPropertySummary();
-      Object.assign(ps, {
-        propertyid: '1', apn: '064-001', fips: '13137', county: 'WHITE', state: 'GA', city: 'CLEVELAND',
-        situs_address: '388 GILSTRAP RD', lat: '34.5970', lng: '-83.7660', lot_size_acres: '3.2', calc_acres: '3.2', owner: 'TEST OWNER',
-      });
-      return {
-        verified: true, status: 'verified', propertyid: '1', fips: '13137', apn: '064-001',
-        situs_address: '388 GILSTRAP RD', city: 'CLEVELAND', state: 'GA', county: 'WHITE', owner: 'TEST OWNER',
-        match_notes: 'ok', candidates: [], property_summary: ps,
-      };
-    };
-  }
-
-  it('PROPERTY-FIRST: 388 Gilstrap (address-only, no FIPS) is Matched via county derivation — no empty Deal Card', async () => {
-    // Default resolver = real no-network paths -> Realie cannot verify. The engine
-    // derives White County (Census, mocked) and corroborates via address suggest
-    // (Photon, mocked), so the property is credibly Matched and a Deal Card opens.
-    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
-    expect(res.status).toBe(201);                       // a Matched success
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.matched).toBe(true);
-    expect(body.dealCardId).toBeGreaterThan(0);          // a real Deal Card, never empty
-    expect(body.confidence).toBeGreaterThanOrEqual(0.7);
-    expect(Array.isArray(body.confirmBeforeOffer)).toBe(true); // unknowns surfaced, not suppressed
-  });
-
-  it('NEEDS CLARIFICATION: a vague non-property input opens nothing and returns guidance', async () => {
-    CENSUS.county = null; // no county derivable
-    const prevSuggest = SUGGEST.result.suggestions;
-    SUGGEST.result.suggestions = [];
-    try {
-      const res = await post('/api/landos/acquire/run', { text: 'some land somewhere', entity: 'TY_LAND_BIZ' });
-      expect(res.status).not.toBe(201);
-      const body = (await res.json()) as any;
-      expect(body.ok).toBe(false);
-      expect(body.matched).toBe(false);
-      expect(body.dealCardId).toBeNull();
-      expect(body.status).toBe('needs_clarification');
-      expect(typeof body.guidance).toBe('string');
-    } finally {
-      CENSUS.county = { county: 'White', state: 'GA', zip: '30528', fips: '13311', lat: 34.597, lng: -83.766 };
-      SUGGEST.result.suggestions = prevSuggest;
-    }
-  });
-
-  it('UNRESOLVED-BUT-USEFUL: an address that providers cannot verify opens a RESEARCH Deal Card with market pulse + research plan', async () => {
-    // Force no structured resolution (no county derivation, no suggest match, no
-    // verify) so the assistant falls back to public-records research.
-    CENSUS.county = null;
-    const prevSuggest = SUGGEST.result.suggestions;
-    SUGGEST.result.suggestions = [];
-    RESOLVER.override = null;
-    try {
-      const res = await post('/api/landos/acquire/run', { text: '2510 State Highway 153, Winters, TX', entity: 'TY_LAND_BIZ' });
-      const body = (await res.json()) as any;
-      // A useful result, not an empty shell: a research Deal Card was opened.
-      expect(body.ok).toBe(true);
-      expect(body.researchCardCreated).toBe(true);
-      expect(body.dealCardId).toBeGreaterThan(0);
-      const id = body.dealCardId;
-
-      // 1. Business Object Spine: honestly NOT decision-grade + blockers.
-      const detail = (await (await get(`/api/landos/deal-cards/${id}`)).json()) as any;
-      expect(detail.businessSpine.header.decisionGrade).toBe(false);
-      const blockers = ((await (await get(`/api/landos/deal-cards/${id}/blockers`)).json()) as any).blockers;
-      expect(blockers.blockingTasks.length).toBeGreaterThanOrEqual(4);
-
-      // 2. Market Pulse: area-level context works even unverified.
-      const mp = ((await (await get(`/api/landos/deal-cards/${id}/market-pulse`)).json()) as any).marketPulse;
-      expect(mp.eligible).toBe(true);
-      expect(typeof mp.plainEnglish).toBe('string');
-
-      // 3. Public-records research plan: official county sources + next action.
-      const plan = ((await (await get(`/api/landos/deal-cards/${id}/research-plan`)).json()) as any).researchPlan;
-      expect(plan.eligible).toBe(true);
-      expect(plan.targets.length).toBeGreaterThanOrEqual(3);
-      expect(plan.targets.some((t: any) => t.kind === 'netr')).toBe(true);
-
-      // eslint-disable-next-line no-console
-      console.log('\n=== ACCEPTANCE (unresolved): 2510 State Highway 153, Winters, TX ===\n' +
-        `Decision-grade: ${detail.businessSpine.header.decisionGrade ? 'YES' : 'NO'} | Confidence: ${detail.businessSpine.header.decisionConfidence}\n` +
-        `Missing: ${detail.businessSpine.header.missingCriticalInfo.join(', ')}\n` +
-        `Market Pulse: ${mp.plainEnglish}\n` +
-        `Next verification: ${plan.nextVerificationAction}\n` +
-        `Top research source: ${plan.targets[0].label} -> ${plan.targets[0].url}\n` +
-        `Next action: ${detail.businessSpine.header.nextBestAction} (owner: ${detail.businessSpine.header.nextActionOwner})`);
-    } finally {
-      CENSUS.county = { county: 'White', state: 'GA', zip: '30528', fips: '13311', lat: 34.597, lng: -83.766 };
-      SUGGEST.result.suggestions = prevSuggest;
-    }
-  });
-
-  it('operator acceptance: raw Florida input starts from raw text and continues past incomplete autocomplete', async () => {
-    const rawInput = '3401 62nd St W, Lehigh Acres FL';
-    const prevCounty = CENSUS.county;
-    const prevSuggest = SUGGEST.result.suggestions;
-    const infoSpy = vi.spyOn(logger, 'info');
-    CENSUS.county = { county: 'Lee', state: 'FL', zip: '33971', fips: '12071', lat: 26.606, lng: -81.710 };
-    SUGGEST.result.suggestions = [{
-      label: '62nd St W, Lehigh Acres, FL 33971',
-      line1: '62nd St W',
-      city: 'Lehigh Acres',
-      state: 'FL',
-      zip: '33971',
-      county: 'Lee',
-      coordinates: { lat: 26.606, lng: -81.710 },
-      source: 'Photon',
-      confidence: 0.62,
-    }];
-    try {
-      const res = await post('/api/landos/acquire/run', {
-        text: rawInput,
-        rawInput,
-        entity: 'TY_LAND_BIZ',
-      });
-      expect(res.status).toBe(201);
-      const body = (await res.json()) as any;
-      expect(body.ok).toBe(true);
-      expect(body.pipeline).toBe('property_resolution');
-      expect(body.matched).toBe(true);
-      expect(body.parcelVerified).toBe(false);
-      expect(body.browserSessionStatus).toBe('disabled');
-      expect(body.browserEscalated).toBe(false);
-      expect(body.dealCardId).toBeGreaterThan(0);
-
-      expect(infoSpy).toHaveBeenCalledWith(expect.objectContaining({
-        event: 'acquire_input',
-        rawInput,
-        selectedSuggestion: null,
-      }), 'acquire_input');
-
-      const row = getLandosDb().prepare(
-        `SELECT pc.active_input_address, pc.city, pc.county, pc.state, pc.verification_status
-           FROM landos_property_card pc
-           JOIN landos_deal_card_property dp ON dp.card_id = pc.id
-          WHERE dp.deal_card_id = ?`,
-      ).get(body.dealCardId) as any;
-      expect(row.active_input_address).toBe(rawInput);
-      expect(row.verification_status).toBe('unverified_lead');
-      expect(row.city).toBe('Lehigh Acres');
-      expect(row.county).toBe('Lee');
-      expect(row.state).toBe('FL');
-
-      const rpt = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/report`)).json()) as any;
-      expect(rpt.discoveryReport.comparableIntelligence).toBeDefined();
-      expect(rpt.discoveryReport.marketIntelligence).toBeDefined();
-    } finally {
-      infoSpy.mockRestore();
-      CENSUS.county = prevCounty;
-      SUGGEST.result.suggestions = prevSuggest;
-    }
-  });
-
-  it('optional provider output does not bypass public-first parcel confirmation', async () => {
-    RESOLVER.override = verifiedGilstrapResolve();
-    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
-    const body = (await res.json()) as any;
-    expect(body.parcelVerified).toBe(false);
-    expect(body.status).toBe('resolution_pending');
-    const id = body.dealCardId;
-    const mp = ((await (await get(`/api/landos/deal-cards/${id}/market-pulse`)).json()) as any).marketPulse;
-    expect(mp.parcelVerified).toBe(false);
-  }, 30000);
-
-  it('creates one resolution Deal Card without running paid or optional-provider analysis', async () => {
-    RESOLVER.override = verifiedGilstrapResolve();
-    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.parcelVerified).toBe(false);
-    expect(body.dealCardId).toBeGreaterThan(0);
-    expect(body.pipeline).toBe('property_resolution'); // property-first engine
-    expect(body.status).toBe('resolution_pending');
-    const identity = ((await (await get(`/api/landos/deal-cards/${body.dealCardId}/resolution`)).json()) as any).parcelIdentity;
-    expect(identity.state).not.toBe('confirmed');
-  }, 30000);
-
-  it('does not promote optional-provider fixture output onto the Property Card', async () => {
-    RESOLVER.override = verifiedGilstrapResolve();
-    const res = await post('/api/landos/acquire/run', { text: '388 Gilstrap Road, Cleveland GA', entity: 'TY_LAND_BIZ' });
-    const body = (await res.json()) as any;
-    expect(body.dealCardId).toBeGreaterThan(0);
-    const row = getLandosDb().prepare(
-      'SELECT pc.apn, pc.county, pc.state, pc.acres, pc.lat, pc.lng, pc.verification_status FROM landos_property_card pc JOIN landos_deal_card_property dp ON dp.card_id = pc.id WHERE dp.deal_card_id = ?',
-    ).get(body.dealCardId) as any;
-    expect(row.verification_status).toBe('unverified_lead');
-    expect(row.apn).not.toBe('064-001');
-  }, 30000);
 });
 
 describe('LandOS routes — Browser Intelligence operator control', () => {
@@ -1314,16 +1025,13 @@ describe('LandOS routes — Acquisitions department (CRM-independent, never send
 });
 
 describe('LandOS routes — post-discovery DD layer', () => {
-  it('lead type: a TEST LEAD deal persists + the report response carries leadType', async () => {
+  it('lead type: a TEST LEAD deal persists and stays out of operating inventory', async () => {
     const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Acceptance test lead', leadType: 'test' });
     const dc = ((await created.json()) as any).dealCard;
     expect(dc.lead_type).toBe('test');
-    const rep = await get(`/api/landos/deal-cards/${dc.id}/report`);
-    const rb = (await rep.json()) as any;
-    expect(rb.leadType).toBe('test');
-    expect(rb.leadTypeLabel).toBe('TEST LEAD');
-    // Operating lists must not present synthetic TEST LEAD records as real
-    // inventory; the direct report keeps its explicit label for isolated QA.
+    const detail = (await (await get(`/api/landos/deal-cards/${dc.id}`)).json()) as any;
+    expect(detail.dealCard.lead_type).toBe('test');
+    // Operating lists must not present synthetic TEST LEAD records as real inventory.
     const list = await get('/api/landos/deal-cards');
     const item = ((await list.json()) as any).dealCards.find((d: any) => d.id === dc.id);
     expect(item).toBeUndefined();
@@ -1387,76 +1095,6 @@ describe('LandOS routes — post-discovery DD layer', () => {
   });
 });
 
-describe('LandOS routes — Deal Card DD readiness surfacing', () => {
-  it('report response includes readiness; list rows include a reportSummary', async () => {
-    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Readiness deal' });
-    const id = ((await created.json()) as any).dealCard.id;
-
-    const rep = await get(`/api/landos/deal-cards/${id}/report`);
-    expect(rep.status).toBe(200);
-    const rb = (await rep.json()) as any;
-    expect(rb.readiness).toBeDefined();
-    expect(rb.readiness.discoveryReportState).toBe('not_generated');
-    expect(rb.readiness.nextBestAction.action).toBe('needs_parcel_verification');
-    // Pre-Call Intelligence: unverified deal -> area-only context, needs verification.
-    expect(rb.preCallIntelligence).toBeDefined();
-    expect(rb.preCallIntelligence.identityTier).toBe('area_only_context');
-    expect(rb.preCallIntelligence.status).toBe('needs_verification');
-    expect(typeof rb.propertyType.propertyType).toBe('string');
-
-    const list = await get('/api/landos/deal-cards');
-    const item = ((await list.json()) as any).dealCards.find((d: any) => d.id === id);
-    expect(item.reportSummary).toBeDefined();
-    expect(item.reportSummary.exists).toBe(false);
-    expect(item.reportSummary.ddPercentComplete).toBe(0);
-  });
-
-  it('report response carries ONE unified readiness record that agrees with every mirrored surface', async () => {
-    const { upsertCardFromDukeRun } = await import('./property-card.js');
-    const { linkPropertyToDeal } = await import('./deal-card.js');
-    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Unified readiness deal' });
-    const id = ((await created.json()) as any).dealCard.id;
-    const { card } = upsertCardFromDukeRun({ entity: 'TY_LAND_BIZ', activeInputAddress: '472 WEST RD', county: 'Worth', state: 'GA', apn: '00830-054-000', fips: '13321', owner: 'X', acres: 8.6, verified: true, verificationSource: 'Realie.ai', summary: 'v' });
-    linkPropertyToDeal({ dealCardId: id, cardId: card.id, role: 'subject' });
-
-    const rb = (await (await get(`/api/landos/deal-cards/${id}/report`)).json()) as any;
-    const u = rb.unifiedReadiness;
-    expect(u).toBeDefined();
-    // The eight named sub-states are present, each with an explanation.
-    expect(u.dimensions.map((d: any) => d.key)).toEqual([
-      'research', 'valuation_context', 'value', 'strategy_screening',
-      'strategy_scoreability', 'strategy_actionability', 'offer', 'contract',
-    ]);
-    for (const d of u.dimensions) expect(String(d.why).trim().length).toBeGreaterThan(0);
-    // No internal inconsistency, and the composition mirrors the operator record.
-    expect(u.consistencyIssues).toEqual([]);
-    if (rb.operatorRecord) {
-      expect(u.value.state).toBe(rb.operatorRecord.valueReadiness.state);
-      expect(u.offer.state).toBe(rb.operatorRecord.offerReadiness.state);
-    }
-    // The five-strategy record and the unified actionability tell one story.
-    const allBlocked = rb.strategyReadiness.strategies.every((s: any) => s.status === 'blocked');
-    if (allBlocked) {
-      expect(u.strategyActionability.state).toBe('blocked');
-      expect(u.strategyScoreability.state).toBe('not_scoreable');
-      expect(u.value.state).not.toBe('ready');
-    }
-    // The legacy per-report offer label never outranks the shared record.
-    if (rb.report.offerReadiness === 'ready_for_offer') expect(u.offer.state).toBe('ready');
-    // The audit gate carries the readiness-agreement checks.
-    const auditIds = rb.orchestration.checks.map((c: any) => c.id);
-    expect(auditIds).toContain('unified_readiness_agreement');
-    expect(auditIds).toContain('readiness_states_reconcile');
-    expect(rb.orchestration.checks.find((c: any) => c.id === 'unified_readiness_agreement').pass).toBe(true);
-    expect(rb.orchestration.checks.find((c: any) => c.id === 'readiness_states_reconcile').pass).toBe(true);
-    // The executive summary mirrors the same record.
-    if (rb.executiveSummary?.readiness) {
-      expect(rb.executiveSummary.readiness.offer.state).toBe(u.offer.state);
-      expect(rb.executiveSummary.readiness.value.state).toBe(u.value.state);
-    }
-  });
-});
-
 describe('LandOS routes — visual image serving + capture gating (no Google call)', () => {
   it('serves a stored captured image by card+service; 404 when none; 400 on bad service', async () => {
     const fsm = await import('fs');
@@ -1495,39 +1133,6 @@ describe('LandOS routes — visual image serving + capture gating (no Google cal
     expect(String(b.error)).toMatch(/not configured/i);
   });
 
-  it('rehydrates the latest eligible satellite and Street View captures on every report read', async () => {
-    const fsm = await import('fs');
-    const pathm = await import('path');
-    const { upsertCardFromDukeRun, saveCardVisualCapture } = await import('./property-card.js');
-    const { createDealCard, linkPropertyToDeal } = await import('./deal-card.js');
-    const { card } = upsertCardFromDukeRun({
-      entity: 'TY_LAND_BIZ', activeInputAddress: 'TALLEY RD', county: 'Cocke', state: 'TN', city: 'Newport',
-      apn: '027 04512', owner: 'JOINES TRAVIS', acres: 5.82, lat: 36.02987, lng: -83.11121,
-      verified: true, verificationSource: 'Tennessee Comptroller parcel layer', summary: 'verified',
-    });
-    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Fresh visual projection fixture' });
-    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
-    const dir = pathm.join(process.cwd(), 'store', 'visuals');
-    fsm.mkdirSync(dir, { recursive: true });
-    const satellite = pathm.join(dir, `test_${card.id}_fresh_sat.png`);
-    const street = pathm.join(dir, `test_${card.id}_fresh_street.png`);
-    fsm.writeFileSync(satellite, Buffer.from([137, 80, 78, 71]));
-    fsm.writeFileSync(street, Buffer.from([137, 80, 78, 71]));
-    const base = { targetKind: 'parcel' as const, cardId: card.id, apn: '027 04512', sourceCoords: { lat: 36.02987, lng: -83.11121 }, captureQuery: '36.02987,-83.11121' };
-    saveCardVisualCapture(card.id, {
-      maps_static: { storedPath: satellite, timestamp: 't', association: { ...base, basis: 'verified_parcel_coordinates' } },
-      street_view_static: { storedPath: street, timestamp: 't', association: { ...base, basis: 'parcel_nearby_street_view', distanceToParcelM: 124 } },
-    }, { provider: 'google' });
-
-    const response = await get(`/api/landos/deal-cards/${deal.id}/report`);
-    expect(response.status).toBe(200);
-    const body = await response.json() as any;
-    expect(body.report.visualContext.assets.find((asset: any) => asset.service === 'maps_static')).toMatchObject({ status: 'captured' });
-    expect(body.report.visualContext.assets.find((asset: any) => asset.service === 'street_view_static')).toMatchObject({ status: 'captured', association: { distanceToParcelM: 124 } });
-    expect(body.report.visualContext.links.streetView).toContain('viewpoint=36.02987%2C-83.11121');
-    fsm.unlinkSync(satellite);
-    fsm.unlinkSync(street);
-  });
 });
 
 describe('LandOS routes - canonical comp-map projection', () => {

@@ -172,7 +172,7 @@ describe('confirmed Deal Cards still display prior Smart Intake evidence', () =>
     expect((artifact.candidates as unknown[]).length).toBeGreaterThan(0);
   });
 
-  it('the confirmed (tabbed) Deal Card mounts the Smart Intake panel outside the tabpanel', () => {
+  it('the confirmed (tabbed) Deal Card keeps retained Smart Intake evidence on its dedicated tab', () => {
     // The dock lives in the `!showResolution` branch — the workspace a card gets
     // ONLY once its parcel is confirmed — so confirmation can never be what
     // removes retained evidence from the card.
@@ -180,25 +180,26 @@ describe('confirmed Deal Cards still display prior Smart Intake evidence', () =>
     const dock = DEAL_CARD_SRC.indexOf('data-testid="smart-intake-dock"');
     expect(tabbed).toBeGreaterThan(-1);
     expect(dock).toBeGreaterThan(tabbed);
-    expect(DEAL_CARD_SRC).toMatch(/data-testid="smart-intake-dock"[^]{0,400}<SmartIntakePanel/);
+    expect(DEAL_CARD_SRC).toMatch(/activeTab === 'intake' && \(\s*<div data-testid="smart-intake-dock"[^>]*>\s*<SmartIntakePanel/);
   });
 });
 
-describe('tab navigation cannot hide or detach Smart Intake artifacts', () => {
-  it('the panel is mounted once and is NOT gated on the active tab', () => {
+describe('tab navigation keeps Smart Intake artifacts in their dedicated workspace', () => {
+  it('the confirmed workspace mounts one panel only on the Smart Intake tab', () => {
     // Exactly one SmartIntakePanel in the tabbed workspace, and it is never
     // rendered behind `activeTab === 'intake' && …` — that gate is what took the
     // retained screenshot off every other tab and remounted it on each switch.
-    expect(DEAL_CARD_SRC).not.toMatch(/activeTab === 'intake' && \(\s*<SmartIntakePanel/);
+    expect(DEAL_CARD_SRC).toMatch(/activeTab === 'intake' && \(\s*<div data-testid="smart-intake-dock"[^>]*>\s*<SmartIntakePanel/);
     const mounts = DEAL_CARD_SRC.match(/<SmartIntakePanel\b/g) ?? [];
     // One mount on the resolution view, one docked on the tabbed workspace: a
     // card is in exactly one of those states, so only one is ever live.
     expect(mounts).toHaveLength(2);
   });
 
-  it('selecting the Smart Intake tab reorders the docked panel instead of remounting it', () => {
-    expect(DEAL_CARD_SRC).toMatch(/class=\{activeTab === 'intake' \? 'order-first' : ''\}/);
-    expect(DEAL_CARD_SRC).toMatch(/data-intake-active=\{activeTab === 'intake' \? 'true' : 'false'\}/);
+  it('the pinned action selects Smart Intake instead of leaving it docked under every tab', () => {
+    expect(DEAL_CARD_SRC).toMatch(/data-testid="open-smart-intake"/);
+    expect(DEAL_CARD_SRC).toMatch(/selectTab\('intake'\)/);
+    expect(DEAL_CARD_SRC).not.toMatch(/class=\{activeTab === 'intake' \? 'order-first' : ''\}/);
   });
 
   it('a failed reload never blanks retained evidence', () => {

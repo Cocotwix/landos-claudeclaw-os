@@ -15,7 +15,8 @@ import { upsertPropertyCard, savePropertyInspection, loadPropertyInspection } fr
 import { linkPropertyToDeal } from './deal-card.js';
 import { collectComparables } from './property-intelligence-live.js';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
-import type { MissionContext } from './property-intelligence-mission.js';
+import { addComp, listComps } from './comps.js';
+import type { MissionContext } from './property-intelligence-collector-types.js';
 
 function seedCard(): { dealCardId: number; cardId: number } {
   const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'LandPortal comp lane' });
@@ -69,6 +70,9 @@ const SOLD_ROW = {
   saleListIndicator: 'sale' as const,
   improvement: 'vacant' as const,
   confidence: 'high' as const,
+  // Rows carry the capture generation that produced them. An unstamped row
+  // predates the two-surface read and is deliberately NOT treated as usable.
+  capturedAtIso: '2026-07-27T12:00:00.000Z',
 };
 
 const ACTIVE_ROW = {
@@ -95,6 +99,26 @@ const IMPROVED_ROW = {
 beforeEach(() => { _initTestLandosDb(); });
 
 describe('LandPortal primary comparable lane', () => {
+  it('preserves historical disabled-provider rows in SQLite but never emits them in the current handback', async () => {
+    const { dealCardId, cardId } = seedCard();
+    addComp({
+      entity: 'TY_LAND_BIZ', dealCardId, cardId, sourceLabel: 'Other',
+      canonicalSource: 'Realie.ai', addressDesc: '1 Legacy Rd', state: 'TN',
+      price: 80_000, priceKind: 'sale', acres: 10, propertyClass: 'vacant_land',
+    });
+    addComp({
+      entity: 'TY_LAND_BIZ', dealCardId, cardId, sourceLabel: 'Zillow',
+      canonicalSource: 'Zillow', addressDesc: '2 Current Rd, Kingston, TN 37763', state: 'TN',
+      price: 90_000, priceKind: 'sale', acres: 11, propertyClass: 'vacant_land',
+    });
+
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    expect(listComps({ dealCardId }).map((row) => row.canonical_source)).toContain('Realie.ai');
+    expect(outcome.data!.candidates.map((candidate) => candidate.provider)).toContain('Zillow');
+    expect(outcome.data!.candidates.some((candidate) => /realie|homeharvest|realtor/i.test(candidate.provider))).toBe(false);
+    expect(outcome.summary).not.toMatch(/realie|homeharvest|realtor/i);
+  });
+
   it('reads the parcel page when no comparable rows are persisted yet', async () => {
     const { dealCardId, cardId } = seedCard();
     const seen: Array<{ cardId: number; searchKey: { apn: string | null } }> = [];
@@ -133,6 +157,27 @@ describe('LandPortal primary comparable lane', () => {
       captureLandPortalInspection: capture,
     });
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('DOES re-read when the retained rows predate the two-surface capture', async () => {
+    // A pre-fix row states a status but carries no capture generation, no comp-
+    // page enrichment and no status source. Treating it as usable satisfied the
+    // very gate that would refresh it, so superseded rows stayed in front of the
+    // operator indefinitely. One re-read per card retires them.
+    const { dealCardId, cardId } = seedCard();
+    const { capturedAtIso, ...unstamped } = SOLD_ROW;
+    void capturedAtIso;
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [unstamped], sources: [], evidence: [],
+      discoveryQuestions: [], missingInformation: [],
+    });
+    const capture = vi.fn(async () => ({ ok: true, note: 're-read', comparableCount: 0 }));
+    await collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: capture,
+    });
+    expect(capture).toHaveBeenCalledTimes(1);
   });
 
   it('makes LandPortal the primary basis and routes its rows by structured status', async () => {

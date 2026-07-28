@@ -78,7 +78,7 @@ function joinInput(overrides: Partial<SnapshotJoinInput> = {}): SnapshotJoinInpu
     },
     strategies: [],
     recommendation: {
-      preferredStrategy: 'Cash Flip',
+      preferredStrategy: 'Quick Flip',
       why: 'Priced band supports a quick resale.',
       whatWouldChangeIt: [],
       posture: 'pursue',
