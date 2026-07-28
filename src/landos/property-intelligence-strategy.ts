@@ -23,6 +23,10 @@ import type {
 
 export interface StrategySynthesisInput {
   identityState: IdentityState;
+  /** See ValuationInput.discoveryIdentityUsable. Never true for a conflict. */
+  discoveryIdentityUsable?: boolean;
+  /** Plain source disclosure for conditional discovery-stage underwriting. */
+  identityBasis?: string | null;
   subjectAcres: number | null;
   valuation: SnapshotValuation;
   dueDiligence: SnapshotDueDiligenceItem[];
@@ -74,6 +78,9 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
   recommendation: SnapshotRecommendation;
 } {
   const identityConfirmed = input.identityState === 'confirmed';
+  const conditionalIdentity = input.identityState === 'provisional'
+    && input.discoveryIdentityUsable === true;
+  const identityUsable = identityConfirmed || conditionalIdentity;
   const priceable = input.valuation.priceable;
   const risks = hardConstraint(input.dueDiligence);
   const unknowns = unknownLanes(input.dueDiligence);
@@ -82,7 +89,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
   const flood = ddItem(input.dueDiligence, 'flood');
   const septic = ddItem(input.dueDiligence, 'septic');
 
-  const identityBlocker = identityConfirmed
+  const identityBlocker = identityUsable
     ? null
     : `Parcel identity is ${input.identityState}; no strategy may be pursued on an unidentified parcel.`;
   const priceBlocker = priceable
@@ -96,6 +103,8 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
   const acres = input.subjectAcres;
 
   const strategies: SnapshotStrategy[] = [];
+  const qualifyForIdentity = (applicability: StrategyApplicability): StrategyApplicability =>
+    conditionalIdentity && applicability === 'applicable' ? 'conditional' : applicability;
 
   // ── 1. Quick Flip (buy at a discount, resell as-is) ───────────────────────
   {
@@ -106,7 +115,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
     if (!blockers.length && risks.length > 0) applicability = worst(applicability, 'conditional');
     strategies.push({
       strategy: 'Quick Flip',
-      applicability,
+      applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         priceable && input.valuation.dispositionRange
           ? `A disposition band of $${input.valuation.dispositionRange.low.toLocaleString()}–$${input.valuation.dispositionRange.high.toLocaleString()} exists against a retail band of $${input.valuation.likelyRetail!.low.toLocaleString()}–$${input.valuation.likelyRetail!.high.toLocaleString()}.`
@@ -121,7 +130,9 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
       risk: risks.length ? `Resale speed is exposed to: ${risks.join('; ')}.` : 'Primary risk is overpaying relative to a thin comp band.',
       nextVerificationStep: identityConfirmed
         ? (priceable ? 'Verify marketable title and confirm the acquisition price sits below the disposition band before offering.' : 'Establish the value basis before any offer is calculated.')
-        : 'Confirm the parcel against the official record before any offer work.',
+        : identityUsable
+          ? 'Use this only as discovery-stage guidance; confirm the subject against the official parcel record before a binding offer or closing decision.'
+          : 'Confirm the parcel against the official record before any offer work.',
     });
   }
 
@@ -133,7 +144,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
     if (!blockers.length && input.activeListingCount >= 3 && input.acceptedSoldCount >= 3) applicability = 'applicable';
     strategies.push({
       strategy: 'Novation or Double Close',
-      applicability,
+      applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         priceable
           ? `A retail band of $${input.valuation.likelyRetail!.low.toLocaleString()}–$${input.valuation.likelyRetail!.high.toLocaleString()} gives the seller a credible upside story.`
@@ -163,7 +174,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
     }
     strategies.push({
       strategy: 'Subdivide or Minor Split',
-      applicability,
+      applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         acres != null ? `${acres.toFixed(2)} governing acres.` : 'Acreage unresolved.',
         input.zoningKnown && input.zoning ? `Zoning: ${input.zoning}.` : 'Zoning not established.',
@@ -190,7 +201,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
     if (!blockers.length && input.landHomeCompCount >= 2) applicability = 'applicable';
     strategies.push({
       strategy: 'Land-Home Package',
-      applicability,
+      applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         `${input.landHomeCompCount} improved or manufactured-home sale(s) retained for this lane only; they never establish vacant-land value.`,
         input.utilitiesSummary ?? 'Utility availability not established.',
@@ -219,7 +230,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
     if (!blockers.length && improvable.length > 0) applicability = 'applicable';
     strategies.push({
       strategy: 'Improvement Then Flip',
-      applicability,
+      applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         improvable.length ? `Discoverable value gaps a buyer would discount for: ${improvable.join(', ')}.` : 'No obvious improvable defect was identified, which limits the upside of this path.',
         priceable ? `Retail band $${input.valuation.likelyRetail!.low.toLocaleString()}–$${input.valuation.likelyRetail!.high.toLocaleString()} sets the ceiling the improvement has to beat.` : 'No retail band to size the improvement against.',
@@ -250,8 +261,11 @@ function recommend(
   unknowns: string[],
 ): SnapshotRecommendation {
   const identityConfirmed = input.identityState === 'confirmed';
+  const conditionalIdentity = input.identityState === 'provisional'
+    && input.discoveryIdentityUsable === true;
+  const identityUsable = identityConfirmed || conditionalIdentity;
 
-  if (!identityConfirmed) {
+  if (!identityUsable) {
     const whatWouldChangeIt = ['A confirmed official parcel match (APN, owner, acreage and situs agreeing on the county or state parcel layer).'];
     return withOperatorAnswers({
       preferredStrategy: null,
@@ -292,17 +306,22 @@ function recommend(
   }
 
   const runnerUp = ranked[1];
-  const posture: OpportunityPosture = risks.length >= 3
+  const posture: OpportunityPosture = conditionalIdentity || risks.length >= 3
     ? 'renegotiate'
     : winner.applicability === 'applicable' && risks.length === 0
       ? 'pursue'
       : 'renegotiate';
 
-  const postureWhy = posture === 'pursue'
+  const postureWhy = conditionalIdentity
+    ? `Renegotiate. The five strategies were ranked from a conditional discovery-stage value basis, but official parcel-source coverage remains unavailable; keep price and commitment conditional on subject confirmation.`
+    : posture === 'pursue'
     ? `Pursue. ${winner.strategy} is supported by the retained evidence, no hard risk was found, and the value basis is ${input.valuation.confidence} confidence.`
     : `Renegotiate. ${winner.strategy} is the best available path, but ${risks.length} mapped risk(s) should move the acquisition price before commitment: ${risks.slice(0, 3).join('; ')}.`;
 
   const whatWouldChangeIt = [
+    ...(conditionalIdentity
+      ? [`Official parcel confirmation would remove the discovery-stage identity limitation${input.identityBasis?.trim() ? ` (${input.identityBasis.trim()})` : ''}.`]
+      : []),
     ...winner.blockers,
     ...(runnerUp ? [`${runnerUp.strategy} would become preferred if: ${runnerUp.blockers[0] ?? 'its conditional evidence is proven'}.`] : []),
     ...(unknowns.length ? [`Resolving ${unknowns.slice(0, 3).join(', ')} could change the ranking.`] : []),

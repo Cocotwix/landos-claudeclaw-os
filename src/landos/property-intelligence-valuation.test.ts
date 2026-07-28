@@ -50,6 +50,31 @@ describe('buildPropertyIntelligenceValuation — refusals', () => {
     expect(result.nextActionToPrice).toMatch(/Confirm the subject parcel/);
   });
 
+  it('allows a low-confidence conditional valuation for a consistent discovery-stage identity', () => {
+    const result = buildPropertyIntelligenceValuation(valuationInput({
+      identityState: 'provisional',
+      discoveryIdentityUsable: true,
+      identityBasis: 'operator-supplied APN, county and state agree with the retained LandPortal subject page',
+    }));
+    expect(result.priceable).toBe(true);
+    expect(result.range).not.toBeNull();
+    expect(result.confidence).toBe('low');
+    expect(result.basis).toMatch(/Conditional discovery-stage valuation/);
+    expect(result.uncertainty.join(' ')).toMatch(/operator-supplied APN.*LandPortal subject page/);
+    expect(result.materialGaps.join(' ')).toMatch(/Official parcel-source coverage remains unavailable/);
+  });
+
+  it('does not let a discovery handoff override unresolved or conflicted identity', () => {
+    for (const identityState of ['unresolved', 'conflicted'] as const) {
+      const result = buildPropertyIntelligenceValuation(valuationInput({
+        identityState,
+        discoveryIdentityUsable: true,
+      }));
+      expect(result.priceable).toBe(false);
+      expect(result.confidence).toBe('none');
+    }
+  });
+
   it('refuses to price with no accepted closed sale', () => {
     const result = buildPropertyIntelligenceValuation(valuationInput({ policy: policyFor([comp(1, { provider: 'Realie' })]) }));
     expect(result.priceable).toBe(false);
@@ -215,6 +240,30 @@ describe('buildPropertyIntelligenceStrategies', () => {
     expect(recommendation.preferredStrategy).toBeNull();
     expect(recommendation.posture).toBe('hold');
     expect(strategies.every((s) => s.applicability === 'blocked' || s.applicability === 'not_applicable')).toBe(true);
+  });
+
+  it('ranks the five strategies conditionally when provisional identity is usable for discovery', () => {
+    const valuation = buildPropertyIntelligenceValuation(valuationInput({
+      identityState: 'provisional',
+      discoveryIdentityUsable: true,
+      identityBasis: 'supplied APN/county/state agree with LandPortal',
+    }));
+    const { strategies, recommendation } = buildPropertyIntelligenceStrategies(strategyInput({
+      identityState: 'provisional',
+      discoveryIdentityUsable: true,
+      identityBasis: 'supplied APN/county/state agree with LandPortal',
+      valuation,
+    }));
+    expect(strategies).toHaveLength(5);
+    expect(strategies.some((strategy) => strategy.blockers.some((blocker) => /identity is provisional/i.test(blocker)))).toBe(false);
+    expect(strategies.every((strategy) => strategy.applicability !== 'applicable')).toBe(true);
+    expect(recommendation.preferredStrategy).toBeTruthy();
+    expect(APPROVED_STRATEGIES).toContain(recommendation.preferredStrategy as never);
+    expect(recommendation.posture).toBe('renegotiate');
+    expect(recommendation.postureWhy).toMatch(/conditional discovery-stage value basis/);
+    expect(recommendation.whatWouldChangeIt.join(' ')).toMatch(/Official parcel confirmation/);
+    expect(recommendation.worth?.workingValue).toBeGreaterThan(0);
+    expect(recommendation.targetBuyRange?.low).toBeGreaterThan(0);
   });
 
   it('recommends nothing when the property is not priceable', () => {

@@ -60,7 +60,7 @@ describe('subject search wiring (source contract)', () => {
     const uses = routesSource.match(/apnAlternates: jurisdictionLocalApnVariants\(searchKey\.apn\)/g) ?? [];
     expect(uses).toHaveLength(1);
     expect(routesSource).toMatch(
-      /captureLandPortalInspection:[\s\S]{0,1800}apnAlternates: jurisdictionLocalApnVariants\(searchKey\.apn\)[\s\S]{0,500}mode: 'parcel_fact'/,
+      /captureLandPortalInspection:[\s\S]{0,2600}apnAlternates: jurisdictionLocalApnVariants\(searchKey\.apn\)[\s\S]{0,900}mode: 'deep_record'/,
     );
   });
 });

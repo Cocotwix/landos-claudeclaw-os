@@ -107,6 +107,16 @@ export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[]
     const place = [input.city.trim(), county ? `${county} County` : '', state.toUpperCase()].filter(Boolean).join(', ');
     routes.push({ kind: 'locality', label: place, url: zillowLandUrl(input.city, state) });
   }
+  // County + state is itself a practical public-market route. Fresh intake can
+  // retain both while city/ZIP/coordinates are still being enriched; treating
+  // that usable geography as "disabled" silently skipped the supplemental lane.
+  if (!input.city?.trim() && county && state) {
+    routes.push({
+      kind: 'locality',
+      label: `${county} County, ${state.toUpperCase()}`,
+      url: zillowLandUrl(`${county} County`, state),
+    });
+  }
   if (input.apn?.trim() && state) {
     const place = [input.apn.trim(), input.owner?.trim(), county ? `${county} County` : '', state.toUpperCase()].filter(Boolean).join(' ');
     routes.push({ kind: 'parcel', label: `parcel ${input.apn.trim()}`, url: `https://www.zillow.com/homes/${encodeURIComponent(place)}_rb/` });

@@ -19,6 +19,8 @@ import type { MissionChildContext } from './mission-graph-runner.js';
 import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-collector-types.js';
 import type { SnapshotIdentity } from './property-intelligence-snapshot.js';
 
+const AT = '2026-07-28T00:00:00.000Z';
+
 const CONFIRMED_IDENTITY: SnapshotIdentity = {
   state: 'confirmed',
   normalizedAddress: 'OLD RIDGE RD',
@@ -347,6 +349,46 @@ describe('Deal Intelligence executors', () => {
     const result = await executors.comparables(ctx());
     const handback = result.result as ComparablesHandback;
     expect(handback.governmentVerificationPerformed).toBe(false);
+  });
+
+  it('does not count government limitation placeholders as retrieved records', async () => {
+    const executors = dealIntelligenceExecutors(caps({
+      collectors: collectors({
+        government_records: async () => outcome('partial', {
+          records: [
+            {
+              key: 'document_completeness', label: 'Recorded document completeness',
+              value: 'missing', grade: 'unresolved_question', source: 'County records',
+              sourceUrl: null, retrievedAt: AT, note: 'No artifact retained.',
+            },
+            {
+              key: 'survey_plat', label: 'Survey or plat', value: 'not searched',
+              grade: 'unavailable_public_record', source: 'County records',
+              sourceUrl: null, retrievedAt: AT, note: null,
+            },
+          ],
+        }, 'No official collector returned a subject record.'),
+      }),
+    }));
+    const result = await executors.government_records(ctx());
+    expect((result.result as { recordCount: number }).recordCount).toBe(0);
+  });
+
+  it('does not count unknown cards as environmental screens when no collector ran', async () => {
+    const executors = dealIntelligenceExecutors(caps({
+      collectors: collectors({
+        environmental_terrain: async () => outcome('partial', {
+          items: [{
+            key: 'wetlands', label: 'Wetlands', verdict: 'unknown',
+            headline: 'Not screened', grade: 'unresolved_question', detail: null,
+            sourceUrl: null, missing: ['Collector did not run.'],
+          }],
+          constraints: [],
+        }, 'No environmental collector ran.'),
+      }),
+    }));
+    const result = await executors.environmental_terrain(ctx());
+    expect((result.result as { screenedLaneCount: number }).screenedLaneCount).toBe(0);
   });
 
   it('prices from an empty comp set as a stated "not priceable", not a failure', async () => {

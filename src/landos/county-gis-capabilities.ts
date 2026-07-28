@@ -105,6 +105,12 @@ export const COUNTY_GIS_CAPABILITIES: CountyGisCapability[] = [
       // unverified and the frontage lane labels it that way).
       roads: 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Transportation/MapServer/8',
     },
+    // Linked by the official Pickens County assessor site. qPublic's
+    // Cloudflare boundary requires a real browser, so these are browser
+    // destinations rather than structured ArcGIS data adapters.
+    mapViewerUrl: 'https://qpublic.schneidercorp.com/Application.aspx?AppID=927&LayerID=18058&PageID=8074&PageTypeID=1',
+    assessorSearchUrl: 'https://qpublic.schneidercorp.com/Application.aspx?AppID=927&LayerID=18058&PageID=8075&PageTypeID=2',
+    recorderSearchUrl: 'https://www.pickensscrod.us/',
   },
 ];
 

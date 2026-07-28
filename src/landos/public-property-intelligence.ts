@@ -67,6 +67,10 @@ export interface PublicIntelligenceSubject {
   requestedApnAlternates?: string[];
   resolvedApn?: string;
   resolutionStatus: ResolutionStatus;
+  /** Exact parcel-level discovery evidence agrees, although an official parcel
+   * service may be unavailable. This allows independent screening lanes to run
+   * without upgrading the subject to official confirmation. */
+  discoveryUsable?: boolean;
   resolutionExplanation: string;
   parcelGeometry?: unknown;
   coordinates?: { lat: number; lng: number };
@@ -78,6 +82,7 @@ export interface ParcelIntelligenceGate {
   blocking: true;
   reasonCode:
     | 'parcel_confirmed'
+    | 'parcel_discovery_established'
     | 'apn_hard_conflict'
     | 'requested_apn_not_resolved'
     | 'parcel_identity_conflicted'
@@ -118,6 +123,14 @@ export function evaluatePublicIntelligenceGate(subject: PublicIntelligenceSubjec
       blocking: true,
       reasonCode: 'apn_hard_conflict',
       explanation: `The requested APN ${requestedRaw[0]} conflicts with resolved APN ${subject.resolvedApn}. No downstream property intelligence may run.`,
+    };
+  }
+  if (subject.resolutionStatus === 'provisional' && subject.discoveryUsable === true) {
+    return {
+      allowed: true,
+      blocking: true,
+      reasonCode: 'parcel_discovery_established',
+      explanation: subject.resolutionExplanation || 'The parcel is established for conditional discovery-stage screening.',
     };
   }
   if (subject.resolutionStatus !== 'confirmed') {
@@ -724,7 +737,10 @@ async function runTaskWithContract(
     attempt += 1;
     record = await runOneTask(task, boundedAdapter, subject, options);
   }
-  return applyContract(record, attempt);
+  // `attempts` means a collector was actually invoked. An unconnected task is
+  // still a precise source-coverage result, but it must never be presented as
+  // an attempted screen merely because the orchestration visited the task.
+  return applyContract(record, boundedAdapter ? attempt : 0);
 }
 
 async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

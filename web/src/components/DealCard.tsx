@@ -839,6 +839,46 @@ function CriticalFactChips({ facts }: { facts?: SpineCriticalFact[] }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+function currentCriticalFacts(
+  snapshot: PiSnapshot | null,
+  fallback?: SpineCriticalFact[],
+): SpineCriticalFact[] | undefined {
+  if (!(snapshot?.identity.state === 'provisional' && snapshot.identity.discoveryUsable)) {
+    return fallback;
+  }
+  const identity = snapshot.identity;
+  const basis = identity.discoveryBasis || identity.explanation;
+  const discovered = (key: string, label: string, value: string | null): SpineCriticalFact => ({
+    key,
+    label,
+    state: value ? 'needs_evidence' : 'absent',
+    ...(value ? { value } : {}),
+    detail: value
+      ? `${value}. Discovery-stage parcel evidence is consistent; official parcel confirmation remains outstanding. ${basis}`
+      : `${label} was not returned by the current parcel evidence.`,
+  });
+  return [
+    {
+      key: 'parcel_identity',
+      label: 'Discovery-stage parcel identity',
+      state: 'needs_evidence',
+      detail: basis,
+    },
+    discovered('owner', 'Owner', identity.owner),
+    discovered('apn', 'APN / parcel number', identity.apn),
+    discovered('acreage', 'Acreage', identity.acres == null ? null : `${identity.acres} ac`),
+    {
+      key: 'source_evidence',
+      label: 'Parcel evidence',
+      state: snapshot.evidence.length > 0 ? 'needs_evidence' : 'absent',
+      value: snapshot.evidence.length > 0 ? `${snapshot.evidence.length} retained item(s)` : undefined,
+      detail: snapshot.evidence.length > 0
+        ? `${snapshot.evidence.length} source artifact(s) support the discovery-stage subject; official confirmation remains outstanding.`
+        : 'No parcel evidence is retained for the current snapshot.',
+    },
+  ];
+}
+
 // PROPERTY INTELLIGENCE REPORT — the Deal Card Overview.
 //
 // The Overview is the primary Acquisitions workspace: ONE complete, professional
@@ -1783,9 +1823,11 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                 />
                 <HeaderField label="County / State" value={[piSnapshot?.identity.county ?? prop?.county, piSnapshot?.identity.state_ ?? prop?.state].filter(Boolean).join(', ')} />
               </div>
-              <CriticalFactChips facts={spine?.header?.criticalFacts} />
-              {spine?.header?.nextBestAction && (
-                <div class="text-[12px]"><span class="text-[var(--color-accent)] font-semibold">Next action:</span>{' '}<span class="text-[var(--color-text)]">{spine.header.nextBestAction}</span></div>
+              <CriticalFactChips facts={currentCriticalFacts(piSnapshot, spine?.header?.criticalFacts)} />
+              {(piSnapshot?.identity.discoveryUsable
+                ? piSnapshot.nextActions[0]
+                : spine?.header?.nextBestAction) && (
+                <div class="text-[12px]"><span class="text-[var(--color-accent)] font-semibold">Next action:</span>{' '}<span class="text-[var(--color-text)]">{piSnapshot?.identity.discoveryUsable ? piSnapshot.nextActions[0] : spine?.header?.nextBestAction}</span></div>
               )}
             </div>
             <div class="flex flex-wrap items-center gap-2">

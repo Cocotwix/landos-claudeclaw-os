@@ -21,6 +21,17 @@ import { listComps } from './comps.js';
 import { getLandosDb } from './db.js';
 import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvidenceItem, type SnapshotFact, type SnapshotIdentity } from './property-intelligence-snapshot.js';
 import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { reconcileDiscoveryIdentity } from './discovery-identity.js';
+import {
+  ACCESS_UTILITY_TASKS,
+  ENVIRONMENTAL_TASKS,
+  GOVERNMENT_RECORD_TASKS,
+  VISUAL_EVIDENCE_TASKS,
+  ZONING_TASKS,
+  countyRecordFactsFromPublicRun,
+  publicLaneExecution,
+  snapshotEvidenceFromPublicTasks,
+} from './property-intelligence-specialist-execution.js';
 import type {
   AccessUtilitiesContribution,
   ComparablesContribution,
@@ -66,9 +77,15 @@ export interface LiveCollectorDeps {
    */
   runPublicIntelligence: (dealCardId: number) => Promise<{ ok: boolean; error?: string }>;
   /** Zillow public land comps, already scoped to the subject market. */
-  captureZillowComps?: (input: { address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null; subjectAcres: number | null }) => Promise<LandMarketplaceResult>;
+  captureZillowComps?: (input: {
+    address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
+    apn: string | null; owner: string | null; lat: number | null; lng: number | null; subjectAcres: number | null;
+  }) => Promise<LandMarketplaceResult>;
   /** Redfin public land comps, already scoped to the subject market. */
-  captureRedfinComps?: (input: { address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null; subjectAcres: number | null }) => Promise<LandMarketplaceResult>;
+  captureRedfinComps?: (input: {
+    address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
+    apn: string | null; owner: string | null; lat: number | null; lng: number | null; subjectAcres: number | null;
+  }) => Promise<LandMarketplaceResult>;
   /** Market Matrix / Market Pulse context for the subject market. */
   captureMarketContext?: (dealCardId: number) => Promise<{ facts: SnapshotFact[]; summary: string }>;
   /**
@@ -105,23 +122,39 @@ function subjectCardId(deal: unknown): number | null {
 
 // ── Parcel identity ─────────────────────────────────────────────────────────
 
-function identityStateFrom(
-  record: OperatorPropertyRecord | null,
-  verified: boolean,
-  apnConflicts: string[],
-  hasApn: boolean,
-): SnapshotIdentity['state'] {
-  if (apnConflicts.length > 0) return 'conflicted';
-  if (verified && hasApn) return 'confirmed';
-  if (hasApn || record?.identity.apn) return 'provisional';
-  return 'unresolved';
-}
-
 export async function collectParcelIdentity(
   ctx: MissionContext,
   deps: LiveCollectorDeps,
 ): Promise<SpecialistOutcome<IdentityContribution>> {
   const now = deps.now ?? (() => new Date().toISOString());
+  const initialDeal = getDealCard(ctx.dealCardId);
+  if (!initialDeal) throw new Error(`Deal Card ${ctx.dealCardId} no longer exists.`);
+  const initialProperty = (initialDeal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
+  const initialCardId = subjectCardId(initialDeal);
+  let inspectionNote = '';
+
+  // Capture the parcel-level LandPortal subject before reconciliation. This
+  // makes its APN, jurisdiction, owner, acreage and visuals first-class
+  // discovery evidence instead of leaving them stranded in the comp lane.
+  if (initialCardId && deps.captureLandPortalInspection) {
+    try {
+      const capture = await deps.captureLandPortalInspection({
+        cardId: initialCardId,
+        searchKey: {
+          address: str(initialProperty.active_input_address) ?? str(initialProperty.address),
+          apn: str(initialProperty.apn),
+          county: str(initialProperty.county),
+          state: str(initialProperty.state),
+          city: str(initialProperty.city),
+          owner: str(initialProperty.owner),
+        },
+      });
+      if (!capture.ok) inspectionNote = ` LandPortal subject capture was limited (${capture.note}).`;
+    } catch (error) {
+      inspectionNote = ` LandPortal subject capture errored (${(error as Error)?.message ?? String(error)}).`;
+    }
+  }
+
   // Run the canonical public lane first so the persisted evidence this
   // specialist reads is current. A provider failure here is not fatal: the
   // already-persisted identity still answers.
@@ -138,6 +171,7 @@ export async function collectParcelIdentity(
   const cardId = subjectCardId(deal);
   const card = cardId ? getPropertyCard(cardId) : null;
   const property = (deal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
+  const inspection = cardId ? loadPropertyInspection(cardId) : null;
 
   const stored = new PublicIntelligenceStore().load(ctx.dealCardId);
   const run = stored?.run ?? null;
@@ -145,17 +179,61 @@ export async function collectParcelIdentity(
   const verified = String(card?.verification_status ?? property.verification_status ?? '') === 'verified_property'
     || property.verified === 1 || property.verified === true;
 
+  const coverage = officialParcelSourceCoverage({
+    address: str(property.active_input_address) ?? str(property.address) ?? undefined,
+    county: str(property.county) ?? undefined,
+    state: str(property.state) ?? undefined,
+    apn: str(property.apn) ?? undefined,
+  });
+  const discovery = reconcileDiscoveryIdentity({
+    subject: {
+      address: str(property.active_input_address) ?? str(property.address),
+      city: str(property.city),
+      county: str(property.county),
+      state: str(property.state),
+      zip: str(property.zip),
+      apn: str(property.apn),
+      owner: str(property.owner),
+      acres: num(property.acres),
+    },
+    landPortal: inspection ? {
+      parcelUrl: inspection.parcelUrl,
+      parcelFacts: inspection.parcelFacts,
+      assetCount: inspection.assets.length,
+      sourceLabel: 'LandPortal authenticated parcel panel',
+      sourceNote: inspection.sources.find((item) => item.provider === 'LandPortal')?.note ?? null,
+    } : null,
+    official: {
+      status: verified ? 'matched' : 'unavailable',
+      source: str(property.verification_source) ?? (coverage.sources.join(', ') || 'Official public parcel lookup'),
+      sourceUrl: null,
+      note: verified
+        ? 'The persisted property card retains the accepted official parcel match.'
+        : `${coverage.reason}${inspectionNote}`,
+      parcel: verified ? {
+        address: str(property.active_input_address) ?? str(property.address),
+        city: str(property.city),
+        county: str(property.county),
+        state: str(property.state),
+        zip: str(property.zip),
+        apn: str(property.apn),
+        owner: str(property.owner),
+        acres: num(property.acres),
+      } : null,
+    },
+  });
+
   const record = buildOperatorPropertyRecord(run, {
-    situsAddress: str(property.active_input_address) ?? str(property.address) ?? '',
-    city: str(property.city),
-    county: str(property.county),
-    state: str(property.state),
-    apn: str(property.apn),
-    owner: str(property.owner),
-    assessedAcres: num(property.acres),
-    coordinates: num(property.lat) != null && property.lng != null
+    situsAddress: str(discovery.patch.address) ?? str(property.active_input_address) ?? str(property.address) ?? '',
+    city: str(discovery.patch.city) ?? str(property.city),
+    county: str(discovery.patch.county) ?? str(property.county),
+    state: str(discovery.patch.state) ?? str(property.state),
+    apn: str(discovery.patch.apn) ?? str(property.apn),
+    owner: str(discovery.patch.owner) ?? str(property.owner),
+    assessedAcres: num(discovery.patch.acres) ?? num(property.acres),
+    coordinates: discovery.patch.coordinates ?? (num(property.lat) != null && property.lng != null
       ? { lat: Number(property.lat), lng: Number(property.lng) }
-      : null,
+      : null),
     parcelVerified: !!verified,
     verificationSource: str(property.verification_source),
     compCount: 0,
@@ -170,6 +248,7 @@ export async function collectParcelIdentity(
   // never a conflict. Only genuinely distinct identifiers are.
   const apnSpellings = [
     str(property.apn),
+    str(discovery.patch.apn),
     record.identity.apn,
     str((run?.gate as { requestedApn?: string } | undefined)?.requestedApn),
   ].filter((value): value is string => value != null);
@@ -179,10 +258,13 @@ export async function collectParcelIdentity(
     : [];
 
   const apn = record.identity.apn ?? str(property.apn);
-  const state = identityStateFrom(record, !!verified, apnConflicts, !!apn);
+  const state = apnConflicts.length > 0 ? 'conflicted' : discovery.state;
 
   const identity: SnapshotIdentity = {
     state,
+    discoveryUsable: discovery.discoveryUsable && apnConflicts.length === 0,
+    discoveryBasis: discovery.discoveryBasis,
+    discoverySources: discovery.discoverySources,
     normalizedAddress: record.identity.situsAddress || str(property.address),
     county: record.identity.county,
     state_: record.identity.state,
@@ -195,9 +277,10 @@ export async function collectParcelIdentity(
     acreageBasis: record.identity.acreageBasis?.valuationBasis ?? record.identity.acreageBasis?.displayBasis ?? null,
     coordinates: record.identity.coordinates,
     hasParcelGeometry: !!record.identity.coordinates,
-    sourceConfidence: state === 'confirmed' ? 'high' : state === 'provisional' ? 'medium' : state === 'conflicted' ? 'low' : 'none',
+    sourceConfidence: discovery.confidence,
     conflicts: [
       ...apnConflicts,
+      ...discovery.conflicts,
       ...(record.identity.acreageConflict
         ? [`Acreage bases disagree: assessed ${record.identity.assessedAcres ?? '—'} ac vs mapped ${record.identity.mappedAcres ?? '—'} ac. The governing acreage is unresolved.`]
         : []),
@@ -208,7 +291,7 @@ export async function collectParcelIdentity(
       : state === 'conflicted'
         ? `Conflicting parcel evidence is attached to this Deal Card.${liveNote}`
         : state === 'provisional'
-          ? `A parcel identifier exists but has not been confirmed against an official record.${liveNote}`
+          ? `${discovery.discoveryBasis}${liveNote}${inspectionNote}`
           // An unresolved identity must say WHY it is unresolved. "No record
           // matched" reads as an answer about the parcel; a missing county or a
           // jurisdiction with no configured source is a LandOS coverage gap and
@@ -235,6 +318,22 @@ export async function collectParcelIdentity(
   push('jurisdiction', 'County and state', [identity.county, identity.state_].filter(Boolean).join(', ') || null);
   push('legal_description', 'Legal description', record.identity.legalDescription);
   push('land_use', 'Land use class', record.identity.landUseClass);
+  for (const item of discovery.evidence) {
+    const key = `discovery_${item.classification}_${item.field}`;
+    if (facts.some((fact) => fact.key === key || (fact.label.toLowerCase().includes(item.field) && fact.value === item.value))) continue;
+    facts.push({
+      key,
+      label: item.field.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      value: item.value,
+      grade: item.classification === 'official_record' ? 'confirmed_fact' : 'likely_indication',
+      source: item.source,
+      sourceUrl: item.sourceUrl,
+      retrievedAt: now(),
+      note: item.classification === 'marketplace_parcel_panel'
+        ? 'Parcel-level LandPortal subject evidence retained for discovery; not a deed, survey, title commitment, or official assessor confirmation.'
+        : null,
+    });
+  }
 
   const status: SpecialistOutcome<IdentityContribution>['status'] = state === 'confirmed'
     ? 'completed'
@@ -247,6 +346,8 @@ export async function collectParcelIdentity(
     summary: identity.explanation,
     data: {
       identity,
+      discoveryUsable: identity.discoveryUsable ?? false,
+      discoveryBasis: identity.discoveryBasis ?? null,
       facts,
       subjectMarket: {
         state: identity.state_,
@@ -265,6 +366,8 @@ export async function collectParcelIdentity(
 
 export async function collectGovernmentRecords(ctx: MissionContext): Promise<SpecialistOutcome<GovernmentRecordsContribution>> {
   const now = new Date().toISOString();
+  const publicRun = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
+  const execution = publicLaneExecution(publicRun, GOVERNMENT_RECORD_TASKS);
   let model = null as ReturnType<typeof readGovernmentRecordsForDeal>;
   try {
     synchronizeGovernmentRecordsForDeal({
@@ -280,8 +383,13 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
   if (!model?.snapshot) {
     return {
       status: 'blocked',
-      summary: 'No recorded-government snapshot exists for this parcel yet. Deed, tax and ownership evidence has not been retrieved.',
-      data: { records: [] },
+      summary: execution.summary,
+      data: {
+        records: countyRecordFactsFromPublicRun(publicRun),
+        collectorAttemptCount: execution.attemptedCount,
+        sourceLimitations: execution.limitations,
+      },
+      evidence: snapshotEvidenceFromPublicTasks(publicRun, GOVERNMENT_RECORD_TASKS),
     };
   }
 
@@ -323,6 +431,11 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
   for (const missing of analysis.missingInstruments) {
     records.push({ key: `missing_${records.length}`, label: 'Missing instrument', value: missing, grade: 'unavailable_public_record', source: 'County recorded government records', sourceUrl: null, retrievedAt: now, note: null });
   }
+  for (const fact of countyRecordFactsFromPublicRun(publicRun)) {
+    if (!records.some((record) => record.key === fact.key || (record.label === fact.label && record.value === fact.value))) {
+      records.push(fact);
+    }
+  }
 
   for (const artifact of model.artifacts.slice(0, 40)) {
     const view = artifact as unknown as Record<string, unknown>;
@@ -342,10 +455,20 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
   }
 
   const percent = model.snapshot.completeness.percent;
+  evidence.push(...snapshotEvidenceFromPublicTasks(publicRun, GOVERNMENT_RECORD_TASKS)
+    .filter((item) => !evidence.some((existing) => existing.id === item.id)));
+  const materialRecordCount = records.filter((record) =>
+    record.grade !== 'unresolved_question' && record.grade !== 'unavailable_public_record').length;
   return {
-    status: percent >= 80 ? 'completed' : 'partial',
-    summary: `Recorded-government screening ${percent}% complete across ${Object.keys(model.snapshot.completeness.domains).length} domains; ${artifactCount} official artifact(s) retained.${model.snapshot.completeness.missing.length ? ` Missing: ${model.snapshot.completeness.missing.join(', ')}.` : ''}`,
-    data: { records },
+    status: materialRecordCount > 0 && percent >= 80 ? 'completed' : materialRecordCount > 0 ? 'partial' : 'blocked',
+    summary: materialRecordCount > 0
+      ? `${materialRecordCount} subject-property government fact(s) retained; ${artifactCount} official artifact(s). ${execution.summary}`
+      : execution.summary,
+    data: {
+      records,
+      collectorAttemptCount: execution.attemptedCount,
+      sourceLimitations: execution.limitations,
+    },
     evidence,
   };
 }
@@ -354,6 +477,8 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
 
 export async function collectZoningLandUse(ctx: MissionContext): Promise<SpecialistOutcome<ZoningContribution>> {
   const now = new Date().toISOString();
+  const publicRun = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
+  const execution = publicLaneExecution(publicRun, ZONING_TASKS);
   try {
     await synchronizeZoningLandUseForDeal({
       dealCardId: ctx.dealCardId,
@@ -379,7 +504,10 @@ export async function collectZoningLandUse(ctx: MissionContext): Promise<Special
           missing: ['The governing zoning district and its minimum lot size are unknown.'],
         }],
         facts: [],
+        collectorAttemptCount: execution.attemptedCount,
+        sourceLimitations: execution.limitations,
       },
+      evidence: snapshotEvidenceFromPublicTasks(publicRun, ZONING_TASKS),
     };
   }
 
@@ -433,9 +561,17 @@ export async function collectZoningLandUse(ctx: MissionContext): Promise<Special
   return {
     status: officiallyConfirmed ? 'completed' : 'partial',
     summary: district
-      ? `Zoning ${district} (${analysis.baseZoning.status.replace(/_/g, ' ')}) under ${analysis.jurisdiction.controllingAuthorityName ?? 'an undetermined authority'}.`
-      : 'Zoning district could not be established from the official sources searched.',
-    data: { zoning: district, zoningKnown: !!district, items, facts },
+      ? `Zoning ${district} (${analysis.baseZoning.status.replace(/_/g, ' ')}) under ${analysis.jurisdiction.controllingAuthorityName ?? 'an undetermined authority'}. ${execution.summary}`
+      : execution.summary,
+    data: {
+      zoning: district,
+      zoningKnown: !!district,
+      items,
+      facts,
+      collectorAttemptCount: execution.attemptedCount,
+      sourceLimitations: execution.limitations,
+    },
+    evidence: snapshotEvidenceFromPublicTasks(publicRun, ZONING_TASKS),
   };
 }
 
@@ -487,16 +623,65 @@ function decisionCardToItem(card: { key: string; label: string; verdict: string;
 }
 
 export async function collectEnvironmentalTerrain(ctx: MissionContext): Promise<SpecialistOutcome<EnvironmentalContribution>> {
+  const publicRun = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
+  const execution = publicLaneExecution(publicRun, ENVIRONMENTAL_TASKS);
   const record = operatorRecordFor(ctx.dealCardId);
   if (!record) {
     return {
       status: 'blocked',
-      summary: 'No public screening run exists yet, so floodplain, wetlands, soils, slope and water features are unknown.',
-      data: { items: [], constraints: [] },
+      summary: execution.summary,
+      data: {
+        items: [],
+        constraints: [],
+        screenedLaneCount: execution.attemptedCount,
+        sourceLimitations: execution.limitations,
+      },
+      evidence: snapshotEvidenceFromPublicTasks(publicRun, ENVIRONMENTAL_TASKS),
     };
   }
   const cards = record.decisionCards.filter((card) => ENVIRONMENTAL_KEYS.includes(card.key));
   const items = cards.map(decisionCardToItem);
+  const deal = getDealCard(ctx.dealCardId);
+  const cardId = deal ? subjectCardId(deal) : null;
+  const inspection = cardId ? loadPropertyInspection(cardId) : null;
+  const lpFacts = inspection?.parcelFacts ?? {};
+  const lpFact = (...labels: string[]): string | null => {
+    for (const label of labels) {
+      const value = str(lpFacts[label]);
+      if (value && value !== '-') return value;
+    }
+    return null;
+  };
+  const replaceUnknown = (item: SnapshotDueDiligenceItem): void => {
+    const index = items.findIndex((candidate) => candidate.key === item.key);
+    if (index < 0) items.push(item);
+    else if (items[index].verdict === 'unknown') items[index] = item;
+  };
+  const flood = lpFact('FEMA Flood Zone', 'FEMA Coverage (%)');
+  if (flood) replaceUnknown({
+    key: 'flood', label: 'Flood screening',
+    verdict: /not in|^0(?:\.0+)?%?$/.test(flood.toLowerCase()) ? 'good' : 'caution',
+    headline: `LandPortal parcel panel reports ${flood}.`,
+    grade: 'likely_indication', detail: 'Retained parcel-level marketplace overlay; confirm against FEMA/public GIS before a binding decision.',
+    sourceUrl: inspection?.parcelUrl ?? null, missing: [],
+  });
+  const wetlands = lpFact('Wetlands Coverage (%)');
+  if (wetlands) replaceUnknown({
+    key: 'wetlands', label: 'Wetlands screening',
+    verdict: /^0(?:\.0+)?%?$/.test(wetlands) ? 'good' : 'caution',
+    headline: `LandPortal parcel panel reports ${wetlands}% wetlands coverage.`,
+    grade: 'likely_indication', detail: 'Retained parcel-level marketplace overlay; not an official wetlands determination.',
+    sourceUrl: inspection?.parcelUrl ?? null, missing: [],
+  });
+  const slope = lpFact('Slope Avg');
+  const buildable = lpFact('Buildability total (%)');
+  if (slope || buildable) replaceUnknown({
+    key: 'terrain', label: 'Terrain and buildability',
+    verdict: 'caution',
+    headline: [slope ? `${slope} average slope` : null, buildable ? `${buildable} buildability shown` : null].filter(Boolean).join('; '),
+    grade: 'likely_indication', detail: 'LandPortal terrain model retained for discovery sizing; field verification is still required.',
+    sourceUrl: inspection?.parcelUrl ?? null, missing: [],
+  });
   const constraints = items
     .filter((item) => item.verdict === 'risk' || item.verdict === 'caution')
     .map((item) => `${item.label}: ${item.headline}`);
@@ -505,23 +690,62 @@ export async function collectEnvironmentalTerrain(ctx: MissionContext): Promise<
   return {
     status: items.length === 0 ? 'blocked' : unknownCount > 0 ? 'partial' : 'completed',
     summary: items.length === 0
-      ? 'The public screening run produced no environmental findings.'
-      : `${items.length} environmental lane(s) screened; ${constraints.length} constraint(s) found${unknownCount ? `, ${unknownCount} lane(s) unknown` : ''}. ${record.septicOutlook.why}`,
-    data: { items, constraints },
+      ? execution.summary
+      : `${inspection?.parcelUrl ? 'The live LandPortal parcel collector supplied parcel-level environmental and terrain indications. ' : ''}${execution.attemptedCount} public source collector(s) ran; ${constraints.length} constraint(s) found${unknownCount ? `, ${unknownCount} conclusion(s) remain unknown` : ''}. ${execution.summary}`,
+    data: {
+      items,
+      constraints,
+      screenedLaneCount: execution.attemptedCount,
+      sourceLimitations: execution.limitations,
+    },
+    evidence: snapshotEvidenceFromPublicTasks(publicRun, ENVIRONMENTAL_TASKS),
   };
 }
 
 export async function collectAccessUtilities(ctx: MissionContext): Promise<SpecialistOutcome<AccessUtilitiesContribution>> {
+  const publicRun = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
+  const execution = publicLaneExecution(publicRun, ACCESS_UTILITY_TASKS);
   const record = operatorRecordFor(ctx.dealCardId);
   if (!record) {
     return {
       status: 'blocked',
-      summary: 'No public screening run exists yet, so legal access, road frontage and utility availability are unknown.',
-      data: { items: [], accessStatus: 'unknown', utilitiesKnown: false, utilitiesSummary: null },
+      summary: execution.summary,
+      data: {
+        items: [],
+        accessStatus: 'unknown',
+        utilitiesKnown: false,
+        utilitiesSummary: null,
+        collectorAttemptCount: execution.attemptedCount,
+        sourceLimitations: execution.limitations,
+      },
+      evidence: snapshotEvidenceFromPublicTasks(publicRun, ACCESS_UTILITY_TASKS),
     };
   }
   const cards = record.decisionCards.filter((card) => ACCESS_KEYS.includes(card.key));
   const items = cards.map(decisionCardToItem);
+  const deal = getDealCard(ctx.dealCardId);
+  const cardId = deal ? subjectCardId(deal) : null;
+  const inspection = cardId ? loadPropertyInspection(cardId) : null;
+  const frontage = str(inspection?.parcelFacts?.['Road Frontage']);
+  const landLocked = str(inspection?.parcelFacts?.['Land Locked']);
+  if (frontage || landLocked) {
+    const indication: SnapshotDueDiligenceItem = {
+      key: 'access',
+      label: 'Road frontage and apparent access',
+      verdict: 'caution',
+      headline: [
+        frontage ? `${frontage} frontage shown` : null,
+        landLocked ? `landlocked flag: ${landLocked}` : null,
+      ].filter(Boolean).join('; '),
+      grade: 'likely_indication',
+      detail: 'LandPortal parcel-panel indication only. Legal access still requires recorded-instrument review.',
+      sourceUrl: inspection?.parcelUrl ?? null,
+      missing: ['Recorded legal access has not been established.'],
+    };
+    const accessIndex = items.findIndex((item) => item.key === 'access');
+    if (accessIndex < 0) items.push(indication);
+    else if (items[accessIndex].verdict === 'unknown') items[accessIndex] = indication;
+  }
   const utilitiesCard = record.decisionCards.find((card) => card.key === 'utilities');
 
   // Legal access is a recorded-instrument question. Mapped road contact is
@@ -537,13 +761,16 @@ export async function collectAccessUtilities(ctx: MissionContext): Promise<Speci
 
   return {
     status: items.length === 0 ? 'blocked' : items.some((item) => item.verdict === 'unknown') ? 'partial' : 'completed',
-    summary: `${record.accessStatus.summary}${utilitiesCard ? ` Utilities: ${utilitiesCard.headline}` : ' Utility availability was not established.'}`,
+    summary: `${frontage || landLocked ? 'The live LandPortal parcel collector supplied frontage/access indications; legal access remains unverified. ' : ''}${record.accessStatus.summary}${utilitiesCard ? ` Utilities: ${utilitiesCard.headline}` : ' Utility availability was not established.'} ${execution.summary}`,
     data: {
       items,
-      accessStatus: record.accessStatus.status,
+      accessStatus: frontage || /no/i.test(landLocked ?? '') ? 'public_road_proximity' : record.accessStatus.status,
       utilitiesKnown: !!utilitiesCard && utilitiesCard.verdict !== 'unknown',
       utilitiesSummary: utilitiesCard?.headline ?? null,
+      collectorAttemptCount: execution.attemptedCount,
+      sourceLimitations: execution.limitations,
     },
+    evidence: snapshotEvidenceFromPublicTasks(publicRun, ACCESS_UTILITY_TASKS),
   };
 }
 
@@ -742,6 +969,10 @@ export async function collectComparables(
     county: ctx.identity?.identity.county ?? str(property.county),
     state,
     zip: str(property.zip),
+    apn: ctx.identity?.identity.apn ?? str(property.apn),
+    owner: ctx.identity?.identity.owner ?? str(property.owner),
+    lat: ctx.identity?.identity.coordinates?.lat ?? num(property.lat),
+    lng: ctx.identity?.identity.coordinates?.lng ?? num(property.lng),
     subjectAcres,
   };
 
@@ -898,6 +1129,9 @@ export async function collectEvidenceVisuals(ctx: MissionContext): Promise<Speci
 
   // Public screening evidence with retrievable source URLs.
   const run = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
+  for (const item of snapshotEvidenceFromPublicTasks(run, VISUAL_EVIDENCE_TASKS)) {
+    if (!evidence.some((existing) => existing.id === item.id)) evidence.push(item);
+  }
   for (const task of run?.tasks ?? []) {
     for (const item of task.evidence ?? []) {
       if (!item.sourceUrl) continue;

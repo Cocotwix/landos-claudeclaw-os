@@ -243,6 +243,24 @@ describe('lookupOfficialParcel — per-strategy resilience', () => {
     expect(result.attempted.every((a) => a.note.trim().length > 0)).toBe(true);
   });
 
+  it('reports an ArcGIS token requirement as a verified source limitation instead of a false no-match', async () => {
+    installFetch({
+      beaufort: () => okJson({ features: [] }),
+      scdotRoot: () => okJson({ error: { code: 499, message: 'Token Required' } }),
+    });
+    const lookup = await loadLookup();
+
+    const result = await lookup(scInput, TIMEOUT_MS, new AbortController().signal);
+
+    expect(result.status).toBe('unavailable');
+    expect(result.parcel).toBeNull();
+    expect(result.attempted[0]).toMatchObject({ status: 'no_match' });
+    expect(result.attempted[1]?.status).toBe('unavailable');
+    expect(result.attempted[1]?.source).toMatch(/South Carolina statewide parcel layer.*Beaufort/i);
+    expect(result.attempted[1].note).toMatch(/ArcGIS 499: authentication required/i);
+    expect(result.attempted[1].note).not.toMatch(/publishes no layer/i);
+  });
+
   it('returns no_match when every applicable strategy completes and none matches', async () => {
     installFetch({
       beaufort: () => okJson({ features: [] }),

@@ -12,6 +12,19 @@ describe('redfin URL + path helpers', () => {
     expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres', { sold: true })).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land,include=sold-1yr');
     expect(redfinLandFilterUrl('/city/23728/FL/Lehigh-Acres', { sold: true, dateWindowMonths: 24 })).toContain('include=sold-2yr');
   });
+
+  it('builds a usable parcel query when intake has APN/county/state but no city or ZIP', () => {
+    const queries = redfinSearchQueries({
+      address: '1488 Liberty Hwy',
+      apn: '4068-00-37-1227',
+      county: 'Pickens',
+      state: 'SC',
+      subjectAcres: 10.3,
+    });
+    expect(queries.some((query) => query.query === 'Pickens County, SC')).toBe(true);
+    expect(queries.some((query) => query.kind === 'parcel')).toBe(true);
+    expect(queries.find((query) => query.kind === 'parcel')?.query).toContain('4068-00-37-1227');
+  });
 });
 
 describe('normalizeRedfinListings', () => {

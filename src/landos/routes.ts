@@ -104,6 +104,7 @@ import {
   upsertPropertyCard,
 } from './property-card.js';
 import { captureAndPersistCardVisuals } from './visual-capture-workflow.js';
+import { reconcileDiscoveryIdentity } from './discovery-identity.js';
 import { resolveGoogleVisualEnv, VISUAL_SERVICES } from './providers/google-visual.js';
 import fs from 'fs';
 import path from 'path';
@@ -142,7 +143,7 @@ import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
 import type { SnapshotFact } from './property-intelligence-snapshot.js';
-import { jurisdictionLocalApnVariants } from './property-intelligence-snapshot.js';
+import { jurisdictionLocalApnVariants, presentPropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
 import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE } from './deal-intelligence-mission.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
@@ -840,6 +841,7 @@ function mappedAcresFromRun(run: PublicIntelligenceRun | null | undefined): numb
  */
 interface PublicCompLocation {
   address?: string; city?: string; state?: string; zip?: string; county?: string;
+  apn?: string; owner?: string;
   lat?: number; lng?: number; subjectAcres?: number | null;
 }
 
@@ -5803,16 +5805,47 @@ export function registerLandosRoutes(app: Hono): void {
       }
       const requestedApn = str(property.apn);
       const acresValue = Number(property.acres);
+      const propertyCardId = subjectCardId(deal);
+      const inspection = propertyCardId ? loadPropertyInspection(propertyCardId) : null;
+      const discovery = reconcileDiscoveryIdentity({
+        subject: {
+          address: str(property.active_input_address) ?? str(property.address),
+          city: str(property.city),
+          county: lookupCounty,
+          state: str(property.state),
+          zip: str(property.zip),
+          apn: requestedApn,
+          owner: str(property.owner),
+          acres: Number.isFinite(acresValue) && acresValue > 0 ? acresValue : null,
+        },
+        landPortal: inspection ? {
+          parcelUrl: inspection.parcelUrl,
+          parcelFacts: inspection.parcelFacts,
+          assetCount: inspection.assets.length,
+          sourceLabel: 'LandPortal authenticated parcel panel',
+        } : null,
+        official: {
+          status: lookup.status,
+          source: lookup.attempted[0]?.source ?? 'Official public parcel lookup',
+          note: lookup.attempted.map((attempt) => `${attempt.source}: ${attempt.note}`).join(' ') || 'The official parcel source did not return a usable result.',
+          parcel: null,
+        },
+      });
       const subject: PublicIntelligenceSubject = {
         rawInput,
-        normalizedAddress: str(property.address),
-        county: lookupCounty,
-        state: str(property.state),
-        zip: str(property.zip),
+        normalizedAddress: str(discovery.patch.address) ?? str(property.address),
+        county: str(discovery.patch.county) ?? lookupCounty,
+        state: str(discovery.patch.state) ?? str(property.state),
+        zip: str(discovery.patch.zip) ?? str(property.zip),
         requestedApn,
-        resolutionStatus: 'provisional',
-        resolutionExplanation: 'Official parcel lookup did not confirm the subject. Public screening and valuation remain blocked until exact parcel identity is established.',
-        assessedAcres: Number.isFinite(acresValue) && acresValue > 0 ? acresValue : undefined,
+        resolvedApn: discovery.discoveryUsable ? str(discovery.patch.apn) ?? requestedApn : undefined,
+        resolutionStatus: discovery.state,
+        discoveryUsable: discovery.discoveryUsable,
+        resolutionExplanation: discovery.discoveryBasis,
+        coordinates: discovery.patch.coordinates,
+        assessedAcres: Number(discovery.patch.acres) > 0
+          ? Number(discovery.patch.acres)
+          : Number.isFinite(acresValue) && acresValue > 0 ? acresValue : undefined,
       };
       const seedRegistry = compRegistryForDeal(id, {
         state: subject.state ?? null,
@@ -5839,7 +5872,9 @@ export function registerLandosRoutes(app: Hono): void {
         synchronizePropertySummaryForDeal({
           dealCardId: id,
           actor: 'public-property-intelligence',
-          changeReason: 'Recorded a blocked Property Summary because official parcel identity remains unresolved.',
+          changeReason: discovery.discoveryUsable
+            ? 'Recorded a conditional discovery-stage Property Summary after exact LandPortal subject reconciliation; official coverage remains disclosed.'
+            : 'Recorded a blocked Property Summary because parcel identity remains unresolved.',
         });
       } catch (error) {
         logger.warn({ err: error, dealCardId: id }, 'property_summary_blocked_sync_failed');
@@ -5850,8 +5885,10 @@ export function registerLandosRoutes(app: Hono): void {
           attachCardActivity({
             cardId,
             agentId: 'public-property-intelligence',
-            kind: 'public_screening_blocked',
-            summary: 'Property Intelligence retained the completed provider outcomes and comp registry, but official parcel identity is still unconfirmed. Public screening and valuation remain blocked.',
+            kind: discovery.discoveryUsable ? 'public_screening' : 'public_screening_blocked',
+            summary: discovery.discoveryUsable
+              ? 'Property Intelligence ran independent discovery-stage lanes against the exact LandPortal-correlated subject. Official parcel coverage remains a disclosed limitation.'
+              : 'Property Intelligence retained provider outcomes, but the subject parcel remains unresolved.',
             ref: JSON.stringify({ status: orchestratorRun.status, contractVersion: orchestratorRun.contractVersion }),
           });
         } catch { /* the blocked orchestration remains authoritative */ }
@@ -6027,6 +6064,10 @@ export function registerLandosRoutes(app: Hono): void {
         county: input.county ?? undefined,
         state: input.state ?? undefined,
         zip: input.zip ?? undefined,
+        apn: input.apn ?? undefined,
+        owner: input.owner ?? undefined,
+        lat: input.lat ?? undefined,
+        lng: input.lng ?? undefined,
       });
       // The public active board and recently-sold board are distinct Zillow
       // surfaces. Read both explicitly; never relabel an active/unknown row as
@@ -6070,6 +6111,10 @@ export function registerLandosRoutes(app: Hono): void {
         county: input.county ?? undefined,
         state: input.state ?? undefined,
         zip: input.zip ?? undefined,
+        apn: input.apn ?? undefined,
+        owner: input.owner ?? undefined,
+        lat: input.lat ?? undefined,
+        lng: input.lng ?? undefined,
       });
       const soldResult = await fetchRedfinLandComps({
         ...market,
@@ -6132,11 +6177,16 @@ export function registerLandosRoutes(app: Hono): void {
           city: searchKey.city ?? undefined,
           owner: searchKey.owner ?? undefined,
         },
-        mode: 'parcel_fact',
+        // Discovery still attempts the practical county assessor/recorder
+        // source after LandPortal establishes the subject. qPublic is
+        // browser-only in Pickens County; skipping it when LP already supplied
+        // core facts was the bootstrap defect that left official coverage
+        // permanently "not attempted."
+        mode: 'deep_record',
         timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
       }, {
         landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
-        countyRecordsBrowser: undefined,
+        countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
         googleVisualConfigured: false,
       }));
       persistPropertyInspection(cardId, result.inspection);
@@ -6300,7 +6350,7 @@ export function registerLandosRoutes(app: Hono): void {
     const latest = propertyIntelligenceStore.latestRun(dealCardId);
     const progressRun = latest ?? primary;
     return {
-      snapshot: primary?.snapshot ?? null,
+      snapshot: primary?.snapshot ? presentPropertyIntelligenceSnapshot(primary.snapshot) : null,
       // In-flight progressive content: assembled at child-settle WRITE time and
       // stored on the run row; this read only serves what is stored (GET does no
       // provider work and no reassembly). Non-null only while the run is

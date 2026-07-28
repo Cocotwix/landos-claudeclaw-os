@@ -81,6 +81,13 @@ export interface OfficialParcelLookupResult {
   attempted: OfficialParcelAttempt[];
 }
 
+export interface PracticalOfficialParcelSource {
+  source: string;
+  url: string;
+  mode: 'structured' | 'browser';
+  note: string;
+}
+
 const OFFICIAL_LOOKUP_SOURCE = 'Official public parcel lookup';
 const NO_ADAPTER_NOTE = 'No tested public parcel adapter is available for this jurisdiction.';
 
@@ -194,6 +201,47 @@ export function officialParcelSourceCoverage(
     sources,
     reason: `No tested official parcel source is configured for ${input.county} County, ${state}${input.apn ? '' : ', and no APN was supplied'}. This is a missing LandOS source configuration, NOT evidence that the parcel does not exist.`,
   };
+}
+
+/**
+ * Public destinations that can practically be attempted for the requested
+ * jurisdiction. This is source routing, not parcel evidence: returning a URL
+ * never means the parcel matched. Browser-only assessor systems remain explicit
+ * because Cloudflare or interactive forms can make them unavailable to the
+ * structured HTTP adapter while they are still usable by the county browser.
+ */
+export function practicalOfficialParcelSources(
+  input: Pick<ParsedIntakeFields, 'county' | 'state'>,
+): PracticalOfficialParcelSource[] {
+  const sources: PracticalOfficialParcelSource[] = [];
+  for (const strategy of applicableParcelStrategies(input, 1)) {
+    if (!/South Carolina statewide parcel layer/i.test(strategy.source)) continue;
+    sources.push({
+      source: strategy.source,
+      url: SC_PARCELS,
+      mode: 'structured',
+      note: 'Structured official parcel adapter; a runtime attempt is required before it can establish any fact.',
+    });
+  }
+  const capability = findCountyGis(input.county, input.state);
+  if (capability?.assessorSearchUrl) {
+    sources.push({
+      source: `${capability.countyLabel} Assessor property search`,
+      url: capability.assessorSearchUrl,
+      mode: 'browser',
+      note: 'Official assessor search requiring the public browser workflow; the destination alone is not parcel evidence.',
+    });
+  }
+  if (capability?.mapViewerUrl && capability.mapViewerUrl !== capability.assessorSearchUrl) {
+    sources.push({
+      source: `${capability.countyLabel} parcel map`,
+      url: capability.mapViewerUrl,
+      mode: 'browser',
+      note: 'Official parcel-map search requiring the public browser workflow; the destination alone is not parcel evidence.',
+    });
+  }
+  return sources.filter((source, index, all) =>
+    all.findIndex((candidate) => candidate.url === source.url) === index);
 }
 
 function cancelledLookup(attempted: OfficialParcelAttempt[], remaining: number): OfficialParcelLookupResult {
@@ -1435,7 +1483,11 @@ const scFieldCache = new Map<number, string[]>();
 
 async function scdotCountyLayerId(county: string, timeoutMs: number, signal?: AbortSignal): Promise<number | null> {
   if (!scLayerIndex) {
-    const root = await json<{ layers?: Array<{ id: number; name: string }> }>(`${SC_PARCELS}?f=json`, timeoutMs, signal);
+    const root = await json<{ layers?: Array<{ id: number; name: string }>; error?: { code?: number; message?: string } }>(`${SC_PARCELS}?f=json`, timeoutMs, signal);
+    if (root.error) {
+      const detail = root.error.code === 499 ? 'authentication required' : (root.error.message ?? 'service unavailable');
+      throw new Error(`SCDOT parcel catalog ArcGIS ${root.error.code ?? 'error'}: ${detail}.`);
+    }
     scLayerIndex = new Map((root.layers ?? []).map((layer) => [layer.name.trim().toLowerCase(), layer.id]));
   }
   const key = county.replace(/\s+county$/i, '').trim().toLowerCase();
@@ -1445,7 +1497,11 @@ async function scdotCountyLayerId(county: string, timeoutMs: number, signal?: Ab
 async function scdotLayerFields(layerId: number, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
   const cached = scFieldCache.get(layerId);
   if (cached) return cached;
-  const meta = await json<{ fields?: Array<{ name: string }> }>(`${SC_PARCELS}/${layerId}?f=json`, timeoutMs, signal);
+  const meta = await json<{ fields?: Array<{ name: string }>; error?: { code?: number; message?: string } }>(`${SC_PARCELS}/${layerId}?f=json`, timeoutMs, signal);
+  if (meta.error) {
+    const detail = meta.error.code === 499 ? 'authentication required' : (meta.error.message ?? 'service unavailable');
+    throw new Error(`SCDOT parcel layer ArcGIS ${meta.error.code ?? 'error'}: ${detail}.`);
+  }
   const fields = (meta.fields ?? []).map((f) => f.name);
   scFieldCache.set(layerId, fields);
   return fields;
@@ -1478,8 +1534,11 @@ async function scdotLookup(
     return { parcel: null, status: 'unavailable', note: 'The county layer publishes no recognizable parcel-id or situs-address field.' };
   }
   const layerUrl = `${SC_PARCELS}/${layerId}`;
-  const tryWhere = async (where: string): Promise<ArcFeature[]> =>
-    (await json<Arc>(query(layerUrl, where, true), timeoutMs, signal)).features ?? [];
+  const tryWhere = async (where: string): Promise<ArcFeature[]> => {
+    const result = await json<Arc>(query(layerUrl, where, true), timeoutMs, signal);
+    if (result.error) throw new Error(`SCDOT parcel query: ${result.error.message ?? 'service unavailable'}.`);
+    return result.features ?? [];
+  };
 
   let feature: ArcFeature | null = null;
   let matchedBy = '';

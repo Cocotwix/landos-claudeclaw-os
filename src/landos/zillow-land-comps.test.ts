@@ -6,6 +6,19 @@ describe('zillowLandUrl', () => {
     expect(zillowLandUrl('LEHIGH ACRES', 'FL')).toBe('https://www.zillow.com/lehigh-acres-fl/land/');
     expect(zillowLandUrl('Fort Myers', 'fl')).toBe('https://www.zillow.com/fort-myers-fl/land/');
   });
+
+  it('builds a usable parcel route when intake has APN/county/state but no city or ZIP', () => {
+    const routes = zillowSearchRoutes({
+      address: '1488 Liberty Hwy',
+      apn: '4068-00-37-1227',
+      county: 'Pickens',
+      state: 'SC',
+      subjectAcres: 10.3,
+    });
+    expect(routes.some((route) => route.label === 'Pickens County, SC')).toBe(true);
+    expect(routes.some((route) => route.kind === 'parcel')).toBe(true);
+    expect(routes[0]?.url).toContain('zillow.com');
+  });
 });
 
 describe('normalizeZillowListings', () => {

@@ -96,6 +96,10 @@ export interface PiSnapshot {
     coordinates: { lat: number; lng: number } | null;
     hasParcelGeometry: boolean;
     sourceConfidence: 'high' | 'medium' | 'low' | 'none';
+    /** True when consistent parcel evidence supports discovery-stage work even
+     * though the practical official source is unavailable. */
+    discoveryUsable?: boolean;
+    discoveryBasis?: string | null;
     conflicts: string[];
     explanation: string;
   };
@@ -433,6 +437,45 @@ function Bullets({ rows, tone }: { rows: string[]; tone?: string }) {
   );
 }
 
+function conciseUnique(rows: Array<string | null | undefined>, limit: number): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of rows) {
+    const value = raw?.trim();
+    if (!value) continue;
+    const key = value
+      .toLowerCase()
+      .replace(/^[^:]{1,72}:\s+(?:partial result\s+[—-]\s+|blocked\s+[—-]\s+)?/u, '')
+      .replace(/\s+/gu, ' ')
+      .replace(/[.?!]+$/gu, '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function materialLimitations(snapshot: PiSnapshot): string[] {
+  const diligence = snapshot.dueDiligence
+    .filter((item) => item.verdict === 'risk' || item.verdict === 'unknown')
+    .map((item) => `${item.label}: ${item.headline}`);
+  return conciseUnique([
+    ...snapshot.headline.topRisks,
+    ...snapshot.blockers,
+    ...snapshot.valuation.materialGaps,
+    ...diligence,
+  ], 6);
+}
+
+function conciseNextActions(snapshot: PiSnapshot): string[] {
+  return conciseUnique([
+    ...snapshot.nextActions,
+    snapshot.valuation.nextActionToPrice,
+    ...(snapshot.recommendation.nextConfirmations ?? []),
+  ], 4);
+}
+
 const money = (value: number | null | undefined): string =>
   typeof value === 'number' && Number.isFinite(value) ? `$${Math.round(value).toLocaleString()}` : '—';
 
@@ -588,22 +631,41 @@ export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntellige
           </div>
           {run.error && <div class="mt-1 text-[11px] text-rose-400">{run.error}</div>}
 
-          <div data-testid="pi-specialists" class="mt-2 space-y-1">
-            {specialists.map((specialist) => (
-              <div key={specialist.id} data-testid={`pi-specialist-${specialist.id}`} class="flex flex-wrap items-start gap-2 rounded border border-[var(--color-border)] px-2 py-1">
-                <Tag tone={STATUS_TONE[specialist.status]}>{specialist.status}</Tag>
-                <span class="text-[11px] font-semibold text-[var(--color-text)]">{specialist.label}</span>
-                {specialist.role === 'supporting' && <Tag tone="border-zinc-500/40 text-zinc-400">supporting</Tag>}
-                {specialist.failureCategory && <Tag tone={STATUS_TONE.failed}>{specialist.failureCategory}</Tag>}
-                <span class="min-w-0 flex-1 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
-                  {specialist.failureMessage ?? specialist.summary}
-                </span>
-                {specialist.durationMs != null && (
-                  <span class="shrink-0 text-[10px] text-[var(--color-text-faint)]">{(specialist.durationMs / 1000).toFixed(1)}s</span>
-                )}
+          {(running || launching) ? (
+            <div data-testid="pi-specialists" class="mt-2 space-y-1">
+              {specialists.map((specialist) => (
+                <div key={specialist.id} data-testid={`pi-specialist-${specialist.id}`} class="flex flex-wrap items-start gap-2 rounded border border-[var(--color-border)] px-2 py-1">
+                  <Tag tone={STATUS_TONE[specialist.status]}>{specialist.status}</Tag>
+                  <span class="text-[11px] font-semibold text-[var(--color-text)]">{specialist.label}</span>
+                  {specialist.role === 'supporting' && <Tag tone="border-zinc-500/40 text-zinc-400">supporting</Tag>}
+                  {specialist.failureCategory && <Tag tone={STATUS_TONE.failed}>{specialist.failureCategory}</Tag>}
+                  <span class="min-w-0 flex-1 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+                    {specialist.failureMessage ?? specialist.summary}
+                  </span>
+                  {specialist.durationMs != null && (
+                    <span class="shrink-0 text-[10px] text-[var(--color-text-faint)]">{(specialist.durationMs / 1000).toFixed(1)}s</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <details data-testid="pi-specialists" class="mt-2 rounded border border-[var(--color-border)] px-2 py-1.5">
+              <summary class="cursor-pointer text-[11px] font-semibold text-[var(--color-text-muted)]">
+                Specialist evidence and source limitations
+              </summary>
+              <div class="mt-2 space-y-1">
+                {specialists.map((specialist) => (
+                  <div key={specialist.id} data-testid={`pi-specialist-${specialist.id}`} class="flex flex-wrap items-start gap-2 rounded border border-[var(--color-border)] px-2 py-1">
+                    <Tag tone={STATUS_TONE[specialist.status]}>{specialist.status}</Tag>
+                    <span class="text-[11px] font-semibold text-[var(--color-text)]">{specialist.label}</span>
+                    <span class="min-w-0 flex-1 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+                      {specialist.failureMessage ?? specialist.summary}
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </details>
+          )}
         </div>
       )}
       {!run && !running && (
@@ -612,7 +674,14 @@ export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntellige
         </div>
       )}
 
-      <ParentMissionPanel mission={view?.mission ?? null} />
+      {(running || launching) ? (
+        <ParentMissionPanel mission={view?.mission ?? null} />
+      ) : view?.mission ? (
+        <details class="mt-2">
+          <summary class="cursor-pointer text-[10.5px] text-[var(--color-text-faint)]">Parent mission execution details</summary>
+          <ParentMissionPanel mission={view.mission} />
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -649,6 +718,8 @@ export function PropertyIntelligenceHistory({ view }: { view: PropertyIntelligen
 export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapshot | null }) {
   if (!snapshot) return <NoSnapshot label="this property" />;
   const { identity, headline, recommendation, valuation } = snapshot;
+  const limitations = materialLimitations(snapshot);
+  const nextActions = conciseNextActions(snapshot);
   return (
     <div data-testid="pi-overview" class="space-y-3">
       <PreliminaryNotice snapshot={snapshot} />
@@ -691,8 +762,8 @@ export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapsho
         )}
       </Card>
 
-      <Card title="Key opportunity">
-        <div class="text-[11px] leading-relaxed text-[var(--color-text)]">{headline.keyOpportunity}</div>
+      <Card title="Mission summary">
+        <div data-testid="pi-mission-summary" class="text-[11px] leading-relaxed text-[var(--color-text)]">{headline.keyOpportunity}</div>
         {recommendation.preferredStrategy && (
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <Tag tone={APPLICABILITY_TONE.applicable}>{recommendation.preferredStrategy}</Tag>
@@ -702,23 +773,14 @@ export function PropertyIntelligenceOverview({ snapshot }: { snapshot: PiSnapsho
         )}
       </Card>
 
-      <div class="grid gap-3 lg:grid-cols-3">
-        <Card title="Top risks">
-          {snapshot.headline.topRisks.length ? <Bullets rows={snapshot.headline.topRisks} tone="text-rose-300" /> : <Empty text="No mapped risk was found in the lanes that were screened. Unscreened lanes are listed under missing information." />}
+      <div class="grid gap-3 lg:grid-cols-2">
+        <Card title="Risks and limitations">
+          {limitations.length ? <Bullets rows={limitations} tone="text-amber-300" /> : <Empty text="No material risk was found in the lanes that ran. Source-specific details remain available in the evidence drill-down." />}
         </Card>
-        <Card title="Blockers">
-          {snapshot.blockers.length ? <Bullets rows={snapshot.blockers} tone="text-amber-300" /> : <Empty text="No blocker is open." />}
-        </Card>
-        <Card title="Next actions">
-          {snapshot.nextActions.length ? <Bullets rows={snapshot.nextActions} /> : <Empty text="No next action is outstanding." />}
+        <Card title="Next action">
+          {nextActions.length ? <Bullets rows={nextActions} /> : <Empty text="No material next action is outstanding." />}
         </Card>
       </div>
-
-      {snapshot.missingInformation.length > 0 && (
-        <Card title="Missing information" right={<Tag tone={STATUS_TONE.partial}>{snapshot.missingInformation.length}</Tag>}>
-          <Bullets rows={snapshot.missingInformation} tone="text-amber-300" />
-        </Card>
-      )}
     </div>
   );
 }

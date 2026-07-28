@@ -104,7 +104,8 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
   it('projects canonical identity into the owner header and keeps visuals and seller identity separate', () => {
     expect(SRC).toMatch(/<HeaderField label="Owner of record" value=\{piSnapshot\?\.identity\.owner \?\? prop\?\.owner\}/);
     expect(SRC).toMatch(/<HeaderField label="APN \/ Parcel ID" value=\{piSnapshot\?\.identity\.apn \?\? prop\?\.apn\}/);
-    expect(SRC).toMatch(/<HeaderField label="Acreage" value=\{piSnapshot\?\.identity\.acres/);
+    expect(SRC).toMatch(/activeTab === 'property'[\s\S]*?<PropertyIntelligenceProperty snapshot=\{piSnapshot\}/);
+    expect(PI_SRC).toMatch(/<Field label="Acreage" value=\{identity\.acres == null \? '—' : `\$\{identity\.acres\.toFixed\(2\)\} ac`\}/);
     expect(SRC).toMatch(/const ownerName = piSnapshot\?\.identity\.owner \?\? prop\?\.owner \?\? ''/);
     expect(SRC).toMatch(/<div[^>]*>Lead \/ contact<\/div>/);
     expect(PI_SRC).toMatch(/data-testid="pi-visuals"/);

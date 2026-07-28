@@ -5,6 +5,7 @@ import {
   initialSpecialistRecords,
   joinPropertyIntelligence,
   normalizeApn,
+  presentPropertyIntelligenceSnapshot,
   type SnapshotIdentity,
   type SnapshotJoinInput,
   type SnapshotSpecialistRecord,
@@ -143,6 +144,62 @@ describe('joinPropertyIntelligence', () => {
     expect(snapshot.status).toBe('complete');
     expect(snapshot.headline.confidence).toBe('high');
     expect(snapshot.missingInformation).toEqual([]);
+  });
+
+  it('keeps discovery-usable provisional identity actionable without overstating official confirmation', () => {
+    const snapshot = joinPropertyIntelligence(joinInput({
+      identity: {
+        ...CONFIRMED_IDENTITY,
+        state: 'provisional',
+        discoveryUsable: true,
+        discoveryBasis:
+          'Supplied APN and authenticated LandPortal parcel evidence consistently identify the subject.',
+        sourceConfidence: 'medium',
+        explanation:
+          'Discovery-stage identity is usable, while official county confirmation remains outstanding.',
+      },
+    }));
+
+    expect(snapshot.headline.keyOpportunity).toContain('Quick Flip');
+    expect(snapshot.headline.keyOpportunity).not.toContain('No opportunity');
+    expect(snapshot.nextActions).toEqual(
+      expect.arrayContaining([expect.stringContaining('binding offer or closing')]),
+    );
+    expect(snapshot.nextActions.join(' ')).not.toContain(
+      'before relying on any parcel-specific conclusion',
+    );
+  });
+
+  it('presents a persisted snapshot through the current join policy without changing run evidence', () => {
+    const current = joinPropertyIntelligence(joinInput({
+      identity: {
+        ...CONFIRMED_IDENTITY,
+        state: 'provisional',
+        discoveryUsable: true,
+        sourceConfidence: 'medium',
+      },
+    }));
+    const stored = {
+      ...current,
+      missionId: 'mission_history_1',
+      browserCleanup: { before: 4, after: 3, closed: 1, note: 'Owned page closed.' },
+      headline: {
+        ...current.headline,
+        keyOpportunity: 'No opportunity can be stated until the subject parcel is identified against an official record.',
+      },
+      nextActions: [
+        'Resolve parcel identity against the official county/state parcel layer before relying on any parcel-specific conclusion.',
+      ],
+    };
+
+    const presented = presentPropertyIntelligenceSnapshot(stored);
+
+    expect(presented.headline.keyOpportunity).toContain('Quick Flip');
+    expect(presented.nextActions.join(' ')).toContain('binding offer or closing');
+    expect(presented.runId).toBe(stored.runId);
+    expect(presented.evidence).toBe(stored.evidence);
+    expect(presented.missionId).toBe('mission_history_1');
+    expect(presented.browserCleanup).toEqual(stored.browserCleanup);
   });
 
   it('never claims completeness when a required specialist failed', () => {

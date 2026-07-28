@@ -606,15 +606,30 @@ const median = (values: number[]): number => {
 export function valuationFromWorkingSet(
   subject: CompSelectionSubject,
   set: CompWorkingSet,
-  context: { constraints?: string[]; hardRisks?: string[] } = {},
+  context: {
+    constraints?: string[];
+    hardRisks?: string[];
+    identityState?: 'confirmed' | 'provisional' | 'conflicted' | 'unresolved';
+    discoveryIdentityUsable?: boolean;
+    identityBasis?: string | null;
+  } = {},
 ): SnapshotValuation {
   const acres = subject.acres != null && subject.acres > 0 ? subject.acres : null;
+  const conditionalIdentity = context.identityState === 'provisional'
+    && context.discoveryIdentityUsable === true;
   const ppaOf = (comps: SnapshotComp[]): number[] => comps
     .map((comp) => comp.pricePerAcre)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
 
   const uncertainty: string[] = [];
   const materialGaps: string[] = [];
+  if (conditionalIdentity) {
+    uncertainty.push(
+      `Conditional discovery-stage identity: ${context.identityBasis?.trim()
+        || 'the supplied parcel identifiers and retained parcel-provider evidence consistently identify one subject, but official parcel-source coverage is unavailable'}.`,
+    );
+    materialGaps.push('Official parcel-source coverage remains unavailable; confirm the subject before a binding offer or closing decision.');
+  }
   if (acres == null) materialGaps.push('The subject acreage is unknown, so no per-acre conclusion can be scaled to this parcel.');
   if (set.duplicatesRemoved > 0) uncertainty.push(`${set.duplicatesRemoved} duplicate row(s) across providers were merged into single properties before valuing.`);
 
@@ -646,16 +661,17 @@ export function valuationFromWorkingSet(
         : ['No mapped physical constraint adjustment was applied.'];
       const baseConfidence: SnapshotValuation['confidence'] =
         set.sold.length >= 4 ? 'high' : set.sold.length >= 2 ? 'medium' : 'low';
-      const confidence: SnapshotValuation['confidence'] = context.hardRisks?.length
+      const evidenceConfidence: SnapshotValuation['confidence'] = context.hardRisks?.length
         ? baseConfidence === 'high' ? 'medium' : 'low'
         : baseConfidence;
+      const confidence: SnapshotValuation['confidence'] = conditionalIdentity ? 'low' : evidenceConfidence;
       return {
         priceable: true,
         range: { low: round(low * acres), high: round(high * acres) },
         pricePerAcreRange: { low: Math.round(low), high: Math.round(high) },
         likelyRetail: { low: round(adjustedMid * acres), high: round(high * acres) },
         dispositionRange: { low: round(low * acres * 0.7), high: round(adjustedMid * acres * 0.85) },
-        basis: `${set.sold.length} closed vacant-land sale(s) inside the subject's comparable acreage band, from ${sources}, at $${Math.round(low).toLocaleString()}–$${Math.round(high).toLocaleString()} per acre applied to ${acres.toFixed(2)} acres.`,
+        basis: `${conditionalIdentity ? 'Conditional discovery-stage valuation. ' : ''}${set.sold.length} closed vacant-land sale(s) inside the subject's comparable acreage band, from ${sources}, at $${Math.round(low).toLocaleString()}–$${Math.round(high).toLocaleString()} per acre applied to ${acres.toFixed(2)} acres.`,
         primaryBasis: `Closed sales: ${set.sold.map((comp) => `${comp.address ?? comp.source} ${comp.acres != null ? `${comp.acres.toFixed(2)}ac` : ''} @ $${(comp.pricePerAcre ?? 0).toLocaleString()}/ac`).join('; ')}.${thinWidening ? ` The supported range is widened ${Math.round(thinWidening * 100)}% for thin-market uncertainty.` : ''}`,
         workingValue: round(adjustedMid * acres),
         adjustments,

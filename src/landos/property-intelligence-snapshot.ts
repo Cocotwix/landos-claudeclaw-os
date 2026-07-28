@@ -76,6 +76,11 @@ export interface SnapshotFact {
 
 export interface SnapshotIdentity {
   state: IdentityState;
+  /** Discovery may proceed when independent parcel-level evidence agrees even
+   * when the official parcel service is unavailable. Never true for conflicts. */
+  discoveryUsable?: boolean;
+  discoveryBasis?: string | null;
+  discoverySources?: string[];
   normalizedAddress: string | null;
   county: string | null;
   state_: string | null;
@@ -588,7 +593,9 @@ export function joinPropertyIntelligence(input: SnapshotJoinInput): PropertyInte
 
   const nextActions: string[] = [];
   if (identity.state !== 'confirmed') {
-    nextActions.push('Resolve parcel identity against the official county/state parcel layer before relying on any parcel-specific conclusion.');
+    nextActions.push(identity.discoveryUsable
+      ? 'Confirm the subject against the official parcel record before a binding offer or closing decision.'
+      : 'Resolve parcel identity against the official county/state parcel layer before relying on any parcel-specific conclusion.');
   }
   if (!input.valuation.priceable && input.valuation.nextActionToPrice) {
     nextActions.push(input.valuation.nextActionToPrice);
@@ -613,9 +620,11 @@ export function joinPropertyIntelligence(input: SnapshotJoinInput): PropertyInte
   }
   if (topRisks.length === 0 && blockers.length > 0) topRisks.push(blockers[0]);
 
-  const keyOpportunity = identity.state === 'confirmed' && input.valuation.priceable && input.recommendation.preferredStrategy
+  const identitySupportsDiscovery = identity.state === 'confirmed'
+    || (identity.state === 'provisional' && identity.discoveryUsable === true);
+  const keyOpportunity = identitySupportsDiscovery && input.valuation.priceable && input.recommendation.preferredStrategy
     ? `${input.recommendation.preferredStrategy}: ${input.recommendation.why}`
-    : identity.state === 'confirmed'
+    : identitySupportsDiscovery
       ? 'The parcel is identified, but no priced opportunity can be stated until the value basis is established.'
       : 'No opportunity can be stated until the subject parcel is identified against an official record.';
 
@@ -648,6 +657,42 @@ export function joinPropertyIntelligence(input: SnapshotJoinInput): PropertyInte
     blockers: dedupe(blockers),
     missingInformation: dedupe(missingInformation),
     nextActions: dedupe(nextActions),
+  };
+}
+
+/**
+ * Re-apply the current join policy to a persisted snapshot without changing its
+ * evidence, specialist handbacks, run identity, or database history. This keeps
+ * the canonical read coherent after a presentation-policy correction while the
+ * stored mission record remains an immutable account of what ran.
+ */
+export function presentPropertyIntelligenceSnapshot(
+  snapshot: PropertyIntelligenceSnapshot,
+): PropertyIntelligenceSnapshot {
+  const presented = joinPropertyIntelligence({
+    dealCardId: snapshot.dealCardId,
+    runId: snapshot.runId,
+    sequence: snapshot.sequence,
+    startedAt: snapshot.startedAt,
+    completedAt: snapshot.completedAt,
+    identity: snapshot.identity,
+    facts: snapshot.facts,
+    governmentRecords: snapshot.governmentRecords,
+    dueDiligence: snapshot.dueDiligence,
+    comps: snapshot.comps,
+    valuation: snapshot.valuation,
+    strategies: snapshot.strategies,
+    recommendation: snapshot.recommendation,
+    evidence: snapshot.evidence,
+    specialists: snapshot.specialists,
+    extraBlockers: snapshot.blockers,
+  });
+  return {
+    ...presented,
+    isPrimary: snapshot.isPrimary,
+    ...(snapshot.missionId !== undefined ? { missionId: snapshot.missionId } : {}),
+    ...(snapshot.preliminary !== undefined ? { preliminary: snapshot.preliminary } : {}),
+    ...(snapshot.browserCleanup !== undefined ? { browserCleanup: snapshot.browserCleanup } : {}),
   };
 }
 

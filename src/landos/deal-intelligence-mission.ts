@@ -147,6 +147,8 @@ export interface SubjectResearchHandback {
   owner: string | null;
   acres: number | null;
   identity: SnapshotIdentity;
+  discoveryUsable: boolean;
+  discoveryBasis: string | null;
   facts: SnapshotFact[];
   subjectMarket: SubjectMarket;
   subjectAcres: number | null;
@@ -900,6 +902,8 @@ export function dealIntelligenceExecutors(
         owner: identity.owner,
         acres: identity.acres,
         identity,
+        discoveryUsable: data.discoveryUsable ?? identity.discoveryUsable ?? false,
+        discoveryBasis: data.discoveryBasis ?? identity.discoveryBasis ?? null,
         facts: data.facts,
         subjectMarket: data.subjectMarket,
         subjectAcres: data.subjectAcres,
@@ -916,10 +920,14 @@ export function dealIntelligenceExecutors(
     // ── Government records (subject property only) ────────────────────────
     government_records: async (ctx) => {
       const outcome = await collectors.government_records(dealScoped(ctx));
+      const retrievedRecords = (outcome.data?.records ?? []).filter((record) =>
+        record.grade !== 'unresolved_question' && record.grade !== 'unavailable_public_record');
       const handback: GovernmentRecordsHandback = {
         dealCardId: ctx.scopeId,
         appliesTo: 'subject_property',
-        recordCount: outcome.data?.records.length ?? 0,
+        // Placeholder rows such as "not searched" and "missing" describe a
+        // limitation; they are not retrieved government facts.
+        recordCount: retrievedRecords.length,
         records: outcome.data?.records ?? [],
         evidence: outcome.evidence ?? [],
         summary: outcome.summary,
@@ -952,7 +960,12 @@ export function dealIntelligenceExecutors(
       const data = outcome.data;
       const handback: EnvironmentalHandback = {
         dealCardId: ctx.scopeId,
-        screenedLaneCount: data?.items.length ?? 0,
+        // Unknown cards are useful disclosure, but their presence does not
+        // prove a collector ran. Live collectors supply the exact count; older
+        // adapters fall back to only non-unknown findings.
+        screenedLaneCount: data?.screenedLaneCount
+          ?? data?.items.filter((item) => item.verdict !== 'unknown').length
+          ?? 0,
         items: data?.items ?? [],
         constraints: data?.constraints ?? [],
         summary: outcome.summary,
@@ -1102,6 +1115,8 @@ export function dealIntelligenceExecutors(
       // an unresolved parcel is never priced, however good the comps look.
       const gated = buildPropertyIntelligenceValuation({
         identityState: identity?.identity.state ?? 'unresolved',
+        discoveryIdentityUsable: identity?.discoveryUsable ?? false,
+        identityBasis: identity?.discoveryBasis ?? null,
         subjectAcres: identity?.subjectAcres ?? null,
         acreageConflict: identity?.acreageConflict ?? false,
         policy,
@@ -1114,6 +1129,9 @@ export function dealIntelligenceExecutors(
       const fromComps = valuationFromWorkingSet(subjectSelection, workingSet, {
         constraints: environmental?.constraints ?? [],
         hardRisks,
+        identityState: identity?.identity.state ?? 'unresolved',
+        discoveryIdentityUsable: identity?.discoveryUsable ?? false,
+        identityBasis: identity?.discoveryBasis ?? null,
       });
       // A HARD gate — unconfirmed identity, unknown or contradicted subject
       // acreage — is about the SUBJECT, not the comps, and its refusal always
@@ -1122,7 +1140,10 @@ export function dealIntelligenceExecutors(
       // also veto is what produced a page saying "not priceable" above a list of
       // qualified sales.
       const subjectAcresKnown = (identity?.subjectAcres ?? 0) > 0;
-      const hardGate = identity?.identity.state !== 'confirmed'
+      const identityState = identity?.identity.state ?? 'unresolved';
+      const usableDiscoveryIdentity = identityState === 'confirmed'
+        || (identityState === 'provisional' && identity?.discoveryUsable === true);
+      const hardGate = !usableDiscoveryIdentity
         || !subjectAcresKnown
         || identity?.acreageConflict === true;
       const valuation: SnapshotValuation = hardGate
@@ -1177,6 +1198,8 @@ export function dealIntelligenceExecutors(
       const dueDiligence = [...(zoning?.items ?? []), ...(environmental?.items ?? []), ...(access?.items ?? [])];
       const { strategies, recommendation } = buildPropertyIntelligenceStrategies({
         identityState: identity?.identity.state ?? 'unresolved',
+        discoveryIdentityUsable: identity?.discoveryUsable ?? false,
+        identityBasis: identity?.discoveryBasis ?? null,
         subjectAcres: identity?.subjectAcres ?? null,
         valuation: valuationHandback.valuation,
         dueDiligence,

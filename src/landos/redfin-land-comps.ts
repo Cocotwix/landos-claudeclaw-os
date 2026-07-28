@@ -244,6 +244,12 @@ export function redfinSearchQueries(input: RedfinFetchInput): RedfinSearchQuery[
     const place = [input.city.trim(), county ? `${county} County` : '', state].filter(Boolean).join(', ');
     queries.push({ kind: 'locality', label: place, query: place });
   }
+  // County + state remains usable discovery geography when a fresh lead has
+  // not yet been enriched with city, ZIP or coordinates.
+  if (!input.city?.trim() && county && state) {
+    const place = `${county} County, ${state}`;
+    queries.push({ kind: 'locality', label: place, query: place });
+  }
   if (input.apn?.trim() && state) {
     const place = [input.apn.trim(), input.owner?.trim(), county ? `${county} County` : '', state].filter(Boolean).join(', ');
     queries.push({ kind: 'parcel', label: `parcel ${input.apn.trim()}`, query: place });

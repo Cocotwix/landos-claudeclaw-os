@@ -255,6 +255,29 @@ describe('comp identity', () => {
     expect(valuation.notPriceableReason).toBeNull();
   });
 
+  it('caps a discovery-stage valuation at low confidence and discloses the official-coverage gap', () => {
+    const set = selectWorkingComps({
+      subject: SUBJECT,
+      rows: [
+        row({ source: 'LandPortal visible', address: '1 Ridge Rd', price: 100_000, acres: 10 }),
+        row({ source: 'LandPortal visible', address: '2 Ridge Rd', price: 110_000, acres: 11 }),
+        row({ source: 'LandPortal visible', address: '3 Ridge Rd', price: 120_000, acres: 12 }),
+        row({ source: 'LandPortal visible', address: '4 Ridge Rd', price: 130_000, acres: 13 }),
+      ],
+      nowMs: NOW,
+    });
+    const valuation = valuationFromWorkingSet(SUBJECT, set, {
+      identityState: 'provisional',
+      discoveryIdentityUsable: true,
+      identityBasis: 'supplied APN/county/state agree with the retained LandPortal subject page',
+    });
+    expect(valuation.priceable).toBe(true);
+    expect(valuation.confidence).toBe('low');
+    expect(valuation.basis).toMatch(/Conditional discovery-stage valuation/);
+    expect(valuation.uncertainty.join(' ')).toMatch(/supplied APN.*LandPortal subject page/);
+    expect(valuation.materialGaps.join(' ')).toMatch(/Official parcel-source coverage remains unavailable/);
+  });
+
   it('applies physical constraints to the same working valuation instead of attaching contradictory adjustment text', () => {
     const set = selectWorkingComps({
       subject: SUBJECT,

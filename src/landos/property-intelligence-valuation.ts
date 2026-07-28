@@ -3,10 +3,11 @@
 // The only inputs that may price a parcel are the closed sales the comp source
 // policy accepted. Active listings are competition, never a value basis.
 //
-// This module refuses to price rather than guess. When identity is unconfirmed,
-// when no accepted closed sale survives, or when the accepted sales carry no
-// acreage, it returns priceable=false with the exact missing evidence and the
-// next action that would make the property priceable.
+// This module refuses to price rather than guess. An unresolved/conflicted
+// subject (or a provisional subject without an explicit consistent discovery
+// handoff), no accepted closed sale, or missing comp acreage returns
+// priceable=false with the exact missing evidence and next action. A consistent
+// provisional identity may support only a disclosed, low-confidence range.
 //
 // Pure + deterministic. No I/O.
 
@@ -15,6 +16,15 @@ import type { IdentityState, SnapshotValuation } from './property-intelligence-s
 
 export interface ValuationInput {
   identityState: IdentityState;
+  /**
+   * True only when discovery-stage identity evidence consistently points to
+   * one subject (for example: supplied APN/county/state plus an exact
+   * LandPortal subject match) even though an official parcel source was not
+   * available. Conflicted and unresolved identities remain blocked.
+   */
+  discoveryIdentityUsable?: boolean;
+  /** Plain, non-secret disclosure of the evidence supporting that handoff. */
+  identityBasis?: string | null;
   /** Governing subject acreage; null when the acreage basis is unresolved. */
   subjectAcres: number | null;
   /** True when assessed/mapped/deeded acreage disagree materially. */
@@ -119,8 +129,10 @@ function notPriceable(reason: string, nextAction: string, gaps: string[], basis:
 export function buildPropertyIntelligenceValuation(input: ValuationInput): SnapshotValuation {
   const accepted = input.policy.acceptedSold;
   const activeCount = input.policy.acceptedActive.length;
+  const conditionalIdentity = input.identityState === 'provisional'
+    && input.discoveryIdentityUsable === true;
 
-  if (input.identityState !== 'confirmed') {
+  if (input.identityState !== 'confirmed' && !conditionalIdentity) {
     return notPriceable(
       `Parcel identity is ${input.identityState}, so no value may be attached to this record. A price on an unidentified parcel is a guess.`,
       'Confirm the subject parcel against the official county/state parcel layer, then re-run Property Intelligence.',
@@ -222,6 +234,12 @@ export function buildPropertyIntelligenceValuation(input: ValuationInput): Snaps
   const dispositionHigh = roundTo(retailHigh * 0.8, moneyStep(retailHigh));
 
   const uncertainty: string[] = [];
+  if (conditionalIdentity) {
+    uncertainty.push(
+      `Conditional discovery-stage identity: ${input.identityBasis?.trim()
+        || 'the supplied parcel identifiers and retained parcel-provider evidence consistently identify one subject, but an official parcel-source match is not available'}.`,
+    );
+  }
   uncertainty.push(`Band derived from ${obs.length} accepted closed sale${obs.length === 1 ? '' : 's'}; per-acre spread across the set is ${Math.round(dispersion * 100)}% of the median.`);
   if (obs.length < 3) uncertainty.push(`Only ${obs.length} accepted closed sale${obs.length === 1 ? '' : 's'} — below the three needed for a defensible band, so this is a thin-market indication.`);
   if (activeCount === 0) uncertainty.push('No active competition was found, so current absorption is unknown.');
@@ -229,17 +247,23 @@ export function buildPropertyIntelligenceValuation(input: ValuationInput): Snaps
   if (input.hardRisks.length) uncertainty.push(`Unresolved risk(s) that could move value: ${input.hardRisks.join('; ')}.`);
 
   const materialGaps: string[] = [];
+  if (conditionalIdentity) {
+    materialGaps.push('Official parcel-source coverage remains unavailable; confirm the subject before a binding offer or closing decision.');
+  }
   const withoutSource = obs.filter((o) => !o.decision.candidate.sourceUrl);
   if (withoutSource.length) materialGaps.push(`${withoutSource.length} accepted comp(s) have no retrievable source link.`);
   const withoutDate = obs.filter((o) => !o.dateIso);
   if (withoutDate.length) materialGaps.push(`${withoutDate.length} accepted comp(s) have no verified sale date.`);
   if (input.constraints.length === 0) materialGaps.push('No mapped physical constraint was found; a constraint discovered later would move the band down.');
 
-  const confidence: SnapshotValuation['confidence'] = obs.length >= 5 && dispersion <= 0.6 && input.hardRisks.length === 0
+  const evidenceConfidence: SnapshotValuation['confidence'] = obs.length >= 5 && dispersion <= 0.6 && input.hardRisks.length === 0
     ? 'high'
     : obs.length >= 3 && dispersion <= 1.2
       ? 'medium'
       : 'low';
+  // Discovery-stage identity is enough for a conditional underwriting range,
+  // but never enough for medium/high parcel-specific confidence.
+  const confidence: SnapshotValuation['confidence'] = conditionalIdentity ? 'low' : evidenceConfidence;
 
   const primaryCount = accepted.filter((d) => d.role === 'primary').length;
   const supplementCount = accepted.filter((d) => d.role === 'supplement').length;
@@ -250,7 +274,7 @@ export function buildPropertyIntelligenceValuation(input: ValuationInput): Snaps
     pricePerAcreRange: { low: ppaLow, high: ppaHigh },
     likelyRetail: { low: retailLow, high: retailHigh },
     dispositionRange: { low: dispositionLow, high: dispositionHigh },
-    basis: `${obs.length} accepted vacant-land closed sale${obs.length === 1 ? '' : 's'} (${primaryCount} LandPortal primary, ${supplementCount} marketplace supplement) normalized to price per acre, applied to ${input.subjectAcres.toFixed(2)} governing acres. ${activeCount} active listing${activeCount === 1 ? '' : 's'} tracked separately as competition and excluded from the value basis.`,
+    basis: `${conditionalIdentity ? 'Conditional discovery-stage valuation. ' : ''}${obs.length} accepted vacant-land closed sale${obs.length === 1 ? '' : 's'} (${primaryCount} LandPortal primary, ${supplementCount} marketplace supplement) normalized to price per acre, applied to ${input.subjectAcres.toFixed(2)} governing acres. ${activeCount} active listing${activeCount === 1 ? '' : 's'} tracked separately as competition and excluded from the value basis.`,
     adjustments,
     confidence,
     uncertainty,

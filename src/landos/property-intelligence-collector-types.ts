@@ -22,6 +22,8 @@ export interface SpecialistOutcome<T> {
 
 export interface IdentityContribution {
   identity: SnapshotIdentity;
+  discoveryUsable?: boolean;
+  discoveryBasis?: string | null;
   facts: SnapshotFact[];
   subjectMarket: SubjectMarket;
   subjectAcres: number | null;
@@ -30,6 +32,10 @@ export interface IdentityContribution {
 
 export interface GovernmentRecordsContribution {
   records: SnapshotFact[];
+  /** Actual source collector attempts, excluding orchestration-only visits. */
+  collectorAttemptCount?: number;
+  /** Precise source limitations when no usable official record was retrieved. */
+  sourceLimitations?: string[];
 }
 
 export interface ZoningContribution {
@@ -37,11 +43,16 @@ export interface ZoningContribution {
   zoningKnown: boolean;
   items: SnapshotDueDiligenceItem[];
   facts: SnapshotFact[];
+  collectorAttemptCount?: number;
+  sourceLimitations?: string[];
 }
 
 export interface EnvironmentalContribution {
   items: SnapshotDueDiligenceItem[];
   constraints: string[];
+  /** Number of environmental source collectors that actually ran. */
+  screenedLaneCount?: number;
+  sourceLimitations?: string[];
 }
 
 export interface AccessUtilitiesContribution {
@@ -49,6 +60,8 @@ export interface AccessUtilitiesContribution {
   accessStatus: 'public_road_proximity' | 'private_road_only' | 'no_mapped_contact' | 'unknown';
   utilitiesKnown: boolean;
   utilitiesSummary: string | null;
+  collectorAttemptCount?: number;
+  sourceLimitations?: string[];
 }
 
 export interface ComparablesContribution {

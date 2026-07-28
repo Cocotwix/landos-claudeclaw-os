@@ -35,6 +35,14 @@ describe('Property Intelligence launch surface', () => {
     expect(DEAL_CARD).toMatch(/const piSnapshot = propertyIntelligence\.view\?\.snapshot\s*\n?\s*\?\? \(propertyIntelligence\.running \? propertyIntelligence\.view\?\.progressive\?\.snapshot \?\? null : null\);/);
   });
 
+  it('uses discovery-usable snapshot identity in the pinned header without reviving stale spine gaps', () => {
+    expect(PANEL).toMatch(/discoveryUsable\?: boolean/);
+    expect(DEAL_CARD).toMatch(/function currentCriticalFacts/);
+    expect(DEAL_CARD).toMatch(/snapshot\?\.identity\.state === 'provisional' && snapshot\.identity\.discoveryUsable/);
+    expect(DEAL_CARD).toMatch(/currentCriticalFacts\(piSnapshot, spine\?\.header\?\.criticalFacts\)/);
+    expect(DEAL_CARD).toMatch(/piSnapshot\?\.identity\.discoveryUsable \? piSnapshot\.nextActions\[0\]/);
+  });
+
   it('renders progressive content clearly marked preliminary, never as the promoted read', () => {
     // Every tab-level section mounts the preliminary notice.
     expect(PANEL).toMatch(/data-testid="pi-preliminary"/);
@@ -173,10 +181,12 @@ describe('Property Intelligence honesty rules in the UI', () => {
     expect(PANEL).toMatch(/post_contract_verification: 'Post-contract legal check'/);
   });
 
-  it('shows blockers, missing information and next actions on the operator read', () => {
-    expect(PANEL).toMatch(/title="Blockers"/);
-    expect(PANEL).toMatch(/title="Missing information"/);
-    expect(PANEL).toMatch(/title="Next actions"/);
+  it('consolidates failure output into one summary, one limitation section and one next-action section', () => {
+    expect(PANEL).toMatch(/title="Mission summary"/);
+    expect(PANEL).toMatch(/title="Risks and limitations"/);
+    expect(PANEL).toMatch(/title="Next action"/);
+    expect(PANEL).not.toMatch(/title="Missing information"/);
+    expect(PANEL).toMatch(/Specialist evidence and source limitations/);
   });
 
   it('keeps wide tables inside their own horizontal scroll container', () => {

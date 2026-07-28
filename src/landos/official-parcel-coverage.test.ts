@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { officialParcelSourceCoverage, practicalOfficialParcelSources } from './public-property-intelligence-live.js';
 
 // Operator acceptance regression: a fresh Kentucky lead ended with the generic
 // "Confirm the exact subject parcel using APN plus county/state", which hides
@@ -39,5 +39,15 @@ describe('officialParcelSourceCoverage', () => {
       const coverage = officialParcelSourceCoverage(input);
       expect(coverage.available).toBe(coverage.sources.length > 0);
     }
+  });
+
+  it('routes Pickens County to its practical official assessor browser surfaces', () => {
+    const sources = practicalOfficialParcelSources({ county: 'Pickens', state: 'SC' });
+    expect(sources.some((source) =>
+      source.mode === 'browser'
+      && /Pickens County Assessor/i.test(source.source)
+      && /qpublic\.schneidercorp\.com/i.test(source.url))).toBe(true);
+    expect(sources.some((source) => /pickensassessor\.org/i.test(source.url))).toBe(false);
+    expect(sources.every((source) => /destination alone is not parcel evidence|runtime attempt is required/i.test(source.note))).toBe(true);
   });
 });
