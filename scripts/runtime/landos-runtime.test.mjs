@@ -19,6 +19,7 @@ import {
   samePath,
   sanitizeEnvironment,
   startDecision,
+  validateBrowserPairingResponse,
 } from './landos-runtime.mjs';
 
 test('samePath handles Windows case and separators', () => {
@@ -135,4 +136,16 @@ test('HTTP probes abort within their explicit timeout', async () => {
 test('command rendering quotes absolute paths with spaces', () => {
   assert.equal(quote('C:\\Program Files\\nodejs\\node.exe'), '"C:\\Program Files\\nodejs\\node.exe"');
   assert.equal(quote('--flag=value'), '--flag=value');
+});
+
+test('browser bootstrap accepts only a credential-free loopback pairing URL', () => {
+  const pairingUrl = 'http://localhost:3141/connect?returnTo=%2Fdept%2Facquisitions#abcdefghijklmnopqrstuvwxyz123456';
+  assert.equal(validateBrowserPairingResponse({ pairingUrl }, 'dashboard-secret'), pairingUrl);
+  assert.throws(
+    () => validateBrowserPairingResponse(
+      { pairingUrl: 'https://example.test/connect#abcdefghijklmnopqrstuvwxyz123456' },
+      'dashboard-secret',
+    ),
+    /outside the managed loopback origin/iu,
+  );
 });

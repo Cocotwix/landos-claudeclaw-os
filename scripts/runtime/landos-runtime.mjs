@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,6 +23,9 @@ const ENV_MODULE = path.join(ROOT, 'dist', 'env.js');
 const PORT = 3141;
 const URL = `http://localhost:${PORT}`;
 const HEALTH_PATH = '/api/health';
+const BROWSER_PAIRING_PATH = '/api/dashboard/browser-pairings';
+const BROWSER_BOOTSTRAP_HEADER = 'x-landos-bootstrap-token';
+const BROWSER_PAIRING_RETURN_TO = '/dept/acquisitions';
 const START_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 8_000;
 const HTTP_TIMEOUT_MS = 3_000;
@@ -667,6 +670,86 @@ async function commandHealth() {
   return 0;
 }
 
+function chromeCandidates(source = process.env) {
+  return [
+    path.join(source.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(source['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    source.LOCALAPPDATA
+      ? path.join(source.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe')
+      : '',
+  ].filter(Boolean);
+}
+
+function findChrome(source = process.env) {
+  return chromeCandidates(source).find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function validateBrowserPairingResponse(value, dashboardToken) {
+  if (!value || typeof value.pairingUrl !== 'string') throw new Error('LandOS returned an invalid browser pairing response.');
+  const pairingUrl = new globalThis.URL(value.pairingUrl);
+  if (pairingUrl.origin !== URL || pairingUrl.pathname !== '/connect') {
+    throw new Error('LandOS returned a browser pairing link outside the managed loopback origin.');
+  }
+  if (!/^[A-Za-z0-9_-]{24,128}$/u.test(pairingUrl.hash.slice(1))) {
+    throw new Error('LandOS returned an invalid one-time browser pairing code.');
+  }
+  if (value.pairingUrl.includes(dashboardToken)) {
+    throw new Error('LandOS refused a browser pairing response containing the dashboard credential.');
+  }
+  return pairingUrl.toString();
+}
+
+async function createLocalBrowserPairing(dashboardToken, fetchImpl = fetch) {
+  if (!dashboardToken) throw new Error('DASHBOARD_TOKEN is not configured.');
+  const response = await fetchImpl(new globalThis.URL(BROWSER_PAIRING_PATH, `${URL}/`), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      [BROWSER_BOOTSTRAP_HEADER]: dashboardToken,
+    },
+    body: JSON.stringify({ returnTo: BROWSER_PAIRING_RETURN_TO }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+  });
+  if (response.status !== 201) {
+    throw new Error(`LandOS rejected the local browser bootstrap (HTTP ${response.status}).`);
+  }
+  const body = await response.json().catch(() => null);
+  return validateBrowserPairingResponse(body, dashboardToken);
+}
+
+async function openPairingInChrome(pairingUrl, source = process.env, spawnImpl = spawn) {
+  const chromePath = findChrome(source);
+  if (!chromePath) throw new Error('Google Chrome is not installed in a supported location.');
+  const browserEnvironment = { ...source };
+  for (const key of Object.keys(browserEnvironment)) {
+    if (key.toUpperCase() === 'DASHBOARD_TOKEN') delete browserEnvironment[key];
+  }
+  await new Promise((resolve, reject) => {
+    const child = spawnImpl(chromePath, [pairingUrl], {
+      cwd: ROOT,
+      env: browserEnvironment,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+async function commandPair() {
+  const dashboardToken = await readDashboardToken();
+  const pairingUrl = await createLocalBrowserPairing(dashboardToken);
+  await openPairingInChrome(pairingUrl);
+  console.log('Opened a five-minute, single-use LandOS pairing in Google Chrome.');
+  console.log(`After pairing, LandOS will open ${URL}${BROWSER_PAIRING_RETURN_TO}.`);
+  return 0;
+}
+
 function commandLogs() {
   console.log(`=== stdout: ${STDOUT_LOG} ===`);
   console.log(logTail(STDOUT_LOG));
@@ -688,12 +771,13 @@ async function main() {
   switch (command) {
     case 'status': return commandStatus();
     case 'health': return commandHealth();
+    case 'pair': return commandPair();
     case 'logs': return commandLogs();
     case 'start': return withOperationLock('start', startInternal).then(() => 0);
     case 'stop': return withOperationLock('stop', stopInternal).then(() => 0);
     case 'restart': return withOperationLock('restart', async () => { await stopInternal(); await sleep(500); await startInternal(); return 0; });
     default:
-      console.error('Usage: node scripts/runtime/landos-runtime.mjs <status|start|stop|restart|logs|health>');
+      console.error('Usage: node scripts/runtime/landos-runtime.mjs <status|start|stop|restart|logs|health|pair>');
       return 2;
   }
 }
@@ -701,6 +785,9 @@ async function main() {
 export {
   ENTRY,
   ROOT,
+  chromeCandidates,
+  createLocalBrowserPairing,
+  findChrome,
   historyAssociation,
   httpProbe,
   logTail,
@@ -713,6 +800,7 @@ export {
   samePath,
   sanitizeEnvironment,
   startDecision,
+  validateBrowserPairingResponse,
 };
 
 if (process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url))) {

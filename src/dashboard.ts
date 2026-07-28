@@ -274,6 +274,7 @@ function tokensMatch(provided: string, expected: string): boolean {
 const BROWSER_PAIRING_TTL_MS = 5 * 60 * 1000;
 const BROWSER_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const BROWSER_SESSION_COOKIE = 'claudeclaw_local_session';
+const BROWSER_BOOTSTRAP_HEADER = 'x-landos-bootstrap-token';
 type BrowserPairing = { expiresAt: number; returnTo: string };
 const browserPairings = new Map<string, BrowserPairing>();
 
@@ -517,7 +518,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       await next();
       return;
     }
-    const token = c.req.query('token');
+    // The canonical local runtime may bootstrap the first browser after a
+    // credential rotation. It sends the existing credential in a request
+    // header that browser CORS does not allow, never in a URL, and only this
+    // loopback-only pairing route accepts it. Normal browser auth remains
+    // query-token/session-cookie based.
+    const isBrowserPairingCreate = path === '/api/dashboard/browser-pairings' && c.req.method === 'POST';
+    const token = c.req.query('token') || (isBrowserPairingCreate ? c.req.header(BROWSER_BOOTSTRAP_HEADER) : '');
     if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
@@ -621,7 +628,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // HttpOnly, and are represented server-side by hashes only.
   app.post('/api/dashboard/browser-pairings', async (c) => {
     if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
-    const token = c.req.query('token') || '';
+    const token = c.req.query('token') || c.req.header(BROWSER_BOOTSTRAP_HEADER) || '';
     if (!DASHBOARD_TOKEN || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }

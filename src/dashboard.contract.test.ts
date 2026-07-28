@@ -1591,6 +1591,43 @@ describe('Security headers on /', () => {
 
 
 describe('local browser pairing', () => {
+  it('bootstraps the first loopback browser after token rotation without a prior browser session', async () => {
+    const created = await app.request('http://localhost/api/dashboard/browser-pairings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-landos-bootstrap-token': TOKEN,
+      },
+      body: JSON.stringify({ returnTo: '/dept/acquisitions' }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await jsonOf(created);
+    expect(createdBody.pairingUrl).toMatch(/^http:\/\/localhost\/connect\?/);
+    expect(JSON.stringify(createdBody)).not.toContain(TOKEN);
+
+    const remoteAttempt = await app.request('http://example.test/api/dashboard/browser-pairings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-landos-bootstrap-token': TOKEN,
+      },
+      body: JSON.stringify({ returnTo: '/dept/acquisitions' }),
+    });
+    expect(remoteAttempt.status).toBe(404);
+
+    const oneTimeCode = new URL(createdBody.pairingUrl).hash.slice(1);
+    const claimed = await app.request('/api/dashboard/browser-pairings/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: oneTimeCode }),
+    });
+    expect(claimed.status).toBe(201);
+
+    const cookie = (claimed.headers.get('set-cookie') || '').split(';')[0];
+    const sessionHealth = await app.request('/api/health', { headers: { cookie } });
+    expect(sessionHealth.status).toBe(200);
+  });
+
   it('pairs a fresh loopback browser without revealing or reusing the dashboard token', async () => {
     const created = await app.request('/api/dashboard/browser-pairings?token=' + TOKEN, {
       method: 'POST',
