@@ -1,104 +1,90 @@
-# LandOS Current Checkpoint
+# Current Active Task
+
+Complete the first Hermes foundation sprint for LandOS Property Intelligence: use one dedicated profile, supported persistent context, healthy reusable sessions, lean property assignments, and the existing authenticated LandPortal CDP workflow without broadening orchestration.
+
+# Exact Operator Outcome
+
+Hermes runs beneath Max through the dedicated `landos` profile, loads permanent LandOS and LandPortal rules from supported project context, soul, memory, user, and skill files, receives only the current property assignment, uses authenticated Chrome at `http://127.0.0.1:9224`, and returns exact-subject evidence only through LandOS's canonical importer. A fresh address entered through New Lead completes the real Deal Card workflow without cross-deal contamination.
+
+# Current State
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-07-27T19:56:38.4523774-04:00
-- **HEAD at generation:** `c3158f6`
-- **Worktree:** DIRTY; 94 modified/untracked paths at record time. Canonical Deal Card consolidation is accepted in the live operator workflow and undergoing final policy checks before local commit.
-- **Latest full suite:** PASS; 360 files, 4,718 tests, 0 failures after integrated cleanup.
-- **Latest typecheck/build:** PASS; server typecheck clean; frontend has zero diagnostics in changed web files (unchanged baseline files only); production build compiled 1,976 modules.
-- **Managed runtime:** RUNNING healthy at 2026-07-27T19:56:38-04:00; PID 43836; root and health HTTP 200; Health OK at http://localhost:3141.
-- **Active sprint:** sprint-2026-07-24-zoning-land-use (complete); preserve its ledger and proof report at `.landos/sprints/sprint-2026-07-24-zoning-land-use/`.
+- **Generated:** 2026-08-02T17:55:35.025Z
+- **HEAD at generation:** `9780877`
+- **Worktree:** DIRTY; 157 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS at 2026-08-02T17:54:24.8900260Z; Hermes controller, importer, and canonical research-store suite passed: 3 files, 16 tests, 0 failures.
+- **Latest typecheck:** PASS at 2026-08-02T17:54:24.8900260Z; npm.cmd run typecheck completed with zero diagnostics.
+- **Latest production build:** PASS at 2026-08-02T17:54:24.8900260Z; server and web production builds completed successfully; web emitted only existing chunk-size warnings.
+- **Managed runtime:** RUNNING healthy at 2026-08-02T17:54:24.8900260Z; PID 8172; http://localhost:3141.
+- **Prior tracked sprint:** sprint-2026-07-24-zoning-land-use (complete); it is not the Current Active Task.
+- **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
 
-Live disk, managed runtime, database, and personally observed owner-facing behavior
-override anything written here. Detailed history is under `docs/landos/`. Do not
-stage machine-local artifacts or push without explicit approval.
+The foundation sprint is implemented and accepted. The live proof property is 3680 Weller Rd, Cato, NY 13033. Its first run exposed a current optional-ZIP validation defect; the narrow fix was regression-tested and the same Deal Card's operator-triggered rerun completed `exact_match` in 109,949 ms with four context comps imported canonically.
 
-## Current state
+# Completed and Proven
 
-The canonical ten-tab Deal Card consolidation is COMPLETE and operator-accepted in
-the working tree and UNCOMMITTED after all repository verification gates passed.
-Obsolete routes and source paths were removed. The canonical intake, parallel mission
-graph, progressive result, versioned snapshot, and Deal Card workspace are the
-current operating path. Historical deal data, evidence, documents, and mission
-history must remain readable.
+1. Added repo-level `.hermes.md` and dedicated profile templates for `SOUL.md`, `memories/MEMORY.md`, `memories/USER.md`, and `skills/landos-landportal/SKILL.md`. They preserve LandOS authority, Max/Hermes boundaries, address-first identity, exact-subject admission, and the fixed CDP endpoint.
+2. Added idempotent `landos` profile provisioning and check commands. The profile uses OpenAI Codex model configuration, local LandOS working directory, memory/user context, zero MCP servers, the new LandPortal skill, and the existing `driving-cdp-browser` skill. The default profile and existing secrets were not copied or modified.
+3. Replaced per-invocation SOP embedding with a lean property-specific assignment. Automatic execution passes `--profile landos` and the two bounded skills; output is scoped beneath the LandOS profile.
+4. Hermes state is healthy in real-user execution. A LandOS session was created, listed, resumed twice under the same session ID, and reused persistent context. Named-profile session listing also shows both live property runs. No current SQLite defect is reproducible; the sandbox-only read-only error is not a Hermes storage fault.
+5. Preserved authenticated Chrome CDP at `http://127.0.0.1:9224`; Chrome 150 / protocol 1.3 responded, and Hermes navigated the signed-in LandPortal subject workflow with the existing browser skill.
+6. Fixed only the importer edge case where New Lead retained street/city/state but no ZIP and LandPortal returned the same situs with a trailing ZIP. APN, subject URL, and canonical LandPortal identifier remain independently exact and mandatory.
+7. Entered 3680 Weller Rd, Cato, NY 13033 through the real New Lead UI. Its Deal Card retained APN `053289 41.00-1-60.212`, owner HASWELL DEREK, 30 acres, verified-property status, and exact LandPortal identity after refresh and managed restart.
+8. The live Deal Card showed no Oneil, Southard, or Wilkinson identity, and its four imported context comps stayed property-scoped. LandOS remained the canonical system of record; Hermes did not own Deal Card state, valuation, strategy, or workflow.
 
-Deal 58 was created through New Lead for 350 Old Hen Valley Rd, Oliver Springs, TN.
-Its automatic first mission failed identity resolution and remains visible as
-history. Operator reconciliation against the official Tennessee property record
-established APN `004 031.00`, owner `MORGAN BRANDON`, and 8.40 acres. The corrected
-mission completed and persisted after refresh and managed restart.
+# Remaining Work
 
-## Deal 58 accepted owner output
+No in-scope foundation work remains. Broad MCP access, delegation, specialist workers, incremental imports, agent hierarchy, and wider orchestration are intentionally deferred to a separately authorized sprint.
 
-- Ten tabs personally exercised: Overview, Property, Due Diligence, Market,
-  Strategy, Visuals, Seller, Documents, Activity, and Smart Intake.
-- Supported value range `$145,000-$196,000`; working value `$170,500`; target
-  acquisition range `$68,000-$102,500`.
-- Recommendation `Improvement Then Flip`; posture `RENEGOTIATE`.
-- Six distinct retained visuals loaded at 1600x1000.
-- LandPortal is the primary comp lane; Zillow and Redfin are permitted supplements.
-  HomeHarvest and Realie do not execute, count, render, or affect the current comp
-  workflow. Sold and active working sets remain capped and deduplicated.
-- Unresolved zoning, access, utilities, flood, site-specific soils, title, lien,
-  septic, and other professional diligence remain stated as gaps. No comparable
-  property receives government-record verification.
-- Owner of record remains separate from seller/lead identity; no contact data was
-  invented.
-- Activity preserves current corrected Run 3, complete Run 2, failed Run 1, and the
-  8.40-acre operator correction. Browser cleanup preserved only the deliverable
-  LandOS tab.
+# Exact Next Action
 
-## Cross-deal persistence
+Stop. Preserve the accepted 3680 Weller Rd proof and await Tyler's next sprint direction. Do not extend this foundation into delegation, specialists, MCP, incremental imports, valuation, strategy, or unrelated LandOS redesign.
 
-- Deal 32 remains isolated: APN `073090 04200`, owner `SACHAN DILEEP S`, situs
-  `OLD RIDGE RD`, 12.28 acres. Its retained evidence and mission history remain.
-- Deal 54 remains isolated: APN `001003 01205`, owner `STARDUST RIDGE LLC`, 12.06
-  acres. Market output remains honestly unpriceable with a HOLD posture; its lead
-  identity remains separate from owner of record.
-- Refresh and the accepted managed restart preserved Deals 32, 54, and 58 without
-  cross-deal contamination.
+# Relevant Files
 
-## Required invariants
+- `.hermes.md`
+- `config/hermes/landos-profile/SOUL.md`
+- `config/hermes/landos-profile/memories/MEMORY.md`
+- `config/hermes/landos-profile/memories/USER.md`
+- `config/hermes/landos-profile/skills/landos-landportal/SKILL.md`
+- `scripts/hermes/provision-landos-profile.mjs`
+- `src/landos/hermes-landportal-auto.ts`
+- `src/landos/hermes-landportal-auto.test.ts`
+- `src/landos/hermes-landportal-import.ts`
+- `src/landos/hermes-landportal-import.test.ts`
+- `package.json`
 
-1. One accepted identity version is current; candidate and confirmed identity cannot
-   coexist. Operator-verified corrections supersede weaker automation through a new
-   version without deleting history.
-2. Accepted facts link to evidence and the researched identity version. GET performs
-   no provider work or reconciliation writes; failures are isolated and resumable.
-3. Unresolved identity cannot show parcel-specific imagery, comps, FMV, or strategy.
-   Screenshot text or geometry never establishes official identity.
-4. A parent cannot complete while a child is non-terminal and cannot claim success
-   over failed, blocked, skipped, rejected, or outstanding work.
-5. Missing specialist output remains visible. Preliminary/progressive output is not
-   promoted as the current snapshot before the join.
-6. The lead/contact is never written into owner of record. APN formatting cannot
-   create a false conflict; transaction type is never inferred from price.
-7. Current comps use only LandPortal, Zillow, and Redfin. HomeHarvest/Realie are not
-   current sources. Comparable properties never trigger government-record research.
-8. No completeness score, readiness gate, legal-proof requirement, or unrelated
-   governance may block or embellish the operator workflow.
-9. Background browser work remains isolated from the operator window and its owned
-   pages are cleaned up without closing another lane's live page.
+# Relevant Records
 
-## Final repository gates
+- Acceptance property: 3680 Weller Rd, Cato, NY 13033; APN `053289 41.00-1-60.212`; owner HASWELL DEREK; 30 acres.
+- Technical continuity only: Property Card 65, Deal Card 75; successful run `di_msc3flvn_9oi8ly`.
+- Reusable Hermes proof session: `20260802_132442_d78af4`.
+- Successful property JSON: LandOS profile `shared/landportal/3680-weller-rd__property-card-65__di-msc3flvn-9oi8ly.json`.
 
-Integrated verification passed: full suite 360 files/4,718 tests; server typecheck;
-frontend changed-file baseline check; production build (1,976 modules); obsolete
-route runtime 404 coverage for 11 method/path pairs with route tests 63/63; canonical
-regressions 52/52; and stale-contract repairs 80/80. Managed root and health returned
-HTTP 200 on PID 43836. Checkpoint tests passed 2 files/32 tests. Memory audit passed
-fresh with 0 content warnings; coding-agent bootstrap was about 4,587 tokens and the
-largest profile about 6,693, both under budget. Diff, secret, artifact, obsolete-route,
-dead-declaration, and legacy-load static scans passed. `.env` is unchanged; the only
-allowlisted secret-shaped value is the deliberate synthetic redaction test fixture.
+# Known Blockers
 
-A narrow Chrome readback was not executed because the ChatGPT Chrome Extension was
-absent from Default and Profile 1 and the native-host registry key was missing. The
-previous personally completed full operator walkthrough remains acceptance authority;
-no research mission was rerun.
+No Hermes foundation blocker remains. Independent Gemini-backed sibling research lanes currently report quota exhaustion; this did not block the Hermes exact-subject import and is outside this sprint. The Codex Chrome extension was unavailable, but the explicitly required authenticated raw Chrome CDP endpoint remained healthy and completed acceptance.
 
-Exclude `.claude/settings.local.json`, databases, browser profiles, screenshots,
-runtime files, temporary probes, secrets, and all machine-local artifacts. `.env`
-is read-only and must remain unmodified. Commit locally only after every gate passes;
-never push without explicit approval.
+# Do Not Inspect or Modify
+
+Do not investigate SQLite internals without a new real-user reproducible defect. Do not alter `.env`, secrets, the default Hermes profile, Anthropic configuration, broad provider architecture, valuation, strategy, operator workflow ownership, unrelated research lanes, or pre-existing dirty work. Do not add MCP, delegation, specialists, hierarchy, or incremental import behavior. Do not commit or push.
+
+# Runtime State
+
+Managed LandOS is healthy at `http://localhost:3141`, PID 8172, with root and health HTTP 200 after the final restart. Chrome CDP `http://127.0.0.1:9224` is healthy. The 3680 Weller Rd Deal Card, accepted facts, and `Run research` control survived restart.
+
+# Verification Required
+
+1. Focused Vitest passed: 3 files, 16 tests, 0 failures.
+2. `npm.cmd run typecheck` passed.
+3. `npm.cmd run build:server` passed.
+4. `npm.cmd run build:web` passed with only existing chunk-size warnings.
+5. `npm.cmd run landos:hermes:profile:check` passed.
+6. Real Hermes session create/list/resume/reuse passed under the `landos` profile.
+7. Live Chrome New Lead, automatic lane, visible operator rerun, exact import, refresh, restart persistence, and cross-deal-isolation checks passed for 3680 Weller Rd.
+8. `npm.cmd run landos:health` passed: root 200, health 200, Health OK.
+
+# Completed and Protected
+
+Protect the dedicated LandOS profile, supported persistent context, lean property assignment, existing authenticated `driving-cdp-browser` capability, exact-subject importer gates, property-scoped output, canonical LandOS persistence, Max authority, and Hermes's bounded worker role.

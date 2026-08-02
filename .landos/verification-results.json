@@ -3,6 +3,27 @@
   "recordedAt": "2026-07-27T19:56:38.4523774-04:00",
   "headUnderReview": "c3158f6",
   "commitState": "UNCOMMITTED",
+  "tests": {
+    "status": "PASS",
+    "timestamp": "2026-08-02T17:54:24.8900260Z",
+    "summary": "Hermes controller, importer, and canonical research-store suite passed: 3 files, 16 tests, 0 failures"
+  },
+  "typecheck": {
+    "status": "PASS",
+    "timestamp": "2026-08-02T17:54:24.8900260Z",
+    "summary": "npm.cmd run typecheck completed with zero diagnostics"
+  },
+  "build": {
+    "status": "PASS",
+    "timestamp": "2026-08-02T17:54:24.8900260Z",
+    "summary": "server and web production builds completed successfully; web emitted only existing chunk-size warnings"
+  },
+  "runtime": {
+    "status": "RUNNING healthy",
+    "timestamp": "2026-08-02T17:54:24.8900260Z",
+    "pid": 8172,
+    "url": "http://localhost:3141"
+  },
   "operatorAcceptance": {
     "status": "PASS",
     "workflow": "canonical ten-tab Deal Card",

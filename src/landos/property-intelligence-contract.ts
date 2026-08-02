@@ -28,6 +28,243 @@ export type ResearchStageRole = 'required' | 'conditional' | 'optional';
 export type ResearchProviderRequirementLevel = 'required' | 'optional' | 'conditional';
 export type CompletionState = 'complete' | 'partial' | 'blocked' | 'no_result' | 'not_applicable' | 'not_attempted';
 
+/**
+ * The provider-facing result vocabulary.  This is deliberately smaller than
+ * the orchestration vocabulary: an adapter either verified subject evidence,
+ * returned explicitly labelled context, did not apply, was unavailable, or
+ * failed.  Merely attempting an action is never a successful provider result.
+ */
+export type PropertyProviderStatus =
+  | 'verified'
+  | 'context_only'
+  | 'not_applicable'
+  | 'unavailable'
+  | 'failed';
+
+export type PropertySubjectClassification = 'verified_subject' | 'context_only' | 'no_match';
+
+export type PropertyEvidenceStrength =
+  | 'operator_accepted'
+  | 'official_record'
+  | 'provider_verified'
+  | 'provider_observed'
+  | 'context_only';
+
+export interface CanonicalPropertyInput {
+  /** Stable technical scope. A provider may never change it. */
+  propertyCardId: number;
+  dealCardId: number;
+  /** Normalized address is retained even after APN/property IDs become known. */
+  normalizedAddress: string;
+  address: string;
+  city: string | null;
+  county: string | null;
+  state: string | null;
+  zip: string | null;
+  apn: string | null;
+  fips: string | null;
+  landPortalPropertyId: string | null;
+}
+
+export interface NormalizedPropertyEvidence {
+  id: string;
+  propertyCardId: number;
+  dealCardId: number;
+  providerId: string;
+  field: string;
+  value: unknown;
+  subjectClassification: PropertySubjectClassification;
+  strength: PropertyEvidenceStrength;
+  sourceUrl: string | null;
+  retrievedAt: string;
+  confidence: 'high' | 'medium' | 'low';
+  kind: 'fact' | 'visual' | 'comp' | 'estimate' | 'status';
+  validation: {
+    valid: boolean;
+    reasons: string[];
+  };
+  artifactHash?: string | null;
+  viewUrl?: string | null;
+}
+
+export interface PropertyProviderValidationResult {
+  valid: boolean;
+  subjectClassification: PropertySubjectClassification;
+  checks: Array<{ check: string; passed: boolean; reason: string }>;
+  rejectedEvidenceIds: string[];
+}
+
+export interface PropertyProviderPersistenceResult {
+  attempted: boolean;
+  persisted: boolean;
+  retainedEvidenceCount: number;
+  rejectedEvidenceCount: number;
+  reason: string | null;
+}
+
+/** Common deterministic adapter handback used by every provider lane. */
+export interface PropertyProviderResult<TExecution = unknown> {
+  contractVersion: 'property-provider-v1';
+  runId: string;
+  laneId: string;
+  providerId: string;
+  input: CanonicalPropertyInput;
+  execution: {
+    attempted: boolean;
+    startedAt: string;
+    completedAt: string;
+    durationMs: number;
+    result: TExecution | null;
+  };
+  validation: PropertyProviderValidationResult;
+  evidence: NormalizedPropertyEvidence[];
+  status: PropertyProviderStatus;
+  persistence: PropertyProviderPersistenceResult;
+  failureReason: string | null;
+}
+
+export interface PropertyProviderAdapter<TExecution = unknown> {
+  laneId: string;
+  providerId: string;
+  execute(input: CanonicalPropertyInput): Promise<TExecution>;
+  validate(input: CanonicalPropertyInput, execution: TExecution): PropertyProviderValidationResult;
+  normalize(
+    input: CanonicalPropertyInput,
+    execution: TExecution,
+    validation: PropertyProviderValidationResult,
+  ): NormalizedPropertyEvidence[];
+  status(
+    input: CanonicalPropertyInput,
+    execution: TExecution,
+    validation: PropertyProviderValidationResult,
+    evidence: NormalizedPropertyEvidence[],
+  ): PropertyProviderStatus;
+}
+
+function providerFailureReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function settleProviderWithin<T>(promise: Promise<T>, timeoutMs?: number): Promise<T> {
+  if (!timeoutMs || timeoutMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Provider lane timed out after ${timeoutMs} ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Execute one provider deterministically and always return the full adapter
+ * contract. Throws are converted to `failed`; they never masquerade as an empty
+ * success and never prevent an independent lane from settling.
+ */
+export async function executePropertyProvider<TExecution>(input: {
+  runId: string;
+  property: CanonicalPropertyInput;
+  adapter: PropertyProviderAdapter<TExecution>;
+  now?: () => string;
+  clockMs?: () => number;
+  timeoutMs?: number;
+}): Promise<PropertyProviderResult<TExecution>> {
+  const now = input.now ?? (() => new Date().toISOString());
+  const clockMs = input.clockMs ?? (() => Date.now());
+  const startedAt = now();
+  const startedMs = clockMs();
+  try {
+    const execution = await settleProviderWithin(input.adapter.execute(input.property), input.timeoutMs);
+    const validation = input.adapter.validate(input.property, execution);
+    const normalized = input.adapter.normalize(input.property, execution, validation);
+    const evidence = normalized.filter((item) => item.validation.valid);
+    const status = input.adapter.status(input.property, execution, validation, evidence);
+    return {
+      contractVersion: 'property-provider-v1',
+      runId: input.runId,
+      laneId: input.adapter.laneId,
+      providerId: input.adapter.providerId,
+      input: input.property,
+      execution: {
+        attempted: true,
+        startedAt,
+        completedAt: now(),
+        durationMs: Math.max(0, clockMs() - startedMs),
+        result: execution,
+      },
+      validation,
+      evidence,
+      status: validation.valid ? status : 'failed',
+      persistence: {
+        attempted: false,
+        persisted: false,
+        retainedEvidenceCount: 0,
+        rejectedEvidenceCount: normalized.length - evidence.length,
+        reason: null,
+      },
+      failureReason: validation.valid ? null : validation.checks.filter((check) => !check.passed).map((check) => check.reason).join(' ') || 'Provider validation failed.',
+    };
+  } catch (error) {
+    const completedAt = now();
+    const reason = providerFailureReason(error);
+    return {
+      contractVersion: 'property-provider-v1',
+      runId: input.runId,
+      laneId: input.adapter.laneId,
+      providerId: input.adapter.providerId,
+      input: input.property,
+      execution: {
+        attempted: true,
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, clockMs() - startedMs),
+        result: null,
+      },
+      validation: {
+        valid: false,
+        subjectClassification: 'no_match',
+        checks: [{ check: 'execution_completed', passed: false, reason }],
+        rejectedEvidenceIds: [],
+      },
+      evidence: [],
+      status: 'failed',
+      persistence: {
+        attempted: false,
+        persisted: false,
+        retainedEvidenceCount: 0,
+        rejectedEvidenceCount: 0,
+        reason: null,
+      },
+      failureReason: reason,
+    };
+  }
+}
+
+export function validatePropertyProviderResult(result: PropertyProviderResult): string[] {
+  const violations: string[] = [];
+  if (result.contractVersion !== 'property-provider-v1') violations.push('unsupported provider contract version');
+  if (!Number.isInteger(result.input.propertyCardId) || result.input.propertyCardId < 1) violations.push('invalid property card scope');
+  if (!Number.isInteger(result.input.dealCardId) || result.input.dealCardId < 1) violations.push('invalid deal card scope');
+  if (!result.execution.attempted && (result.status === 'verified' || result.status === 'context_only')) {
+    violations.push('an unattempted action cannot be a successful result');
+  }
+  if (result.status === 'verified' && result.validation.subjectClassification !== 'verified_subject') {
+    violations.push('verified status requires verified_subject classification');
+  }
+  for (const item of result.evidence) {
+    if (item.propertyCardId !== result.input.propertyCardId || item.dealCardId !== result.input.dealCardId) {
+      violations.push(`evidence ${item.id} belongs to a different property scope`);
+    }
+    if (!item.validation.valid) violations.push(`rejected evidence ${item.id} cannot enter normalized evidence`);
+    if (item.subjectClassification === 'no_match') violations.push(`no-match evidence ${item.id} cannot enter normalized evidence`);
+  }
+  return violations;
+}
+
 export type CompletionPredicate =
   | { kind: 'always' }
   | { kind: 'resolution_status_in'; values: Array<'confirmed' | 'provisional' | 'conflicted' | 'unresolved'> }

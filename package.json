@@ -17,6 +17,8 @@
     "landos:restart": "node scripts/runtime/landos-runtime.mjs restart",
     "landos:logs": "node scripts/runtime/landos-runtime.mjs logs",
     "landos:health": "node scripts/runtime/landos-runtime.mjs health",
+    "landos:hermes:profile": "node scripts/hermes/provision-landos-profile.mjs",
+    "landos:hermes:profile:check": "node scripts/hermes/provision-landos-profile.mjs --check",
     "landos:pair": "node scripts/runtime/landos-runtime.mjs pair",
     "landos:runtime:test": "node scripts/runtime/landos-runtime.test.mjs",
     "landos:hive": "tsx src/hive-cli.ts",
