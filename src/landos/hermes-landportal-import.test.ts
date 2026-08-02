@@ -87,6 +87,82 @@ afterEach(() => {
 });
 
 describe('Hermes LandPortal import', () => {
+  it('persists subject facts first, then comparables in a later independent snapshot', () => {
+    const target = subjectCard();
+    const file = fixture({ ...payload(), completed_categories: ['subject'], comps: [] });
+    const first = importHermesLandPortalFile(file, {
+      propertyCardId: target.card.id,
+      now: () => '2026-08-02T14:00:01.000Z',
+    });
+
+    expect(first.persistedCategories).toEqual(['subject']);
+    expect(first.categoryResults).toEqual([
+      expect.objectContaining({ category: 'subject', imported: true, persistedAt: '2026-08-02T14:00:01.000Z', error: null }),
+    ]);
+    expect(getPropertyCardRow(target.card.id)).toMatchObject({
+      owner: 'WILKINSON DANIEL', acres: 75.71, lp_property_id: '89505385', lp_url: SUBJECT_URL,
+    });
+    expect(loadPropertyInspection(target.card.id)?.parcelFacts).toMatchObject({ 'Owner Name': 'WILKINSON DANIEL', 'Parcel ID': '053889 75.00-1-24.11' });
+    expect(listComps({ dealCardId: target.deal.id })).toHaveLength(0);
+    expect(Object.keys(new PropertyResearchStore().loadForProperty(target.card.id)?.lanes ?? {})).toEqual(['hermes_landportal_subject']);
+
+    fs.writeFileSync(file, JSON.stringify({ ...payload(), completed_categories: ['subject', 'comps'] }));
+    const second = importHermesLandPortalFile(file, {
+      propertyCardId: target.card.id,
+      now: () => '2026-08-02T14:00:12.000Z',
+    });
+
+    expect(second.persistedCategories).toEqual(['subject', 'comps']);
+    expect(second.categoryResults.find((result) => result.category === 'subject')).toMatchObject({ imported: false, error: null });
+    expect(second.categoryResults.find((result) => result.category === 'comps')).toMatchObject({ imported: true, persistedAt: '2026-08-02T14:00:12.000Z', itemCount: 3, error: null });
+    expect(listComps({ dealCardId: target.deal.id })).toHaveLength(3);
+    expect(loadPropertyInspection(target.card.id)?.comparables).toHaveLength(3);
+    expect(Object.keys(new PropertyResearchStore().loadForProperty(target.card.id)?.lanes ?? {})).toEqual([
+      'hermes_landportal_subject', 'hermes_landportal_comps',
+    ]);
+  });
+
+  it('admits verified property-scoped visual artifacts as their own category', () => {
+    const target = subjectCard();
+    const base = payload();
+    const file = fixture({
+      ...base,
+      completed_categories: ['subject', 'comps', 'visuals'],
+      visual_artifacts: [{
+        key: 'parcel-context',
+        label: 'Exact parcel context',
+        kind: 'parcel_boundary',
+        purpose: 'Verify the exact subject boundary and immediate context.',
+        source_path: 'parcel-context.png',
+        timestamp: '2026-08-02T14:00:20.000Z',
+        requested_view: 'parcel_context',
+        active_view: 'parcel_context',
+        boundary_required: true,
+        boundary_visible: true,
+        tiles_loaded: true,
+        camera_scale: 'parcel',
+        clipped: false,
+        obstructions: [],
+      }],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'parcel-context.png'), Buffer.alloc(9 * 1024, 1));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+
+    expect(imported.persistedCategories).toEqual(['subject', 'comps', 'visuals']);
+    expect(imported.importedVisualCount).toBe(1);
+    expect(imported.rejectedVisualCount).toBe(0);
+    expect(imported.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({ imported: true, itemCount: 1, rejectedItemCount: 0, error: null });
+    expect(loadPropertyInspection(target.card.id)?.assets).toEqual([
+      expect.objectContaining({ key: 'parcel-context', label: 'Exact parcel context', validation: expect.objectContaining({ status: 'accepted', propertyCardId: target.card.id }) }),
+    ]);
+    expect(new PropertyResearchStore().loadForProperty(target.card.id)?.evidence.filter((item) => item.kind === 'visual')).toHaveLength(1);
+    const repeated = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+    expect(repeated.imported).toBe(false);
+    expect(repeated.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({ imported: false, error: null });
+    expect(loadPropertyInspection(target.card.id)?.assets).toHaveLength(1);
+  });
+
   it('imports the verified subject and all context comps through canonical stores, idempotently', () => {
     const target = subjectCard();
     const unrelatedDeal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Unrelated property' });

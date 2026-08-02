@@ -288,6 +288,49 @@ export interface PiMissionView {
 
 export interface PropertyIntelligenceView {
   snapshot: PiSnapshot | null;
+  hermesLandPortal?: {
+    runId: string;
+    dealCardId: number;
+    propertyCardId: number;
+    address: string;
+    status: 'running' | 'exact_match' | 'context_only' | 'no_match' | 'failed';
+    startedAt: string;
+    completedAt: string | null;
+    note: string;
+    persistedCategories: Array<{
+      category: 'subject' | 'comps' | 'visuals';
+      persistedAt: string;
+      itemCount: number;
+      rejectedItemCount: number;
+      error: string | null;
+    }>;
+  } | null;
+  providerResearch?: {
+    contractVersion: string;
+    propertyCardId: number;
+    updatedAt: string;
+    lanes: Array<{
+      laneId: string;
+      providerId: string;
+      retainedStatus: string;
+      latestAttemptStatus: string;
+      latestAttemptAt: string;
+      latestFailureReason: string | null;
+      durationMs: number;
+    }>;
+    acceptedEvidenceCount: number;
+    acceptedEvidence?: Array<{
+      id: string;
+      field: string;
+      value: unknown;
+      kind: 'fact' | 'visual' | 'comp' | 'estimate' | 'status';
+      subjectClassification: 'verified_subject' | 'context_only' | 'no_match';
+      sourceUrl: string | null;
+      retrievedAt: string;
+    }>;
+    rejectedEvidenceCount: number;
+    rejectedEvidence: Array<{ evidenceId: string; laneId: string; providerId: string; reason: string }>;
+  } | null;
   /** In-flight progressive content while a run is running; null otherwise. */
   progressive?: PiProgressive | null;
   /** The parent mission behind the snapshot and the run in flight. */
@@ -332,7 +375,7 @@ export function usePropertyIntelligence(dealId: number | null | undefined): Prop
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const running = view?.run?.status === 'running';
+  const running = view?.run?.status === 'running' || view?.hermesLandPortal?.status === 'running';
 
   // Poll while a mission is in flight so the operator watches real progress.
   useEffect(() => {
@@ -667,6 +710,78 @@ export function PropertyIntelligenceLaunch({ state }: { state: PropertyIntellige
             </details>
           )}
         </div>
+      )}
+      {view?.hermesLandPortal && (
+        <div data-testid="pi-hermes-incremental-status" class="mt-2 rounded border border-sky-500/30 bg-sky-500/5 px-2.5 py-2 text-[10.5px]">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <Tag tone={view.hermesLandPortal.status === 'failed' ? STATUS_TONE.failed : view.hermesLandPortal.status === 'running' ? STATUS_TONE.running : STATUS_TONE.completed}>
+              {view.hermesLandPortal.status.replace(/_/g, ' ')}
+            </Tag>
+            <span class="font-semibold text-[var(--color-text)]">Hermes · {view.hermesLandPortal.address}</span>
+          </div>
+          <div class="mt-1 text-[var(--color-text-muted)]">{view.hermesLandPortal.note}</div>
+          {!!view.hermesLandPortal.persistedCategories.length && (
+            <div class="mt-1 space-y-0.5" data-testid="pi-hermes-persisted-categories">
+              {view.hermesLandPortal.persistedCategories.map((result) => (
+                <div key={result.category}>
+                  <span class="font-semibold text-sky-200">{result.category}</span>
+                  {' · '}{result.itemCount} item(s) persisted {new Date(result.persistedAt).toLocaleString()}
+                  {result.rejectedItemCount ? ` · ${result.rejectedItemCount} rejected` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {view?.providerResearch && (
+        <details open={!!view.hermesLandPortal || view.providerResearch.lanes.some((lane) => lane.providerId === 'hermes_landportal_import')} data-testid="pi-provider-lanes" class="mt-2 rounded border border-[var(--color-border)] px-2 py-1.5">
+          <summary class="cursor-pointer text-[11px] font-semibold text-[var(--color-text-muted)]">
+            Provider lanes · {view.providerResearch.lanes.length} · {view.providerResearch.acceptedEvidenceCount} accepted evidence item(s)
+          </summary>
+          <div class="mt-2 space-y-1">
+            {view.providerResearch.lanes.map((lane) => (
+              <div key={lane.laneId} class="rounded border border-[var(--color-border)] px-2 py-1 text-[10.5px]">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <Tag tone={lane.latestAttemptStatus === 'failed' || lane.latestAttemptStatus === 'unavailable' ? STATUS_TONE.failed : lane.latestAttemptStatus === 'verified' ? STATUS_TONE.completed : STATUS_TONE.partial}>
+                    {lane.latestAttemptStatus.replace(/_/g, ' ')}
+                  </Tag>
+                  <span class="font-semibold text-[var(--color-text)]">{lane.laneId.replace(/_/g, ' ')}</span>
+                  <span class="text-[var(--color-text-faint)]">{lane.providerId}</span>
+                  <span class="ml-auto text-[var(--color-text-faint)]">persisted {new Date(lane.latestAttemptAt).toLocaleString()} · {(lane.durationMs / 1000).toFixed(1)}s</span>
+                </div>
+                {lane.retainedStatus !== lane.latestAttemptStatus && (
+                  <div class="mt-0.5 text-[var(--color-text-muted)]">Retained stronger result: {lane.retainedStatus.replace(/_/g, ' ')}</div>
+                )}
+                {lane.latestFailureReason && <div class="mt-0.5 text-rose-400">{lane.latestFailureReason}</div>}
+              </div>
+            ))}
+            {(view.providerResearch.acceptedEvidence?.length ?? 0) > 0 && (
+              <div data-testid="pi-provider-accepted-evidence" class="mt-2 space-y-1 border-t border-[var(--color-border)] pt-2">
+                <div class="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">Persisted provider results</div>
+                {(view.providerResearch.acceptedEvidence ?? []).map((item) => {
+                  const shown = item.value && typeof item.value === 'object'
+                    ? Object.entries(item.value as Record<string, unknown>).map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
+                    : String(item.value ?? '');
+                  return (
+                    <div key={item.id} data-testid={`pi-provider-evidence-${item.kind}`} class="rounded border border-[var(--color-border)] px-2 py-1 text-[10.5px]">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <Tag tone={item.subjectClassification === 'verified_subject' ? STATUS_TONE.completed : STATUS_TONE.partial}>{item.kind}</Tag>
+                        <span class="font-semibold text-[var(--color-text)]">{item.field.replace(/[_\.]/g, ' ')}</span>
+                        <span class="ml-auto text-[var(--color-text-faint)]">{new Date(item.retrievedAt).toLocaleString()}</span>
+                      </div>
+                      <div class="mt-0.5 break-words text-[var(--color-text-muted)]">{shown}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {view.providerResearch.rejectedEvidenceCount > 0 && (
+              <div class="text-[10px] text-amber-300">
+                {view.providerResearch.rejectedEvidenceCount} evidence item(s) rejected by scope, strength, or validation rules.
+              </div>
+            )}
+          </div>
+        </details>
       )}
       {!run && !running && (
         <div class="mt-2 text-[11px] text-[var(--color-text-faint)]">

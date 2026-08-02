@@ -17,6 +17,10 @@ import {
   validateLandPortalSubjectUrl,
 } from './landportal-operating-rules.js';
 import {
+  validateLandPortalVisualEvidence,
+  type LandPortalVisualView,
+} from './landportal-evidence-validation.js';
+import {
   attachCardActivity,
   getPropertyCardRow,
   loadPropertyInspection,
@@ -44,6 +48,27 @@ export interface HermesLandPortalComp {
   price_per_acre?: number | null;
   sale_date?: string | null;
   source_url?: string | null;
+}
+
+export type HermesLandPortalResultCategory = 'subject' | 'comps' | 'visuals';
+
+export interface HermesLandPortalVisualArtifact {
+  key: string;
+  label: string;
+  kind: 'parcel_page' | 'parcel_3d' | 'parcel_boundary' | 'overlay' | 'comparables_map';
+  purpose: string;
+  source_path: string;
+  timestamp: string;
+  requested_view: LandPortalVisualView;
+  active_view: LandPortalVisualView;
+  boundary_required: boolean;
+  boundary_visible: boolean;
+  tiles_loaded: boolean;
+  camera_scale: 'parcel' | 'context' | 'county' | 'national' | 'unknown';
+  clipped: boolean;
+  obstructions: string[];
+  overlay?: string | null;
+  note?: string | null;
 }
 
 export interface HermesLandPortalSubject {
@@ -74,6 +99,8 @@ export interface HermesLandPortalSubject {
   canonical_property_identifier?: string | number | null;
   property_id?: string | number | null;
   landportal_property_id?: string | number | null;
+  completed_categories?: HermesLandPortalResultCategory[];
+  visual_artifacts?: HermesLandPortalVisualArtifact[];
   comps: HermesLandPortalComp[];
 }
 
@@ -99,10 +126,27 @@ export interface HermesLandPortalImportResult {
   duplicateCompCount: number;
   rejectedFields: string[];
   canonicalEvidenceRetained: number;
+  completedCategories: HermesLandPortalResultCategory[];
+  persistedCategories: HermesLandPortalResultCategory[];
+  importedVisualCount: number;
+  rejectedVisualCount: number;
+  categoryResults: HermesLandPortalCategoryImportResult[];
+}
+
+export interface HermesLandPortalCategoryImportResult {
+  category: HermesLandPortalResultCategory;
+  runId: string;
+  imported: boolean;
+  persistedAt: string;
+  retainedEvidenceCount: number;
+  itemCount: number;
+  rejectedItemCount: number;
+  error: string | null;
 }
 
 export interface ImportHermesLandPortalOptions {
   propertyCardId?: number;
+  now?: () => string;
 }
 
 type SubjectCard = PropertyCardRow & { deal_card_id: number; role: string };
@@ -114,6 +158,10 @@ const compact = (value: unknown): string => text(value).toLowerCase().replace(/[
 const compactApn = (value: unknown): string => text(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
 const money = (value: number): string => `$${Math.round(value).toLocaleString('en-US')}`;
 const percent = (value: number): string => `${value.toFixed(2)}%`;
+const HERMES_RESULT_CATEGORIES = new Set<HermesLandPortalResultCategory>(['subject', 'comps', 'visuals']);
+const HERMES_VISUAL_KINDS = new Set<HermesLandPortalVisualArtifact['kind']>(['parcel_page', 'parcel_3d', 'parcel_boundary', 'overlay', 'comparables_map']);
+const HERMES_VISUAL_VIEWS = new Set<LandPortalVisualView>(['parcel_context', 'road_frontage', 'wetlands', 'fema_flood', 'soil', 'contours', 'front_3d', 'rear_3d', 'comparables_map']);
+const HERMES_CAMERA_SCALES = new Set<HermesLandPortalVisualArtifact['camera_scale']>(['parcel', 'context', 'county', 'national', 'unknown']);
 
 function asDict(value: unknown, label: string): Dict {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
@@ -129,6 +177,17 @@ function requiredText(value: unknown, label: string): string {
 function requiredPositiveNumber(value: unknown, label: string): number {
   const parsed = finite(value);
   if (parsed == null || parsed <= 0) throw new Error(`Hermes JSON field "${label}" must be a positive number.`);
+  return parsed;
+}
+
+function requiredBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`Hermes JSON field "${label}" must be a boolean.`);
+  return value;
+}
+
+function enumText<T extends string>(value: unknown, label: string, allowed: Set<T>): T {
+  const parsed = requiredText(value, label) as T;
+  if (!allowed.has(parsed)) throw new Error(`Hermes JSON field "${label}" has unsupported value "${parsed}".`);
   return parsed;
 }
 
@@ -150,12 +209,51 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
       source_url: text(comp.source_url) || null,
     };
   });
+  const completedCategories = raw.completed_categories == null
+    ? undefined
+    : (() => {
+        if (!Array.isArray(raw.completed_categories)) throw new Error('Hermes JSON field "completed_categories" must be an array.');
+        const parsed = raw.completed_categories.map((entry, index) => enumText(entry, `completed_categories[${index}]`, HERMES_RESULT_CATEGORIES));
+        if (!parsed.includes('subject')) throw new Error('Hermes exact-subject snapshots must complete "subject" before later result categories.');
+        return [...new Set(parsed)];
+      })();
+  const visualArtifacts = raw.visual_artifacts == null
+    ? undefined
+    : (() => {
+        if (!Array.isArray(raw.visual_artifacts)) throw new Error('Hermes JSON field "visual_artifacts" must be an array.');
+        return raw.visual_artifacts.map((entry, index): HermesLandPortalVisualArtifact => {
+          const artifact = asDict(entry, `Hermes visual artifact ${index + 1}`);
+          if (!Array.isArray(artifact.obstructions) || artifact.obstructions.some((item) => typeof item !== 'string')) {
+            throw new Error(`Hermes JSON field "visual_artifacts[${index}].obstructions" must be a string array.`);
+          }
+          return {
+            key: requiredText(artifact.key, `visual_artifacts[${index}].key`),
+            label: requiredText(artifact.label, `visual_artifacts[${index}].label`),
+            kind: enumText(artifact.kind, `visual_artifacts[${index}].kind`, HERMES_VISUAL_KINDS),
+            purpose: requiredText(artifact.purpose, `visual_artifacts[${index}].purpose`),
+            source_path: requiredText(artifact.source_path, `visual_artifacts[${index}].source_path`),
+            timestamp: requiredText(artifact.timestamp, `visual_artifacts[${index}].timestamp`),
+            requested_view: enumText(artifact.requested_view, `visual_artifacts[${index}].requested_view`, HERMES_VISUAL_VIEWS),
+            active_view: enumText(artifact.active_view, `visual_artifacts[${index}].active_view`, HERMES_VISUAL_VIEWS),
+            boundary_required: requiredBoolean(artifact.boundary_required, `visual_artifacts[${index}].boundary_required`),
+            boundary_visible: requiredBoolean(artifact.boundary_visible, `visual_artifacts[${index}].boundary_visible`),
+            tiles_loaded: requiredBoolean(artifact.tiles_loaded, `visual_artifacts[${index}].tiles_loaded`),
+            camera_scale: enumText(artifact.camera_scale, `visual_artifacts[${index}].camera_scale`, HERMES_CAMERA_SCALES),
+            clipped: requiredBoolean(artifact.clipped, `visual_artifacts[${index}].clipped`),
+            obstructions: artifact.obstructions.map((item) => item.trim()).filter(Boolean),
+            overlay: text(artifact.overlay) || null,
+            note: text(artifact.note) || null,
+          };
+        });
+      })();
   return {
     ...(raw as unknown as HermesLandPortalSubject),
     subject_url: requiredText(raw.subject_url, 'subject_url'),
     subject_verification_status: requiredText(raw.subject_verification_status, 'subject_verification_status'),
     address: requiredText(raw.address, 'address'),
     apn: requiredText(raw.apn, 'apn'),
+    completed_categories: completedCategories,
+    visual_artifacts: visualArtifacts,
     comps,
   };
 }
@@ -417,16 +515,95 @@ function compEvidence(input: CanonicalPropertyInput, subject: HermesLandPortalSu
   });
 }
 
+interface PreparedHermesVisual {
+  artifact: HermesLandPortalVisualArtifact;
+  sourcePath: string;
+  sha256: string;
+  bytes: number;
+  validation: ReturnType<typeof validateLandPortalVisualEvidence>;
+}
+
+function prepareVisuals(
+  subject: HermesLandPortalSubject,
+  card: SubjectCard,
+  sourceFile: string,
+): { accepted: PreparedHermesVisual[]; rejected: Array<{ artifact: HermesLandPortalVisualArtifact; reason: string }> } {
+  const artifactRoot = path.dirname(sourceFile);
+  const priorHashes = (loadPropertyInspection(card.id)?.assets ?? [])
+    .map((asset) => asset.validation?.sha256 ?? null)
+    .filter((value): value is string => !!value);
+  const accepted: PreparedHermesVisual[] = [];
+  const rejected: Array<{ artifact: HermesLandPortalVisualArtifact; reason: string }> = [];
+  for (const artifact of subject.visual_artifacts ?? []) {
+    const sourcePath = path.resolve(artifactRoot, artifact.source_path);
+    const relative = path.relative(artifactRoot, sourcePath);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      rejected.push({ artifact, reason: 'visual source_path must remain inside the property-specific Hermes output directory' });
+      continue;
+    }
+    if (!/\.(?:png|jpe?g|webp)$/i.test(sourcePath) || !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+      rejected.push({ artifact, reason: 'visual source_path is not a retained PNG, JPEG, or WebP file' });
+      continue;
+    }
+    const file = fs.readFileSync(sourcePath);
+    const sha256 = crypto.createHash('sha256').update(file).digest('hex');
+    const validation = validateLandPortalVisualEvidence({
+      propertyCardId: card.id,
+      expectedPropertyCardId: card.id,
+      subjectClassification: 'verified_subject',
+      requestedView: artifact.requested_view,
+      activeView: artifact.active_view,
+      boundaryRequired: artifact.boundary_required,
+      boundaryVisible: artifact.boundary_visible,
+      tilesLoaded: artifact.tiles_loaded,
+      bytes: file.byteLength,
+      sha256,
+      priorSha256s: priorHashes,
+      cameraScale: artifact.camera_scale,
+      clipped: artifact.clipped,
+      obstructions: artifact.obstructions,
+    });
+    if (validation.status !== 'accepted') {
+      rejected.push({ artifact, reason: validation.reasons.join(' ') || 'visual validation rejected the artifact' });
+      continue;
+    }
+    priorHashes.push(sha256);
+    accepted.push({ artifact, sourcePath, sha256, bytes: file.byteLength, validation });
+  }
+  return { accepted, rejected };
+}
+
+function visualEvidence(input: CanonicalPropertyInput, subject: HermesLandPortalSubject, visuals: PreparedHermesVisual[]): NormalizedPropertyEvidence[] {
+  return visuals.map(({ artifact, sha256, bytes }) => ({
+    id: `hermes-landportal:visual:${sha256}`,
+    propertyCardId: input.propertyCardId,
+    dealCardId: input.dealCardId,
+    providerId: 'hermes_landportal_import',
+    field: `visuals.landportal.${artifact.key}`,
+    value: { key: artifact.key, label: artifact.label, purpose: artifact.purpose, requestedView: artifact.requested_view, bytes },
+    subjectClassification: 'verified_subject',
+    strength: 'provider_verified',
+    sourceUrl: subject.subject_url,
+    retrievedAt: artifact.timestamp,
+    confidence: 'high',
+    kind: 'visual',
+    validation: { valid: true, reasons: [] },
+    artifactHash: sha256,
+    viewUrl: null,
+  }));
+}
+
 function providerResult(input: {
   runId: string;
-  laneId: 'hermes_landportal_subject' | 'hermes_landportal_comps';
+  laneId: 'hermes_landportal_subject' | 'hermes_landportal_comps' | 'hermes_landportal_visuals';
   property: CanonicalPropertyInput;
   subject: HermesLandPortalSubject;
   evidence: NormalizedPropertyEvidence[];
   capturedAt: string;
+  persistedAt: string;
   checks: HermesLandPortalValidationCheck[];
 }): PropertyProviderResult<HermesLandPortalSubject> {
-  const subjectLane = input.laneId === 'hermes_landportal_subject';
+  const contextLane = input.laneId === 'hermes_landportal_comps';
   return {
     contractVersion: 'property-provider-v1',
     runId: input.runId,
@@ -436,18 +613,18 @@ function providerResult(input: {
     execution: {
       attempted: true,
       startedAt: input.capturedAt,
-      completedAt: input.capturedAt,
-      durationMs: 0,
+      completedAt: input.persistedAt,
+      durationMs: Math.max(0, Date.parse(input.persistedAt) - Date.parse(input.capturedAt)) || 0,
       result: input.subject,
     },
     validation: {
       valid: true,
-      subjectClassification: subjectLane ? 'verified_subject' : 'context_only',
+      subjectClassification: contextLane ? 'context_only' : 'verified_subject',
       checks: input.checks.map((check) => ({ check: check.check, passed: check.passed, reason: check.reason })),
       rejectedEvidenceIds: [],
     },
     evidence: input.evidence,
-    status: subjectLane ? 'verified' : 'context_only',
+    status: contextLane ? 'context_only' : 'verified',
     persistence: { attempted: false, persisted: false, retainedEvidenceCount: 0, rejectedEvidenceCount: 0, reason: null },
     failureReason: null,
   };
@@ -519,158 +696,209 @@ export function importHermesLandPortalFile(
   const runId = `hermes-landportal-${card.id}-${fileHash.slice(0, 24)}`;
   const property = canonicalInput(card, subject, validation.propertyId, validation.fips);
   const normalizedSubject = subjectEvidence(property, subject, validation.propertyId, validation.fips, captured.value);
-  const normalizedComps = compEvidence(property, subject, captured.value);
-  const existingComps = listComps({ dealCardId: card.deal_card_id, limit: 500 });
-  const duplicates = subject.comps.map((comp) => duplicateRegistryComp(comp, existingComps));
+  const completedCategories = subject.completed_categories
+    ?? (['subject', 'comps', ...((subject.visual_artifacts?.length ?? 0) ? ['visuals' as const] : [])] satisfies HermesLandPortalResultCategory[]);
+  const now = options.now ?? (() => new Date().toISOString());
+  const categoryResults: HermesLandPortalCategoryImportResult[] = [];
+  let createdCompCount = 0;
+  let duplicateCompCount = 0;
+  let importedVisualCount = 0;
+  let rejectedVisualCount = 0;
 
-  const already = getLandosDb().prepare(
-    "SELECT 1 FROM landos_card_activity WHERE card_id = ? AND kind = 'hermes_landportal_import' AND ref = ? LIMIT 1",
-  ).get(card.id, runId);
-  if (already) {
-    return {
+  const categoryRunId = (category: HermesLandPortalResultCategory, value: unknown): string =>
+    `hermes-landportal-${category}-${card.id}-${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24)}`;
+  const priorCategoryResult = (category: HermesLandPortalResultCategory, categoryId: string): HermesLandPortalCategoryImportResult | null => {
+    const row = getLandosDb().prepare(
+      'SELECT created_at FROM landos_card_activity WHERE card_id = ? AND kind = ? AND ref = ? LIMIT 1',
+    ).get(card.id, `hermes_landportal_${category}_import`, categoryId) as { created_at?: string } | undefined;
+    return row ? {
+      category,
+      runId: categoryId,
       imported: false,
-      runId,
-      sourceFile,
-      sourceUrl: subject.subject_url,
-      capturedAt: captured.value,
-      captureTimestampSource: captured.source,
-      propertyCardId: card.id,
-      dealCardId: card.deal_card_id,
-      validationChecks: validation.checks,
-      importedSubjectFields: normalizedSubject.importedFields,
-      importedCompCount: subject.comps.length,
-      createdCompCount: 0,
-      duplicateCompCount: subject.comps.length,
-      rejectedFields: normalizedSubject.rejectedFields,
-      canonicalEvidenceRetained: 0,
-    };
+      persistedAt: row.created_at || captured.value,
+      retainedEvidenceCount: 0,
+      itemCount: category === 'subject' ? normalizedSubject.evidence.length : category === 'comps' ? subject.comps.length : subject.visual_artifacts?.length ?? 0,
+      rejectedItemCount: 0,
+      error: null,
+    } : null;
+  };
+
+  if (completedCategories.includes('subject')) {
+    const subjectHashInput = Object.fromEntries(Object.entries(subject).filter(([key]) => !['comps', 'visual_artifacts', 'completed_categories'].includes(key)));
+    const categoryId = categoryRunId('subject', subjectHashInput);
+    const prior = priorCategoryResult('subject', categoryId);
+    if (prior) categoryResults.push(prior);
+    else {
+      const persistedAt = now();
+      try {
+        const applied = getLandosDb().transaction(() => {
+          const persisted = new PropertyResearchStore().persistProviderResult(providerResult({
+            runId: categoryId, laneId: 'hermes_landportal_subject', property, subject,
+            evidence: normalizedSubject.evidence, capturedAt: captured.value, persistedAt, checks: validation.checks,
+          }));
+          if (!persisted.persistence.persisted) throw new Error(persisted.persistence.reason || 'Canonical subject persistence rejected the Hermes import.');
+          const retainedCard = getPropertyCardRow(card.id)!;
+          upsertPropertyCard({
+            cardId: retainedCard.id,
+            entity: retainedCard.entity as LandosEntity,
+            activeInputAddress: retainedCard.active_input_address,
+            city: retainedCard.city,
+            zip: retainedCard.zip,
+            county: retainedCard.county || text(subject.county),
+            state: retainedCard.state,
+            apn: retainedCard.apn,
+            lpPropertyId: retainedCard.lp_property_id || validation.propertyId,
+            fips: retainedCard.fips || validation.fips || '',
+            lpUrl: subject.subject_url,
+            owner: retainedCard.owner || text(subject.owner),
+            acres: retainedCard.acres ?? finite(subject.deeded_acres) ?? finite(subject.calculated_acres) ?? undefined,
+            verified: true,
+            verificationSource: retainedCard.verification_source || 'Hermes validated LandPortal JSON import',
+            agentId: 'hermes-landportal-import',
+          });
+          const retainedInspection = loadPropertyInspection(card.id);
+          savePropertyInspection(card.id, {
+            parcelUrl: subject.subject_url,
+            parcelUrlRecord: {
+              url: subject.subject_url,
+              source: 'Hermes validated LandPortal incremental subject import',
+              capturedAt: captured.value,
+              propertyCardId: card.id,
+              dealCardId: card.deal_card_id,
+              verifiedSubject: true,
+              apn: subject.apn,
+              fips: validation.fips,
+              propertyId: validation.propertyId,
+            },
+            threeDCapture: retainedInspection?.threeDCapture ?? null,
+            comparablesUrl: retainedInspection?.comparablesUrl ?? null,
+            comparablesCapturedAt: null,
+            parcelFacts: inspectionFacts(subject, retainedInspection?.parcelFacts ?? {}),
+            assets: [], overlays: [], visualObservations: [], comparables: [],
+            sources: [{ provider: 'LandPortal', stage: 'hermes_subject_import', status: 'used', resultKind: 'retrieved', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `Exact subject identity for ${subject.address} persisted independently from ${path.basename(sourceFile)}.` }],
+            evidence: [{ label: 'Hermes LandPortal verified subject import', status: 'verified', detail: `Exact address, APN, subject URL, and LandPortal property identifier validated for ${subject.address}.`, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url }],
+          });
+          attachCardActivity({ cardId: card.id, agentId: 'hermes-landportal-import', kind: 'hermes_landportal_subject_import', summary: `Persisted verified Hermes LandPortal subject facts for ${subject.address}.`, ref: categoryId });
+          return persisted.persistence.retainedEvidenceCount;
+        })();
+        categoryResults.push({ category: 'subject', runId: categoryId, imported: true, persistedAt, retainedEvidenceCount: applied, itemCount: normalizedSubject.evidence.length, rejectedItemCount: 0, error: null });
+      } catch (error) {
+        categoryResults.push({ category: 'subject', runId: categoryId, imported: false, persistedAt, retainedEvidenceCount: 0, itemCount: normalizedSubject.evidence.length, rejectedItemCount: normalizedSubject.evidence.length, error: (error as Error).message });
+      }
+    }
   }
 
-  const apply = getLandosDb().transaction(() => {
-    const research = new PropertyResearchStore();
-    const subjectPersisted = research.persistProviderResult(providerResult({
-      runId, laneId: 'hermes_landportal_subject', property, subject,
-      evidence: normalizedSubject.evidence, capturedAt: captured.value, checks: validation.checks,
-    }));
-    if (!subjectPersisted.persistence.persisted) throw new Error(subjectPersisted.persistence.reason || 'Canonical subject persistence rejected the Hermes import.');
-    const compsPersisted = research.persistProviderResult(providerResult({
-      runId, laneId: 'hermes_landportal_comps', property, subject,
-      evidence: normalizedComps, capturedAt: captured.value, checks: validation.checks,
-    }));
-    if (!compsPersisted.persistence.persisted) throw new Error(compsPersisted.persistence.reason || 'Canonical comp persistence rejected the Hermes import.');
-
-    const retainedCard = getPropertyCardRow(card.id)!;
-    upsertPropertyCard({
-      cardId: retainedCard.id,
-      entity: retainedCard.entity as LandosEntity,
-      activeInputAddress: retainedCard.active_input_address,
-      city: retainedCard.city,
-      zip: retainedCard.zip,
-      county: retainedCard.county || text(subject.county),
-      state: retainedCard.state,
-      apn: retainedCard.apn,
-      lpPropertyId: retainedCard.lp_property_id || validation.propertyId,
-      fips: retainedCard.fips || validation.fips || '',
-      lpUrl: subject.subject_url,
-      owner: retainedCard.owner || text(subject.owner),
-      acres: retainedCard.acres ?? finite(subject.deeded_acres) ?? finite(subject.calculated_acres) ?? undefined,
-      verified: true,
-      verificationSource: retainedCard.verification_source || 'Hermes validated LandPortal JSON import',
-      agentId: 'hermes-landportal-import',
-    });
-
-    const retainedInspection = loadPropertyInspection(card.id);
-    savePropertyInspection(card.id, {
-      parcelUrl: subject.subject_url,
-      parcelUrlRecord: {
-        url: subject.subject_url,
-        source: 'Hermes validated LandPortal JSON import',
-        capturedAt: captured.value,
-        propertyCardId: card.id,
-        dealCardId: card.deal_card_id,
-        verifiedSubject: true,
-        apn: subject.apn,
-        fips: validation.fips,
-        propertyId: validation.propertyId,
-      },
-      threeDCapture: retainedInspection?.threeDCapture ?? null,
-      comparablesUrl: retainedInspection?.comparablesUrl ?? null,
-      comparablesCapturedAt: captured.value,
-      parcelFacts: inspectionFacts(subject, retainedInspection?.parcelFacts ?? {}),
-      assets: [],
-      overlays: [],
-      visualObservations: [],
-      comparables: subject.comps.map((comp, index) => projectedComparable(comp, duplicates[index], subject.subject_url, captured.value)),
-      sources: [{
-        provider: 'LandPortal',
-        stage: 'hermes_import',
-        status: 'used',
-        resultKind: 'retrieved',
-        attemptedAt: captured.value,
-        confidence: 'high',
-        url: subject.subject_url,
-        note: `Validated Hermes JSON import (${path.basename(sourceFile)}); exact subject identity confirmed before projection.`,
-      }],
-      evidence: [{
-        label: 'Hermes LandPortal verified subject import',
-        status: 'verified',
-        detail: `Exact subject APN, address, and LandPortal property identifier validated; ${subject.comps.length} comp row(s) retained as context-only evidence.`,
-        confidence: 'high',
-        source: 'Hermes validated LandPortal JSON import',
-        url: subject.subject_url,
-      }],
-      discoveryQuestions: [],
-      missingInformation: [],
-    });
-
-    let createdCompCount = 0;
-    for (const [index, comp] of subject.comps.entries()) {
-      if (duplicates[index]) continue;
-      upsertNormalizedComp({
-        entity: card.entity as LandosEntity,
-        dealCardId: card.deal_card_id,
-        cardId: card.id,
-        sourceLabel: 'LandPortal',
-        canonicalSource: 'Hermes / LandPortal',
-        sourceUrl: comp.source_url || subject.subject_url,
-        addressDesc: text(comp.address),
-        apn: text(comp.apn),
-        county: text(subject.county) || card.county,
-        state: card.state,
-        price: comp.price,
-        priceKind: 'unknown',
-        saleOrListDate: text(comp.sale_date),
-        acres: comp.acres,
-        pricePerAcre: finite(comp.price_per_acre) ?? undefined,
-        notes: 'Hermes-imported LandPortal comparable; context-only unless a transaction status/date is independently retained.',
-        addedBy: 'hermes-landportal-import',
-        status: 'manual_unverified',
-        propertyClass: 'land',
-        classification: 'landportal_context',
-        retrievedAt: captured.value,
-        inclusionReason: 'LandPortal comparable retained from a validated exact-subject Hermes payload.',
-        sourceAttributions: [{ provider: 'Hermes / LandPortal', url: comp.source_url || subject.subject_url }],
-        canonicalKey: hermesLandPortalCompKey(comp),
-      });
-      createdCompCount += 1;
+  if (completedCategories.includes('comps')) {
+    const categoryId = categoryRunId('comps', { address: subject.address, apn: subject.apn, propertyId: validation.propertyId, comps: subject.comps });
+    const prior = priorCategoryResult('comps', categoryId);
+    if (prior) {
+      duplicateCompCount = subject.comps.length;
+      categoryResults.push(prior);
+    } else {
+      const persistedAt = now();
+      try {
+        const applied = getLandosDb().transaction(() => {
+          const normalizedComps = compEvidence(property, subject, captured.value);
+          const existingComps = listComps({ dealCardId: card.deal_card_id, limit: 500 });
+          const duplicates = subject.comps.map((comp) => duplicateRegistryComp(comp, existingComps));
+          const persisted = new PropertyResearchStore().persistProviderResult(providerResult({
+            runId: categoryId, laneId: 'hermes_landportal_comps', property, subject,
+            evidence: normalizedComps, capturedAt: captured.value, persistedAt, checks: validation.checks,
+          }));
+          if (!persisted.persistence.persisted) throw new Error(persisted.persistence.reason || 'Canonical comp persistence rejected the Hermes import.');
+          const retainedInspection = loadPropertyInspection(card.id);
+          savePropertyInspection(card.id, {
+            parcelUrl: subject.subject_url,
+            parcelUrlRecord: retainedInspection?.parcelUrlRecord ?? null,
+            threeDCapture: retainedInspection?.threeDCapture ?? null,
+            comparablesUrl: retainedInspection?.comparablesUrl ?? subject.subject_url,
+            comparablesCapturedAt: captured.value,
+            parcelFacts: {}, assets: [], overlays: [], visualObservations: [],
+            comparables: subject.comps.map((comp, index) => projectedComparable(comp, duplicates[index], subject.subject_url, captured.value)),
+            sources: [{ provider: 'LandPortal', stage: 'hermes_comps_import', status: 'used', resultKind: 'retrieved', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `${subject.comps.length} comparable row(s) for ${subject.address} persisted independently after exact-subject validation.` }],
+            evidence: [{ label: 'Hermes LandPortal comparable import', status: 'observed', detail: `${subject.comps.length} LandPortal comparable row(s) retained as context-only evidence for ${subject.address}.`, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url }],
+          });
+          let created = 0;
+          for (const [index, comp] of subject.comps.entries()) {
+            if (duplicates[index]) continue;
+            upsertNormalizedComp({
+              entity: card.entity as LandosEntity, dealCardId: card.deal_card_id, cardId: card.id,
+              sourceLabel: 'LandPortal', canonicalSource: 'Hermes / LandPortal', sourceUrl: comp.source_url || subject.subject_url,
+              addressDesc: text(comp.address), apn: text(comp.apn), county: text(subject.county) || card.county, state: card.state,
+              price: comp.price, priceKind: 'unknown', saleOrListDate: text(comp.sale_date), acres: comp.acres,
+              pricePerAcre: finite(comp.price_per_acre) ?? undefined,
+              notes: 'Hermes-imported LandPortal comparable; context-only unless transaction status/date is independently retained.',
+              addedBy: 'hermes-landportal-import', status: 'manual_unverified', propertyClass: 'land', classification: 'landportal_context',
+              retrievedAt: captured.value, inclusionReason: `LandPortal comparable retained for exact subject ${subject.address}.`,
+              sourceAttributions: [{ provider: 'Hermes / LandPortal', url: comp.source_url || subject.subject_url }],
+              canonicalKey: hermesLandPortalCompKey(comp),
+            });
+            created += 1;
+          }
+          attachCardActivity({ cardId: card.id, agentId: 'hermes-landportal-import', kind: 'hermes_landportal_comps_import', summary: `Persisted ${subject.comps.length} Hermes LandPortal comparable row(s) for ${subject.address}.`, ref: categoryId });
+          return { created, retained: persisted.persistence.retainedEvidenceCount };
+        })();
+        createdCompCount = applied.created;
+        duplicateCompCount = subject.comps.length - applied.created;
+        categoryResults.push({ category: 'comps', runId: categoryId, imported: true, persistedAt, retainedEvidenceCount: applied.retained, itemCount: subject.comps.length, rejectedItemCount: 0, error: null });
+      } catch (error) {
+        categoryResults.push({ category: 'comps', runId: categoryId, imported: false, persistedAt, retainedEvidenceCount: 0, itemCount: subject.comps.length, rejectedItemCount: subject.comps.length, error: (error as Error).message });
+      }
     }
+  }
 
-    attachCardActivity({
-      cardId: card.id,
-      agentId: 'hermes-landportal-import',
-      kind: 'hermes_landportal_import',
-      summary: `Imported validated Hermes LandPortal subject evidence and ${subject.comps.length} context comp row(s) into the canonical property record.`,
-      ref: runId,
+  if (completedCategories.includes('visuals')) {
+    const artifactRoot = path.dirname(sourceFile);
+    const visualIdentity = (subject.visual_artifacts ?? []).map((artifact) => {
+      const resolved = path.resolve(artifactRoot, artifact.source_path);
+      const relative = path.relative(artifactRoot, resolved);
+      const sha256 = relative && !relative.startsWith('..') && !path.isAbsolute(relative) && fs.existsSync(resolved) && fs.statSync(resolved).isFile()
+        ? crypto.createHash('sha256').update(fs.readFileSync(resolved)).digest('hex')
+        : null;
+      return { ...artifact, sha256 };
     });
-    return {
-      createdCompCount,
-      canonicalEvidenceRetained: subjectPersisted.persistence.retainedEvidenceCount + compsPersisted.persistence.retainedEvidenceCount,
-    };
-  });
+    const categoryId = categoryRunId('visuals', { address: subject.address, apn: subject.apn, propertyId: validation.propertyId, artifacts: visualIdentity });
+    const prior = priorCategoryResult('visuals', categoryId);
+    if (prior) categoryResults.push(prior);
+    else {
+      const prepared = prepareVisuals(subject, card, sourceFile);
+      rejectedVisualCount = prepared.rejected.length;
+      const persistedAt = now();
+      try {
+        const applied = getLandosDb().transaction(() => {
+          const evidence = visualEvidence(property, subject, prepared.accepted);
+          const persisted = new PropertyResearchStore().persistProviderResult(providerResult({
+            runId: categoryId, laneId: 'hermes_landportal_visuals', property, subject,
+            evidence, capturedAt: captured.value, persistedAt, checks: validation.checks,
+          }));
+          if (!persisted.persistence.persisted) throw new Error(persisted.persistence.reason || 'Canonical visual persistence rejected the Hermes import.');
+          const retainedInspection = loadPropertyInspection(card.id);
+          savePropertyInspection(card.id, {
+            parcelUrl: subject.subject_url,
+            parcelUrlRecord: retainedInspection?.parcelUrlRecord ?? null,
+            threeDCapture: retainedInspection?.threeDCapture ?? null,
+            comparablesUrl: retainedInspection?.comparablesUrl ?? null,
+            comparablesCapturedAt: null,
+            parcelFacts: {},
+            assets: prepared.accepted.map(({ artifact, sourcePath, validation: visualValidation }) => ({ key: artifact.key, label: artifact.label, kind: artifact.kind, purpose: artifact.purpose, sourcePath, timestamp: artifact.timestamp, overlay: artifact.overlay ?? undefined, note: artifact.note ?? undefined, validation: visualValidation })),
+            overlays: [], visualObservations: [], comparables: [],
+            sources: [{ provider: 'LandPortal', stage: 'hermes_visuals_import', status: prepared.accepted.length ? 'used' : 'partial', resultKind: prepared.accepted.length ? 'retrieved' : 'attempted_inconclusive', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `${prepared.accepted.length} verified visual artifact(s) for ${subject.address} persisted independently; ${prepared.rejected.length} rejected.` }],
+            evidence: prepared.accepted.map(({ artifact }) => ({ label: artifact.label, status: 'verified', detail: artifact.purpose, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url })),
+          });
+          attachCardActivity({ cardId: card.id, agentId: 'hermes-landportal-import', kind: 'hermes_landportal_visuals_import', summary: `Persisted ${prepared.accepted.length} verified Hermes LandPortal visual artifact(s) for ${subject.address}; rejected ${prepared.rejected.length}.`, ref: categoryId });
+          return persisted.persistence.retainedEvidenceCount;
+        })();
+        importedVisualCount = prepared.accepted.length;
+        categoryResults.push({ category: 'visuals', runId: categoryId, imported: true, persistedAt, retainedEvidenceCount: applied, itemCount: prepared.accepted.length, rejectedItemCount: prepared.rejected.length, error: null });
+      } catch (error) {
+        categoryResults.push({ category: 'visuals', runId: categoryId, imported: false, persistedAt, retainedEvidenceCount: 0, itemCount: prepared.accepted.length, rejectedItemCount: prepared.rejected.length + prepared.accepted.length, error: (error as Error).message });
+      }
+    }
+  }
 
-  const applied = apply();
+  const persistedCategories = categoryResults.filter((result) => !result.error).map((result) => result.category);
   return {
-    imported: true,
+    imported: categoryResults.some((result) => result.imported),
     runId,
     sourceFile,
     sourceUrl: subject.subject_url,
@@ -680,10 +908,15 @@ export function importHermesLandPortalFile(
     dealCardId: card.deal_card_id,
     validationChecks: validation.checks,
     importedSubjectFields: normalizedSubject.importedFields,
-    importedCompCount: subject.comps.length,
-    createdCompCount: applied.createdCompCount,
-    duplicateCompCount: subject.comps.length - applied.createdCompCount,
+    importedCompCount: completedCategories.includes('comps') ? subject.comps.length : 0,
+    createdCompCount,
+    duplicateCompCount,
     rejectedFields: normalizedSubject.rejectedFields,
-    canonicalEvidenceRetained: applied.canonicalEvidenceRetained,
+    canonicalEvidenceRetained: categoryResults.reduce((sum, result) => sum + result.retainedEvidenceCount, 0),
+    completedCategories,
+    persistedCategories,
+    importedVisualCount,
+    rejectedVisualCount,
+    categoryResults,
   };
 }

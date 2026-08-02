@@ -140,6 +140,8 @@ import { runPropertyIntelligenceOrchestrator } from './property-intelligence-orc
 import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
+import { PropertyResearchStore } from './property-research-store.js';
+import { getHermesLandPortalLaneProgress } from './hermes-landportal-auto.js';
 import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
 import type { SnapshotFact } from './property-intelligence-snapshot.js';
@@ -6051,6 +6053,7 @@ export function registerLandosRoutes(app: Hono): void {
   // continue in the background so progress is visible while it works. The joined
   // snapshot is written back to THIS Deal Card and becomes the primary read.
   const propertyIntelligenceStore = new PropertyIntelligenceStore();
+  const propertyResearchStore = new PropertyResearchStore();
 
   const propertyIntelligenceCollectors = (dealCardId: number) => makeLivePropertyIntelligenceCollectors({
     runPublicIntelligence: async (id) => {
@@ -6351,6 +6354,34 @@ export function registerLandosRoutes(app: Hono): void {
     const progressRun = latest ?? primary;
     return {
       snapshot: primary?.snapshot ? presentPropertyIntelligenceSnapshot(primary.snapshot) : null,
+      hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
+      providerResearch: (() => {
+        const deal = getDealCard(dealCardId);
+        const cardId = subjectCardId(deal) ?? null;
+        if (cardId == null) return null;
+        const canonical = propertyResearchStore.loadForProperty(cardId);
+        if (!canonical) return null;
+        return {
+          contractVersion: canonical.contractVersion,
+          propertyCardId: canonical.propertyCardId,
+          updatedAt: canonical.updatedAt,
+          lanes: Object.values(canonical.lanes),
+          acceptedEvidenceCount: canonical.evidence.length,
+          acceptedEvidence: canonical.evidence
+            .filter((item) => item.providerId === 'hermes_landportal_import')
+            .map((item) => ({
+              id: item.id,
+              field: item.field,
+              value: item.value,
+              kind: item.kind,
+              subjectClassification: item.subjectClassification,
+              sourceUrl: item.sourceUrl,
+              retrievedAt: item.retrievedAt,
+            })),
+          rejectedEvidenceCount: canonical.rejectedEvidence.length,
+          rejectedEvidence: canonical.rejectedEvidence.slice(-20),
+        };
+      })(),
       // In-flight progressive content: assembled at child-settle WRITE time and
       // stored on the run row; this read only serves what is stored (GET does no
       // provider work and no reassembly). Non-null only while the run is

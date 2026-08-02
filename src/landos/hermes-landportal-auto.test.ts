@@ -10,6 +10,7 @@ import {
   HERMES_LANDPORTAL_HARD_TIMEOUT_MS,
   HERMES_LANDPORTAL_PROFILE,
   HERMES_LANDPORTAL_TARGET_RUNTIME_MS,
+  getHermesLandPortalLaneProgress,
   hermesLandPortalInvocationArgs,
   hermesLandPortalOutputFile,
   hermesLandPortalPrompt,
@@ -47,6 +48,14 @@ const importedResult = (file: string): HermesLandPortalImportResult => ({
   duplicateCompCount: 0,
   rejectedFields: [],
   canonicalEvidenceRetained: 2,
+  completedCategories: ['subject', 'comps'],
+  persistedCategories: ['subject', 'comps'],
+  importedVisualCount: 0,
+  rejectedVisualCount: 0,
+  categoryResults: [
+    { category: 'subject', runId: 'subject-run', imported: true, persistedAt: '2026-08-02T03:00:00.000Z', retainedEvidenceCount: 1, itemCount: 2, rejectedItemCount: 0, error: null },
+    { category: 'comps', runId: 'comps-run', imported: true, persistedAt: '2026-08-02T03:00:01.000Z', retainedEvidenceCount: 1, itemCount: 3, rejectedItemCount: 0, error: null },
+  ],
 });
 
 let dirs: string[] = [];
@@ -108,7 +117,7 @@ describe('automatic Hermes LandPortal lane', () => {
     expect(result.importResult).toBeNull();
   });
 
-  it('uses an under-three-minute target cutoff by default', async () => {
+  it('uses a bounded target with shutdown margin inside the hard ceiling', async () => {
     const subject = { ...input(), runId: 'default-target-cutoff' };
     const directory = tempDir();
     let receivedTimeout = 0;
@@ -123,7 +132,8 @@ describe('automatic Hermes LandPortal lane', () => {
       },
     });
     expect(receivedTimeout).toBe(HERMES_LANDPORTAL_TARGET_RUNTIME_MS);
-    expect(receivedTimeout).toBeLessThan(3 * 60_000);
+    expect(receivedTimeout).toBeLessThan(HERMES_LANDPORTAL_HARD_TIMEOUT_MS);
+    expect(HERMES_LANDPORTAL_HARD_TIMEOUT_MS - receivedTimeout).toBeGreaterThanOrEqual(20_000);
   });
 
   it('imports only an exact-match JSON through the existing importer', async () => {
@@ -231,5 +241,74 @@ describe('automatic Hermes LandPortal lane', () => {
     expect(result.note).toBe('Hermes LandPortal execution exceeded the 125 ms lane limit.');
     expect(handback.subject_verification_note).toBe(result.note);
     expect(handback.subject_verification_note).not.toContain('full prompt');
+  });
+
+  it('imports progressive subject and comp snapshots before a later interruption', async () => {
+    const directory = tempDir();
+    const subject = { ...input(), runId: 'progressive-then-interrupted' };
+    const output = hermesLandPortalOutputFile(subject, directory);
+    const importedCategories: string[][] = [];
+    let subjectWasImportedBeforeComps = false;
+    const progressiveResult = (categories: Array<'subject' | 'comps'>): HermesLandPortalImportResult => ({
+      ...importedResult(output),
+      importedCompCount: categories.includes('comps') ? 2 : 0,
+      createdCompCount: categories.includes('comps') ? 2 : 0,
+      completedCategories: categories,
+      persistedCategories: categories,
+      categoryResults: categories.map((category, index) => ({
+        category,
+        runId: `${category}-incremental-run`,
+        imported: true,
+        persistedAt: `2026-08-02T15:00:0${index + 1}.000Z`,
+        retainedEvidenceCount: 1,
+        itemCount: category === 'subject' ? 5 : 2,
+        rejectedItemCount: 0,
+        error: null,
+      })),
+    });
+
+    const result = await runHermesLandPortalLane(subject, {
+      outputDirectory: directory,
+      timeoutMs: 150,
+      monitorIntervalMs: 10,
+      invokeHermes: async () => {
+        fs.writeFileSync(output, JSON.stringify({
+          subject_verification_status: 'verified_exact_subject',
+          subject_verification_note: 'Exact identity verified.',
+          completed_categories: ['subject'],
+          comps: [],
+        }));
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        subjectWasImportedBeforeComps = importedCategories.length === 1 && importedCategories[0].join(',') === 'subject';
+        fs.writeFileSync(output, JSON.stringify({
+          subject_verification_status: 'verified_exact_subject',
+          subject_verification_note: 'Exact identity and comps verified.',
+          completed_categories: ['subject', 'comps'],
+          comps: [{ price: 100000, acres: 10, apn: 'COMP-1' }, { price: 150000, acres: 15, apn: 'COMP-2' }],
+        }));
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        throw Object.assign(new Error('bounded interruption after comps'), { killed: true, signal: 'SIGTERM' });
+      },
+      importFile: (file) => {
+        const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')) as { completed_categories: Array<'subject' | 'comps'> };
+        importedCategories.push(snapshot.completed_categories);
+        return progressiveResult(snapshot.completed_categories);
+      },
+    });
+
+    expect(subjectWasImportedBeforeComps).toBe(true);
+    expect(importedCategories).toEqual([['subject'], ['subject', 'comps']]);
+    expect(result.status).toBe('failed');
+    expect(result.persistedCategories.map((category) => category.category)).toEqual(['subject', 'comps']);
+    expect(result.importResults).toHaveLength(2);
+    expect(getHermesLandPortalLaneProgress(subject.dealCardId)).toMatchObject({
+      address: subject.address,
+      status: 'failed',
+      persistedCategories: [{ category: 'subject' }, { category: 'comps' }],
+    });
+    expect(JSON.parse(fs.readFileSync(output, 'utf8'))).toMatchObject({
+      subject_verification_status: 'verified_exact_subject',
+      completed_categories: ['subject', 'comps'],
+    });
   });
 });

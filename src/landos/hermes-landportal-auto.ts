@@ -5,13 +5,19 @@
 // comps, or a second persistence model.
 
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { logger } from '../logger.js';
-import { importHermesLandPortalFile, type HermesLandPortalImportResult } from './hermes-landportal-import.js';
+import {
+  importHermesLandPortalFile,
+  type HermesLandPortalCategoryImportResult,
+  type HermesLandPortalImportResult,
+  type HermesLandPortalResultCategory,
+} from './hermes-landportal-import.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,10 +25,11 @@ export const HERMES_LANDPORTAL_CDP_ENDPOINT = 'http://127.0.0.1:9224';
 export const HERMES_LANDPORTAL_PROFILE = 'landos';
 export const HERMES_LANDPORTAL_CDP_SKILL = 'driving-cdp-browser';
 export const HERMES_LANDPORTAL_CONTEXT_SKILL = 'landos-landportal';
-// Leave enough shutdown/handback margin to keep the observed lane under the
-// three-minute operating target. Callers may request more only for an explicit
-// recovery case, and can never exceed the five-minute hard ceiling below.
-export const HERMES_LANDPORTAL_TARGET_RUNTIME_MS = 175_000;
+// The authenticated LandPortal worker can need more than three minutes before
+// its first verified snapshot on a cold/recovered browser session. Keep a
+// bounded shutdown margin inside the existing five-minute hard ceiling so the
+// incremental subject handback can land before the worker is interrupted.
+export const HERMES_LANDPORTAL_TARGET_RUNTIME_MS = 280_000;
 export const HERMES_LANDPORTAL_HARD_TIMEOUT_MS = 5 * 60_000;
 
 export type HermesLandPortalLaneStatus = 'exact_match' | 'context_only' | 'no_match' | 'failed';
@@ -51,6 +58,20 @@ export interface HermesLandPortalLaneOutcome {
   runtimeMs: number;
   note: string;
   importResult: HermesLandPortalImportResult | null;
+  importResults: HermesLandPortalImportResult[];
+  persistedCategories: HermesLandPortalCategoryImportResult[];
+}
+
+export interface HermesLandPortalLaneProgress {
+  runId: string;
+  dealCardId: number;
+  propertyCardId: number;
+  address: string;
+  status: 'running' | HermesLandPortalLaneStatus;
+  startedAt: string;
+  completedAt: string | null;
+  persistedCategories: HermesLandPortalCategoryImportResult[];
+  note: string;
 }
 
 export interface HermesLandPortalAutoDeps {
@@ -58,6 +79,7 @@ export interface HermesLandPortalAutoDeps {
   timeoutMs?: number;
   now?: () => string;
   clockMs?: () => number;
+  monitorIntervalMs?: number;
   invokeHermes?: (prompt: string, outputDirectory: string, timeoutMs: number) => Promise<void>;
   importFile?: typeof importHermesLandPortalFile;
 }
@@ -69,8 +91,10 @@ type HermesStatusPayload = {
 
 const activeRuns = new Map<string, Promise<HermesLandPortalLaneOutcome>>();
 const completedRuns = new Map<string, HermesLandPortalLaneOutcome>();
+const laneProgress = new Map<number, HermesLandPortalLaneProgress>();
 
 const cleanText = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
+const cryptoHash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
 
 export function hermesLandPortalPropertyLabel(input: Pick<HermesLandPortalLaneInput, 'address' | 'propertyCardId'>): string {
   return `${input.address.trim()} [Property Card ${input.propertyCardId}]`;
@@ -107,13 +131,18 @@ export function hermesLandPortalPrompt(input: HermesLandPortalLaneInput, outputF
     property_card_id: input.propertyCardId,
     canonical_property_identifier: input.landPortalPropertyId,
     output_file: outputFile,
+    visual_artifact_directory: path.dirname(outputFile),
+    requested_visuals: ['parcel_context'],
+    handback_mode: 'progressive_snapshot',
+    progressive_categories: ['subject', 'comps', 'visuals'],
+    visual_artifact_fields: ['key', 'label', 'kind', 'purpose', 'source_path', 'timestamp', 'requested_view', 'active_view', 'boundary_required', 'boundary_visible', 'tiles_loaded', 'camera_scale', 'clipped', 'obstructions'],
   }, null, 2);
   return `Complete the current LandOS LandPortal assignment using the persistent profile context and the preloaded ${HERMES_LANDPORTAL_CONTEXT_SKILL} and ${HERMES_LANDPORTAL_CDP_SKILL} skills.
 
 CURRENT ASSIGNMENT
 ${assignment}
 
-Write the required property-specific JSON handback to output_file, then stop.`;
+Follow the progressive handback contract in the LandOS project context: persist the verified subject snapshot to output_file immediately after exact-subject verification, then rewrite that same property-specific snapshot after each later completed category. Visual source_path values must stay beneath visual_artifact_directory. Stop after the final rewrite.`;
 }
 
 export function hermesLandPortalInvocationArgs(prompt: string): string[] {
@@ -187,18 +216,71 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
   // this lane beyond its five-minute hard ceiling; sibling lanes remain
   // independent and continue on their own schedules.
   const timeoutMs = Math.min(HERMES_LANDPORTAL_HARD_TIMEOUT_MS, Math.max(1, deps.timeoutMs ?? HERMES_LANDPORTAL_TARGET_RUNTIME_MS));
+  const importResults: HermesLandPortalImportResult[] = [];
+  const categoryResults = new Map<HermesLandPortalResultCategory, HermesLandPortalCategoryImportResult>();
+  let lastImportResult: HermesLandPortalImportResult | null = null;
+  let lastImportError: string | null = null;
+  let lastArtifactHash = '';
+  let monitor: ReturnType<typeof setInterval> | null = null;
+  const publishProgress = (status: HermesLandPortalLaneProgress['status'], note: string, completedAt: string | null): void => {
+    laneProgress.set(input.dealCardId, {
+      runId: input.runId,
+      dealCardId: input.dealCardId,
+      propertyCardId: input.propertyCardId,
+      address: input.address,
+      status,
+      startedAt,
+      completedAt,
+      persistedCategories: [...categoryResults.values()].filter((result) => !result.error),
+      note,
+    });
+  };
+  const consumeIncrementalArtifact = (): void => {
+    if (!fs.existsSync(outputFile)) return;
+    let raw: string;
+    try { raw = fs.readFileSync(outputFile, 'utf8'); } catch { return; }
+    const artifactHash = cryptoHash(raw);
+    if (!raw.trim() || artifactHash === lastArtifactHash) return;
+    const classified = classifyPayload(outputFile);
+    if (classified.status !== 'exact_match') return;
+    lastArtifactHash = artifactHash;
+    try {
+      const imported = (deps.importFile ?? importHermesLandPortalFile)(outputFile, { propertyCardId: input.propertyCardId });
+      lastImportResult = imported;
+      lastImportError = null;
+      importResults.push(imported);
+      for (const result of imported.categoryResults) {
+        const held = categoryResults.get(result.category);
+        if (!held || result.imported || held.error) categoryResults.set(result.category, result);
+        if (result.imported && !result.error) {
+          logger.info({ propertyLabel, runId: input.runId, category: result.category, persistedAt: result.persistedAt, itemCount: result.itemCount }, 'hermes_landportal_category_persisted');
+        }
+      }
+      publishProgress('running', classified.note, null);
+    } catch (error) {
+      lastImportError = (error as Error).message;
+    }
+  };
   const finish = (status: HermesLandPortalLaneStatus, note: string, importResult: HermesLandPortalImportResult | null): HermesLandPortalLaneOutcome => ({
-    status,
-    runId: input.runId,
-    dealCardId: input.dealCardId,
-    propertyCardId: input.propertyCardId,
-    propertyLabel,
-    outputFile,
-    startedAt,
-    completedAt: now(),
-    runtimeMs: Math.max(0, clockMs() - startedMs),
-    note,
-    importResult,
+    ...(() => {
+      const completedAt = now();
+      publishProgress(status, note, completedAt);
+      return {
+        status,
+        runId: input.runId,
+        dealCardId: input.dealCardId,
+        propertyCardId: input.propertyCardId,
+        propertyLabel,
+        outputFile,
+        startedAt,
+        completedAt,
+        runtimeMs: Math.max(0, clockMs() - startedMs),
+        note,
+        importResult,
+        importResults,
+        persistedCategories: [...categoryResults.values()].filter((result) => !result.error),
+      };
+    })(),
   });
 
   try {
@@ -206,7 +288,11 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
     // Never accept a stale artifact as this run's handback.
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
     logger.info({ propertyLabel, runId: input.runId, outputFile }, 'hermes_landportal_lane_started');
+    publishProgress('running', `Hermes LandPortal is collecting verified evidence for ${input.address}.`, null);
+    monitor = setInterval(consumeIncrementalArtifact, Math.max(10, deps.monitorIntervalMs ?? 250));
+    monitor.unref?.();
     await (deps.invokeHermes ?? invokeInstalledHermes)(hermesLandPortalPrompt(input, outputFile), outputDirectory, timeoutMs);
+    consumeIncrementalArtifact();
     if (!fs.existsSync(outputFile)) {
       const note = 'Hermes completed without creating the required property-specific JSON file.';
       fs.writeFileSync(outputFile, JSON.stringify({
@@ -223,13 +309,15 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
     }
     const classified = classifyPayload(outputFile);
     if (classified.status !== 'exact_match') return finish(classified.status, classified.note, null);
-    try {
-      const imported = (deps.importFile ?? importHermesLandPortalFile)(outputFile, { propertyCardId: input.propertyCardId });
-      return finish('exact_match', classified.note, imported);
-    } catch (error) {
-      return finish('failed', `Hermes exact-match JSON was rejected by the canonical importer: ${(error as Error).message}`, null);
-    }
+    const finalImport = importResults.at(-1) ?? null;
+    const categoryError = finalImport?.categoryResults.find((result) => !!result.error)?.error ?? lastImportError;
+    if (categoryError) return finish('failed', `Hermes exact-match JSON was rejected by the canonical importer: ${categoryError}`, finalImport);
+    if (!finalImport) return finish('failed', 'Hermes exact-match JSON did not produce an importable incremental result.', null);
+    return finish('exact_match', classified.note, finalImport);
   } catch (error) {
+    // Import the last stable exact-subject snapshot before recording the later
+    // execution failure. Already-persisted categories remain canonical.
+    consumeIncrementalArtifact();
     // execFile errors include the complete prompt in their default message.
     // Persist only a bounded operational reason, never that command payload.
     const note = executionFailureNote(error, timeoutMs);
@@ -247,7 +335,9 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
         comps: [],
       }, null, 2));
     }
-    return finish('failed', note, null);
+    return finish('failed', note, lastImportResult);
+  } finally {
+    if (monitor) clearInterval(monitor);
   }
 }
 
@@ -273,6 +363,7 @@ export function runHermesLandPortalLane(
       runtimeMs: outcome.runtimeMs,
       outputFile: outcome.outputFile,
       importedCompCount: outcome.importResult?.importedCompCount ?? 0,
+      persistedCategories: outcome.persistedCategories.map((result) => result.category),
     }, 'hermes_landportal_lane_completed');
     return outcome;
   }).finally(() => activeRuns.delete(key));
@@ -280,7 +371,13 @@ export function runHermesLandPortalLane(
   return execution;
 }
 
+export function getHermesLandPortalLaneProgress(dealCardId: number): HermesLandPortalLaneProgress | null {
+  const progress = laneProgress.get(dealCardId);
+  return progress ? { ...progress, persistedCategories: progress.persistedCategories.map((result) => ({ ...result })) } : null;
+}
+
 export function resetHermesLandPortalLaneCache(): void {
   activeRuns.clear();
   completedRuns.clear();
+  laneProgress.clear();
 }
