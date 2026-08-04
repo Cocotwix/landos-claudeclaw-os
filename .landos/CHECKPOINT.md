@@ -1,89 +1,130 @@
 # Current Active Task
 
-Complete the authorized incremental-persistence sprint for the existing Hermes LandPortal lane. Verified subject facts, comparables, and accepted visuals persist as independent property-scoped categories while Hermes is still working, and later failure does not retract them.
+The V2 property-intelligence functional baseline is committed on `main`
+(single clean commit replacing the oversized local commit `2a60346`, which
+had swept in the whole dirty worktree; nothing was pushed). The commit holds
+only the approved scope plus compiler/test-proven dependencies: V2 route +
+Overview + Property Intelligence tab, desktop rendering corrections, scores
+at top, uncropped hero, LandPortal subject links, Property Score
+recalculation, Hermes v0.20 import/auto lanes, SOP 10B, and the
+property-market-context join. No new task is active.
 
 # Exact Operator Outcome
 
-`9488 State Route 90, Genoa, NY 13071` was entered through New Lead in authenticated Chrome. Its Deal Card rendered verified Hermes subject facts before the Hermes lane finished, rendered a later independent comp category, retained both after an intentional Hermes interruption, and retained them again after refresh and managed restart without cross-property evidence.
+`http://localhost:3141/dept/acquisitions/v2?deal=81` (and
+`&section=property-intelligence`) open with Property 74 Strong / Market 57
+Moderate / Seller Pending at the top of both pages, each with a transparent
+ledger explanation and +/− factors. The Overview hero renders the retained
+close-parcel aerial at natural aspect: complete boundary, Onionville Rd,
+Sterling Creek, no LandPortal sidebar; facts and caption fill the right pane.
+"View in LandPortal" (header, both pages) and "Open this subject in
+LandPortal" (hero) open the verified subject (fips 36011 / APN / 89525293)
+in a new tab. PI gallery thumbnails are 367×230 and click through to full
+size; market context stays labeled "LandOS Market Research — not
+LandPortal". Both pages survive refresh and managed restart.
 
 # Current State
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-08-02T20:35:21.790Z
-- **HEAD at generation:** `e7f46a4`
-- **Worktree:** DIRTY; 153 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-08-02T17:54:24.8900260Z; Hermes controller, importer, and canonical research-store suite passed: 3 files, 16 tests, 0 failures.
-- **Latest typecheck:** PASS at 2026-08-02T17:54:24.8900260Z; npm.cmd run typecheck completed with zero diagnostics.
-- **Latest production build:** PASS at 2026-08-02T17:54:24.8900260Z; server and web production builds completed successfully; web emitted only existing chunk-size warnings.
-- **Managed runtime:** RUNNING healthy at 2026-08-02T17:54:24.8900260Z; PID 8172; http://localhost:3141.
-- **Prior tracked sprint:** sprint-2026-07-24-zoning-land-use (complete); it is not the Current Active Task.
-- **Sprint ledger:** .landos/sprints/sprint-2026-07-24-zoning-land-use/ledger.json; proof report .landos/sprints/sprint-2026-07-24-zoning-land-use/report.md; frozen capabilities: 3 (.landos/capabilities.json).
+- **Generated:** 2026-08-04T05:45:00.000Z
+- **HEAD at generation:** `f25d7a5` (parent; this checkpoint ships inside the replacement baseline commit built on it)
+- **Worktree:** DIRTY by design; the excluded workstreams below remain uncommitted. Preserve them.
+- **Latest tests:** PASS at 2026-08-04T05:32:40Z; focused suites on the exact committed tree in an isolated worktree: deal-operator-analysis.contract, property-market-context, property-intelligence.routes, hermes-landportal-auto, hermes-landportal-import; 52 tests, 0 failures.
+- **Latest typecheck:** PASS at 2026-08-04T05:34:00Z on the exact committed tree (the parent alone had 19 errors; this commit repairs them).
+- **Latest production build:** PASS at 2026-08-04T05:35:00Z; server (tsc) and web (vite) on the exact committed tree; only pre-existing chunk-size warnings.
+- **Managed runtime:** RUNNING healthy at 2026-08-04T03:44:00Z; PID 128224; http://localhost:3141.
 <!-- DERIVED:END -->
-
-Implementation and live acceptance are complete. LandOS is healthy under the approved managed runtime at `http://localhost:3141`, PID 103796. Root and `/health` return HTTP 200; authenticated Chrome `/api/health` returns HTTP 200. The accepted subject and comp evidence is durable in LandOS and renders after process replacement.
 
 # Completed and Proven
 
-1. The importer admits `subject`, `comps`, and `visuals` in separate idempotent transactions. Each category revalidates address, APN, subject URL, Property Card guard, and canonical LandPortal identity.
-2. Subject writes update canonical research, Property Card identity, parcel URL, and inspection facts. Comps independently update context evidence and the scoped registry. Visuals independently hash, validate, retain, and project accepted artifacts.
-3. The controller monitors progressive rewrites while Hermes runs. Exact snapshots import immediately; later failure retains prior categories. The bounded target is 280 seconds inside the unchanged five-minute ceiling because observed cold runs exceeded 175 seconds.
-4. The Property Intelligence read and Deal Card expose live address-first progress plus durable evidence, kept separate from valuation and strategy.
-5. Acceptance property: `9488 State Route 90, Genoa, NY 13071`; APN `053000 227.00-1-38`; Cayuga County; LandPortal id `89498105`. New Lead completed at `2026-08-02T20:25:31.197Z`; Hermes started at `2026-08-02T20:25:31.317Z` with zero categories.
-6. Subject first persisted at `2026-08-02T20:26:58.629Z` (24 items) while Hermes was `running` and the parent mission was already complete. The Deal Card rendered exact address, APN, owner, subject URL, acreage, FIPS, and related facts.
-7. Four comps persisted separately at `2026-08-02T20:27:32.420Z` while Hermes remained `running`.
-8. Verified Hermes PID 65800 was intentionally terminated after matching its parent, profile, address, card guard, and start time. The lane recorded `failed` at `2026-08-02T20:28:50.733Z` and retained subject plus comps.
-9. Refresh at `2026-08-02T20:29:27.934Z` and managed-restart proof at `2026-08-02T20:32:23.904Z` rendered 24 subject items and 4 comps with no Duck Lake, Carley, Southard, or O'Neil data. Restart replaced PID 101540 with 103796; in-memory Hermes progress was gone, proving the rendered evidence was durable LandOS state.
-10. The installed `landos` profile was unchanged. `.hermes.md` plus the lean assignment carried the incremental protocol. OpenAI Codex, reusable sessions, `driving-cdp-browser`, and CDP `http://127.0.0.1:9224` remain intact; no MCP, delegation, Anthropic, or paid API was added.
-11. Passing verification: focused incremental suite 22/22, Property Intelligence UI 28/28, Deal Card UI 15/15, routes 10/10, final controller 9/9, typecheck, server/web builds, profile check, managed restart, root health, and authenticated API health. Default-worker Vitest batches twice exhausted a worker; the same tests pass single-fork.
+Committed baseline (54 files): V2 page/component/stylesheet + App route;
+deal-operator-analysis (metric-aware Property Score: frontage/buildability/
+coverage govern sign, retained parcel imagery counts as boundary evidence,
+% normalization, base-58 ledger explanation, quarantine preserved);
+property-market-context read-time join; routes.ts PI projection
+(marketContext, subjectParcelUrl, visualKey separation); Hermes v0.20
+import/auto lanes; SOP 10B doc + landos-landportal SKILL; and the 35
+compiler/test-proven server dependencies (snapshot/assembly/inspection/
+card/db schema with the zip column, market-scan, landportal evidence
+validation + operating rules, live collectors, etc.). The set was proven by
+building the tree at the parent, adding only files tsc/vitest demanded, then
+passing typecheck, both builds, and 52 focused tests on that exact tree.
 
 # Remaining Work
 
-No blocker remains. Two earlier candidates were non-importable and are not acceptance evidence: `10720 Duck Lake Rd, Port Byron, NY 13140` lacked canonical LandPortal identity, and `1680 Carley Dr, Port Byron, NY 13140` returned `context_only`. Neither appeared on the accepted card.
+Uncommitted workstreams intentionally left dirty in the worktree, each
+needing its own review-and-commit decision from Tyler: governed multi-agent
+architecture + governance schemas; governed Hermes profiles; MCP servers;
+knowledge registries + docs; acceptance/visual-QA architecture (playwright
+config, acceptance scripts/schemas); Browser Use pilots (scripts +
+LandPortalBrowserUsePanel); memory/protocol revamp (CLAUDE.md, AGENTS.md,
+.hermes.md, .landos protocol files, memory/runtime scripts); Deal Card V1
+UI + test updates; dashboard/db root changes; package.json/lock additions
+(zod, @playwright/test, infra scripts). Functional follow-ups: other V2
+tabs; valuation still not priceable; creek/water feature has no structured
+fact so the score omits it.
 
 # Exact Next Action
 
-Hand off the completed sprint without committing or pushing. Preserve all uncommitted work. Any later extension should begin from the durable category-import architecture and the accepted `9488 State Route 90, Genoa, NY 13071` proof rather than redesigning Hermes, Max, Deal Card ownership, or runtime management.
+On Tyler's direction, pick one uncommitted workstream from Remaining Work to
+review and commit separately (suggested first: memory/protocol revamp or
+Deal Card V1 updates), or start the next functional V2 tab. No implicit
+action is pending.
 
 # Relevant Files
 
-- `.hermes.md`
-- `.landos/CHECKPOINT.md`
-- `src/landos/hermes-landportal-auto.ts`
-- `src/landos/hermes-landportal-auto.test.ts`
-- `src/landos/hermes-landportal-import.ts`
-- `src/landos/hermes-landportal-import.test.ts`
-- `src/landos/hermes-landportal-incremental-ui.test.ts`
-- `src/landos/routes.ts`
-- `web/src/components/PropertyIntelligencePanel.tsx`
+- `src/landos/deal-operator-analysis.ts` (+contract test)
+- `src/landos/property-market-context.ts` (+test)
+- `src/landos/routes.ts`, `src/landos/hermes-landportal-{auto,import}.ts`
+  (+tests), `src/landos/property-intelligence.routes.test.ts`
+- `web/src/pages/AcquisitionWorkspaceV2.tsx`,
+  `web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx`,
+  `web/src/styles/workspace-v2.css`, `web/src/App.tsx`
+- `docs/landos/property-intelligence-sop.md`,
+  `config/hermes/landos-profile/skills/landos-landportal/SKILL.md`
 
 # Relevant Records
 
-- Primary identifier: `9488 State Route 90, Genoa, NY 13071`.
-- Internal routing only: Deal Card 78, Property Card 68.
-- Exact LandPortal identity: APN `053000 227.00-1-38`, FIPS `36011`, property id `89498105`.
-- First subject persistence: `2026-08-02T20:26:58.629Z`.
-- Cumulative subject snapshot re-import: `2026-08-02T20:27:32.416Z`.
-- Comp persistence: `2026-08-02T20:27:32.420Z`.
-- Intentional interruption recorded: `2026-08-02T20:28:50.733Z`.
-- Final managed runtime PID: 103796.
-- Chrome CDP: `http://127.0.0.1:9224`, Chrome 150, protocol 1.3.
+- Deal Card 81; Property Card 71; LandPortal 89525293; APN
+  `055689 10.00-1-64.22`; 10 accepted visuals (hero natural 920×890).
+- Screenshots under `store/browser-shots/acceptance-deal81/`:
+  `v2-overview-desktop-correction.png`, `v2-overview-after-restart.png`,
+  `v2-property-intelligence-desktop-correction.png`,
+  `v2-property-intelligence-after-restart.png`.
 
 # Known Blockers
 
-None for this sprint. The earlier ChatGPT Chrome Extension/native-host issue was not a blocker because the approved accepted workflow uses the established authenticated raw CDP/Puppeteer operator path.
+None.
 
 # Do Not Inspect or Modify
 
-Do not alter `.env`, secrets, the default Hermes profile, installed profile files, Anthropic configuration, paid APIs, broad provider architecture, valuation, strategy, operator workflow ownership, unrelated lanes, or pre-existing dirty work. Do not add MCP, delegation, specialists, hierarchy, or a second store. Do not commit, push, reset, revert, or clean.
+Do not expose `.env` or secrets, run destructive SQL, discard the dirty
+worktree (it holds the uncommitted workstreams), or delete
+`store/backups/landos-pre-rescue-2026-08-03.db` without Tyler's
+authorization. Do not push without authorization. Do not weaken the
+visual-evidence validation, comp source policy, SOP 10B, score-quarantine
+logic, or completion gates.
 
 # Runtime State
 
-Managed LandOS is healthy at `http://localhost:3141`, PID 103796. Root and `/health` are HTTP 200. Authenticated Chrome `/api/health` is HTTP 200. The accepted Deal Card loads through Acquisitions and renders durable Hermes subject and comp evidence after refresh and restart.
+Managed LandOS healthy at `http://localhost:3141` (PID 128224); root and
+/health 200. Authenticated LandPortal Chrome remains on CDP 9224 (operator
+session, untouched).
 
 # Verification Required
 
-No additional verification is required for this sprint. If any relevant implementation changes later, repeat focused tests, typecheck, both builds, profile check, managed restart, root/health/API health, and a fresh New Lead Chrome proof.
+For follow-on changes to the score projection or V2 layout: rerun
+deal-operator-analysis.contract, property-market-context,
+property-intelligence.routes, and hermes-landportal suites; typecheck; both
+builds; managed restart + health; live walkthrough of BOTH V2 pages at
+desktop width incl. refresh + restart; memory audit; secret scan.
 
 # Completed and Protected
 
-Protect the committed Hermes foundation at `e7f46a47928204299da2bf8ae698972fe9058da5`: dedicated `landos` profile, supported persistent context, reusable sessions, authenticated CDP endpoint, `driving-cdp-browser`, lean address-first assignments, exact-match importer gates, property-scoped output, LandOS canonical authority, Max ownership, and Hermes's bounded worker role.
+Retain: the metric-aware propertyScore recalculation with ledger
+explanation; imagery-as-boundary-evidence with survey upgrade path; the
+score strip on both sections; the contain-based hero; verified-URL-only
+LandPortal links; the enlarged clickable gallery; SOP 10B labeling; the four
+correction screenshots; the isolated-worktree proof method for minimal
+commits. Standing protections: no secret exposure, no destructive SQL, no
+cross-property evidence, dirty-state preservation.

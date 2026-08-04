@@ -728,6 +728,7 @@ function createLandosSchema(db: Database.Database): void {
       county                TEXT NOT NULL DEFAULT '',
       state                 TEXT NOT NULL DEFAULT '',
       city                  TEXT NOT NULL DEFAULT '',
+      zip                   TEXT NOT NULL DEFAULT '',
       owner                 TEXT NOT NULL DEFAULT '',
       acres                 REAL,
       verification_source   TEXT NOT NULL DEFAULT '',
@@ -1289,6 +1290,10 @@ function createLandosSchema(db: Database.Database): void {
   // so a reopened verified parcel keeps its full enrichment pipeline.
   addColumn('landos_property_card', 'lat', `lat REAL`);
   addColumn('landos_property_card', 'lng', `lng REAL`);
+  // ZIP is a canonical geography input for the Market Matrix.  It belongs on
+  // the Property Card rather than being repeatedly re-parsed from a freeform
+  // address (vacant parcels frequently have no postal-format situs address).
+  addColumn('landos_property_card', 'zip', `zip TEXT NOT NULL DEFAULT ''`);
   // Platform Intelligence: learned allowed/restricted/forbidden work surfaces.
   addColumn('landos_platform_intel', 'task_boundary_json', `task_boundary_json TEXT NOT NULL DEFAULT '{}'`);
   // Market Matrix: per-snapshot data-quality flags (accepted-but-unusual values,
@@ -1360,6 +1365,13 @@ function createLandosSchema(db: Database.Database): void {
   addColumn('landos_property_collector_attempt', 'open_resource_count_after', `open_resource_count_after INTEGER NOT NULL DEFAULT 0`);
   addColumn('landos_property_collector_attempt', 'memory_before_bytes', `memory_before_bytes INTEGER`);
   addColumn('landos_property_collector_attempt', 'memory_after_bytes', `memory_after_bytes INTEGER`);
+  // Operator-grade Deal Card tasks. Existing action rows remain valid and gain
+  // optional scheduling/ownership metadata without a destructive migration.
+  addColumn('landos_card_next_action', 'due_date', `due_date TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_card_next_action', 'assigned_owner', `assigned_owner TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_card_next_action', 'priority', `priority TEXT NOT NULL DEFAULT 'normal'`);
+  addColumn('landos_card_next_action', 'reminder_at', `reminder_at TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_person_link', 'primary_contact', `primary_contact INTEGER NOT NULL DEFAULT 0`);
 
   // Acquisitions department (CRM-independent intelligence layer) — one row per
   // Deal Card holding the seller profile, communication log, discovery notes, and

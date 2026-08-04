@@ -38,8 +38,12 @@ import {
   valuationFromWorkingSet,
   workingSetToSnapshotComps,
 } from './deal-intelligence-comps.js';
-import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
+import {
+  buildPropertyIntelligenceStrategies,
+  type SubdivisionEvidenceInput,
+} from './property-intelligence-strategy.js';
 import { buildPropertyIntelligenceValuation } from './property-intelligence-valuation.js';
+import { buildPracticalMarketMatrix, type AcreageMarketObservation } from './market-scan.js';
 import { APPROVED_STRATEGIES } from './strategy-readiness.js';
 import { scopeIntegrityCheck, type MissionAcceptanceCheckSpec } from './mission-acceptance.js';
 import type { MissionChildSpec } from './mission-graph.js';
@@ -63,6 +67,8 @@ import type {
 } from './property-intelligence-snapshot.js';
 import type { SpecialistId } from './property-intelligence-specialists.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
+import type { DealOperatorAnalysis, DealOperatorContext } from './deal-operator-analysis.js';
+import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
 
 export const DEAL_INTELLIGENCE_KIND = 'deal_intelligence';
 export const DEAL_INTELLIGENCE_SCOPE = 'deal_card';
@@ -199,6 +205,16 @@ export interface ComparablesHandback {
   candidateCount: number;
   candidates: CompRegistryCandidate[];
   duplicatesMerged: number;
+  landHomeSearchProof?: {
+    status: 'completed' | 'blocked' | 'unavailable' | 'not_run';
+    radiusMiles: number;
+    timePeriodMonths: number;
+    sourcesSearched: string[];
+    routesAttempted: string[];
+    candidatesReviewed: number;
+    qualifyingResults: number;
+    exclusionReasons: Array<{ reason: string; count: number }>;
+  } | null;
   /** Always false. Comps are discovery-stage market evidence; no government
    *  record is pulled for a comparable property. */
   governmentVerificationPerformed: false;
@@ -209,6 +225,7 @@ export interface MarketPulseHandback {
   dealCardId: number;
   marketMatrix: unknown;
   marketPulse: unknown;
+  marketScan?: unknown;
   marketMatrixAvailable: boolean;
   marketPulseAvailable: boolean;
   facts: SnapshotFact[];
@@ -233,6 +250,7 @@ export interface ValuationHandback {
   acceptedSoldCount: number;
   activeListingCount: number;
   landHomeCompCount: number;
+  landHomeSearchProof: ComparablesHandback['landHomeSearchProof'];
   summary: string;
 }
 
@@ -257,9 +275,19 @@ export interface DealIntelligenceCapabilities {
   marketPulse?: (dealCardId: number) => Promise<{
     marketMatrix: unknown;
     marketPulse: unknown;
+    marketScan?: unknown;
     facts: SnapshotFact[];
     summary: string;
   }>;
+  /** Deal-scoped CRM, retained-source-attempt, market, and visual context. */
+  operatorContext?: (dealCardId: number) => Promise<DealOperatorContext>;
+  /** Optional whole-card multimodal Analyst. Deterministic synthesis remains the safe fallback. */
+  operatorAnalyst?: (input: {
+    pkg: DealIntelligenceInputPackage;
+    context: DealOperatorContext;
+    previousSnapshot: PropertyIntelligenceSnapshot | null;
+    generatedAt: string;
+  }) => Promise<DealOperatorAnalysis>;
   now?: () => string;
 }
 
@@ -272,10 +300,12 @@ export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
     purpose: 'Research the subject parcel on LandPortal and the official parcel sources, then reconcile one accepted identity: address, county, state, APN, owner and acreage.',
     role: 'required',
     dependsOn: [],
-    // Identity resolution only: the official parcel lookup and the reconciled
-    // subject identity. The retired oversized report projection no longer runs
-    // as a competing mission child.
-    timeoutMs: 300_000,
+    // This required lane performs one bounded authenticated LandPortal
+    // inspection and the independent public-source task graph. Real provider
+    // latency can put the combined evidence-preserving work just above five
+    // minutes, so allow seven while every nested provider retains its own
+    // tighter deadline. Timing out this parent discards every downstream lane.
+    timeoutMs: 420_000,
     group: DEAL_INTELLIGENCE_GROUPS.subjectIdentity,
     assignedRole: 'Subject parcel identity of record',
     agentKey: 'dd_bot',
@@ -322,7 +352,7 @@ export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
     key: 'government_records',
     label: 'Government records (subject property)',
     purpose: 'Retrieve the recorded assessor, deed, ownership, legal-description and tax evidence for the SUBJECT parcel only, at discovery-stage depth.',
-    role: 'required',
+    role: 'supporting',
     dependsOn: ['parcel_identity'],
     timeoutMs: 300_000,
     group: DEAL_INTELLIGENCE_GROUPS.officialRecord,
@@ -875,6 +905,57 @@ function childStatusFor(outcome: SpecialistOutcome<unknown>): MissionChildOutcom
   return outcome.status;
 }
 
+function practicalMarketObservations(candidates: CompRegistryCandidate[]): AcreageMarketObservation[] {
+  return candidates.flatMap((candidate) => {
+    if ((candidate.lane !== 'sold' && candidate.lane !== 'active')
+      || typeof candidate.acres !== 'number' || candidate.acres <= 0
+      || typeof candidate.price !== 'number' || candidate.price <= 0) return [];
+    return [{
+      status: candidate.lane,
+      acres: candidate.acres,
+      price: candidate.price,
+      dateIso: candidate.saleOrListDate ?? null,
+      daysOnMarket: candidate.daysOnMarket ?? null,
+      source: candidate.provider,
+    }];
+  });
+}
+
+function subdivisionEvidenceFrom(input: {
+  acres: number | null;
+  government: SnapshotFact[];
+  zoning: SnapshotFact[];
+  dueDiligence: SnapshotDueDiligenceItem[];
+}): SubdivisionEvidenceInput | null {
+  if (input.acres == null || input.acres < 5) return null;
+  const rows = [
+    ...input.government.map((fact) => `${fact.label}: ${fact.value ?? ''}. ${fact.note ?? ''}`),
+    ...input.zoning.map((fact) => `${fact.label}: ${fact.value ?? ''}. ${fact.note ?? ''}`),
+    ...input.dueDiligence.map((item) => `${item.label}: ${item.headline}. ${item.detail ?? ''}`),
+  ];
+  const first = (pattern: RegExp): string | null => rows.find((row) => pattern.test(row)) ?? null;
+  const roadText = first(/frontage|road connection|road neck|access/i);
+  const observedRoadNeckFeet = roadText
+    ? Number(roadText.match(/([\d,.]+)\s*(?:ft|feet|foot)\b/i)?.[1]?.replace(/,/g, '') ?? NaN)
+    : NaN;
+  const narrow = Number.isFinite(observedRoadNeckFeet) && observedRoadNeckFeet < 200;
+  const legalPositive = rows.some((row) => /(?:legal|approved|permitted).{0,35}(?:multi(?:ple)? lots?|shared access|private road)/i.test(row));
+  const physicalPositive = rows.some((row) => /(?:physical|adequate|sufficient).{0,35}(?:multi(?:ple)? lots?|shared access|private road)/i.test(row));
+  return {
+    governingJurisdiction: first(/jurisdiction|planning authority/i),
+    minimumLotSize: first(/minimum lot|min\.? lot|lot size/i),
+    minimumFrontage: first(/minimum frontage|minimum lot width/i),
+    minorSubdivisionThreshold: first(/minor subdivision|minor split|administrative split/i),
+    flagLotRules: first(/flag lot/i),
+    sharedAccessRules: first(/shared access|shared driveway/i),
+    privateRoadStandards: first(/private road|road standard/i),
+    legalMultiLotAccess: legalPositive ? true : null,
+    physicalMultiLotAccess: narrow ? false : physicalPositive ? true : null,
+    observedRoadNeckFeet: Number.isFinite(observedRoadNeckFeet) ? observedRoadNeckFeet : null,
+    concepts: [],
+  };
+}
+
 export function dealIntelligenceExecutors(
   capabilities: DealIntelligenceCapabilities,
 ): Record<string, (ctx: MissionChildContext) => Promise<MissionChildOutcome>> {
@@ -1018,6 +1099,7 @@ export function dealIntelligenceExecutors(
         candidateCount: candidates.length,
         candidates,
         duplicatesMerged: outcome.data?.duplicatesMerged ?? 0,
+        landHomeSearchProof: outcome.data?.landHomeSearchProof ?? null,
         governmentVerificationPerformed: false,
         summary: outcome.summary,
       };
@@ -1026,13 +1108,21 @@ export function dealIntelligenceExecutors(
 
     // ── Market Pulse and Market Matrix ────────────────────────────────────
     market_intelligence: async (ctx) => {
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      const comparables = upstream<ComparablesHandback>(ctx, 'comparables');
+      const acreageMatrix = buildPracticalMarketMatrix({
+        observations: practicalMarketObservations(comparables?.candidates ?? []),
+        subjectAcres: identity?.subjectAcres ?? null,
+        nowIso: capabilities.now?.() ?? new Date().toISOString(),
+      });
       if (!capabilities.marketPulse) {
         const outcome = await collectors.market_intelligence(dealScoped(ctx));
         const facts = outcome.data?.facts ?? [];
         const handback: MarketPulseHandback = {
           dealCardId: ctx.scopeId,
-          marketMatrix: null,
-          marketPulse: null,
+        marketMatrix: null,
+        marketPulse: null,
+        marketScan: { acreageMatrix },
           marketMatrixAvailable: facts.some((fact) => fact.key === 'market_matrix'),
           marketPulseAvailable: false,
           facts,
@@ -1041,10 +1131,17 @@ export function dealIntelligenceExecutors(
         return { status: childStatusFor(outcome), summary: handback.summary, result: handback };
       }
       const context = await capabilities.marketPulse(ctx.scopeId);
+      const existingScan = context.marketScan && typeof context.marketScan === 'object'
+        ? context.marketScan as Record<string, unknown>
+        : {};
+      const retainedAcreageMatrix = existingScan.acreageMatrix && typeof existingScan.acreageMatrix === 'object'
+        ? existingScan.acreageMatrix
+        : acreageMatrix;
       const handback: MarketPulseHandback = {
         dealCardId: ctx.scopeId,
         marketMatrix: context.marketMatrix ?? null,
         marketPulse: context.marketPulse ?? null,
+        marketScan: { ...existingScan, acreageMatrix: retainedAcreageMatrix },
         marketMatrixAvailable: context.marketMatrix != null,
         marketPulseAvailable: context.marketPulse != null,
         facts: context.facts,
@@ -1097,6 +1194,8 @@ export function dealIntelligenceExecutors(
         acres: identity?.subjectAcres ?? subjectMarket.acres ?? null,
         locality: subjectMarket.locality ?? null,
         county: subjectMarket.county ?? null,
+        address: identity?.address ?? identity?.identity.situs ?? identity?.identity.normalizedAddress ?? null,
+        apn: identity?.apn ?? identity?.identity.apn ?? null,
       };
       const workingSet = selectWorkingComps({
         subject: subjectSelection,
@@ -1110,6 +1209,7 @@ export function dealIntelligenceExecutors(
         landPortalRowsSeen: policy.plan.landPortalRowsSeen,
         caps: policy.plan.caps,
       });
+      comps.landHomeSearchProof = comparables?.landHomeSearchProof ?? null;
 
       // Identity and hard due-diligence gates still outrank the comp evidence:
       // an unresolved parcel is never priced, however good the comps look.
@@ -1157,7 +1257,8 @@ export function dealIntelligenceExecutors(
         comps,
         acceptedSoldCount: workingSet.sold.length,
         activeListingCount: workingSet.active.length,
-        landHomeCompCount: policy.landHomeOnly.length,
+        landHomeCompCount: workingSet.landHomeOnly.length,
+        landHomeSearchProof: comparables?.landHomeSearchProof ?? null,
         summary: valuation.priceable
           ? `Value band $${valuation.range!.low.toLocaleString()}–$${valuation.range!.high.toLocaleString()} (${valuation.confidence} confidence) from ${workingSet.sold.length} selected closed sale(s) and ${workingSet.active.length} selected active competitor(s).`
           : `Not priceable: ${valuation.notPriceableReason}`,
@@ -1209,8 +1310,15 @@ export function dealIntelligenceExecutors(
         utilitiesSummary: access?.utilitiesSummary ?? null,
         accessStatus: access?.accessStatus ?? 'unknown',
         landHomeCompCount: valuationHandback.landHomeCompCount,
+        landHomeSearchProof: valuationHandback.landHomeSearchProof ?? null,
         acceptedSoldCount: valuationHandback.acceptedSoldCount,
         activeListingCount: valuationHandback.activeListingCount,
+        subdivisionEvidence: subdivisionEvidenceFrom({
+          acres: identity?.subjectAcres ?? null,
+          government: government?.records ?? [],
+          zoning: zoning?.facts ?? [],
+          dueDiligence,
+        }),
         // Missing research is disclosed to the strategy analysis, but it is NOT
         // passed as a mission blocker: a gap qualifies the strategies it bears
         // on, and never places the whole deal on hold.

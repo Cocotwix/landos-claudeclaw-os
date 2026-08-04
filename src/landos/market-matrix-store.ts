@@ -88,6 +88,17 @@ export function resolveCountyRefByZip(zip: string | null | undefined, state?: st
   return { fips: rows[0].fips, state: rows[0].state, countyName: rows[0].county_name.replace(/\s+County$/i, '') };
 }
 
+/** Resolve an exact retained county/state label when a verified card has no ZIP. */
+export function resolveCountyRefByName(county: string | null | undefined, state: string | null | undefined): CountyRef | null {
+  const normalizedCounty = (county ?? '').replace(/\s+County$/i, '').trim().toLowerCase();
+  const normalizedState = (state ?? '').trim().toUpperCase();
+  if (!normalizedCounty || !normalizedState) return null;
+  const matches = listCountyRef(normalizedState).filter(
+    (row) => row.countyName.replace(/\s+County$/i, '').trim().toLowerCase() === normalizedCounty,
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Ingestion
 // ─────────────────────────────────────────────────────────────────────────

@@ -124,7 +124,7 @@ export function normalizeComps(
 
 // ── Zillow structured (__NEXT_DATA__ / search results JSON) ──────────────────
 
-interface ZListResult {
+export interface ZListResult {
   price?: number | string;
   unformattedPrice?: number;
   address?: string;
@@ -135,7 +135,27 @@ interface ZListResult {
   detailUrl?: string;
   statusType?: string;
   homeStatus?: string;
-  hdpData?: { homeInfo?: { lotAreaValue?: number; lotAreaUnit?: string; livingArea?: number; homeType?: string } };
+  latLong?: { latitude?: number; longitude?: number };
+  latitude?: number;
+  longitude?: number;
+  imgSrc?: string;
+  dateSold?: string | number;
+  soldDate?: string | number;
+  listingDate?: string | number;
+  daysOnZillow?: number;
+  timeOnZillow?: number;
+  hdpData?: { homeInfo?: {
+    lotAreaValue?: number;
+    lotAreaUnit?: string;
+    livingArea?: number;
+    homeType?: string;
+    latitude?: number;
+    longitude?: number;
+    yearBuilt?: number;
+    dateSold?: string | number;
+    listingDate?: string | number;
+    daysOnZillow?: number;
+  } };
 }
 
 /** Safely dig the Zillow search-results list out of parsed __NEXT_DATA__ (or a

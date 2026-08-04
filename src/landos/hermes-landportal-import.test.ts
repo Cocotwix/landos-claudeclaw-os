@@ -87,6 +87,77 @@ afterEach(() => {
 });
 
 describe('Hermes LandPortal import', () => {
+  it('admits one independently verified specialist category without implicitly writing sibling categories', () => {
+    const target = subjectCard();
+    const file = fixture({
+      ...payload(),
+      specialist_category: 'comps',
+      completed_categories: ['comps'],
+      visual_artifacts: [],
+    });
+
+    const imported = importHermesLandPortalFile(file, {
+      propertyCardId: target.card.id,
+      now: () => '2026-08-02T13:59:59.000Z',
+    });
+
+    expect(imported.completedCategories).toEqual(['comps']);
+    expect(imported.persistedCategories).toEqual(['comps']);
+    expect(imported.categoryResults).toEqual([
+      expect.objectContaining({ category: 'comps', imported: true, persistedAt: '2026-08-02T13:59:59.000Z' }),
+    ]);
+    expect(Object.keys(new PropertyResearchStore().loadForProperty(target.card.id)?.lanes ?? {})).toEqual(['hermes_landportal_comps']);
+    expect(listComps({ dealCardId: target.deal.id })).toHaveLength(3);
+    expect(loadPropertyInspection(target.card.id)?.parcelFacts).toEqual({});
+  });
+
+  it('rejects a specialist handback that claims another category', () => {
+    const target = subjectCard();
+    expect(() => importHermesLandPortalFile(fixture({
+      ...payload(),
+      specialist_category: 'comps',
+      completed_categories: ['subject', 'comps'],
+    }), { propertyCardId: target.card.id })).toThrow(/must complete only its assigned category/i);
+    expect(new PropertyResearchStore().loadForProperty(target.card.id)).toBeNull();
+    expect(listComps({ dealCardId: target.deal.id })).toHaveLength(0);
+  });
+
+  it('reconciles duplicate comparable rows within one specialist handback', () => {
+    const target = subjectCard();
+    const base = payload();
+    const imported = importHermesLandPortalFile(fixture({
+      ...base,
+      specialist_category: 'comps',
+      completed_categories: ['comps'],
+      comps: [...base.comps, { ...base.comps[0] }],
+    }), { propertyCardId: target.card.id });
+
+    expect(imported.importedCompCount).toBe(3);
+    expect(imported.categoryResults[0]).toMatchObject({ category: 'comps', itemCount: 3 });
+    expect(listComps({ dealCardId: target.deal.id })).toHaveLength(3);
+    expect(loadPropertyInspection(target.card.id)?.comparables).toHaveLength(3);
+  });
+
+  it('normalizes strictly formatted positive currency strings without admitting ambiguous comp prices', () => {
+    const target = subjectCard();
+    const base = payload();
+    const imported = importHermesLandPortalFile(fixture({
+      ...base,
+      specialist_category: 'comps',
+      completed_categories: ['comps'],
+      comps: [{ ...base.comps[0], price: '$337,500' as unknown as number }],
+    }), { propertyCardId: target.card.id });
+
+    expect(imported.categoryResults[0]).toMatchObject({ category: 'comps', itemCount: 1, rejectedItemCount: 0 });
+    expect(listComps({ dealCardId: target.deal.id })[0]?.price).toBe(337500);
+    expect(() => importHermesLandPortalFile(fixture({
+      ...base,
+      specialist_category: 'comps',
+      completed_categories: ['comps'],
+      comps: [{ ...base.comps[0], price: 'about $337,500' as unknown as number }],
+    }), { propertyCardId: target.card.id })).toThrow(/must be a positive number/i);
+  });
+
   it('persists subject facts first, then comparables in a later independent snapshot', () => {
     const target = subjectCard();
     const file = fixture({ ...payload(), completed_categories: ['subject'], comps: [] });
@@ -131,16 +202,16 @@ describe('Hermes LandPortal import', () => {
       visual_artifacts: [{
         key: 'parcel-context',
         label: 'Exact parcel context',
-        kind: 'parcel_boundary',
+        kind: 'screenshot' as unknown as 'parcel_boundary',
         purpose: 'Verify the exact subject boundary and immediate context.',
         source_path: 'parcel-context.png',
         timestamp: '2026-08-02T14:00:20.000Z',
         requested_view: 'parcel_context',
-        active_view: 'parcel_context',
+        active_view: 'Mapbox Satellite Streets with parcel overlay' as unknown as 'parcel_context',
         boundary_required: true,
         boundary_visible: true,
         tiles_loaded: true,
-        camera_scale: 'parcel',
+        camera_scale: 'zoom 16.3647; center -76.69, 43.19' as unknown as 'parcel',
         clipped: false,
         obstructions: [],
       }],
@@ -161,6 +232,113 @@ describe('Hermes LandPortal import', () => {
     expect(repeated.imported).toBe(false);
     expect(repeated.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({ imported: false, error: null });
     expect(loadPropertyInspection(target.card.id)?.assets).toHaveLength(1);
+  });
+
+  // Live 1487 Onionville Rd regression: Hermes wrote a descriptive
+  // camera_scale ("Viewport 1600x1000 CSS px; ... numeric map zoom was not
+  // exposed in the DOM.") and the whole verified visuals category was thrown
+  // away. Sworn framing booleans on the same artifact prove context framing.
+  it('derives context framing for a screenshot whose camera_scale is descriptive free text', () => {
+    const target = subjectCard();
+    const file = fixture({
+      ...payload(),
+      specialist_category: 'visuals',
+      completed_categories: ['visuals'],
+      visual_artifacts: [{
+        key: 'parcel_context',
+        label: 'Parcel context map with boundary overlay',
+        kind: 'screenshot' as unknown as 'parcel_boundary',
+        purpose: 'Required visual evidence for the verified exact subject parcel.',
+        source_path: 'parcel-context.png',
+        timestamp: '2026-08-02T14:00:20.000Z',
+        requested_view: 'parcel_context',
+        active_view: 'parcel_context',
+        boundary_required: true,
+        boundary_visible: true,
+        tiles_loaded: true,
+        camera_scale: 'Viewport 1600x1000 CSS px; selected parcel and immediate road context visible; numeric map zoom was not exposed in the DOM.' as unknown as 'parcel',
+        clipped: false,
+        obstructions: [],
+      }],
+      comps: [],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'parcel-context.png'), Buffer.alloc(9 * 1024, 1));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+
+    expect(imported.persistedCategories).toEqual(['visuals']);
+    expect(imported.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({ imported: true, itemCount: 1, rejectedItemCount: 0, error: null });
+  });
+
+  it('still rejects a free-text camera_scale screenshot whose framing is not sworn', () => {
+    const target = subjectCard();
+    const file = fixture({
+      ...payload(),
+      specialist_category: 'visuals',
+      completed_categories: ['visuals'],
+      visual_artifacts: [{
+        key: 'parcel_context',
+        label: 'Parcel context map with boundary overlay',
+        purpose: 'Required visual evidence for the verified exact subject parcel.',
+        kind: 'screenshot' as unknown as 'parcel_boundary',
+        source_path: 'parcel-context.png',
+        timestamp: '2026-08-02T14:00:20.000Z',
+        requested_view: 'parcel_context',
+        active_view: 'parcel_context',
+        boundary_required: true,
+        boundary_visible: false,
+        tiles_loaded: true,
+        camera_scale: 'wide unlabeled framing' as unknown as 'parcel',
+        clipped: false,
+        obstructions: [],
+      }],
+      comps: [],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'parcel-context.png'), Buffer.alloc(9 * 1024, 1));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+
+    const visuals = imported.categoryResults.find((result) => result.category === 'visuals');
+    expect(visuals?.itemCount ?? 0).toBe(0);
+    expect(imported.rejectedVisualCount).toBe(1);
+  });
+
+  it('retains a single explanatory visual obstruction string as one evidence note', () => {
+    const target = subjectCard();
+    const file = fixture({
+      ...payload(),
+      specialist_category: 'visuals',
+      completed_categories: ['visuals'],
+      visual_artifacts: [{
+        key: 'parcel-context',
+        label: 'Exact parcel context',
+        kind: 'parcel_boundary',
+        purpose: 'Verify the exact subject boundary and immediate context.',
+        source_path: 'parcel-context.png',
+        timestamp: '2026-08-02T14:00:20.000Z',
+        requested_view: 'parcel_context',
+        active_view: 'parcel_context',
+        boundary_required: true,
+        boundary_visible: true,
+        tiles_loaded: true,
+        camera_scale: 'parcel',
+        clipped: false,
+        obstructions: 'Sidebar is visible but does not cover the selected parcel.' as unknown as string[],
+      }],
+      comps: [],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'parcel-context.png'), Buffer.alloc(9 * 1024, 1));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+
+    expect(imported.persistedCategories).toEqual(['visuals']);
+    expect(imported.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({
+      imported: true,
+      itemCount: 1,
+      rejectedItemCount: 0,
+      error: null,
+    });
+    expect(new PropertyResearchStore().loadForProperty(target.card.id)?.evidence.filter((item) => item.kind === 'visual')).toHaveLength(1);
   });
 
   it('imports the verified subject and all context comps through canonical stores, idempotently', () => {
@@ -237,6 +415,28 @@ describe('Hermes LandPortal import', () => {
     expect(new PropertyResearchStore().loadForProperty(target.card.id)).toBeNull();
     expect(loadPropertyInspection(target.card.id)).toBeNull();
     expect(listComps({ dealCardId: target.deal.id })).toHaveLength(0);
+  });
+
+  it('reconciles a decoded LandPortal canonical identity tuple only when every embedded identifier agrees', () => {
+    const target = subjectCard();
+    const exactTuple = 'fips=36011&apn=053889+75.00-1-24.11&propertyid=89505385&mls_propertyid=12345678';
+
+    const imported = importHermesLandPortalFile(fixture({
+      ...payload(),
+      canonical_property_identifier: exactTuple,
+      property_id: '89505385',
+      landportal_property_id: '89505385',
+    }), { propertyCardId: target.card.id });
+
+    expect(imported.imported).toBe(true);
+    expect(imported.validationChecks.find((check) => check.check === 'canonical_property_identifier')?.passed).toBe(true);
+
+    expect(() => importHermesLandPortalFile(fixture({
+      ...payload(),
+      canonical_property_identifier: exactTuple.replace('apn=053889+75.00-1-24.11', 'apn=DIFFERENT-APN'),
+      property_id: '89505385',
+      landportal_property_id: '89505385',
+    }), { propertyCardId: target.card.id })).toThrow(/property identifier mismatch/i);
   });
 
   it('accepts the exact situs address when LandPortal supplies a ZIP absent from New Lead intake', () => {

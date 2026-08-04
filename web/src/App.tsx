@@ -26,6 +26,7 @@ import { BrowserTraining } from '@/pages/BrowserTraining';
 import { Forge } from '@/pages/Forge';
 import { Department } from '@/pages/Department';
 import { Acquisitions } from '@/pages/Acquisitions';
+import { AcquisitionWorkspaceV2 } from '@/pages/AcquisitionWorkspaceV2';
 import { BrowserConnect } from '@/pages/BrowserConnect';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 import { MaxDock } from '@/components/MaxDock';
@@ -60,6 +61,8 @@ export function App() {
           <Route path="/mission"><MissionControl /></Route>
           {/* Acquisitions is a full department workspace, not a generic hub. */}
           <Route path="/dept/acquisitions"><Acquisitions /></Route>
+          {/* V2 opportunity workspace — separate route; the Deal Card above is untouched. */}
+          <Route path="/dept/acquisitions/v2"><AcquisitionWorkspaceV2 /></Route>
           <Route path="/dept/market-research"><MarketResearch /></Route>
           <Route path="/dept/:slug">{(params: { slug: string }) => <Department slug={params.slug} />}</Route>
           <Route path="/landos"><LandOS /></Route>

@@ -99,6 +99,7 @@ export interface HermesLandPortalSubject {
   canonical_property_identifier?: string | number | null;
   property_id?: string | number | null;
   landportal_property_id?: string | number | null;
+  specialist_category?: HermesLandPortalResultCategory;
   completed_categories?: HermesLandPortalResultCategory[];
   visual_artifacts?: HermesLandPortalVisualArtifact[];
   comps: HermesLandPortalComp[];
@@ -147,6 +148,20 @@ export interface HermesLandPortalCategoryImportResult {
 export interface ImportHermesLandPortalOptions {
   propertyCardId?: number;
   now?: () => string;
+  expectedIdentity?: Pick<HermesLandPortalValidatedIdentity, 'address' | 'apn' | 'subjectUrl' | 'propertyId'>;
+}
+
+export interface HermesLandPortalValidatedIdentity {
+  address: string;
+  apn: string;
+  subjectUrl: string;
+  propertyId: string;
+  fips: string | null;
+  propertyCardId: number;
+  dealCardId: number;
+  specialistCategory: HermesLandPortalResultCategory | null;
+  completedCategories: HermesLandPortalResultCategory[];
+  checks: HermesLandPortalValidationCheck[];
 }
 
 type SubjectCard = PropertyCardRow & { deal_card_id: number; role: string };
@@ -163,6 +178,24 @@ const HERMES_VISUAL_KINDS = new Set<HermesLandPortalVisualArtifact['kind']>(['pa
 const HERMES_VISUAL_VIEWS = new Set<LandPortalVisualView>(['parcel_context', 'road_frontage', 'wetlands', 'fema_flood', 'soil', 'contours', 'front_3d', 'rear_3d', 'comparables_map']);
 const HERMES_CAMERA_SCALES = new Set<HermesLandPortalVisualArtifact['camera_scale']>(['parcel', 'context', 'county', 'national', 'unknown']);
 
+function visualKindForView(view: LandPortalVisualView): HermesLandPortalVisualArtifact['kind'] {
+  if (view === 'comparables_map') return 'comparables_map';
+  if (view === 'front_3d' || view === 'rear_3d') return 'parcel_3d';
+  if (view === 'parcel_context' || view === 'road_frontage') return 'parcel_boundary';
+  return 'overlay';
+}
+
+function cameraScaleFromZoom(value: unknown): HermesLandPortalVisualArtifact['camera_scale'] | null {
+  const match = text(value).match(/\bzoom\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (!match) return null;
+  const zoom = Number(match[1]);
+  if (!Number.isFinite(zoom)) return null;
+  if (zoom >= 15) return 'parcel';
+  if (zoom >= 10) return 'context';
+  if (zoom >= 6) return 'county';
+  return 'national';
+}
+
 function asDict(value: unknown, label: string): Dict {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
   return value as Dict;
@@ -175,7 +208,9 @@ function requiredText(value: unknown, label: string): string {
 }
 
 function requiredPositiveNumber(value: unknown, label: string): number {
-  const parsed = finite(value);
+  const numericText = typeof value === 'string' ? value.trim() : '';
+  const safelyFormatted = /^\$?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(numericText);
+  const parsed = finite(value) ?? (safelyFormatted ? Number(numericText.replace(/[$,]/g, '')) : null);
   if (parsed == null || parsed <= 0) throw new Error(`Hermes JSON field "${label}" must be a positive number.`);
   return parsed;
 }
@@ -193,8 +228,11 @@ function enumText<T extends string>(value: unknown, label: string, allowed: Set<
 
 export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSubject {
   const raw = asDict(value, 'Hermes LandPortal payload');
+  const specialistCategory = raw.specialist_category == null
+    ? undefined
+    : enumText(raw.specialist_category, 'specialist_category', HERMES_RESULT_CATEGORIES);
   if (!Array.isArray(raw.comps)) throw new Error('Hermes JSON field "comps" must be an array.');
-  const comps = raw.comps.map((entry, index): HermesLandPortalComp => {
+  const parsedComps = raw.comps.map((entry, index): HermesLandPortalComp => {
     const comp = asDict(entry, `Hermes comp ${index + 1}`);
     const apn = text(comp.apn) || null;
     const address = text(comp.address) || null;
@@ -209,40 +247,89 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
       source_url: text(comp.source_url) || null,
     };
   });
+  const compKeys = new Set<string>();
+  const comps = parsedComps.filter((comp) => {
+    const key = hermesLandPortalCompKey(comp);
+    if (compKeys.has(key)) return false;
+    compKeys.add(key);
+    return true;
+  });
   const completedCategories = raw.completed_categories == null
     ? undefined
     : (() => {
         if (!Array.isArray(raw.completed_categories)) throw new Error('Hermes JSON field "completed_categories" must be an array.');
         const parsed = raw.completed_categories.map((entry, index) => enumText(entry, `completed_categories[${index}]`, HERMES_RESULT_CATEGORIES));
-        if (!parsed.includes('subject')) throw new Error('Hermes exact-subject snapshots must complete "subject" before later result categories.');
-        return [...new Set(parsed)];
+        const unique = [...new Set(parsed)];
+        if (specialistCategory && (unique.length !== 1 || unique[0] !== specialistCategory)) {
+          throw new Error(`Hermes specialist "${specialistCategory}" must complete only its assigned category.`);
+        }
+        if (!specialistCategory && !unique.includes('subject')) {
+          throw new Error('Hermes progressive snapshots must complete "subject" before later result categories.');
+        }
+        return unique;
       })();
+  if (specialistCategory && !completedCategories) {
+    throw new Error(`Hermes specialist "${specialistCategory}" must declare its completed category.`);
+  }
   const visualArtifacts = raw.visual_artifacts == null
     ? undefined
     : (() => {
         if (!Array.isArray(raw.visual_artifacts)) throw new Error('Hermes JSON field "visual_artifacts" must be an array.');
         return raw.visual_artifacts.map((entry, index): HermesLandPortalVisualArtifact => {
           const artifact = asDict(entry, `Hermes visual artifact ${index + 1}`);
-          if (!Array.isArray(artifact.obstructions) || artifact.obstructions.some((item) => typeof item !== 'string')) {
+          const obstructionNarrative = typeof artifact.obstructions === 'string'
+            ? artifact.obstructions.trim()
+            : '';
+          const explicitlyNonObstructing = !!obstructionNarrative
+            && /\b(?:does not|do not)\s+(?:cover|obstruct)\b/i.test(obstructionNarrative);
+          const obstructionValues = typeof artifact.obstructions === 'string'
+            ? explicitlyNonObstructing ? [] : [artifact.obstructions]
+            : artifact.obstructions;
+          if (!Array.isArray(obstructionValues) || obstructionValues.some((item) => typeof item !== 'string')) {
             throw new Error(`Hermes JSON field "visual_artifacts[${index}].obstructions" must be a string array.`);
           }
+          const requestedView = enumText(artifact.requested_view, `visual_artifacts[${index}].requested_view`, HERMES_VISUAL_VIEWS);
+          const rawKind = text(artifact.kind);
+          const kind = rawKind === 'screenshot'
+            ? visualKindForView(requestedView)
+            : enumText(artifact.kind, `visual_artifacts[${index}].kind`, HERMES_VISUAL_KINDS);
+          const activeView = rawKind === 'screenshot' && !HERMES_VISUAL_VIEWS.has(text(artifact.active_view) as LandPortalVisualView)
+            ? requestedView
+            : enumText(artifact.active_view, `visual_artifacts[${index}].active_view`, HERMES_VISUAL_VIEWS);
+          const rawCameraScale = text(artifact.camera_scale) as HermesLandPortalVisualArtifact['camera_scale'];
+          // A screenshot artifact whose camera_scale is descriptive free text
+          // is not discarded wholesale: when the same handback swears the
+          // required parcel boundary is visible, unclipped, with tiles loaded,
+          // that proves at-least-context framing (the same attestation the
+          // literal enum would carry). Anything weaker stays 'unknown' and is
+          // still rejected by the visual evidence gate.
+          const framingProven = artifact.boundary_required === true
+            && artifact.boundary_visible === true
+            && artifact.tiles_loaded === true
+            && artifact.clipped === false;
+          const cameraScale = HERMES_CAMERA_SCALES.has(rawCameraScale)
+            ? rawCameraScale
+            : rawKind === 'screenshot'
+              ? cameraScaleFromZoom(artifact.camera_scale) ?? (framingProven ? 'context' : 'unknown')
+              : null;
+          if (!cameraScale) throw new Error(`Hermes JSON field "visual_artifacts[${index}].camera_scale" has unsupported value "${text(artifact.camera_scale)}".`);
           return {
             key: requiredText(artifact.key, `visual_artifacts[${index}].key`),
             label: requiredText(artifact.label, `visual_artifacts[${index}].label`),
-            kind: enumText(artifact.kind, `visual_artifacts[${index}].kind`, HERMES_VISUAL_KINDS),
+            kind,
             purpose: requiredText(artifact.purpose, `visual_artifacts[${index}].purpose`),
             source_path: requiredText(artifact.source_path, `visual_artifacts[${index}].source_path`),
             timestamp: requiredText(artifact.timestamp, `visual_artifacts[${index}].timestamp`),
-            requested_view: enumText(artifact.requested_view, `visual_artifacts[${index}].requested_view`, HERMES_VISUAL_VIEWS),
-            active_view: enumText(artifact.active_view, `visual_artifacts[${index}].active_view`, HERMES_VISUAL_VIEWS),
+            requested_view: requestedView,
+            active_view: activeView,
             boundary_required: requiredBoolean(artifact.boundary_required, `visual_artifacts[${index}].boundary_required`),
             boundary_visible: requiredBoolean(artifact.boundary_visible, `visual_artifacts[${index}].boundary_visible`),
             tiles_loaded: requiredBoolean(artifact.tiles_loaded, `visual_artifacts[${index}].tiles_loaded`),
-            camera_scale: enumText(artifact.camera_scale, `visual_artifacts[${index}].camera_scale`, HERMES_CAMERA_SCALES),
+            camera_scale: cameraScale,
             clipped: requiredBoolean(artifact.clipped, `visual_artifacts[${index}].clipped`),
-            obstructions: artifact.obstructions.map((item) => item.trim()).filter(Boolean),
+            obstructions: obstructionValues.map((item) => item.trim()).filter(Boolean),
             overlay: text(artifact.overlay) || null,
-            note: text(artifact.note) || null,
+            note: [text(artifact.note), explicitlyNonObstructing ? obstructionNarrative : ''].filter(Boolean).join(' ') || null,
           };
         });
       })();
@@ -252,6 +339,7 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
     subject_verification_status: requiredText(raw.subject_verification_status, 'subject_verification_status'),
     address: requiredText(raw.address, 'address'),
     apn: requiredText(raw.apn, 'apn'),
+    specialist_category: specialistCategory,
     completed_categories: completedCategories,
     visual_artifacts: visualArtifacts,
     comps,
@@ -278,8 +366,25 @@ function addressMatches(card: PropertyCardRow, address: string): boolean {
   return false;
 }
 
+function parsedCanonicalPropertyIdentifier(value: unknown): {
+  propertyId: string;
+  fips: string | null;
+  apn: string | null;
+} | null {
+  const raw = String(value ?? '').trim();
+  if (!raw || /^\d+$/.test(raw)) return null;
+  if (!raw.includes('=')) return null;
+  const params = new URLSearchParams(raw);
+  const propertyId = text(params.get('propertyid'));
+  const fips = text(params.get('fips'));
+  const apn = text(params.get('apn'));
+  return propertyId && fips && apn ? { propertyId, fips, apn } : null;
+}
+
 function explicitPropertyIds(subject: HermesLandPortalSubject): string[] {
-  return [subject.canonical_property_identifier, subject.property_id, subject.landportal_property_id]
+  const canonicalRaw = String(subject.canonical_property_identifier ?? '').trim();
+  const canonical = parsedCanonicalPropertyIdentifier(canonicalRaw);
+  return [canonical?.propertyId ?? canonicalRaw, subject.property_id, subject.landportal_property_id]
     .map((value) => String(value ?? '').trim())
     .filter(Boolean);
 }
@@ -327,7 +432,14 @@ function validateSubject(subject: HermesLandPortalSubject, card: SubjectCard): {
   const urlIdentity = url.identity;
   const retainedIds = canonicalIdsForCard(card);
   const suppliedIds = explicitPropertyIds(subject);
+  const suppliedCanonicalIdentity = parsedCanonicalPropertyIdentifier(subject.canonical_property_identifier);
   const propertyId = urlIdentity?.propertyId ?? '';
+  const suppliedCanonicalIdentityMatches = !suppliedCanonicalIdentity || (
+    suppliedCanonicalIdentity.propertyId === propertyId
+    && suppliedCanonicalIdentity.fips === urlIdentity?.fips
+    && apnEquivalent(suppliedCanonicalIdentity.apn, subject.apn)
+    && apnEquivalent(suppliedCanonicalIdentity.apn, urlIdentity?.apn ?? '')
+  );
   const checks: HermesLandPortalValidationCheck[] = [
     {
       check: 'verified_exact_subject',
@@ -354,10 +466,14 @@ function validateSubject(subject: HermesLandPortalSubject, card: SubjectCard): {
       check: 'canonical_property_identifier',
       passed: !!propertyId
         && suppliedIds.every((id) => id === propertyId)
+        && suppliedCanonicalIdentityMatches
         && retainedIds.every((id) => id === propertyId),
-      reason: !!propertyId && suppliedIds.every((id) => id === propertyId) && retainedIds.every((id) => id === propertyId)
+      reason: !!propertyId
+        && suppliedIds.every((id) => id === propertyId)
+        && suppliedCanonicalIdentityMatches
+        && retainedIds.every((id) => id === propertyId)
         ? `LandPortal property identifier ${propertyId} agrees everywhere it is available.`
-        : `LandPortal property identifier mismatch (URL=${propertyId || 'missing'}, JSON=${suppliedIds.join(',') || 'not supplied'}, retained=${retainedIds.join(',') || 'not supplied'}).`,
+        : `LandPortal property identifier mismatch (URL=${propertyId || 'missing'}, JSON=${suppliedIds.join(',') || 'not supplied'}, canonical tuple=${suppliedCanonicalIdentity ? `${suppliedCanonicalIdentity.fips}/${suppliedCanonicalIdentity.apn}/${suppliedCanonicalIdentity.propertyId}` : 'not supplied'}, retained=${retainedIds.join(',') || 'not supplied'}).`,
     },
     {
       check: 'subject_url',
@@ -678,6 +794,38 @@ function projectedComparable(comp: HermesLandPortalComp, duplicate: CompRow | nu
   };
 }
 
+/**
+ * Validate a specialist handback against the retained subject without writing.
+ * The concurrent controller uses this to establish one run-scoped identity
+ * before any sibling category reaches the canonical importer.
+ */
+export function validateHermesLandPortalFileIdentity(
+  filePath: string,
+  options: Pick<ImportHermesLandPortalOptions, 'propertyCardId'> = {},
+): HermesLandPortalValidatedIdentity {
+  const sourceFile = path.resolve(filePath);
+  let parsed: unknown;
+  try { parsed = JSON.parse(fs.readFileSync(sourceFile, 'utf8')); } catch (error) {
+    throw new Error(`Hermes LandPortal file is not valid JSON: ${(error as Error).message}`);
+  }
+  const subject = parseHermesLandPortalSubject(parsed);
+  const card = resolveSubjectCard(subject, options.propertyCardId);
+  const validation = validateSubject(subject, card);
+  return {
+    address: subject.address,
+    apn: subject.apn,
+    subjectUrl: subject.subject_url,
+    propertyId: validation.propertyId,
+    fips: validation.fips,
+    propertyCardId: card.id,
+    dealCardId: card.deal_card_id,
+    specialistCategory: subject.specialist_category ?? null,
+    completedCategories: subject.completed_categories
+      ?? (['subject', 'comps', ...((subject.visual_artifacts?.length ?? 0) ? ['visuals' as const] : [])] satisfies HermesLandPortalResultCategory[]),
+    checks: validation.checks,
+  };
+}
+
 export function importHermesLandPortalFile(
   filePath: string,
   options: ImportHermesLandPortalOptions = {},
@@ -691,6 +839,18 @@ export function importHermesLandPortalFile(
   const subject = parseHermesLandPortalSubject(parsed);
   const card = resolveSubjectCard(subject, options.propertyCardId);
   const validation = validateSubject(subject, card);
+  if (options.expectedIdentity) {
+    const expected = options.expectedIdentity;
+    const conflicts = [
+      normalizeAddressKey(expected.address) === normalizeAddressKey(subject.address) ? null : 'address',
+      apnEquivalent(expected.apn, subject.apn) ? null : 'APN',
+      expected.propertyId === validation.propertyId ? null : 'LandPortal property identifier',
+      expected.subjectUrl === subject.subject_url ? null : 'LandPortal subject URL',
+    ].filter((value): value is string => !!value);
+    if (conflicts.length) {
+      throw new Error(`Hermes specialist identity conflict rejected (${conflicts.join(', ')}).`);
+    }
+  }
   const captured = captureTimestamp(subject, sourceFile);
   const fileHash = crypto.createHash('sha256').update(rawText).digest('hex');
   const runId = `hermes-landportal-${card.id}-${fileHash.slice(0, 24)}`;

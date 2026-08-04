@@ -157,14 +157,34 @@ export function planParcelSearch(forms: FormInfo[], key: NavSearchKey): ParcelSe
 
 export interface ResultLink { text: string; href: string }
 
+export function isRejectedParcelRecordDestination(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return /(?:^|\.)(?:zillow|realtor|redfin|trulia|spokeo|whitepages|propertyshark|landglide|regrid|loopnet|facebook)\.(?:com|net)\b|google\.[^/]+\/search|duckduckgo\.com\/\?q=/i.test(url);
+}
+
+/** Historical source-attempt notes may retain a reached URL even when the
+ * canonical source URL is still the county landing page. Quarantine those
+ * contaminated attempts too, so an old commercial redirect cannot re-enter a
+ * later government-record run through cumulative inspection history. */
+export function containsRejectedParcelRecordDestination(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return (text.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [])
+    .some((candidate) => isRejectedParcelRecordDestination(candidate));
+}
+
 /** From a search-results page, choose the most likely parcel record link by
  *  matching the identifier (APN/address/owner) in the link text. Pure. */
 export function pickParcelRecordLink(results: ResultLink[], key: NavSearchKey): ResultLink | null {
   const needles = [key.apn, key.address?.split(',')[0], key.owner].filter(Boolean).map((s) => (s as string).toLowerCase());
   const recordish = /detail|parcel|property|record|account|view|result/i;
+  // A county department's generic site-search form can return commercial
+  // property pages that happen to repeat the subject address. Those are not a
+  // government record and must never become the reached URL for an official
+  // source attempt.
   let best: ResultLink | null = null;
   for (const r of results) {
     if (!r.href || !/^https?:/i.test(r.href)) continue;
+    if (isRejectedParcelRecordDestination(r.href)) continue;
     const hay = `${r.text} ${r.href}`.toLowerCase();
     const matchesId = needles.some((n) => n && hay.includes(n.replace(/[ .\-/]/g, '')) || (n && hay.includes(n)));
     const looksRecord = recordish.test(hay);

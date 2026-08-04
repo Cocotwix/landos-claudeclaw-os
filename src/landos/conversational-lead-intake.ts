@@ -1,5 +1,6 @@
 import { buildSmartIntake, type DealIntelItem, type SmartIntake } from './smart-intake.js';
 import { extractSellerIdentity, formatAddressLabel, sanitizeLocalityCandidate } from './lead-identity.js';
+import { extractSafePhone } from './contact-phone.js';
 
 export interface ConversationalLeadIntake {
   rawInput: string;
@@ -14,6 +15,7 @@ export interface ConversationalLeadIntake {
   city: string | null;
   county: string | null;
   state: string | null;
+  zip: string | null;
   acreage: number | null;
   propertyLabel: string;
   dealIntelligence: DealIntelItem[];
@@ -28,14 +30,19 @@ function labeledValue(raw: string, labels: string[]): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function extractPhone(raw: string): string | null {
-  const match = raw.match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/);
-  return match?.[0]?.trim() || null;
-}
-
 function extractEmail(raw: string): string | null {
   const match = raw.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/i);
   return match?.[0] || null;
+}
+
+function extractZip(raw: string): string | null {
+  // Cautious: a bare 5-digit number could be a price or parcel fragment, so a
+  // ZIP is accepted only when labeled or directly following a state
+  // abbreviation ("Sterling, NY 13156").
+  const labeled = raw.match(/\b(?:zip|zip\s*code|postal\s*code)\s*[:=-]?\s*(\d{5})(?:-\d{4})?\b/i);
+  if (labeled) return labeled[1];
+  const afterState = raw.match(/,?\s+[A-Z]{2}\.?,?\s+(\d{5})(?:-\d{4})?\b/);
+  return afterState?.[1] ?? null;
 }
 
 function extractAcreage(raw: string): number | null {
@@ -72,7 +79,7 @@ export function parseConversationalLeadIntake(rawInput: string): ConversationalL
   // A locality candidate is kept only when it is locality shaped. A parser
   // fragment ("NC. APN may") would otherwise be persisted as the city and then
   // scope every jurisdiction lookup to a place that does not exist.
-  const city = sanitizeLocalityCandidate(oneLine(fields.city));
+  const city = sanitizeLocalityCandidate(oneLine(fields.city), { allowStateName: !!oneLine(fields.state) });
   const county = sanitizeLocalityCandidate(oneLine(fields.county));
   const locality = [city, fields.state].filter(Boolean).join(', ');
   const propertyLabel = address || (apn ? `Parcel ${apn}` : locality || 'Unresolved property');
@@ -81,7 +88,7 @@ export function parseConversationalLeadIntake(rawInput: string): ConversationalL
     rawInput,
     sellerName,
     sellerNameBasis,
-    phone: extractPhone(rawInput),
+    phone: extractSafePhone(rawInput),
     email: extractEmail(rawInput),
     leadSource,
     address,
@@ -89,6 +96,7 @@ export function parseConversationalLeadIntake(rawInput: string): ConversationalL
     city,
     county,
     state: oneLine(fields.state),
+    zip: extractZip(rawInput),
     acreage: extractAcreage(rawInput),
     propertyLabel,
     dealIntelligence: smartIntake.dealIntelligence,

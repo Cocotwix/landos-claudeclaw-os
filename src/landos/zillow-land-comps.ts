@@ -15,7 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
 import { resolveChromePath, readSessionConfig } from './browser-session.js';
-import { parseZillowStructured, parseListingStatus, type CompStatus } from './comp-extraction.js';
+import { parseZillowStructured, parseListingStatus, zillowListResults, type CompStatus } from './comp-extraction.js';
 import { addressStateCode } from './comp-registry.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
@@ -37,6 +37,9 @@ export interface ZillowLandComp {
   lat?: number | null;
   lng?: number | null;
   thumbnailUrl?: string | null;
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
 }
 
 export interface ZillowCompsResult {
@@ -44,6 +47,19 @@ export interface ZillowCompsResult {
   comps: ZillowLandComp[];
   note: string;
   routeTried: string;
+  /** Present for the dedicated manufactured-home lane, including zero-result
+   * searches, so the UI can prove what was searched and why rows were excluded. */
+  searchProof?: ManufacturedHomeSearchProof;
+}
+
+export interface ManufacturedHomeSearchProof {
+  radiusMiles: number;
+  timePeriodMonths: number;
+  sourcesSearched: string[];
+  routesAttempted: string[];
+  candidatesReviewed: number;
+  qualifyingResults: number;
+  exclusionReasons: Array<{ reason: string; count: number }>;
 }
 
 export interface ZillowFetchInput {
@@ -60,9 +76,24 @@ export interface ZillowFetchInput {
   mode?: 'sold' | 'active';
   radiusMiles?: 5 | 10 | 15 | 20;
   dateWindowMonths?: 12 | 24;
+  propertyType?: 'land' | 'manufactured';
 }
 
-export interface RawZillowListing { address: string | null; price: number | null; acres: number | null; url: string | null; status?: string | null }
+export interface RawZillowListing {
+  address: string | null;
+  price: number | null;
+  acres: number | null;
+  url: string | null;
+  status?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  soldDate?: string | null;
+  listingDate?: string | null;
+  daysOnMarket?: number | null;
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
+}
 /** DOM read: card rows PLUS the raw __NEXT_DATA__ JSON for structured parsing. */
 export interface RawZillowRead { listings: RawZillowListing[]; nextData: string | null }
 
@@ -84,6 +115,7 @@ export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[]
   const sold = input.mode === 'sold';
   const radius = input.radiusMiles ?? 5;
   const routes: ZillowSearchRoute[] = [];
+  const manufactured = input.propertyType === 'manufactured';
   if (Number.isFinite(input.lat) && Number.isFinite(input.lng)) {
     const lat = input.lat as number;
     const lng = input.lng as number;
@@ -91,10 +123,18 @@ export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[]
     const lngDelta = radius / Math.max(35, 69 * Math.cos(lat * Math.PI / 180));
     const searchQueryState = encodeURIComponent(JSON.stringify({
       mapBounds: { north: lat + latDelta, south: lat - latDelta, east: lng + lngDelta, west: lng - lngDelta },
-      filterState: { land: { value: true }, house: { value: false }, condo: { value: false }, townhouse: { value: false }, apartment: { value: false }, manufactured: { value: false }, ...(sold ? { isRecentlySold: { value: true }, doz: { value: input.dateWindowMonths === 24 ? '24m' : '12m' } } : {}) },
+      filterState: {
+        land: { value: !manufactured },
+        house: { value: false },
+        condo: { value: false },
+        townhouse: { value: false },
+        apartment: { value: false },
+        manufactured: { value: manufactured },
+        ...(sold ? { isRecentlySold: { value: true }, doz: { value: input.dateWindowMonths === 24 ? '24m' : '12m' } } : {}),
+      },
       isListVisible: true,
     }));
-    routes.push({ kind: 'coordinates', label: `${lat.toFixed(5)}, ${lng.toFixed(5)} within ${radius} miles`, url: `https://www.zillow.com/homes/${sold ? 'recently_sold' : 'for_sale/land_type'}/?searchQueryState=${searchQueryState}` });
+    routes.push({ kind: 'coordinates', label: `${lat.toFixed(5)}, ${lng.toFixed(5)} within ${radius} miles`, url: `https://www.zillow.com/homes/${sold ? 'recently_sold' : manufactured ? 'for_sale/manufactured_type' : 'for_sale/land_type'}/?searchQueryState=${searchQueryState}` });
   }
   const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
   const road = (input.address ?? '').replace(/,.*$/, '').trim();
@@ -130,6 +170,7 @@ export function normalizeZillowListings(
   raw: RawZillowListing[],
   subjectAcres: number | null,
   mode: 'sold' | 'active' = 'active',
+  propertyType: 'land' | 'manufactured' = 'land',
 ): ZillowLandComp[] {
   const band = subjectAcres != null && subjectAcres > 0
     ? { lo: Math.max(0.05, subjectAcres * 0.5), hi: subjectAcres * 2.5 }
@@ -141,7 +182,8 @@ export function normalizeZillowListings(
     if (!r.address || price == null || price <= 0) continue;
     if (price < 1000 || price > 5_000_000) continue; // broad land-price sanity band
     const acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
-    if (acres != null && (acres < band.lo || acres > band.hi)) continue;
+    if (propertyType === 'land' && acres != null && (acres < band.lo || acres > band.hi)) continue;
+    if (propertyType === 'manufactured' && price <= 200_000) continue;
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -152,7 +194,23 @@ export function normalizeZillowListings(
     const status: CompStatus = parsed === 'unknown' && mode === 'active' ? 'active' : parsed;
     if (mode === 'sold' && status !== 'sold') continue;
     if (mode === 'active' && status === 'sold') continue;
-    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status, url: r.url ?? null, source: 'Zillow' });
+    out.push({
+      address: r.address.replace(/\s+/g, ' ').trim(),
+      price,
+      acres,
+      pricePerAcre: acres ? Math.round(price / acres) : null,
+      status,
+      url: r.url ?? null,
+      source: 'Zillow',
+      lat: r.lat ?? null,
+      lng: r.lng ?? null,
+      soldDate: r.soldDate ?? null,
+      listingDate: r.listingDate ?? null,
+      daysOnMarket: r.daysOnMarket ?? null,
+      homeType: r.homeType ?? null,
+      yearBuilt: r.yearBuilt ?? null,
+      homeSizeSqft: r.homeSizeSqft ?? null,
+    });
   }
   return out.slice(0, 8);
 }
@@ -175,6 +233,8 @@ export interface ZillowFetchDeps {
   scrollSettleMs?: number;
   /** Bypass the live-mode gate (tests). */
   force?: boolean;
+  /** Deterministic clock for sale-window screening in tests. */
+  nowMs?: number;
 }
 
 export interface ZillowPageLike {
@@ -235,8 +295,73 @@ const READ_PAGE_GEOGRAPHY = (): { url: string; text: string } => ({
   text: `${(document as any).title ?? ''} ${((document as any).body?.innerText ?? '').slice(0, 5000)}`,
 });
 
+function structuredManufacturedListings(rawJsonOrObj: string | unknown): RawZillowListing[] {
+  let parsed: unknown = rawJsonOrObj;
+  if (typeof rawJsonOrObj === 'string') {
+    try { parsed = JSON.parse(rawJsonOrObj); } catch { return []; }
+  }
+  return zillowListResults(parsed).map((item) => {
+    const info = item.hdpData?.homeInfo;
+    const address = item.address
+      ?? ([item.addressStreet, item.addressCity, item.addressState, item.addressZipcode].filter(Boolean).join(', ') || null);
+    const price = typeof item.unformattedPrice === 'number'
+      ? item.unformattedPrice
+      : typeof item.price === 'number'
+        ? item.price
+        : typeof item.price === 'string'
+          ? Number(item.price.replace(/[^0-9.]/g, '')) || null
+          : null;
+    let acres: number | null = null;
+    if (typeof info?.lotAreaValue === 'number' && info.lotAreaValue > 0) {
+      acres = /acre/i.test(info.lotAreaUnit ?? '')
+        ? info.lotAreaValue
+        : Math.round((info.lotAreaValue / 43_560) * 100) / 100;
+    }
+    const detailUrl = item.detailUrl
+      ? (item.detailUrl.startsWith('http') ? item.detailUrl : `https://www.zillow.com${item.detailUrl}`)
+      : null;
+    const dateValue = item.dateSold ?? item.soldDate ?? info?.dateSold;
+    const listingDateValue = item.listingDate ?? info?.listingDate;
+    return {
+      address,
+      price,
+      acres,
+      url: detailUrl,
+      status: item.statusType ?? item.homeStatus ?? null,
+      lat: item.latLong?.latitude ?? item.latitude ?? info?.latitude ?? null,
+      lng: item.latLong?.longitude ?? item.longitude ?? info?.longitude ?? null,
+      soldDate: normalizeZillowDate(dateValue),
+      listingDate: normalizeZillowDate(listingDateValue),
+      daysOnMarket: item.daysOnZillow ?? item.timeOnZillow ?? info?.daysOnZillow ?? null,
+      homeType: info?.homeType ?? 'Manufactured',
+      yearBuilt: info?.yearBuilt ?? null,
+      homeSizeSqft: info?.livingArea ?? null,
+    };
+  });
+}
+
+function normalizeZillowDate(value: string | number | null | undefined): string | null {
+  if (value == null) return null;
+  const numeric = typeof value === 'number' ? value : /^\d{10,13}$/.test(value) ? Number(value) : null;
+  const stamp = numeric != null
+    ? (numeric < 10_000_000_000 ? numeric * 1000 : numeric)
+    : Date.parse(String(value));
+  if (!Number.isFinite(stamp)) return null;
+  return new Date(stamp).toISOString().slice(0, 10);
+}
+
 function normalizedGeo(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+export function distanceMiles(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const radians = (degrees: number) => degrees * Math.PI / 180;
+  const dLat = radians(b.lat - a.lat);
+  const dLng = radians(b.lng - a.lng);
+  const lat1 = radians(a.lat);
+  const lat2 = radians(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 3958.7613 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
 /** Refuse an unrelated Zillow market before extraction. Listing addresses are
@@ -274,14 +399,26 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
   const state = (input.state ?? '').trim();
   const routes = zillowSearchRoutes(input);
   const url = routes[0]?.url ?? '';
+  const manufacturedSearch = input.propertyType === 'manufactured';
+  const proof: ManufacturedHomeSearchProof = {
+    radiusMiles: input.radiusMiles ?? 5,
+    timePeriodMonths: input.dateWindowMonths ?? 24,
+    sourcesSearched: ['Zillow'],
+    routesAttempted: [],
+    candidatesReviewed: 0,
+    qualifyingResults: 0,
+    exclusionReasons: [],
+  };
+  const finish = (result: ZillowCompsResult): ZillowCompsResult =>
+    manufacturedSearch ? { ...result, searchProof: { ...proof, exclusionReasons: [...proof.exclusionReasons] } } : result;
   if (!deps.force && !deps.connect) {
     // Production gate: only browse when live-browser mode is enabled.
-    try { if (!readSessionConfig().enabled) return { status: 'disabled', comps: [], note: 'Live browser mode off — Zillow not attempted.', routeTried: url }; } catch { /* fall through */ }
+    try { if (!readSessionConfig().enabled) return finish({ status: 'disabled', comps: [], note: 'Live browser mode off — Zillow not attempted.', routeTried: url }); } catch { /* fall through */ }
   }
-  if (!state || routes.length === 0) return { status: 'disabled', comps: [], note: 'No coordinates, ZIP, city, or county with state for a Zillow land search.', routeTried: url };
+  if (!state || routes.length === 0) return finish({ status: 'disabled', comps: [], note: 'No coordinates, ZIP, city, or county with state for a Zillow land search.', routeTried: url });
 
   const chrome = (deps.resolveChrome ?? (() => resolveChromePath()))();
-  if (!chrome.path) return { status: 'disabled', comps: [], note: 'Google Chrome not found for a disposable Zillow session.', routeTried: url };
+  if (!chrome.path) return finish({ status: 'disabled', comps: [], note: 'Google Chrome not found for a disposable Zillow session.', routeTried: url });
 
   const spawnImpl = deps.spawn ?? defaultSpawn;
   const connect = deps.connect ?? defaultConnect;
@@ -296,7 +433,7 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* ignore */ }
     child = spawnImpl(chrome.path, [`--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', '--disable-blink-features=AutomationControlled', 'about:blank']);
     for (let i = 0; i < 12 && !browser; i++) { browser = await connect(`http://127.0.0.1:${port}`); if (!browser) await sleep(600); }
-    if (!browser) return { status: 'error', comps: [], note: 'Disposable Chrome for Zillow did not start.', routeTried: url };
+    if (!browser) return finish({ status: 'error', comps: [], note: 'Disposable Chrome for Zillow did not start.', routeTried: url });
 
     const settleMs = deps.settleMs ?? 6000;
     const scrollSettleMs = deps.scrollSettleMs ?? 800;
@@ -306,37 +443,78 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
     let lastRoute = url;
     for (const route of routes) {
       lastRoute = route.url;
+      proof.routesAttempted.push(`${route.label}: ${route.url}`);
       await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await sleep(settleMs);
       for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
       const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
       const read = await page.evaluate<RawZillowRead>(EXTRACT_ZILLOW as unknown as () => RawZillowRead);
       const raw = read?.listings ?? [];
-      if (blocked && raw.length === 0 && !read?.nextData) return { status: 'blocked', comps: [], note: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).`, routeTried: route.url };
+      if (blocked && raw.length === 0 && !read?.nextData) return finish({ status: 'blocked', comps: [], note: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).`, routeTried: route.url });
       const pageGeo = await page.evaluate<{ url: string; text: string }>(READ_PAGE_GEOGRAPHY as unknown as () => { url: string; text: string }).catch(() => ({ url: route.url, text: '' }));
       const verifiedGeo = verifyZillowResolvedGeography(input, route, pageGeo, raw);
       if (!verifiedGeo.valid) { failedGeographies.push(`${route.label}: ${verifiedGeo.reason}`); continue; }
-      const structured = read?.nextData ? parseZillowStructured(read.nextData, input.subjectAcres ?? null) : [];
+      const manufactured = manufacturedSearch;
+      const structuredRaw = manufactured && read?.nextData ? structuredManufacturedListings(read.nextData) : [];
+      const structured = !manufactured && read?.nextData ? parseZillowStructured(read.nextData, input.subjectAcres ?? null) : [];
       const mode = input.mode ?? 'active';
-      const normalized = structured.length
+      const normalized: ZillowLandComp[] = manufactured
+        ? normalizeZillowListings(structuredRaw.length ? structuredRaw : raw, null, mode, 'manufactured')
+        : structured.length
         ? structured
-          .map((s) => ({ address: s.address ?? '', price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status, url: s.url, source: 'Zillow' as const }))
+          .map((s) => ({ address: s.address ?? '', price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status, url: s.url, source: 'Zillow' as const, lat: null, lng: null }))
           .filter((c) => c.address && (mode === 'sold' ? c.status === 'sold' : c.status !== 'sold'))
         : normalizeZillowListings(raw, input.subjectAcres ?? null, mode);
       const expectedState = state.toUpperCase();
-      const comps = normalized.filter((comp) => addressStateCode(comp.address) === expectedState);
+      const subjectPoint = Number.isFinite(input.lat) && Number.isFinite(input.lng)
+        ? { lat: input.lat as number, lng: input.lng as number }
+        : null;
+      const exclusionCounts = new Map<string, number>();
+      const exclude = (reason: string): false => {
+        exclusionCounts.set(reason, (exclusionCounts.get(reason) ?? 0) + 1);
+        return false;
+      };
+      if (manufactured) proof.candidatesReviewed += normalized.length;
+      const cutoff = (deps.nowMs ?? Date.now()) - (input.dateWindowMonths ?? 24) * 30.4 * 86_400_000;
+      const comps = normalized.filter((comp) => {
+        if (addressStateCode(comp.address) !== expectedState) return manufactured ? exclude(`Outside subject state ${expectedState}`) : false;
+        if (!manufactured) return true;
+        if (comp.status !== 'sold') return exclude('Not a confirmed closed sale');
+        if (comp.price <= 200_000) return exclude('Sale price is not above $200,000');
+        if (!subjectPoint) return exclude('Subject coordinates unavailable');
+        if (!Number.isFinite(comp.lat) || !Number.isFinite(comp.lng)) return exclude('Listing coordinates unavailable');
+        if (distanceMiles(subjectPoint, { lat: comp.lat as number, lng: comp.lng as number }) > (input.radiusMiles ?? 5)) {
+          return exclude(`Outside ${input.radiusMiles ?? 5}-mile radius`);
+        }
+        if (!comp.soldDate || !Number.isFinite(Date.parse(comp.soldDate))) return exclude('Verified sale date unavailable');
+        if (Date.parse(comp.soldDate) < cutoff) return exclude(`Outside ${input.dateWindowMonths ?? 24}-month time period`);
+        return true;
+      });
+      if (manufactured) {
+        proof.qualifyingResults += comps.length;
+        proof.exclusionReasons = [...exclusionCounts.entries()].map(([reason, count]) => ({ reason, count }));
+      }
       const rejectedOutsideMarket = normalized.length - comps.length;
       if (!comps.length) continue;
-      const via = structured.length ? 'structured __NEXT_DATA__' : 'visible cards';
-      return {
+      const via = structured.length || structuredRaw.length ? 'structured __NEXT_DATA__' : 'visible cards';
+      return finish({
         status: 'retrieved', comps,
-        note: `Zillow verified ${route.label} and returned ${comps.length} in-band ${expectedState} comp(s) via ${via}${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}${rejectedOutsideMarket ? `; rejected ${rejectedOutsideMarket} row(s) outside the verified state or without usable locality evidence` : ''}.`,
+        note: manufactured
+          ? `Zillow verified ${route.label} and returned ${comps.length} sold manufactured-home comp(s) above $200,000 with listing coordinates proven within 5 miles via ${via}.`
+          : `Zillow verified ${route.label} and returned ${comps.length} in-band ${expectedState} comp(s) via ${via}${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}${rejectedOutsideMarket ? `; rejected ${rejectedOutsideMarket} row(s) outside the verified state or without usable locality evidence` : ''}.`,
         routeTried: route.url,
-      };
+      });
     }
-    return { status: 'none', comps: [], note: `Zillow returned no verified in-band ${state.toUpperCase()} land comps across ${routes.length} subject-geography route(s)${failedGeographies.length ? `; ${failedGeographies.length} wrong-geography route(s) were automatically rejected` : ''}.`, routeTried: lastRoute };
+    return finish({
+      status: 'none',
+      comps: [],
+      note: manufacturedSearch
+        ? `Zillow reviewed ${proof.candidatesReviewed} manufactured-home candidate(s) within ${proof.radiusMiles} miles over ${proof.timePeriodMonths} months and retained no qualifying closed sale above $200,000.`
+        : `Zillow returned no verified in-band ${state.toUpperCase()} land comps across ${routes.length} subject-geography route(s)${failedGeographies.length ? `; ${failedGeographies.length} wrong-geography route(s) were automatically rejected` : ''}.`,
+      routeTried: lastRoute,
+    });
   } catch (e) {
-    return { status: 'error', comps: [], note: `Zillow capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried: url };
+    return finish({ status: 'error', comps: [], note: `Zillow capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried: url });
   } finally {
     try { if (browser) await browser.close(); } catch { /* ignore */ }
     try { child?.kill?.(); } catch { /* ignore */ }

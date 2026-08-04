@@ -32,6 +32,7 @@ import type {
   ZoningHandback,
 } from './deal-intelligence-mission.js';
 import type { MissionChildState, MissionJoin } from './mission-graph.js';
+import { buildPracticalMarketMatrix } from './market-scan.js';
 import type {
   SnapshotComps,
   SnapshotDueDiligenceItem,
@@ -131,6 +132,11 @@ export interface DealIntelligenceInputPackage {
   missionId: string;
   identity: SnapshotIdentity;
   facts: SnapshotFact[];
+  marketIntelligence?: {
+    marketMatrix: unknown;
+    marketPulse: unknown;
+    marketScan: unknown;
+  } | null;
   governmentRecords: SnapshotFact[];
   dueDiligence: SnapshotDueDiligenceItem[];
   comps: SnapshotComps;
@@ -297,12 +303,41 @@ export function assembleDealIntelligencePackage(input: {
       'The comparable lane reported government-record verification on comparable properties, which is out of scope for discovery-stage comps. Its result is carried as unverified and is not treated as validated comp evidence.',
     );
   }
+  const selectedMarketObservations = [
+    ...(valuationLane?.comps.sold ?? []),
+    ...(valuationLane?.comps.active ?? []),
+  ].flatMap((comp) => (
+    comp.acres != null && comp.price != null
+      ? [{
+          status: comp.lane,
+          acres: comp.acres,
+          price: comp.price,
+          dateIso: comp.dateIso,
+          daysOnMarket: comp.daysOnMarket,
+          source: comp.source,
+        }]
+      : []
+  ));
+  const existingMarketScan = market?.marketScan && typeof market.marketScan === 'object'
+    ? market.marketScan as Record<string, unknown>
+    : {};
+  const acreageMatrix = existingMarketScan.acreageMatrix && typeof existingMarketScan.acreageMatrix === 'object'
+    ? existingMarketScan.acreageMatrix
+    : buildPracticalMarketMatrix({
+        observations: selectedMarketObservations,
+        subjectAcres: subject?.subjectAcres ?? null,
+      });
 
   return {
     dealCardId: input.dealCardId,
     missionId: input.missionId,
     identity: subject?.identity ?? UNRESOLVED_ASSEMBLY_IDENTITY,
     facts,
+    marketIntelligence: market ? {
+      marketMatrix: market.marketMatrix ?? null,
+      marketPulse: market.marketPulse ?? null,
+      marketScan: { ...existingMarketScan, acreageMatrix },
+    } : null,
     governmentRecords: government?.records ?? [],
     dueDiligence,
     comps: valuationLane?.comps ?? EMPTY_COMPS,

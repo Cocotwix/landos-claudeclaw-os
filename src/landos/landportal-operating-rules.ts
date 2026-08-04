@@ -83,3 +83,63 @@ export function isVerifiedLandPortalSubjectUrl(value: unknown): value is string 
 export function landPortalIdentityFromUrl(value: unknown): LandPortalParcelIdentity | null {
   return validateLandPortalSubjectUrl(value).identity;
 }
+
+function numberFrom(value: unknown): number | null {
+  const match = String(value ?? '').replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  const parsed = match ? Number(match[0]) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Collect slope metrics from both normalized facts and retained provider rows. */
+export function slopeMetricsFromRetained(value: unknown): {
+  averageSlopePercent: number | null;
+  areaAboveTenSlopePercent: number | null;
+} {
+  let averageSlopePercent: number | null = null;
+  let underTenPercent: number | null = null;
+  let heavyPercent: number | null = null;
+  let extremePercent: number | null = null;
+  const applyMetric = (label: string, candidate: unknown): void => {
+    if (/^(?:slope\s*avg|average\s*slope|avg\s*slope)$/i.test(label)) averageSlopePercent ??= numberFrom(candidate);
+    if (/under\s*10|below\s*10/i.test(label) && /slope/i.test(label)) underTenPercent ??= numberFrom(candidate);
+    if (/heavy\s*slope|10\s*[-–]\s*15/i.test(label)) heavyPercent ??= numberFrom(candidate);
+    if (/extreme\s*slope|15\s*%?\s*\+/i.test(label)) extremePercent ??= numberFrom(candidate);
+  };
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) { for (const child of node) visit(child); return; }
+    if (!node || typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+    const label = String(obj.label ?? obj.key ?? obj.name ?? '').trim();
+    const candidate = obj.value ?? obj.detail;
+    applyMetric(label, candidate);
+    for (const [key, child] of Object.entries(obj)) {
+      if (typeof child !== 'object') applyMetric(key, child);
+      if (key !== 'value' && key !== 'detail') visit(child);
+    }
+  };
+  visit(value);
+  const areaAboveTenSlopePercent = heavyPercent != null && extremePercent != null
+    ? heavyPercent + extremePercent
+    : underTenPercent != null ? Math.max(0, 100 - underTenPercent) : null;
+  return { averageSlopePercent, areaAboveTenSlopePercent };
+}
+
+/** Exact rule: average slope >=10% OR area strictly greater than 10%. */
+export function evaluateThreeDCaptureEligibility(value: unknown): ThreeDCaptureEligibility {
+  const metrics = slopeMetricsFromRetained(value);
+  if (metrics.averageSlopePercent == null && metrics.areaAboveTenSlopePercent == null) {
+    return { ...metrics, decision: 'unknown', reason: 'slope_data_missing' };
+  }
+  if ((metrics.averageSlopePercent != null && metrics.averageSlopePercent >= 10)
+      || (metrics.areaAboveTenSlopePercent != null && metrics.areaAboveTenSlopePercent > 10)) {
+    return { ...metrics, decision: 'eligible', reason: 'material_slope_threshold_met' };
+  }
+  return { ...metrics, decision: 'not_applicable', reason: 'average_below_10_and_area_above_10_not_greater_than_10' };
+}
+
+export function sameLandPortalParcel(a: LandPortalParcelIdentity | null, b: LandPortalParcelIdentity | null): boolean {
+  if (!a || !b) return false;
+  if (a.propertyId && b.propertyId) return a.propertyId === b.propertyId;
+  const compact = (v: string | null) => (v ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+  return !!a.fips && !!b.fips && !!a.apn && !!b.apn && compact(a.fips) === compact(b.fips) && compact(a.apn) === compact(b.apn);
+}

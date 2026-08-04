@@ -193,6 +193,46 @@ It must retrieve:
 
 Do not capture screenshots with the overlay panel covering the parcel.
 
+### 10A. Hermes bounded subject lookup
+
+Every Hermes LandPortal task must load and follow this SOP and the installed
+`driving-cdp-browser` skill. Hermes must attach only to the already
+authenticated Chrome CDP endpoint at `http://127.0.0.1:9224`; it must not
+launch another browser, use another CDP port, or inspect unrelated tabs.
+
+The approved search sequence is exhaustive and must be followed in this exact
+order:
+
+1. Full address.
+2. APN with state and county.
+3. Owner name with state and county.
+
+For each attempted query, clear or close any obstructing popup, choose the
+correct LandPortal search type, and select the top returned suggestion. Verify
+the candidate against the requested address, APN, owner, county, and acreage
+when each value is available. Classify the outcome as exactly one of
+`verified_exact_subject`, `context_only`, or `no_match` (or `failed` for an
+execution failure). A nearby parcel, a different same-owner parcel, or an
+unverified suggestion is never the verified subject.
+
+For `verified_exact_subject`, extract the approved visible sidebar fields, the
+exact subject parcel URL, LP Estimate total and per-acre values, and visible
+comparable rows into the property-specific JSON handback. For `context_only`,
+`no_match`, or `failed`, write an honest property-specific JSON handback with
+no subject facts and no comps, then stop. Only verified-exact-subject JSON may
+enter the existing Hermes importer; context-only and no-match results must not
+populate subject facts.
+
+Hermes must not invent another LandPortal workflow, create exploratory Python
+or JavaScript helper scripts, cycle through alternate search strategies,
+navigate Market Research, or continue after the three approved searches are
+exhausted. The only permitted output file is the requested property-specific
+JSON. Target completion is under three minutes and the hard execution ceiling
+is five minutes for the subject and comps work units; the visuals work unit,
+whose captures require vision-verified clean-capture checks, has a
+twelve-minute ceiling. At the ceiling, return `no_match` or `failed` honestly
+instead of continuing to explore.
+
 **Conditional screenshot rules:**
 - Wetlands: research every parcel; capture only when wetlands affect the subject parcel.
 - FEMA: research every parcel; capture only when a FEMA flood zone or floodway affects the subject parcel.
@@ -200,6 +240,77 @@ Do not capture screenshots with the overlay panel covering the parcel.
 - Transmission lines: capture when a corridor crosses or materially affects the parcel.
 
 Store the no-impact result and provenance even when no screenshot is required.
+
+### 10B. Market Research Source Rule
+
+LandPortal is responsible for:
+
+1. Subject property identity
+2. Owner and parcel facts
+3. Acreage values
+4. Road frontage
+5. Landlocked status
+6. Water features
+7. Building information when shown
+8. Wetlands
+9. FEMA
+10. Soil
+11. Terrain
+12. Slope
+13. Buildability
+14. Required satellite, 3D, overlay, frontage, and context images
+15. Sidebar comparables
+16. The separate Show on Map comparable page
+17. Comparable details, thumbnails, locations, and reconciliation
+
+LandPortal must not be used as the primary source for:
+
+1. County market metrics
+2. ZIP market metrics
+3. Acreage-band market metrics
+4. Market Matrix
+5. Market Pulse numeric metrics
+
+The Hermes LandPortal workflow must not scrape LandPortal market panels for
+county, ZIP, or acreage-band market data, and must not navigate LandPortal
+Market Research surfaces.
+
+After the subject property's county, state, ZIP, and acreage are established,
+LandOS retrieves the matching market information from its existing Market
+Research data (the same tables and services already used by the Market
+Research section). Required retrieval:
+
+1. Subject county record
+2. Subject ZIP record
+3. Subject property acreage band
+4. County sold count
+5. County active count
+6. County median days on market
+7. County sell-through rate
+8. County absorption rate
+9. County inventory or months of supply
+10. County median price
+11. County median price per acre
+12. County population
+13. County growth rate
+14. ZIP sold count
+15. ZIP active count
+16. ZIP median days on market
+17. ZIP sell-through rate
+18. ZIP absorption rate
+19. ZIP inventory or months of supply
+20. ZIP median price
+21. ZIP median price per acre
+22. Subject acreage-band metrics
+23. The county acreage band with the highest sell-through rate
+24. The sold count, active count, median DOM, sell-through rate, absorption,
+    median price, and median price per acre for that fastest-selling county
+    acreage band
+25. Relevant snapshot dates and source periods
+
+Do not create or duplicate Market Research data for this purpose. When no
+exact ZIP or acreage-band record exists, report it honestly as unavailable;
+never silently substitute a different ZIP, county, or acreage band.
 
 ## 11. Water, Sewer, Well, Septic, and Electricity
 
@@ -229,6 +340,27 @@ Provide a preliminary soil-based septic outlook:
 - Perc test required
 
 Do not represent soil interpretation as a completed or passed perc test.
+
+## 11A. Conditional LandPortal 3D Capture
+
+LandPortal Front Side 3D and Rear Side 3D are conditional evidence stages. The
+deterministic direct-action runner may open LandPortal for these stages only
+when retained subject-parcel slope data proves either condition:
+
+- average slope is greater than or equal to 10 percent; or
+- the parcel area above 10 percent slope is strictly greater than 10 percent.
+
+Average slope exactly equal to 10 percent qualifies. Area exactly equal to 10
+percent does not qualify unless the average-slope condition qualifies. The
+runner must calculate the decision from retained facts (including the 10–15
+and 15%+ bands when available), emit the decision and metrics, and enforce the
+90-second action budget. If both conditions are false, both 3D stages are
+completed as `not_applicable`; they must not be reported as missing, failed, or
+unavailable, must not open a browser page, and must not add a missing-imagery
+warning. Missing slope data is an explicit `unknown`/not-attempted outcome and
+requires data before a conditional capture can be scheduled. Existing 3D
+evidence remains historical evidence and is never deleted when a later parcel
+is not applicable.
 
 ## 12. Environmental and Buildability
 
@@ -456,6 +588,25 @@ Every successful external-site workflow should be capable of becoming reusable L
 7. Use those improvements on future leads
 
 Agents discover workflows. LandOS keeps them.
+
+### 20A. Verified Subject-Parcel URL
+
+When a verified subject parcel is open, capture the exact current LandPortal
+parcel URL. A valid subject URL is HTTPS on LandPortal, contains a decodable
+`property` token with parcel identity fields, and is not a homepage, search,
+market-research/comp map, login, paid-report, temporary-popup, or other
+generic surface. Persist one canonical record with URL, source, capture time,
+property-card ID, Deal Card ID, verified-subject flag, and APN/FIPS/property ID
+when available. A newer observation may replace it only when it resolves to the
+same canonical parcel; a different parcel, malformed URL, blank value, or
+generic surface is rejected. The record is property-card scoped and survives
+future refreshes and restarts without creating duplicate gallery entries.
+
+The operator read exposes a safe, clickable `Open subject in LandPortal` link
+near parcel identity on Overview and in Documents & Visuals under LandPortal
+details/source. It opens a new tab with `target="_blank"` and `rel="noreferrer"`;
+raw URL tokens are never rendered as text. If no verified canonical URL exists,
+the link is omitted.
 
 Do not store credentials, cookies, tokens, or private session data as learned configuration.
 

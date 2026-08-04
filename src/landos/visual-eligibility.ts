@@ -21,6 +21,7 @@ export type VisualAssociationBasis =
   | 'verified_parcel_coordinates'
   | 'verified_parcel_centroid'
   | 'verified_parcel_geometry'
+  | 'landportal_matched_parcel_coordinates'
   | 'landportal_parcel_page'
   | 'county_gis_parcel_page'
   | 'parcel_google_earth'
@@ -46,6 +47,7 @@ export const ELIGIBLE_BASES: ReadonlySet<VisualAssociationBasis> = new Set([
   'verified_parcel_coordinates',
   'verified_parcel_centroid',
   'verified_parcel_geometry',
+  'landportal_matched_parcel_coordinates',
   'landportal_parcel_page',
   'county_gis_parcel_page',
   'parcel_google_earth',
@@ -174,6 +176,7 @@ export function assessVisualAssociation(
     case 'verified_parcel_coordinates':
     case 'verified_parcel_centroid':
     case 'verified_parcel_geometry':
+    case 'landportal_matched_parcel_coordinates':
     case 'parcel_google_earth': {
       const c = assoc.sourceCoords;
       if (!c || typeof c.lat !== 'number' || typeof c.lng !== 'number' || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) {

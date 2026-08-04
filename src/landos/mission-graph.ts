@@ -123,6 +123,8 @@ export interface MissionChildState {
   purpose: string;
   role: MissionChildRole;
   dependsOn: string[];
+  /** Ordering-only predecessors from the declared mission graph. */
+  awaits?: string[];
   identity: MissionChildIdentity;
   status: MissionChildStatus;
   summary: string;
@@ -363,6 +365,7 @@ export function initialMissionChildren(specs: MissionChildSpec[], missionId = ''
     purpose: spec.purpose,
     role: spec.role,
     dependsOn: [...spec.dependsOn],
+    awaits: [...(spec.awaits ?? [])],
     identity: missionChildIdentity(spec, missionId),
     status: 'queued' as const,
     summary: spec.purpose,
@@ -478,7 +481,7 @@ export function overlayDeclaredIdentity(
         : 'Not evaluated yet: this child has not settled.',
       checks: [],
     };
-    return { ...child, identity, acceptance };
+    return { ...child, awaits: [...(spec?.awaits ?? child.awaits ?? [])], identity, acceptance };
   });
 }
 

@@ -257,7 +257,10 @@ export function streetReferenceFrom(situsAddress: string | null | undefined): st
  * ("NC. APN may"), and a wrong city is worse than an absent one: it silently
  * scopes a jurisdiction lookup to a place that does not exist.
  */
-export function sanitizeLocalityCandidate(value: string | null | undefined): string | null {
+export function sanitizeLocalityCandidate(
+  value: string | null | undefined,
+  options: { allowStateName?: boolean } = {},
+): string | null {
   const text = (value ?? '').trim().replace(/\s+/g, ' ').replace(/[.,;:]+$/, '');
   if (!text) return null;
   if (/[.;:0-9]/.test(text)) return null;
@@ -265,7 +268,10 @@ export function sanitizeLocalityCandidate(value: string | null | undefined): str
   if (tokens.length > 3) return null;
   if (!tokens.every((token) => /^[A-Za-z][A-Za-z'’-]*$/.test(token))) return null;
   // A bare state name/abbreviation is a state, never a city or county.
-  if (tokens.length === 1 && STATE_WORDS.includes(nameKey(tokens[0]))) return null;
+  // A one-word state name is normally too ambiguous to keep as a city. When
+  // the parser also supplied a separate state, however, it can be a genuine
+  // place name (for example Hampshire, TN), so retain it for source checks.
+  if (!options.allowStateName && tokens.length === 1 && STATE_WORDS.includes(nameKey(tokens[0]))) return null;
   return text;
 }
 

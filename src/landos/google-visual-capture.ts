@@ -35,6 +35,7 @@ import {
 
 export type FetchBinary = (
   url: string,
+  init?: RequestInit,
 ) => Promise<{ ok: boolean; status: number; arrayBuffer: () => Promise<ArrayBuffer> }>;
 
 export interface CaptureInput {
@@ -50,7 +51,7 @@ export interface CaptureInput {
    *  refused — a filename or address string is never association proof. */
   association?: {
     apn?: string | null;
-    basis: 'verified_parcel_coordinates' | 'verified_parcel_centroid' | 'verified_parcel_geometry';
+    basis: 'verified_parcel_coordinates' | 'verified_parcel_centroid' | 'verified_parcel_geometry' | 'landportal_matched_parcel_coordinates';
   };
 }
 export interface CaptureDeps {
@@ -59,6 +60,9 @@ export interface CaptureDeps {
   now?: () => string;
   storeDir?: string;                // default store/visuals (gitignored)
   usageFile?: string;
+  /** Shared network deadline for metadata plus every image request. */
+  timeoutMs?: number;
+  nowMs?: () => number;
 }
 export interface CapturedAsset { service: VisualService; storedPath: string; timestamp: string }
 export interface CaptureResult {
@@ -114,6 +118,27 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchBinary);
   const storeDir = deps.storeDir ?? landosArtifactPath('visuals');
   fs.mkdirSync(storeDir, { recursive: true });
+  const nowMs = deps.nowMs ?? Date.now;
+  const deadlineMs = nowMs() + Math.max(1, deps.timeoutMs ?? 25_000);
+  const fetchWithDeadline = async (url: string): ReturnType<FetchBinary> => {
+    const remaining = deadlineMs - nowMs();
+    if (remaining <= 0) throw new Error('Google visual capture deadline exhausted.');
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        fetchImpl(url, { signal: abort.signal }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            abort.abort();
+            reject(new Error('Google visual request timed out.'));
+          }, remaining);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
 
   const coords = inputCoords;
   const coordQuery = `${coords.lat},${coords.lng}`;
@@ -128,7 +153,7 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
   let svDistanceM: number | null = null;
   try {
     const metaUrl = buildStreetViewMetadataUrl({ address: null, coords, key, radius: MAX_PARCEL_CONTEXT_DISTANCE_M });
-    const metaRes = await fetchImpl(metaUrl);
+    const metaRes = await fetchWithDeadline(metaUrl);
     if (metaRes.ok) {
       const meta = JSON.parse(Buffer.from(await metaRes.arrayBuffer()).toString('utf8')) as { status?: string; location?: { lat?: number; lng?: number } };
       if (meta.status === 'OK' && typeof meta.location?.lat === 'number' && typeof meta.location?.lng === 'number') {
@@ -179,7 +204,7 @@ export async function capturePropertyVisuals(input: CaptureInput, deps: CaptureD
   for (const { service, url, association } of plan) {
     let success = false;
     try {
-      const res = await fetchImpl(url);
+      const res = await fetchWithDeadline(url);
       if (res.ok) {
         const buf = Buffer.from(await res.arrayBuffer());
         const file = path.join(storeDir, safeName(input.cardId, input.propertyLabel, service));

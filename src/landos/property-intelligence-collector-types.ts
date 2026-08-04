@@ -67,6 +67,16 @@ export interface AccessUtilitiesContribution {
 export interface ComparablesContribution {
   candidates: CompRegistryCandidate[];
   duplicatesMerged: number;
+  landHomeSearchProof?: {
+    status: 'completed' | 'blocked' | 'unavailable' | 'not_run';
+    radiusMiles: number;
+    timePeriodMonths: number;
+    sourcesSearched: string[];
+    routesAttempted: string[];
+    candidatesReviewed: number;
+    qualifyingResults: number;
+    exclusionReasons: Array<{ reason: string; count: number }>;
+  } | null;
 }
 
 export interface MarketContribution {

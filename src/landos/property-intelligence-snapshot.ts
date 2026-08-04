@@ -23,6 +23,7 @@ import {
   type SpecialistStatus,
 } from './property-intelligence-specialists.js';
 import type { FailureCategory } from '../failure-classification.js';
+import type { DealOperatorAnalysis } from './deal-operator-analysis.js';
 
 /**
  * Snapshot format version. MONOTONIC — it may never go backwards.
@@ -90,6 +91,13 @@ export interface SnapshotIdentity {
   owner: string | null;
   ownerMailing: string | null;
   situs: string | null;
+  /** Operator-accepted full display address (street, locality, state, ZIP)
+   * when the retained lead input extends the confirmed situs street.
+   * View-enriched at read time; never persisted onto the stored snapshot. */
+  displayAddress?: string | null;
+  /** Canonical LandPortal property identifier retained on the subject card.
+   * View-enriched at read time. */
+  lpPropertyId?: string | null;
   acres: number | null;
   acreageBasis: string | null;
   coordinates: { lat: number; lng: number } | null;
@@ -127,6 +135,16 @@ export interface SnapshotComp {
   acres: number | null;
   pricePerAcre: number | null;
   distanceMiles: number | null;
+  originalListingDate?: string | null;
+  collectionDate?: string | null;
+  daysOnMarket?: number | null;
+  priceChanges?: Array<{ at: string | null; price: number | null; note: string }>;
+  views?: number | null;
+  saves?: number | null;
+  engagement?: 'strong' | 'weak' | 'inconclusive';
+  /** Retained marketplace imagery, when the source exposed stable http(s) URLs. */
+  thumbnailUrl?: string | null;
+  photoUrls?: string[];
   /** Why this comp is useful to the subject. */
   whyUseful: string;
   similarities: string[];
@@ -180,6 +198,18 @@ export interface SnapshotComps {
   totalCollected?: number;
   /** Which of the three conclusions the evidence supports. */
   conclusion?: SnapshotCompConclusion;
+  /** Audit proof for the dedicated manufactured-home search, including a
+   * truthful zero-result explanation. */
+  landHomeSearchProof?: {
+    status: 'completed' | 'blocked' | 'unavailable' | 'not_run';
+    radiusMiles: number;
+    timePeriodMonths: number;
+    sourcesSearched: string[];
+    routesAttempted: string[];
+    candidatesReviewed: number;
+    qualifyingResults: number;
+    exclusionReasons: Array<{ reason: string; count: number }>;
+  } | null;
 }
 
 export interface SnapshotValuation {
@@ -260,6 +290,12 @@ export interface SnapshotEvidenceItem {
   supports: string;
   sha256: string | null;
   bytes: number | null;
+  /** Total pages stated by the official document metadata. */
+  pageCount?: number | null;
+  /** Number of page files LandOS actually retained locally. */
+  capturedPageCount?: number | null;
+  /** Existing local page-viewer routes only; never synthesized for uncaptured pages. */
+  pageViewUrls?: string[];
 }
 
 export interface SnapshotSpecialistRecord {
@@ -319,6 +355,9 @@ export interface PropertyIntelligenceSnapshot {
   missingInformation: string[];
   nextActions: string[];
 
+  /** CRM-style acquisition opinion. Optional so every historical snapshot stays readable. */
+  operatorAnalysis?: DealOperatorAnalysis;
+
   /** The parent mission this snapshot was assembled from. Null on a snapshot
    *  produced before the run became a native parent mission. */
   missionId?: string | null;
@@ -338,6 +377,9 @@ export interface PropertyIntelligenceSnapshot {
    * visible rather than assumed clean. Absent on pre-Phase-5 snapshots.
    */
   browserCleanup?: { before: number; after: number; closed: number; note: string } | null;
+  /** Route-time retained LandPortal subject link and conditional 3D decision. */
+  subjectParcelUrl?: string | null;
+  threeDCapture?: { decision: 'eligible' | 'not_applicable' | 'unknown'; averageSlopePercent: number | null; areaAboveTenSlopePercent: number | null; reason: string } | null;
 }
 
 /**
@@ -668,6 +710,11 @@ export function joinPropertyIntelligence(input: SnapshotJoinInput): PropertyInte
  */
 export function presentPropertyIntelligenceSnapshot(
   snapshot: PropertyIntelligenceSnapshot,
+  overrides: {
+    strategies?: SnapshotStrategy[];
+    recommendation?: SnapshotRecommendation;
+    extraBlockers?: string[];
+  } = {},
 ): PropertyIntelligenceSnapshot {
   const presented = joinPropertyIntelligence({
     dealCardId: snapshot.dealCardId,
@@ -681,11 +728,11 @@ export function presentPropertyIntelligenceSnapshot(
     dueDiligence: snapshot.dueDiligence,
     comps: snapshot.comps,
     valuation: snapshot.valuation,
-    strategies: snapshot.strategies,
-    recommendation: snapshot.recommendation,
+    strategies: overrides.strategies ?? snapshot.strategies,
+    recommendation: overrides.recommendation ?? snapshot.recommendation,
     evidence: snapshot.evidence,
     specialists: snapshot.specialists,
-    extraBlockers: snapshot.blockers,
+    extraBlockers: overrides.extraBlockers ?? snapshot.blockers,
   });
   return {
     ...presented,
@@ -693,6 +740,189 @@ export function presentPropertyIntelligenceSnapshot(
     ...(snapshot.missionId !== undefined ? { missionId: snapshot.missionId } : {}),
     ...(snapshot.preliminary !== undefined ? { preliminary: snapshot.preliminary } : {}),
     ...(snapshot.browserCleanup !== undefined ? { browserCleanup: snapshot.browserCleanup } : {}),
+    ...(snapshot.operatorAnalysis !== undefined ? { operatorAnalysis: snapshot.operatorAnalysis } : {}),
+  };
+}
+
+const FACT_GRADE_STRENGTH: Readonly<Record<EvidenceGrade, number>> = {
+  unavailable_public_record: 0,
+  unresolved_question: 1,
+  post_contract_verification: 2,
+  likely_indication: 3,
+  confirmed_fact: 4,
+};
+
+function identityStrength(identity: SnapshotIdentity): number {
+  if (identity.state === 'confirmed') return 4;
+  if (identity.state === 'provisional' && identity.discoveryUsable) return 3;
+  if (identity.state === 'provisional') return 2;
+  if (identity.state === 'unresolved') return 1;
+  return 0;
+}
+
+function compactAddress(value: string | null | undefined): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function sameSnapshotSubject(a: SnapshotIdentity, b: SnapshotIdentity): boolean {
+  if (a.apn && b.apn) return apnEquivalent(a.apn, b.apn);
+  const addressA = compactAddress(a.normalizedAddress ?? a.situs);
+  const addressB = compactAddress(b.normalizedAddress ?? b.situs);
+  return !!addressA && !!addressB && addressA === addressB;
+}
+
+function strongerFact(incoming: SnapshotFact, retained: SnapshotFact): boolean {
+  if (incoming.value == null || !incoming.value.trim()) return false;
+  const incomingStrength = FACT_GRADE_STRENGTH[incoming.grade];
+  const retainedStrength = FACT_GRADE_STRENGTH[retained.grade];
+  if (incomingStrength !== retainedStrength) return incomingStrength > retainedStrength;
+  return String(incoming.retrievedAt ?? '') >= String(retained.retrievedAt ?? '');
+}
+
+function mergeFacts(retained: SnapshotFact[], incoming: SnapshotFact[]): SnapshotFact[] {
+  const merged = new Map(retained.map((fact) => [fact.key, fact]));
+  for (const fact of incoming) {
+    const held = merged.get(fact.key);
+    if (!held || strongerFact(fact, held)) merged.set(fact.key, fact);
+  }
+  return [...merged.values()];
+}
+
+function mergeDueDiligence(
+  retained: SnapshotDueDiligenceItem[],
+  incoming: SnapshotDueDiligenceItem[],
+): SnapshotDueDiligenceItem[] {
+  const merged = new Map(retained.map((item) => [item.key, item]));
+  for (const item of incoming) {
+    const held = merged.get(item.key);
+    const incomingStrength = FACT_GRADE_STRENGTH[item.grade];
+    const heldStrength = held ? FACT_GRADE_STRENGTH[held.grade] : -1;
+    if (!held || (item.verdict !== 'unknown' && incomingStrength >= heldStrength)) merged.set(item.key, item);
+  }
+  return [...merged.values()];
+}
+
+function mergeComps(retained: SnapshotComps, incoming: SnapshotComps): SnapshotComps {
+  const mergeRows = (oldRows: SnapshotComp[], newRows: SnapshotComp[]): SnapshotComp[] => {
+    const rows = new Map(oldRows.map((row) => [row.key, row]));
+    for (const row of newRows) rows.set(row.key, row);
+    return [...rows.values()];
+  };
+  const mergeRejected = (oldRows: SnapshotRejectedComp[], newRows: SnapshotRejectedComp[]): SnapshotRejectedComp[] => {
+    const rows = new Map<string, SnapshotRejectedComp>();
+    for (const row of [...oldRows, ...newRows]) {
+      rows.set(`${row.source}|${row.address ?? ''}|${row.price ?? ''}|${row.reason}`, row);
+    }
+    return [...rows.values()];
+  };
+  return {
+    ...incoming,
+    sold: mergeRows(retained.sold, incoming.sold),
+    active: mergeRows(retained.active, incoming.active),
+    landHomeOnly: mergeRows(retained.landHomeOnly, incoming.landHomeOnly),
+    askingReferences: mergeRows(retained.askingReferences ?? [], incoming.askingReferences ?? []),
+    rejected: mergeRejected(retained.rejected, incoming.rejected),
+    duplicatesMerged: Math.max(retained.duplicatesMerged, incoming.duplicatesMerged),
+    totalCollected: Math.max(retained.totalCollected ?? 0, incoming.totalCollected ?? 0),
+    landPortalRowsSeen: Math.max(retained.landPortalRowsSeen, incoming.landPortalRowsSeen),
+  };
+}
+
+function mergeSnapshotEvidence(
+  retained: SnapshotEvidenceItem[],
+  incoming: SnapshotEvidenceItem[],
+): SnapshotEvidenceItem[] {
+  const merged = new Map<string, SnapshotEvidenceItem>();
+  for (const item of [...retained, ...incoming]) {
+    const key = item.sha256 || `${item.id}|${item.sourceUrl ?? ''}|${item.viewUrl ?? ''}`;
+    const held = merged.get(key);
+    if (!held || item.confidence === 'high' || (held.confidence === 'low' && item.confidence === 'medium')) merged.set(key, item);
+  }
+  return [...merged.values()];
+}
+
+export interface SnapshotPromotionReconciliation {
+  promotable: boolean;
+  snapshot: PropertyIntelligenceSnapshot;
+  reason: string | null;
+}
+
+/**
+ * Reconcile a rerun against the retained primary read before promotion.
+ *
+ * The new run keeps its timestamps, mission and specialist outcomes, but valid
+ * same-property facts/evidence survive gaps. A conflicting subject never
+ * promotes. A weaker identity, blank fact, failed visual lane, or empty comp
+ * handback cannot erase a stronger retained result.
+ */
+export function reconcilePropertyIntelligenceSnapshot(
+  retained: PropertyIntelligenceSnapshot | null,
+  incoming: PropertyIntelligenceSnapshot,
+): SnapshotPromotionReconciliation {
+  if (!retained) return { promotable: incoming.status !== 'running' && incoming.status !== 'failed', snapshot: incoming, reason: null };
+  if (retained.dealCardId !== incoming.dealCardId) {
+    return { promotable: false, snapshot: incoming, reason: 'Snapshot belongs to a different Deal Card.' };
+  }
+  if (!sameSnapshotSubject(retained.identity, incoming.identity)) {
+    return { promotable: false, snapshot: incoming, reason: 'Incoming subject identity conflicts with the retained canonical property.' };
+  }
+
+  const keepRetainedIdentity = identityStrength(retained.identity) > identityStrength(incoming.identity);
+  const identity = keepRetainedIdentity
+    ? { ...incoming.identity, ...retained.identity, conflicts: [...new Set([...retained.identity.conflicts, ...incoming.identity.conflicts])] }
+    : {
+        ...retained.identity,
+        ...incoming.identity,
+        normalizedAddress: incoming.identity.normalizedAddress || retained.identity.normalizedAddress,
+        county: incoming.identity.county || retained.identity.county,
+        state_: incoming.identity.state_ || retained.identity.state_,
+        apn: incoming.identity.apn || retained.identity.apn,
+        owner: incoming.identity.owner || retained.identity.owner,
+        ownerMailing: incoming.identity.ownerMailing || retained.identity.ownerMailing,
+        situs: incoming.identity.situs || retained.identity.situs,
+        acres: incoming.identity.acres ?? retained.identity.acres,
+        acreageBasis: incoming.identity.acreageBasis || retained.identity.acreageBasis,
+        coordinates: incoming.identity.coordinates ?? retained.identity.coordinates,
+        conflicts: [...new Set([...retained.identity.conflicts, ...incoming.identity.conflicts])],
+      };
+  const facts = mergeFacts(retained.facts, incoming.facts);
+  const governmentRecords = mergeFacts(retained.governmentRecords, incoming.governmentRecords);
+  const dueDiligence = mergeDueDiligence(retained.dueDiligence, incoming.dueDiligence);
+  const comps = mergeComps(retained.comps, incoming.comps);
+  const valuation = incoming.valuation.priceable || !retained.valuation.priceable ? incoming.valuation : retained.valuation;
+  const strategies = incoming.strategies.length ? incoming.strategies : retained.strategies;
+  const recommendation = incoming.recommendation.preferredStrategy || !retained.recommendation.preferredStrategy
+    ? incoming.recommendation
+    : retained.recommendation;
+  const evidence = mergeSnapshotEvidence(retained.evidence, incoming.evidence);
+  const joined = joinPropertyIntelligence({
+    dealCardId: incoming.dealCardId,
+    runId: incoming.runId,
+    sequence: incoming.sequence,
+    startedAt: incoming.startedAt,
+    completedAt: incoming.completedAt,
+    identity,
+    facts,
+    governmentRecords,
+    dueDiligence,
+    comps,
+    valuation,
+    strategies,
+    recommendation,
+    evidence,
+    specialists: incoming.specialists,
+  });
+  return {
+    promotable: incoming.status !== 'running' && incoming.status !== 'failed',
+    reason: null,
+    snapshot: {
+      ...joined,
+      missionId: incoming.missionId,
+      browserCleanup: incoming.browserCleanup,
+      operatorAnalysis: incoming.operatorAnalysis,
+      subjectParcelUrl: incoming.subjectParcelUrl ?? retained.subjectParcelUrl,
+      threeDCapture: incoming.threeDCapture ?? retained.threeDCapture,
+    },
   };
 }
 

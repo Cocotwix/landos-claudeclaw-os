@@ -57,3 +57,43 @@ export async function captureAndPersistCardVisuals(cardId: number, deps: Capture
   saveCardVisualCapture(cardId, assets, { provider: 'google' });
   return { ok: true, cardId, reason: res.reason, captured: Object.keys(assets) };
 }
+
+export async function captureAndPersistAcceptedIdentityVisuals(input: {
+  cardId: number;
+  apn: string | null;
+  coordinates: { lat: number; lng: number } | null;
+  discoveryUsable: boolean;
+  discoverySources: string[];
+}, deps: CaptureDeps = {}): Promise<CaptureWorkflowResult> {
+  const card = getPropertyCardRow(input.cardId);
+  if (!card) return { ok: false, cardId: input.cardId, reason: 'property card not found', captured: [] };
+  const normalizeApn = (value: string | null | undefined): string => (value ?? '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const exactParcelMatch = !!normalizeApn(input.apn)
+    && normalizeApn(input.apn) === normalizeApn(card.apn)
+    && input.discoveryUsable
+    && input.discoverySources.some((source) => /landportal authenticated parcel panel/i.test(source));
+  const coords = input.coordinates;
+  if (!exactParcelMatch || !coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
+    return {
+      ok: false,
+      cardId: input.cardId,
+      reason: 'Accepted LandPortal parcel coordinates are unavailable or do not match this card APN; no Google imagery captured.',
+      captured: [],
+    };
+  }
+
+  const res = await capturePropertyVisuals({
+    propertyLabel: `APN ${card.apn}`,
+    address: null,
+    coords,
+    cardId: input.cardId,
+    association: { apn: card.apn, basis: 'landportal_matched_parcel_coordinates' },
+  }, deps);
+  if (!res.captured) return { ok: false, cardId: input.cardId, reason: res.reason, captured: [] };
+  const assets: Record<string, CardVisualAsset> = {};
+  for (const [svc, asset] of Object.entries(res.assets)) {
+    if (asset) assets[svc] = { storedPath: asset.storedPath, timestamp: asset.timestamp, association: asset.association ?? null };
+  }
+  saveCardVisualCapture(input.cardId, assets, { provider: 'google' });
+  return { ok: true, cardId: input.cardId, reason: res.reason, captured: Object.keys(assets) };
+}

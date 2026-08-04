@@ -29,6 +29,10 @@ export type CommChannel = (typeof COMM_CHANNELS)[number];
 
 export interface SellerProfile {
   name?: string; phone?: string; email?: string;
+  role?: string;
+  mailingAddress?: string;
+  assignedOwner?: string;
+  primaryContact?: boolean;
   preferredChannel?: CommChannel;
   relationshipToProperty?: string;
   motivation?: string; timeline?: string;
@@ -42,8 +46,15 @@ export interface SellerProfile {
 }
 
 export interface CommLogEntry {
+  /** Stable per-deal identifier used by the operator timeline edit/delete controls. */
+  id?: string;
+  /** Operator-facing record kind. Kept separately from delivery channel so
+   * transcripts and notes survive reload without pretending they were sent. */
+  type?: 'call' | 'text' | 'email' | 'note' | 'transcript';
   at: string; channel: CommChannel; direction: 'inbound' | 'outbound';
   summary: string; notes?: string;
+  outcome?: string;
+  followUpDate?: string;
   sentiment?: 'positive' | 'neutral' | 'negative' | 'unknown';
   keyFacts?: string[]; objections?: string[]; commitments?: string[];
   followUpNeeded?: boolean; createdAt: string;
@@ -83,7 +94,10 @@ export function getAcquisition(dealCardId: number): AcquisitionState {
     dealCardId,
     stage: isAcquisitionStage(row.stage) ? row.stage : 'new_lead',
     profile: parse<SellerProfile>(row.profile_json, {}),
-    commLog: parse<CommLogEntry[]>(row.comm_log_json, []),
+    commLog: parse<CommLogEntry[]>(row.comm_log_json, []).map((entry, index) => ({
+      ...entry,
+      id: commEntryIdentity(entry, index),
+    })),
     discovery: parse<DiscoveryExtraction[]>(row.discovery_json, []),
     updatedAt: row.updated_at,
   };
@@ -110,8 +124,44 @@ export function upsertSellerProfile(dealCardId: number, patch: Partial<SellerPro
 
 export function addCommLogEntry(dealCardId: number, entry: Omit<CommLogEntry, 'createdAt'>): AcquisitionState {
   const s = getAcquisition(dealCardId);
-  s.commLog = [{ ...entry, createdAt: new Date().toISOString() }, ...s.commLog];
+  const createdAt = new Date().toISOString();
+  const id = entry.id?.trim() || `comm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  s.commLog = [{ ...entry, id, createdAt }, ...s.commLog];
   if (entry.at) s.profile.lastContactDate = entry.at.slice(0, 10);
+  persist(s);
+  return getAcquisition(dealCardId);
+}
+
+function commEntryIdentity(entry: CommLogEntry, index: number): string {
+  return entry.id?.trim() || `legacy_${entry.createdAt || entry.at}_${index}`;
+}
+
+/** Edit one communication without disturbing the rest of the retained timeline. */
+export function updateCommLogEntry(
+  dealCardId: number,
+  commId: string,
+  patch: Partial<Omit<CommLogEntry, 'id' | 'createdAt'>>,
+): AcquisitionState | null {
+  const s = getAcquisition(dealCardId);
+  const index = s.commLog.findIndex((entry, entryIndex) => commEntryIdentity(entry, entryIndex) === commId);
+  if (index < 0) return null;
+  const current = s.commLog[index];
+  const definedPatch = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined),
+  ) as Partial<Omit<CommLogEntry, 'id' | 'createdAt'>>;
+  s.commLog[index] = { ...current, ...definedPatch, id: current.id || commId, createdAt: current.createdAt };
+  if (index === 0 && s.commLog[index].at) s.profile.lastContactDate = s.commLog[index].at.slice(0, 10);
+  persist(s);
+  return getAcquisition(dealCardId);
+}
+
+/** Remove one communication from this Deal Card only. */
+export function deleteCommLogEntry(dealCardId: number, commId: string): AcquisitionState | null {
+  const s = getAcquisition(dealCardId);
+  const retained = s.commLog.filter((entry, index) => commEntryIdentity(entry, index) !== commId);
+  if (retained.length === s.commLog.length) return null;
+  s.commLog = retained;
+  s.profile.lastContactDate = retained[0]?.at?.slice(0, 10);
   persist(s);
   return getAcquisition(dealCardId);
 }

@@ -410,6 +410,70 @@ export function addPerson(input: AddPersonInput): number {
   return id;
 }
 
+export function updateDealPerson(input: {
+  dealCardId: number;
+  personId: number;
+  name?: string;
+  phone?: string;
+  email?: string;
+  mailingAddress?: string;
+  preferredContactMethod?: string;
+  notes?: string;
+  role?: PersonRole;
+  authorityStatus?: PersonAuthorityStatus;
+  authoritySource?: string;
+  relationshipNote?: string;
+  primaryContact?: boolean;
+}): boolean {
+  const db = getLandosDb();
+  const link = db.prepare(
+    'SELECT id, role, authority_status, authority_source, note, primary_contact FROM landos_person_link WHERE deal_card_id = ? AND person_id = ? ORDER BY id LIMIT 1',
+  ).get(input.dealCardId, input.personId) as Record<string, unknown> | undefined;
+  if (!link) return false;
+  const person = db.prepare('SELECT * FROM landos_person WHERE id = ?').get(input.personId) as Record<string, unknown> | undefined;
+  if (!person) return false;
+  const now = Math.floor(Date.now() / 1000);
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE landos_person SET name = ?, phone = ?, email = ?, mailing_address = ?,
+       preferred_contact_method = ?, notes = ?, updated_at = ? WHERE id = ?`,
+    ).run(
+      input.name ?? String(person.name ?? ''),
+      input.phone ?? String(person.phone ?? ''),
+      input.email ?? String(person.email ?? ''),
+      input.mailingAddress ?? String(person.mailing_address ?? ''),
+      input.preferredContactMethod ?? String(person.preferred_contact_method ?? ''),
+      input.notes ?? String(person.notes ?? ''),
+      now,
+      input.personId,
+    );
+    db.prepare(
+      `UPDATE landos_person_link SET role = ?, authority_status = ?, authority_source = ?, note = ?, primary_contact = ?
+       WHERE id = ?`,
+    ).run(
+      input.role ?? String(link.role ?? 'unknown_relation'),
+      input.authorityStatus ?? String(link.authority_status ?? 'unknown'),
+      input.authoritySource ?? String(link.authority_source ?? ''),
+      input.relationshipNote ?? String(link.note ?? ''),
+      input.primaryContact === undefined ? Number(link.primary_contact ?? 0) : input.primaryContact ? 1 : 0,
+      Number(link.id),
+    );
+  })();
+  return true;
+}
+
+/** Unlink a person from this Deal Card; retain the person if another record uses it. */
+export function unlinkDealPerson(dealCardId: number, personId: number): boolean {
+  const db = getLandosDb();
+  const result = db.prepare(
+    'DELETE FROM landos_person_link WHERE deal_card_id = ? AND person_id = ?',
+  ).run(dealCardId, personId);
+  if (!result.changes) return false;
+  const remaining = db.prepare('SELECT 1 FROM landos_person_link WHERE person_id = ? LIMIT 1').get(personId);
+  if (!remaining) db.prepare('DELETE FROM landos_person WHERE id = ?').run(personId);
+  return true;
+}
+
 /**
  * Link a person to a deal and/or a property with a role. authority_status
  * defaults to 'unknown' — a relationship role (heir, sibling, spouse, ...)
@@ -488,6 +552,39 @@ export interface DealCardDetail extends DealCardRow {
   latestReportStatus: string | null;
   /** Standardized Duke Partial output contract derived from the fields above. */
   dukePartial: DukePartialContract;
+}
+
+export interface SubjectPropertyResolution {
+  card: Record<string, unknown> | null;
+  cardId: number | null;
+  reason: 'explicit_subject' | 'single_link_fallback' | 'missing' | 'ambiguous';
+}
+
+/**
+ * Resolve the one canonical subject property for a Deal Card.
+ *
+ * Linked-card order is historical UI order, not identity authority. Research
+ * must prefer exactly one explicit `subject` role and may fall back only when
+ * the deal has exactly one linked property. Ambiguity fails closed so evidence
+ * from a neighbor or package parcel cannot silently populate the subject.
+ */
+export function resolveSubjectPropertyCard(deal: unknown): SubjectPropertyResolution {
+  const cards = (deal as { propertyCards?: unknown[] } | null | undefined)?.propertyCards;
+  const rows = Array.isArray(cards)
+    ? cards.filter((card): card is Record<string, unknown> => !!card && typeof card === 'object')
+    : [];
+  const subjects = rows.filter((card) => String(card.role ?? '').toLowerCase() === 'subject');
+  const selected = subjects.length === 1
+    ? { card: subjects[0], reason: 'explicit_subject' as const }
+    : subjects.length === 0 && rows.length === 1
+      ? { card: rows[0], reason: 'single_link_fallback' as const }
+      : null;
+  if (!selected) {
+    return { card: null, cardId: null, reason: rows.length === 0 ? 'missing' : 'ambiguous' };
+  }
+  const cardId = Number(selected.card.id);
+  if (!Number.isInteger(cardId) || cardId < 1) return { card: null, cardId: null, reason: 'missing' };
+  return { card: selected.card, cardId, reason: selected.reason };
 }
 
 /**

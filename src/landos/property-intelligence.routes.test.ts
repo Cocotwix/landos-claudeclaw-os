@@ -75,6 +75,26 @@ describe('Property Intelligence API', () => {
     expect(body.propertyIntelligence.history).toEqual([]);
   });
 
+  it('joins SOP 10B market context from LandOS Market Research on every snapshot read', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'PI market-context card' });
+    const res = await app.request(withToken(`/api/landos/deal-cards/${deal.id}/property-intelligence`));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { marketContext: {
+      source: string;
+      county: { available: boolean; note: string };
+      zip: { available: boolean };
+      subjectBand: { available: boolean };
+      fastestBand: { available: boolean };
+    } };
+    expect(body.marketContext.source).toBe('LandOS Market Research');
+    // No geography on this card: every record reports honestly unavailable
+    // instead of substituting another county, ZIP, or band.
+    expect(body.marketContext.county.available).toBe(false);
+    expect(body.marketContext.zip.available).toBe(false);
+    expect(body.marketContext.subjectBand.available).toBe(false);
+    expect(body.marketContext.fastestBand.available).toBe(false);
+  });
+
   it('returns the persisted snapshot and specialist roster once a run exists', async () => {
     const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'PI snapshot card' });
     const store = new PropertyIntelligenceStore();
@@ -94,7 +114,9 @@ describe('Property Intelligence API', () => {
     expect(body.propertyIntelligence.run.runId).toBe('pi_http_1');
     expect(body.propertyIntelligence.run.isPrimary).toBe(true);
     expect(body.propertyIntelligence.specialists).toHaveLength(initialSpecialistRecords().length);
-    expect(body.propertyIntelligence.specialists.find((s) => s.id === 'parcel_identity')!.status).toBe('completed');
+    // The read route projects the immutable snapshot's recorded mission state;
+    // it must not infer a terminal specialist transition from current facts.
+    expect(body.propertyIntelligence.specialists.find((s) => s.id === 'parcel_identity')!.status).toBe('queued');
     expect(body.propertyIntelligence.history).toHaveLength(1);
   });
 

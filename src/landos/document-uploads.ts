@@ -106,6 +106,54 @@ export function listDocumentUploads(dealCardId: number): UploadedDocumentRow[] {
   }));
 }
 
+export function updateDocumentUpload(
+  dealCardId: number,
+  uploadId: number,
+  patch: {
+    title?: string;
+    category?: RegisteredDocument['category'];
+    docType?: string;
+    documentDate?: string | null;
+    note?: string | null;
+  },
+): UploadedDocumentRow | null {
+  ensureTable();
+  const current = getLandosDb().prepare(
+    'SELECT * FROM landos_document_upload WHERE id = ? AND deal_card_id = ? AND superseded = 0',
+  ).get(uploadId, dealCardId) as Record<string, unknown> | undefined;
+  if (!current) return null;
+  const title = patch.title?.trim();
+  if (patch.title !== undefined && !title) throw new Error('Document title is required.');
+  getLandosDb().prepare(
+    `UPDATE landos_document_upload SET
+       category = ?, title = ?, doc_type = ?, document_date = ?, note = ?
+     WHERE id = ? AND deal_card_id = ? AND superseded = 0`,
+  ).run(
+    patch.category ?? String(current.category),
+    title ?? String(current.title),
+    patch.docType?.trim() ?? String(current.doc_type),
+    patch.documentDate === undefined ? current.document_date : patch.documentDate,
+    patch.note === undefined ? current.note : patch.note,
+    uploadId,
+    dealCardId,
+  );
+  return listDocumentUploads(dealCardId).find((row) => row.id === uploadId) ?? null;
+}
+
+/**
+ * Remove an upload from this Deal Card without erasing the retained local file.
+ * The row is soft-removed so an accidental operator deletion remains recoverable.
+ */
+export function removeDocumentUpload(dealCardId: number, uploadId: number): UploadedDocumentRow | null {
+  ensureTable();
+  const current = listDocumentUploads(dealCardId).find((row) => row.id === uploadId) ?? null;
+  if (!current) return null;
+  const result = getLandosDb().prepare(
+    'UPDATE landos_document_upload SET superseded = 1 WHERE id = ? AND deal_card_id = ? AND superseded = 0',
+  ).run(uploadId, dealCardId);
+  return result.changes ? current : null;
+}
+
 /** Resolve a servable uploaded file path — card-scoped, traversal-safe. */
 export function servableUploadPath(dealCardId: number, fileName: string): string | null {
   if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) return null;

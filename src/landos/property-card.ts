@@ -43,6 +43,14 @@ import { normalizeAddressMatchKey } from './address-normalize.js';
 import { filterEligibleAssetMap, type VisualAssociation } from './visual-eligibility.js';
 import { classifySource, evaluateFact, type SourceType } from './source-evidence.js';
 import {
+  isVerifiedLandPortalSubjectUrl,
+  sameLandPortalParcel,
+  validateLandPortalSubjectUrl,
+  type LandPortalParcelUrlRecord,
+  type ThreeDCaptureEligibility,
+} from './landportal-operating-rules.js';
+import type { LandPortalVisualValidation } from './landportal-evidence-validation.js';
+import {
   addressVariantsCompatible,
   evaluatePropertyInstructionConsistency,
   recordInstructionContradiction,
@@ -115,6 +123,7 @@ export interface PropertyCardRow {
   county: string;
   state: string;
   city: string;
+  zip: string;
   owner: string;
   acres: number | null;
   verification_source: string;
@@ -134,6 +143,7 @@ export interface UpsertPropertyCardInput {
   entity: LandosEntity;
   activeInputAddress: string;
   city?: string;
+  zip?: string;
   county?: string;
   state?: string;
   apn?: string;
@@ -426,6 +436,7 @@ export function upsertPropertyCard(
          county = CASE WHEN ? != '' THEN ? ELSE county END,
          state = CASE WHEN ? != '' THEN ? ELSE state END,
          city = CASE WHEN ? != '' THEN ? ELSE city END,
+         zip = CASE WHEN ? != '' THEN ? ELSE zip END,
          owner = CASE WHEN ? != '' THEN ? ELSE owner END,
          acres = COALESCE(?, acres),
          lat = COALESCE(?, lat),
@@ -450,6 +461,7 @@ export function upsertPropertyCard(
       preserveOwnerReconciledIdentity ? '' : input.county ?? '', preserveOwnerReconciledIdentity ? '' : input.county ?? '',
       preserveOwnerReconciledIdentity ? '' : input.state ?? '', preserveOwnerReconciledIdentity ? '' : input.state ?? '',
       preserveOwnerReconciledIdentity ? '' : input.city ?? '', preserveOwnerReconciledIdentity ? '' : input.city ?? '',
+      preserveOwnerReconciledIdentity ? '' : input.zip ?? '', preserveOwnerReconciledIdentity ? '' : input.zip ?? '',
       preserveOwnerReconciledIdentity ? '' : input.owner ?? '', preserveOwnerReconciledIdentity ? '' : input.owner ?? '',
       input.acres ?? null,
       input.lat ?? null,
@@ -472,9 +484,9 @@ export function upsertPropertyCard(
   const id = db.prepare(
     `INSERT INTO landos_property_card
        (entity, verification_status, kanban_status, active_input_address, address_key,
-        prior_inputs, apn, lp_property_id, fips, lp_url, county, state, city, owner, acres,
+        prior_inputs, apn, lp_property_id, fips, lp_url, county, state, city, zip, owner, acres,
         lat, lng, verification_source, property_id, parcel_id, summary, last_refreshed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.entity,
     verificationStatus,
@@ -489,6 +501,7 @@ export function upsertPropertyCard(
     input.county ?? '',
     input.state ?? '',
     input.city ?? '',
+    input.zip ?? '',
     input.owner ?? '',
     input.acres ?? null,
     input.lat ?? null,
@@ -778,6 +791,8 @@ export interface LandPortalInspectionAsset {
   timestamp: string;
   overlay?: string;
   note?: string;
+  /** Admission proof. Missing/rejected assets remain history but never project. */
+  validation?: LandPortalVisualValidation | null;
 }
 
 export interface LandPortalOverlayObservation {
@@ -870,6 +885,9 @@ export interface PropertyInspectionSource {
   provider: string;
   stage: string;
   status: 'used' | 'fallback' | 'not_attempted' | 'not_configured' | 'partial' | 'error';
+  /** Business-level result from a source that was actually attempted. */
+  resultKind?: 'retrieved' | 'useful_indication' | 'attempted_inconclusive' | 'source_unavailable' | 'not_found' | 'execution_failure';
+  attemptedAt?: string | null;
   confidence: 'high' | 'medium' | 'low';
   url?: string | null;
   note: string;
@@ -886,7 +904,11 @@ export interface PropertyInspectionEvidence {
 
 export interface PropertyInspectionRecord {
   parcelUrl: string | null;
+  parcelUrlRecord?: LandPortalParcelUrlRecord | null;
+  threeDCapture?: ThreeDCaptureEligibility | null;
   comparablesUrl: string | null;
+  /** Timestamp of the latest completed comparable-set read, even when it returned zero rows. */
+  comparablesCapturedAt?: string | null;
   parcelFacts: Record<string, string>;
   assets: LandPortalInspectionAsset[];
   overlays: LandPortalOverlayObservation[];
@@ -907,11 +929,15 @@ interface PendingLandPortalInspectionAsset {
   timestamp: string;
   overlay?: string;
   note?: string;
+  validation?: LandPortalVisualValidation | null;
 }
 
 export interface PendingPropertyInspectionRecord {
   parcelUrl: string | null;
+  parcelUrlRecord?: LandPortalParcelUrlRecord | null;
+  threeDCapture?: ThreeDCaptureEligibility | null;
   comparablesUrl: string | null;
+  comparablesCapturedAt?: string | null;
   parcelFacts: Record<string, string>;
   assets: PendingLandPortalInspectionAsset[];
   overlays: LandPortalOverlayObservation[];
@@ -955,6 +981,7 @@ function copyInspectionAsset(cardId: number, asset: PendingLandPortalInspectionA
       timestamp: asset.timestamp,
       overlay: asset.overlay,
       note: asset.note,
+      validation: asset.validation ?? null,
     };
   } catch {
     return null;
@@ -1016,6 +1043,32 @@ function mergeUniqueBy<T>(rows: T[], keyOf: (row: T) => string): T[] {
   return [...merged.values()];
 }
 
+function mergeInspectionAssets(rows: LandPortalInspectionAsset[]): LandPortalInspectionAsset[] {
+  const merged = new Map<string, LandPortalInspectionAsset>();
+  for (const row of rows) {
+    const key = row.key || row.storedPath;
+    if (!key) continue;
+    const held = merged.get(key);
+    if (!held) { merged.set(key, row); continue; }
+    const heldAccepted = held.validation?.status === 'accepted';
+    const incomingAccepted = row.validation?.status === 'accepted';
+    if (heldAccepted && !incomingAccepted) continue;
+    if (incomingAccepted && !heldAccepted) { merged.set(key, row); continue; }
+    merged.set(key, {
+      ...held,
+      ...row,
+      label: row.label || held.label,
+      purpose: row.purpose || held.purpose,
+      storedPath: row.storedPath || held.storedPath,
+      timestamp: row.timestamp || held.timestamp,
+      overlay: row.overlay || held.overlay,
+      note: row.note || held.note,
+      validation: row.validation ?? held.validation ?? null,
+    });
+  }
+  return [...merged.values()];
+}
+
 /**
  * Property inspection is cumulative evidence. A later county-only gap-fill may
  * add official facts, but it must never erase an earlier LandPortal parcel page,
@@ -1025,21 +1078,37 @@ function mergeUniqueBy<T>(rows: T[], keyOf: (row: T) => string): T[] {
 export function mergePropertyInspections(records: Array<PropertyInspectionRecord | null | undefined>): PropertyInspectionRecord | null {
   const usable = records.filter((record): record is PropertyInspectionRecord => !!record);
   if (!usable.length) return null;
+  const canonicalRecords = usable.flatMap((record) => [record.parcelUrlRecord ?? null])
+    .filter((record): record is LandPortalParcelUrlRecord => !!record && isVerifiedLandPortalSubjectUrl(record.url) && record.verifiedSubject);
+  let latestCanonical: LandPortalParcelUrlRecord | null = null;
+  for (const record of canonicalRecords) {
+    if (!latestCanonical || sameLandPortalParcel(
+      { fips: latestCanonical.fips, apn: latestCanonical.apn, propertyId: latestCanonical.propertyId },
+      { fips: record.fips, apn: record.apn, propertyId: record.propertyId },
+    )) latestCanonical = record;
+  }
+  const factRecords = latestCanonical
+    ? usable.filter((record) => record.parcelUrl === latestCanonical!.url || record.parcelUrlRecord?.url === latestCanonical!.url)
+    : usable;
   const facts: Record<string, string> = {};
-  for (const record of usable) {
+  for (const record of factRecords) {
     for (const [key, value] of Object.entries(record.parcelFacts ?? {})) {
       if (nonBlank(value)) facts[key] = value;
     }
   }
-  const landPortalUrl = [...usable].reverse().map((r) => r.parcelUrl).find((url) => !!url && /landportal/i.test(url));
+  const landPortalUrl = latestCanonical?.url
+    ?? [...usable].reverse().map((r) => r.parcelUrl).find((url) => !!url && /landportal/i.test(url));
   const latestParcelUrl = [...usable].reverse().map((r) => r.parcelUrl).find((url) => nonBlank(url));
   const latestComparablesUrl = [...usable].reverse().map((r) => r.comparablesUrl).find((url) => nonBlank(url));
   const all = <T>(pick: (record: PropertyInspectionRecord) => T[]) => usable.flatMap((record) => pick(record) ?? []);
   return {
     parcelUrl: landPortalUrl ?? latestParcelUrl ?? null,
+    parcelUrlRecord: latestCanonical,
+    threeDCapture: [...usable].reverse().map((r) => r.threeDCapture ?? null).find((value): value is ThreeDCaptureEligibility => !!value) ?? null,
     comparablesUrl: latestComparablesUrl ?? null,
+    comparablesCapturedAt: [...usable].reverse().map((r) => r.comparablesCapturedAt ?? null).find(nonBlank) ?? null,
     parcelFacts: facts,
-    assets: mergeUniqueBy(all((r) => r.assets), (row) => row.key || row.storedPath),
+    assets: mergeInspectionAssets(all((r) => r.assets)),
     overlays: mergeUniqueBy(all((r) => r.overlays), (row) => `${row.overlay}|${row.screenshotKey ?? ''}`),
     visualObservations: mergeUniqueBy(all((r) => r.visualObservations), (row) => `${row.label}|${row.detail}|${row.evidence}`),
     comparables: mergeComparableRows(all((r) => r.comparables)),
@@ -1057,7 +1126,10 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
     .filter((asset): asset is LandPortalInspectionAsset => !!asset);
   const captured: PropertyInspectionRecord = {
     parcelUrl: inspection.parcelUrl,
+    parcelUrlRecord: inspection.parcelUrlRecord ?? null,
+    threeDCapture: inspection.threeDCapture ?? null,
     comparablesUrl: inspection.comparablesUrl,
+    comparablesCapturedAt: inspection.comparablesCapturedAt ?? null,
     parcelFacts: inspection.parcelFacts,
     assets,
     overlays: inspection.overlays,
@@ -1095,6 +1167,8 @@ export function currentComparables(
   inspection: PropertyInspectionRecord | null | undefined,
 ): LandPortalComparableRecord[] {
   const rows = inspection?.comparables ?? [];
+  const completedGeneration = inspection?.comparablesCapturedAt ?? null;
+  if (completedGeneration) return rows.filter((row) => row.capturedAtIso === completedGeneration);
   const stamps = rows
     .map((row) => (typeof row.capturedAtIso === 'string' ? row.capturedAtIso : null))
     .filter((value): value is string => !!value);
@@ -1118,7 +1192,10 @@ export function loadPropertyInspection(cardId: number): PropertyInspectionRecord
     if (!parsed || typeof parsed !== 'object') continue;
     parsedRows.push({
       parcelUrl: typeof parsed.parcelUrl === 'string' ? parsed.parcelUrl : null,
+      parcelUrlRecord: parsed.parcelUrlRecord && typeof parsed.parcelUrlRecord === 'object' ? parsed.parcelUrlRecord : null,
+      threeDCapture: parsed.threeDCapture && typeof parsed.threeDCapture === 'object' ? parsed.threeDCapture : null,
       comparablesUrl: typeof parsed.comparablesUrl === 'string' ? parsed.comparablesUrl : null,
+      comparablesCapturedAt: typeof parsed.comparablesCapturedAt === 'string' ? parsed.comparablesCapturedAt : null,
       parcelFacts: parsed.parcelFacts && typeof parsed.parcelFacts === 'object' ? parsed.parcelFacts : {},
       assets: Array.isArray(parsed.assets) ? parsed.assets : [],
       overlays: Array.isArray(parsed.overlays) ? parsed.overlays : [],
@@ -1133,6 +1210,81 @@ export function loadPropertyInspection(cardId: number): PropertyInspectionRecord
   return mergePropertyInspections(parsedRows);
 }
 
+function retainedParcelUrlCandidates(value: unknown, pathName = ''): Array<{ url: string; path: string; verified: boolean; capturedAt: string | null }> {
+  if (Array.isArray(value)) return value.flatMap((item, index) => retainedParcelUrlCandidates(item, `${pathName}[${index}]`));
+  if (!value || typeof value !== 'object') return [];
+  const obj = value as Record<string, unknown>;
+  const pathLower = pathName.toLowerCase();
+  if (/(?:market|comp|search|login|paid|report|skip)/i.test(pathLower)) return [];
+  const verified = /parcel_match["']?\s*:\s*["']confirmed|verified["']?\s*:\s*true/i.test(JSON.stringify(obj));
+  const capturedAt = ['capturedAtIso', 'capturedAt', 'finishedAt', 'timestamp', 'retrievedAt']
+    .map((key) => obj[key])
+    .find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0) ?? null;
+  const direct = ['parcelUrl', 'pageUrl']
+    .flatMap((key) => typeof obj[key] === 'string' ? [{ url: obj[key] as string, path: pathName ? `${pathName}.${key}` : key, verified: verified || key === 'parcelUrl', capturedAt }] : []);
+  return [...direct, ...Object.entries(obj).flatMap(([key, child]) => retainedParcelUrlCandidates(child, pathName ? `${pathName}.${key}` : key))];
+}
+
+/** Promote an already retained, verified subject URL without running a provider. */
+export function promoteRetainedLandPortalParcelUrl(cardId: number, dealCardId: number | null = null): LandPortalParcelUrlRecord | null {
+  const current = loadPropertyInspection(cardId);
+  const currentValidation = validateLandPortalSubjectUrl(current?.parcelUrlRecord?.url ?? current?.parcelUrl);
+  const currentIdentity = currentValidation.identity;
+  const dbRows = getLandosDb().prepare(
+    `SELECT id, kind, ref, created_at FROM landos_card_activity
+     WHERE card_id = ?
+       AND kind IN ('property_inspection','landportal_inspection','landportal_browseruse_stage','landportal_browseruse')
+     ORDER BY created_at ASC, id ASC`,
+  ).all(cardId) as Array<{ id: number; kind: string; ref: string; created_at: number }>;
+  const candidates: Array<{ url: string; source: string; verified: boolean; capturedAt: string }> = [];
+  if (currentValidation.valid && currentValidation.canonicalUrl) {
+    candidates.push({
+      url: currentValidation.canonicalUrl,
+      source: current?.parcelUrlRecord?.source ?? 'retained:property_inspection.parcelUrl',
+      verified: current?.parcelUrlRecord?.verifiedSubject ?? true,
+      capturedAt: current?.parcelUrlRecord?.capturedAt ?? new Date().toISOString(),
+    });
+  }
+  for (const row of dbRows) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.ref); } catch { continue; }
+    for (const candidate of retainedParcelUrlCandidates(parsed)) {
+      const validation = validateLandPortalSubjectUrl(candidate.url);
+      if (!validation.valid || !validation.canonicalUrl || !candidate.verified) continue;
+      if (currentIdentity && validation.identity && !sameLandPortalParcel(currentIdentity, validation.identity)) continue;
+      const capturedAt = candidate.capturedAt ?? new Date(row.created_at * 1000).toISOString();
+      candidates.push({ url: validation.canonicalUrl, source: `retained:activity:${row.id}:${row.kind}:${candidate.path}`, verified: true, capturedAt });
+    }
+  }
+  const selected = candidates.filter((candidate) => candidate.verified).at(-1);
+  if (!selected) return null;
+  const validation = validateLandPortalSubjectUrl(selected.url);
+  if (!validation.valid || !validation.identity) return null;
+  const card = getPropertyCard(cardId);
+  const record: LandPortalParcelUrlRecord = {
+    url: selected.url,
+    source: selected.source,
+    capturedAt: selected.capturedAt,
+    propertyCardId: cardId,
+    dealCardId,
+    verifiedSubject: true,
+    apn: validation.identity.apn ?? (card?.apn ? String(card.apn) : null),
+    fips: validation.identity.fips,
+    propertyId: validation.identity.propertyId,
+  };
+  if (current?.parcelUrlRecord?.url === record.url
+      && current.parcelUrlRecord.propertyCardId === record.propertyCardId
+      && current.parcelUrlRecord.dealCardId === record.dealCardId) return current.parcelUrlRecord;
+  savePropertyInspection(cardId, {
+    parcelUrl: record.url,
+    parcelUrlRecord: record,
+    comparablesUrl: current?.comparablesUrl ?? null,
+    parcelFacts: {},
+    assets: [], overlays: [], visualObservations: [], comparables: [],
+  });
+  return record;
+}
+
 export function saveLandPortalInspection(cardId: number, inspection: PendingLandPortalInspectionRecord): void {
   savePropertyInspection(cardId, inspection);
 }
@@ -1141,15 +1293,76 @@ export function loadLandPortalInspection(cardId: number): LandPortalInspectionRe
   return loadPropertyInspection(cardId);
 }
 
-export function addCardNextAction(input: { cardId: number; action: string; createdBy?: string }): number {
+export interface CardNextActionInput {
+  cardId: number;
+  action: string;
+  createdBy?: string;
+  dueDate?: string;
+  assignedOwner?: string;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  reminderAt?: string;
+}
+
+export function addCardNextAction(input: CardNextActionInput): number {
   return getLandosDb().prepare(
-    `INSERT INTO landos_card_next_action (card_id, action, created_by) VALUES (?, ?, ?)`,
-  ).run(input.cardId, input.action, input.createdBy ?? '').lastInsertRowid as number;
+    `INSERT INTO landos_card_next_action
+      (card_id, action, created_by, due_date, assigned_owner, priority, reminder_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.cardId,
+    input.action,
+    input.createdBy ?? '',
+    input.dueDate ?? '',
+    input.assignedOwner ?? '',
+    input.priority ?? 'normal',
+    input.reminderAt ?? '',
+  ).lastInsertRowid as number;
 }
 
 export function setNextActionStatus(id: number, status: string): void {
   const now = Math.floor(Date.now() / 1000);
   getLandosDb().prepare('UPDATE landos_card_next_action SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id);
+}
+
+export function updateCardNextAction(
+  cardId: number,
+  id: number,
+  patch: {
+    action?: string;
+    status?: 'open' | 'completed';
+    dueDate?: string;
+    assignedOwner?: string;
+    priority?: 'low' | 'normal' | 'high' | 'urgent';
+    reminderAt?: string;
+  },
+): boolean {
+  const current = getLandosDb().prepare(
+    'SELECT * FROM landos_card_next_action WHERE id = ? AND card_id = ?',
+  ).get(id, cardId) as Record<string, unknown> | undefined;
+  if (!current) return false;
+  const now = Math.floor(Date.now() / 1000);
+  const result = getLandosDb().prepare(
+    `UPDATE landos_card_next_action SET
+       action = ?, status = ?, due_date = ?, assigned_owner = ?, priority = ?, reminder_at = ?, updated_at = ?
+     WHERE id = ? AND card_id = ?`,
+  ).run(
+    patch.action ?? String(current.action ?? ''),
+    patch.status ?? String(current.status ?? 'open'),
+    patch.dueDate ?? String(current.due_date ?? ''),
+    patch.assignedOwner ?? String(current.assigned_owner ?? ''),
+    patch.priority ?? String(current.priority ?? 'normal'),
+    patch.reminderAt ?? String(current.reminder_at ?? ''),
+    now,
+    id,
+    cardId,
+  );
+  return result.changes > 0;
+}
+
+export function deleteCardNextAction(cardId: number, id: number): boolean {
+  return getLandosDb().prepare(
+    'DELETE FROM landos_card_next_action WHERE id = ? AND card_id = ?',
+  ).run(id, cardId).changes > 0;
 }
 
 /** Merge risk/anomaly flags into a card's open_risks (deduped). Returns the
@@ -1280,6 +1493,7 @@ export interface DukeRunCardInput {
   agentId?: string;
   activeInputAddress: string;
   city?: string;
+  zip?: string;
   county?: string;
   state?: string;
   apn?: string;
@@ -1313,6 +1527,7 @@ export function upsertCardFromDukeRun(
     entity: input.entity,
     activeInputAddress: input.activeInputAddress,
     city: input.city,
+    zip: input.zip,
     county: input.county,
     state: input.state,
     apn: input.apn,

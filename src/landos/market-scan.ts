@@ -24,11 +24,15 @@ export type RelevanceCategory =
   | 'subdivision'
   | 'master_planned_community'
   | 'residential_development'
+  | 'commercial_development'
+  | 'industrial_project'
   | 'manufacturing'
   | 'distribution'
   | 'water_expansion'
   | 'sewer_expansion'
   | 'highway_project'
+  | 'transportation_improvement'
+  | 'annexation'
   | 'rezoning'
   | 'permit_growth'
   | 'building_trend'
@@ -47,6 +51,10 @@ interface RelevanceRule {
 const RELEVANCE_RULES: RelevanceRule[] = [
   { category: 'data_center', test: /\bdata center|datacenter|hyperscale|colocation\b/i, whyItMatters: 'Data-center projects bring land acquisition at scale, utility buildout, and a wave of land demand around the site.' },
   { category: 'ai_campus', test: /\bai (campus|factory|infrastructure|cluster)|gpu (cluster|farm)\b/i, whyItMatters: 'AI-compute campuses drive large-parcel acquisition and long-horizon land appreciation nearby.' },
+  { category: 'commercial_development', test: /\bcommercial (project|development|construction)|mixed[- ]use|retail (center|development|project)\b/i, whyItMatters: 'Commercial investment follows household growth and can widen nearby residential and business land demand.' },
+  { category: 'industrial_project', test: /\bindustrial (project|development|campus|facility|park)\b/i, whyItMatters: 'Industrial investment brings jobs, infrastructure and downstream housing demand that can improve land absorption.' },
+  { category: 'transportation_improvement', test: /\b(road|bridge|rail|transit|transportation)\b.{0,24}\b(project|widening|expansion|construction|improvement)\b/i, whyItMatters: 'Transportation improvements can change access, commute patterns and development pressure around land.' },
+  { category: 'annexation', test: /\bannex(?:ation|ed|ing)\b/i, whyItMatters: 'Annexation can change services, taxes and development rules, materially changing a land exit.' },
   { category: 'master_planned_community', test: /\bmaster[- ]planned\b/i, whyItMatters: 'A master-planned community pulls thousands of future residents — nearby raw land rides its demand curve.' },
   { category: 'subdivision', test: /\bsubdivision|platted lots|new phase of\b/i, whyItMatters: 'Active subdividing means builders are buying land here — direct evidence of land demand and a subdivide exit.' },
   { category: 'residential_development', test: /\b(new homes?|housing development|apartment|residential (project|development|construction))\b/i, whyItMatters: 'Residential construction absorbs land and lifts surrounding land values.' },
@@ -76,6 +84,12 @@ export interface RelevanceAssessment {
 export function assessLandRelevance(text: string): RelevanceAssessment {
   const t = (text ?? '').trim();
   if (!t) return { relevant: false, category: null, whyItMatters: null };
+  // When a project description also names a rezoning/annexation action, the
+  // governing action is the more decision-useful classification.
+  for (const priority of ['annexation', 'rezoning'] as const) {
+    const rule = RELEVANCE_RULES.find((candidate) => candidate.category === priority);
+    if (rule?.test.test(t)) return { relevant: true, category: rule.category, whyItMatters: rule.whyItMatters };
+  }
   for (const rule of RELEVANCE_RULES) {
     if (rule.test.test(t)) return { relevant: true, category: rule.category, whyItMatters: rule.whyItMatters };
   }
@@ -90,6 +104,14 @@ export interface ScanFinding {
   url?: string | null;
   /** Publication year when the source stated one. Undated items are kept. */
   year?: number | null;
+  /** Structured fields are retained only when the live researcher established
+   * them. The projection never infers distance or scale from a headline. */
+  location?: string | null;
+  distanceMiles?: number | null;
+  status?: string | null;
+  timeline?: string | null;
+  scale?: string | null;
+  downside?: string | null;
 }
 
 // ── Data Center Watch ────────────────────────────────────────────────────────
@@ -106,6 +128,9 @@ export type DataCenterItemStatus =
 
 export interface DataCenterWatchItem {
   title: string;
+  operatorOrDeveloper?: string | null;
+  location?: string | null;
+  distanceMiles?: number | null;
   status: DataCenterItemStatus;
   summary: string;
   whyItMatters: string;
@@ -123,6 +148,13 @@ export interface DataCenterWatch {
   /** Existence check only — deeper research is a later, explicit task. */
   note: string;
   generatedAt: string;
+  browserMapEvidence?: {
+    sourceUrl: string;
+    subject: { lat: number; lng: number };
+    radiusMiles: number;
+    screenshotPath: string | null;
+    attemptedAt: string;
+  } | null;
 }
 
 const DC_STATUS_RULES: Array<{ status: DataCenterItemStatus; test: RegExp }> = [
@@ -187,6 +219,9 @@ export function buildDataCenterWatch(input: {
     const status = classifyDataCenterStatus(text);
     items.push({
       title: (f.title || '').trim() || 'Data center activity',
+      location: f.location?.trim() || null,
+      distanceMiles: typeof f.distanceMiles === 'number' && Number.isFinite(f.distanceMiles)
+        ? f.distanceMiles : null,
       status,
       summary: (f.summary || '').trim(),
       whyItMatters: DC_WHY[status],
@@ -222,6 +257,12 @@ export interface MarketSignalItem {
   whyItMatters: string;
   url: string | null;
   year: number | null;
+  location: string | null;
+  distanceMiles: number | null;
+  status: string | null;
+  timeline: string | null;
+  scale: string | null;
+  downside: string | null;
 }
 
 export interface MarketSignalScan {
@@ -266,6 +307,16 @@ export function buildMarketSignalScan(input: {
       whyItMatters: rel.whyItMatters,
       url: (f.url && f.url.trim()) || null,
       year: f.year ?? null,
+      location: f.location?.trim() || null,
+      distanceMiles: typeof f.distanceMiles === 'number' && Number.isFinite(f.distanceMiles)
+        ? f.distanceMiles : null,
+      status: f.status?.trim() || null,
+      timeline: f.timeline?.trim() || (f.year != null ? String(f.year) : null),
+      scale: f.scale?.trim() || null,
+      downside: f.downside?.trim()
+        || (/closure|opposition|decline|loss|delay|risk/i.test(`${f.title} ${f.summary}`)
+          ? (f.summary || '').trim() || 'Potential downside signal.'
+          : null),
     });
   }
   if (!items.length) {
@@ -278,12 +329,312 @@ export function buildMarketSignalScan(input: {
   };
 }
 
+// ── Practical acreage-band market matrix ────────────────────────────────────
+
+export type PracticalAcreageBand = '50+' | '20-50' | '10-20' | '5-10' | '2-5' | '1-2' | '0-1';
+
+export const PRACTICAL_ACREAGE_BANDS: ReadonlyArray<{
+  band: PracticalAcreageBand;
+  min: number;
+  max: number | null;
+}> = [
+  { band: '50+', min: 50, max: null },
+  { band: '20-50', min: 20, max: 50 },
+  { band: '10-20', min: 10, max: 20 },
+  { band: '5-10', min: 5, max: 10 },
+  { band: '2-5', min: 2, max: 5 },
+  { band: '1-2', min: 1, max: 2 },
+  { band: '0-1', min: 0, max: 1 },
+];
+
+export interface AcreageMarketObservation {
+  status: 'sold' | 'active';
+  acres: number | null;
+  price: number | null;
+  dateIso?: string | null;
+  daysOnMarket?: number | null;
+  source?: string | null;
+}
+
+export interface AcreageBandMarketRead {
+  band: PracticalAcreageBand;
+  soldVolume: number;
+  activeInventory: number;
+  medianSalePrice: number | null;
+  medianPricePerAcre: number | null;
+  medianDaysOnMarket: number | null;
+  sellThroughRate: number | null;
+  /** Native internal Market Research absorption rate, normally a percentage. */
+  absorptionRate: number | null;
+  /** Closed-sale count divided by the observation lookback. Kept separately so
+   * it is never mislabeled as the internal percentage metric. */
+  absorptionPerMonth: number | null;
+  monthsOfSupply: number | null;
+  population: number | null;
+  populationDensity: number | null;
+  populationGrowth: number | null;
+  priceTrend: { direction: 'up' | 'down' | 'flat' | 'insufficient'; percent: number | null };
+  likelyResaleTime: string;
+  movementRank: number | null;
+  snapshotPeriod: string | null;
+  confidence: 'high' | 'medium' | 'low' | 'none';
+  coverage: string;
+  source: string;
+  evidence: string;
+}
+
+/**
+ * Typed handoff from LandOS Market Research. The assembly layer supplies the
+ * newest county snapshots for all seven required bands and both market sides;
+ * this module projects and ranks them without reading the database.
+ */
+export interface InternalCountyAcreageSnapshot {
+  band: PracticalAcreageBand;
+  side: 'sold' | 'for_sale';
+  period: string;
+  metrics: {
+    salesCount?: number | null;
+    listingCount?: number | null;
+    medianPrice?: number | null;
+    medianPricePerAcre?: number | null;
+    daysOnMarket?: number | null;
+    sellThroughRate?: number | null;
+    absorptionRate?: number | null;
+    monthsOfSupply?: number | null;
+    population?: number | null;
+    populationDensity?: number | null;
+    populationGrowth?: number | null;
+  };
+  confidence: 'high' | 'medium' | 'low';
+  provider: string;
+  sourceRef: string;
+  extractionTimestamp: string;
+  /** Example: "Pickens County, sold land, 12-month snapshot". */
+  coverage: string;
+}
+
+export interface PracticalMarketMatrix {
+  lookbackMonths: number;
+  bands: AcreageBandMarketRead[];
+  subjectBand: PracticalAcreageBand | null;
+  bulkTractRead: string;
+  splitSizeRead: string;
+  arbitrage: {
+    status: 'supported' | 'not_observed' | 'insufficient';
+    bulkPricePerAcre: number | null;
+    bestSmallerBand: PracticalAcreageBand | null;
+    smallerBandPricePerAcre: number | null;
+    premiumPercent: number | null;
+    explanation: string;
+  };
+  bestMovingBands: PracticalAcreageBand[];
+}
+
+function numericMedian(values: number[]): number | null {
+  if (!values.length) return null;
+  const ordered = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+export function practicalAcreageBand(acres: number | null | undefined): PracticalAcreageBand | null {
+  if (typeof acres !== 'number' || !Number.isFinite(acres) || acres < 0) return null;
+  return PRACTICAL_ACREAGE_BANDS.find((entry) =>
+    acres >= entry.min && (entry.max == null || acres < entry.max))?.band ?? null;
+}
+
+/**
+ * Build the matrix from actual sold and active rows. Missing metrics stay null;
+ * zero observations never become fake zero DOM, absorption or supply.
+ */
+export function buildPracticalMarketMatrix(input: {
+  observations: AcreageMarketObservation[];
+  internalCountySnapshots?: InternalCountyAcreageSnapshot[];
+  subjectAcres?: number | null;
+  lookbackMonths?: number;
+  nowIso?: string;
+}): PracticalMarketMatrix {
+  const lookbackMonths = input.lookbackMonths ?? 24;
+  const nowMs = Date.parse(input.nowIso ?? new Date().toISOString());
+  const cutoff = nowMs - lookbackMonths * 30.4 * 86_400_000;
+  const rows = input.observations.filter((row) =>
+    typeof row.acres === 'number' && row.acres > 0
+    && typeof row.price === 'number' && row.price > 0);
+  const snapshots = input.internalCountySnapshots ?? [];
+  const newestSnapshot = (
+    band: PracticalAcreageBand,
+    side: InternalCountyAcreageSnapshot['side'],
+  ): InternalCountyAcreageSnapshot | null =>
+    snapshots
+      .filter((snapshot) => snapshot.band === band && snapshot.side === side)
+      .sort((a, b) =>
+        b.period.localeCompare(a.period)
+        || Date.parse(b.extractionTimestamp) - Date.parse(a.extractionTimestamp))[0] ?? null;
+
+  const bands = PRACTICAL_ACREAGE_BANDS.map((definition): AcreageBandMarketRead & { movementScore: number } => {
+    const inBand = rows.filter((row) =>
+      row.acres! >= definition.min && (definition.max == null || row.acres! < definition.max));
+    const sold = inBand.filter((row) => row.status === 'sold'
+      && (!row.dateIso || !Number.isFinite(Date.parse(row.dateIso)) || Date.parse(row.dateIso) >= cutoff));
+    const active = inBand.filter((row) => row.status === 'active');
+    const internalSold = newestSnapshot(definition.band, 'sold');
+    const internalActive = newestSnapshot(definition.band, 'for_sale');
+    const soldMetrics = internalSold?.metrics ?? {};
+    const activeMetrics = internalActive?.metrics ?? {};
+    const ppas = sold.map((row) => row.price! / row.acres!);
+    const dom = sold.map((row) => row.daysOnMarket).filter((value): value is number =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0);
+    const observedAbsorption = sold.length ? sold.length / lookbackMonths : null;
+    const observedMonthsSupply = observedAbsorption && observedAbsorption > 0
+      ? active.length / observedAbsorption : null;
+    const observedSellThrough = sold.length + active.length > 0
+      ? sold.length / (sold.length + active.length) * 100 : null;
+    const dated = sold.filter((row) => row.dateIso && Number.isFinite(Date.parse(row.dateIso)))
+      .sort((a, b) => Date.parse(a.dateIso!) - Date.parse(b.dateIso!));
+    let trend: AcreageBandMarketRead['priceTrend'] = { direction: 'insufficient', percent: null };
+    if (dated.length >= 4) {
+      const half = Math.floor(dated.length / 2);
+      const older = numericMedian(dated.slice(0, half).map((row) => row.price! / row.acres!))!;
+      const newer = numericMedian(dated.slice(-half).map((row) => row.price! / row.acres!))!;
+      const percent = older > 0 ? ((newer - older) / older) * 100 : 0;
+      trend = {
+        direction: percent > 3 ? 'up' : percent < -3 ? 'down' : 'flat',
+        percent: Math.round(percent * 10) / 10,
+      };
+    }
+    const internalHistory = snapshots
+      .filter((snapshot) => snapshot.band === definition.band
+        && snapshot.side === 'sold'
+        && typeof snapshot.metrics.medianPricePerAcre === 'number')
+      .sort((a, b) => b.period.localeCompare(a.period));
+    if (trend.direction === 'insufficient' && internalHistory.length >= 2) {
+      const current = internalHistory[0].metrics.medianPricePerAcre!;
+      const prior = internalHistory[1].metrics.medianPricePerAcre!;
+      const percent = prior > 0 ? ((current - prior) / prior) * 100 : 0;
+      trend = {
+        direction: percent > 3 ? 'up' : percent < -3 ? 'down' : 'flat',
+        percent: Math.round(percent * 10) / 10,
+      };
+    }
+    const medianDom = soldMetrics.daysOnMarket ?? numericMedian(dom);
+    const soldVolume = soldMetrics.salesCount ?? sold.length;
+    const activeInventory = activeMetrics.listingCount ?? soldMetrics.listingCount ?? active.length;
+    const medianSalePrice = soldMetrics.medianPrice ?? numericMedian(sold.map((row) => row.price!));
+    const medianPricePerAcre = soldMetrics.medianPricePerAcre ?? numericMedian(ppas);
+    const sellThrough = soldMetrics.sellThroughRate ?? observedSellThrough;
+    const absorptionRate = soldMetrics.absorptionRate ?? null;
+    const absorptionPerMonth = internalSold ? null : observedAbsorption;
+    const monthsSupply = soldMetrics.monthsOfSupply
+      ?? activeMetrics.monthsOfSupply
+      ?? observedMonthsSupply;
+    const population = soldMetrics.population ?? activeMetrics.population ?? null;
+    const populationDensity = soldMetrics.populationDensity ?? activeMetrics.populationDensity ?? null;
+    const populationGrowth = soldMetrics.populationGrowth ?? activeMetrics.populationGrowth ?? null;
+    const likelyResaleTime = medianDom != null
+      ? `${Math.max(1, Math.round(medianDom / 30))}–${Math.max(2, Math.round(medianDom / 30) + 2)} months based on sold DOM`
+      : monthsSupply != null
+        ? `${Math.max(1, Math.ceil(monthsSupply))}–${Math.max(2, Math.ceil(monthsSupply) + 2)} months from current supply/absorption`
+        : 'Insufficient sold DOM and absorption evidence';
+    const movementScore = (sellThrough ?? 0) / 100 * 30
+      + (absorptionRate != null
+        ? Math.min(1, Math.max(0, absorptionRate) / 100) * 20
+        : absorptionPerMonth != null ? Math.min(1, absorptionPerMonth / 0.5) * 20 : 0)
+      + (monthsSupply != null ? Math.max(0, 1 - Math.min(monthsSupply, 36) / 36) * 15 : 0)
+      + (medianDom != null ? Math.max(0, 1 - medianDom / 365) * 15 : 0)
+      + Math.min(1, soldVolume / 12) * 15
+      + (trend.direction === 'up' ? 5 : trend.direction === 'flat' ? 2.5 : 0);
+    const sources = [internalSold, internalActive]
+      .filter((snapshot): snapshot is InternalCountyAcreageSnapshot => snapshot != null);
+    const confidenceOrder = { low: 1, medium: 2, high: 3 } as const;
+    const confidence: AcreageBandMarketRead['confidence'] = sources.length
+      ? sources.map((snapshot) => snapshot.confidence)
+          .sort((a, b) => confidenceOrder[a] - confidenceOrder[b])[0]
+      : sold.length + active.length > 0 ? 'low' : 'none';
+    const periods = [...new Set(sources.map((snapshot) => snapshot.period))];
+    const coverage = sources.length
+      ? [...new Set(sources.map((snapshot) => snapshot.coverage))].join(' | ')
+      : `${sold.length} sold and ${active.length} active selected observation(s); not a county Market Research snapshot.`;
+    const source = sources.length
+      ? [...new Set(sources.map((snapshot) => snapshot.provider))].join(', ')
+      : 'Selected sold and active market observations';
+
+    return {
+      band: definition.band,
+      soldVolume,
+      activeInventory,
+      medianSalePrice,
+      medianPricePerAcre,
+      medianDaysOnMarket: medianDom,
+      sellThroughRate: sellThrough == null ? null : Math.round(sellThrough * 10) / 10,
+      absorptionRate: absorptionRate == null ? null : Math.round(absorptionRate * 10) / 10,
+      absorptionPerMonth: absorptionPerMonth == null ? null : Math.round(absorptionPerMonth * 100) / 100,
+      monthsOfSupply: monthsSupply == null ? null : Math.round(monthsSupply * 10) / 10,
+      population,
+      populationDensity,
+      populationGrowth,
+      priceTrend: trend,
+      likelyResaleTime,
+      movementRank: null,
+      snapshotPeriod: periods.length ? periods.join(' / ') : null,
+      confidence,
+      coverage,
+      source,
+      evidence: sources.length
+        ? `${soldVolume} sold and ${activeInventory} active in the ${definition.band} acre internal county snapshot (${periods.join(' / ')}; ${confidence} confidence).`
+        : `${sold.length} sold and ${active.length} active row(s) in the ${definition.band} acre band over ${lookbackMonths} months.`,
+      movementScore,
+    };
+  });
+
+  const ranked = bands.filter((band) => band.soldVolume + band.activeInventory > 0)
+    .sort((a, b) => b.movementScore - a.movementScore);
+  ranked.forEach((band, index) => { band.movementRank = index + 1; });
+  const publicBands: AcreageBandMarketRead[] = bands.map(({ movementScore: _movementScore, ...band }) => band);
+  const subjectBand = practicalAcreageBand(input.subjectAcres);
+  const bulk = publicBands.find((band) => band.band === subjectBand) ?? null;
+  const subjectIndex = subjectBand == null ? -1 : PRACTICAL_ACREAGE_BANDS.findIndex((entry) => entry.band === subjectBand);
+  const smaller = subjectIndex < 0
+    ? []
+    : publicBands.slice(subjectIndex + 1).filter((band) => band.medianPricePerAcre != null);
+  const bestSmaller = [...smaller].sort((a, b) => (b.medianPricePerAcre ?? 0) - (a.medianPricePerAcre ?? 0))[0] ?? null;
+  const bulkPpa = bulk?.medianPricePerAcre ?? null;
+  const smallerPpa = bestSmaller?.medianPricePerAcre ?? null;
+  const premium = bulkPpa && smallerPpa ? ((smallerPpa - bulkPpa) / bulkPpa) * 100 : null;
+  const arbitrageStatus = premium == null ? 'insufficient' : premium > 5 ? 'supported' : 'not_observed';
+
+  return {
+    lookbackMonths,
+    bands: publicBands,
+    subjectBand,
+    bulkTractRead: bulk
+      ? `${subjectBand} acre bulk-tract evidence: ${bulk.evidence} Median ${bulk.medianPricePerAcre == null ? '$/acre unavailable' : `$${Math.round(bulk.medianPricePerAcre).toLocaleString()}/acre`}; likely resale ${bulk.likelyResaleTime}.`
+      : 'Subject acreage does not map to the 2+ acre matrix.',
+    splitSizeRead: bestSmaller
+      ? `${bestSmaller.band} acres is the strongest smaller-lot price band at $${Math.round(bestSmaller.medianPricePerAcre!).toLocaleString()}/acre; movement rank ${bestSmaller.movementRank ?? 'unavailable'}.`
+      : 'No smaller acreage band has enough sold evidence to support split pricing.',
+    arbitrage: {
+      status: arbitrageStatus,
+      bulkPricePerAcre: bulkPpa,
+      bestSmallerBand: bestSmaller?.band ?? null,
+      smallerBandPricePerAcre: smallerPpa,
+      premiumPercent: premium == null ? null : Math.round(premium * 10) / 10,
+      explanation: premium == null
+        ? 'Bulk-versus-split per-acre arbitrage cannot be measured from the retained rows.'
+        : premium > 5
+          ? `${bestSmaller!.band} acre sales show a ${premium.toFixed(1)}% per-acre premium over the ${subjectBand} bulk band before subdivision costs.`
+          : `No meaningful per-acre premium is observed after comparing ${bestSmaller!.band} acres with the ${subjectBand} bulk band.`,
+    },
+    bestMovingBands: ranked.slice(0, 3).map((band) => band.band),
+  };
+}
+
 // ── The combined market scan (persisted per Deal Card by the route layer) ────
 
 export interface MarketScanResult {
   area: { county?: string; state?: string; descriptor: string };
   dataCenterWatch: DataCenterWatch;
   growthSignals: MarketSignalScan;
+  acreageMatrix?: PracticalMarketMatrix;
   generatedAt: string;
 }
 
@@ -294,7 +645,7 @@ export type ScanSearchFn = (query: string) => Promise<ScanFinding[]>;
 export const DATA_CENTER_QUERY = (area: string) =>
   `${area} data center OR "AI campus" OR hyperscale proposed OR approved OR "under construction" 2025 2026`;
 export const GROWTH_SIGNAL_QUERY = (area: string) =>
-  `${area} population growth OR "new subdivision" OR "master planned" OR manufacturing plant OR "distribution center" OR "water line extension" OR "sewer extension" OR highway project OR rezoning OR "building permits" 2025 2026`;
+  `${area} population growth OR housing growth OR "new subdivision" OR "master planned" OR commercial development OR industrial project OR manufacturing plant OR "distribution center" OR road project OR transportation improvement OR "water line extension" OR "sewer extension" OR utility expansion OR annexation OR rezoning OR employer expansion OR employer closure OR "building permits" 2025 2026`;
 
 /**
  * Run the live market scan with an injected search function. Exactly two bounded
@@ -305,6 +656,9 @@ export async function runMarketScan(input: {
   county?: string;
   state?: string;
   search: ScanSearchFn | null; // null = no search source configured
+  marketObservations?: AcreageMarketObservation[];
+  internalCountySnapshots?: InternalCountyAcreageSnapshot[];
+  subjectAcres?: number | null;
   nowIso?: string;
 }): Promise<MarketScanResult> {
   const descriptor = [input.county, input.state].filter(Boolean).join(', ') || 'this area';
@@ -315,6 +669,15 @@ export async function runMarketScan(input: {
       area: { county: input.county, state: input.state, descriptor },
       dataCenterWatch: buildDataCenterWatch({ county: input.county, state: input.state, findings: null, nowIso: generatedAt }),
       growthSignals: buildMarketSignalScan({ county: input.county, state: input.state, findings: null, nowIso: generatedAt }),
+      acreageMatrix: input.marketObservations
+        || input.internalCountySnapshots
+        ? buildPracticalMarketMatrix({
+            observations: input.marketObservations ?? [],
+            internalCountySnapshots: input.internalCountySnapshots,
+            subjectAcres: input.subjectAcres,
+            nowIso: generatedAt,
+          })
+        : undefined,
       generatedAt,
     };
   }
@@ -338,6 +701,15 @@ export async function runMarketScan(input: {
     area: { county: input.county, state: input.state, descriptor },
     dataCenterWatch: buildDataCenterWatch({ county: input.county, state: input.state, findings: dcFindings, searchFailed: dcFailed, nowIso: generatedAt }),
     growthSignals: buildMarketSignalScan({ county: input.county, state: input.state, findings: gsFindings, searchFailed: gsFailed, nowIso: generatedAt }),
+    acreageMatrix: input.marketObservations
+      || input.internalCountySnapshots
+      ? buildPracticalMarketMatrix({
+          observations: input.marketObservations ?? [],
+          internalCountySnapshots: input.internalCountySnapshots,
+          subjectAcres: input.subjectAcres,
+          nowIso: generatedAt,
+        })
+      : undefined,
     generatedAt,
   };
 }

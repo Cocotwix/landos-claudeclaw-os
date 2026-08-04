@@ -96,9 +96,36 @@ const TYPE_PATTERNS: Array<{ type: CountySourceType; rx: RegExp }> = [
 /** Known official / official-adjacent hosts that signal a real public-record site
  *  even without a .gov TLD. Counties widely run their assessor/tax/GIS/recorder on
  *  these standard government-records SaaS platforms — they ARE the official source. */
-const OFFICIAL_HOST_HINTS = /\.gov\b|\.us\b|arcgis\.com|qpublic|schneidercorp|schneidergis|beacon|tylertech|tylerhost|governmax|devnet|gworks|opendata|publicaccess|govern|county|parcel|assessor|apprais|\btax\b|\bgis\b/i;
+const OFFICIAL_HOST_HINTS = /\.gov\b|\.us\b|arcgis\.com|qpublic|schneidercorp|schneidergis|beacon|tylertech|tylerhost|municode|revize|governmax|devnet|gworks|opendata|publicaccess|govern|county|parcel|assessor|apprais|\btax\b|\bgis\b/i;
 /** Hosts to avoid (aggregators / data brokers — not the official source). */
-const NON_OFFICIAL_HOST = /netronline|zillow|realtor|redfin|trulia|spokeo|whitepages|propertyshark|landglide|regrid|loopnet|facebook|google\.com\/search/i;
+const NON_OFFICIAL_HOST = /netronline|countyoffice|zillow|realtor|redfin|trulia|spokeo|whitepages|propertyshark|landglide|regrid|loopnet|facebook|google\.com\/search/i;
+
+const US_STATE_CODES = new Set([
+  'al', 'ak', 'az', 'ar', 'ca', 'co', 'ct', 'de', 'fl', 'ga', 'hi', 'id', 'il', 'in', 'ia', 'ks', 'ky', 'la',
+  'me', 'md', 'ma', 'mi', 'mn', 'ms', 'mo', 'mt', 'ne', 'nv', 'nh', 'nj', 'nm', 'ny', 'nc', 'nd', 'oh', 'ok',
+  'or', 'pa', 'ri', 'sc', 'sd', 'tn', 'tx', 'ut', 'vt', 'va', 'wa', 'wv', 'wi', 'wy', 'dc',
+]);
+
+/** Reject official-looking results for a same-name county in another state. */
+export function sourceContradictsRequestedState(link: PageLink, county?: string, state?: string): boolean {
+  const requested = String(state ?? '').trim().toLowerCase();
+  const countyToken = normalizedPlace(county);
+  if (!countyToken || requested.length !== 2 || !US_STATE_CODES.has(requested)) return false;
+  const hostCompact = hostOf(link.href).replace(/[^a-z0-9]/g, '');
+  const explicitCodes: string[] = [];
+  const hostCode = hostCompact.match(new RegExp(`${countyToken}(?:county)?([a-z]{2})(?:gov|us|org|com|net|$)`))?.[1];
+  if (hostCode) explicitCodes.push(hostCode);
+  const countyWords = String(county ?? '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const textCode = String(link.text ?? '').match(new RegExp(`\\b${countyWords}\\s+County[,\\s-]+([A-Z]{2})\\b`, 'i'))?.[1]?.toLowerCase();
+  if (textCode) explicitCodes.push(textCode);
+  try {
+    const pathCode = new URL(link.href).pathname
+      .toLowerCase()
+      .match(new RegExp(`/([a-z]{2})/${countyToken}(?:[_-]?county)?(?:/|$)`))?.[1];
+    if (pathCode) explicitCodes.push(pathCode);
+  } catch { /* malformed URLs are rejected by the caller */ }
+  return explicitCodes.some((explicit) => US_STATE_CODES.has(explicit) && explicit !== requested);
+}
 
 function hostOf(href: string): string {
   try { return new URL(href).hostname.toLowerCase(); } catch { return ''; }
@@ -139,6 +166,7 @@ export function extractCountySources(
   const best = new Map<CountySourceType, CountySourceLink>();
   for (const link of links) {
     if (!link.href || !/^https?:/i.test(link.href)) continue;
+    if (sourceContradictsRequestedState(link, opts.county, opts.state)) continue;
     const type = classifyCountyLink(link);
     if (!type) continue;
     const domain = officialDomainScore(link.href, opts.county, opts.state);
@@ -198,6 +226,7 @@ export function pickOfficialResult(results: PageLink[], type: CountySourceType, 
   let best: CountySourceLink | null = null;
   for (const r of results) {
     if (!r.href || !/^https?:/i.test(r.href)) continue;
+    if (sourceContradictsRequestedState(r, county, state)) continue;
     if (classifyCountyLink(r) !== type && !TYPE_PATTERNS.find((p) => p.type === type)?.rx.test(`${r.text} ${r.href}`)) continue;
     const domain = officialDomainScore(r.href, county, state);
     if (domain === 0) continue;

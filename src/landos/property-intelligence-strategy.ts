@@ -41,20 +41,186 @@ export interface StrategySynthesisInput {
   accessStatus: 'public_road_proximity' | 'private_road_only' | 'no_mapped_contact' | 'unknown';
   /** Improved / manufactured comparables retained for the Land-Home lane. */
   landHomeCompCount: number;
+  landHomeSearchProof?: {
+    status: 'completed' | 'blocked' | 'unavailable' | 'not_run';
+    radiusMiles: number;
+    timePeriodMonths: number;
+    sourcesSearched: string[];
+    candidatesReviewed: number;
+    exclusionReasons: Array<{ reason: string; count: number }>;
+  } | null;
   /** Count of accepted closed sales backing the value basis. */
   acceptedSoldCount: number;
   /** Active competition count. */
   activeListingCount: number;
   /** Blockers already known at mission level (identity, evidence, provider). */
   missionBlockers: string[];
+  /** Optional evidence-backed split concepts. When absent, subdivision remains
+   * a hypothesis and no lot count or net profit is invented. */
+  subdivisionEvidence?: SubdivisionEvidenceInput | null;
+}
+
+export type SubdivisionCostCategory =
+  | 'acquisition'
+  | 'survey_engineering'
+  | 'plat_approval'
+  | 'soil_testing'
+  | 'access_road'
+  | 'utilities'
+  | 'holding'
+  | 'sales_marketing'
+  | 'contingency';
+
+export interface SubdivisionCostInput {
+  category: SubdivisionCostCategory;
+  label: string;
+  low: number;
+  high: number;
+  basis: string;
+}
+
+export interface SubdivisionConceptInput {
+  name: string;
+  lotSizesAcres: number[];
+  accessConfiguration: string;
+  geometryBasis: string;
+  ordinancePath: string;
+  marketBand: string;
+  grossValue: { low: number; high: number };
+  costs: SubdivisionCostInput[];
+  timeline: string;
+  mainRisk: string;
+}
+
+export interface SubdivisionEvidenceInput {
+  governingJurisdiction: string | null;
+  minimumLotSize: string | null;
+  minimumFrontage: string | null;
+  minorSubdivisionThreshold: string | null;
+  flagLotRules: string | null;
+  sharedAccessRules: string | null;
+  privateRoadStandards: string | null;
+  legalMultiLotAccess: boolean | null;
+  physicalMultiLotAccess: boolean | null;
+  observedRoadNeckFeet?: number | null;
+  concepts: SubdivisionConceptInput[];
+}
+
+export interface SubdivisionConceptEconomics extends SubdivisionConceptInput {
+  totalCosts: { low: number; high: number } | null;
+  estimatedNetProfit: { low: number; high: number } | null;
+  missingCostCategories: SubdivisionCostCategory[];
+  fullyModeled: boolean;
+}
+
+export interface SubdivisionEconomics {
+  status: 'viable' | 'hypothesis' | 'insufficient';
+  highestUpsideHypothesis: 'Subdivision';
+  immediateGatingIssue: string;
+  fallbackStrategy: 'Quick Flip';
+  ruleAndAccessGaps: string[];
+  concepts: SubdivisionConceptEconomics[];
+}
+
+const REQUIRED_SUBDIVISION_COSTS: readonly SubdivisionCostCategory[] = [
+  'acquisition',
+  'survey_engineering',
+  'plat_approval',
+  'soil_testing',
+  'access_road',
+  'utilities',
+  'holding',
+  'sales_marketing',
+  'contingency',
+];
+
+/** Cost and gate validator. "Net profit" is emitted only when every required
+ * cost category is present and the gross/cost ranges are internally valid. */
+export function buildSubdivisionEconomics(input: SubdivisionEvidenceInput | null | undefined): SubdivisionEconomics {
+  const accessQuestion = 'Can the road connection legally and physically serve multiple lots?';
+  if (!input) {
+    return {
+      status: 'insufficient',
+      highestUpsideHypothesis: 'Subdivision',
+      immediateGatingIssue: accessQuestion,
+      fallbackStrategy: 'Quick Flip',
+      ruleAndAccessGaps: ['No ordinance, access, geometry, market-band or cost concept was supplied.'],
+      concepts: [],
+    };
+  }
+
+  const gaps: string[] = [];
+  if (!input.governingJurisdiction) gaps.push('Governing jurisdiction is unresolved.');
+  if (!input.minimumLotSize) gaps.push('Minimum lot size is unresolved.');
+  if (!input.minimumFrontage) gaps.push('Minimum frontage is unresolved.');
+  if (!input.minorSubdivisionThreshold) gaps.push('Minor-subdivision threshold is unresolved.');
+  if (!input.flagLotRules) gaps.push('Flag-lot rules are unresolved.');
+  if (!input.sharedAccessRules) gaps.push('Shared-access rules are unresolved.');
+  if (!input.privateRoadStandards) gaps.push('Private-road standards are unresolved.');
+  if (input.legalMultiLotAccess !== true) gaps.push('Legal multi-lot access is not established.');
+  if (input.physicalMultiLotAccess !== true) gaps.push('Physical multi-lot access is not established.');
+
+  const concepts = input.concepts.map((concept): SubdivisionConceptEconomics => {
+    const present = new Set(concept.costs.map((cost) => cost.category));
+    const missingCostCategories = REQUIRED_SUBDIVISION_COSTS.filter((category) => !present.has(category));
+    const validRanges = concept.grossValue.low >= 0
+      && concept.grossValue.high >= concept.grossValue.low
+      && concept.costs.every((cost) =>
+        cost.low >= 0 && cost.high >= cost.low && cost.basis.trim().length > 0);
+    const totalCosts = missingCostCategories.length === 0 && validRanges
+      ? {
+          low: concept.costs.reduce((sum, cost) => sum + cost.low, 0),
+          high: concept.costs.reduce((sum, cost) => sum + cost.high, 0),
+        }
+      : null;
+    return {
+      ...concept,
+      totalCosts,
+      estimatedNetProfit: totalCosts
+        ? {
+            low: concept.grossValue.low - totalCosts.high,
+            high: concept.grossValue.high - totalCosts.low,
+          }
+        : null,
+      missingCostCategories,
+      fullyModeled: totalCosts != null,
+    };
+  });
+
+  const fullyModeled = concepts.filter((concept) => concept.fullyModeled);
+  const gatesClear = gaps.length === 0;
+  return {
+    status: gatesClear && fullyModeled.length > 0
+      ? 'viable'
+      : concepts.length > 0
+        ? 'hypothesis'
+        : 'insufficient',
+    highestUpsideHypothesis: 'Subdivision',
+    immediateGatingIssue: input.legalMultiLotAccess !== true || input.physicalMultiLotAccess !== true
+      ? `${accessQuestion}${input.observedRoadNeckFeet != null ? ` Observed road neck: approximately ${input.observedRoadNeckFeet} feet.` : ''}`
+      : 'Access is supported; confirm final ordinance interpretation and engineered layout before entitlement spend.',
+    fallbackStrategy: 'Quick Flip',
+    ruleAndAccessGaps: gaps,
+    concepts,
+  };
 }
 
 function ddItem(items: SnapshotDueDiligenceItem[], key: string): SnapshotDueDiligenceItem | null {
   return items.find((item) => item.key === key) ?? null;
 }
 
+function unsupportedPhysicalConclusion(item: SnapshotDueDiligenceItem): boolean {
+  const text = `${item.key} ${item.label} ${item.headline} ${item.detail ?? ''} ${item.missing.join(' ')}`;
+  return /\bterrain|slope|buildab|usable acreage|septic|perc|soil\b/i.test(text)
+    && (item.grade === 'unresolved_question'
+      || item.grade === 'unavailable_public_record'
+      || /\bunsupported|unverified|questionable|not established|insufficient evidence|single (?:point|map unit)|point sample|preliminary only|cannot be relied|missing\b/i.test(text));
+}
+
 function hardConstraint(items: SnapshotDueDiligenceItem[]): string[] {
-  return items.filter((item) => item.verdict === 'risk').map((item) => `${item.label}: ${item.headline}`);
+  return items
+    .filter((item) => item.verdict === 'risk' && !unsupportedPhysicalConclusion(item))
+    .map((item) => `${item.label}: ${item.headline}`);
 }
 
 function unknownLanes(items: SnapshotDueDiligenceItem[]): string[] {
@@ -101,6 +267,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
   const accessOk = input.accessStatus === 'public_road_proximity';
   const accessUnknown = input.accessStatus === 'unknown' || input.accessStatus === 'no_mapped_contact';
   const acres = input.subjectAcres;
+  const subdivisionEconomics = buildSubdivisionEconomics(input.subdivisionEvidence);
 
   const strategies: SnapshotStrategy[] = [];
   const qualifyForIdentity = (applicability: StrategyApplicability): StrategyApplicability =>
@@ -131,7 +298,7 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
       nextVerificationStep: identityConfirmed
         ? (priceable ? 'Verify marketable title and confirm the acquisition price sits below the disposition band before offering.' : 'Establish the value basis before any offer is calculated.')
         : identityUsable
-          ? 'Use this only as discovery-stage guidance; confirm the subject against the official parcel record before a binding offer or closing decision.'
+          ? 'Use the retained parcel match for discovery and retry the county parcel source during normal offer diligence.'
           : 'Confirm the parcel against the official record before any offer work.',
     });
   }
@@ -163,39 +330,53 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
   // ── 3. Subdivide or Minor Split ──────────────────────────────────────────
   {
     const blockers = [...baseBlockers];
-    if (!input.zoningKnown) blockers.push('Zoning and the minimum lot size that governs a split are not established.');
-    if (acres == null) blockers.push('The governing acreage is unknown, so no split arithmetic is possible.');
-    if (!accessOk) blockers.push('A split requires frontage or legal access for each resulting lot; access is not confirmed.');
+    if (!input.zoningKnown) blockers.push('Zoning evidence has not established that a split is allowed.');
+    if (acres == null) blockers.push('The governing acreage is unknown.');
+    blockers.push(...subdivisionEconomics.ruleAndAccessGaps);
+    if (!subdivisionEconomics.concepts.length) {
+      blockers.push('No geometry-, access- and market-band-supported lot concept has been modeled.');
+    } else if (!subdivisionEconomics.concepts.some((concept) => concept.fullyModeled)) {
+      blockers.push('No concept includes acquisition plus every required project-cost category, so net profit is not supportable.');
+    }
     let applicability: StrategyApplicability = blockers.length ? 'blocked' : 'conditional';
     if (acres != null && acres < 2) {
       applicability = 'not_applicable';
-    } else if (!blockers.length && acres != null && acres >= 5) {
-      applicability = 'conditional';
+    } else if (!blockers.length && subdivisionEconomics.status === 'viable') {
+      applicability = 'applicable';
     }
-    strategies.push({
+    const modeled = subdivisionEconomics.concepts.find((concept) => concept.fullyModeled) ?? null;
+    const splitStrategy: SnapshotStrategy & { subdivisionEconomics: SubdivisionEconomics } = {
       strategy: 'Subdivide or Minor Split',
       applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         acres != null ? `${acres.toFixed(2)} governing acres.` : 'Acreage unresolved.',
         input.zoningKnown && input.zoning ? `Zoning: ${input.zoning}.` : 'Zoning not established.',
         septic?.headline ? `Septic outlook: ${septic.headline}` : 'Septic suitability not established.',
+        `Highest-upside hypothesis: subdivision. Immediate gate: ${subdivisionEconomics.immediateGatingIssue}`,
+        modeled?.estimatedNetProfit
+          ? `${modeled.name}: modeled net profit $${modeled.estimatedNetProfit.low.toLocaleString()}–$${modeled.estimatedNetProfit.high.toLocaleString()} after all required project-cost categories.`
+          : 'No net-profit figure is stated until acquisition, survey/engineering, approval, soils, access/road, utilities, holding, sales/marketing and contingency are all modeled.',
       ],
       blockers,
       effort: 'High. Survey, county minor-plat process, possible road/utility extension, and per-lot septic suitability.',
-      timeline: '6–18 months depending on whether the county allows a minor plat or requires full subdivision review.',
+      timeline: modeled?.timeline ?? '6–18 months depending on whether the county allows a minor plat or requires full subdivision review.',
       valueCreationPath: 'Convert one larger parcel into multiple smaller lots that each sell at the higher small-parcel price per acre.',
       risk: acres != null && acres < 5
         ? 'The parcel may be too small for the split to clear minimum lot size after setbacks and access.'
-        : 'Approval risk, survey and infrastructure cost, and per-lot septic failure can erase the spread.',
-      nextVerificationStep: 'Confirm the minimum lot size, frontage requirement and minor-plat path with the county planning office.',
-    });
+        : modeled?.mainRisk ?? 'Approval risk, survey and infrastructure cost, and per-lot septic failure can erase the spread.',
+      nextVerificationStep: subdivisionEconomics.immediateGatingIssue,
+      subdivisionEconomics,
+    };
+    strategies.push(splitStrategy);
   }
 
   // ── 4. Land-Home Package ─────────────────────────────────────────────────
   {
     const blockers = [...baseBlockers];
     if (!input.utilitiesKnown) blockers.push('Utility availability is not established, and a home placement depends on power and water.');
-    if (septic?.verdict === 'risk') blockers.push(`Septic suitability is a risk: ${septic.headline}`);
+    if (septic?.verdict === 'risk' && !unsupportedPhysicalConclusion(septic)) {
+      blockers.push(`Septic suitability is a risk: ${septic.headline}`);
+    }
     if (!accessOk) blockers.push('A home package requires established access for delivery, financing and occupancy.');
     let applicability: StrategyApplicability = blockers.length ? 'blocked' : 'conditional';
     if (!blockers.length && input.landHomeCompCount >= 2) applicability = 'applicable';
@@ -204,6 +385,9 @@ export function buildPropertyIntelligenceStrategies(input: StrategySynthesisInpu
       applicability: qualifyForIdentity(applicability),
       supportingFacts: [
         `${input.landHomeCompCount} improved or manufactured-home sale(s) retained for this lane only; they never establish vacant-land value.`,
+        input.landHomeSearchProof
+          ? `Manufactured-home search ${input.landHomeSearchProof.status}: ${input.landHomeSearchProof.radiusMiles}-mile radius, ${input.landHomeSearchProof.timePeriodMonths}-month period, ${input.landHomeSearchProof.sourcesSearched.join(' + ')}, ${input.landHomeSearchProof.candidatesReviewed} candidate(s) reviewed.${input.landHomeSearchProof.exclusionReasons.length ? ` Exclusions: ${input.landHomeSearchProof.exclusionReasons.map((item) => `${item.count} ${item.reason}`).join('; ')}.` : ''}`
+          : 'Manufactured-home search proof was not supplied to strategy synthesis.',
         input.utilitiesSummary ?? 'Utility availability not established.',
         septic?.headline ?? 'Septic suitability not established.',
       ],
@@ -292,7 +476,18 @@ function recommend(
 
   const rank: Record<StrategyApplicability, number> = { applicable: 0, conditional: 1, blocked: 2, not_applicable: 3 };
   const ranked = [...strategies].sort((a, b) => rank[a.applicability] - rank[b.applicability] || a.blockers.length - b.blockers.length);
-  const winner = ranked[0];
+  const split = strategies.find((strategy) => strategy.strategy === 'Subdivide or Minor Split') as
+    | (SnapshotStrategy & { subdivisionEconomics?: SubdivisionEconomics })
+    | undefined;
+  const splitHasPositiveModeledUpside = split?.subdivisionEconomics?.status === 'viable'
+    && split.subdivisionEconomics.concepts.some((concept) =>
+      concept.estimatedNetProfit != null && concept.estimatedNetProfit.high > 0);
+  // A fully rule/access/cost-gated, profitable split is the supported
+  // highest-upside path. A hypothesis with an open gate never outranks Quick
+  // Flip merely because division arithmetic looks attractive.
+  const winner = split?.applicability === 'applicable' && splitHasPositiveModeledUpside
+    ? split
+    : ranked[0];
 
   if (winner.applicability === 'blocked' || winner.applicability === 'not_applicable') {
     const whatWouldChangeIt = [...new Set(strategies.flatMap((s) => s.blockers))].slice(0, 5);
@@ -305,7 +500,9 @@ function recommend(
     }, input, strategies, risks, unknowns, 'no', 'no');
   }
 
-  const runnerUp = ranked[1];
+  const runnerUp = winner.strategy === 'Subdivide or Minor Split'
+    ? strategies.find((strategy) => strategy.strategy === 'Quick Flip') ?? ranked[1]
+    : ranked.find((strategy) => strategy !== winner) ?? ranked[1];
   const posture: OpportunityPosture = conditionalIdentity || risks.length >= 3
     ? 'renegotiate'
     : winner.applicability === 'applicable' && risks.length === 0
@@ -313,14 +510,14 @@ function recommend(
       : 'renegotiate';
 
   const postureWhy = conditionalIdentity
-    ? `Renegotiate. The five strategies were ranked from a conditional discovery-stage value basis, but official parcel-source coverage remains unavailable; keep price and commitment conditional on subject confirmation.`
+    ? 'Renegotiate. The five strategies are usable from the retained discovery-stage parcel match; keep the acquisition price conservative while title, acreage and access are confirmed during normal offer diligence.'
     : posture === 'pursue'
     ? `Pursue. ${winner.strategy} is supported by the retained evidence, no hard risk was found, and the value basis is ${input.valuation.confidence} confidence.`
     : `Renegotiate. ${winner.strategy} is the best available path, but ${risks.length} mapped risk(s) should move the acquisition price before commitment: ${risks.slice(0, 3).join('; ')}.`;
 
   const whatWouldChangeIt = [
     ...(conditionalIdentity
-      ? [`Official parcel confirmation would remove the discovery-stage identity limitation${input.identityBasis?.trim() ? ` (${input.identityBasis.trim()})` : ''}.`]
+      ? [`Title, acreage and access diligence would strengthen the retained parcel match${input.identityBasis?.trim() ? ` (${input.identityBasis.trim()})` : ''}.`]
       : []),
     ...winner.blockers,
     ...(runnerUp ? [`${runnerUp.strategy} would become preferred if: ${runnerUp.blockers[0] ?? 'its conditional evidence is proven'}.`] : []),

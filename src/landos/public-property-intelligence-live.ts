@@ -21,6 +21,7 @@ import { SCREENING_DISCLAIMERS, slopeBandFor, SLOPE_BANDS } from './public-prope
 import { findCountyGis, computeExactOverlaps, queryLayerByPolygon, queryLayerByEnvelope, type CountyGisCapability } from './county-gis-capabilities.js';
 import { interiorGrid, measureFrontage, overlapLocationDescription, ringsAreaAcres, type Rings, type LonLat } from './parcel-spatial.js';
 import { addressVariantsCompatible, roadNamesCompatible } from './instruction-consistency.js';
+import type { SnapshotFact } from './property-intelligence-snapshot.js';
 
 type Pos = [number, number];
 type ArcFeature = { attributes?: Record<string, unknown>; geometry?: { rings?: Rings; paths?: Pos[][] } };
@@ -79,6 +80,109 @@ export interface OfficialParcelLookupResult {
   /** True only when the caller's own signal cancelled the lookup. */
   cancelled?: boolean;
   attempted: OfficialParcelAttempt[];
+}
+
+export interface PracticalSubjectSourceAttempt {
+  source: string;
+  url?: string | null;
+  status:
+    | 'used'
+    | 'partial'
+    | 'no_match'
+    | 'unavailable'
+    | 'error'
+    | 'retrieved'
+    | 'useful_indication'
+    | 'attempted_inconclusive'
+    | 'source_unavailable'
+    | 'not_found'
+    | 'execution_failure';
+  note: string;
+  attemptedAt?: string;
+}
+
+export interface PracticalSubjectFact {
+  field: string;
+  value: string | number;
+  source: string;
+  url?: string | null;
+  retrievedAt?: string;
+  classification?: 'official_record' | 'recorded_instrument';
+}
+
+const PUBLIC_RECORD_FACT_LABELS: Record<string, string> = {
+  apn: 'Parcel number (APN)',
+  owner: 'Recorded owner',
+  currentDeed: 'Current deed',
+  grantor: 'Grantor',
+  grantee: 'Grantee',
+  recordingDate: 'Recording date',
+  instrumentNumber: 'Instrument number',
+  deedRef: 'Deed reference',
+  recordBookPage: 'Recorded book / page',
+  recordedPageCount: 'Recorded document pages',
+  consideration: 'Recorded consideration',
+  legalDescription: 'Legal description',
+  recordedPlat: 'Recorded plat',
+};
+
+function publicRecordFactValue(value: unknown): string | null {
+  if (value == null || value === '') return null;
+  if (Array.isArray(value)) return value.map(String).filter(Boolean).join('; ') || null;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+/** Project persisted, successfully retrieved official outcomes into the current
+ * Deal Card read without re-running the broad Property Intelligence mission.
+ * The immutable mission snapshot remains intact; this read-through only adds
+ * newer subject-government facts that carry their exact retained source. */
+export function governmentFactsFromPublicRecordOutcomes(
+  records: Array<Record<string, unknown>>,
+): SnapshotFact[] {
+  const facts: SnapshotFact[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (record.retrieval_status !== 'retrieved_yes') continue;
+    const values = record.facts && typeof record.facts === 'object'
+      ? record.facts as Record<string, unknown>
+      : {};
+    const source = String(record.authority ?? '').trim() || 'Official county record';
+    const sourceUrl = String(record.document_url ?? record.source_url ?? '').trim() || null;
+    const retrievedAt = String(record.searched_at ?? '').trim() || null;
+    for (const [key, rawValue] of Object.entries(values)) {
+      const value = publicRecordFactValue(rawValue);
+      if (!value) continue;
+      const dedupeKey = `${source}\n${key}\n${value}`.toLowerCase();
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const label = PUBLIC_RECORD_FACT_LABELS[key]
+        ?? key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
+      facts.push({
+        key: `official_outcome_${String(record.id ?? facts.length)}_${key}`,
+        label,
+        value,
+        grade: 'confirmed_fact',
+        source,
+        sourceUrl,
+        retrievedAt,
+        note: String(record.title ?? '').trim() || null,
+      });
+    }
+  }
+  return facts;
+}
+
+export interface PracticalDiscoveryScreeningInput {
+  county?: string | null;
+  state?: string | null;
+  coordinates?: { lat: number; lng: number } | null;
+  parcelSourceUrl?: string | null;
+  soilOverlay?: {
+    status: string;
+    note: string;
+    sourceUrl?: string | null;
+  } | null;
 }
 
 export interface PracticalOfficialParcelSource {
@@ -242,6 +346,360 @@ export function practicalOfficialParcelSources(
   }
   return sources.filter((source, index, all) =>
     all.findIndex((candidate) => candidate.url === source.url) === index);
+}
+
+/**
+ * Carry already-executed structured and browser government attempts into the
+ * canonical public-intelligence task graph when exact LandPortal evidence
+ * establishes a discovery subject but no structured official parcel geometry
+ * was returned. This adapter does not pretend a destination is a fact and does
+ * not re-run the lookup; it preserves the real attempts that immediately
+ * preceded orchestration so the lane is never mislabeled "not attempted."
+ */
+export function makePracticalSubjectAttemptAdapters(
+  attempts: PracticalSubjectSourceAttempt[],
+  facts: PracticalSubjectFact[] = [],
+): PublicIntelligenceAdapter[] {
+  const ran = attempts
+    .filter((attempt) => attempt.status !== 'unavailable' || /timeout|error|unavailable|not configured/i.test(attempt.note))
+    .filter((attempt, index, all) => all.findIndex((candidate) =>
+      candidate.source === attempt.source
+      && (candidate.url ?? null) === (attempt.url ?? null)
+      && candidate.status === attempt.status
+      && candidate.note === attempt.note) === index);
+  if (!ran.length) return [];
+  return [{
+    task: 'county_records',
+    adapterId: 'practical_subject_government_attempts_v1',
+    timeoutMs: 5_000,
+    async run(_subject, context) {
+      const evidenceRows: PublicEvidence[] = ran
+        .filter((attempt) => !!attempt.url)
+        .map((attempt, index) => ({
+          evidenceId: `subject-government-attempt-${index + 1}`,
+          sourceName: attempt.source,
+          sourceUrl: attempt.url ?? undefined,
+          sourceTier: 'official_county_state',
+          verification: 'supporting_context',
+          retrievedAt: attempt.attemptedAt ?? context.startedAt,
+          confidence: 'low',
+          supports: ['government source attempt'],
+          limitation: `Actual attempt status: ${attempt.status}. ${attempt.note} This retains the source attempt; it does not assert a parcel fact.`,
+          captureMode: context.captureMode,
+          decisionUsable: true,
+        }));
+      const useful = ran.filter((attempt) =>
+        ['used', 'partial', 'retrieved', 'useful_indication'].includes(attempt.status));
+      const unavailable = ran.filter((attempt) =>
+        ['unavailable', 'error', 'source_unavailable', 'execution_failure'].includes(attempt.status));
+      const factRows = facts.map((fact, index) => {
+        let evidenceIndex = evidenceRows.findIndex((row) =>
+          (!!fact.url && row.sourceUrl === fact.url) || row.sourceName === fact.source);
+        if (evidenceIndex < 0) {
+          evidenceIndex = evidenceRows.push({
+            evidenceId: `subject-government-fact-${index + 1}`,
+            sourceName: fact.source,
+            sourceUrl: fact.url ?? undefined,
+            sourceTier: 'official_county_state',
+            verification: 'official_record',
+            retrievedAt: fact.retrievedAt ?? context.startedAt,
+            confidence: 'medium',
+            supports: ['subject property government fact'],
+            limitation: 'Browser-extracted public record; retain the source page for review.',
+            captureMode: context.captureMode,
+            decisionUsable: true,
+          }) - 1;
+        }
+        return {
+          field: fact.field,
+          value: fact.value,
+          sourceEvidenceId: evidenceRows[evidenceIndex].evidenceId,
+          classification: fact.classification ?? 'official_record' as const,
+        };
+      });
+      const summary = ran
+        .map((attempt) => `${attempt.source}: ${attempt.status.replace(/_/g, ' ')} — ${attempt.note}`)
+        .join(' ');
+      return {
+        status: factRows.length ? 'succeeded' : useful.length ? 'partial' : unavailable.length === ran.length ? 'unavailable' : 'partial',
+        evidence: evidenceRows,
+        confidence: factRows.length ? 'medium' : useful.length ? 'low' : 'none',
+        retryEligible: true,
+        failureReason: factRows.length ? undefined : useful.length ? 'The sources were attempted but did not return a recorded parcel fact.' : summary,
+        finding: {
+          kind: 'county_records',
+          jurisdiction: [_subject.county && `${_subject.county} County`, _subject.state].filter(Boolean).join(', '),
+          facts: factRows,
+          accessState: unavailable.length === ran.length ? 'unavailable' : 'public',
+          summary,
+          whyItMatters: 'These attempts show which subject-property government sources actually ran and what each returned.',
+          limitation: factRows.length
+            ? 'Browser-extracted public-record facts retain their exact source; recorded instruments still require document review.'
+            : 'Attempt evidence is not a parcel fact. A source must return a supported record before its contents are asserted.',
+          classification: 'official_record',
+        },
+      };
+    },
+  }];
+}
+
+/**
+ * Practical public-core screening for an exact discovery-grade subject when an
+ * official parcel polygon is unavailable. The point soil screen and official
+ * utility-authority page are real bounded collectors, but their findings stay
+ * explicitly preliminary and never claim parcel-wide soil coverage or
+ * address-level utility availability.
+ */
+export function makePracticalDiscoveryScreeningAdapters(
+  input: PracticalDiscoveryScreeningInput,
+): PublicIntelligenceAdapter[] {
+  const county = (input.county ?? '').replace(/\s+county$/i, '').trim();
+  const state = stateCode(input.state ?? '');
+  const adapters: PublicIntelligenceAdapter[] = [];
+
+  if (input.coordinates || input.soilOverlay) {
+    adapters.push({
+      task: 'soils_septic',
+      adapterId: 'discovery_subject_ssurgo_point_v1',
+      timeoutMs: 45_000,
+      async run(_subject, context) {
+        const retainedOverlayEvidence: PublicEvidence[] = input.soilOverlay?.sourceUrl
+          ? [{
+              evidenceId: 'landportal-soil-overlay-attempt',
+              sourceName: 'LandPortal soil overlay',
+              sourceUrl: input.soilOverlay.sourceUrl,
+              sourceTier: 'land_portal',
+              verification: 'supporting_context',
+              retrievedAt: context.startedAt,
+              confidence: 'low',
+              supports: ['soil overlay attempt'],
+              limitation: `${input.soilOverlay.status}: ${input.soilOverlay.note}`,
+              captureMode: context.captureMode,
+              decisionUsable: true,
+            }]
+          : [];
+        const coordinates = input.coordinates;
+        if (!coordinates) {
+          return {
+            status: 'partial',
+            evidence: retainedOverlayEvidence,
+            confidence: 'none',
+            retryEligible: true,
+            failureReason: input.soilOverlay?.note ?? 'No accepted subject coordinate was available for a public soil screen.',
+            finding: {
+              kind: 'soils_septic',
+              mapUnits: [],
+              apparentInvestigationAreas: 'Insufficient evidence after the LandPortal soil-overlay attempt.',
+              datasetName: 'LandPortal soil overlay attempt',
+              summary: `Preliminary septic outlook: insufficient evidence after attempted research. ${input.soilOverlay?.note ?? ''}`.trim(),
+              whyItMatters: 'Soil drainage and absorption-field limitations affect likely septic feasibility and usable split-lot area.',
+              limitation: SCREENING_DISCLAIMERS.soilsSeptic,
+              classification: 'screening',
+            },
+          };
+        }
+        const wkt = `POINT(${coordinates.lng} ${coordinates.lat})`;
+        const sourceEvidence = evidence(
+          'usda-ssurgo-subject-point',
+          'USDA NRCS Soil Data Access / SSURGO subject-point screen',
+          SDA,
+          'authoritative_federal',
+          ['soil map unit at accepted subject coordinate', 'preliminary septic context'],
+          undefined,
+          'low',
+          'A point screen is not parcel-wide soil coverage and does not replace a perc test.',
+        );
+        try {
+          const maps = await sda(
+            `SELECT mu.mukey, mu.musym, mu.muname FROM mapunit mu INNER JOIN SDA_Get_Mukey_from_intersection_with_WktWgs84('${wkt}') a ON mu.mukey = a.mukey`,
+            context.timeoutMs,
+            context.signal,
+          );
+          const units = maps.slice(1)
+            .map((row) => ({ mukey: row[0], symbol: row[1], name: row[2] }))
+            .filter((unit) => unit.mukey);
+          if (!units.length) {
+            return {
+              status: 'partial',
+              evidence: [sourceEvidence, ...retainedOverlayEvidence],
+              confidence: 'none',
+              retryEligible: true,
+              failureReason: 'USDA Soil Data Access returned no map unit at the accepted subject coordinate.',
+              finding: {
+                kind: 'soils_septic',
+                mapUnits: [],
+                apparentInvestigationAreas: 'Insufficient evidence after the USDA point query and LandPortal overlay attempt.',
+                datasetName: 'USDA NRCS SSURGO point screen',
+                summary: 'Preliminary septic outlook: insufficient evidence after attempted research; the public point query returned no soil map unit.',
+                whyItMatters: 'Soil drainage and absorption-field limitations affect likely septic feasibility and usable split-lot area.',
+                limitation: SCREENING_DISCLAIMERS.soilsSeptic,
+                classification: 'screening',
+              },
+            };
+          }
+          const ids = units.map((unit) => `'${sql(unit.mukey)}'`).join(',');
+          const rows = await sda(
+            `SELECT c.mukey, c.compname, c.comppct_r, c.drainagecl, c.hydgrp, c.slope_l, c.slope_h, ci.interphrc, ci.rulename FROM component c LEFT JOIN cointerp ci ON c.cokey = ci.cokey AND ci.mrulename = 'ENG - Septic Tank Absorption Fields' AND ci.ruledepth = 0 WHERE c.mukey IN (${ids})`,
+            context.timeoutMs,
+            context.signal,
+          );
+          const byUnit = new Map<string, SoilComponent[]>();
+          for (const row of rows.slice(1)) {
+            const list = byUnit.get(row[0]) ?? [];
+            list.push({
+              name: row[1] || 'Unnamed component',
+              percentage: num(row[2]) ?? undefined,
+              septicLimitation: septic(row[7]),
+              limitingFactors: row[8] ? [row[8]] : [],
+              drainageClass: row[3] || undefined,
+              hydrologicSoilGroup: row[4] || undefined,
+              slopeRangePct: num(row[5]) != null && num(row[6]) != null ? [num(row[5])!, num(row[6])!] : undefined,
+            });
+            byUnit.set(row[0], list);
+          }
+          const mapUnits = units.map((unit) => ({
+            symbol: unit.symbol,
+            name: unit.name,
+            components: byUnit.get(unit.mukey) ?? [],
+          }));
+          const ratings = mapUnits.flatMap((unit) => unit.components.map((component) => component.septicLimitation));
+          const known = ratings.filter((rating) => rating !== 'unknown');
+          const outlook = !known.length
+            ? 'insufficient evidence after attempted research'
+            : known.every((rating) => rating === 'not_limited')
+              ? 'more favorable'
+              : known.every((rating) => rating === 'very_limited')
+                ? 'more challenging'
+                : 'mixed';
+          return {
+            status: 'succeeded',
+            evidence: [sourceEvidence, ...retainedOverlayEvidence],
+            confidence: 'low',
+            retryEligible: true,
+            finding: {
+              kind: 'soils_septic',
+              mapUnits,
+              apparentInvestigationAreas: 'Use this subject-point result only to prioritize parcel-wide soil mapping and onsite perc locations.',
+              datasetName: 'USDA NRCS SSURGO subject-point screen',
+              summary: `Preliminary septic outlook: ${outlook}. SSURGO returned ${mapUnits.map((unit) => `${unit.symbol} (${unit.name})`).join(', ')} at the accepted subject coordinate.`,
+              whyItMatters: 'Published soil drainage and absorption-field interpretations help prioritize likely perc investigation areas.',
+              limitation: `${SCREENING_DISCLAIMERS.soilsSeptic} This result represents one accepted subject coordinate, not the full tract.`,
+              classification: 'screening',
+            },
+          };
+        } catch (error) {
+          const message = (error as Error)?.message ?? String(error);
+          return {
+            status: 'partial',
+            evidence: [sourceEvidence, ...retainedOverlayEvidence],
+            confidence: 'none',
+            retryEligible: true,
+            failureReason: message,
+            finding: {
+              kind: 'soils_septic',
+              mapUnits: [],
+              apparentInvestigationAreas: 'Insufficient evidence after the live USDA and LandPortal attempts.',
+              datasetName: 'USDA NRCS SSURGO subject-point screen',
+              summary: `Preliminary septic outlook: insufficient evidence after attempted research. USDA response: ${message}`,
+              whyItMatters: 'Soil drainage and absorption-field limitations affect likely septic feasibility and usable split-lot area.',
+              limitation: SCREENING_DISCLAIMERS.soilsSeptic,
+              classification: 'screening',
+            },
+          };
+        }
+      },
+    });
+  }
+
+  const utilitySource = state === 'SC' && county.toLowerCase() === 'pickens'
+    ? {
+        name: 'City of Pickens Utilities',
+        url: 'https://cityofpickens.com/utilities/',
+        providers: [
+          {
+            service: 'Water/Sewer authority candidate',
+            provider: 'City of Pickens Water & Wastewater',
+            contact: 'https://cityofpickens.com/utilities/ / (864) 878-6421',
+            basis: 'The official utility page publishes water and sewer service, outside-city rates, and parcel-specific service inquiry. It does not establish that a line reaches this address.',
+          },
+          {
+            service: 'Electric provider candidates',
+            provider: 'Blue Ridge Electric Cooperative or Duke Energy Carolinas',
+            contact: 'blueridge.coop / duke-energy.com',
+            basis: 'Both publish a Pickens-area presence; confirm the parcel-specific provider and service location by address.',
+          },
+        ],
+      }
+    : null;
+  if (utilitySource) {
+    adapters.push({
+      task: 'utilities',
+      adapterId: 'official_utility_authority_page_v1',
+      timeoutMs: 30_000,
+      async run(_subject, context) {
+        const sourceEvidence = evidence(
+          'official-utility-authority',
+          utilitySource.name,
+          utilitySource.url,
+          'official_county_state',
+          ['water authority candidate', 'sewer authority candidate', 'outside-city service context'],
+          undefined,
+          'low',
+          'Authority and rates are public context; address-level line availability still requires written confirmation.',
+        );
+        try {
+          const page = await publicPageText(utilitySource.url, context.timeoutMs, context.signal);
+          const mentionsWater = /\bwater\b/i.test(page);
+          const mentionsSewer = /\bsewer\b|\bwastewater\b/i.test(page);
+          if (!mentionsWater && !mentionsSewer) throw new Error('The official page responded but did not expose readable water/sewer service text.');
+          return {
+            status: 'succeeded',
+            evidence: [sourceEvidence],
+            confidence: 'low',
+            retryEligible: true,
+            finding: {
+              kind: 'utilities',
+              publicWater: 'unknown',
+              publicSewer: 'unknown',
+              electric: 'unknown',
+              wellLikelyRequired: null,
+              septicLikelyRequired: null,
+              serviceProviders: utilitySource.providers,
+              researchAttempted: [`Opened ${utilitySource.name}`, 'Read published water/sewer service and outside-city rate context'],
+              summary: `${utilitySource.name} is a practical water/sewer authority candidate and publishes outside-city service rates. Whether water or sewer lines reach this parcel remains unknown pending an address-level availability response; well and septic therefore remain possible, not assumed.`,
+              whyItMatters: 'Utility availability drives buildability, septic dependence, tap cost, and split-lot economics.',
+              limitation: 'Official authority identification only. Written address-level availability, capacity, connection, and tap-cost confirmation controls.',
+              classification: 'screening',
+            },
+          };
+        } catch (error) {
+          const message = (error as Error)?.message ?? String(error);
+          return {
+            status: 'partial',
+            evidence: [sourceEvidence],
+            confidence: 'none',
+            retryEligible: true,
+            failureReason: message,
+            finding: {
+              kind: 'utilities',
+              publicWater: 'unknown',
+              publicSewer: 'unknown',
+              electric: 'unknown',
+              wellLikelyRequired: null,
+              septicLikelyRequired: null,
+              serviceProviders: utilitySource.providers,
+              researchAttempted: [`Attempted ${utilitySource.name}`],
+              summary: `Water and sewer remain unknown after the official utility-page attempt: ${message}`,
+              whyItMatters: 'Utility availability drives buildability, septic dependence, tap cost, and split-lot economics.',
+              limitation: 'The public page attempt did not establish address-level service. Written utility-authority confirmation controls.',
+              classification: 'screening',
+            },
+          };
+        }
+      },
+    });
+  }
+  return adapters;
 }
 
 function cancelledLookup(attempted: OfficialParcelAttempt[], remaining: number): OfficialParcelLookupResult {
@@ -1174,33 +1632,104 @@ function zoningAdapter(p: OfficialParcel, capability: CountyGisCapability | null
   };
 }
 
+function jurisdictionUtilityProviders(p: OfficialParcel): Array<{ service: string; provider: string; contact?: string; basis: string }> {
+  const state = stateCode(p.state);
+  const county = p.county.replace(/\s+county$/i, '').trim().toLowerCase();
+  if (state === 'SC' && county === 'pickens') {
+    return [
+      {
+        service: 'Water/Sewer authority candidate',
+        provider: 'City of Pickens Water & Wastewater',
+        contact: 'cityofpickens.com/utilities / (864) 878-6421',
+        basis: 'The official municipal utility publishes water and sewer service, including outside-city rates. This identifies a practical authority to ask; it does not establish that a line reaches this parcel.',
+      },
+      {
+        service: 'Electric provider candidates',
+        provider: 'Blue Ridge Electric Cooperative or Duke Energy Carolinas',
+        contact: 'blueridge.coop / duke-energy.com',
+        basis: 'Both utilities publish a Pickens-area presence/service territory. The parcel-specific provider and service location must be confirmed by address.',
+      },
+    ];
+  }
+  if (state === 'SC' && county === 'beaufort') {
+    return [
+      {
+        service: 'Water/Sewer',
+        provider: 'Beaufort-Jasper Water & Sewer Authority (BJWSA)',
+        contact: 'bjwsa.org / (843) 987-9200',
+        basis: 'Regional water and sewer authority for Beaufort County; service availability at this parcel must be confirmed with BJWSA.',
+      },
+      {
+        service: 'Electric',
+        provider: 'Dominion Energy SC or Palmetto Electric Cooperative',
+        contact: 'palmetto.coop / (843) 208-5551',
+        basis: 'Service-territory screening for the Beaufort County area; confirm the actual provider at the parcel.',
+      },
+    ];
+  }
+  return [];
+}
+
 function utilitiesAdapter(p: OfficialParcel, capability: CountyGisCapability | null): PublicIntelligenceAdapter {
+  const onsiteRequirement = (availability: UtilityAvailability): boolean | null =>
+    availability === 'unlikely' ? true : availability === 'mapped_available' ? false : null;
   return {
     task: 'utilities',
     adapterId: 'utility_screening_v1',
     timeoutMs: 30_000,
     async run(_subject, _context) {
       if (!capability) {
-        return unavailable(`No tested official county utility layer or authority adapter is available for ${p.county} County, ${p.state}.`);
+        const attempted = [
+          `${p.county} County official GIS capability registry`,
+          'Public water/sewer line and service-area layer inventory',
+        ];
+        const evidenceRef = evidence(
+          'utility-screening-unresolved',
+          `${p.county} County utility source inventory`,
+          p.sourceUrl,
+          'official_county_state',
+          ['utilities'],
+          undefined,
+          'low',
+          'No tested public utility line/service-area layer was available; absence of a mapped layer is not evidence that service is unavailable.',
+        );
+        return {
+          status: 'partial',
+          evidence: [evidenceRef],
+          confidence: 'low',
+          retryEligible: true,
+          finding: {
+            kind: 'utilities',
+            publicWater: 'unknown',
+            publicSewer: 'unknown',
+            electric: 'unknown',
+            wellLikelyRequired: null,
+            septicLikelyRequired: null,
+            serviceProviders: [],
+            researchAttempted: attempted,
+            summary: `Water and sewer availability remain unknown after checking the tested official-source inventory for ${p.county} County, ${p.state}; no supported line or service-area layer was available. This does not mean service is unavailable.`,
+            whyItMatters: 'Utility availability drives buildability, septic dependence, and end-buyer cost.',
+            limitation: 'Desktop utility screening exhausted the currently supported official-source path. Written utility-authority availability and tap-cost confirmation controls.',
+            classification: 'screening',
+          },
+        };
       }
       const attempted: string[] = [];
       let water: UtilityAvailability = 'unknown';
       let sewer: UtilityAvailability = 'unknown';
-      const providers: Array<{ service: string; provider: string; contact?: string; basis: string }> = [];
+      const providers = jurisdictionUtilityProviders(p);
       attempted.push(`${capability.countyLabel} GIS service catalog (no public water/sewer line layers are published)`);
       if (stateCode(p.state) === 'SC' && /beaufort/i.test(p.county)) {
         // Rural St Helena Island: county GIS publishes no utility lines; BJWSA is the regional authority.
         water = 'unknown';
         sewer = 'unlikely';
-        providers.push(
-          { service: 'Water/Sewer', provider: 'Beaufort-Jasper Water & Sewer Authority (BJWSA)', contact: 'bjwsa.org / (843) 987-9200', basis: 'Regional water and sewer authority for Beaufort County; service availability at this parcel must be confirmed with BJWSA.' },
-          { service: 'Electric', provider: 'Dominion Energy SC or Palmetto Electric Cooperative', contact: 'palmetto.coop / (843) 208-5551', basis: 'Service-territory screening for the St Helena Island area; confirm the actual provider at the parcel.' },
-        );
         attempted.push('BJWSA regional authority identification', 'Electric service-territory screening');
+      } else if (providers.length) {
+        attempted.push(...providers.map((provider) => `${provider.provider} official service/provider identification`));
       }
-      const septicRequired = (sewer as UtilityAvailability) !== 'mapped_available';
-      const wellRequired = (water as UtilityAvailability) !== 'mapped_available';
-      const summary = `No public water or sewer line is mapped at the parcel by county GIS${providers.length ? `; ${providers[0].provider} is the regional authority to confirm service` : ''}. Development would most likely need a well and onsite septic unless the authority confirms service.`;
+      const septicRequired = onsiteRequirement(sewer);
+      const wellRequired = onsiteRequirement(water);
+      const summary = `No public water or sewer line is mapped at the parcel by the supported county GIS source${providers.length ? `; ${providers[0].provider} is the regional authority to confirm service` : ''}. Unmapped service remains unknown until the authority confirms availability; it is not treated as unavailable.`;
       const evidenceRef = evidence('utility-screening', 'Utility availability screening (county GIS + authority identification)', capability.layers.parcels ?? capability.mapViewerUrl ?? capability.assessorSearchUrl ?? p.sourceUrl, 'official_county_state', ['utilities'], undefined, 'low', 'Screening only; the utility authority controls service availability and connection cost.');
       return {
         status: 'succeeded', evidence: [evidenceRef], confidence: 'low', retryEligible: true,
@@ -1208,7 +1737,7 @@ function utilitiesAdapter(p: OfficialParcel, capability: CountyGisCapability | n
           kind: 'utilities',
           publicWater: water,
           publicSewer: sewer,
-          electric: providers.length ? 'likely' : 'unknown',
+          electric: providers.some((provider) => /electric/i.test(`${provider.service} ${provider.provider}`)) ? 'likely' : 'unknown',
           wellLikelyRequired: wellRequired,
           septicLikelyRequired: septicRequired,
           serviceProviders: providers,
@@ -1439,6 +1968,22 @@ async function json<T>(url: string, timeout: number, signal?: AbortSignal, init?
     return await response.json() as T;
   } catch (error) {
     throw requestFailure(error, bounded, signal, 'The public provider');
+  } finally {
+    bounded.release();
+  }
+}
+
+async function publicPageText(url: string, timeout: number, signal?: AbortSignal): Promise<string> {
+  const bounded = boundedRequest(timeout, signal);
+  try {
+    const response = await fetch(url, {
+      signal: bounded.controller.signal,
+      headers: { accept: 'text/html,application/xhtml+xml' },
+    });
+    if (!response.ok) throw new Error(`Official public page HTTP ${response.status}.`);
+    return await response.text();
+  } catch (error) {
+    throw requestFailure(error, bounded, signal, 'The official public page');
   } finally {
     bounded.release();
   }

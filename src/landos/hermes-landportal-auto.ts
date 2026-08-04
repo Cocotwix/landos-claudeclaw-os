@@ -1,8 +1,8 @@
 // Automatic Hermes -> LandOS LandPortal lane.
 //
-// This is deliberately a thin controller around the proven Hermes one-shot
-// runtime and importHermesLandPortalFile(). It does not own property facts,
-// comps, or a second persistence model.
+// The lane owns exactly three sibling work units. Each one runs a bounded
+// Hermes one-shot, verifies the same exact subject, and hands one category to
+// the existing canonical importer. LandOS remains the only system of record.
 
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -12,11 +12,14 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { logger } from '../logger.js';
+import { landPortalIdentityFromUrl } from './landportal-operating-rules.js';
 import {
   importHermesLandPortalFile,
+  validateHermesLandPortalFileIdentity,
   type HermesLandPortalCategoryImportResult,
   type HermesLandPortalImportResult,
   type HermesLandPortalResultCategory,
+  type HermesLandPortalValidatedIdentity,
 } from './hermes-landportal-import.js';
 
 const execFileAsync = promisify(execFile);
@@ -25,14 +28,19 @@ export const HERMES_LANDPORTAL_CDP_ENDPOINT = 'http://127.0.0.1:9224';
 export const HERMES_LANDPORTAL_PROFILE = 'landos';
 export const HERMES_LANDPORTAL_CDP_SKILL = 'driving-cdp-browser';
 export const HERMES_LANDPORTAL_CONTEXT_SKILL = 'landos-landportal';
-// The authenticated LandPortal worker can need more than three minutes before
-// its first verified snapshot on a cold/recovered browser session. Keep a
-// bounded shutdown margin inside the existing five-minute hard ceiling so the
-// incremental subject handback can land before the worker is interrupted.
-export const HERMES_LANDPORTAL_TARGET_RUNTIME_MS = 280_000;
+export const HERMES_LANDPORTAL_TARGET_RUNTIME_MS = 5 * 60_000;
 export const HERMES_LANDPORTAL_HARD_TIMEOUT_MS = 5 * 60_000;
+// Hermes v0.20.0 verifies each capture with vision-model checks before writing
+// its handback; the visuals work unit measurably cannot finish that loop inside
+// five minutes (it was killed mid final-check at eight). Subject and comps keep
+// the five-minute ceiling; only the visuals work unit gets the longer one.
+export const HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS = 12 * 60_000;
+export const HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS = 12 * 60_000;
+export const HERMES_LANDPORTAL_SPECIALISTS = ['subject', 'comps', 'visuals'] as const;
 
+export type HermesLandPortalSpecialist = typeof HERMES_LANDPORTAL_SPECIALISTS[number];
 export type HermesLandPortalLaneStatus = 'exact_match' | 'context_only' | 'no_match' | 'failed';
+export type HermesLandPortalWorkUnitStatus = 'running' | HermesLandPortalLaneStatus;
 
 export interface HermesLandPortalLaneInput {
   runId: string;
@@ -44,6 +52,19 @@ export interface HermesLandPortalLaneInput {
   county: string | null;
   state: string | null;
   landPortalPropertyId: string | null;
+}
+
+export interface HermesLandPortalWorkUnitProgress {
+  workUnitId: string;
+  specialist: HermesLandPortalSpecialist;
+  label: string;
+  outputFile: string;
+  status: HermesLandPortalWorkUnitStatus;
+  startedAt: string;
+  completedAt: string | null;
+  runtimeMs: number | null;
+  note: string;
+  persistedCategory: HermesLandPortalCategoryImportResult | null;
 }
 
 export interface HermesLandPortalLaneOutcome {
@@ -60,6 +81,7 @@ export interface HermesLandPortalLaneOutcome {
   importResult: HermesLandPortalImportResult | null;
   importResults: HermesLandPortalImportResult[];
   persistedCategories: HermesLandPortalCategoryImportResult[];
+  workUnits: HermesLandPortalWorkUnitProgress[];
 }
 
 export interface HermesLandPortalLaneProgress {
@@ -71,17 +93,26 @@ export interface HermesLandPortalLaneProgress {
   startedAt: string;
   completedAt: string | null;
   persistedCategories: HermesLandPortalCategoryImportResult[];
+  workUnits: HermesLandPortalWorkUnitProgress[];
   note: string;
+}
+
+export interface HermesLandPortalInvocation {
+  specialist: HermesLandPortalSpecialist;
+  workUnitId: string;
+  outputFile: string;
 }
 
 export interface HermesLandPortalAutoDeps {
   outputDirectory?: string;
   timeoutMs?: number;
+  specialistTimeoutMs?: Partial<Record<HermesLandPortalSpecialist, number>>;
   now?: () => string;
   clockMs?: () => number;
   monitorIntervalMs?: number;
-  invokeHermes?: (prompt: string, outputDirectory: string, timeoutMs: number) => Promise<void>;
+  invokeHermes?: (prompt: string, outputDirectory: string, timeoutMs: number, invocation: HermesLandPortalInvocation) => Promise<void>;
   importFile?: typeof importHermesLandPortalFile;
+  validateFile?: typeof validateHermesLandPortalFileIdentity;
 }
 
 type HermesStatusPayload = {
@@ -89,12 +120,19 @@ type HermesStatusPayload = {
   subject_verification_note?: unknown;
 };
 
+interface SpecialistExecution {
+  workUnit: HermesLandPortalWorkUnitProgress;
+  importResult: HermesLandPortalImportResult | null;
+  importResults: HermesLandPortalImportResult[];
+}
+
 const activeRuns = new Map<string, Promise<HermesLandPortalLaneOutcome>>();
 const completedRuns = new Map<string, HermesLandPortalLaneOutcome>();
 const laneProgress = new Map<number, HermesLandPortalLaneProgress>();
 
 const cleanText = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const cryptoHash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
+const compactIdentity = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 export function hermesLandPortalPropertyLabel(input: Pick<HermesLandPortalLaneInput, 'address' | 'propertyCardId'>): string {
   return `${input.address.trim()} [Property Card ${input.propertyCardId}]`;
@@ -108,21 +146,48 @@ function safeFilePart(value: string, fallback: string): string {
   return safe || fallback;
 }
 
-export function hermesLandPortalOutputFile(
-  input: HermesLandPortalLaneInput,
-  outputDirectory = path.join(
+function defaultOutputDirectory(): string {
+  return path.join(
     process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
     'hermes', 'profiles', HERMES_LANDPORTAL_PROFILE, 'shared', 'landportal',
-  ),
+  );
+}
+
+/** Retained for the existing single-file operator/import tooling. */
+export function hermesLandPortalOutputFile(
+  input: HermesLandPortalLaneInput,
+  outputDirectory = defaultOutputDirectory(),
 ): string {
   const address = safeFilePart(input.address, 'property');
   const run = safeFilePart(input.runId, 'run');
   return path.join(outputDirectory, `${address}__property-card-${input.propertyCardId}__${run}.json`);
 }
 
-export function hermesLandPortalPrompt(input: HermesLandPortalLaneInput, outputFile: string): string {
+export function hermesLandPortalSpecialistOutputFile(
+  input: HermesLandPortalLaneInput,
+  specialist: HermesLandPortalSpecialist,
+  outputDirectory = defaultOutputDirectory(),
+): string {
+  const propertyRunDirectory = hermesLandPortalOutputFile(input, outputDirectory).replace(/\.json$/i, '');
+  return path.join(propertyRunDirectory, `${specialist}.json`);
+}
+
+function specialistLabel(specialist: HermesLandPortalSpecialist): string {
+  if (specialist === 'subject') return 'Exact subject identity and property facts';
+  if (specialist === 'comps') return 'LandPortal comparables';
+  return 'Required visual and overlay evidence';
+}
+
+export function hermesLandPortalPrompt(
+  input: HermesLandPortalLaneInput,
+  outputFile: string,
+  specialist: HermesLandPortalSpecialist = 'subject',
+): string {
   const assignment = JSON.stringify({
-    assignment: 'landportal_subject_lookup',
+    assignment: 'landportal_specialist_lookup',
+    specialist_category: specialist,
+    work_unit_id: `${input.runId}:${input.propertyCardId}:${specialist}`,
+    responsibility: specialistLabel(specialist),
     address: input.address,
     apn: input.apn,
     owner: input.owner,
@@ -132,17 +197,28 @@ export function hermesLandPortalPrompt(input: HermesLandPortalLaneInput, outputF
     canonical_property_identifier: input.landPortalPropertyId,
     output_file: outputFile,
     visual_artifact_directory: path.dirname(outputFile),
-    requested_visuals: ['parcel_context'],
-    handback_mode: 'progressive_snapshot',
-    progressive_categories: ['subject', 'comps', 'visuals'],
-    visual_artifact_fields: ['key', 'label', 'kind', 'purpose', 'source_path', 'timestamp', 'requested_view', 'active_view', 'boundary_required', 'boundary_visible', 'tiles_loaded', 'camera_scale', 'clipped', 'obstructions'],
+    requested_visuals: specialist === 'visuals' ? ['parcel_context'] : [],
+    handback_mode: 'independent_specialist',
+    completed_categories: [specialist],
+    visual_artifact_fields: specialist === 'visuals'
+      ? ['key', 'label', 'kind', 'purpose', 'source_path', 'timestamp', 'requested_view', 'active_view', 'boundary_required', 'boundary_visible', 'tiles_loaded', 'camera_scale', 'clipped', 'obstructions']
+      : [],
+    // The importer accepts only these literal values; free-text camera notes
+    // previously caused a verified visuals handback to be rejected wholesale.
+    visual_artifact_field_rules: specialist === 'visuals'
+      ? {
+        camera_scale: 'exactly one of: parcel | context | county | national | unknown',
+        obstructions: 'array of obstruction descriptions; [] when the captured map area is clean',
+        clean_capture: 'collapse the sidebar and close every panel, popup, and menu before the screenshot so only the map area is captured',
+      }
+      : undefined,
   }, null, 2);
-  return `Complete the current LandOS LandPortal assignment using the persistent profile context and the preloaded ${HERMES_LANDPORTAL_CONTEXT_SKILL} and ${HERMES_LANDPORTAL_CDP_SKILL} skills.
+  return `Complete one bounded LandOS LandPortal specialist work unit using the persistent profile context and the preloaded ${HERMES_LANDPORTAL_CONTEXT_SKILL} and ${HERMES_LANDPORTAL_CDP_SKILL} skills.
 
-CURRENT ASSIGNMENT
+CURRENT WORK UNIT
 ${assignment}
 
-Follow the progressive handback contract in the LandOS project context: persist the verified subject snapshot to output_file immediately after exact-subject verification, then rewrite that same property-specific snapshot after each later completed category. Visual source_path values must stay beneath visual_artifact_directory. Stop after the final rewrite.`;
+Verify the exact subject independently. Own one CDP tab and never touch another worker's tab. Write only this specialist's category to output_file as soon as it is verified. Repeat the exact address, APN, subject URL, Property Card guard, and canonical LandPortal identifier. Do not wait for sibling specialists. Stop after the handback.`;
 }
 
 export function hermesLandPortalInvocationArgs(prompt: string): string[] {
@@ -153,7 +229,12 @@ export function hermesLandPortalInvocationArgs(prompt: string): string[] {
   ];
 }
 
-async function invokeInstalledHermes(prompt: string, _outputDirectory: string, timeoutMs: number): Promise<void> {
+async function invokeInstalledHermes(
+  prompt: string,
+  _outputDirectory: string,
+  timeoutMs: number,
+  _invocation: HermesLandPortalInvocation,
+): Promise<void> {
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const root = path.join(localAppData, 'hermes', 'hermes-agent');
   const python = path.join(root, 'venv', 'Scripts', 'python.exe');
@@ -166,9 +247,6 @@ async function invokeInstalledHermes(prompt: string, _outputDirectory: string, t
     throw new Error(`Hermes profile "${HERMES_LANDPORTAL_PROFILE}" is not provisioned. Run npm run landos:hermes:profile.`);
   }
   await execFileAsync(python, [launcher, ...hermesLandPortalInvocationArgs(prompt)], {
-    // Project context files are discovered from the launch directory. Keep the
-    // process rooted in LandOS; outputDirectory is already carried as an
-    // absolute, property-specific assignment path.
     cwd: process.cwd(),
     timeout: timeoutMs,
     maxBuffer: 1024 * 1024,
@@ -176,7 +254,7 @@ async function invokeInstalledHermes(prompt: string, _outputDirectory: string, t
   });
 }
 
-function classifyPayload(filePath: string): { status: Exclude<HermesLandPortalLaneStatus, 'failed'> | 'failed'; note: string } {
+function classifyPayload(filePath: string): { status: HermesLandPortalLaneStatus; note: string } {
   let parsed: HermesStatusPayload;
   try {
     parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as HermesStatusPayload;
@@ -198,44 +276,92 @@ function laneKey(input: HermesLandPortalLaneInput): string {
 function executionFailureNote(error: unknown, timeoutMs: number): string {
   const details = error as { killed?: boolean; signal?: string | null; message?: string };
   if (details?.killed || details?.signal === 'SIGTERM') {
-    return `Hermes LandPortal execution exceeded the ${timeoutMs} ms lane limit.`;
+    return `Hermes LandPortal execution exceeded the ${timeoutMs} ms work-unit limit.`;
   }
   const firstLine = cleanText(details?.message ?? String(error)).split(/\r?\n/, 1)[0]?.slice(0, 300);
   return `Hermes LandPortal execution failed: ${firstLine || 'Unknown execution error.'}`;
 }
 
-async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPortalAutoDeps): Promise<HermesLandPortalLaneOutcome> {
+function cloneCategory(result: HermesLandPortalCategoryImportResult): HermesLandPortalCategoryImportResult {
+  return { ...result };
+}
+
+function cloneWorkUnit(unit: HermesLandPortalWorkUnitProgress): HermesLandPortalWorkUnitProgress {
+  return { ...unit, persistedCategory: unit.persistedCategory ? cloneCategory(unit.persistedCategory) : null };
+}
+
+function identityConflict(
+  held: HermesLandPortalValidatedIdentity,
+  incoming: HermesLandPortalValidatedIdentity,
+): string | null {
+  const conflicts: string[] = [];
+  if (compactIdentity(held.address) !== compactIdentity(incoming.address)) conflicts.push('address');
+  if (compactIdentity(held.apn) !== compactIdentity(incoming.apn)) conflicts.push('APN');
+  if (held.propertyId !== incoming.propertyId) conflicts.push('LandPortal property identifier');
+  const heldUrlIdentity = landPortalIdentityFromUrl(held.subjectUrl);
+  const incomingUrlIdentity = landPortalIdentityFromUrl(incoming.subjectUrl);
+  const sameSubjectUrlIdentity = heldUrlIdentity && incomingUrlIdentity
+    ? heldUrlIdentity.fips === incomingUrlIdentity.fips
+      && compactIdentity(heldUrlIdentity.apn ?? '') === compactIdentity(incomingUrlIdentity.apn ?? '')
+      && heldUrlIdentity.propertyId === incomingUrlIdentity.propertyId
+    : held.subjectUrl === incoming.subjectUrl;
+  if (!sameSubjectUrlIdentity) conflicts.push('LandPortal subject URL');
+  return conflicts.length ? conflicts.join(', ') : null;
+}
+
+function failedHandback(input: HermesLandPortalLaneInput, specialist: HermesLandPortalSpecialist, note: string, capturedAt: string): string {
+  return JSON.stringify({
+    specialist_category: specialist,
+    subject_verification_status: 'failed',
+    subject_verification_note: note,
+    address: input.address,
+    apn: input.apn,
+    property_card_id: input.propertyCardId,
+    canonical_property_identifier: input.landPortalPropertyId,
+    captured_at: capturedAt,
+    completed_categories: [],
+    comps: [],
+    visual_artifacts: [],
+  }, null, 2);
+}
+
+async function executeSpecialist(input: {
+  lane: HermesLandPortalLaneInput;
+  specialist: HermesLandPortalSpecialist;
+  outputDirectory: string;
+  timeoutMs: number;
+  deps: HermesLandPortalAutoDeps;
+  reconcile: (identity: HermesLandPortalValidatedIdentity) => HermesLandPortalValidatedIdentity;
+  publish: (workUnit: HermesLandPortalWorkUnitProgress) => void;
+}): Promise<SpecialistExecution> {
+  const { lane, specialist, outputDirectory, timeoutMs, deps, reconcile, publish } = input;
   const now = deps.now ?? (() => new Date().toISOString());
   const clockMs = deps.clockMs ?? (() => Date.now());
   const startedAt = now();
   const startedMs = clockMs();
-  const propertyLabel = hermesLandPortalPropertyLabel(input);
-  const outputDirectory = path.resolve(deps.outputDirectory ?? path.dirname(hermesLandPortalOutputFile(input)));
-  const outputFile = hermesLandPortalOutputFile(input, outputDirectory);
-  // The approved SOP allows only three bounded searches. No caller may extend
-  // this lane beyond its five-minute hard ceiling; sibling lanes remain
-  // independent and continue on their own schedules.
-  const timeoutMs = Math.min(HERMES_LANDPORTAL_HARD_TIMEOUT_MS, Math.max(1, deps.timeoutMs ?? HERMES_LANDPORTAL_TARGET_RUNTIME_MS));
+  const outputFile = hermesLandPortalSpecialistOutputFile(lane, specialist, outputDirectory);
+  const workUnitId = `${lane.runId}:${lane.propertyCardId}:${specialist}`;
   const importResults: HermesLandPortalImportResult[] = [];
-  const categoryResults = new Map<HermesLandPortalResultCategory, HermesLandPortalCategoryImportResult>();
-  let lastImportResult: HermesLandPortalImportResult | null = null;
-  let lastImportError: string | null = null;
+  let importResult: HermesLandPortalImportResult | null = null;
+  let persistedCategory: HermesLandPortalCategoryImportResult | null = null;
   let lastArtifactHash = '';
+  let lastImportError: string | null = null;
   let monitor: ReturnType<typeof setInterval> | null = null;
-  const publishProgress = (status: HermesLandPortalLaneProgress['status'], note: string, completedAt: string | null): void => {
-    laneProgress.set(input.dealCardId, {
-      runId: input.runId,
-      dealCardId: input.dealCardId,
-      propertyCardId: input.propertyCardId,
-      address: input.address,
-      status,
-      startedAt,
-      completedAt,
-      persistedCategories: [...categoryResults.values()].filter((result) => !result.error),
-      note,
-    });
-  };
-  const consumeIncrementalArtifact = (): void => {
+
+  const unit = (status: HermesLandPortalWorkUnitStatus, note: string, completedAt: string | null): HermesLandPortalWorkUnitProgress => ({
+    workUnitId,
+    specialist,
+    label: specialistLabel(specialist),
+    outputFile,
+    status,
+    startedAt,
+    completedAt,
+    runtimeMs: completedAt ? Math.max(0, clockMs() - startedMs) : null,
+    note,
+    persistedCategory: persistedCategory ? cloneCategory(persistedCategory) : null,
+  });
+
+  const consume = (): void => {
     if (!fs.existsSync(outputFile)) return;
     let raw: string;
     try { raw = fs.readFileSync(outputFile, 'utf8'); } catch { return; }
@@ -245,106 +371,173 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
     if (classified.status !== 'exact_match') return;
     lastArtifactHash = artifactHash;
     try {
-      const imported = (deps.importFile ?? importHermesLandPortalFile)(outputFile, { propertyCardId: input.propertyCardId });
-      lastImportResult = imported;
-      lastImportError = null;
-      importResults.push(imported);
-      for (const result of imported.categoryResults) {
-        const held = categoryResults.get(result.category);
-        if (!held || result.imported || held.error) categoryResults.set(result.category, result);
-        if (result.imported && !result.error) {
-          logger.info({ propertyLabel, runId: input.runId, category: result.category, persistedAt: result.persistedAt, itemCount: result.itemCount }, 'hermes_landportal_category_persisted');
-        }
+      const identity = (deps.validateFile ?? validateHermesLandPortalFileIdentity)(outputFile, { propertyCardId: lane.propertyCardId });
+      if (identity.specialistCategory !== specialist || identity.completedCategories.length !== 1 || identity.completedCategories[0] !== specialist) {
+        throw new Error(`Hermes ${specialist} work unit returned categories assigned to another specialist.`);
       }
-      publishProgress('running', classified.note, null);
+      const expectedIdentity = reconcile(identity);
+      const imported = (deps.importFile ?? importHermesLandPortalFile)(outputFile, { propertyCardId: lane.propertyCardId, expectedIdentity });
+      importResult = imported;
+      importResults.push(imported);
+      const category = imported.categoryResults.find((result) => result.category === specialist) ?? null;
+      if (!category) throw new Error(`Canonical importer returned no ${specialist} category result.`);
+      if (category.error) throw new Error(category.error);
+      persistedCategory = category;
+      lastImportError = null;
+      logger.info({
+        propertyLabel: hermesLandPortalPropertyLabel(lane), runId: lane.runId, workUnitId,
+        specialist, persistedAt: category.persistedAt, itemCount: category.itemCount,
+      }, 'hermes_landportal_specialist_category_persisted');
+      publish(unit('running', classified.note, null));
     } catch (error) {
       lastImportError = (error as Error).message;
     }
   };
-  const finish = (status: HermesLandPortalLaneStatus, note: string, importResult: HermesLandPortalImportResult | null): HermesLandPortalLaneOutcome => ({
-    ...(() => {
-      const completedAt = now();
-      publishProgress(status, note, completedAt);
-      return {
-        status,
-        runId: input.runId,
-        dealCardId: input.dealCardId,
-        propertyCardId: input.propertyCardId,
-        propertyLabel,
-        outputFile,
-        startedAt,
-        completedAt,
-        runtimeMs: Math.max(0, clockMs() - startedMs),
-        note,
-        importResult,
-        importResults,
-        persistedCategories: [...categoryResults.values()].filter((result) => !result.error),
-      };
-    })(),
-  });
 
   try {
-    fs.mkdirSync(outputDirectory, { recursive: true });
-    // Never accept a stale artifact as this run's handback.
+    fs.mkdirSync(path.dirname(outputFile), { recursive: true });
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-    logger.info({ propertyLabel, runId: input.runId, outputFile }, 'hermes_landportal_lane_started');
-    publishProgress('running', `Hermes LandPortal is collecting verified evidence for ${input.address}.`, null);
-    monitor = setInterval(consumeIncrementalArtifact, Math.max(10, deps.monitorIntervalMs ?? 250));
+    const started = unit('running', `Hermes ${specialist} specialist is collecting ${specialistLabel(specialist).toLowerCase()} for ${lane.address}.`, null);
+    publish(started);
+    logger.info({ propertyLabel: hermesLandPortalPropertyLabel(lane), runId: lane.runId, workUnitId, specialist, outputFile }, 'hermes_landportal_specialist_started');
+    monitor = setInterval(consume, Math.max(10, deps.monitorIntervalMs ?? 250));
     monitor.unref?.();
-    await (deps.invokeHermes ?? invokeInstalledHermes)(hermesLandPortalPrompt(input, outputFile), outputDirectory, timeoutMs);
-    consumeIncrementalArtifact();
+    await (deps.invokeHermes ?? invokeInstalledHermes)(
+      hermesLandPortalPrompt(lane, outputFile, specialist),
+      outputDirectory,
+      timeoutMs,
+      { specialist, workUnitId, outputFile },
+    );
+    consume();
     if (!fs.existsSync(outputFile)) {
-      const note = 'Hermes completed without creating the required property-specific JSON file.';
-      fs.writeFileSync(outputFile, JSON.stringify({
-        subject_verification_status: 'failed',
-        subject_verification_note: note,
-        address: input.address,
-        apn: input.apn,
-        property_card_id: input.propertyCardId,
-        canonical_property_identifier: input.landPortalPropertyId,
-        captured_at: now(),
-        comps: [],
-      }, null, 2));
-      return finish('failed', note, null);
+      const note = `Hermes ${specialist} specialist completed without creating its required property-specific JSON file.`;
+      fs.writeFileSync(outputFile, failedHandback(lane, specialist, note, now()));
+      const finished = unit('failed', note, now());
+      publish(finished);
+      return { workUnit: finished, importResult, importResults };
     }
     const classified = classifyPayload(outputFile);
-    if (classified.status !== 'exact_match') return finish(classified.status, classified.note, null);
-    const finalImport = importResults.at(-1) ?? null;
-    const categoryError = finalImport?.categoryResults.find((result) => !!result.error)?.error ?? lastImportError;
-    if (categoryError) return finish('failed', `Hermes exact-match JSON was rejected by the canonical importer: ${categoryError}`, finalImport);
-    if (!finalImport) return finish('failed', 'Hermes exact-match JSON did not produce an importable incremental result.', null);
-    return finish('exact_match', classified.note, finalImport);
-  } catch (error) {
-    // Import the last stable exact-subject snapshot before recording the later
-    // execution failure. Already-persisted categories remain canonical.
-    consumeIncrementalArtifact();
-    // execFile errors include the complete prompt in their default message.
-    // Persist only a bounded operational reason, never that command payload.
-    const note = executionFailureNote(error, timeoutMs);
-    // A failed lane still leaves one property-scoped, machine-readable
-    // handback. It is never imported and cannot be mistaken for subject proof.
-    if (!fs.existsSync(outputFile)) {
-      fs.writeFileSync(outputFile, JSON.stringify({
-        subject_verification_status: 'failed',
-        subject_verification_note: note,
-        address: input.address,
-        apn: input.apn,
-        property_card_id: input.propertyCardId,
-        canonical_property_identifier: input.landPortalPropertyId,
-        captured_at: now(),
-        comps: [],
-      }, null, 2));
+    if (classified.status !== 'exact_match') {
+      const finished = unit(classified.status, classified.note, now());
+      publish(finished);
+      return { workUnit: finished, importResult, importResults };
     }
-    return finish('failed', note, lastImportResult);
+    if (lastImportError) {
+      const finished = unit('failed', `Hermes ${specialist} handback was rejected: ${lastImportError}`, now());
+      publish(finished);
+      return { workUnit: finished, importResult, importResults };
+    }
+    if (!persistedCategory) {
+      const finished = unit('failed', `Hermes ${specialist} exact-match handback did not produce its canonical category.`, now());
+      publish(finished);
+      return { workUnit: finished, importResult, importResults };
+    }
+    const finished = unit('exact_match', classified.note, now());
+    publish(finished);
+    return { workUnit: finished, importResult, importResults };
+  } catch (error) {
+    consume();
+    const note = executionFailureNote(error, timeoutMs);
+    if (!fs.existsSync(outputFile)) fs.writeFileSync(outputFile, failedHandback(lane, specialist, note, now()));
+    const finished = unit('failed', note, now());
+    publish(finished);
+    return { workUnit: finished, importResult, importResults };
   } finally {
     if (monitor) clearInterval(monitor);
   }
 }
 
-/**
- * Launch at most once for one active Deal Intelligence run + Property Card.
- * Repeated callers receive the same in-flight or completed outcome.
- */
+async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPortalAutoDeps): Promise<HermesLandPortalLaneOutcome> {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const clockMs = deps.clockMs ?? (() => Date.now());
+  const startedAt = now();
+  const startedMs = clockMs();
+  const propertyLabel = hermesLandPortalPropertyLabel(input);
+  const outputDirectory = path.resolve(deps.outputDirectory ?? defaultOutputDirectory());
+  const workUnits = new Map<HermesLandPortalSpecialist, HermesLandPortalWorkUnitProgress>();
+  const categories = new Map<HermesLandPortalResultCategory, HermesLandPortalCategoryImportResult>();
+  let reconciledIdentity: HermesLandPortalValidatedIdentity | null = null;
+
+  const currentCategories = (): HermesLandPortalCategoryImportResult[] => [...categories.values()].map(cloneCategory);
+  const currentUnits = (): HermesLandPortalWorkUnitProgress[] => HERMES_LANDPORTAL_SPECIALISTS
+    .map((specialist) => workUnits.get(specialist))
+    .filter((unit): unit is HermesLandPortalWorkUnitProgress => !!unit)
+    .map(cloneWorkUnit);
+  const publishLane = (status: HermesLandPortalLaneProgress['status'], note: string, completedAt: string | null): void => {
+    laneProgress.set(input.dealCardId, {
+      runId: input.runId,
+      dealCardId: input.dealCardId,
+      propertyCardId: input.propertyCardId,
+      address: input.address,
+      status,
+      startedAt,
+      completedAt,
+      persistedCategories: currentCategories(),
+      workUnits: currentUnits(),
+      note,
+    });
+  };
+  const publishWorkUnit = (unit: HermesLandPortalWorkUnitProgress): void => {
+    workUnits.set(unit.specialist, cloneWorkUnit(unit));
+    if (unit.persistedCategory && !unit.persistedCategory.error) categories.set(unit.specialist, cloneCategory(unit.persistedCategory));
+    const running = currentUnits().filter((candidate) => candidate.status === 'running').length;
+    publishLane('running', `${currentCategories().length}/3 Hermes categories retained; ${running}/3 specialist work units active.`, null);
+  };
+  const reconcile = (identity: HermesLandPortalValidatedIdentity): HermesLandPortalValidatedIdentity => {
+    if (!reconciledIdentity) {
+      reconciledIdentity = identity;
+      return reconciledIdentity;
+    }
+    const conflict = identityConflict(reconciledIdentity, identity);
+    if (conflict) throw new Error(`Hermes specialist identity conflict rejected (${conflict}) for ${input.address}.`);
+    return reconciledIdentity;
+  };
+
+  publishLane('running', `Launching three controlled Hermes specialists for ${input.address}.`, null);
+  const executions = await Promise.all(HERMES_LANDPORTAL_SPECIALISTS.map((specialist) => {
+    const target = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS : HERMES_LANDPORTAL_TARGET_RUNTIME_MS;
+    const hardCeiling = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS : HERMES_LANDPORTAL_HARD_TIMEOUT_MS;
+    const configured = deps.specialistTimeoutMs?.[specialist] ?? deps.timeoutMs ?? target;
+    const timeoutMs = Math.min(hardCeiling, Math.max(1, configured));
+    return executeSpecialist({ lane: input, specialist, outputDirectory, timeoutMs, deps, reconcile, publish: publishWorkUnit });
+  }));
+
+  const persistedCategories = currentCategories();
+  const imports = executions.flatMap((execution) => execution.importResults);
+  const finalImport = imports.at(-1) ?? null;
+  const units = currentUnits();
+  const failed = units.filter((unit) => unit.status === 'failed');
+  const status: HermesLandPortalLaneStatus = persistedCategories.length > 0
+    ? 'exact_match'
+    : units.some((unit) => unit.status === 'context_only')
+      ? 'context_only'
+      : units.length === HERMES_LANDPORTAL_SPECIALISTS.length && units.every((unit) => unit.status === 'no_match')
+        ? 'no_match'
+        : 'failed';
+  const completedAt = now();
+  const note = persistedCategories.length > 0
+    ? `${persistedCategories.length}/3 independently verified Hermes categories retained for ${input.address}; ${failed.length} specialist failure(s) did not retract them.`
+    : `No Hermes specialist category was admitted for ${input.address}; ${failed.length} work unit(s) failed.`;
+  publishLane(status, note, completedAt);
+  return {
+    status,
+    runId: input.runId,
+    dealCardId: input.dealCardId,
+    propertyCardId: input.propertyCardId,
+    propertyLabel,
+    outputFile: hermesLandPortalSpecialistOutputFile(input, 'subject', outputDirectory),
+    startedAt,
+    completedAt,
+    runtimeMs: Math.max(0, clockMs() - startedMs),
+    note,
+    importResult: finalImport,
+    importResults: imports,
+    persistedCategories,
+    workUnits: units,
+  };
+}
+
+/** Launch once for one Deal Intelligence run + Property Card. */
 export function runHermesLandPortalLane(
   input: HermesLandPortalLaneInput,
   deps: HermesLandPortalAutoDeps = {},
@@ -361,8 +554,7 @@ export function runHermesLandPortalLane(
       runId: outcome.runId,
       status: outcome.status,
       runtimeMs: outcome.runtimeMs,
-      outputFile: outcome.outputFile,
-      importedCompCount: outcome.importResult?.importedCompCount ?? 0,
+      specialists: outcome.workUnits.map((unit) => ({ specialist: unit.specialist, status: unit.status, startedAt: unit.startedAt, completedAt: unit.completedAt })),
       persistedCategories: outcome.persistedCategories.map((result) => result.category),
     }, 'hermes_landportal_lane_completed');
     return outcome;
@@ -373,7 +565,11 @@ export function runHermesLandPortalLane(
 
 export function getHermesLandPortalLaneProgress(dealCardId: number): HermesLandPortalLaneProgress | null {
   const progress = laneProgress.get(dealCardId);
-  return progress ? { ...progress, persistedCategories: progress.persistedCategories.map((result) => ({ ...result })) } : null;
+  return progress ? {
+    ...progress,
+    persistedCategories: progress.persistedCategories.map(cloneCategory),
+    workUnits: progress.workUnits.map(cloneWorkUnit),
+  } : null;
 }
 
 export function resetHermesLandPortalLaneCache(): void {

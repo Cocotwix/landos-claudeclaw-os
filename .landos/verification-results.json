@@ -1,207 +1,41 @@
 {
   "schema": 1,
-  "recordedAt": "2026-07-27T19:56:38.4523774-04:00",
-  "headUnderReview": "c3158f6",
-  "commitState": "UNCOMMITTED",
+  "recordedAt": "2026-08-04T05:40:00.0000000Z",
+  "headUnderReview": "f25d7a5",
+  "commitState": "COMMITTED as the minimal V2 property-intelligence baseline (replacement for oversized local commit 2a60346; excluded workstreams remain uncommitted in the worktree)",
   "tests": {
     "status": "PASS",
-    "timestamp": "2026-08-02T17:54:24.8900260Z",
-    "summary": "Hermes controller, importer, and canonical research-store suite passed: 3 files, 16 tests, 0 failures"
+    "timestamp": "2026-08-04T05:32:40.0000000Z",
+    "summary": "Focused suites passed against the exact replacement-commit tree in an isolated parent-based worktree: deal-operator-analysis.contract, property-market-context, property-intelligence.routes, hermes-landportal-auto, hermes-landportal-import; 52 tests, 0 failures."
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-02T17:54:24.8900260Z",
-    "summary": "npm.cmd run typecheck completed with zero diagnostics"
+    "timestamp": "2026-08-04T05:34:00.0000000Z",
+    "summary": "tsc --noEmit clean on the exact replacement-commit tree (parent tree alone had 19 pre-existing errors; the committed set repairs them)."
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-08-02T17:54:24.8900260Z",
-    "summary": "server and web production builds completed successfully; web emitted only existing chunk-size warnings"
+    "timestamp": "2026-08-04T05:35:00.0000000Z",
+    "summary": "Server (tsc) and web (vite) production builds completed on the exact replacement-commit tree; only pre-existing chunk-size warnings."
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-08-02T17:54:24.8900260Z",
-    "pid": 8172,
+    "timestamp": "2026-08-04T03:44:00.0000000Z",
+    "pid": 128224,
     "url": "http://localhost:3141"
   },
   "operatorAcceptance": {
     "status": "PASS",
-    "workflow": "canonical ten-tab Deal Card",
-    "url": "http://localhost:3141/dept/acquisitions?deal=58",
-    "freshLead": {
-      "dealCardId": 58,
-      "input": "350 Old Hen Valley Rd, Oliver Springs, TN 37840",
-      "automaticLaunch": true,
-      "identity": {
-        "state": "confirmed",
-        "apn": "004 031.00",
-        "ownerOfRecord": "MORGAN BRANDON",
-        "acres": 8.4
-      },
-      "valuation": {
-        "supportedRange": {
-          "low": 145000,
-          "high": 196000
-        },
-        "workingValue": 170500,
-        "targetAcquisitionRange": {
-          "low": 68000,
-          "high": 102500
-        }
-      },
-      "strategy": {
-        "recommendation": "Improvement Then Flip",
-        "posture": "RENEGOTIATE"
-      },
-      "visuals": {
-        "distinctCount": 6,
-        "loadedCount": 6,
-        "width": 1600,
-        "height": 1000
-      },
-      "tabsVerified": [
-        "Overview",
-        "Property",
-        "Due Diligence",
-        "Market",
-        "Strategy",
-        "Visuals",
-        "Seller",
-        "Documents",
-        "Activity",
-        "Smart Intake"
-      ],
-      "historyPreserved": {
-        "run3": "CURRENT",
-        "run2": "COMPLETE",
-        "run1": "FAILED"
-      }
-    },
-    "persistence": {
-      "refresh": "PASS",
-      "managedRestart": "PASS",
-      "browserCleanup": "PASS",
-      "crossDealIsolation": "PASS"
-    },
-    "postCleanupReadback": {
-      "status": "NOT RUN",
-      "reason": "The ChatGPT Chrome Extension was absent from Default and Profile 1, and the native-host registry key was missing.",
-      "acceptanceAuthority": "The previously completed full operator walkthrough remains authoritative because repository cleanup did not invalidate its accepted business evidence.",
-      "missionsRerun": false
-    },
-    "crossDealChecks": {
-      "deal32": {
-        "status": "PASS",
-        "apn": "073090 04200",
-        "ownerOfRecord": "SACHAN DILEEP S",
-        "acres": 12.28
-      },
-      "deal54": {
-        "status": "PASS",
-        "apn": "001003 01205",
-        "ownerOfRecord": "STARDUST RIDGE LLC",
-        "acres": 12.06,
-        "marketConclusion": "not priceable",
-        "posture": "HOLD"
-      }
-    },
-    "compPolicy": {
-      "currentSources": [
-        "LandPortal",
-        "Zillow",
-        "Redfin"
-      ],
-      "excludedFromExecutionCountsRenderingAndValuation": [
-        "HomeHarvest",
-        "Realie"
-      ],
-      "workingSets": "capped and deduplicated",
-      "governmentVerificationOfComparables": false
-    },
-    "identitySeparation": "owner of record remains separate from seller and lead identity",
-    "diligenceDisclosure": "unresolved professional diligence remains visible; no unsupported legal or completeness claim",
-    "runtimeAtRecordTime": {
-      "status": "RUNNING healthy",
-      "pid": 43836,
-      "httpStatus": 200,
-      "url": "http://localhost:3141"
+    "workflow": "V2 desktop correction sprint: full-width readable Overview + Property Intelligence, scores-at-top strip, uncropped full-parcel hero, LandPortal subject link, Property Score recalculated 42 Weak -> 74 Strong from accepted evidence (deal 81, 1487 Onionville Rd)",
+    "url": "http://localhost:3141/dept/acquisitions/v2?deal=81",
+    "evidence": {
+      "overviewScreenshot": "store/browser-shots/acceptance-deal81/v2-overview-desktop-correction.png",
+      "overviewAfterRestart": "store/browser-shots/acceptance-deal81/v2-overview-after-restart.png",
+      "propertyIntelligenceScreenshot": "store/browser-shots/acceptance-deal81/v2-property-intelligence-desktop-correction.png",
+      "propertyIntelligenceAfterRestart": "store/browser-shots/acceptance-deal81/v2-property-intelligence-after-restart.png",
+      "refreshProof": "Live reload of both pages re-rendered scores 74/57/Pending, uncropped hero at natural aspect, LandPortal link, 367x230 clickable gallery",
+      "restartProof": "Managed restart (PID 128224) + live browser reinspection of both pages; root and /health 200",
+      "note": "Prior sprint's untracked v2-property-intelligence-after-restart.png was overwritten by this sprint's after-restart capture; prior state remains documented by v2-property-intelligence-fullpage.png"
     }
-  },
-  "integrationVerification": {
-    "status": "PASS",
-    "reason": "All integrated test, build, policy, static-scan, artifact, secret, memory, checkpoint, diff, and managed-health gates passed.",
-    "fullRepositorySuite": {
-      "status": "PASS",
-      "summary": "360 files, 4,718 tests, 0 failures."
-    },
-    "serverTypecheck": {
-      "status": "PASS"
-    },
-    "frontendBaselineCheck": {
-      "status": "PASS",
-      "summary": "The two DealCard diagnostics were fixed. Zero diagnostics remain in changed web files; only unchanged baseline files report diagnostics."
-    },
-    "productionBuild": {
-      "status": "PASS",
-      "summary": "Production build completed; 1,976 modules transformed."
-    },
-    "obsoleteRouteRuntimeCoverage": {
-      "status": "PASS",
-      "summary": "All 11 obsolete method/path pairs return 404; route test set 63/63."
-    },
-    "canonicalRegressionCoverage": {
-      "status": "PASS",
-      "summary": "Focused canonical regressions 52/52; stale-contract repair set 80/80."
-    },
-    "checkpointTests": {
-      "status": "PASS",
-      "summary": "2 files, 32 tests, 0 failures."
-    },
-    "memoryAudit": {
-      "status": "PASS",
-      "checkpoint": "fresh",
-      "contentWarnings": 0,
-      "codingAgentBootstrapApproxTokens": 4587,
-      "largestProfileApproxTokens": 6693,
-      "budget": "PASS"
-    },
-    "diffCheck": {
-      "status": "PASS",
-      "summary": "git diff --check clean."
-    },
-    "secretScan": {
-      "status": "PASS",
-      "envModified": false,
-      "summary": "No secret value found. The deliberate synthetic redaction test fixture is explicitly allowlisted."
-    },
-    "artifactScan": {
-      "status": "PASS",
-      "summary": "No database, browser profile, screenshot, runtime, temporary probe, or machine-local artifact is included."
-    },
-    "obsoleteRuntimeStaticScans": {
-      "status": "PASS",
-      "summary": "Obsolete route, dead Deal Card declaration, and legacy projection-load scans are clean."
-    },
-    "managedHealth": {
-      "status": "PASS",
-      "pid": 43836,
-      "rootHttpStatus": 200,
-      "healthHttpStatus": 200,
-      "summary": "Health OK."
-    }
-  },
-  "artifactPolicy": {
-    "envModified": false,
-    "secretsAllowed": false,
-    "excludedPaths": [
-      ".claude/settings.local.json",
-      "databases",
-      "browser profiles",
-      "screenshots",
-      "runtime files",
-      "temporary probes",
-      "machine-local artifacts"
-    ],
-    "pushAuthorized": false
   }
 }

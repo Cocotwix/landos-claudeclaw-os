@@ -8,6 +8,7 @@ import {
 } from './property-card.js';
 import { captureAndPersistCardVisuals, type CaptureWorkflowResult } from './visual-capture-workflow.js';
 import { resolveGoogleVisualEnv } from './providers/google-visual.js';
+import { evaluateThreeDCaptureEligibility } from './landportal-operating-rules.js';
 
 export interface PropertyInspectionRoute {
   provider: string;
@@ -28,6 +29,9 @@ export interface PropertyInspectionDeps {
   countyRecordsBrowser?: BrowserService;
   googleVisualConfigured?: boolean;
   captureVisuals?: (cardId: number) => Promise<CaptureWorkflowResult>;
+  /** Monotonic clock seam used to keep all browser providers inside one
+   * inspection deadline. Tests inject it; production uses Date.now(). */
+  nowMs?: () => number;
 }
 
 export interface PropertyInspectionInput {
@@ -124,6 +128,106 @@ function mergeFacts(base: Record<string, string>, incoming: Record<string, strin
   return out;
 }
 
+function factNumber(facts: Record<string, string>, names: string[]): number | null {
+  const value = inspectionFact(facts, names);
+  if (!value) return null;
+  const match = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  const parsed = match ? Number(match[0]) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * LandPortal terrain/buildability values are provider-model outputs, not
+ * surveyed facts. The previous path promoted every numeric provider field as
+ * high-confidence evidence and downstream scoring consumed it verbatim even
+ * when no analyst had interpreted the terrain image. Likewise, a frontage
+ * number could survive despite imagery showing a materially narrower road
+ * neck. Quarantine only the challenged numeric fields while retaining the raw
+ * values in evidence for targeted follow-up.
+ */
+function challengeImplausibleVisualFacts(inspection: PendingPropertyInspectionRecord): PendingPropertyInspectionRecord {
+  const out: PendingPropertyInspectionRecord = {
+    ...inspection,
+    parcelFacts: { ...inspection.parcelFacts },
+    evidence: [...(inspection.evidence ?? [])],
+    visualObservations: [...inspection.visualObservations],
+  };
+  const facts = out.parcelFacts;
+  const addChallenge = (label: string, detail: string): void => {
+    out.evidence!.push({
+      label,
+      status: 'needs_verification',
+      detail,
+      confidence: 'low',
+      source: 'Multimodal parcel review',
+      url: inspection.parcelUrl,
+    });
+  };
+
+  const frontage = factNumber(facts, ['Road Frontage', 'Road Frontage Ft']);
+  const visualFrontageMatch = out.visualObservations
+    // A generated "Parcel panel: Road Frontage = …" observation is only the
+    // provider number repeated in prose, not independent image interpretation.
+    .filter((row) => /imagery|aerial|boundary|map|visual/i.test(`${row.detail} ${row.evidence}`))
+    .map((row) => `${row.label} ${row.detail}`)
+    .map((text) => /(?:frontage|road (?:neck|contact))[^.\d]{0,45}(?:approx(?:imately)?\.?\s*)?(\d[\d,.]*)\s*(?:ft|feet)/i.exec(text)
+      ?? /(?:approx(?:imately)?\.?\s*)?(\d[\d,.]*)\s*(?:ft|feet)[^.]{0,45}(?:frontage|road (?:neck|contact))/i.exec(text))
+    .find((match): match is RegExpExecArray => !!match) ?? null;
+  const visualFrontage = visualFrontageMatch ? Number(visualFrontageMatch[1].replace(/,/g, '')) : null;
+  if (frontage != null && visualFrontage != null && visualFrontage > 0
+      && Math.abs(frontage - visualFrontage) >= 150
+      && Math.max(frontage, visualFrontage) / Math.min(frontage, visualFrontage) >= 3) {
+    const raw = facts['Road Frontage'] ?? facts['Road Frontage Ft'] ?? `${frontage} ft`;
+    for (const key of ['Road Frontage', 'Road Frontage Ft']) {
+      if (key in facts) facts[key] = 'Needs visual verification — imagery indicates materially different parcel-road contact.';
+    }
+    addChallenge('Road frontage conflict', `Provider frontage (${raw}) conflicts with the imagery observation (${visualFrontageMatch![0].trim()}); the numeric frontage is withheld from scoring and strategy until targeted access research resolves it.`);
+  }
+
+  const acres = factNumber(facts, ['Acres', 'Calc Acres', 'MLS Acres']);
+  const slope = factNumber(facts, ['Slope Avg', 'Average Slope']);
+  const slopeMax = factNumber(facts, ['Slope Max']);
+  const buildability = factNumber(facts, ['Buildability total (%)', 'Buildability total', 'Buildability']);
+  const buildableAcres = factNumber(facts, ['Buildability area (acres)', 'Buildability area']);
+  const terrainContradictsExtreme = out.visualObservations.some((row) =>
+    row.confidence !== 'low'
+    && /terrain|slope|contour|ridge|grade|topograph|buildab/i.test(`${row.label} ${row.detail} ${row.evidence}`)
+    && /flat|gentle|rolling|moderate|mostly level|usable bench/i.test(`${row.label} ${row.detail} ${row.evidence}`));
+  const terrainCorroboratesExtreme = !terrainContradictsExtreme && out.visualObservations.some((row) =>
+    row.confidence !== 'low'
+    && /terrain|slope|contour|ridge|grade|topograph|buildab/i.test(`${row.label} ${row.detail} ${row.evidence}`)
+    && /steep|very steep|extreme|mountain|strong relief|heavy grade/i.test(`${row.label} ${row.detail} ${row.evidence}`)
+    && !/not\s+(?:uniformly\s+)?(?:steep|extreme)|rather than[^.]{0,30}(?:steep|extreme)/i.test(`${row.label} ${row.detail} ${row.evidence}`));
+  const arithmeticConflict = acres != null && acres > 0 && buildability != null && buildableAcres != null
+    && Math.abs((buildableAcres / acres) * 100 - buildability) > Math.max(1, buildability * 0.2);
+  const extremeUncorroborated = !terrainCorroboratesExtreme
+    && ((slope != null && slope >= 35) || (buildability != null && buildability < 5));
+  const invalidTerrain = (buildability != null && (buildability < 0 || buildability > 100))
+    || (slope != null && slope < 0)
+    || (slopeMax != null && slope != null && slopeMax < slope);
+  if (arithmeticConflict || extremeUncorroborated || invalidTerrain) {
+    const rawSummary = [
+      slope != null ? `average slope ${slope}%` : null,
+      buildability != null ? `buildability ${buildability}%` : null,
+      buildableAcres != null ? `buildable area ${buildableAcres} acres` : null,
+    ].filter(Boolean).join(', ');
+    for (const key of Object.keys(facts)) {
+      if (/^(?:Slope|Flat Slope|Minimal Slope|Moderate Slope|Heavy Slope|Extreme Slope|Buildability)/i.test(key)) {
+        facts[key] = 'Needs visual verification — provider terrain output is quarantined from decision calculations.';
+      }
+    }
+    const reason = arithmeticConflict
+      ? 'the buildable-area arithmetic does not reconcile to parcel acreage'
+      : invalidTerrain
+        ? 'the provider terrain values fail range or ordering checks'
+        : terrainContradictsExtreme
+          ? 'the retained imagery interpretation describes materially gentler terrain'
+          : 'the extreme provider values have no medium-confidence steep-terrain interpretation from the retained imagery';
+    addChallenge('Terrain and buildability conflict', `Provider reported ${rawSummary || 'terrain/buildability values'}, but ${reason}. These numeric fields are withheld from scoring, valuation, septic conclusions, strategy ranking, and offer guidance pending visual reconciliation or an independent terrain source.`);
+  }
+  return out;
+}
+
 function normalizeInspectionComparables(rows: LandPortalComparableRecord[]): LandPortalComparableRecord[] {
   const normalized: LandPortalComparableRecord[] = [];
   for (const row of rows ?? []) {
@@ -185,20 +289,31 @@ function normalizeInspectionComparables(rows: LandPortalComparableRecord[]): Lan
 }
 
 function evidenceFromInspection(inspection: PendingPropertyInspectionRecord): PropertyInspectionEvidence[] {
-  const evidence: PropertyInspectionEvidence[] = [];
+  // Preserve source-specific county evidence assembled from the live browser.
+  // The previous implementation rebuilt this array from flattened parcel facts
+  // and silently discarded the assessor/GIS/tax/recorder provenance.
+  const evidence: PropertyInspectionEvidence[] = [...(inspection.evidence ?? [])];
+  const pushUnique = (item: PropertyInspectionEvidence): void => {
+    if (evidence.some((existing) =>
+      existing.label === item.label
+      && existing.detail === item.detail
+      && (existing.url ?? null) === (item.url ?? null))) return;
+    evidence.push(item);
+  };
   for (const [label, value] of Object.entries(inspection.parcelFacts)) {
     if (!value || /^not found$/i.test(value)) continue;
-    evidence.push({
+    const challenged = /^needs visual verification\b/i.test(value);
+    pushUnique({
       label,
-      status: 'verified',
+      status: challenged ? 'needs_verification' : 'verified',
       detail: value,
-      confidence: 'high',
+      confidence: challenged ? 'low' : 'high',
       source: (inspection.sources ?? []).find((s) => s.provider === 'LandPortal' || s.provider.startsWith('Official'))?.provider ?? null,
       url: inspection.parcelUrl,
     });
   }
   for (const obs of inspection.visualObservations) {
-    evidence.push({
+    pushUnique({
       label: obs.label,
       status: 'observed',
       detail: obs.detail,
@@ -208,7 +323,7 @@ function evidenceFromInspection(inspection: PendingPropertyInspectionRecord): Pr
     });
   }
   for (const overlay of inspection.overlays) {
-    evidence.push({
+    pushUnique({
       label: overlay.overlay,
       status: overlay.status === 'captured' || overlay.status === 'observed' ? 'observed' : 'needs_verification',
       detail: overlay.note,
@@ -229,7 +344,7 @@ function missingInformation(inspection: PendingPropertyInspectionRecord): string
   if (missingFact('Acres', 'Calc Acres')) missing.push('Acreage');
   if (!inspection.parcelUrl) missing.push('Parcel source URL');
   if (!inspection.assets.some((a) => a.kind === 'parcel_page')) missing.push('Parcel imagery screenshot');
-  if (!inspection.assets.some((a) => a.kind === 'parcel_3d')) missing.push('3D terrain screenshot');
+  if (!inspection.assets.some((a) => a.kind === 'parcel_3d') && inspection.threeDCapture?.decision !== 'not_applicable') missing.push('3D terrain screenshot');
   if (!inspection.assets.some((a) => a.kind === 'comparables_map')) missing.push('Comparable map screenshot');
   if (inspection.comparables.length === 0) missing.push('Comparable rows');
   return missing;
@@ -277,7 +392,7 @@ function packageFromLandPortal(ev: BrowserEvidence): PendingPropertyInspectionRe
       url: ev.inspection.parcelUrl,
       note: ev.note || 'LandPortal parcel inspection.',
     }],
-    evidence: [],
+    evidence: [...(ev.inspection.evidence ?? [])],
     discoveryQuestions: [],
     missingInformation: [],
   };
@@ -285,6 +400,48 @@ function packageFromLandPortal(ev: BrowserEvidence): PendingPropertyInspectionRe
 
 function packageFromCounty(ev: BrowserEvidence): PendingPropertyInspectionRecord {
   const parcelFacts = countyFactMap(ev.facts);
+  const attemptSources: PropertyInspectionSource[] = (ev.sourceAttempts ?? []).map((attempt) => ({
+    provider: attempt.sourceName,
+    stage: `county_${attempt.sourceType.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+    status: attempt.result === 'retrieved'
+      ? 'used'
+      : attempt.result === 'useful_indication'
+        ? 'fallback'
+        : attempt.result === 'execution_failure' || attempt.result === 'source_unavailable'
+          ? 'error'
+          : 'partial',
+    resultKind: attempt.result,
+    attemptedAt: attempt.attemptedAt,
+    confidence: attempt.result === 'retrieved' ? 'high' : attempt.result === 'useful_indication' ? 'medium' : 'low',
+    url: attempt.sourceUrl,
+    note: attempt.note,
+  }));
+  const fallbackSource: PropertyInspectionSource = {
+    provider: 'County Records Browser',
+    stage: 'county_records_browser',
+    status: ev.status === 'retrieved' ? 'fallback' : ev.status === 'partial' ? 'partial' : 'error',
+    resultKind: ev.status === 'retrieved'
+      ? 'retrieved'
+      : ev.status === 'no_match'
+        ? 'not_found'
+        : ev.status === 'error'
+          ? 'execution_failure'
+          : 'attempted_inconclusive',
+    attemptedAt: null,
+    confidence: ev.status === 'retrieved' ? 'medium' : 'low',
+    url: ev.sourcesUsed[0]?.url ?? null,
+    note: ev.note || 'County records fallback inspection.',
+  };
+  const countyEvidence: PropertyInspectionEvidence[] = ev.facts
+    .filter((fact) => fact.status === 'extracted')
+    .map((fact) => ({
+      label: fact.label,
+      status: /link$/i.test(fact.key) ? 'observed' : 'verified',
+      detail: fact.value,
+      confidence: fact.confidence,
+      source: fact.sourceName,
+      url: fact.sourceUrl,
+    }));
   return {
     parcelUrl: ev.sourcesUsed[0]?.url ?? ev.sourceUrls[0] ?? null,
     comparablesUrl: null,
@@ -293,15 +450,8 @@ function packageFromCounty(ev: BrowserEvidence): PendingPropertyInspectionRecord
     overlays: [],
     visualObservations: [],
     comparables: [],
-    sources: [{
-      provider: 'County Records Browser',
-      stage: 'county_records_browser',
-      status: ev.status === 'retrieved' ? 'fallback' : ev.status === 'partial' ? 'partial' : 'error',
-      confidence: ev.status === 'retrieved' ? 'medium' : 'low',
-      url: ev.sourcesUsed[0]?.url ?? null,
-      note: ev.note || 'County records fallback inspection.',
-    }],
-    evidence: [],
+    sources: attemptSources.length ? attemptSources : [fallbackSource],
+    evidence: countyEvidence,
     discoveryQuestions: [],
     missingInformation: [],
   };
@@ -331,13 +481,23 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   let inspection = emptyInspection();
   let landPortalEvidence = browserEvidenceByService(input.existingEvidence, 'landportal');
   let countyEvidence = browserEvidenceByService(input.existingEvidence, 'county_records');
+  // `timeoutMs` is the budget for the whole inspection, not a fresh allowance
+  // for every sequential provider. The former per-provider interpretation let
+  // a 180-second LandPortal pass plus a second 180-second county pass overrun
+  // the 300-second parent identity mission before its official lookup ran.
+  const nowMs = deps.nowMs ?? Date.now;
+  const deadlineMs = nowMs() + Math.max(1, input.timeoutMs);
+  const remainingMs = (): number => Math.max(0, deadlineMs - nowMs());
 
   if (landPortalEvidence?.inspection) {
     const lp = packageFromLandPortal(landPortalEvidence);
     if (lp) inspection = lp;
     upsertRoute(routes, 'LandPortal', { status: 'used', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection reused from browser evidence.', url: inspection.parcelUrl });
   } else if (deps.landPortalBrowser?.configured()) {
-    landPortalEvidence = await deps.landPortalBrowser.runWorkflow({ searchKey: input.searchKey, mode: input.mode } satisfies BrowserWorkflowInput, { timeoutMs: input.timeoutMs });
+    landPortalEvidence = await deps.landPortalBrowser.runWorkflow(
+      { searchKey: input.searchKey, mode: input.mode, propertyCardId: input.cardId } satisfies BrowserWorkflowInput,
+      { timeoutMs: Math.max(1, remainingMs()) },
+    );
     if (landPortalEvidence.inspection) {
       const lp = packageFromLandPortal(landPortalEvidence);
       if (lp) inspection = lp;
@@ -355,10 +515,20 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   // record lanes for GIS/assessor/recorder evidence (including a deed attempt).
   // The old core-facts gate silently skipped every one of those required paths.
   const needsCountyDeepRecord = input.mode === 'deep_record';
-  if ((needsCountyDeepRecord || !hasCoreParcelFacts || !inspection.parcelUrl) && countyEvidence == null && deps.countyRecordsBrowser?.configured()) {
+  const countyNeeded = needsCountyDeepRecord || !hasCoreParcelFacts || !inspection.parcelUrl;
+  if (countyNeeded && countyEvidence == null && deps.countyRecordsBrowser?.configured() && remainingMs() > 0) {
     // Preserve explicit operator constraints, but let the immediately preceding
     // LandPortal parcel read supply missing county/state routing context.
-    countyEvidence = await deps.countyRecordsBrowser.runWorkflow({ searchKey: countySearchKey(input.searchKey, inspection.parcelFacts), mode: input.mode }, { timeoutMs: input.timeoutMs });
+    countyEvidence = await deps.countyRecordsBrowser.runWorkflow(
+      { searchKey: countySearchKey(input.searchKey, inspection.parcelFacts), mode: input.mode },
+      { timeoutMs: Math.max(1, remainingMs()) },
+    );
+  } else if (countyNeeded && countyEvidence == null && deps.countyRecordsBrowser?.configured()) {
+    upsertRoute(routes, 'County Records Browser', {
+      status: 'partial',
+      confidence: 'low',
+      note: 'The shared inspection deadline was exhausted after LandPortal; the official county lane remains queued for the next run.',
+    });
   }
   if ((needsCountyDeepRecord || !hasCoreParcelFacts || !inspection.parcelUrl) && countyEvidence) {
     mergeCountyRoutes(routes, countyEvidence);
@@ -366,14 +536,18 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
     inspection.parcelUrl ??= countyPkg.parcelUrl;
     inspection.parcelFacts = mergeFacts(inspection.parcelFacts, countyPkg.parcelFacts);
     inspection.sources = [...(inspection.sources ?? []), ...(countyPkg.sources ?? [])];
+    inspection.evidence = [...(inspection.evidence ?? []), ...(countyPkg.evidence ?? [])];
   }
 
-  if (input.cardId && deps.googleVisualConfigured) {
+  if (input.cardId && deps.googleVisualConfigured && remainingMs() > 0) {
     // Resolve the Google key from the .env FILE (not just process.env) so the
     // Static Map + Street View capture actually fires — the key lives in the file,
     // which is why googleVisualConfiguredResolved() sees it but a bare process.env
     // read did not (the capture was silently returning "not configured").
-    const capture = await (deps.captureVisuals ?? ((cardId: number) => captureAndPersistCardVisuals(cardId, { env: resolveGoogleVisualEnv() })))(input.cardId);
+    const capture = await (deps.captureVisuals ?? ((cardId: number) => captureAndPersistCardVisuals(cardId, {
+      env: resolveGoogleVisualEnv(),
+      timeoutMs: Math.max(1, remainingMs()),
+    })))(input.cardId);
     upsertRoute(routes, 'Google Maps / Satellite / Street View', {
       status: capture.ok ? 'fallback' : 'partial',
       confidence: capture.ok ? 'medium' : 'low',
@@ -381,10 +555,21 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
     });
   } else if (!deps.googleVisualConfigured) {
     upsertRoute(routes, 'Google Maps / Satellite / Street View', { status: 'not_configured', confidence: 'low', note: 'Google visual provider not configured.' });
+  } else if (input.cardId) {
+    upsertRoute(routes, 'Google Maps / Satellite / Street View', {
+      status: 'partial',
+      confidence: 'low',
+      note: 'The shared inspection deadline was exhausted before Google imagery; use the card visual-capture action to retry without delaying parcel identity.',
+    });
   }
 
+  inspection = challengeImplausibleVisualFacts(inspection);
+  inspection.threeDCapture ??= evaluateThreeDCaptureEligibility(inspection.parcelFacts);
   inspection.comparables = normalizeInspectionComparables(inspection.comparables);
+  const hasDetailedCountySources = (inspection.sources ?? []).some((source) =>
+    source.stage.startsWith('county_') && source.stage !== 'county_records_browser');
   inspection.sources = [...(inspection.sources ?? []), ...routes
+    .filter((route) => !(route.provider === 'County Records Browser' && hasDetailedCountySources))
     .filter((r) => !(inspection.sources ?? []).some((s) => s.provider === r.provider))
     .map((r) => ({ provider: r.provider, stage: r.stage, status: r.status, confidence: r.confidence, url: r.url, note: r.note }))];
   inspection.missingInformation = missingInformation(inspection);

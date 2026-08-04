@@ -32,6 +32,10 @@ export interface CompRegistryCandidate {
   thumbnailUrl?: string | null;
   listingDate?: string | null;
   daysOnMarket?: number | null;
+  views?: number | null;
+  saves?: number | null;
+  priceChanges?: Array<{ at: string | null; price: number | null; note: string }>;
+  collectedAt?: string | null;
   distanceMiles?: number | null;
   inclusionReason?: string | null;
   /** Persisted status from landos_comp ('rejected' rows stay rejected). */
@@ -49,6 +53,10 @@ export interface CompRegistryCandidate {
    * assumption, and must not be downgraded to 'unknown' downstream.
    */
   statusSource?: string | null;
+  /** Manufactured-home attributes retained for the dedicated Land-Home lane. */
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
 }
 
 export interface SubjectMarket {

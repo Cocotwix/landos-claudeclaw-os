@@ -9,8 +9,10 @@
 // browser comp captures) are injected by the route layer so this module stays
 // independently testable and free of route wiring.
 
+import fs from 'node:fs';
+
 import { currentComparables, getPropertyCard, loadPropertyInspection } from './property-card.js';
-import { getDealCard } from './deal-card.js';
+import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { PublicIntelligenceStore } from './public-intelligence-store.js';
 import { buildOperatorPropertyRecord, type OperatorPropertyRecord } from './operator-property-record.js';
 import { readGovernmentRecordsForDeal, synchronizeGovernmentRecordsForDeal } from './government-records-legacy-adapter.js';
@@ -19,8 +21,10 @@ import { parseLandPortalCompRows } from './comp-extraction.js';
 import { documentRegistryForCard } from './deal-card-canonical.js';
 import { listComps } from './comps.js';
 import { getLandosDb } from './db.js';
+import { listPublicRecordOutcomes } from './lead-card-intake.js';
 import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvidenceItem, type SnapshotFact, type SnapshotIdentity } from './property-intelligence-snapshot.js';
-import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { governmentFactsFromPublicRecordOutcomes, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import type { GovernmentRecordArtifactView } from './government-records-types.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
 import {
   ACCESS_UTILITY_TASKS,
@@ -46,6 +50,16 @@ import type {
   ZoningContribution,
 } from './property-intelligence-collector-types.js';
 import type { CompRegistryCandidate } from './comp-registry.js';
+import { landosArtifactPath } from './storage-profile.js';
+import {
+  executePropertyProvider,
+  type CanonicalPropertyInput,
+  type NormalizedPropertyEvidence,
+  type PropertyProviderAdapter,
+  type PropertyProviderResult,
+} from './property-intelligence-contract.js';
+import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
+import type { HermesLandPortalLaneOutcome } from './hermes-landportal-auto.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
 
@@ -58,9 +72,19 @@ export interface LandMarketplaceComp {
   url?: string | null;
   status?: string | null;
   saleDate?: string | null;
+  listingDate?: string | null;
+  daysOnMarket?: number | null;
+  views?: number | null;
+  saves?: number | null;
+  priceChanges?: Array<{ at: string | null; price: number | null; note: string }>;
+  collectedAt?: string | null;
   distanceMiles?: number | null;
   lat?: number | null;
   lng?: number | null;
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
+  thumbnailUrl?: string | null;
 }
 
 export interface LandMarketplaceResult {
@@ -68,6 +92,15 @@ export interface LandMarketplaceResult {
   sold: LandMarketplaceComp[];
   active: LandMarketplaceComp[];
   note?: string | null;
+  searchProof?: {
+    radiusMiles: number;
+    timePeriodMonths: number;
+    sourcesSearched: string[];
+    routesAttempted: string[];
+    candidatesReviewed: number;
+    qualifyingResults: number;
+    exclusionReasons: Array<{ reason: string; count: number }>;
+  };
 }
 
 export interface LiveCollectorDeps {
@@ -86,6 +119,12 @@ export interface LiveCollectorDeps {
     address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
     apn: string | null; owner: string | null; lat: number | null; lng: number | null; subjectAcres: number | null;
   }) => Promise<LandMarketplaceResult>;
+  /** Dedicated sold manufactured-home lane. It runs only with subject coordinates;
+   *  the provider must enforce >$200k and <=5 miles before returning rows. */
+  captureManufacturedHomeComps?: (input: {
+    address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
+    apn: string | null; owner: string | null; lat: number; lng: number; subjectAcres: number | null;
+  }) => Promise<LandMarketplaceResult>;
   /** Market Matrix / Market Pulse context for the subject market. */
   captureMarketContext?: (dealCardId: number) => Promise<{ facts: SnapshotFact[]; summary: string }>;
   /**
@@ -101,6 +140,29 @@ export interface LiveCollectorDeps {
     cardId: number;
     searchKey: { address: string | null; apn: string | null; county: string | null; state: string | null; city: string | null; owner: string | null };
   }) => Promise<{ ok: boolean; note: string; comparableCount: number }>;
+  /** Automatic Hermes LandPortal lane. It imports its exact-match file through
+   *  the canonical importer before settling and never blocks another provider. */
+  captureHermesLandPortal?: (input: {
+    runId: string;
+    dealCardId: number;
+    propertyCardId: number;
+    address: string;
+    apn: string | null;
+    owner: string | null;
+    county: string | null;
+    state: string | null;
+    landPortalPropertyId: string | null;
+  }) => Promise<HermesLandPortalLaneOutcome>;
+  /** Maximum time parcel identity waits for the authenticated LandPortal
+   * capture. The browser work may finish later and persist its cumulative
+   * evidence, but it must not consume the whole required-child deadline. */
+  landPortalCaptureWaitMs?: number;
+  /** Maximum time the required identity child waits for the independent public
+   * refresh. The refresh remains safely handled in the background after this
+   * handoff; it must not cancel an otherwise established LandPortal identity. */
+  publicRefreshWaitMs?: number;
+  /** Persist a provider handback immediately when that independent lane settles. */
+  persistProviderResult?: (result: PropertyProviderResult) => PropertyProviderResult | Promise<PropertyProviderResult>;
   now?: () => string;
 }
 
@@ -109,15 +171,63 @@ const str = (value: unknown): string | null => {
   return text.length ? text : null;
 };
 
+function hasVerifiedLandPortalSubject(inspection: ReturnType<typeof loadPropertyInspection>): boolean {
+  return inspection?.parcelUrlRecord?.verifiedSubject === true;
+}
+
+function hasVerifiedPropertyCard(card: Record<string, unknown> | null | undefined): boolean {
+  return String(card?.verification_status ?? '') === 'verified_property'
+    || card?.verified === 1 || card?.verified === true;
+}
+
+function usableInspectionAsset(asset: { storedPath?: string | null }): boolean {
+  if (!asset.storedPath) return false;
+  try { return fs.statSync(asset.storedPath).isFile() && fs.statSync(asset.storedPath).size >= 8 * 1024; }
+  catch { return false; }
+}
+
 const num = (value: unknown): number | null => {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
 function subjectCardId(deal: unknown): number | null {
-  const cards = (deal as { propertyCards?: Array<{ id?: unknown }> } | null)?.propertyCards ?? [];
-  const id = Number(cards[0]?.id);
-  return Number.isInteger(id) && id > 0 ? id : null;
+  return resolveSubjectPropertyCard(deal).cardId;
+}
+
+/** Canonical address-first provider input for every independent research lane. */
+export function canonicalPropertyInputForDeal(dealCardId: number): CanonicalPropertyInput | null {
+  const deal = getDealCard(dealCardId);
+  const resolved = resolveSubjectPropertyCard(deal);
+  const property = resolved.card;
+  if (!property || resolved.cardId == null) return null;
+  const address = str(property.active_input_address) ?? str(property.address) ?? '';
+  const normalizedAddress = str(property.normalized_address) ?? address.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!normalizedAddress) return null;
+  return {
+    propertyCardId: resolved.cardId,
+    dealCardId,
+    normalizedAddress,
+    address,
+    city: str(property.city),
+    county: str(property.county),
+    state: str(property.state),
+    zip: str(property.zip),
+    apn: str(property.apn),
+    fips: str(property.fips),
+    landPortalPropertyId: str(property.lp_property_id),
+  };
+}
+
+async function persistProviderResult<TExecution>(
+  deps: LiveCollectorDeps,
+  result: PropertyProviderResult<TExecution>,
+): Promise<PropertyProviderResult<TExecution>> {
+  if (!deps.persistProviderResult) return result;
+  const persisted = await deps.persistProviderResult(result);
+  // Persistence is allowed to annotate its own outcome only. The provider's
+  // typed execution/validation handback remains the immutable lane result.
+  return { ...result, persistence: persisted.persistence };
 }
 
 // ── Parcel identity ─────────────────────────────────────────────────────────
@@ -129,16 +239,59 @@ export async function collectParcelIdentity(
   const now = deps.now ?? (() => new Date().toISOString());
   const initialDeal = getDealCard(ctx.dealCardId);
   if (!initialDeal) throw new Error(`Deal Card ${ctx.dealCardId} no longer exists.`);
-  const initialProperty = (initialDeal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
-  const initialCardId = subjectCardId(initialDeal);
+  const initialResolution = resolveSubjectPropertyCard(initialDeal);
+  const initialProperty = initialResolution.card ?? {};
+  const initialCardId = initialResolution.cardId;
   let inspectionNote = '';
+  let liveNote = '';
 
-  // Capture the parcel-level LandPortal subject before reconciliation. This
-  // makes its APN, jurisdiction, owner, acreage and visuals first-class
-  // discovery evidence instead of leaving them stranded in the comp lane.
-  if (initialCardId && deps.captureLandPortalInspection) {
-    try {
-      const capture = await deps.captureLandPortalInspection({
+  // LandPortal and the independent public-source refresh are separate provider
+  // paths. Start them together: running the full public task graph only after
+  // the visual inspection made this required identity child take the sum of
+  // both latencies and repeatedly cancelled every downstream workspace.
+  const canonicalInitial = canonicalPropertyInputForDeal(ctx.dealCardId);
+  let hermesStarted = false;
+  const startHermesWhenUsable = (
+    canonical: CanonicalPropertyInput | null,
+    property: Record<string, unknown>,
+  ): boolean => {
+    if (hermesStarted || !deps.captureHermesLandPortal || !canonical) return false;
+    const address = str(property.active_input_address) ?? str(property.address) ?? canonical.address;
+    const apn = str(property.apn) ?? canonical.apn;
+    const landPortalPropertyId = str(property.lp_property_id) ?? canonical.landPortalPropertyId;
+    // Address-first identity becomes usable once it also has a parcel/APN or
+    // canonical LandPortal identifier. Address-only intake keeps resolving in
+    // the existing identity lanes and launches Hermes as soon as either lands.
+    if (!address || (!apn && !landPortalPropertyId)) return false;
+    hermesStarted = true;
+    void executePropertyProvider({
+      runId: ctx.runId,
+      property: canonical,
+      adapter: hermesLandPortalProviderAdapter({ execute: () => deps.captureHermesLandPortal!({
+        runId: ctx.runId,
+        dealCardId: ctx.dealCardId,
+        propertyCardId: canonical.propertyCardId,
+        address,
+        apn,
+        owner: str(property.owner),
+        county: str(property.county) ?? canonical.county,
+        state: str(property.state) ?? canonical.state,
+        landPortalPropertyId,
+      }) }),
+    }).then((result) => persistProviderResult(deps, result)).catch(() => {
+      // executePropertyProvider already converts the Hermes error to a failed
+      // handback. A persistence exception is contained so no sibling lane is
+      // cancelled by this independent provider.
+    });
+    return true;
+  };
+  const hermesStartedInitially = startHermesWhenUsable(canonicalInitial, initialProperty);
+  const capturePromise = initialCardId && deps.captureLandPortalInspection && canonicalInitial && !hermesStartedInitially
+    ? executePropertyProvider({
+      runId: ctx.runId,
+      property: canonicalInitial,
+      timeoutMs: Math.max(1, deps.landPortalCaptureWaitMs ?? 90_000),
+      adapter: landPortalSubjectProviderAdapter({ cardId: initialCardId, execute: () => deps.captureLandPortalInspection!({
         cardId: initialCardId,
         searchKey: {
           address: str(initialProperty.active_input_address) ?? str(initialProperty.address),
@@ -148,30 +301,94 @@ export async function collectParcelIdentity(
           city: str(initialProperty.city),
           owner: str(initialProperty.owner),
         },
-      });
-      if (!capture.ok) inspectionNote = ` LandPortal subject capture was limited (${capture.note}).`;
-    } catch (error) {
-      inspectionNote = ` LandPortal subject capture errored (${(error as Error)?.message ?? String(error)}).`;
-    }
+      }) }),
+    }).then((result) => persistProviderResult(deps, result)).then(
+        (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: providerResult.status === 'failed' ? new Error(providerResult.failureReason ?? 'LandPortal subject lane failed.') : null as unknown }),
+        (error: unknown) => ({ result: null, error }),
+      )
+    : null;
+  // Attach the rejection handler immediately; LandPortal may still be running
+  // when a public provider fails, and an early rejection must not surface as an
+  // unhandled promise while the independent capture finishes.
+  const publicPromise = canonicalInitial
+    ? executePropertyProvider({
+      runId: ctx.runId,
+      property: canonicalInitial,
+      timeoutMs: Math.max(1, deps.publicRefreshWaitMs ?? 330_000),
+      adapter: publicPropertyProviderAdapter({ execute: () => deps.runPublicIntelligence(ctx.dealCardId) }),
+    }).then((result) => persistProviderResult(deps, result)).then(
+    (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: providerResult.status === 'failed' ? new Error(providerResult.failureReason ?? 'Public property lane failed.') : null as unknown }),
+    (error: unknown) => ({ result: null, error }),
+  ) : deps.runPublicIntelligence(ctx.dealCardId).then(
+    (result) => ({ result, error: null as unknown }),
+    (error: unknown) => ({ result: null, error }),
+  );
+
+  // Bound both independent provider paths from the moment they start, then
+  // await them together. Starting the public timer only after a stuck browser
+  // capture used to make the two nominal bounds additive and let parcel
+  // identity hit its outer seven-minute deadline before either handback was
+  // assembled.
+  const landPortalCaptureWaitMs = Math.max(1, deps.landPortalCaptureWaitMs ?? 90_000);
+  const publicRefreshWaitMs = Math.max(1, deps.publicRefreshWaitMs ?? 330_000);
+  let captureWaitTimer: ReturnType<typeof setTimeout> | null = null;
+  let publicWaitTimer: ReturnType<typeof setTimeout> | null = null;
+  const captureWait = capturePromise ? Promise.race([
+    capturePromise.then((outcome) => ({ ...outcome, timedOut: false as const })),
+    new Promise<{ result: null; error: null; timedOut: true }>((resolve) => {
+      captureWaitTimer = setTimeout(() => resolve({ result: null, error: null, timedOut: true }), landPortalCaptureWaitMs);
+    }),
+  ]) : Promise.resolve({ result: null, error: null, timedOut: false as const });
+  const publicWait = Promise.race([
+    publicPromise.then((outcome) => ({ ...outcome, timedOut: false as const })),
+    new Promise<{ result: null; error: null; timedOut: true }>((resolve) => {
+      publicWaitTimer = setTimeout(() => resolve({ result: null, error: null, timedOut: true }), publicRefreshWaitMs);
+    }),
+  ]);
+  const [capture, live] = await Promise.all([captureWait, publicWait]);
+  if (captureWaitTimer) clearTimeout(captureWaitTimer);
+  if (publicWaitTimer) clearTimeout(publicWaitTimer);
+  if (capture.timedOut) {
+    inspectionNote = ` LandPortal subject capture exceeded the ${Math.round(landPortalCaptureWaitMs / 1000)}-second identity handoff window; it continues independently and any previously retained parcel evidence is used.`;
+  } else if (capture.error) {
+    const captureError = (capture.error as Error)?.message ?? String(capture.error);
+    inspectionNote = /provider lane timed out/i.test(captureError)
+      ? ` LandPortal subject capture exceeded the ${Math.round(landPortalCaptureWaitMs / 1000)}-second identity handoff window; it continues independently and any previously retained parcel evidence is used.`
+      : ` LandPortal subject capture errored (${captureError}).`;
+  } else if (capture.result && !capture.result.ok) {
+    inspectionNote = ` LandPortal subject capture was limited (${capture.result.note}).`;
+  }
+  if (live.timedOut) {
+    liveNote = ` Live public-source refresh exceeded the ${Math.round(publicRefreshWaitMs / 1000)}-second identity handoff window; it continues independently and retained public evidence is used for this handback.`;
+  } else if (live.error) {
+    liveNote = ` Live parcel lookup errored (${(live.error as Error)?.message ?? String(live.error)}); the persisted identity is used.`;
+  } else if (live.result && !live.result.ok) {
+    liveNote = ` Live parcel lookup did not confirm a new match (${live.result.error ?? 'no match'}).`;
   }
 
-  // Run the canonical public lane first so the persisted evidence this
-  // specialist reads is current. A provider failure here is not fatal: the
-  // already-persisted identity still answers.
-  let liveNote = '';
-  try {
-    const result = await deps.runPublicIntelligence(ctx.dealCardId);
-    if (!result.ok) liveNote = ` Live parcel lookup did not confirm a new match (${result.error ?? 'no match'}).`;
-  } catch (error) {
-    liveNote = ` Live parcel lookup errored (${(error as Error)?.message ?? String(error)}); the persisted identity is used.`;
+  // Address-only intake may have gained APN/property-id identity from either
+  // existing lane above. Start Hermes now without awaiting it; downstream
+  // Zillow, Redfin, market, public-record, and screening specialists continue.
+  startHermesWhenUsable(
+    canonicalPropertyInputForDeal(ctx.dealCardId),
+    (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,
+  );
+  if (!hermesStarted && capturePromise) {
+    void capturePromise.then(() => {
+      startHermesWhenUsable(
+        canonicalPropertyInputForDeal(ctx.dealCardId),
+        (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,
+      );
+    });
   }
 
   const deal = getDealCard(ctx.dealCardId);
   if (!deal) throw new Error(`Deal Card ${ctx.dealCardId} no longer exists.`);
   const cardId = subjectCardId(deal);
   const card = cardId ? getPropertyCard(cardId) : null;
-  const property = (deal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
+  const property = resolveSubjectPropertyCard(deal).card ?? {};
   const inspection = cardId ? loadPropertyInspection(cardId) : null;
+  const landPortalSubjectVerified = hasVerifiedLandPortalSubject(inspection);
 
   const stored = new PublicIntelligenceStore().load(ctx.dealCardId);
   const run = stored?.run ?? null;
@@ -202,6 +419,7 @@ export async function collectParcelIdentity(
       assetCount: inspection.assets.length,
       sourceLabel: 'LandPortal authenticated parcel panel',
       sourceNote: inspection.sources.find((item) => item.provider === 'LandPortal')?.note ?? null,
+      verifiedSubject: landPortalSubjectVerified,
     } : null,
     official: {
       status: verified ? 'matched' : 'unavailable',
@@ -223,7 +441,13 @@ export async function collectParcelIdentity(
     },
   });
 
-  const record = buildOperatorPropertyRecord(run, {
+  // A retained public run may have been produced from the same unverified
+  // neighbor/context geometry. Keep it in history, but do not let it feed the
+  // current subject record until either the canonical LandPortal URL or an
+  // official parcel record proves the association.
+  const record = buildOperatorPropertyRecord(
+    landPortalSubjectVerified || verified ? run : null,
+    {
     situsAddress: str(discovery.patch.address) ?? str(property.active_input_address) ?? str(property.address) ?? '',
     city: str(discovery.patch.city) ?? str(property.city),
     county: str(discovery.patch.county) ?? str(property.county),
@@ -287,7 +511,7 @@ export async function collectParcelIdentity(
       ...record.identity.ownerWarnings,
     ],
     explanation: state === 'confirmed'
-      ? `Confirmed against the official parcel record (${str(property.verification_source) ?? 'official parcel source'}).${liveNote}`
+      ? `Confirmed against the official parcel record (${str(property.verification_source) ?? 'official parcel source'}).${liveNote}${inspectionNote}`
       : state === 'conflicted'
         ? `Conflicting parcel evidence is attached to this Deal Card.${liveNote}`
         : state === 'provisional'
@@ -330,8 +554,34 @@ export async function collectParcelIdentity(
       sourceUrl: item.sourceUrl,
       retrievedAt: now(),
       note: item.classification === 'marketplace_parcel_panel'
-        ? 'Parcel-level LandPortal subject evidence retained for discovery; not a deed, survey, title commitment, or official assessor confirmation.'
+        ? 'LandPortal parcel-panel indication retained for discovery; retry the county source during normal diligence.'
         : null,
+    });
+  }
+  // Retain the authenticated LandPortal sidebar estimate as a separate
+  // source indication. It is intentionally not folded into the LandOS
+  // working value or valuation range.
+  const landPortalFactsCapturedAt = inspection?.sources
+    .filter((item) => item.provider === 'LandPortal')
+    .map((item) => item.attemptedAt)
+    .filter((value): value is string => !!value)
+    .sort()
+    .at(-1) ?? now();
+  for (const [label, value] of Object.entries(discovery.retainedLandPortalFacts)) {
+    if (!/^estimate\s*(price|ppa|price\s*per\s*acre|value|total)$/i.test(label.trim())
+      && !/^lp\s*estimate\s*(price|ppa|value|total)?$/i.test(label.trim())) continue;
+    const isPpa = /ppa|price\s*per\s*acre/i.test(label);
+    const key = isPpa ? 'lpEstimatePerAcre' : 'lpEstimateTotal';
+    if (facts.some((fact) => fact.key === key)) continue;
+    facts.push({
+      key,
+      label: isPpa ? 'LandPortal LP Estimate · Price per acre' : 'LandPortal LP Estimate · Total',
+      value,
+      grade: 'likely_indication',
+      source: 'LandPortal authenticated parcel sidebar',
+      sourceUrl: inspection?.parcelUrl ?? null,
+      retrievedAt: landPortalFactsCapturedAt,
+      note: 'Retained LandPortal subject estimate; additional source indication only. LandOS working value remains separate.',
     });
   }
 
@@ -363,6 +613,38 @@ export async function collectParcelIdentity(
 }
 
 // ── Government records ──────────────────────────────────────────────────────
+
+export function governmentArtifactEvidence(
+  dealCardId: number,
+  artifacts: GovernmentRecordArtifactView[],
+  retrievedAtFallback = new Date().toISOString(),
+): SnapshotEvidenceItem[] {
+  return artifacts.slice(0, 40).map((artifact) => {
+    const capturedPageCount = Math.max(
+      0,
+      Math.min(artifact.captureCount, artifact.pageCount || artifact.captureCount),
+    );
+    const pageViewUrls = Array.from({ length: capturedPageCount }, (_, index) =>
+      `/api/landos/deal-cards/${dealCardId}/government-records/artifacts/${artifact.id}/page/${index + 1}`);
+    return {
+      id: `gov-artifact-${artifact.id}`,
+      kind: 'document' as const,
+      label: artifact.displayName || artifact.documentType || 'Recorded document',
+      sourceType: 'official_county_state',
+      sourceUrl: artifact.sourceUrl,
+      viewUrl: pageViewUrls[0] ?? null,
+      retrievedAt: artifact.retrievedAt || retrievedAtFallback,
+      confidence: 'high' as const,
+      supports: 'government_records',
+      sha256: artifact.artifactHash,
+      bytes: null,
+      pageCount: artifact.pageCount,
+      capturedPageCount,
+      pageViewUrls,
+    };
+    },
+  );
+}
 
 export async function collectGovernmentRecords(ctx: MissionContext): Promise<SpecialistOutcome<GovernmentRecordsContribution>> {
   const now = new Date().toISOString();
@@ -436,23 +718,13 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
       records.push(fact);
     }
   }
-
-  for (const artifact of model.artifacts.slice(0, 40)) {
-    const view = artifact as unknown as Record<string, unknown>;
-    evidence.push({
-      id: `gov-artifact-${String(view.id)}`,
-      kind: 'document',
-      label: str(view.displayName) ?? str(view.kind) ?? 'Recorded document',
-      sourceType: 'official_county_state',
-      sourceUrl: str(view.sourceUrl),
-      viewUrl: `/api/landos/deal-cards/${ctx.dealCardId}/government-records/artifacts/${String(view.id)}/page/1`,
-      retrievedAt: str(view.retrievedAt) ?? now,
-      confidence: 'high',
-      supports: 'government_records',
-      sha256: str(view.sha256),
-      bytes: typeof view.bytes === 'number' ? view.bytes : null,
-    });
+  for (const fact of governmentFactsFromPublicRecordOutcomes(listPublicRecordOutcomes(ctx.dealCardId))) {
+    if (!records.some((record) => record.key === fact.key || (record.label === fact.label && record.value === fact.value))) {
+      records.push(fact);
+    }
   }
+
+  evidence.push(...governmentArtifactEvidence(ctx.dealCardId, model.artifacts, now));
 
   const percent = model.snapshot.completeness.percent;
   evidence.push(...snapshotEvidenceFromPublicTasks(publicRun, GOVERNMENT_RECORD_TASKS)
@@ -580,7 +852,14 @@ export async function collectZoningLandUse(ctx: MissionContext): Promise<Special
 function operatorRecordFor(dealCardId: number): OperatorPropertyRecord | null {
   const deal = getDealCard(dealCardId);
   if (!deal) return null;
-  const property = (deal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
+  const property = resolveSubjectPropertyCard(deal).card ?? {};
+  const cardId = Number(property.id);
+  const inspection = Number.isInteger(cardId) ? loadPropertyInspection(cardId) : null;
+  // Public screening findings are spatially keyed. A no-match LandPortal
+  // capture may still have a coordinate, overlay, or soil result, but those
+  // belong to context until the subject URL is canonically verified (or an
+  // official parcel card is already accepted).
+  if (!hasVerifiedPropertyCard(property) && !hasVerifiedLandPortalSubject(inspection)) return null;
   const run = new PublicIntelligenceStore().load(dealCardId)?.run ?? null;
   if (!run) return null;
   return buildOperatorPropertyRecord(run, {
@@ -641,10 +920,27 @@ export async function collectEnvironmentalTerrain(ctx: MissionContext): Promise<
   }
   const cards = record.decisionCards.filter((card) => ENVIRONMENTAL_KEYS.includes(card.key));
   const items = cards.map(decisionCardToItem);
+  const environmentalTaskFor = (key: string) =>
+    key === 'septic' || key === 'soils'
+      ? 'soils_septic'
+      : key === 'terrain' || key === 'slope'
+        ? 'slope_topography'
+        : key === 'flood'
+          ? 'fema_flood'
+          : key === 'wetlands'
+            ? 'wetlands'
+            : null;
+  for (const item of items) {
+    const task = environmentalTaskFor(item.key);
+    const source = task
+      ? publicRun?.tasks.find((candidate) => candidate.task === task)?.evidence.find((evidence) => !!evidence.sourceUrl)
+      : null;
+    if (source?.sourceUrl) item.sourceUrl = source.sourceUrl;
+  }
   const deal = getDealCard(ctx.dealCardId);
   const cardId = deal ? subjectCardId(deal) : null;
   const inspection = cardId ? loadPropertyInspection(cardId) : null;
-  const lpFacts = inspection?.parcelFacts ?? {};
+  const lpFacts = hasVerifiedLandPortalSubject(inspection) ? (inspection?.parcelFacts ?? {}) : {};
   const lpFact = (...labels: string[]): string | null => {
     for (const label of labels) {
       const value = str(lpFacts[label]);
@@ -681,6 +977,17 @@ export async function collectEnvironmentalTerrain(ctx: MissionContext): Promise<
     headline: [slope ? `${slope} average slope` : null, buildable ? `${buildable} buildability shown` : null].filter(Boolean).join('; '),
     grade: 'likely_indication', detail: 'LandPortal terrain model retained for discovery sizing; field verification is still required.',
     sourceUrl: inspection?.parcelUrl ?? null, missing: [],
+  });
+  const soilOverlay = inspection?.assets?.find((asset) => /soil/i.test(`${asset.overlay ?? ''} ${asset.label ?? ''} ${asset.purpose ?? ''}`));
+  if (soilOverlay) replaceUnknown({
+    key: 'septic',
+    label: 'Preliminary septic outlook',
+    verdict: 'unknown',
+    headline: 'Insufficient evidence after attempt',
+    grade: 'unresolved_question',
+    detail: 'A parcel-centered LandPortal soil overlay was captured, but the image alone does not publish an absorption-field rating. The SSURGO interpretation or a site-specific perc/soil evaluation is required before classifying the outlook.',
+    sourceUrl: inspection?.parcelUrl ?? null,
+    missing: ['No interpretable septic absorption-field rating was returned from the soil overlay.'],
   });
   const constraints = items
     .filter((item) => item.verdict === 'risk' || item.verdict === 'caution')
@@ -726,8 +1033,8 @@ export async function collectAccessUtilities(ctx: MissionContext): Promise<Speci
   const deal = getDealCard(ctx.dealCardId);
   const cardId = deal ? subjectCardId(deal) : null;
   const inspection = cardId ? loadPropertyInspection(cardId) : null;
-  const frontage = str(inspection?.parcelFacts?.['Road Frontage']);
-  const landLocked = str(inspection?.parcelFacts?.['Land Locked']);
+  const frontage = hasVerifiedLandPortalSubject(inspection) ? str(inspection?.parcelFacts?.['Road Frontage']) : null;
+  const landLocked = hasVerifiedLandPortalSubject(inspection) ? str(inspection?.parcelFacts?.['Land Locked']) : null;
   if (frontage || landLocked) {
     const indication: SnapshotDueDiligenceItem = {
       key: 'access',
@@ -791,15 +1098,294 @@ function marketplaceCandidates(
     price: row.price ?? null,
     priceKind: lane === 'sold' ? 'sold' : 'list',
     saleOrListDate: row.saleDate ?? null,
+    listingDate: row.listingDate ?? null,
+    daysOnMarket: row.daysOnMarket ?? null,
+    views: row.views ?? null,
+    saves: row.saves ?? null,
+    priceChanges: row.priceChanges ?? [],
+    collectedAt: row.collectedAt ?? null,
     acres: row.acres ?? null,
     pricePerAcre: row.pricePerAcre ?? null,
     sourceUrl: row.url ?? null,
     distanceMiles: row.distanceMiles ?? null,
     lat: row.lat ?? null,
     lng: row.lng ?? null,
+    thumbnailUrl: row.thumbnailUrl ?? null,
     compClass: 'vacant_land',
   } as CompRegistryCandidate));
   return [...map(result.sold ?? [], 'sold'), ...map(result.active ?? [], 'active')];
+}
+
+function landPortalSubjectProviderAdapter(input: {
+  cardId: number;
+  execute: () => Promise<{ ok: boolean; note: string; comparableCount: number }>;
+}): PropertyProviderAdapter<{
+  capture: { ok: boolean; note: string; comparableCount: number };
+  inspection: ReturnType<typeof loadPropertyInspection>;
+}> {
+  return {
+    laneId: 'landportal_subject',
+    providerId: 'landportal',
+    execute: async () => {
+      const capture = await input.execute();
+      return { capture, inspection: loadPropertyInspection(input.cardId) };
+    },
+    validate: (_property, execution) => {
+      const verified = hasVerifiedLandPortalSubject(execution.inspection);
+      return {
+        valid: true,
+        subjectClassification: verified ? 'verified_subject' : 'no_match',
+        checks: [
+          { check: 'provider_attempt_recorded', passed: true, reason: execution.capture.note },
+          { check: 'exact_subject_parcel', passed: verified, reason: verified ? 'Exact retained LandPortal parcel is bound to this Property Card.' : 'LandPortal did not establish an exact subject match.' },
+        ],
+        rejectedEvidenceIds: [],
+      };
+    },
+    normalize: (property, execution, validation) => validation.subjectClassification !== 'verified_subject'
+      ? []
+      : Object.entries(execution.inspection?.parcelFacts ?? {}).filter(([, value]) => !!str(value)).map(([field, value]) => ({
+        id: `landportal-subject:${field.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+        propertyCardId: property.propertyCardId,
+        dealCardId: property.dealCardId,
+        providerId: 'landportal',
+        field,
+        value,
+        subjectClassification: 'verified_subject' as const,
+        strength: 'provider_verified' as const,
+        sourceUrl: execution.inspection?.parcelUrl ?? null,
+        retrievedAt: execution.inspection?.sources.find((source) => source.provider === 'LandPortal')?.attemptedAt ?? new Date().toISOString(),
+        confidence: 'high' as const,
+        kind: /estimate/i.test(field) ? 'estimate' as const : 'fact' as const,
+        validation: { valid: true, reasons: [] },
+      })),
+    status: (_property, execution, validation) => validation.subjectClassification === 'verified_subject'
+      ? 'verified'
+      : execution.capture.ok ? 'context_only' : 'unavailable',
+  };
+}
+
+function publicPropertyProviderAdapter(input: {
+  execute: () => Promise<{ ok: boolean; error?: string }>;
+}): PropertyProviderAdapter<{
+  capture: { ok: boolean; error?: string };
+  card: ReturnType<typeof getPropertyCard>;
+}> {
+  return {
+    laneId: 'public_property',
+    providerId: 'official_public_property',
+    execute: async (property) => {
+      const capture = await input.execute();
+      return { capture, card: getPropertyCard(property.propertyCardId) };
+    },
+    validate: (_property, execution) => {
+      const verified = hasVerifiedPropertyCard(execution.card as unknown as Record<string, unknown> | null);
+      return {
+        valid: true,
+        subjectClassification: verified ? 'verified_subject' : 'no_match',
+        checks: [
+          { check: 'public_lookup_attempted', passed: true, reason: execution.capture.error ?? (execution.capture.ok ? 'Public lookup completed.' : 'Public lookup returned no match.') },
+          { check: 'official_subject_match', passed: verified, reason: verified ? 'Official public identity is accepted on the Property Card.' : 'No accepted official subject match was retained.' },
+        ],
+        rejectedEvidenceIds: [],
+      };
+    },
+    normalize: (property, execution, validation) => {
+      if (validation.subjectClassification !== 'verified_subject' || !execution.card) return [];
+      const card = execution.card as unknown as Record<string, unknown>;
+      return ['apn', 'owner', 'acres', 'county', 'state', 'active_input_address'].flatMap((field): NormalizedPropertyEvidence[] => {
+        const value = card[field];
+        if (!str(value)) return [];
+        return [{
+          id: `public-property:${field}`,
+          propertyCardId: property.propertyCardId,
+          dealCardId: property.dealCardId,
+          providerId: 'official_public_property',
+          field,
+          value,
+          subjectClassification: 'verified_subject',
+          strength: 'official_record',
+          sourceUrl: null,
+          retrievedAt: new Date().toISOString(),
+          confidence: 'high',
+          kind: 'fact',
+          validation: { valid: true, reasons: [] },
+        }];
+      });
+    },
+    status: (_property, execution, validation) => validation.subjectClassification === 'verified_subject'
+      ? 'verified'
+      : execution.capture.ok ? 'context_only' : 'unavailable',
+  };
+}
+
+function hermesLandPortalProviderAdapter(input: {
+  execute: () => Promise<HermesLandPortalLaneOutcome>;
+}): PropertyProviderAdapter<HermesLandPortalLaneOutcome> {
+  return {
+    laneId: 'hermes_landportal_auto',
+    providerId: 'hermes_landportal',
+    execute: input.execute,
+    validate: (_property, execution) => ({
+      valid: execution.status !== 'failed',
+      subjectClassification: execution.status === 'exact_match'
+        ? 'verified_subject'
+        : execution.status === 'context_only'
+          ? 'context_only'
+          : 'no_match',
+      checks: [{
+        check: 'hermes_landportal_outcome',
+        passed: execution.status !== 'failed',
+        reason: `${execution.propertyLabel}: ${execution.note}`,
+      }],
+      rejectedEvidenceIds: [],
+    }),
+    // The proven importer owns fact/estimate/comp normalization. This provider
+    // result is the independently persisted lane outcome only.
+    normalize: () => [],
+    status: (_property, execution) => execution.status === 'exact_match'
+      ? 'verified'
+      : execution.status === 'context_only'
+        ? 'context_only'
+        : execution.status === 'no_match'
+          ? 'unavailable'
+          : 'failed',
+  };
+}
+
+function marketplaceProviderAdapter(input: {
+  laneId: 'zillow' | 'redfin' | 'manufactured_home';
+  providerId: string;
+  execute: () => Promise<LandMarketplaceResult>;
+}): PropertyProviderAdapter<LandMarketplaceResult> {
+  return {
+    laneId: input.laneId,
+    providerId: input.providerId,
+    execute: input.execute,
+    validate: (_property, execution) => {
+      const valid = !!execution && typeof execution.status === 'string';
+      return {
+        valid,
+        subjectClassification: 'context_only',
+        checks: [{
+          check: 'provider_returned_explicit_status',
+          passed: valid,
+          reason: valid ? `Provider returned status "${execution.status}".` : 'Provider returned no explicit execution status.',
+        }],
+        rejectedEvidenceIds: [],
+      };
+    },
+    normalize: (property, execution) => {
+      const rows = [...(execution.sold ?? []), ...(execution.active ?? [])];
+      return rows.map((row, index): NormalizedPropertyEvidence => ({
+        id: `${input.laneId}:${row.providerId ?? row.url ?? index}`,
+        propertyCardId: property.propertyCardId,
+        dealCardId: property.dealCardId,
+        providerId: input.providerId,
+        field: `comparables.${input.laneId}.${row.providerId ?? index}`,
+        value: row,
+        subjectClassification: 'context_only',
+        strength: 'provider_observed',
+        sourceUrl: row.url ?? null,
+        retrievedAt: row.collectedAt ?? new Date().toISOString(),
+        confidence: 'medium',
+        kind: 'comp',
+        validation: { valid: true, reasons: [] },
+        artifactHash: null,
+        viewUrl: row.thumbnailUrl ?? null,
+      }));
+    },
+    status: (_property, execution) => {
+      if (/not[_ ]applicable/i.test(execution.status)) return 'not_applicable';
+      if (/error|failed/i.test(execution.status)) return 'failed';
+      if (/blocked|disabled|unavailable/i.test(execution.status)) return 'unavailable';
+      // Marketplace comps describe context properties, not subject parcel facts.
+      return 'context_only';
+    },
+  };
+}
+
+function landPortalComparableAdapter(input: {
+  cardId: number;
+  execute: () => Promise<{ ok: boolean; note: string; comparableCount: number }>;
+}): PropertyProviderAdapter<{
+  capture: { ok: boolean; note: string; comparableCount: number };
+  inspection: ReturnType<typeof loadPropertyInspection>;
+}> {
+  return {
+    laneId: 'landportal_comps',
+    providerId: 'landportal',
+    execute: async () => {
+      const capture = await input.execute();
+      return { capture, inspection: loadPropertyInspection(input.cardId) };
+    },
+    validate: (_property, execution) => {
+      const verifiedSubject = hasVerifiedLandPortalSubject(execution.inspection);
+      const valid = !!execution.inspection || execution.capture.ok;
+      return {
+        valid,
+        subjectClassification: verifiedSubject ? 'verified_subject' : valid ? 'context_only' : 'no_match',
+        checks: [
+          { check: 'landportal_attempt_completed', passed: valid, reason: execution.capture.note },
+          {
+            check: 'subject_parcel_verified',
+            passed: verifiedSubject,
+            reason: verifiedSubject ? 'The retained exact parcel URL is verified for this Property Card.' : 'LandPortal did not prove an exact subject parcel; any rows remain context only.',
+          },
+        ],
+        rejectedEvidenceIds: [],
+      };
+    },
+    normalize: (property, execution, validation) => {
+      const evidence: NormalizedPropertyEvidence[] = [];
+      const retrievedAt = execution.inspection?.sources.find((source) => source.provider === 'LandPortal')?.attemptedAt
+        ?? new Date().toISOString();
+      if (validation.subjectClassification === 'verified_subject') {
+        for (const [field, value] of Object.entries(execution.inspection?.parcelFacts ?? {})) {
+          if (!str(value)) continue;
+          evidence.push({
+            id: `landportal:fact:${field.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+            propertyCardId: property.propertyCardId,
+            dealCardId: property.dealCardId,
+            providerId: 'landportal',
+            field,
+            value,
+            subjectClassification: 'verified_subject',
+            strength: 'provider_verified',
+            sourceUrl: execution.inspection?.parcelUrl ?? null,
+            retrievedAt,
+            confidence: 'high',
+            kind: /estimate/i.test(field) ? 'estimate' : 'fact',
+            validation: { valid: true, reasons: [] },
+          });
+        }
+      }
+      for (const [index, comp] of currentComparables(execution.inspection).entries()) {
+        evidence.push({
+          id: `landportal:comp:${comp.apn ?? comp.sourceUrl ?? index}`,
+          propertyCardId: property.propertyCardId,
+          dealCardId: property.dealCardId,
+          providerId: 'landportal',
+          field: `comparables.landportal.${comp.apn ?? index}`,
+          value: comp,
+          subjectClassification: 'context_only',
+          strength: 'provider_observed',
+          sourceUrl: comp.detailUrl ?? comp.sourceUrl ?? execution.inspection?.parcelUrl ?? null,
+          retrievedAt: comp.capturedAtIso ?? retrievedAt,
+          confidence: comp.confidence,
+          kind: 'comp',
+          validation: { valid: true, reasons: [] },
+          viewUrl: null,
+        });
+      }
+      return evidence;
+    },
+    status: (_property, execution, validation) => {
+      if (validation.subjectClassification === 'verified_subject') return 'verified';
+      if (validation.subjectClassification === 'context_only') return 'context_only';
+      return execution.capture.ok ? 'context_only' : 'unavailable';
+    },
+  };
 }
 
 export async function collectComparables(
@@ -809,12 +1395,33 @@ export async function collectComparables(
   const deal = getDealCard(ctx.dealCardId);
   if (!deal) throw new Error(`Deal Card ${ctx.dealCardId} no longer exists.`);
   const cardId = subjectCardId(deal);
-  const property = (deal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
+  const property = resolveSubjectPropertyCard(deal).card ?? {};
   const state = ctx.identity?.identity.state_ ?? str(property.state);
   const subjectAcres = ctx.identity?.subjectAcres ?? num(property.acres);
+  const canonicalInput = canonicalPropertyInputForDeal(ctx.dealCardId);
 
   const notes: string[] = [];
   const candidates: CompRegistryCandidate[] = [];
+
+  // Every approved marketplace is independent once the subject handback is
+  // usable. Start all of them before waiting on LandPortal's browser work:
+  // previously the public Zillow/Redfin boards sat idle behind the LandPortal
+  // parcel capture, turning one slow provider into serial wall-clock time for
+  // the entire comparable lane. The promises are deliberately contained here;
+  // their results are reconciled and persisted only by the mission
+  // orchestrator after this lane settles.
+  const marketInput = {
+    address: str(property.active_input_address) ?? str(property.address),
+    city: str(property.city),
+    county: ctx.identity?.identity.county ?? str(property.county),
+    state,
+    zip: str(property.zip),
+    apn: ctx.identity?.identity.apn ?? str(property.apn),
+    owner: ctx.identity?.identity.owner ?? str(property.owner),
+    lat: ctx.identity?.identity.coordinates?.lat ?? num(property.lat),
+    lng: ctx.identity?.identity.coordinates?.lng ?? num(property.lng),
+    subjectAcres,
+  };
 
   // ── Primary: LandPortal visible vacant-land rows ─────────────────────────
   // LandPortal is the PRIMARY accepted source, so the lane reads the
@@ -840,22 +1447,73 @@ export async function collectComparables(
     const ind = str(record.saleListIndicator) ?? 'unknown';
     return ind === 'sale' || st === 'sold' || ind === 'list' || st === 'active' || st === 'listed';
   }).length;
-  if (cardId && usableRows === 0 && deps.captureLandPortalInspection) {
-    try {
-      landPortalCapture = await deps.captureLandPortalInspection({
+  const landPortalCapturePromise = cardId && usableRows === 0 && deps.captureLandPortalInspection && !deps.captureHermesLandPortal && canonicalInput
+    ? executePropertyProvider({
+      runId: ctx.runId,
+      property: canonicalInput,
+      adapter: landPortalComparableAdapter({
         cardId,
-        searchKey: {
-          address: str(property.active_input_address) ?? str(property.address),
+        execute: () => deps.captureLandPortalInspection!({
+       cardId,
+       searchKey: {
+         address: str(property.active_input_address) ?? str(property.address),
           apn: ctx.identity?.identity.apn ?? str(property.apn),
           county: ctx.identity?.identity.county ?? str(property.county),
           state,
           city: str(property.city),
-          owner: str(property.owner),
-        },
-      });
-      inspection = loadPropertyInspection(cardId);
-    } catch (error) {
-      landPortalCapture = { ok: false, note: `LandPortal parcel read errored: ${(error as Error)?.message ?? String(error)}.`, comparableCount: 0 };
+         owner: str(property.owner),
+       },
+        }),
+      }),
+    }).then((result) => persistProviderResult(deps, result)).then(
+      (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: null as unknown }),
+      (error: unknown) => ({ result: null, error }),
+    )
+    : null;
+  const zillowPromise = deps.captureZillowComps && canonicalInput
+    ? executePropertyProvider({
+        runId: ctx.runId,
+        property: canonicalInput,
+        adapter: marketplaceProviderAdapter({ laneId: 'zillow', providerId: 'zillow', execute: () => deps.captureZillowComps!(marketInput) }),
+      }).then((result) => persistProviderResult(deps, result)).then(
+        (providerResult) => ({ result: providerResult.execution.result, error: null as unknown }),
+        (error: unknown) => ({ result: null, error }),
+      )
+    : null;
+  const redfinPromise = deps.captureRedfinComps && canonicalInput
+    ? executePropertyProvider({
+        runId: ctx.runId,
+        property: canonicalInput,
+        adapter: marketplaceProviderAdapter({ laneId: 'redfin', providerId: 'redfin', execute: () => deps.captureRedfinComps!(marketInput) }),
+      }).then((result) => persistProviderResult(deps, result)).then(
+        (providerResult) => ({ result: providerResult.execution.result, error: null as unknown }),
+        (error: unknown) => ({ result: null, error }),
+      )
+    : null;
+  const manufacturedHomesPromise = deps.captureManufacturedHomeComps && canonicalInput
+    ? executePropertyProvider({
+        runId: ctx.runId,
+        property: canonicalInput,
+        adapter: marketplaceProviderAdapter({
+          laneId: 'manufactured_home',
+          providerId: 'zillow_manufactured_home',
+          execute: () => marketInput.lat != null && marketInput.lng != null
+            ? deps.captureManufacturedHomeComps!({ ...marketInput, lat: marketInput.lat, lng: marketInput.lng })
+            : Promise.resolve({ status: 'not_applicable', sold: [], active: [], note: 'Confirmed subject coordinates are required for the 5-mile manufactured-home boundary.' }),
+        }),
+      }).then((result) => persistProviderResult(deps, result)).then(
+        (providerResult) => ({ result: providerResult.execution.result, error: null as unknown }),
+        (error: unknown) => ({ result: null, error }),
+      )
+    : null;
+
+  if (landPortalCapturePromise) {
+    const outcome = await landPortalCapturePromise;
+    if (outcome.error) {
+      landPortalCapture = { ok: false, note: `LandPortal parcel read errored: ${(outcome.error as Error)?.message ?? String(outcome.error)}.`, comparableCount: 0 };
+    } else {
+      landPortalCapture = outcome.result;
+      inspection = loadPropertyInspection(cardId!);
     }
   }
 
@@ -868,7 +1526,11 @@ export async function collectComparables(
   for (const record of landPortalRecords) {
     const status = str(record.status) ?? 'unknown';
     const indicator = str(record.saleListIndicator) ?? 'unknown';
-    const improvement = str(record.improvement) ?? 'unknown';
+    // Defensive normalization also repairs retained captures made before the
+    // detail parser learned that a material building can never be vacant land.
+    const improvement = (num(record.buildingSqft) ?? 0) >= 1_500
+      ? 'improved'
+      : str(record.improvement) ?? 'unknown';
     const isActive = indicator === 'list' || status === 'active' || status === 'listed';
     const isSold = indicator === 'sale' || status === 'sold';
     // The parcel panel often shows a price + acreage with no sale/list word. That
@@ -913,6 +1575,16 @@ export async function collectComparables(
       lat: num(record.lat),
       lng: num(record.lng),
       sourceUrl: str(record.detailUrl) ?? str(record.sourceUrl) ?? inspection?.parcelUrl ?? null,
+      thumbnailUrl: (() => {
+        const apn = str(record.apn);
+        if (!apn) return null;
+        const safeApn = apn.replace(/[^A-Za-z0-9_-]/g, '');
+        if (!safeApn) return null;
+        const file = `deal${deal.id}_comp_${safeApn}.png`;
+        return fs.existsSync(landosArtifactPath('browser-shots', file))
+          ? `/api/landos/deal-cards/${deal.id}/comp-image/${safeApn}`
+          : null;
+      })(),
       // LandPortal states whether the comparable carries an improvement. An
       // improved row is routed to the Land-Home lane by the source policy, never
       // into vacant-land FMV; an unknown row is left for the classifier.
@@ -963,31 +1635,47 @@ export async function collectComparables(
   }
 
   // ── Supplements: Zillow and Redfin public land comps ─────────────────────
-  const marketInput = {
-    address: str(property.active_input_address) ?? str(property.address),
-    city: str(property.city),
-    county: ctx.identity?.identity.county ?? str(property.county),
-    state,
-    zip: str(property.zip),
-    apn: ctx.identity?.identity.apn ?? str(property.apn),
-    owner: ctx.identity?.identity.owner ?? str(property.owner),
-    lat: ctx.identity?.identity.coordinates?.lat ?? num(property.lat),
-    lng: ctx.identity?.identity.coordinates?.lng ?? num(property.lng),
-    subjectAcres,
-  };
-
-  const [zillow, redfin] = await Promise.all([
-    deps.captureZillowComps ? deps.captureZillowComps(marketInput).catch((error) => {
-      notes.push(`Zillow supplement unavailable: ${(error as Error)?.message ?? String(error)}.`);
-      return null;
-    }) : Promise.resolve(null),
-    deps.captureRedfinComps ? deps.captureRedfinComps(marketInput).catch((error) => {
-      notes.push(`Redfin supplement unavailable: ${(error as Error)?.message ?? String(error)}.`);
-      return null;
-    }) : Promise.resolve(null),
+  const [zillowOutcome, redfinOutcome, manufacturedHomesOutcome] = await Promise.all([
+    zillowPromise ?? Promise.resolve({ result: null, error: null as unknown }),
+    redfinPromise ?? Promise.resolve({ result: null, error: null as unknown }),
+    manufacturedHomesPromise ?? Promise.resolve({ result: null, error: null as unknown }),
   ]);
+  if (zillowOutcome.error) notes.push(`Zillow supplement unavailable: ${(zillowOutcome.error as Error)?.message ?? String(zillowOutcome.error)}.`);
+  if (redfinOutcome.error) notes.push(`Redfin supplement unavailable: ${(redfinOutcome.error as Error)?.message ?? String(redfinOutcome.error)}.`);
+  if (manufacturedHomesOutcome.error) notes.push(`Manufactured-home supplement unavailable: ${(manufacturedHomesOutcome.error as Error)?.message ?? String(manufacturedHomesOutcome.error)}.`);
+  const zillow = zillowOutcome.result;
+  const redfin = redfinOutcome.result;
+  const manufacturedHomes = manufacturedHomesOutcome.result;
   candidates.push(...marketplaceCandidates(zillow, 'Zillow', state));
   candidates.push(...marketplaceCandidates(redfin, 'Redfin', state));
+  if (manufacturedHomes) {
+    for (const row of manufacturedHomes.sold ?? []) {
+      if ((row.price ?? 0) <= 200_000 || (row.distanceMiles ?? Number.POSITIVE_INFINITY) > 5) continue;
+      candidates.push({
+        id: row.providerId ?? null,
+        provider: 'Zillow manufactured-home sold',
+        lane: 'sold',
+        addressDesc: row.address,
+        state,
+        price: row.price,
+        priceKind: 'sold',
+        saleOrListDate: row.saleDate ?? null,
+        acres: row.acres,
+        pricePerAcre: row.pricePerAcre ?? null,
+        sourceUrl: row.url ?? null,
+        distanceMiles: row.distanceMiles ?? null,
+        lat: row.lat ?? null,
+        lng: row.lng ?? null,
+        compClass: 'manufactured',
+        homeType: row.homeType ?? null,
+        yearBuilt: row.yearBuilt ?? null,
+        homeSizeSqft: row.homeSizeSqft ?? null,
+      } as CompRegistryCandidate);
+    }
+    notes.push(`Manufactured-home sold lane: ${manufacturedHomes.status} (${manufacturedHomes.sold?.length ?? 0} returned; only >$200,000 sales proven within 5 miles retained).`);
+  } else if (marketInput.lat == null || marketInput.lng == null) {
+    notes.push('Manufactured-home sold lane not run: confirmed subject coordinates are required for the 5-mile boundary.');
+  }
   if (zillow) notes.push(`Zillow: ${zillow.status} (${(zillow.sold?.length ?? 0)} sold, ${(zillow.active?.length ?? 0)} active).`);
   if (redfin) notes.push(`Redfin: ${redfin.status} (${(redfin.sold?.length ?? 0)} sold, ${(redfin.active?.length ?? 0)} active).`);
 
@@ -1016,17 +1704,28 @@ export async function collectComparables(
       pricePerAcre: typeof row.price_per_acre === 'number' ? row.price_per_acre : null,
       sourceUrl: row.source_url || null,
       distanceMiles: typeof row.distance_miles === 'number' ? row.distance_miles : null,
+      thumbnailUrl: row.thumbnail_url || null,
       compClass: row.property_class || null,
       persistedStatus: row.status || null,
     } as CompRegistryCandidate);
   }
   if (persisted.length) notes.push(`${persisted.length} previously persisted comp row(s) re-screened against the current policy.`);
 
-  const anySource = landPortalRecords.length > 0 || !!zillow || !!redfin || persisted.length > 0;
+  const anySource = landPortalRecords.length > 0 || !!zillow || !!redfin || !!manufacturedHomes || persisted.length > 0;
   return {
     status: candidates.length === 0 ? 'partial' : anySource ? 'completed' : 'partial',
     summary: notes.join(' '),
-    data: { candidates, duplicatesMerged: 0 },
+    data: {
+      candidates,
+      duplicatesMerged: 0,
+      landHomeSearchProof: manufacturedHomes?.searchProof ? {
+        status: manufacturedHomes.status === 'retrieved' || manufacturedHomes.status === 'none'
+          ? 'completed'
+          : manufacturedHomes.status === 'blocked' ? 'blocked'
+            : manufacturedHomes.status === 'disabled' ? 'not_run' : 'unavailable',
+        ...manufacturedHomes.searchProof,
+      } : null,
+    },
   };
 }
 
@@ -1043,7 +1742,41 @@ export async function collectMarketIntelligence(
       data: { facts: [], summary: '' },
     };
   }
-  const context = await deps.captureMarketContext(ctx.dealCardId);
+  const canonicalInput = canonicalPropertyInputForDeal(ctx.dealCardId);
+  const context = canonicalInput
+    ? (await persistProviderResult(deps, await executePropertyProvider({
+      runId: ctx.runId,
+      property: canonicalInput,
+      timeoutMs: 60_000,
+      adapter: {
+        laneId: 'market_matrix',
+        providerId: 'landos_market_matrix',
+        execute: () => deps.captureMarketContext!(ctx.dealCardId),
+        validate: (_property, execution) => ({
+          valid: Array.isArray(execution.facts),
+          subjectClassification: 'context_only',
+          checks: [{ check: 'market_context_returned', passed: Array.isArray(execution.facts), reason: execution.summary }],
+          rejectedEvidenceIds: [],
+        }),
+        normalize: (property, execution) => execution.facts.map((fact, index): NormalizedPropertyEvidence => ({
+          id: `market-matrix:${fact.key || index}`,
+          propertyCardId: property.propertyCardId,
+          dealCardId: property.dealCardId,
+          providerId: 'landos_market_matrix',
+          field: fact.key,
+          value: fact.value,
+          subjectClassification: 'context_only',
+          strength: 'context_only',
+          sourceUrl: fact.sourceUrl,
+          retrievedAt: fact.retrievedAt ?? new Date().toISOString(),
+          confidence: 'medium',
+          kind: 'fact',
+          validation: { valid: !!fact.value, reasons: fact.value ? [] : ['Market context fact was blank.'] },
+        })),
+        status: (_property, _execution, _validation, evidence) => evidence.length ? 'context_only' : 'unavailable',
+      },
+    }))).execution.result ?? { facts: [], summary: 'Market Matrix provider did not return a usable handback.' }
+    : await deps.captureMarketContext(ctx.dealCardId);
   return {
     status: context.facts.length ? 'completed' : 'partial',
     summary: context.summary || `${context.facts.length} market fact(s) assembled.`,
@@ -1063,20 +1796,26 @@ export async function collectEvidenceVisuals(ctx: MissionContext): Promise<Speci
   // Retained LandPortal / browser inspection assets.
   const inspection = cardId ? loadPropertyInspection(cardId) : null;
   for (const asset of inspection?.assets ?? []) {
+    if (!usableInspectionAsset(asset)) continue;
+    if (!cardId || !isAcceptedLandPortalVisualForProperty(asset.validation, cardId)) continue;
     const view = asset as unknown as Record<string, unknown>;
+    const validation = asset.validation;
+    const subjectVerified = validation.subjectClassification === 'verified_subject'
+      && hasVerifiedLandPortalSubject(inspection);
     const key = str(view.key);
+    const label = str(view.label) ?? key ?? 'Retained parcel screenshot';
     evidence.push({
       id: `visual-${key ?? evidence.length}`,
       kind: 'screenshot',
-      label: str(view.label) ?? key ?? 'Retained parcel screenshot',
-      sourceType: str(view.source) ?? 'landportal',
+      label: subjectVerified ? label : `LandPortal context — ${label}`,
+      sourceType: subjectVerified ? (str(view.source) ?? 'landportal') : 'landportal_context',
       sourceUrl: str(view.sourceUrl) ?? inspection?.parcelUrl ?? null,
       // Served through the existing token-gated inspection image route; the
       // stored disk path never leaves the server.
       viewUrl: key && cardId ? `/api/landos/inspection/image?cardId=${cardId}&key=${encodeURIComponent(key)}` : null,
       retrievedAt: str(view.capturedAt) ?? now,
-      confidence: 'high',
-      supports: 'visual_evidence',
+      confidence: subjectVerified ? 'high' : 'low',
+      supports: subjectVerified ? 'visual_evidence' : 'context_visual_evidence',
       sha256: str(view.sha256),
       bytes: typeof view.bytes === 'number' ? view.bytes : null,
     });

@@ -7,7 +7,7 @@
 import type { Hono } from 'hono';
 
 import { logger } from '../logger.js';
-import { generateContent, parseJsonResponse } from '../gemini.js';
+import { generateContent, generateVisionContent, parseJsonResponse } from '../gemini.js';
 import { DEPARTMENTS } from './departments.js';
 import {
   GATED_ACTION_TYPES,
@@ -68,7 +68,7 @@ import { RUBRIC_FACTORS, RUBRIC_SOURCE, RUBRIC_STATUS, VERDICT_TIERS } from './r
 import { STRATEGIES, evaluateStrategies } from './offer-engine.js';
 import { buildPursuitDecision } from './deal-card-pursuit.js';
 import { auditDealCardCoherence } from './deal-card-audit.js';
-import { runMarketScan, type ScanFinding, type ScanSearchFn, type MarketScanResult } from './market-scan.js';
+import { buildPracticalMarketMatrix, runMarketScan, type ScanFinding, type ScanSearchFn, type MarketScanResult, type InternalCountyAcreageSnapshot } from './market-scan.js';
 import { saveMarketScan, loadMarketScan } from './db.js';
 import { buildIntakeConversation, type IntakeMessage } from './intake-conversation.js';
 import {
@@ -89,6 +89,8 @@ import {
   attachCardSourceEvidence,
   attachCardActivity,
   addCardNextAction,
+  updateCardNextAction,
+  deleteCardNextAction,
   attachNearbySearchReference,
   createLeadJobs,
   listLeadJobs,
@@ -102,8 +104,11 @@ import {
   getPropertyCardRow,
   getCardActivity,
   upsertPropertyCard,
+  promoteRetainedLandPortalParcelUrl,
 } from './property-card.js';
-import { captureAndPersistCardVisuals } from './visual-capture-workflow.js';
+import { isVerifiedLandPortalSubjectUrl } from './landportal-operating-rules.js';
+import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
+import { captureAndPersistAcceptedIdentityVisuals, captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
 import { resolveGoogleVisualEnv, VISUAL_SERVICES } from './providers/google-visual.js';
 import fs from 'fs';
@@ -112,8 +117,9 @@ import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification, mapResolveToVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
 import { resolveParcelIdentityResult } from './parcel-capability.js';
-import { fetchZillowLandComps } from './zillow-land-comps.js';
+import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
 import { fetchRedfinLandComps } from './redfin-land-comps.js';
+import { runBrockovichDataCenterMap } from './brockovich-data-center.js';
 import { extractPropertyArgs } from './duke-preflight.js';
 import { suggestAddresses } from './address-suggest.js';
 import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
@@ -132,24 +138,31 @@ import { listNavigationModels } from './browser-navigation-model.js';
 import { listSitePlaybooks } from './browser-learning.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
+import { containsRejectedParcelRecordDestination, isRejectedParcelRecordDestination } from './browser-navigator.js';
 import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds, closeSurplusSessionPages } from './browser-session.js';
 import { getCountySources } from './county-source-map.js';
+import { officialDomainScore, sourceContradictsRequestedState } from './netr-routing.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
 import { normalizeParcelIdentifier, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
 import { runPropertyIntelligenceOrchestrator } from './property-intelligence-orchestrator.js';
-import { lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { governmentFactsFromPublicRecordOutcomes, lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, makePracticalSubjectAttemptAdapters, makePracticalDiscoveryScreeningAdapters, practicalOfficialParcelSources, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { PropertyResearchStore } from './property-research-store.js';
-import { getHermesLandPortalLaneProgress } from './hermes-landportal-auto.js';
+import { getHermesLandPortalLaneProgress, runHermesLandPortalLane } from './hermes-landportal-auto.js';
 import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
-import type { SnapshotFact } from './property-intelligence-snapshot.js';
+import type { SnapshotComps, SnapshotEvidenceItem, SnapshotFact } from './property-intelligence-snapshot.js';
 import { jurisdictionLocalApnVariants, presentPropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
-import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE } from './deal-intelligence-mission.js';
+import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
+import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
+import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
-import { makeLivePropertyIntelligenceCollectors } from './property-intelligence-live.js';
+import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors } from './property-intelligence-live.js';
+import { executePropertyProvider, type NormalizedPropertyEvidence, type PropertyProviderAdapter } from './property-intelligence-contract.js';
+import { gatherCardImages, loadCardVisionAnalysis } from './browser-vision.js';
+import { buildDealOperatorAnalysis, emptyDealOperatorContext, runWholeCardOperatorAnalyst, type DealOperatorContext, type OperatorResearchAttempt, type ResearchAttemptStatus } from './deal-operator-analysis.js';
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
 import { WindowsCredentialVault } from './windows-credential-vault.js';
 import { SqliteGovernmentAccountRepository } from './government-account-manager.js';
@@ -171,7 +184,7 @@ import {
 import {
   ingestMarketSnapshots, runMarketQueryWithExplanation, getMatrixCoverage,
   saveMarketQuery, listMarketQueries, getMarketQueryById, deleteMarketQuery,
-  getHeatmapData, getCountyDrilldown, listReviewQueue, listCountyRef, listFlaggedSnapshots, resolveCountyRefByZip,
+  getHeatmapData, getCountyDrilldown, listReviewQueue, listCountyRef, listFlaggedSnapshots, resolveCountyRefByZip, resolveCountyRefByName,
 } from './market-matrix-store.js';
 import { makeFixtureMarketProvider, makeLiveBrowserMarketProvider, delegateMarketResearchToBrowserAgent, pickMarketResearchBackend } from './market-browser-provider.js';
 import {
@@ -180,7 +193,8 @@ import {
 } from './market-research-snapshots.js';
 import { collectQuarterlyMarketSnapshot, collectMarketGapFill, collectMarketVerifySweep, isCollectionActive, getCollectionStatus } from './market-research-collector.js';
 import { getZipGeometries } from './market-research-geometry.js';
-import { resolveMarketMatrix, resolveMarketMatrixSection } from './market-matrix-read.js';
+import { buildMarketMatrixReportSection, resolveMarketMatrix, resolveMarketMatrixSection } from './market-matrix-read.js';
+import { propertyMarketContextFor, type PropertyMarketContext } from './property-market-context.js';
 import { buildDealCardOwnerAnalysis } from './deal-card-owner-analysis.js';
 import { playbookInfo, listBrowserAgentRuns } from './browser-agent.js';
 import {
@@ -211,7 +225,7 @@ import {
 } from './landos-structure.js';
 import { INTAKE_TRANSPORTS, type IntakeTransport, type LandOSIntake, type ResponseMode } from './intake-types.js';
 import { evaluateFact, evaluateComp, evaluateZoning } from './source-evidence.js';
-import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, linkPropertyToDeal, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard, addPerson, linkPerson } from './deal-card.js';
+import { listDealCards, getDealCard, createDealCard, updateDealCard, ensureDealCardForProperty, getDealCardIdForPropertyCard, linkPropertyToDeal, listTrashedDealCards, softDeleteDealCard, restoreDealCard, hardDeleteDealCard, addPerson, linkPerson, updateDealPerson, unlinkDealPerson, resolveSubjectPropertyCard } from './deal-card.js';
 import { readPropertySummaryForDeal, synchronizePropertySummaryForDeal, reconcileCanonicalIdentity, reconcileAllPendingCanonicalIdentities } from './property-summary-legacy-adapter.js';
 import { readGovernmentRecordsForDeal, synchronizeGovernmentRecordsForDeal } from './government-records-legacy-adapter.js';
 import { resolveGovernmentRecordArtifactPage } from './government-records-operator.js';
@@ -224,6 +238,7 @@ import { officialResolutionLane, landPortalResolutionLane } from './parallel-res
 import { buildCompMapView } from './comp-map.js';
 import { buildResolutionSnapshot, writeResolutionSnapshot, readResolutionSnapshot } from './resolution-snapshot.js';
 import { getDealCardDd } from './deal-card-dd.js';
+import { getDealCardMarket } from './deal-card-market.js';
 import { getDealCardReport, runDealCardReport, buildPersistedResolver, buildIdentityText, landFactsForScore, projectPropertyInspectionForReport } from './deal-card-report.js';
 import { computeDealCardReadiness } from './deal-card-readiness.js';
 import { govDdProvidersStatus } from './providers/gov-dd-providers.js';
@@ -287,11 +302,12 @@ import {
   missionViewForCard, reconcileDealCard, compStateFromRegistry, DEAL_CARD_MODEL_VERSION,
   type ReportCompLanes,
 } from './deal-card-canonical.js';
+import { reconcilePersistedLandPortalEvidence } from './landportal-persisted-reconciliation.js';
 import { isServableDocumentPage, type RegisteredDocument } from './document-registry.js';
 import { recordDeedPage } from './recorded-deed-pages.js';
 import { validateRecordedLienReview, type RecordedLienStatus } from './recorded-lien-review.js';
 import { buildDdBusinessStatus } from './dd-business-status.js';
-import { saveDocumentUpload, listDocumentUploads, servableUploadPath, UPLOAD_CATEGORIES } from './document-uploads.js';
+import { saveDocumentUpload, listDocumentUploads, updateDocumentUpload, removeDocumentUpload, servableUploadPath, UPLOAD_CATEGORIES } from './document-uploads.js';
 import {
   RESOURCE_CATEGORIES,
   analyzeLeadCardIntake,
@@ -331,6 +347,7 @@ import type { DocumentRegistry } from './document-registry.js';
 import { getOrBuildParcelOverlay, PARCEL_OVERLAY_KINDS, PARCEL_OVERLAY_LABELS, type ParcelOverlayKind } from './parcel-overlay-visuals.js';
 import {
   getAcquisition, upsertSellerProfile, addCommLogEntry, addDiscoveryNote, setAcquisitionStage,
+  updateCommLogEntry, deleteCommLogEntry,
   extractDiscoveryNotes, acquisitionNextAction, sellerStrategySummary, isAcquisitionStage,
   COMM_CHANNELS, ACQUISITION_STAGE_LABEL, type CommChannel, type AcquisitionStage,
 } from './acquisitions.js';
@@ -346,7 +363,71 @@ import { collectBrowserMarketIntelligence, makeNewsResearchBackend, type GrowthD
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { isLeadType } from './db.js';
 import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
+import { applyCompSourcePolicy } from './comp-source-policy.js';
+import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
+import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
+import {
+  runLandPortalBrowserUsePilot,
+  browserUseRunStatus,
+  markBrowserUseQueued,
+  setBrowserUseRunState,
+  subjectForDealCard,
+  loadBrowserUseRunForDeal,
+  hasPersistedBrowserUseCaptureForDeal,
+  resolveBrowserUseCapturePath,
+} from './landportal-browseruse.js';
+import { runLandPortalStagedPilot, loadStagedRun } from './landportal-staged-pilot.js';
+
+/** Staged pilot with the same operator-visible status surface as the agent path. */
+async function runLandPortalStagedPilotTracked(dealCardId: number, provider: 'ollama' | 'google' | 'auto', captureLabels?: string[]): Promise<void> {
+  setBrowserUseRunState(dealCardId, 'running');
+  try {
+    const outcome = await runLandPortalStagedPilot(dealCardId, provider, { captureLabels });
+    if (outcome.error) setBrowserUseRunState(dealCardId, 'failed', outcome.error);
+    else setBrowserUseRunState(dealCardId, outcome.ok ? 'completed' : 'failed', outcome.ok ? null : 'One or more stages failed; completed stages are persisted.');
+  } catch (err) {
+    setBrowserUseRunState(dealCardId, 'failed', err instanceof Error ? err.message : String(err));
+  }
+}
+
+interface LandPortalSoilDetailProjection {
+  symbol: string | null;
+  name: string | null;
+  fields: Record<string, string>;
+}
+
+/** Project deterministic direct-runner soil evidence into the existing
+ * operator result surface. The direct runner intentionally persists cumulative
+ * inspection evidence rather than creating a staged Browser Use run. */
+function soilDetailsForDealCard(dealCardId: number): LandPortalSoilDetailProjection[] {
+  const subjectCard = subjectForDealCard(dealCardId);
+  if (!subjectCard) return [];
+  const inspection = loadPropertyInspection(subjectCard.propertyCardId);
+  const seen = new Set<string>();
+  const details: LandPortalSoilDetailProjection[] = [];
+  for (const evidence of inspection?.evidence ?? []) {
+    if (evidence.source !== 'LandPortal Soil Type overlay popup') continue;
+    try {
+      const parsed = JSON.parse(evidence.detail) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object') continue;
+      const name = typeof parsed.name === 'string' ? parsed.name : null;
+      const symbol = typeof parsed.symbol === 'string' ? parsed.symbol : null;
+      const fields = parsed.fields && typeof parsed.fields === 'object'
+        ? Object.fromEntries(Object.entries(parsed.fields).filter(([, value]) => typeof value === 'string'))
+        : {};
+      if (!name && !symbol) continue;
+      const identity = (name ?? symbol ?? '').trim().toLowerCase();
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      details.push({ symbol, name, fields });
+    } catch {
+      // Historic evidence may contain a non-JSON detail; leave it visible in
+      // the inspection record without manufacturing a structured soil row.
+    }
+  }
+  return details;
+}
 import {
   DEAL_CARD_STATUSES,
   type DealCardStatus,
@@ -358,6 +439,12 @@ import {
 const isEntity = (v: unknown): v is LandosEntity =>
   v === 'LAND_ALLY' || v === 'TY_LAND_BIZ';
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+
+function usableInspectionAsset(asset: { storedPath?: string | null }): boolean {
+  if (!asset.storedPath) return false;
+  try { return fs.statSync(asset.storedPath).isFile() && fs.statSync(asset.storedPath).size >= 8 * 1024; }
+  catch { return false; }
+}
 // Browser sources sometimes render an unavailable field as "-".  This is not
 // usable locality data and must never overwrite the owner-supplied city or
 // leak into the visible Lead Card / map links.
@@ -1667,6 +1754,7 @@ export function registerLandosRoutes(app: Hono): void {
     const city = parsed?.city ?? (str(body.city)?.trim() || null);
     const county = parsed?.county ?? (str(body.county)?.trim() || null);
     const state = parsed?.state ?? (str(body.state)?.trim() || null);
+    const zip = parsed?.zip ?? (str(body.zip)?.trim() || null);
     // A lead with no property reference still needs its OWN property card, so
     // the placeholder carries a unique suffix. It is an internal storage handle;
     // `isPlaceholderPropertyLabel` keeps it off every owner-facing surface.
@@ -1677,6 +1765,7 @@ export function registerLandosRoutes(app: Hono): void {
       city: city ?? undefined,
       county: county ?? undefined,
       state: state ?? undefined,
+      zip: zip ?? undefined,
       apn: apn ?? undefined,
       // The seller/lead name is NEVER written here. `owner` is the owner OF
       // RECORD, established only by an official source; seeding it from an
@@ -2805,9 +2894,76 @@ export function registerLandosRoutes(app: Hono): void {
   app.post('/api/landos/property-cards/:id/next-action', async (c) => {
     const id = Number(c.req.param('id'));
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!str(body.action)) return c.json({ error: 'action required' }, 400);
-    const naId = addCardNextAction({ cardId: id, action: str(body.action)!, createdBy: str(body.createdBy) });
+    const action = str(body.action);
+    if (!action) return c.json({ error: 'action required' }, 400);
+    const createdBy = str(body.createdBy) ?? 'tyler';
+    const priority = ['low', 'normal', 'high', 'urgent'].includes(str(body.priority) ?? '')
+      ? str(body.priority) as 'low' | 'normal' | 'high' | 'urgent'
+      : 'normal';
+    const naId = addCardNextAction({
+      cardId: id,
+      action,
+      createdBy,
+      dueDate: str(body.dueDate),
+      assignedOwner: str(body.assignedOwner),
+      priority,
+      reminderAt: str(body.reminderAt),
+    });
+    attachCardActivity({
+      cardId: id,
+      agentId: createdBy,
+      kind: 'task_created',
+      summary: `Task created: ${action}`,
+      ref: `next_action:${naId}`,
+    });
     return c.json({ id: naId }, 201);
+  });
+
+  app.patch('/api/landos/property-cards/:id/next-actions/:taskId', async (c) => {
+    const cardId = Number(c.req.param('id'));
+    const taskId = Number(c.req.param('taskId'));
+    if (!Number.isInteger(cardId) || !Number.isInteger(taskId) || !getPropertyCard(cardId)) {
+      return c.json({ error: 'task not found' }, 404);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const status = str(body.status);
+    if (status && !['open', 'completed'].includes(status)) return c.json({ error: 'invalid task status' }, 400);
+    const priority = str(body.priority);
+    if (priority && !['low', 'normal', 'high', 'urgent'].includes(priority)) return c.json({ error: 'invalid priority' }, 400);
+    const updated = updateCardNextAction(cardId, taskId, {
+      action: str(body.action),
+      status: status as 'open' | 'completed' | undefined,
+      dueDate: str(body.dueDate),
+      assignedOwner: str(body.assignedOwner),
+      priority: priority as 'low' | 'normal' | 'high' | 'urgent' | undefined,
+      reminderAt: str(body.reminderAt),
+    });
+    if (!updated) return c.json({ error: 'task not found' }, 404);
+    attachCardActivity({
+      cardId,
+      agentId: 'landos/deal-card',
+      kind: status === 'completed' ? 'task_completed' : 'task_updated',
+      summary: status === 'completed' ? `Task completed: ${str(body.action) ?? `#${taskId}`}` : `Task updated: ${str(body.action) ?? `#${taskId}`}`,
+      ref: `next_action:${taskId}`,
+    });
+    return c.json({ task: (getPropertyCard(cardId)?.nextActions as Array<Record<string, unknown>>).find((row) => Number(row.id) === taskId) });
+  });
+
+  app.delete('/api/landos/property-cards/:id/next-actions/:taskId', (c) => {
+    const cardId = Number(c.req.param('id'));
+    const taskId = Number(c.req.param('taskId'));
+    if (!Number.isInteger(cardId) || !Number.isInteger(taskId) || !getPropertyCard(cardId)) {
+      return c.json({ error: 'task not found' }, 404);
+    }
+    if (!deleteCardNextAction(cardId, taskId)) return c.json({ error: 'task not found' }, 404);
+    attachCardActivity({
+      cardId,
+      agentId: 'landos/deal-card',
+      kind: 'task_deleted',
+      summary: `Task #${taskId} removed from this Deal Card.`,
+      ref: `next_action:${taskId}`,
+    });
+    return c.json({ deleted: true, taskId });
   });
 
   // ── Batch lead intake ───────────────────────────────────────────────
@@ -2911,15 +3067,82 @@ export function registerLandosRoutes(app: Hono): void {
         phone: str(body.phone),
         email: str(body.email),
         mailingAddress: str(body.mailingAddress),
+        preferredContactMethod: str(body.preferredContactMethod),
+        notes: str(body.notes),
       });
-      linkPerson({
+      const linked = linkPerson({
         dealCardId: id,
         personId,
         role: role as Parameters<typeof linkPerson>[0]['role'],
         authorityStatus: str(body.authorityStatus) as Parameters<typeof linkPerson>[0]['authorityStatus'],
+        note: str(body.relationshipNote),
       });
+      if (linked.id && body.primaryContact === true) {
+        getLandosDb().prepare('UPDATE landos_person_link SET primary_contact = 1 WHERE id = ?').run(linked.id);
+      }
     }
     return c.json({ dealCard: getDealCard(id), created: !existing }, existing ? 200 : 201);
+  });
+
+  app.patch('/api/landos/deal-cards/:id/people/:personId', async (c) => {
+    const id = Number(c.req.param('id'));
+    const personId = Number(c.req.param('personId'));
+    const deal = Number.isInteger(id) && Number.isInteger(personId) ? getDealCard(id) : undefined;
+    if (!deal) return c.json({ error: 'contact not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const requestedRole = str(body.role)?.trim().toLowerCase();
+    const role = requestedRole
+      ? (({ lead: 'lead_contact', contact: 'unknown_relation', owner: 'record_owner' } as Record<string, string>)[requestedRole] ?? requestedRole)
+      : undefined;
+    if (role && !['seller', 'lead_contact', 'wholesaler', 'agent', 'record_owner', 'heir', 'sibling', 'spouse', 'decision_maker', 'probate_contact', 'attorney', 'title_contact', 'unknown_relation'].includes(role)) {
+      return c.json({ error: 'invalid contact role' }, 400);
+    }
+    const authorityStatus = str(body.authorityStatus);
+    if (authorityStatus && !['unknown', 'title_to_confirm', 'attorney_or_title_to_confirm', 'needs_to_sign', 'can_sign', 'cannot_sign', 'unsure_if_on_deed', 'heir_claimed', 'probate_attorney'].includes(authorityStatus)) {
+      return c.json({ error: 'invalid authority status' }, 400);
+    }
+    const updated = updateDealPerson({
+      dealCardId: id,
+      personId,
+      name: str(body.name),
+      phone: str(body.phone),
+      email: str(body.email),
+      mailingAddress: str(body.mailingAddress),
+      preferredContactMethod: str(body.preferredContactMethod),
+      notes: str(body.notes),
+      role: role as Parameters<typeof updateDealPerson>[0]['role'],
+      authorityStatus: authorityStatus as Parameters<typeof updateDealPerson>[0]['authorityStatus'],
+      authoritySource: str(body.authoritySource),
+      relationshipNote: str(body.relationshipNote),
+      primaryContact: body.primaryContact === undefined ? undefined : body.primaryContact === true,
+    });
+    if (!updated) return c.json({ error: 'contact not found on this Deal Card' }, 404);
+    const cardId = subjectCardId(deal);
+    if (cardId) attachCardActivity({
+      cardId,
+      agentId: 'landos/deal-card',
+      kind: 'contact_updated',
+      summary: `Contact updated: ${str(body.name) ?? `person #${personId}`}.`,
+      ref: `person:${personId}`,
+    });
+    return c.json({ dealCard: getDealCard(id) });
+  });
+
+  app.delete('/api/landos/deal-cards/:id/people/:personId', (c) => {
+    const id = Number(c.req.param('id'));
+    const personId = Number(c.req.param('personId'));
+    const deal = Number.isInteger(id) && Number.isInteger(personId) ? getDealCard(id) : undefined;
+    if (!deal) return c.json({ error: 'contact not found' }, 404);
+    if (!unlinkDealPerson(id, personId)) return c.json({ error: 'contact not found on this Deal Card' }, 404);
+    const cardId = subjectCardId(deal);
+    if (cardId) attachCardActivity({
+      cardId,
+      agentId: 'landos/deal-card',
+      kind: 'contact_deleted',
+      summary: `Contact #${personId} removed from this Deal Card.`,
+      ref: `person:${personId}`,
+    });
+    return c.json({ deleted: true, personId });
   });
 
   // Living lead-card identity, smart intake, transcript, resource-contact, and
@@ -3531,6 +3754,106 @@ export function registerLandosRoutes(app: Hono): void {
     };
   };
 
+  const internalCountySnapshotsForDeal = (deal: unknown): InternalCountyAcreageSnapshot[] => {
+    const record = deal as { title?: string; propertyCards?: Array<Record<string, unknown>> };
+    const subject = record.propertyCards?.find((card) => card.role === 'subject') ?? record.propertyCards?.[0] ?? {};
+    const inspection = Number.isInteger(Number(subject.id)) ? loadPropertyInspection(Number(subject.id)) : null;
+    const lpFact = (...labels: string[]): string | null => {
+      for (const label of labels) {
+        const value = str(inspection?.parcelFacts?.[label]);
+        if (value && value !== '-') return value;
+      }
+      return null;
+    };
+    const state = str(subject.state) || lpFact('Parcel Address State');
+    // The situs address alone often lacks the ZIP; the operator's retained raw
+    // lead input (card summary) is the next honest source before giving up.
+    const zip = str(subject.zip)
+      || extractZipCandidate(str(subject.active_input_address) || str(record.title) || '')
+      || lpFact('Parcel Address Zip Code')
+      || extractZipCandidate(str(subject.summary) || '');
+    const fips = str(subject.fips);
+    const countyName = str(subject.county) || lpFact('Parcel Address County');
+    const retainedMrCounty = !fips && state && countyName
+      ? getLandosDb().prepare(
+        `SELECT fips, name FROM landos_mr_geography
+         WHERE level = 'county' AND state = ?
+           AND (lower(name) = lower(?) OR lower(name) = lower(?))
+         LIMIT 1`,
+      ).get(state.toUpperCase(), countyName, countyName.replace(/\s+county$/i, '').trim()) as { fips: string; name: string } | undefined
+      : undefined;
+    const countyRef = fips
+      ? { fips, state: state ?? '', countyName: countyName || fips }
+      : resolveCountyRefByZip(zip, state)
+        ?? resolveCountyRefByName(countyName, state)
+        ?? (retainedMrCounty ? { fips: retainedMrCounty.fips, state: state ?? '', countyName: retainedMrCounty.name } : undefined);
+    if (!countyRef) return [];
+    const practicalBandSources: ReadonlyArray<{
+      band: InternalCountyAcreageSnapshot['band'];
+      sourceBand: AcreageBand;
+    }> = [
+      { band: '50+', sourceBand: '50-100' },
+      { band: '20-50', sourceBand: '20-50' },
+      { band: '10-20', sourceBand: '10-20' },
+      { band: '5-10', sourceBand: '5-10' },
+      { band: '2-5', sourceBand: '2-5' },
+      { band: '1-2', sourceBand: '1-2' },
+      { band: '0-1', sourceBand: '0-1' },
+    ];
+    const retained = practicalBandSources.flatMap(({ band, sourceBand }) => {
+      const snapshot = listMrSnapshots()
+        .filter((candidate) => candidate.filters.acreageBand === sourceBand)
+        .sort((a, b) => b.quarter.localeCompare(a.quarter) || b.id - a.id)[0];
+      if (!snapshot) return [];
+      const summary = getMrGeoSummary(snapshot.id, `county:${countyRef.fips}`);
+      if (!summary) return [];
+      return [{
+        band,
+        side: 'sold' as const,
+        period: summary.snapshot.quarter,
+        metrics: summary.row.metrics,
+        confidence: 'high' as const,
+        provider: summary.row.provider || summary.snapshot.provider,
+        sourceRef: summary.row.sourceRef,
+        extractionTimestamp: summary.row.observedAt || summary.snapshot.collectedAt,
+        coverage: `${summary.row.name || countyRef.countyName}, sold ${sourceBand}-acre LandOS Market Research snapshot, ${summary.snapshot.quarter}`,
+      }];
+    });
+    const drilldown = getCountyDrilldown(countyRef.fips);
+    if (!drilldown) return retained;
+    const requiredBands = new Set(['50+', '20-50', '10-20', '5-10', '2-5', '1-2', '0-1']);
+    const legacy = drilldown.snapshots
+      .filter((snapshot) => requiredBands.has(snapshot.acreageBand))
+      .filter((snapshot) => !retained.some((row) => row.band === snapshot.acreageBand && row.side === snapshot.side))
+      .map((snapshot) => ({
+        band: snapshot.acreageBand as InternalCountyAcreageSnapshot['band'],
+        side: snapshot.side,
+        period: snapshot.period,
+        metrics: snapshot.metrics,
+        confidence: snapshot.confidence,
+        provider: snapshot.provider,
+        sourceRef: snapshot.sourceRef,
+        extractionTimestamp: snapshot.extractionTs,
+        coverage: `${drilldown.countyName} County, ${snapshot.side === 'sold' ? 'sold' : 'for-sale'} ${snapshot.acreageBand}-acre band, ${snapshot.period}`,
+      }));
+    return [...retained, ...legacy];
+  };
+
+  const rehydrateCachedAcreageMatrix = (deal: unknown, scan: MarketScanResult): MarketScanResult => {
+    const record = deal as { propertyCards?: Array<Record<string, unknown>> };
+    const subject = record.propertyCards?.find((card) => card.role === 'subject') ?? record.propertyCards?.[0] ?? {};
+    const internalCountySnapshots = internalCountySnapshotsForDeal(deal);
+    if (!internalCountySnapshots.length) return scan;
+    return {
+      ...scan,
+      acreageMatrix: buildPracticalMarketMatrix({
+        observations: [],
+        internalCountySnapshots,
+        subjectAcres: num(subject.acres),
+      }),
+    };
+  };
+
   app.get('/api/landos/deal-cards/:id/market-scan', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -3547,10 +3870,18 @@ export function registerLandosRoutes(app: Hono): void {
     const isAnswered = (p?: MarketScanResult | null) =>
       !!p && ['found', 'none_found'].some((s) => p.dataCenterWatch?.status === s || p.growthSignals?.status === s);
     const fresh = !!cached && Math.floor(Date.now() / 1000) - cached.createdAt < MAX_AGE_S && isAnswered(cached.payload);
-    if (cached && fresh && !refresh) return c.json({ marketScan: cached.payload, cached: true });
+    if (cached && fresh && !refresh) {
+      return c.json({ marketScan: rehydrateCachedAcreageMatrix(deal, cached.payload), cached: true });
+    }
     let scan: MarketScanResult;
     try {
-      scan = await runMarketScan({ county, state, search: groundedScanSearch() });
+      scan = await runMarketScan({
+        county,
+        state,
+        search: groundedScanSearch(),
+        internalCountySnapshots: internalCountySnapshotsForDeal(deal),
+        subjectAcres: num(subj?.acres),
+      });
     } catch (err) {
       logger.warn({ err, dealCardId: id }, 'market_scan_failed');
       return c.json({ marketScan: cached?.payload ?? null, cached: !!cached, error: 'market scan failed' });
@@ -3568,6 +3899,46 @@ export function registerLandosRoutes(app: Hono): void {
     // unavailable/not_run result (uncached).
     const cachedAnswered = cached && (answered((cached.payload as MarketScanResult).dataCenterWatch?.status) || answered((cached.payload as MarketScanResult).growthSignals?.status));
     return c.json({ marketScan: cachedAnswered ? cached!.payload : scan, cached: !!cachedAnswered });
+  });
+
+  app.get('/api/landos/deal-cards/:id/data-center-map', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'not found' }, 404);
+    const cached = loadMarketScan<MarketScanResult>(id, 'market_scan');
+    const storedPath = cached?.payload.dataCenterWatch.browserMapEvidence?.screenshotPath;
+    if (!storedPath) return c.json({ error: 'data-center map not captured' }, 404);
+    const resolved = path.resolve(storedPath);
+    const root = landosArtifactPath('browser-shots');
+    if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const buf = fs.readFileSync(resolved);
+      return new Response(new Uint8Array(buf), {
+        headers: { 'content-type': 'image/png', 'cache-control': 'private, no-store' },
+      });
+    } catch {
+      return c.json({ error: 'data-center map not found' }, 404);
+    }
+  });
+
+  app.get('/api/landos/deal-cards/:id/comp-image/:apn', (c) => {
+    const id = Number(c.req.param('id'));
+    const apn = c.req.param('apn');
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'not found' }, 404);
+    if (!/^[A-Za-z0-9_-]+$/.test(apn)) return c.json({ error: 'invalid apn' }, 400);
+    const file = `deal${id}_comp_${apn}.png`;
+    const root = landosArtifactPath('browser-shots');
+    const resolved = path.resolve(root, file);
+    if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const buf = fs.readFileSync(resolved);
+      return new Response(new Uint8Array(buf), {
+        headers: { 'content-type': 'image/png', 'cache-control': 'private, max-age=3600' },
+      });
+    } catch {
+      return c.json({ error: 'comp image not found' }, 404);
+    }
   });
 
   // Resolution view data — the Property Resolution trace for a NOT-yet-confirmed
@@ -3857,9 +4228,60 @@ export function registerLandosRoutes(app: Hono): void {
     const d = deal as { title?: string; propertyCards?: Array<Record<string, unknown>> };
     const pc = d.propertyCards?.[0] ?? {};
     const sv = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    // A no-match lead may have no county on the Property Card. Use retained
+    // parcel-page geography for area Market Matrix context only; it never feeds
+    // subject geometry or parcel facts.
+    const inspection = Number.isInteger(Number(pc.id)) ? loadPropertyInspection(Number(pc.id)) : null;
+    const lpFact = (...labels: string[]): string | undefined => {
+      for (const label of labels) {
+        const value = sv(inspection?.parcelFacts?.[label]);
+        if (value && value !== '-') return value;
+      }
+      return undefined;
+    };
+    const marketState = sv(pc.state) ?? lpFact('Parcel Address State');
+    const marketCounty = sv(pc.fips) ?? sv(pc.county) ?? lpFact('Parcel Address County');
     const zip = sv(pc.zip) ?? extractZipCandidate(sv(pc.active_input_address) ?? sv(d.title));
     const acres = typeof pc.acres === 'number' && pc.acres > 0 ? pc.acres : null;
-    return resolveMarketMatrixSection({ state: sv(pc.state), county: sv(pc.fips) ?? sv(pc.county), zip, acres, side: 'sold' });
+    if (acres != null && acres >= 50) {
+      return buildMarketMatrixReportSection(resolveMarketMatrix({
+        state: marketState,
+        county: marketCounty,
+        zip,
+        acreageBand: acres < 100 ? '50-100' : '100+',
+        side: 'sold',
+      }));
+    }
+    return resolveMarketMatrixSection({ state: marketState, county: marketCounty, zip, acres, side: 'sold' });
+  };
+
+  // SOP 10B: property-scoped market context joined at read time from the
+  // LandOS Market Research store (never from LandPortal market panels).
+  const marketContextFor = (deal: unknown): PropertyMarketContext => {
+    const d = deal as { id?: number; title?: string; propertyCards?: Array<Record<string, unknown>> };
+    const pc = d.propertyCards?.[0] ?? {};
+    const sv = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    const inspection = Number.isInteger(Number(pc.id)) ? loadPropertyInspection(Number(pc.id)) : null;
+    const lpFact = (...labels: string[]): string | undefined => {
+      for (const label of labels) {
+        const value = sv(inspection?.parcelFacts?.[label]);
+        if (value && value !== '-') return value;
+      }
+      return undefined;
+    };
+    // The confirmed situs is often street-only and the card ZIP may be blank;
+    // the retained raw lead input keeps the operator-typed ZIP.
+    const rawLeadZip = (): string | undefined => {
+      if (!Number.isInteger(d.id)) return undefined;
+      const rawInput = getOpportunityByDealCardId(d.id as number).rawInput ?? '';
+      return extractZipCandidate(rawInput.split(/\r?\n/)[0] ?? '');
+    };
+    return propertyMarketContextFor({
+      county: sv(pc.fips) ?? sv(pc.county) ?? lpFact('Parcel Address County') ?? null,
+      state: sv(pc.state) ?? lpFact('Parcel Address State') ?? null,
+      zip: sv(pc.zip) ?? extractZipCandidate(sv(pc.active_input_address) ?? sv(d.title)) ?? rawLeadZip() ?? null,
+      acres: typeof pc.acres === 'number' && pc.acres > 0 ? pc.acres : null,
+    });
   };
 
   // Pursuit decision (Strategy's ONE question) + the Executive Orchestrator
@@ -4390,28 +4812,34 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const cardId = subjectCardId(deal) ?? null;
-    const prop = (deal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
-    const report = getDealCardReport(id);
     const terminalStatus = terminalParcelStatus(deal);
     if (terminalStatus) return c.json(terminalParcelError(terminalStatus), 409);
+    // Completed staged LandPortal packages are immutable evidence records. The
+    // normal reconcile action is their single promotion boundary: it performs
+    // no browser/provider work and makes every Deal Card workspace consume the
+    // standard property, inspection, visual, comp, identity, and market stores.
+    const stagedPromotion = reconcilePersistedLandPortalEvidence(id);
+    const refreshedDeal = getDealCard(id) ?? deal;
+    const refreshedProp = (refreshedDeal.propertyCards?.[0] ?? {}) as Record<string, unknown>;
+    const refreshedReport = getDealCardReport(id);
     const result = reconcileDealCard({
       dealCardId: id,
       cardId,
       subject: {
-        state: str(prop.state) ?? null,
-        county: str(prop.county) ?? null,
-        acres: typeof prop.acres === 'number' ? (prop.acres as number) : null,
+        state: str(refreshedProp.state) ?? null,
+        county: str(refreshedProp.county) ?? null,
+        acres: typeof refreshedProp.acres === 'number' ? (refreshedProp.acres as number) : null,
       },
-      reportLanes: (report.marketComps as unknown as ReportCompLanes) ?? null,
+      reportLanes: (refreshedReport.marketComps as unknown as ReportCompLanes) ?? null,
     });
-    const registry = compRegistryForDeal(id, { state: str(prop.state) ?? null, county: str(prop.county) ?? null }, (report.marketComps as unknown as ReportCompLanes) ?? null);
+    const registry = compRegistryForDeal(id, { state: str(refreshedProp.state) ?? null, county: str(refreshedProp.county) ?? null }, (refreshedReport.marketComps as unknown as ReportCompLanes) ?? null);
     const modelVersion = modelVersionForCard(cardId, registry);
     // Refresh the RAG index from the card's accepted evidence (idempotent —
     // content-hash keyed, no external calls, no paid providers).
     let ragSynced = 0;
-    try { ragSynced = ingestCardEvidence({ dealCardId: id, cardId, county: str(prop.county) ?? null, state: str(prop.state) ?? null, apn: str(prop.apn) ?? null, address: str(prop.active_input_address) ?? null }).length; } catch { ragSynced = 0; }
+    try { ragSynced = ingestCardEvidence({ dealCardId: id, cardId, county: str(refreshedProp.county) ?? null, state: str(refreshedProp.state) ?? null, apn: str(refreshedProp.apn) ?? null, address: str(refreshedProp.active_input_address) ?? null }).length; } catch { ragSynced = 0; }
     landosAudit('landos/reconcile', 'deal_card_reconciled', `deal ${id}: ${result.note}`, { refTable: 'landos_deal_card', refId: id });
-    return c.json({ ...result, modelVersion, ragSynced });
+    return c.json({ ...result, stagedPromotion, modelVersion, ragSynced });
   });
 
   // ── Embedded LandOS comp map (final deduplicated registry, every property) ──
@@ -4716,6 +5144,59 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({ uploads: listDocumentUploads(id) });
   });
 
+  app.patch('/api/landos/deal-cards/:id/documents/uploads/:uploadId', async (c) => {
+    const id = Number(c.req.param('id'));
+    const uploadId = Number(c.req.param('uploadId'));
+    const deal = Number.isInteger(id) && Number.isInteger(uploadId) ? getDealCard(id) : undefined;
+    if (!deal) return c.json({ error: 'document not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const category = str(body.category);
+    if (category && !UPLOAD_CATEGORIES.some((row) => row.value === category)) return c.json({ error: 'invalid category' }, 400);
+    try {
+      const upload = updateDocumentUpload(id, uploadId, {
+        title: str(body.title),
+        category: category as RegisteredDocument['category'] | undefined,
+        docType: str(body.docType),
+        documentDate: body.documentDate === null ? null : str(body.documentDate),
+        note: body.note === null ? null : str(body.note),
+      });
+      if (!upload) return c.json({ error: 'document not found' }, 404);
+      const cardId = subjectCardId(deal);
+      if (cardId) attachCardActivity({
+        cardId,
+        agentId: 'landos/documents',
+        kind: 'document_updated',
+        summary: `Operator updated document metadata for "${upload.title}".`,
+        ref: `upload:${uploadId}`,
+      });
+      return c.json({ upload, uploads: listDocumentUploads(id) });
+    } catch (error) {
+      return c.json({ error: (error as Error).message }, 400);
+    }
+  });
+
+  app.delete('/api/landos/deal-cards/:id/documents/uploads/:uploadId', (c) => {
+    const id = Number(c.req.param('id'));
+    const uploadId = Number(c.req.param('uploadId'));
+    const deal = Number.isInteger(id) && Number.isInteger(uploadId) ? getDealCard(id) : undefined;
+    if (!deal) return c.json({ error: 'document not found' }, 404);
+    const removed = removeDocumentUpload(id, uploadId);
+    if (!removed) return c.json({ error: 'document not found' }, 404);
+    const cardId = subjectCardId(deal);
+    if (cardId) attachCardActivity({
+      cardId,
+      agentId: 'landos/documents',
+      kind: 'document_deleted',
+      summary: `Operator removed "${removed.title}" from this Deal Card.`,
+      ref: `upload:${uploadId}`,
+    });
+    landosAudit('landos/documents', 'document_deleted', `deal ${id}: ${removed.title}`, {
+      refTable: 'landos_deal_card',
+      refId: id,
+    });
+    return c.json({ deleted: true, uploadId, uploads: listDocumentUploads(id) });
+  });
+
   app.get('/api/landos/deal-cards/:id/documents/upload-file/:file', (c) => {
     const id = Number(c.req.param('id'));
     const file = c.req.param('file');
@@ -4758,7 +5239,7 @@ export function registerLandosRoutes(app: Hono): void {
   // Resolve the deal's SUBJECT property card id (seller facts + county records
   // are stored on it). undefined when no property card is linked yet.
   const subjectCardId = (deal: unknown): number | undefined =>
-    ((deal as { propertyCards?: Array<Record<string, unknown>> }).propertyCards?.[0]?.id) as number | undefined;
+    resolveSubjectPropertyCard(deal).cardId ?? undefined;
 
   // Free government DD provider readiness (dormant by default; no live call).
   app.get('/api/landos/dd-providers/status', (c) => c.json(govDdProvidersStatus()));
@@ -4900,6 +5381,15 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     upsertSellerProfile(id, (body.profile ?? body) as Record<string, never>);
+    const cardId = subjectCardId(getDealCard(id)!);
+    if (cardId) {
+      attachCardActivity({
+        cardId,
+        agentId: 'landos/acquisitions',
+        kind: 'seller_profile_updated',
+        summary: 'Seller and CRM details were updated on the Deal Card.',
+      });
+    }
     return c.json(acqView(id), 201);
   });
   app.post('/api/landos/deal-cards/:id/acquisition/comm', async (c) => {
@@ -4907,18 +5397,87 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const channel = (COMM_CHANNELS as readonly string[]).includes(str(b.channel) ?? '') ? (b.channel as CommChannel) : 'other';
+    const communicationType = str(b.type);
+    if (communicationType && !['call', 'text', 'email', 'note', 'transcript'].includes(communicationType)) {
+      return c.json({ error: 'invalid communication type' }, 400);
+    }
     if (!str(b.summary)) return c.json({ error: 'summary is required' }, 400);
     addCommLogEntry(id, {
+      type: communicationType as 'call' | 'text' | 'email' | 'note' | 'transcript' | undefined,
       at: str(b.at) ?? new Date().toISOString(), channel,
       direction: b.direction === 'inbound' ? 'inbound' : 'outbound',
       summary: str(b.summary)!, notes: str(b.notes),
+      outcome: str(b.outcome),
+      followUpDate: str(b.followUpDate),
       sentiment: (str(b.sentiment) as never) ?? 'unknown',
       keyFacts: Array.isArray(b.keyFacts) ? (b.keyFacts as string[]) : [],
       objections: Array.isArray(b.objections) ? (b.objections as string[]) : [],
       commitments: Array.isArray(b.commitments) ? (b.commitments as string[]) : [],
       followUpNeeded: b.followUpNeeded === true,
     });
+    const cardId = subjectCardId(getDealCard(id)!);
+    if (cardId) {
+      attachCardActivity({
+        cardId,
+        agentId: 'landos/acquisitions',
+        kind: 'communication_added',
+        summary: `${b.direction === 'inbound' ? 'Inbound' : 'Outbound'} ${String(channel).replace(/_/g, ' ')} recorded: ${str(b.summary)!.slice(0, 180)}`,
+      });
+    }
     return c.json(acqView(id), 201);
+  });
+
+  app.patch('/api/landos/deal-cards/:id/acquisition/comm/:commId', async (c) => {
+    const id = Number(c.req.param('id'));
+    const commId = decodeURIComponent(c.req.param('commId'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const channel = str(body.channel);
+    if (channel && !(COMM_CHANNELS as readonly string[]).includes(channel)) return c.json({ error: 'invalid channel' }, 400);
+    const direction = str(body.direction);
+    if (direction && !['inbound', 'outbound'].includes(direction)) return c.json({ error: 'invalid direction' }, 400);
+    const communicationType = str(body.type);
+    if (communicationType && !['call', 'text', 'email', 'note', 'transcript'].includes(communicationType)) {
+      return c.json({ error: 'invalid communication type' }, 400);
+    }
+    const updated = updateCommLogEntry(id, commId, {
+      type: communicationType as 'call' | 'text' | 'email' | 'note' | 'transcript' | undefined,
+      at: str(body.at),
+      channel: channel as CommChannel | undefined,
+      direction: direction as 'inbound' | 'outbound' | undefined,
+      summary: str(body.summary),
+      notes: str(body.notes),
+      outcome: str(body.outcome),
+      followUpDate: str(body.followUpDate),
+      followUpNeeded: body.followUpNeeded === undefined ? undefined : body.followUpNeeded === true,
+    });
+    if (!updated) return c.json({ error: 'communication not found' }, 404);
+    const cardId = subjectCardId(getDealCard(id)!);
+    if (cardId) attachCardActivity({
+      cardId,
+      agentId: 'landos/acquisitions',
+      kind: 'communication_updated',
+      summary: `Communication updated: ${str(body.summary)?.slice(0, 180) ?? commId}.`,
+      ref: `communication:${commId}`,
+    });
+    return c.json(acqView(id));
+  });
+
+  app.delete('/api/landos/deal-cards/:id/acquisition/comm/:commId', (c) => {
+    const id = Number(c.req.param('id'));
+    const commId = decodeURIComponent(c.req.param('commId'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const updated = deleteCommLogEntry(id, commId);
+    if (!updated) return c.json({ error: 'communication not found' }, 404);
+    const cardId = subjectCardId(getDealCard(id)!);
+    if (cardId) attachCardActivity({
+      cardId,
+      agentId: 'landos/acquisitions',
+      kind: 'communication_deleted',
+      summary: 'Communication removed from this Deal Card.',
+      ref: `communication:${commId}`,
+    });
+    return c.json(acqView(id));
   });
   app.post('/api/landos/deal-cards/:id/acquisition/discovery', async (c) => {
     const id = Number(c.req.param('id'));
@@ -4936,6 +5495,17 @@ export function registerLandosRoutes(app: Hono): void {
     const stage = str(b.stage);
     if (!isAcquisitionStage(stage)) return c.json({ error: 'invalid stage' }, 400);
     setAcquisitionStage(id, stage as AcquisitionStage);
+    const cardId = subjectCardId(getDealCard(id)!);
+    if (cardId) {
+      attachCardActivity({
+        cardId,
+        agentId: 'landos/acquisitions',
+        kind: stage === 'ready_for_offer_prep' ? 'offer_started' : 'stage_advanced',
+        summary: stage === 'ready_for_offer_prep'
+          ? 'Offer preparation started from the Deal Card.'
+          : `CRM stage advanced to ${ACQUISITION_STAGE_LABEL[stage as AcquisitionStage]}.`,
+      });
+    }
     return c.json(acqView(id), 201);
   });
   // Generate a follow-up DRAFT only — NEVER sends anything.
@@ -5750,6 +6320,56 @@ export function registerLandosRoutes(app: Hono): void {
   // 180s budget, so a genuinely dead provider is still caught quickly.
   const OFFICIAL_PARCEL_LOOKUP_TIMEOUT_MS = 60_000;
 
+  const retainedBrowserGovernment = (
+    inspection: ReturnType<typeof loadPropertyInspection>,
+    locality?: { county?: string | null; state?: string | null },
+  ) => {
+    const rawSources = (inspection?.sources ?? []).filter((source) =>
+      source.stage.startsWith('county_')
+      || /county|assessor|appraiser|gis|recorder|deed|tax|planning|zoning|clerk/i.test(`${source.provider} ${source.stage}`))
+      .filter((source) =>
+        !isRejectedParcelRecordDestination(source.url)
+        && !containsRejectedParcelRecordDestination(source.note))
+      .filter((source) => !source.url
+        || (officialDomainScore(source.url, locality?.county ?? undefined, locality?.state ?? undefined) > 0
+          && !sourceContradictsRequestedState(
+            { text: source.provider, href: source.url },
+            locality?.county ?? undefined,
+            locality?.state ?? undefined,
+          )));
+    const actualSources = rawSources.some((source) => source.provider !== 'County Records Browser')
+      ? rawSources.filter((source) => source.provider !== 'County Records Browser')
+      : rawSources;
+    const attempts = actualSources
+      .filter((source) => source.status !== 'not_attempted' && source.status !== 'not_configured')
+      .map((source) => ({
+        source: source.provider,
+        url: source.url ?? null,
+        status: source.resultKind ?? (source.status === 'used'
+          ? 'retrieved' as const
+          : source.status === 'fallback'
+            ? 'useful_indication' as const
+            : source.status === 'partial'
+              ? 'attempted_inconclusive' as const
+              : 'execution_failure' as const),
+        note: source.note,
+        attemptedAt: source.attemptedAt ?? undefined,
+      }));
+    const sourceNames = new Set(actualSources.map((source) => source.provider));
+    const facts = (inspection?.evidence ?? [])
+      .filter((item) => item.status === 'verified' && !!item.source && sourceNames.has(item.source))
+      .map((item) => ({
+        field: item.label,
+        value: item.detail,
+        source: item.source!,
+        url: item.url ?? null,
+        classification: /deed|recording|grantor|grantee|book.?page|instrument/i.test(item.label)
+          ? 'recorded_instrument' as const
+          : 'official_record' as const,
+      }));
+    return { attempts, facts };
+  };
+
   const runPublicIntelligenceForDealCard = async (id: number, suppliedReportLanes?: ReportCompLanes | null): Promise<
     | { ok: true; saved: unknown; parcel: { address: string | null; county: string | null; state: string | null; apn: string | null; acres: number | null; sourceUrl: string | null } }
     | { ok: false; error: string; attempted?: unknown }
@@ -5779,32 +6399,11 @@ export function registerLandosRoutes(app: Hono): void {
     if (!lookup.parcel) {
       const retainedResolved = new PublicIntelligenceStore().loadLatestResolved(id);
       const retainedVerification = verificationFromStoredPublicIntelligence(retainedResolved);
-      if (retainedResolved && retainedVerification?.identity) {
-        const retainedEvidence = retainedResolved.run.tasks
-          .find((task) => task.task === 'county_records')?.evidence
-          .find((item) => item.sourceTier === 'official_county_state');
-        try {
-          synchronizePropertySummaryForDeal({
-            dealCardId: id,
-            actor: 'public-property-intelligence',
-            changeReason: 'Retained the last accepted official parcel and rebuilt its Property Summary from persisted evidence.',
-          });
-        } catch (error) {
-          logger.warn({ err: error, dealCardId: id }, 'property_summary_retained_sync_failed');
-        }
-        return {
-          ok: true,
-          saved: retainedResolved,
-          parcel: {
-            address: retainedVerification.identity.situsAddress ?? null,
-            county: retainedVerification.identity.county ?? null,
-            state: retainedVerification.identity.state ?? null,
-            apn: retainedVerification.identity.apn ?? null,
-            acres: retainedVerification.identity.acres ?? null,
-            sourceUrl: retainedEvidence?.sourceUrl ?? null,
-          },
-        };
-      }
+      // A retained accepted identity may inform reconciliation, but it must not
+      // short-circuit a new operator run. The former early return resurfaced an
+      // older task graph and falsely reported newly connected soil/utility
+      // collectors as "not run." Continue through the live discovery adapters
+      // below and preserve retained identity fields only as fallback context.
       const requestedApn = str(property.apn);
       const acresValue = Number(property.acres);
       const propertyCardId = subjectCardId(deal);
@@ -5825,6 +6424,7 @@ export function registerLandosRoutes(app: Hono): void {
           parcelFacts: inspection.parcelFacts,
           assetCount: inspection.assets.length,
           sourceLabel: 'LandPortal authenticated parcel panel',
+          verifiedSubject: inspection.parcelUrlRecord?.verifiedSubject === true,
         } : null,
         official: {
           status: lookup.status,
@@ -5833,20 +6433,39 @@ export function registerLandosRoutes(app: Hono): void {
           parcel: null,
         },
       });
+      const cardLat = Number(
+        property.lat
+        ?? property.latitude
+        ?? inspection?.parcelFacts['Centroid Latitude']
+        ?? inspection?.parcelFacts.Latitude,
+      );
+      const cardLng = Number(
+        property.lng
+        ?? property.longitude
+        ?? inspection?.parcelFacts['Centroid Longitude']
+        ?? inspection?.parcelFacts.Longitude,
+      );
+      const cardCoordinates = Number.isFinite(cardLat) && Number.isFinite(cardLng)
+        ? { lat: cardLat, lng: cardLng }
+        : undefined;
       const subject: PublicIntelligenceSubject = {
         rawInput,
-        normalizedAddress: str(discovery.patch.address) ?? str(property.address),
-        county: str(discovery.patch.county) ?? lookupCounty,
-        state: str(discovery.patch.state) ?? str(property.state),
+        normalizedAddress: str(discovery.patch.address) ?? retainedVerification?.identity?.situsAddress ?? str(property.address),
+        county: str(discovery.patch.county) ?? retainedVerification?.identity?.county ?? lookupCounty,
+        state: str(discovery.patch.state) ?? retainedVerification?.identity?.state ?? str(property.state),
         zip: str(discovery.patch.zip) ?? str(property.zip),
         requestedApn,
-        resolvedApn: discovery.discoveryUsable ? str(discovery.patch.apn) ?? requestedApn : undefined,
+        resolvedApn: discovery.discoveryUsable
+          ? str(discovery.patch.apn) ?? retainedVerification?.identity?.apn ?? requestedApn
+          : retainedVerification?.identity?.apn ?? undefined,
         resolutionStatus: discovery.state,
         discoveryUsable: discovery.discoveryUsable,
         resolutionExplanation: discovery.discoveryBasis,
-        coordinates: discovery.patch.coordinates,
+        coordinates: discovery.patch.coordinates ?? cardCoordinates,
         assessedAcres: Number(discovery.patch.acres) > 0
           ? Number(discovery.patch.acres)
+          : Number(retainedVerification?.identity?.acres) > 0
+            ? Number(retainedVerification?.identity?.acres)
           : Number.isFinite(acresValue) && acresValue > 0 ? acresValue : undefined,
       };
       const seedRegistry = compRegistryForDeal(id, {
@@ -5855,9 +6474,45 @@ export function registerLandosRoutes(app: Hono): void {
         zip: subject.zip ?? null,
         acres: subject.assessedAcres ?? null,
       }, reportLanes);
+      const practicalSources = practicalOfficialParcelSources({
+        county: subject.county,
+        state: subject.state,
+      });
+      const sourceUrl = (source: string): string | null =>
+        practicalSources.find((candidate) =>
+          source.toLowerCase().includes(candidate.source.toLowerCase())
+          || candidate.source.toLowerCase().includes(source.toLowerCase()))?.url ?? null;
+      const practicalAttempts: Parameters<typeof makePracticalSubjectAttemptAdapters>[0] = [
+        ...lookup.attempted.map((attempt) => ({
+          source: attempt.source,
+          url: sourceUrl(attempt.source),
+          status: attempt.status === 'no_match' ? 'no_match' as const : 'unavailable' as const,
+          note: attempt.note,
+        })),
+      ];
+      const retainedBrowser = retainedBrowserGovernment(inspection, { county: subject.county, state: subject.state });
+      practicalAttempts.push(...retainedBrowser.attempts);
+      const soilOverlay = inspection?.overlays.find((overlay) => /soil/i.test(overlay.overlay)) ?? null;
       const orchestratorRun = await runPropertyIntelligenceOrchestrator({
         subject,
-        adapters: [],
+        // The structured official lookup and the authenticated county-browser
+        // pass already ran immediately above. Carry those real source attempts
+        // into the canonical task graph instead of erasing them with an empty
+        // adapter list merely because neither returned official geometry.
+        adapters: [
+          ...makePracticalSubjectAttemptAdapters(practicalAttempts, retainedBrowser.facts),
+          ...makePracticalDiscoveryScreeningAdapters({
+            county: subject.county,
+            state: subject.state,
+            coordinates: subject.coordinates,
+            parcelSourceUrl: inspection?.parcelUrl,
+            soilOverlay: soilOverlay ? {
+              status: soilOverlay.status,
+              note: soilOverlay.note,
+              sourceUrl: inspection?.parcelUrl,
+            } : null,
+          }),
+        ],
         compJobs: [],
         retainedCompRuns: retainedCompRunsFromReport(reportLanes),
         captureMode: 'live',
@@ -5910,7 +6565,15 @@ export function registerLandosRoutes(app: Hono): void {
     }
     const parcel = lookup.parcel;
     const subject = publicSubjectFromOfficialParcel(parcel, rawInput);
-    const adapters = makeLivePublicIntelligenceAdapters(parcel);
+    const cardInspection = subjectCardId(deal);
+    const retainedBrowser = retainedBrowserGovernment(
+      cardInspection ? loadPropertyInspection(cardInspection) : null,
+      { county: subject.county, state: subject.state },
+    );
+    const adapters = [
+      ...makeLivePublicIntelligenceAdapters(parcel),
+      ...makePracticalSubjectAttemptAdapters(retainedBrowser.attempts, retainedBrowser.facts),
+    ];
     const seedRegistry = compRegistryForDeal(id, {
       state: subject.state ?? null,
       county: subject.county ?? null,
@@ -6054,8 +6717,14 @@ export function registerLandosRoutes(app: Hono): void {
   // snapshot is written back to THIS Deal Card and becomes the primary read.
   const propertyIntelligenceStore = new PropertyIntelligenceStore();
   const propertyResearchStore = new PropertyResearchStore();
+  // Leave bounded headroom inside the 300-second parcel-identity mission for
+  // the subsequent official parcel lookup and public-intelligence task graph.
+  // runPropertyInspection shares this budget across LandPortal + county work.
+  const SUBJECT_INSPECTION_TIMEOUT_MS = 120_000;
 
   const propertyIntelligenceCollectors = (dealCardId: number) => makeLivePropertyIntelligenceCollectors({
+    persistProviderResult: (result) => propertyResearchStore.persistProviderResult(result),
+    captureHermesLandPortal: (input) => runHermesLandPortalLane(input),
     runPublicIntelligence: async (id) => {
       const result = await runPublicIntelligenceForDealCard(id);
       return result.ok ? { ok: true } : { ok: false, error: result.error };
@@ -6100,10 +6769,61 @@ export function registerLandosRoutes(app: Hono): void {
         sold: soldResult.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
           address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
           url: comp.url, status: comp.status, saleDate: comp.soldDate ?? null,
+          listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
+          thumbnailUrl: comp.thumbnailUrl ?? null,
+          collectedAt: new Date().toISOString(),
         })),
         active: activeResult.comps.filter((comp) => comp.status === 'active').map((comp) => ({
           address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
           url: comp.url, status: comp.status, saleDate: comp.listingDate ?? null,
+          listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
+          thumbnailUrl: comp.thumbnailUrl ?? null,
+          collectedAt: new Date().toISOString(),
+        })),
+      };
+    },
+    captureManufacturedHomeComps: async (input) => {
+      const result = await fetchZillowLandComps({
+        ...publicLocalityFallback(dealCardId, {
+          address: input.address ?? undefined,
+          city: input.city ?? undefined,
+          county: input.county ?? undefined,
+          state: input.state ?? undefined,
+          zip: input.zip ?? undefined,
+          apn: input.apn ?? undefined,
+          owner: input.owner ?? undefined,
+          lat: input.lat,
+          lng: input.lng,
+        }),
+        lat: input.lat,
+        lng: input.lng,
+        propertyType: 'manufactured',
+        mode: 'sold',
+        radiusMiles: 5,
+        dateWindowMonths: 24,
+      });
+      return {
+        status: result.status,
+        note: result.note,
+        searchProof: result.searchProof,
+        active: [],
+        sold: result.comps.map((comp) => ({
+          address: comp.address,
+          price: comp.price,
+          acres: comp.acres,
+          pricePerAcre: comp.pricePerAcre,
+          url: comp.url,
+          status: comp.status,
+          saleDate: comp.soldDate ?? null,
+          collectedAt: new Date().toISOString(),
+          lat: comp.lat ?? null,
+          lng: comp.lng ?? null,
+          distanceMiles: comp.lat != null && comp.lng != null
+            ? distanceMiles({ lat: input.lat, lng: input.lng }, { lat: comp.lat, lng: comp.lng })
+            : null,
+          homeType: comp.homeType ?? null,
+          yearBuilt: comp.yearBuilt ?? null,
+          homeSizeSqft: comp.homeSizeSqft ?? null,
         })),
       };
     },
@@ -6144,10 +6864,16 @@ export function registerLandosRoutes(app: Hono): void {
         sold: soldResult.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
           address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
           url: comp.url, status: comp.status, saleDate: comp.soldDate ?? null,
+          listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
+          thumbnailUrl: comp.thumbnailUrl ?? null,
+          collectedAt: new Date().toISOString(),
         })),
         active: activeResult.comps.filter((comp) => comp.status === 'active').map((comp) => ({
           address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
           url: comp.url, status: comp.status, saleDate: comp.listingDate ?? null,
+          listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
+          thumbnailUrl: comp.thumbnailUrl ?? null,
+          collectedAt: new Date().toISOString(),
         })),
       };
     },
@@ -6186,13 +6912,18 @@ export function registerLandosRoutes(app: Hono): void {
         // core facts was the bootstrap defect that left official coverage
         // permanently "not attempted."
         mode: 'deep_record',
-        timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
+        timeoutMs: SUBJECT_INSPECTION_TIMEOUT_MS,
       }, {
         landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
         countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
-        googleVisualConfigured: false,
+        googleVisualConfigured: googleVisualConfiguredResolved(),
       }));
       persistPropertyInspection(cardId, result.inspection);
+      // runPropertyInspection reaches this point only after the deterministic
+      // LandPortal parcel checkpoint. Bind the exact URL to this Property Card
+      // immediately so later lanes classify its facts and visuals as subject
+      // evidence instead of trusting a generic retained parcel URL.
+      promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
       const landPortalRoute = result.routes.find((route) => route.provider === 'LandPortal');
       const count = result.inspection.comparables?.length ?? 0;
       return {
@@ -6226,15 +6957,331 @@ export function registerLandosRoutes(app: Hono): void {
   // ONE operator action creates ONE parent mission on the Phase 4 mission graph.
   // Its children reuse the collectors and research systems that already work;
   // its join is assembled and analysed into ONE current snapshot.
-  const dealIntelligenceCapabilities = (dealCardId: number) => ({
+  const operatorMarketScanForDeal = async (id: number, deal: ReturnType<typeof getDealCard>): Promise<MarketScanResult | null> => {
+    if (!deal) return null;
+    const cached = loadMarketScan<MarketScanResult>(id, 'market_scan');
+    const answered = (status: string | undefined): boolean => status === 'found' || status === 'none_found';
+    const cacheAnswered = !!cached
+      && (answered(cached.payload.dataCenterWatch?.status) || answered(cached.payload.growthSignals?.status));
+    const cacheFresh = cacheAnswered
+      && !!cached?.payload.dataCenterWatch?.browserMapEvidence
+      && Math.floor(Date.now() / 1000) - cached!.createdAt < 7 * 24 * 3600;
+    if (cacheFresh) return rehydrateCachedAcreageMatrix(deal, cached!.payload);
+    const cards = (Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>;
+    const subject = cards.find((card) => card.role === 'subject') ?? cards[0];
+    const subjectInspection = Number.isInteger(Number(subject?.id))
+      ? loadPropertyInspection(Number(subject?.id))
+      : null;
+    const dd = getDealCardDd(id);
+    const scan = await runMarketScan({
+      county: str(subject?.county) || dd.county || undefined,
+      state: str(subject?.state) || dd.state || undefined,
+      search: groundedScanSearch(),
+      internalCountySnapshots: internalCountySnapshotsForDeal(deal),
+      subjectAcres: num(subject?.acres),
+    });
+    if (!scan.dataCenterWatch.browserMapEvidence) {
+      const acceptedIdentityCoordinates = propertyIntelligenceStore.primaryRun(id)?.snapshot?.identity.coordinates;
+      const lat = num(subject?.lat)
+        ?? num(subject?.latitude)
+        ?? num(subjectInspection?.parcelFacts['Centroid Latitude'])
+        ?? num(subjectInspection?.parcelFacts.Latitude)
+        ?? num(acceptedIdentityCoordinates?.lat);
+      const lng = num(subject?.lng)
+        ?? num(subject?.longitude)
+        ?? num(subjectInspection?.parcelFacts['Centroid Longitude'])
+        ?? num(subjectInspection?.parcelFacts.Longitude)
+        ?? num(acceptedIdentityCoordinates?.lng);
+      const browserState = await ensureBrowserSession().catch(() => 'unreachable' as const);
+      const mapResult = await runBrockovichDataCenterMap({
+        lat,
+        lng,
+        driver: makeLiveBrowserDriver('brockovich_data_center'),
+      });
+      logger.info({
+        dealCardId: id,
+        browserState,
+        status: mapResult.status,
+        projectCount: mapResult.projects.length,
+        screenshotCaptured: !!mapResult.screenshotPath,
+        note: mapResult.note,
+      }, 'brockovich_data_center_map_result');
+      if (mapResult.status === 'found' || mapResult.status === 'none_found') {
+        scan.dataCenterWatch = {
+          ...scan.dataCenterWatch,
+          status: mapResult.status,
+          items: mapResult.projects.map((project) => ({
+            title: project.title,
+            operatorOrDeveloper: project.operatorOrDeveloper,
+            location: project.location,
+            distanceMiles: project.distanceMiles,
+            status: project.status === 'operational' ? 'mention'
+              : project.status === 'community_reported' ? 'community_opposition'
+                : project.status === 'unknown' ? 'mention'
+                  : project.status,
+            summary: project.summary,
+            whyItMatters: 'A mapped data-center project inside the subject’s 20-mile trade area can signal institutional land demand and utility investment.',
+            url: project.sourceUrl ?? mapResult.sourceUrl,
+            year: null,
+          })),
+          summary: mapResult.projects.length
+            ? `${mapResult.projects.length} Brockovich data-center project(s) are mapped within 20 miles of the subject.`
+            : 'No Brockovich data-center project with mappable coordinates was found within 20 miles of the subject.',
+          note: mapResult.note,
+          browserMapEvidence: {
+            sourceUrl: mapResult.sourceUrl,
+            subject: mapResult.subject!,
+            radiusMiles: mapResult.radiusMiles,
+            screenshotPath: mapResult.screenshotPath,
+            attemptedAt: mapResult.attemptedAt,
+          },
+        };
+      } else {
+        scan.dataCenterWatch.note = `${scan.dataCenterWatch.note} Brockovich map: ${mapResult.note}`;
+      }
+    }
+    if (answered(scan.dataCenterWatch.status) || answered(scan.growthSignals.status)) {
+      saveMarketScan(id, 'market_scan', scan);
+      return scan;
+    }
+    return cacheAnswered ? cached!.payload : scan;
+  };
+
+  // Explicit operator refresh for the primary Brockovich browser-map evidence.
+  // The response never exposes the stored filesystem path; the existing
+  // token-gated image route serves the screenshot after a successful capture.
+  app.post('/api/landos/deal-cards/:id/data-center-map/refresh', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const scan = await operatorMarketScanForDeal(id, deal);
+    const result = scan?.dataCenterWatch;
+    return c.json({
+      status: result?.status ?? 'not_run',
+      summary: result?.summary ?? 'The data-center map did not return a result.',
+      note: result?.note ?? null,
+      sourceUrl: result?.browserMapEvidence?.sourceUrl ?? null,
+      attemptedAt: result?.browserMapEvidence?.attemptedAt ?? null,
+      projectCount: result?.items?.length ?? 0,
+      screenshotUrl: result?.browserMapEvidence?.screenshotPath
+        ? `/api/landos/deal-cards/${id}/data-center-map`
+        : null,
+    });
+  });
+
+  const researchAttemptStatus = (
+    taskStatus: PublicIntelligenceRun['tasks'][number]['status'],
+    attempts: number,
+    evidenceCount: number,
+  ): ResearchAttemptStatus => {
+    if (taskStatus === 'succeeded') return evidenceCount > 0 ? 'retrieved' : 'useful_indication';
+    if (taskStatus === 'partial') return evidenceCount > 0 ? 'useful_indication' : 'attempted_inconclusive';
+    if (taskStatus === 'failed' || taskStatus === 'timed_out') return attempts > 0 ? 'not_run_system_failure' : 'not_run';
+    if (taskStatus === 'unavailable') return attempts > 0 ? 'source_unavailable' : 'not_run';
+    if (taskStatus === 'blocked') return attempts > 0 ? 'attempted_inconclusive' : 'not_run';
+    return 'not_run';
+  };
+
+  const operatorResearchAttempts = (run: PublicIntelligenceRun | null): OperatorResearchAttempt[] => {
+    if (!run) return [];
+    return run.tasks.flatMap<OperatorResearchAttempt>((task) => {
+      const actualProviders = (task.providerOutcomes ?? []).filter((outcome) => outcome.attemptCount > 0);
+      const attempts = Math.max(task.attempts ?? 0, actualProviders.reduce((sum, outcome) => sum + outcome.attemptCount, 0));
+      const firstEvidence = task.evidence.find((item) => !!item.sourceUrl);
+      const common: OperatorResearchAttempt = {
+        key: task.task,
+        label: task.label,
+        category: task.role,
+        source: actualProviders.map((outcome) => outcome.providerId).join(', ')
+          || firstEvidence?.sourceName
+          || task.diagnostics.adapterId
+          || 'No source connected',
+        url: firstEvidence?.sourceUrl ?? null,
+        attemptCount: attempts,
+        status: researchAttemptStatus(task.status, attempts, task.evidence.length),
+        result: task.finding?.summary ?? task.failureReason ?? task.operatorMessage ?? 'No result was returned.',
+        artifactIds: task.evidence.map((item) => item.evidenceId),
+        attemptedAt: task.startedAt || null,
+      };
+      if (task.diagnostics.adapterId !== 'practical_subject_government_attempts_v1') return [common];
+      const exactSources = task.evidence
+        .filter((item) => !!item.sourceUrl)
+        .filter((item, index, all) => all.findIndex((candidate) =>
+          candidate.sourceName === item.sourceName && candidate.sourceUrl === item.sourceUrl) === index);
+      if (!exactSources.length) return [common];
+      return exactSources.map((evidence) => {
+        const limitation = evidence.limitation ?? 'The source was attempted; no source-specific result text was retained.';
+        const attemptStatus = limitation.match(/Actual attempt status:\s*([a-z_]+)/i)?.[1]?.toLowerCase() ?? '';
+        const status: ResearchAttemptStatus =
+          /unavailable|error|failure/.test(attemptStatus) ? 'source_unavailable'
+            : /not_found|no_match/.test(attemptStatus) ? 'not_found'
+              : /retrieved|used/.test(attemptStatus) ? 'retrieved'
+                : /partial|useful_indication/.test(attemptStatus) ? 'useful_indication'
+                  : 'attempted_inconclusive';
+        return {
+          ...common,
+          key: `${task.task}:${evidence.evidenceId}`,
+          label: evidence.sourceName,
+          source: evidence.sourceName,
+          url: evidence.sourceUrl ?? null,
+          attemptCount: 1,
+          status,
+          result: limitation,
+          artifactIds: [evidence.evidenceId],
+          attemptedAt: evidence.retrievedAt || task.startedAt || null,
+        };
+      });
+    });
+  };
+
+  const dealOperatorContext = async (id: number): Promise<DealOperatorContext> => {
+    const deal = getDealCard(id);
+    if (!deal) throw new Error('deal card not found');
+    const acquisition = getAcquisition(id);
+    const profile = acquisition.profile;
+    const people = (deal.people ?? []) as Array<Record<string, unknown>>;
+    const person = people.find((row) => ['seller', 'lead_contact'].includes(String(row.role ?? ''))) ?? people[0];
+    const cardId = subjectCardId(deal) ?? null;
+    const publicRun = new PublicIntelligenceStore().load(id)?.run ?? null;
+    const money = (value: unknown): number | null => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      const parsed = Number(String(value ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+    const normalizeNote = (value: unknown): string => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const propertyAddressNotes = new Set(
+      ((Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>)
+        .flatMap((card) => [card.active_input_address, card.address, card.situs, card.normalized_address])
+        .map(normalizeNote)
+        .filter(Boolean),
+    );
+    const normalizedLegacySellerNote = normalizeNote(deal.seller_notes);
+    const legacySellerNoteIsAddress = normalizedLegacySellerNote.length > 8
+      && [...propertyAddressNotes].some((address) =>
+        address.length > 8
+        && (normalizedLegacySellerNote === address
+          || normalizedLegacySellerNote.startsWith(`${address} `)
+          || address.startsWith(`${normalizedLegacySellerNote} `)));
+    const legacySellerNote = legacySellerNoteIsAddress ? null : deal.seller_notes;
+    const notes = [
+      legacySellerNote,
+      profile.motivation,
+      profile.personalityNotes,
+      profile.communicationStyle,
+      ...(profile.sellerStatedFacts ?? []),
+      ...acquisition.discovery.map((entry) => entry.rawNotes),
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    const next = acquisitionNextAction(acquisition, { ddParcelVerified: true });
+    const tasks = [
+      { label: next.label, dueAt: profile.nextFollowUpDate ?? null, status: 'open' },
+      ...(deal.nextActions ?? []).map((item) => ({
+        label: String(item.action ?? item.label ?? item.summary ?? 'Review next action'),
+        dueAt: typeof item.due_at === 'string' ? item.due_at : null,
+        status: String(item.status ?? 'open'),
+      })),
+    ];
+    const activity = cardId ? getCardActivity(cardId, 200) : [];
+    const latestVision = cardId ? loadCardVisionAnalysis(cardId) : null;
+    return {
+      seller: {
+        name: profile.name?.trim() || str(person?.name) || null,
+        phone: profile.phone?.trim() || str(person?.phone) || null,
+        email: profile.email?.trim() || str(person?.email) || null,
+        notes,
+        askingPrice: money(profile.askingPrice) ?? deal.asking_price,
+        timeline: profile.timeline?.trim() || acquisition.discovery[0]?.timeline || null,
+        responsiveness: acquisition.commLog.length ? `Last contact ${acquisition.commLog[0].at}; ${acquisition.commLog.length} retained communication(s).` : null,
+        flexibility: profile.priceFlexibility?.trim() || null,
+        decisionAuthority: profile.decisionMakers?.trim() || str(person?.authority_status) || null,
+        ownershipContext: profile.relationshipToProperty?.trim() || str(person?.role) || null,
+        followUpDate: profile.nextFollowUpDate?.trim() || null,
+        offerHistory: activity.filter((event) => /offer/i.test(`${event.kind} ${event.summary}`)).map((event) => event.summary),
+        communications: acquisition.commLog.map((entry) => ({ kind: `${entry.direction} ${entry.channel}`, at: entry.at, summary: entry.summary })),
+        tasks,
+      },
+      researchAttempts: operatorResearchAttempts(publicRun),
+      marketScan: await operatorMarketScanForDeal(id, deal),
+      marketWorksheet: getDealCardMarket(id),
+      visualAnalysis: latestVision ? {
+        ok: latestVision.ok,
+        model: latestVision.model,
+        summary: latestVision.summary,
+        analyzed: latestVision.analyzed,
+        observations: latestVision.observations,
+        note: latestVision.note ?? null,
+      } : null,
+    };
+  };
+
+  const dealIntelligenceCapabilities = (dealCardId: number): DealIntelligenceCapabilities => ({
     collectors: propertyIntelligenceCollectors(dealCardId),
     // The existing LandPortal + county subject-research system, reused as a
     // child-mission capability. Phase 5 does not rebuild it.
     // Market Matrix + Market Pulse, read through the same code the Market tab uses.
     marketPulse: async (id: number) => {
       const deal = getDealCard(id);
-      const matrix = deal ? marketMatrixFor(deal) : null;
-      const pulseResult = await marketPulseForDeal(id).catch(() => null);
+      const canonical = canonicalPropertyInputForDeal(id);
+      const providerRunId = missionGraphStore.activeMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, id)?.missionId
+        ?? `deal-${id}-market-${Date.now()}`;
+      const contextAdapter = <T,>(input: {
+        laneId: string;
+        providerId: string;
+        execute: () => Promise<T>;
+        evidence: (result: T) => Array<{ field: string; value: unknown; sourceUrl?: string | null }>;
+      }): PropertyProviderAdapter<T> => ({
+        laneId: input.laneId,
+        providerId: input.providerId,
+        execute: input.execute,
+        validate: () => ({
+          valid: true,
+          subjectClassification: 'context_only',
+          checks: [{ check: 'context_provider_settled', passed: true, reason: `${input.providerId} returned an explicit handback.` }],
+          rejectedEvidenceIds: [],
+        }),
+        normalize: (property, result) => input.evidence(result).filter((item) => item.value != null && String(item.value).trim()).map((item, index): NormalizedPropertyEvidence => ({
+          id: `${input.laneId}:${item.field || index}`,
+          propertyCardId: property.propertyCardId,
+          dealCardId: property.dealCardId,
+          providerId: input.providerId,
+          field: item.field,
+          value: item.value,
+          subjectClassification: 'context_only',
+          strength: 'context_only',
+          sourceUrl: item.sourceUrl ?? null,
+          retrievedAt: new Date().toISOString(),
+          confidence: 'medium',
+          kind: 'fact',
+          validation: { valid: true, reasons: [] },
+        })),
+        status: (_property, _result, _validation, evidence) => evidence.length ? 'context_only' : 'unavailable',
+      });
+      const runLane = async <T,>(adapter: PropertyProviderAdapter<T>): Promise<T> => {
+        if (!canonical) return adapter.execute({} as never);
+        const result = await executePropertyProvider({ runId: providerRunId, property: canonical, adapter });
+        return propertyResearchStore.persistProviderResult(result).execution.result as T;
+      };
+      // Market Matrix is a local read. Market Pulse and the grounded Market
+      // Scan (including the Brockovich data-center research) are independent
+      // provider lanes, so they must begin together after identity rather than
+      // making one provider's latency a prerequisite for the other.
+      const [matrix, pulseResult, marketScan] = await Promise.all([
+        runLane(contextAdapter({
+          laneId: 'market_matrix', providerId: 'landos_market_matrix',
+          execute: async () => deal ? marketMatrixFor(deal) : null,
+          evidence: (result) => result ? [{ field: 'market_matrix', value: result }] : [],
+        })),
+        runLane(contextAdapter({
+          laneId: 'market_pulse', providerId: 'landos_market_pulse',
+          execute: () => marketPulseForDeal(id).catch(() => null),
+          evidence: (result) => result?.marketPulse ? [{ field: 'market_pulse', value: result.marketPulse }] : [],
+        })),
+        runLane(contextAdapter({
+          laneId: 'data_center', providerId: 'brockovich_data_center_map',
+          execute: () => deal ? operatorMarketScanForDeal(id, deal).catch(() => null) : Promise.resolve(null),
+          evidence: (result) => result?.dataCenterWatch ? [{ field: 'data_center_watch', value: result.dataCenterWatch, sourceUrl: result.dataCenterWatch.browserMapEvidence?.sourceUrl ?? null }] : [],
+        })),
+      ]);
       const pulse = pulseResult?.marketPulse ?? null;
       const now = new Date().toISOString();
       const facts: SnapshotFact[] = [];
@@ -6282,6 +7329,7 @@ export function registerLandosRoutes(app: Hono): void {
       return {
         marketMatrix: matrix ?? null,
         marketPulse: pulse,
+        marketScan,
         facts,
         summary: matrix && pulse
           ? 'Market Matrix and Market Pulse assembled for the subject market.'
@@ -6291,6 +7339,25 @@ export function registerLandosRoutes(app: Hono): void {
               ? 'Market Pulse assembled; no Market Matrix resolved for this market.'
               : 'Neither a Market Matrix nor a Market Pulse could be assembled for this market. This is a LandOS coverage gap, not evidence that the market has no activity.',
       };
+    },
+    operatorContext: dealOperatorContext,
+    operatorAnalyst: async (input) => {
+      const deal = getDealCard(dealCardId);
+      const cardId = deal ? subjectCardId(deal) : null;
+      const model = process.env.BROWSER_VISION_MODEL || 'gemini-3-flash-preview';
+      const previousVisualSnapshot = propertyIntelligenceStore
+        .history(dealCardId, 10)
+        .map((row) => row.snapshot)
+        .find((snapshot) =>
+          snapshot?.operatorAnalysis?.analyst.mode === 'multimodal_llm_assisted'
+          && snapshot.operatorAnalysis.analyst.reviewedImages.length > 0) ?? null;
+      return runWholeCardOperatorAnalyst({
+        ...input,
+        previousVisualSnapshot,
+        images: cardId ? gatherCardImages(cardId) : [],
+        generate: generateVisionContent,
+        model,
+      });
     },
   });
 
@@ -6321,6 +7388,7 @@ export function registerLandosRoutes(app: Hono): void {
         purpose: child.purpose,
         role: child.role,
         dependsOn: child.dependsOn,
+        awaits: child.awaits,
         missionId: child.identity.missionId,
         group: child.identity.group,
         assignedRole: child.identity.assignedRole,
@@ -6352,12 +7420,603 @@ export function registerLandosRoutes(app: Hono): void {
     const primary = propertyIntelligenceStore.primaryRun(dealCardId);
     const latest = propertyIntelligenceStore.latestRun(dealCardId);
     const progressRun = latest ?? primary;
+    const storedSnapshot = primary?.snapshot ?? null;
+    let snapshot = storedSnapshot ? presentPropertyIntelligenceSnapshot(storedSnapshot) : null;
+    if (snapshot) {
+      const deal = getDealCard(dealCardId);
+      const acquisition = getAcquisition(dealCardId);
+      const subject = ((deal?.propertyCards ?? []) as Array<Record<string, unknown>>)
+        .find((card) => card.role === 'subject')
+        ?? ((deal?.propertyCards ?? []) as Array<Record<string, unknown>>)[0]
+        ?? {};
+      const accessEvidence = [
+        ...snapshot.facts.map((fact) => `${fact.key} ${fact.label} ${fact.value ?? ''}`),
+        ...snapshot.dueDiligence.map((item) => `${item.key} ${item.label} ${item.headline} ${item.detail ?? ''}`),
+      ].join(' ');
+      const accessStatus =
+        /\bprivate[- ]road(?: only)?\b/i.test(accessEvidence) ? 'private_road_only' as const
+          : /\blandlocked\b.{0,30}\byes\b|\bno mapped (?:road )?contact\b/i.test(accessEvidence) ? 'no_mapped_contact' as const
+            : /\blandlocked\b.{0,30}\bno\b|\broad frontage\b.{0,30}\d/i.test(accessEvidence) ? 'public_road_proximity' as const
+              : 'unknown' as const;
+      const zoning = snapshot.dueDiligence.find((item) => /zoning|land use/i.test(`${item.key} ${item.label}`)) ?? null;
+      const utilities = snapshot.dueDiligence.find((item) => /utilit|power|water|sewer/i.test(`${item.key} ${item.label}`)) ?? null;
+      const identityUsable = snapshot.identity.state === 'confirmed'
+        || (snapshot.identity.state === 'provisional' && snapshot.identity.discoveryUsable === true);
+      const currentBlockers = snapshot.blockers.filter((blocker) => {
+        if (identityUsable
+          && /parcel identity.*(?:provisional|unidentified|missing|not (?:been )?identified)|subject identity.*(?:missing|unresolved)|confirm the parcel against/i.test(blocker)) return false;
+        if (snapshot!.evidence.length
+          && /evidence and property screenshots.*did not contribute|no screenshots, documents or source links have been retained/i.test(blocker)) return false;
+        if (snapshot!.comps.sold.length
+          && /no (?:accepted |retained )?(?:sold )?comparable|comparables.*did not contribute/i.test(blocker)) return false;
+        if (snapshot!.valuation.priceable
+          && /not priceable|no (?:defensible )?value basis/i.test(blocker)) return false;
+        return true;
+      });
+      const synthesized = buildPropertyIntelligenceStrategies({
+        identityState: snapshot.identity.state,
+        discoveryIdentityUsable: snapshot.identity.discoveryUsable,
+        identityBasis: snapshot.identity.discoveryBasis ?? snapshot.identity.explanation,
+        subjectAcres: snapshot.identity.acres,
+        valuation: snapshot.valuation,
+        dueDiligence: snapshot.dueDiligence,
+        zoning: zoning?.headline ?? zoning?.detail ?? null,
+        zoningKnown: !!zoning && !['unresolved_question', 'unavailable_public_record'].includes(zoning.grade),
+        utilitiesKnown: !!utilities && !['unresolved_question', 'unavailable_public_record'].includes(utilities.grade),
+        utilitiesSummary: utilities?.headline ?? utilities?.detail ?? null,
+        accessStatus,
+        landHomeCompCount: snapshot.comps.landHomeOnly.length,
+        acceptedSoldCount: snapshot.comps.sold.length,
+        activeListingCount: snapshot.comps.active.length,
+        missionBlockers: currentBlockers,
+      });
+      snapshot = presentPropertyIntelligenceSnapshot(storedSnapshot!, {
+        strategies: synthesized.strategies,
+        recommendation: synthesized.recommendation,
+        extraBlockers: currentBlockers,
+      });
+      // The confirmed situs is often street-only. The operator's accepted lead
+      // input retains the full address; when that input extends the confirmed
+      // street it is exposed for display, together with the canonical
+      // LandPortal property identifier retained on the subject card. Stored
+      // identity fields are never rewritten.
+      {
+        const identityKeyOf = (value: string): string =>
+          value.normalize('NFKC').replace(/[^a-zA-Z0-9]/g, '').toLocaleLowerCase('en-US');
+        const situsStreet = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
+        let displayAddress: string | null = null;
+        if (situsStreet) {
+          const rawLeadInput = getOpportunityByDealCardId(dealCardId).rawInput ?? '';
+          // Tolerate an operator lead-in label ("New seller lead: 1487 …")
+          // before the address; only the address-through-ZIP span is compared.
+          const candidate = (rawLeadInput.split(/\r?\n/)[0] ?? '')
+            .replace(/^[^:]{0,80}:\s*/, '')
+            .match(/^(.*?\b\d{5}(?:-\d{4})?)(?!\d)/)?.[1]?.trim() ?? '';
+          if (candidate
+            && identityKeyOf(candidate).startsWith(identityKeyOf(situsStreet))
+            && identityKeyOf(candidate).length > identityKeyOf(situsStreet).length) {
+            displayAddress = candidate;
+          }
+        }
+        snapshot.identity = {
+          ...snapshot.identity,
+          displayAddress: displayAddress ?? situsStreet ?? null,
+          lpPropertyId: str(subject.lp_property_id) || null,
+        };
+      }
+      // Direct LandPortal retakes are cumulative property-inspection evidence,
+      // while the promoted intelligence snapshot is intentionally immutable.
+      // Project the newest retained asset for each visual category into this
+      // read without starting a mission or creating a second gallery record.
+      const retainedVisualInspection = subjectCardId(deal) != null ? loadPropertyInspection(subjectCardId(deal)!) : null;
+      const visualKey = (value: string): string | null => {
+        const compact = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (/roadfrontage/.test(compact)) return 'road_frontage_aerial';
+        // Wider-context captures are their own category: a newer context shot
+        // must never displace the close-parcel hero, and vice versa.
+        if (/parcelcontext|widercontext|neighborcontext/.test(compact)) return 'parcel_context';
+        if (/closeparcelaerial|parcelpage/.test(compact)) return 'close_parcel_aerial';
+        // Contour must resolve before the 3D bucket: "Contour terrain view"
+        // also matches the 3D bucket's terrain-view alias.
+        if (/contour/.test(compact)) return 'contour_terrain_view';
+        if (/front(?:side)?3d|3dterrain|terrainview/.test(compact)) return 'front_side_3d';
+        if (/rear(?:side)?3d/.test(compact)) return 'rear_side_3d';
+        if (/wetland/.test(compact)) return 'wetlands_overlay';
+        if (/soil/.test(compact)) return 'soil_overlay';
+        if (/terrain/.test(compact)) return 'contour_terrain_view';
+        if (/fema|floodplain|floodoverlay/.test(compact)) return 'fema_flood_overlay';
+        if (/comparablesmap|compsmap/.test(compact)) return 'comps_map';
+        return null;
+      };
+      const retainedVisuals = new Map<string, NonNullable<ReturnType<typeof loadPropertyInspection>>['assets'][number]>();
+      const resolvedSubjectCardId = subjectCardId(deal);
+      for (const asset of retainedVisualInspection?.assets ?? []) {
+        if (!usableInspectionAsset(asset)) continue;
+        if (!resolvedSubjectCardId || !isAcceptedLandPortalVisualForProperty(asset.validation, resolvedSubjectCardId)) continue;
+        const key = visualKey(`${asset.key} ${asset.label}`);
+        if (key) retainedVisuals.set(key, asset);
+      }
+      const projectedVisualEvidence: SnapshotEvidenceItem[] = snapshot.evidence.flatMap((item): SnapshotEvidenceItem[] => {
+        const key = visualKey(`${item.label} ${item.sourceType}`);
+        const asset = key ? retainedVisuals.get(key) : null;
+        // Inspection-backed visual evidence with a missing/blank retained file
+        // is omitted from every consumer. The persisted record remains intact.
+        if (key && /landportal|inspection|direct action/i.test(`${item.sourceType} ${item.viewUrl ?? ''}`) && !asset) return [];
+        if (!asset || subjectCardId(deal) == null) return [item];
+        const subjectVisualVerified = asset.validation?.subjectClassification === 'verified_subject'
+          && retainedVisualInspection?.parcelUrlRecord?.verifiedSubject === true;
+        const label = subjectVisualVerified ? asset.label : `LandPortal context — ${asset.label}`;
+        return [{
+          ...item,
+          id: `inspection-${asset.key}`,
+          label,
+          sourceType: subjectVisualVerified ? 'LandPortal direct action runner' : 'landportal_context',
+          sourceUrl: retainedVisualInspection?.parcelUrl ?? item.sourceUrl,
+          viewUrl: `/api/landos/inspection/image?cardId=${subjectCardId(deal)}&key=${encodeURIComponent(asset.key)}`,
+          retrievedAt: asset.timestamp,
+          confidence: subjectVisualVerified ? 'high' : 'low' as 'low' | 'high',
+          supports: subjectVisualVerified ? asset.purpose : 'context_visual_evidence',
+        }];
+      });
+      const presentVisualKeys = new Set(projectedVisualEvidence.map((item) => visualKey(`${item.label} ${item.sourceType}`)).filter((key): key is string => !!key));
+      for (const [key, asset] of retainedVisuals) {
+        if (presentVisualKeys.has(key) || subjectCardId(deal) == null) continue;
+        const subjectVisualVerified = asset.validation?.subjectClassification === 'verified_subject'
+          && retainedVisualInspection?.parcelUrlRecord?.verifiedSubject === true;
+        const label = subjectVisualVerified ? asset.label : `LandPortal context — ${asset.label}`;
+        projectedVisualEvidence.push({
+          id: `inspection-${asset.key}`,
+          kind: asset.kind === 'overlay' ? 'overlay' : 'screenshot',
+          label,
+          sourceType: subjectVisualVerified ? 'LandPortal direct action runner' : 'landportal_context',
+          sourceUrl: retainedVisualInspection?.parcelUrl ?? null,
+          viewUrl: `/api/landos/inspection/image?cardId=${subjectCardId(deal)}&key=${encodeURIComponent(asset.key)}`,
+          retrievedAt: asset.timestamp,
+          confidence: subjectVisualVerified ? 'high' : 'low' as 'low' | 'high',
+          supports: subjectVisualVerified ? asset.purpose : 'context_visual_evidence',
+          sha256: null,
+          bytes: null,
+        });
+      }
+      snapshot.evidence = projectedVisualEvidence;
+      // Route-time projection keeps retained LandPortal sidebar evidence
+      // visible on historical snapshots without starting a new mission. The
+      // estimate is an additional source indication, never the LandOS working
+      // value or a replacement for the comp-based valuation.
+      const retainedInspection = subjectCardId(deal) != null ? loadPropertyInspection(subjectCardId(deal)!) : null;
+      const estimateCapturedAt = retainedInspection?.sources
+        .filter((source) => source.provider === 'LandPortal' && source.attemptedAt)
+        .map((source) => source.attemptedAt as string)
+        .sort()
+        .at(-1)
+        ?? snapshot.completedAt
+        ?? primary?.updatedAt
+        ?? null;
+      const estimateFacts = Object.entries(retainedInspection?.parcelFacts ?? {})
+        .filter(([label, value]) => value && (/^estimate\s*(price|ppa|price\s*per\s*acre|value|total)$/i.test(label.trim()) || /^lp\s*estimate\s*(price|ppa|value|total)?$/i.test(label.trim())))
+        .map(([label, value]) => ({
+          key: /ppa|price\s*per\s*acre/i.test(label) ? 'lpEstimatePerAcre' : 'lpEstimateTotal',
+          label: /ppa|price\s*per\s*acre/i.test(label) ? 'LandPortal LP Estimate · Price per acre' : 'LandPortal LP Estimate · Total',
+          value,
+          grade: 'likely_indication' as const,
+          source: 'LandPortal authenticated parcel sidebar',
+          sourceUrl: retainedInspection?.parcelUrl ?? null,
+          retrievedAt: estimateCapturedAt,
+          note: 'Retained LandPortal subject estimate; additional source indication only. LandOS working value remains separate.',
+        }));
+      if (estimateFacts.length) {
+        const seenEstimateKeys = new Set(snapshot.facts.filter((fact) => /^lpEstimate/.test(fact.key)).map((fact) => fact.key));
+        snapshot.facts = [...snapshot.facts, ...estimateFacts.filter((fact) => !seenEstimateKeys.has(fact.key))];
+      }
+      const persistedSpecialistStates = snapshot.specialists;
+      const currentFact = (pattern: RegExp): string | null => {
+        const fact = snapshot!.facts.find((item) => item.value && pattern.test(`${item.key} ${item.label}`));
+        return fact?.value ?? null;
+      };
+      snapshot.specialists = snapshot.specialists.map((specialist) => {
+        if (specialist.id === 'parcel_identity' && identityUsable) {
+          return { ...specialist, status: 'completed', summary: `Practical subject identity is confirmed for discovery: ${snapshot!.identity.apn ?? 'APN retained'} · ${snapshot!.identity.county ?? 'jurisdiction retained'} · ${snapshot!.identity.acres ?? 'acreage retained'} acres.` };
+        }
+        if (specialist.id === 'government_records' && identityUsable) {
+          return { ...specialist, status: 'partial', summary: 'Practical parcel identity is confirmed for discovery. Official county, deed, title, and recorded-instrument retrieval remains normal offer-stage diligence and does not block analysis.' };
+        }
+        if (specialist.id === 'zoning_land_use' && identityUsable) {
+          return { ...specialist, status: 'partial', summary: 'Practical parcel identity is confirmed. Governing zoning and subdivision rules remain normal diligence; the missing official zoning record does not put the Deal Card back into Resolution.' };
+        }
+        if (specialist.id === 'environmental_terrain') {
+          const retained = [
+            currentFact(/wetland/),
+            currentFact(/fema|flood/),
+            currentFact(/buildab/),
+            currentFact(/under[_\s-]*(?:10|ten).*slope|slope.*(?:10|ten)/),
+          ].filter(Boolean);
+          if (retained.length) return { ...specialist, status: 'partial', summary: `Retained parcel screening: ${retained.join(' · ')}. Provider screening is usable for current analysis; field and official-source confirmation remain normal diligence.` };
+        }
+        if (specialist.id === 'access_utilities') {
+          const retained = [currentFact(/landlocked|land locked/), currentFact(/road[_\s-]*frontage|frontage feet/)].filter(Boolean);
+          if (retained.length) return { ...specialist, status: 'partial', summary: `Retained access screening: ${retained.join(' · ')}. Legal access and parcel-level utility service remain to be confirmed.` };
+        }
+        if (specialist.id === 'comparables' && snapshot!.comps.sold.length) {
+          return { ...specialist, status: 'completed', summary: `${snapshot!.comps.sold.length} unique retained sold comparable(s) are active in the canonical comp registry and support the current valuation.` };
+        }
+        if (specialist.id === 'market_intelligence' && snapshot!.facts.some((fact) => /market_matrix/.test(fact.key))) {
+          return { ...specialist, status: 'completed', summary: 'Native subject-band, overall-market, and county acreage-band Market Matrix evidence is active in the current read.' };
+        }
+        if (specialist.id === 'evidence_visuals' && snapshot!.evidence.length) {
+          return { ...specialist, status: 'completed', summary: `${snapshot!.evidence.length} retained visual evidence item(s) are active in the normal Deal Card visual registry.` };
+        }
+        if (specialist.id === 'valuation' && snapshot!.valuation.priceable) {
+          return { ...specialist, status: 'completed', summary: `${snapshot!.comps.sold.length} retained sold comparable(s) support the current ${snapshot!.valuation.confidence}-confidence value range.` };
+        }
+        if (specialist.id === 'strategy' && synthesized.recommendation.preferredStrategy) {
+          return { ...specialist, status: 'completed', summary: `All five approved strategies were recomputed from the current identity, property, comp, market, valuation, and seller evidence.` };
+        }
+        return specialist;
+      });
+      // Mission child state is historical execution truth. Route projection may
+      // enrich facts, but it must not infer and overwrite task completion.
+      snapshot.specialists = persistedSpecialistStates;
+      if (identityUsable) {
+        const staleIdentityGap = /parcel identity.*(?:provisional|unidentified|missing|not (?:been )?identified)|subject identity.*(?:missing|unresolved)|confirm the parcel against/i;
+        snapshot.missingInformation = snapshot.missingInformation.filter((item) =>
+          !staleIdentityGap.test(item)
+          && !(snapshot!.evidence.length && /no screenshots, documents or source links have been retained/i.test(item)));
+        snapshot.nextActions = snapshot.nextActions.filter((item) => !staleIdentityGap.test(item));
+      }
+
+      // The persisted package keeps the provider's native percentages. Format
+      // those values once in the canonical read so every workspace shows both
+      // percentage and approximate affected acres without screen-specific data.
+      snapshot.facts = snapshot.facts.map((fact) => {
+        if (!['wetlands', 'fema', 'under_ten_slope'].includes(fact.key) || snapshot!.identity.acres == null) return fact;
+        const raw = String(fact.value ?? '').trim();
+        const percent = Number(raw.replace(/[^0-9.-]/g, ''));
+        if (!Number.isFinite(percent) || percent < 0 || percent > 100) return fact;
+        const acres = (snapshot!.identity.acres! * percent) / 100;
+        return { ...fact, value: `${percent.toFixed(2)}% · approximately ${acres.toFixed(2)} acres` };
+      });
+
+      const marketInspection = Number.isInteger(Number(subject.id)) ? loadPropertyInspection(Number(subject.id)) : null;
+      const marketFactValue = (...labels: string[]): string | undefined => {
+        for (const label of labels) {
+          const value = str(marketInspection?.parcelFacts?.[label]);
+          if (value && value !== '-') return value;
+        }
+        return undefined;
+      };
+      const marketState = str(subject.state) || marketFactValue('Parcel Address State') || snapshot.identity.state_ || undefined;
+      const marketCounty = str(subject.fips) || str(subject.county) || marketFactValue('Parcel Address County') || snapshot.identity.county || undefined;
+      const subjectZip = str(subject.zip) || marketFactValue('Parcel Address Zip Code') || (deal ? extractZipCandidate(str(subject.active_input_address) || str(deal.title)) : undefined);
+      const retainedCountySnapshots = deal ? internalCountySnapshotsForDeal(deal) : [];
+      const retainedPulseSample = retainedCountySnapshots
+        .filter((row) => row.side === 'sold' && row.metrics.medianPricePerAcre != null)
+        .sort((a, b) => b.period.localeCompare(a.period))[0] ?? retainedCountySnapshots[0] ?? null;
+      const retainedPulseMetrics = retainedPulseSample?.metrics ?? null;
+      const retainedPulseSummary = retainedPulseSample
+        ? `Area context only: ${retainedPulseSample.coverage}. ${retainedPulseMetrics?.medianPricePerAcre != null ? `Median price per acre: $${Math.round(retainedPulseMetrics.medianPricePerAcre).toLocaleString('en-US')}. ` : ''}${retainedPulseMetrics?.populationGrowth != null ? `Population growth: ${retainedPulseMetrics.populationGrowth}%.` : 'Population growth is not established in the retained snapshot.'} Parcel-level valuation remains separate and is pending accepted closed subject-band evidence.`
+        : null;
+      const subjectMatrix = deal ? marketMatrixFor(deal) : null;
+      const overallMatrix = deal ? buildMarketMatrixReportSection(resolveMarketMatrix({
+        state: marketState,
+        county: marketCounty,
+        zip: subjectZip,
+        acreageBand: 'all',
+        side: 'sold',
+      })) : null;
+      const marketFact = (
+        key: string,
+        label: string,
+        section: ReturnType<typeof resolveMarketMatrixSection> | null,
+      ): SnapshotFact | null => {
+        if (!section?.available) return null;
+        const geographyLabel = section.coverageLevel === 'zip' && subjectZip
+          ? `ZIP ${subjectZip}`
+          : section.coverageLabel;
+        const metrics = section.fields
+          .filter((field) => !field.unknown && field.value != null)
+          .map((field) => `${field.label}: ${field.value}`)
+          .join(' · ');
+        return {
+          key,
+          label: `${label} — ${geographyLabel}`,
+          value: [
+            section.acreageBandUsed,
+            section.period,
+            metrics,
+          ].filter(Boolean).join(' · '),
+          grade: 'likely_indication',
+          source: section.source ?? section.provider ?? 'LandOS Market Matrix',
+          sourceUrl: null,
+          retrievedAt: primary?.updatedAt ?? snapshot!.completedAt ?? '',
+          note: section.note,
+        };
+      };
+      const pulseFact: SnapshotFact = {
+        key: 'market_pulse',
+        label: 'Market Pulse',
+        value: overallMatrix?.available
+          ? `Area context only: ${overallMatrix.coverageLabel} retained ${overallMatrix.period ?? 'a'} Market Research snapshot. ${overallMatrix.fields.filter((field) => !field.unknown && field.value != null).slice(0, 3).map((field) => `${field.label}: ${field.value}`).join(' · ') || 'Population growth and county pricing are not established in the retained snapshot.'} Parcel-level valuation remains separate and is pending accepted closed subject-band evidence.`
+          : retainedPulseSummary ?? 'Area context only: population growth and county price-per-acre are not established in the retained Market Research snapshot.',
+        grade: 'likely_indication',
+        source: 'LandOS Market Research',
+        sourceUrl: null,
+        retrievedAt: primary?.updatedAt ?? snapshot.completedAt ?? '',
+        note: 'Area context only; this summary does not establish subject parcel identity or valuation.',
+      };
+      const currentMarketFacts = [
+        marketFact('market_matrix_subject', 'Subject acreage band', subjectMatrix),
+        marketFact('market_matrix_overall', 'Overall market', overallMatrix),
+      ].filter((fact): fact is SnapshotFact => fact != null);
+      snapshot.facts = [
+        ...snapshot.facts.filter((fact) => !['market_matrix', 'market_pulse', 'market_matrix_subject', 'market_matrix_overall'].includes(fact.key)),
+        ...currentMarketFacts,
+        pulseFact,
+      ];
+
+      const marketScan = retainedCountySnapshots.length
+        ? {
+            acreageMatrix: buildPracticalMarketMatrix({
+              observations: [],
+              internalCountySnapshots: retainedCountySnapshots,
+              subjectAcres: num(subject.acres) ?? null,
+            }),
+          }
+        : null;
+      // The promoted snapshot is immutable and may predate comp rows accepted
+      // later (for example an incremental Hermes import). Re-screen the
+      // persisted canonical rows through the same source policy and working-set
+      // selection the mission uses, and project them into this read when they
+      // yield more operator-visible rows than the frozen snapshot. The stored
+      // snapshot is never downgraded and never rewritten.
+      {
+        const persistedCompRows = listComps({ dealCardId }).filter((row) => {
+          const source = `${row.canonical_source ?? ''} ${row.source_label ?? ''}`;
+          if (/home\s*harvest|homeharvest|realtor|realie|really\.?ai/i.test(source)) return false;
+          return /landportal|zillow|redfin/i.test(source);
+        });
+        const visibleCompRowCount = (comps: SnapshotComps): number =>
+          comps.sold.length + comps.active.length + (comps.askingReferences?.length ?? 0) + comps.landHomeOnly.length;
+        if (persistedCompRows.length) {
+          const subjectMarketForRead: SubjectMarket = {
+            state: marketState ?? null,
+            county: marketCounty ?? null,
+            zip: subjectZip ?? null,
+            acres: num(subject.acres) ?? snapshot.identity.acres ?? null,
+          };
+          const candidatesForRead = persistedCompRows.map((row) => ({
+            id: row.id,
+            provider: row.canonical_source || row.source_label || 'Unknown',
+            lane: row.price_kind === 'list' ? 'active' : 'sold',
+            addressDesc: row.address_desc || null,
+            apn: row.apn || null,
+            state: row.state || marketState || null,
+            price: typeof row.price === 'number' ? row.price : null,
+            priceKind: row.price_kind || null,
+            saleOrListDate: row.sale_or_list_date || null,
+            acres: typeof row.acres === 'number' ? row.acres : null,
+            pricePerAcre: typeof row.price_per_acre === 'number' ? row.price_per_acre : null,
+            sourceUrl: row.source_url || null,
+            distanceMiles: typeof row.distance_miles === 'number' ? row.distance_miles : null,
+            thumbnailUrl: row.thumbnail_url || null,
+            compClass: row.property_class || null,
+            persistedStatus: row.status || null,
+          } as CompRegistryCandidate));
+          const policyForRead = applyCompSourcePolicy(subjectMarketForRead, candidatesForRead);
+          const workingSetForRead = selectWorkingComps({
+            subject: {
+              acres: num(subject.acres) ?? snapshot.identity.acres ?? null,
+              locality: null,
+              county: marketCounty ?? null,
+              address: snapshot.identity.situs ?? snapshot.identity.normalizedAddress ?? null,
+              apn: snapshot.identity.apn ?? null,
+            },
+            rows: candidateRowsFromPolicy(policyForRead),
+            nowMs: Date.now(),
+            sourceCaps: policyForRead.plan.caps,
+          });
+          const currentComps = workingSetToSnapshotComps(workingSetForRead, {
+            policyExplanation: policyForRead.plan.explanation,
+            landPortalUsable: policyForRead.plan.landPortalUsable,
+            landPortalRowsSeen: policyForRead.plan.landPortalRowsSeen,
+            caps: policyForRead.plan.caps,
+          });
+          // Project the re-screened canonical rows when they yield more
+          // visible rows than the frozen snapshot OR the same number: at equal
+          // counts the same policy over the current canonical rows carries any
+          // later-merged fields (address, sale date, thumbnail, attribution)
+          // without dropping anything. Strictly fewer rows keeps the stored
+          // snapshot — it is never downgraded.
+          const currentCount = visibleCompRowCount(currentComps);
+          const storedCount = visibleCompRowCount(snapshot.comps);
+          if (currentCount > storedCount || (currentCount === storedCount && currentCount > 0)) {
+            currentComps.landHomeSearchProof = snapshot.comps.landHomeSearchProof ?? null;
+            snapshot.comps = currentComps;
+          }
+        }
+        // Field-level enrichment: the frozen snapshot keeps its counts and
+        // classifications, but it must not hide newer accepted canonical comp
+        // fields merged after promotion (LandPortal Show on Map reconciliation
+        // adds address, sale/list date, thumbnail, the comp's own source link,
+        // and its merge attribution). Nothing is removed or reclassified here.
+        {
+          const compactKey = (value: unknown): string => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          const canonicalByApn = new Map<string, ReturnType<typeof listComps>[number]>();
+          for (const row of persistedCompRows) {
+            const key = compactKey(row.apn);
+            if (key) canonicalByApn.set(key, row);
+          }
+          const enrich = (comp: SnapshotComps['sold'][number]): void => {
+            const row = canonicalByApn.get(compactKey(comp.apn));
+            if (!row) return;
+            if (!comp.address && row.address_desc) comp.address = row.address_desc;
+            if (!comp.dateIso && row.sale_or_list_date) comp.dateIso = row.sale_or_list_date;
+            if (!comp.thumbnailUrl && row.thumbnail_url) comp.thumbnailUrl = row.thumbnail_url;
+            // The comp's own retained source page beats a generic subject-parcel
+            // link; a missing link is filled the same way.
+            if (row.source_url && (!comp.sourceUrl || comp.sourceUrl.includes('?property='))) comp.sourceUrl = row.source_url;
+            try {
+              const attributions = JSON.parse(row.source_attributions_json || '[]') as Array<{ provider?: string }>;
+              for (const attribution of attributions) {
+                const provider = str(attribution?.provider);
+                if (!provider) continue;
+                comp.providerAttributions = comp.providerAttributions ?? [];
+                if (!comp.providerAttributions.some((existing) => existing.toLowerCase() === provider.toLowerCase())) {
+                  comp.providerAttributions.push(provider);
+                }
+              }
+            } catch { /* attribution enrichment is best-effort */ }
+          };
+          for (const bucket of [snapshot.comps.sold, snapshot.comps.active, snapshot.comps.landHomeOnly, snapshot.comps.askingReferences ?? []]) {
+            for (const comp of bucket) enrich(comp);
+          }
+        }
+      }
+      const context = emptyDealOperatorContext();
+      const people = (deal?.people ?? []) as Array<Record<string, unknown>>;
+      const person = people.find((row) => ['seller', 'lead_contact'].includes(String(row.role ?? ''))) ?? people[0];
+      const profile = acquisition.profile;
+      const parseMoney = (candidate: unknown): number | null => {
+        if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) return candidate;
+        const parsed = Number(String(candidate ?? '').replace(/[^0-9.-]/g, ''));
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      };
+      context.seller = {
+        name: profile.name?.trim() || str(person?.name) || null,
+        phone: profile.phone?.trim() || str(person?.phone) || null,
+        email: profile.email?.trim() || str(person?.email) || null,
+        notes: [
+          profile.motivation,
+          profile.personalityNotes,
+          profile.communicationStyle,
+          ...(profile.sellerStatedFacts ?? []),
+          ...acquisition.discovery.map((entry) => entry.rawNotes),
+        ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0),
+        askingPrice: parseMoney(profile.askingPrice) ?? deal?.asking_price ?? null,
+        timeline: profile.timeline?.trim() || acquisition.discovery[0]?.timeline || null,
+        responsiveness: acquisition.commLog.length ? `Last contact ${acquisition.commLog[0].at}; ${acquisition.commLog.length} retained communication(s).` : null,
+        flexibility: profile.priceFlexibility?.trim() || null,
+        decisionAuthority: profile.decisionMakers?.trim() || (str(person?.authority_status) === 'unknown' ? null : str(person?.authority_status)) || null,
+        ownershipContext: profile.relationshipToProperty?.trim() || null,
+        followUpDate: profile.nextFollowUpDate?.trim() || null,
+        offerHistory: [],
+        communications: acquisition.commLog.map((entry) => ({ kind: `${entry.direction} ${entry.channel}`, at: entry.at, summary: entry.summary })),
+        tasks: [],
+      };
+      context.marketScan = marketScan;
+      context.marketWorksheet = getDealCardMarket(dealCardId);
+      const packageForRead: DealIntelligenceInputPackage = {
+        dealCardId,
+        missionId: snapshot.missionId ?? snapshot.runId,
+        identity: snapshot.identity,
+        facts: snapshot.facts,
+        marketIntelligence: {
+          marketMatrix: subjectMatrix,
+          marketPulse: overallMatrix ? { plainEnglish: overallMatrix.note } : null,
+          marketScan,
+        },
+        governmentRecords: snapshot.governmentRecords,
+        dueDiligence: snapshot.dueDiligence,
+        comps: snapshot.comps,
+        valuation: snapshot.valuation,
+        strategies: snapshot.strategies,
+        recommendation: snapshot.recommendation,
+        evidence: snapshot.evidence,
+        specialists: snapshot.specialists,
+        gaps: [],
+        requiredGaps: [],
+        missionOutcome: snapshot.headline.confidenceWhy,
+        missionStatus: snapshot.status === 'complete' ? 'joined' : 'joined_with_gaps',
+        packageBlockers: snapshot.blockers,
+        counts: {
+          childrenTotal: snapshot.specialists.length,
+          contributed: snapshot.specialists.filter((item) => item.status === 'completed' || item.status === 'partial').length,
+          accepted: snapshot.specialists.filter((item) => item.status === 'completed').length,
+          incomplete: snapshot.specialists.filter((item) => item.status !== 'completed').length,
+        },
+      };
+      snapshot.operatorAnalysis = buildDealOperatorAnalysis({
+        pkg: packageForRead,
+        context,
+        previousSnapshot: storedSnapshot,
+        generatedAt: primary?.updatedAt ?? snapshot.completedAt ?? '',
+      });
+      const bestCurrentStrategy = snapshot.valuation.priceable
+        ? snapshot.operatorAnalysis.rankedStrategies[0]?.strategy ?? null
+        : null;
+      if (bestCurrentStrategy) {
+        snapshot.recommendation = {
+          ...snapshot.recommendation,
+          preferredStrategy: bestCurrentStrategy,
+          bestExit: bestCurrentStrategy,
+          why: snapshot.operatorAnalysis.overall.mainOpportunity,
+          postureWhy: `${snapshot.recommendation.posture === 'pursue' ? 'Pursue.' : snapshot.recommendation.posture === 'reject' ? 'Do not pursue on current terms.' : 'Hold.'} ${snapshot.operatorAnalysis.overall.recommendation}`,
+        };
+      } else if (!snapshot.valuation.priceable) {
+        snapshot.recommendation = {
+          ...snapshot.recommendation,
+          preferredStrategy: null,
+          bestExit: null,
+          why: 'Strategy selection is pending valuation evidence.',
+          posture: 'hold',
+          postureWhy: `Hold. Strategy selection is pending valuation evidence. ${snapshot.valuation.notPriceableReason ?? 'No defensible value basis is established.'}`,
+        };
+      }
+
+      const currentGovernmentFacts = governmentFactsFromPublicRecordOutcomes(listPublicRecordOutcomes(dealCardId));
+      if (currentGovernmentFacts.length) {
+        const currentKeys = new Set(currentGovernmentFacts.map((fact) =>
+          `${fact.label}\n${fact.value ?? ''}`.toLowerCase()));
+        snapshot.governmentRecords = [
+          ...currentGovernmentFacts,
+          ...snapshot.governmentRecords.filter((fact) =>
+            !currentKeys.has(`${fact.label}\n${fact.value ?? ''}`.toLowerCase())),
+        ];
+      }
+      const currentGovernmentEvidence = governmentArtifactEvidence(
+        dealCardId,
+        readGovernmentRecordsForDeal(dealCardId)?.artifacts ?? [],
+      );
+      if (currentGovernmentEvidence.length) {
+        const currentEvidenceIds = new Set(currentGovernmentEvidence.map((item) => item.id));
+        snapshot.evidence = [
+          ...currentGovernmentEvidence,
+          ...snapshot.evidence.filter((item) => !currentEvidenceIds.has(item.id)),
+        ];
+      }
+    }
+    const linkDeal = getDealCard(dealCardId);
+    const linkCardId = linkDeal ? subjectCardId(linkDeal) : null;
+    const linkInspection = linkCardId ? loadPropertyInspection(linkCardId) : null;
+    const canonicalParcel = linkInspection?.parcelUrlRecord;
+    const subjectParcel = canonicalParcel?.verifiedSubject && isVerifiedLandPortalSubjectUrl(canonicalParcel.url)
+      ? {
+          url: canonicalParcel.url,
+          source: canonicalParcel.source,
+          capturedAt: canonicalParcel.capturedAt,
+          propertyCardId: canonicalParcel.propertyCardId,
+          dealCardId: canonicalParcel.dealCardId ?? dealCardId,
+          verifiedSubject: canonicalParcel.verifiedSubject,
+          apn: canonicalParcel.apn,
+          threeDCapture: linkInspection?.threeDCapture ?? null,
+        }
+      : null;
+    if (snapshot) {
+      snapshot = {
+        ...snapshot,
+        subjectParcelUrl: subjectParcel?.url ?? null,
+        threeDCapture: subjectParcel?.threeDCapture ?? linkInspection?.threeDCapture ?? null,
+      };
+    }
+    if (linkInspection?.threeDCapture?.decision === 'not_applicable' && snapshot) {
+      snapshot.missingInformation = snapshot.missingInformation.filter((item) => !/3d|terrain screenshot|imagery/i.test(item));
+    }
     return {
-      snapshot: primary?.snapshot ? presentPropertyIntelligenceSnapshot(primary.snapshot) : null,
+      snapshot,
+      subjectParcel,
       hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
       providerResearch: (() => {
         const deal = getDealCard(dealCardId);
-        const cardId = subjectCardId(deal) ?? null;
+        const cardId = resolveSubjectPropertyCard(deal).cardId;
         if (cardId == null) return null;
         const canonical = propertyResearchStore.loadForProperty(cardId);
         if (!canonical) return null;
@@ -6404,11 +8063,13 @@ export function registerLandosRoutes(app: Hono): void {
             isPrimary: progressRun.isPrimary,
           }
         : null,
-      specialists: progressRun ? propertyIntelligenceStore.listSpecialists(progressRun.runId).map((row) => ({
+      specialists: progressRun && progressRun.status === 'running'
+        ? propertyIntelligenceStore.listSpecialists(progressRun.runId).map((row) => ({
         id: row.id, label: row.label, role: row.role, status: row.status, summary: row.summary,
         failureCategory: row.failureCategory, failureMessage: row.failureMessage, retryable: row.retryable,
         evidenceCount: row.evidenceCount, startedAt: row.startedAt, completedAt: row.completedAt, durationMs: row.durationMs,
-      })) : [],
+          }))
+        : snapshot?.specialists ?? [],
       history: propertyIntelligenceStore.history(dealCardId, 10).map((row) => ({
         runId: row.runId, sequence: row.sequence, status: row.status,
         startedAt: row.startedAt, completedAt: row.completedAt, isPrimary: row.isPrimary,
@@ -6430,6 +8091,8 @@ export function registerLandosRoutes(app: Hono): void {
       // reviving the obsolete operational-report projection.
       documentRegistry: documentRegistryForCard(cardId, { dealCardId: id }),
       parcelRoster: parcelRosterFor(deal),
+      // SOP 10B read-time join; never sourced from LandPortal market panels.
+      marketContext: marketContextFor(deal),
     });
   });
 
@@ -6467,7 +8130,27 @@ export function registerLandosRoutes(app: Hono): void {
       logger.info({ dealCardId: id, runId: launch.runId, missionId: launch.missionId }, 'deal_intelligence_already_running');
       return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
     }
-    completion.catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_mission_failed'));
+    completion
+      .then(async (snapshot) => {
+        const cardId = subjectCardId(deal);
+        if (!snapshot || !cardId || !googleVisualConfiguredResolved()) return;
+        const capture = await captureAndPersistAcceptedIdentityVisuals({
+          cardId,
+          apn: snapshot.identity.apn,
+          coordinates: snapshot.identity.coordinates,
+          discoveryUsable: snapshot.identity.discoveryUsable === true,
+          discoverySources: snapshot.identity.discoverySources ?? [],
+        }, { env: resolveGoogleVisualEnv(), timeoutMs: 25_000 });
+        logger.info({
+          dealCardId: id,
+          cardId,
+          runId: launch.runId,
+          captured: capture.captured,
+          ok: capture.ok,
+          reason: capture.reason,
+        }, 'deal_intelligence_google_visual_capture');
+      })
+      .catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_mission_failed'));
     if (wait) await completion;
     return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
   });
@@ -6564,7 +8247,21 @@ export function registerLandosRoutes(app: Hono): void {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const mode: BrowserSearchMode = str(body.mode) === 'deep_record' ? 'deep_record' : 'parcel_fact';
     const prop = (deal.propertyCards?.[0] ?? {}) as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null; owner?: string | null; verification_status?: string | null };
-    const searchKey = { address: str(prop.active_input_address ?? undefined), apn: str(prop.apn ?? undefined), county: str(prop.county ?? undefined), state: str(prop.state ?? undefined), owner: str(prop.owner ?? undefined) };
+    const cardId = subjectCardId(deal);
+    const retainedInspection = cardId ? loadPropertyInspection(cardId) : null;
+    const retainedOwner = Object.entries(retainedInspection?.parcelFacts ?? {})
+      .find(([label, value]) => /^owner(\s*name)?$/i.test(label.trim()) && !!String(value ?? '').trim())?.[1];
+    const searchKey = {
+      address: str(prop.active_input_address ?? undefined),
+      apn: str(prop.apn ?? undefined),
+      county: str(prop.county ?? undefined),
+      state: str(prop.state ?? undefined),
+      // A Deal Card can intentionally leave its mutable owner field blank while
+      // the accepted parcel inspection retains the exact LandPortal owner. The
+      // recorder fallback needs that owner only as a search key; the official
+      // result must still repeat the exact subject APN before any fact persists.
+      owner: str(prop.owner ?? undefined) ?? str(retainedOwner),
+    };
     const sellerPerson = (deal.people ?? []).find((p) => { const r = (p as { role?: string }).role; return r === 'seller' || r === 'lead'; }) as { name?: string } | undefined;
     const sellerName = str(sellerPerson?.name);
     const ownerVerified = prop.verification_status === 'verified_property';
@@ -6584,7 +8281,62 @@ export function registerLandosRoutes(app: Hono): void {
     const county = makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') });
     const landportal = await lp.runWorkflow({ searchKey, mode }, hooks);      // LandPortal first
     const countyRecords = await county.runWorkflow({ searchKey, mode }, hooks); // then County Records
-    const cardId = subjectCardId(deal);
+    let recordedGovernmentOutcome: Record<string, unknown> | null = null;
+    const recorderAttempt = countyRecords.sourceAttempts?.find((attempt) =>
+      attempt.sourceType === 'recorder' && attempt.result === 'retrieved');
+    const recorderFacts = countyRecords.facts.filter((fact) =>
+      fact.sourceType === 'recorder' && fact.status === 'extracted');
+    const exactApn = recorderFacts.find((fact) => fact.key === 'apn')?.value;
+    if (
+      recorderAttempt
+      && exactApn
+      && normalizeParcelIdentifier(exactApn) === normalizeParcelIdentifier(searchKey.apn)
+    ) {
+      const factMap = Object.fromEntries(recorderFacts.map((fact) => [fact.key, fact.value]));
+      const instrument = str(factMap.instrumentNumber);
+      const bookPage = str(factMap.recordBookPage) ?? str(factMap.deedRef);
+      const recordedAt = str(factMap.recordingDate);
+      const grantor = str(factMap.grantor);
+      const grantee = str(factMap.grantee);
+      const consideration = str(factMap.consideration);
+      const description = str(factMap.legalDescription);
+      const summary = [
+        instrument ? `Instrument ${instrument}` : 'A recorded instrument',
+        recordedAt ? `recorded ${recordedAt}` : null,
+        bookPage ? `at Book/Page ${bookPage}` : null,
+        grantor && grantee ? `conveys from ${grantor} to ${grantee}` : null,
+        consideration ? `for recorded consideration ${consideration}` : null,
+        description ? `with description "${description}"` : null,
+        `and repeats exact subject APN ${exactApn}.`,
+      ].filter(Boolean).join(' ');
+      const documentUrl = [
+        recorderAttempt.reachedUrl,
+        ...countyRecords.sourceUrls,
+      ].find((url) => /\/Image\/DocumentImage\d*\//i.test(url ?? '')) ?? null;
+      recordedGovernmentOutcome = upsertPublicRecordOutcome({
+        dealCardId: id,
+        category: 'deed_ownership',
+        title: instrument ? `Recorded deed ${instrument}` : 'Recorded deed matched to subject parcel',
+        jurisdiction: [searchKey.county ? `${searchKey.county} County` : null, searchKey.state].filter(Boolean).join(', '),
+        authority: recorderAttempt.sourceName,
+        retrievalStatus: 'retrieved_yes',
+        summary,
+        facts: factMap,
+        sourceUrl: recorderAttempt.sourceUrl,
+        screenshotUrl: countyRecords.screenshots[0]?.path,
+        documentUrl: documentUrl ?? undefined,
+        searchedAt: recorderAttempt.attemptedAt,
+      });
+      try {
+        synchronizeGovernmentRecordsForDeal({
+          dealCardId: id,
+          actor: 'county-records-browser',
+          changeReason: 'Persisted an exact-APN official recorder result and retained its source evidence.',
+        });
+      } catch (error) {
+        logger.warn({ err: error, dealCardId: id }, 'county_record_result_sync_failed');
+      }
+    }
     if (cardId) {
       try {
         const inspectionResult = await runPropertyInspection({
@@ -6617,6 +8369,7 @@ export function registerLandosRoutes(app: Hono): void {
       dealCardId: id, mode,
       landportal: redactEvidence(landportal),
       countyRecords: redactEvidence(countyRecords),
+      recordedGovernmentOutcome,
       sellerAuthority,
       facts: listBrowserFacts(id),
       countySourceMap: searchKey.state && searchKey.county ? getCountySources(searchKey.state, searchKey.county) : null,
@@ -6840,9 +8593,80 @@ export function registerLandosRoutes(app: Hono): void {
     const inspection = loadPropertyInspection(cardId);
     const asset = inspection?.assets.find((a) => a.key === key);
     if (!asset?.storedPath) return c.json({ error: 'no captured image' }, 404);
+    if (!isAcceptedLandPortalVisualForProperty(asset.validation, cardId)) {
+      return c.json({ error: 'image excluded: visual validation did not bind it to this Property Card' }, 404);
+    }
     const resolved = path.resolve(asset.storedPath);
     const root = landosArtifactPath('visuals');
     if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const buf = fs.readFileSync(resolved);
+      return new Response(new Uint8Array(buf), { headers: { 'content-type': 'image/png', 'cache-control': 'private, no-store' } });
+    } catch {
+      return c.json({ error: 'image not found' }, 404);
+    }
+  });
+
+  // ── Browser Use LandPortal pilot ─────────────────────────────────────────
+  // Adaptive LandPortal research through the SAME paired authenticated Chrome
+  // session. Fire-and-poll: POST starts the run, GET reports status + the
+  // newest persisted result, the image route serves labeled evidence captures
+  // (token-gated, confined to the configured screenshot dir).
+  app.post('/api/landos/deal-cards/:id/browseruse/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const current = browserUseRunStatus(id);
+    if (current.state === 'running' || current.state === 'queued') {
+      return c.json({ error: 'A Browser Use run is already in progress for this deal card.', status: current }, 409);
+    }
+    // mode 'staged' (default): deterministic hybrid stages + local/remote
+    // interpretation model. mode 'agent': the original Browser Use full-agent
+    // path, kept for adaptive recovery and benchmarking.
+    const body = await c.req.json().catch(() => ({})) as { mode?: string; provider?: string; captureLabels?: unknown };
+    const mode = body.mode === 'agent' ? 'agent' : 'staged';
+    const provider = body.provider === 'google' ? 'google' : body.provider === 'ollama' ? 'ollama' : 'auto';
+    const allowedCaptureLabels = new Set([
+      'road_frontage_aerial', 'close_parcel_aerial', 'clean_parcel_aerial', 'wider_context',
+      'wetlands_overlay', 'soil_overlay', 'contour_terrain_view', 'fema_flood_overlay',
+      'front_side_3d', 'rear_side_3d',
+    ]);
+    const captureLabels = Array.isArray(body.captureLabels)
+      ? [...new Set(body.captureLabels.filter((label): label is string => typeof label === 'string' && allowedCaptureLabels.has(label)))]
+      : undefined;
+    // Deliberately not awaited: the run takes minutes; the UI polls status.
+    // Serialized through the shared single-Chrome mission gate so neither path
+    // ever runs while a Puppeteer mission is using the paired browser.
+    markBrowserUseQueued(id);
+    void withBrowserMissionGate<void>(async () => {
+      if (mode === 'agent') { await runLandPortalBrowserUsePilot(id); return; }
+      await runLandPortalStagedPilotTracked(id, provider, captureLabels);
+    }).catch((err) => {
+      logger.warn({ dealCardId: id, err: err instanceof Error ? err.message : String(err) }, 'browseruse run rejected unexpectedly');
+    });
+    return c.json({ started: true, mode, provider, status: browserUseRunStatus(id) }, 202);
+  });
+
+  app.get('/api/landos/deal-cards/:id/browseruse', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subjectCard = subjectForDealCard(id);
+    return c.json({
+      status: browserUseRunStatus(id),
+      run: loadBrowserUseRunForDeal(id),
+      stages: subjectCard ? loadStagedRun(subjectCard.propertyCardId) : [],
+      soilDetails: soilDetailsForDealCard(id),
+    });
+  });
+
+  app.get('/api/landos/deal-cards/:id/browseruse/image/:file', (c) => {
+    const id = Number(c.req.param('id'));
+    const file = c.req.param('file') ?? '';
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!hasPersistedBrowserUseCaptureForDeal(id, file)) {
+      return c.json({ error: 'no such capture for this deal card' }, 404);
+    }
+    const resolved = resolveBrowserUseCapturePath(file);
+    if (!resolved) return c.json({ error: 'forbidden' }, 403);
     try {
       const buf = fs.readFileSync(resolved);
       return new Response(new Uint8Array(buf), { headers: { 'content-type': 'image/png', 'cache-control': 'private, no-store' } });

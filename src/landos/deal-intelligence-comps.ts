@@ -29,6 +29,8 @@ import type {
 
 /** At most this many rows in each operator-facing lane. */
 export const WORKING_SET_LIMIT = 5;
+/** At most this many active listings in the operator-facing lane. */
+export const ACTIVE_WORKING_SET_LIMIT = 4;
 
 /** Marketplaces whose rows may price or compete with the subject. */
 export const WORKING_SET_SOURCES = [/landportal/i, /zillow/i, /redfin/i];
@@ -70,11 +72,22 @@ export interface CompCandidateRow {
   acres: number | null;
   pricePerAcre: number | null;
   dateIso: string | null;
+  listingDate?: string | null;
+  daysOnMarket?: number | null;
+  views?: number | null;
+  saves?: number | null;
+  priceChanges?: Array<{ at: string | null; price: number | null; note: string }>;
+  thumbnailUrl?: string | null;
+  photoUrls?: string[];
+  collectedAt?: string | null;
   distanceMiles: number | null;
   lat?: number | null;
   lng?: number | null;
   /** Vacant land, improved, or unknown. */
   landClass: 'vacant_land' | 'improved' | 'unknown';
+  /** Retained only for the dedicated land-home lane. It never changes the
+   *  vacant-land classification or valuation decision. */
+  improvedClass?: 'manufactured' | 'residential' | 'commercial' | null;
   statusBasis: CompStatusBasis;
   /** Locality the row sits in, for same-market scoring. */
   locality: string | null;
@@ -93,14 +106,29 @@ export interface CompCandidateRow {
   /** Optional normalized (0-1) subject-similarity signals. Missing is neutral. */
   accessSimilarity?: number | null;
   terrainSimilarity?: number | null;
+  /**
+   * Terrain similarity may affect selection only when the source/calculation
+   * has been checked for the correct parcel, units and geometry. Deal 64 showed
+   * why a bare terrain percentage is not trustworthy enough to rank comps.
+   */
+  terrainSimilarityReliable?: boolean;
   utilitiesSimilarity?: number | null;
   developmentContextSimilarity?: number | null;
+  /** Manufactured-home detail retained for the dedicated land-home lane. */
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
 }
 
 export interface CompSelectionSubject {
   acres: number | null;
   locality: string | null;
   county: string | null;
+  /** Canonical subject identifiers used only to keep the subject itself out of
+   *  the comparable working set. A current listing for the subject remains
+   *  evidence/seller context, never an "active competitor." */
+  address?: string | null;
+  apn?: string | null;
 }
 
 export interface CompEvidenceBucket {
@@ -110,16 +138,35 @@ export interface CompEvidenceBucket {
 }
 
 export interface CompWorkingSet {
-  sold: SnapshotComp[];
-  active: SnapshotComp[];
+  sold: WeightedSnapshotComp[];
+  active: WeightedSnapshotComp[];
+  /** Recent, nearby, qualifying manufactured-home closed sales. This is a
+   *  separate strategy lane and never enters vacant-land value. */
+  landHomeOnly: WeightedSnapshotComp[];
   /** Close-acreage rows whose status the source never stated. Shown prominently
    *  as an asking-market reference, never as sold evidence. */
-  askingReferences: SnapshotComp[];
+  askingReferences: WeightedSnapshotComp[];
   evidence: CompEvidenceBucket[];
   duplicatesRemoved: number;
   totalCollected: number;
   /** The ONE conclusion the evidence supports. */
   conclusion: CompConclusion;
+}
+
+/**
+ * Runtime-compatible extension of SnapshotComp. Older stored snapshots remain
+ * readable, while new selections expose the actual weight and material
+ * differences the operator needs to judge the comp.
+ */
+export interface WeightedSnapshotComp extends SnapshotComp {
+  weight: number;
+  weightLabel: 'strong' | 'moderate' | 'limited';
+  materialDifferences: string[];
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
+  thumbnailUrl?: string | null;
+  photoUrls?: string[];
 }
 
 export type CompConclusion =
@@ -197,16 +244,44 @@ export function comparabilityScore(
     recencyScore(row.dateIso, nowMs) * 2 +
     distanceScore(row.distanceMiles) * 1 +
     bounded(row.accessSimilarity) * 0.75 +
-    bounded(row.terrainSimilarity) * 0.75 +
+    (row.terrainSimilarityReliable === true ? bounded(row.terrainSimilarity) * 0.75 : 0) +
     bounded(row.utilitiesSimilarity) * 0.5 +
     bounded(row.developmentContextSimilarity) * 0.5
   );
+}
+
+/** Operator-facing normalized selection weight. This explains rank; it is not
+ * a statistical confidence interval and never changes the comp's sale price. */
+export function compSelectionWeight(
+  subject: CompSelectionSubject,
+  row: CompCandidateRow,
+  nowMs: number,
+): number {
+  const maximumScore = 15.5;
+  return Math.max(0, Math.min(100, Math.round((comparabilityScore(subject, row, nowMs) / maximumScore) * 100)));
 }
 
 // ── Deduplication ───────────────────────────────────────────────────────────
 
 const normAddress = (value: string | null): string =>
   (value ?? '').toLowerCase().replace(/\b(lot|unit|#)\s*[\w-]+/g, '').replace(/[^a-z0-9]/g, '');
+
+function isSubjectProperty(subject: CompSelectionSubject, row: CompCandidateRow): boolean {
+  const subjectApn = normalizedApn(subject.apn);
+  const rowApn = normalizedApn(row.apn);
+  if (subjectApn && rowApn && subjectApn === rowApn) return true;
+
+  const subjectAddress = normAddress(subject.address ?? null);
+  const rowAddress = normAddress(row.address);
+  if (!subjectAddress || !rowAddress) return false;
+
+  // Marketplace rows commonly append city/state/ZIP while intake retains only
+  // the street address. Prefix agreement in either direction identifies the
+  // same subject without requiring locality text to be identical.
+  return subjectAddress === rowAddress
+    || (subjectAddress.length >= 8 && rowAddress.startsWith(subjectAddress))
+    || (rowAddress.length >= 8 && subjectAddress.startsWith(rowAddress));
+}
 
 /**
  * A stable identity for one physical property.
@@ -237,6 +312,20 @@ function priceAcreKey(row: CompCandidateRow): string | null {
 function normalizedApn(value: string | null | undefined): string | null {
   const normalized = (value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   return normalized.length >= 4 ? normalized : null;
+}
+
+function validPhotoUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return /^\/api\/landos\/deal-cards\/\d+\/(?:comp-image|browseruse\/image)\/[A-Za-z0-9_.-]+$/.test(trimmed) ? trimmed : null;
+}
+
+function mergedPhotoUrls(...rows: CompCandidateRow[]): string[] {
+  return [...new Set(rows.flatMap((row) => [
+    validPhotoUrl(row.thumbnailUrl),
+    ...(row.photoUrls ?? []).map(validPhotoUrl),
+  ]).filter((value): value is string => value != null))].slice(0, 20);
 }
 
 function sameCoordinates(a: CompCandidateRow, b: CompCandidateRow): boolean {
@@ -300,8 +389,11 @@ export function dedupeCompRows(rows: CompCandidateRow[]): { rows: CompCandidateR
     const slot = kept.findIndex((held) => samePhysicalProperty(held, row));
 
     if (slot < 0) {
+      const photos = mergedPhotoUrls(row);
       kept.push({
         ...row,
+        thumbnailUrl: validPhotoUrl(row.thumbnailUrl) ?? photos[0] ?? null,
+        photoUrls: photos,
         providerAttributions: [...new Set(row.providerAttributions ?? [row.source])],
       });
       continue;
@@ -325,6 +417,11 @@ export function dedupeCompRows(rows: CompCandidateRow[]): { rows: CompCandidateR
       sourceUrl: winner.sourceUrl ?? loser.sourceUrl,
       lat: winner.lat ?? loser.lat,
       lng: winner.lng ?? loser.lng,
+      thumbnailUrl: validPhotoUrl(winner.thumbnailUrl)
+        ?? validPhotoUrl(loser.thumbnailUrl)
+        ?? mergedPhotoUrls(winner, loser)[0]
+        ?? null,
+      photoUrls: mergedPhotoUrls(winner, loser),
       providerAttributions: [...new Set([
         ...(winner.providerAttributions ?? [winner.source]),
         ...(loser.providerAttributions ?? [loser.source]),
@@ -337,16 +434,45 @@ export function dedupeCompRows(rows: CompCandidateRow[]): { rows: CompCandidateR
 
 // ── Selection ───────────────────────────────────────────────────────────────
 
-function toSnapshotComp(row: CompCandidateRow, lane: 'sold' | 'active', why: string): SnapshotComp {
+function toSnapshotComp(
+  row: CompCandidateRow,
+  lane: 'sold' | 'active',
+  why: string,
+  subject: CompSelectionSubject,
+  nowMs: number,
+): WeightedSnapshotComp {
   const ppa = row.pricePerAcre
     ?? (row.price != null && row.acres != null && row.acres > 0 ? Math.round(row.price / row.acres) : null);
   const similarities: string[] = [];
   const differences: string[] = [];
-  if (row.acres != null) similarities.push(`${row.acres.toFixed(2)} ac`);
-  if (row.distanceMiles != null) similarities.push(`${row.distanceMiles.toFixed(1)} mi from the subject`);
+  if (row.acres != null && subject.acres != null && subject.acres > 0) {
+    const ratio = row.acres / subject.acres;
+    if (ratio >= 0.8 && ratio <= 1.25) {
+      similarities.push(`${row.acres.toFixed(2)} ac, close to the subject's ${subject.acres.toFixed(2)} ac`);
+    } else {
+      differences.push(`${row.acres.toFixed(2)} ac versus ${subject.acres.toFixed(2)} subject acres (${ratio.toFixed(2)}x).`);
+    }
+  } else if (row.acres != null) {
+    similarities.push(`${row.acres.toFixed(2)} ac`);
+  }
+  if (row.distanceMiles != null) {
+    if (row.distanceMiles <= 10) similarities.push(`${row.distanceMiles.toFixed(1)} mi from the subject`);
+    else differences.push(`${row.distanceMiles.toFixed(1)} mi away; local demand may differ.`);
+  }
   if (row.acres == null) differences.push('No acreage on the row.');
   if (!row.dateIso) differences.push('No transaction date published.');
+  else {
+    const ageMonths = Math.max(0, (nowMs - Date.parse(row.dateIso)) / (30.4 * 86_400_000));
+    if (Number.isFinite(ageMonths) && ageMonths > 24) differences.push(`Sale is ${Math.round(ageMonths)} months old.`);
+  }
   if (row.statusBasis === 'unconfirmed') differences.push('The source did not state whether this is a sale or an asking price.');
+  if (row.terrainSimilarity != null && row.terrainSimilarityReliable !== true) {
+    differences.push('Terrain similarity is unverified and was excluded from the selection weight.');
+  }
+  if (row.accessSimilarity != null && row.accessSimilarity < 0.4) differences.push('Access appears materially different from the subject.');
+  if (row.utilitiesSimilarity != null && row.utilitiesSimilarity < 0.4) differences.push('Utility context appears materially different from the subject.');
+  const weight = compSelectionWeight(subject, row, nowMs);
+  const weightLabel: WeightedSnapshotComp['weightLabel'] = weight >= 70 ? 'strong' : weight >= 50 ? 'moderate' : 'limited';
   return {
     key: row.key,
     apn: row.apn ?? null,
@@ -363,10 +489,35 @@ function toSnapshotComp(row: CompCandidateRow, lane: 'sold' | 'active', why: str
     acres: row.acres,
     pricePerAcre: ppa,
     distanceMiles: row.distanceMiles,
-    whyUseful: why,
+    originalListingDate: row.listingDate ?? null,
+    collectionDate: row.collectedAt ?? null,
+    daysOnMarket: row.daysOnMarket ?? calculatedDaysOnMarket(row.listingDate, row.collectedAt),
+    priceChanges: row.priceChanges ?? [],
+    views: row.views ?? null,
+    saves: row.saves ?? null,
+    engagement: typeof row.views === 'number' || typeof row.saves === 'number'
+      ? ((row.views ?? 0) >= 100 || (row.saves ?? 0) >= 5 ? 'strong' : 'weak')
+      : 'inconclusive',
+    whyUseful: `${why} Selection weight ${weight}/100 (${weightLabel}); acreage, property type, locality, recency and distance drive the weight.`,
     similarities,
     differences,
+    weight,
+    weightLabel,
+    materialDifferences: differences,
+    homeType: row.homeType ?? null,
+    yearBuilt: row.yearBuilt ?? null,
+    homeSizeSqft: row.homeSizeSqft ?? null,
+    thumbnailUrl: validPhotoUrl(row.thumbnailUrl) ?? mergedPhotoUrls(row)[0] ?? null,
+    photoUrls: mergedPhotoUrls(row),
   };
+}
+
+function calculatedDaysOnMarket(listingDate?: string | null, collectedAt?: string | null): number | null {
+  if (!listingDate || !collectedAt) return null;
+  const listed = Date.parse(listingDate);
+  const collected = Date.parse(collectedAt);
+  if (!Number.isFinite(listed) || !Number.isFinite(collected) || collected < listed) return null;
+  return Math.floor((collected - listed) / 86_400_000);
 }
 
 function bucketEvidence(buckets: Map<string, CompEvidenceBucket>, reason: string, source: string): void {
@@ -400,6 +551,7 @@ export function selectWorkingComps(input: {
   const buckets = new Map<string, CompEvidenceBucket>();
 
   const approved: CompCandidateRow[] = [];
+  const manufacturedHomeCandidates: CompCandidateRow[] = [];
   for (const row of input.rows) {
     if (isEvidenceOnlySource(row.source)) {
       // Keep one generic archival bucket without serializing the disabled
@@ -413,6 +565,18 @@ export function selectWorkingComps(input: {
     }
     if (!isWorkingSetSource(row.source)) {
       bucketEvidence(buckets, 'Source is not one of the approved comparable marketplaces (LandPortal, Zillow, Redfin).', row.source || 'unknown');
+      continue;
+    }
+    if (isSubjectProperty(subject, row)) {
+      bucketEvidence(
+        buckets,
+        'The subject property itself is retained as seller/listing context and excluded from comparable sales and active competition.',
+        row.source,
+      );
+      continue;
+    }
+    if (row.landClass === 'improved' && row.improvedClass === 'manufactured') {
+      manufacturedHomeCandidates.push(row);
       continue;
     }
     if (row.policyExcluded) {
@@ -482,23 +646,52 @@ export function selectWorkingComps(input: {
   const rankedSold = applySourceCaps(soldPool, 'closed-sale');
   const rankedActive = applySourceCaps(activePool, 'active-competition');
   const rankedAsking = applySourceCaps(askingPool, 'asking-reference');
+  const recentManufacturedCutoff = nowMs - 36 * 30.4 * 86_400_000;
+  const landHomeOnly = dedupeCompRows(manufacturedHomeCandidates).rows
+    .filter((row) =>
+      row.statusBasis === 'closed_sale'
+      && row.price != null && row.price > 200_000
+      && row.distanceMiles != null && row.distanceMiles <= 5
+      && row.dateIso != null
+      && Number.isFinite(Date.parse(row.dateIso))
+      && Date.parse(row.dateIso) >= recentManufacturedCutoff)
+    .sort((a, b) =>
+      (a.distanceMiles ?? Number.POSITIVE_INFINITY) - (b.distanceMiles ?? Number.POSITIVE_INFINITY)
+      || (Date.parse(b.dateIso ?? '') || 0) - (Date.parse(a.dateIso ?? '') || 0))
+    .slice(0, WORKING_SET_LIMIT)
+    .map((row) => toSnapshotComp(
+      row,
+      'sold',
+      `Manufactured-home closed sale above $200,000 within five miles, retained only to test finished land-home-package demand.`,
+      subject,
+      nowMs,
+    ));
 
   for (const row of rankedSold.slice(WORKING_SET_LIMIT)) {
     bucketEvidence(buckets, `Beyond the ${WORKING_SET_LIMIT} most comparable closed sales.`, row.source);
   }
-  for (const row of rankedActive.slice(WORKING_SET_LIMIT)) {
-    bucketEvidence(buckets, `Beyond the ${WORKING_SET_LIMIT} most comparable active listings.`, row.source);
+  for (const row of rankedActive.slice(ACTIVE_WORKING_SET_LIMIT)) {
+    bucketEvidence(buckets, `Beyond the ${ACTIVE_WORKING_SET_LIMIT} most comparable active listings.`, row.source);
   }
   for (const row of rankedAsking.slice(WORKING_SET_LIMIT)) {
     bucketEvidence(buckets, `Beyond the ${WORKING_SET_LIMIT} most comparable asking references.`, row.source);
   }
 
   const sold = rankedSold.slice(0, WORKING_SET_LIMIT).map((row) =>
-    toSnapshotComp(row, 'sold', `Closed vacant-land sale at ${row.acres!.toFixed(2)} ac, inside the subject's comparable acreage band.`));
-  const active = rankedActive.slice(0, WORKING_SET_LIMIT).map((row) =>
-    toSnapshotComp(row, 'active', `Active vacant-land listing at ${row.acres!.toFixed(2)} ac — what the subject competes against today.`));
+    toSnapshotComp(row, 'sold', `Closed vacant-land sale at ${row.acres!.toFixed(2)} ac, inside the subject's comparable acreage band.`, subject, nowMs));
+  const active = rankedActive.slice(0, ACTIVE_WORKING_SET_LIMIT).map((row) =>
+    toSnapshotComp(row, 'active', `Active vacant-land listing at ${row.acres!.toFixed(2)} ac — what the subject competes against today.`, subject, nowMs));
   const askingReferences = rankedAsking.slice(0, WORKING_SET_LIMIT).map((row) =>
-    toSnapshotComp(row, 'active', `${row.source} asking-market reference at ${row.acres!.toFixed(2)} ac. The source did not state whether it closed, so it is NOT sold evidence.`));
+    toSnapshotComp(row, 'active', `${row.source} asking-market reference at ${row.acres!.toFixed(2)} ac. The source did not state whether it closed, so it is NOT sold evidence.`, subject, nowMs));
+  if (subject.acres) {
+    for (const comp of [...sold, ...active, ...askingReferences]) {
+      if (!comp.acres) continue;
+      const ratio = comp.acres / subject.acres;
+      if (ratio < 0.75 || ratio > 1.5) {
+        comp.whyUseful += ' The search widened beyond the preferred 0.75x-1.5x acreage range to the practical 0.5x-2.5x range.';
+      }
+    }
+  }
 
   const conclusion: CompConclusion = sold.length > 0
     ? 'sold_supported'
@@ -507,6 +700,7 @@ export function selectWorkingComps(input: {
   return {
     sold,
     active,
+    landHomeOnly,
     askingReferences,
     evidence: [...buckets.values()].sort((a, b) => b.count - a.count),
     duplicatesRemoved: removed,
@@ -568,8 +762,23 @@ export function candidateRowsFromPolicy(policy: CompSourcePolicyResult): CompCan
       acres,
       pricePerAcre: c.acreageConflict === true ? null : (typeof c.pricePerAcre === 'number' ? c.pricePerAcre : null),
       dateIso: c.saleOrListDate ?? null,
+      listingDate: c.listingDate ?? null,
+      daysOnMarket: c.daysOnMarket ?? null,
+      views: c.views ?? null,
+      saves: c.saves ?? null,
+      priceChanges: c.priceChanges ?? [],
+      thumbnailUrl: validPhotoUrl(c.thumbnailUrl),
+      photoUrls: Array.isArray((c as unknown as { photoUrls?: unknown }).photoUrls)
+        ? ((c as unknown as { photoUrls: unknown[] }).photoUrls)
+            .map(validPhotoUrl)
+            .filter((value): value is string => value != null)
+        : validPhotoUrl(c.thumbnailUrl) ? [validPhotoUrl(c.thumbnailUrl)!] : [],
+      collectedAt: c.collectedAt ?? null,
       distanceMiles: typeof c.distanceMiles === 'number' ? c.distanceMiles : null,
       landClass,
+      improvedClass: decision.compClass === 'manufactured' ? 'manufactured'
+        : decision.compClass === 'residential' ? 'residential'
+          : decision.compClass === 'commercial' ? 'commercial' : null,
       statusBasis,
       locality: c.addressDesc ?? null,
       policyExcluded,
@@ -578,6 +787,9 @@ export function candidateRowsFromPolicy(policy: CompSourcePolicyResult): CompCan
       lat: typeof c.lat === 'number' ? c.lat : null,
       lng: typeof c.lng === 'number' ? c.lng : null,
       providerAttributions: [c.provider],
+      homeType: c.homeType ?? null,
+      yearBuilt: typeof c.yearBuilt === 'number' ? c.yearBuilt : null,
+      homeSizeSqft: typeof c.homeSizeSqft === 'number' ? c.homeSizeSqft : null,
     };
     });
 }
@@ -589,6 +801,17 @@ const median = (values: number[]): number => {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 };
+
+export interface EvidenceValueAdjustment {
+  label: string;
+  /** Signed percentage: -10 is a 10% deduction, +5 is a 5% premium. */
+  percent: number;
+  /** Subject-versus-comp evidence supporting the adjustment. */
+  evidence: string;
+  reliability: 'verified' | 'supported' | 'questionable';
+  /** True when the selected sales already share/price the condition. */
+  alreadyReflectedInComps?: boolean;
+}
 
 /**
  * The ONE valuation conclusion, derived from the working set that is on screen.
@@ -609,6 +832,9 @@ export function valuationFromWorkingSet(
   context: {
     constraints?: string[];
     hardRisks?: string[];
+    /** Numeric changes require an explicit percentage and reliable evidence.
+     * Legacy constraint strings remain qualitative and never silently deduct. */
+    adjustments?: EvidenceValueAdjustment[];
     identityState?: 'confirmed' | 'provisional' | 'conflicted' | 'unresolved';
     discoveryIdentityUsable?: boolean;
     identityBasis?: string | null;
@@ -625,10 +851,9 @@ export function valuationFromWorkingSet(
   const materialGaps: string[] = [];
   if (conditionalIdentity) {
     uncertainty.push(
-      `Conditional discovery-stage identity: ${context.identityBasis?.trim()
-        || 'the supplied parcel identifiers and retained parcel-provider evidence consistently identify one subject, but official parcel-source coverage is unavailable'}.`,
+      `Working subject match: ${context.identityBasis?.trim()
+        || 'the retained parcel evidence consistently identifies one discovery-stage subject'}.`,
     );
-    materialGaps.push('Official parcel-source coverage remains unavailable; confirm the subject before a binding offer or closing decision.');
   }
   if (acres == null) materialGaps.push('The subject acreage is unknown, so no per-acre conclusion can be scaled to this parcel.');
   if (set.duplicatesRemoved > 0) uncertainty.push(`${set.duplicatesRemoved} duplicate row(s) across providers were merged into single properties before valuing.`);
@@ -640,12 +865,32 @@ export function valuationFromWorkingSet(
       const observedHigh = Math.max(...ppa);
       const mid = median(ppa);
       const thinWidening = set.sold.length === 1 ? 0.15 : set.sold.length === 2 ? 0.08 : 0;
-      const constraintCount = context.constraints?.length ?? 0;
-      const constraintFactor = Math.max(0.7, 1 - 0.08 * constraintCount);
-      const low = observedLow * (1 - thinWidening) * constraintFactor;
-      const high = observedHigh * (1 + thinWidening) * constraintFactor;
+      let evidenceFactor = 1;
+      const adjustments: string[] = [];
+      for (const adjustment of context.adjustments ?? []) {
+        const usable = adjustment.reliability !== 'questionable'
+          && adjustment.alreadyReflectedInComps !== true
+          && Number.isFinite(adjustment.percent)
+          && Math.abs(adjustment.percent) <= 30
+          && adjustment.evidence.trim().length > 0;
+        if (!usable) {
+          adjustments.push(`${adjustment.label}: no numeric adjustment applied because ${
+            adjustment.alreadyReflectedInComps
+              ? 'the selected sales already reflect the condition'
+              : adjustment.reliability === 'questionable'
+                ? 'the input is questionable'
+                : 'the percentage or evidence is not supportable'
+          }.`);
+          continue;
+        }
+        evidenceFactor *= 1 + adjustment.percent / 100;
+        adjustments.push(`${adjustment.label}: ${adjustment.percent > 0 ? '+' : ''}${adjustment.percent.toFixed(1)}% supported by ${adjustment.evidence}`);
+      }
+      evidenceFactor = Math.max(0.7, Math.min(1.3, evidenceFactor));
+      const low = observedLow * (1 - thinWidening) * evidenceFactor;
+      const high = observedHigh * (1 + thinWidening) * evidenceFactor;
       const round = (value: number): number => Math.round(value / 500) * 500;
-      const adjustedMid = mid * constraintFactor;
+      const adjustedMid = mid * evidenceFactor;
       const sources = [...new Set(set.sold.map((comp) => comp.source))].join(', ');
       if (set.sold.length < 3) uncertainty.push(`Only ${set.sold.length} closed sale(s) support this band; a wider comp set would tighten it.`);
       const undated = set.sold.filter((comp) => !comp.dateIso).length;
@@ -656,9 +901,12 @@ export function valuationFromWorkingSet(
       if (context.hardRisks?.length) {
         uncertainty.push(`Open risk(s) that could move value or kill the deal: ${context.hardRisks.join('; ')}.`);
       }
-      const adjustments = constraintCount
-        ? [`${constraintCount} mapped physical constraint(s) reduce the supported band ${Math.round((1 - constraintFactor) * 100)}%: ${context.constraints!.join('; ')}.`]
-        : ['No mapped physical constraint adjustment was applied.'];
+      if (context.constraints?.length) {
+        adjustments.push(
+          `No automatic deduction was applied for qualitative constraint text (${context.constraints.join('; ')}). A numeric change requires a reliable subject-versus-comp difference and an explicit percentage; questionable terrain, slope, buildability or septic inputs remain neutral.`,
+        );
+      }
+      if (!adjustments.length) adjustments.push('No numeric subject adjustment was applied; the selected sales already define the raw market indication.');
       const baseConfidence: SnapshotValuation['confidence'] =
         set.sold.length >= 4 ? 'high' : set.sold.length >= 2 ? 'medium' : 'low';
       const evidenceConfidence: SnapshotValuation['confidence'] = context.hardRisks?.length
@@ -671,8 +919,8 @@ export function valuationFromWorkingSet(
         pricePerAcreRange: { low: Math.round(low), high: Math.round(high) },
         likelyRetail: { low: round(adjustedMid * acres), high: round(high * acres) },
         dispositionRange: { low: round(low * acres * 0.7), high: round(adjustedMid * acres * 0.85) },
-        basis: `${conditionalIdentity ? 'Conditional discovery-stage valuation. ' : ''}${set.sold.length} closed vacant-land sale(s) inside the subject's comparable acreage band, from ${sources}, at $${Math.round(low).toLocaleString()}–$${Math.round(high).toLocaleString()} per acre applied to ${acres.toFixed(2)} acres.`,
-        primaryBasis: `Closed sales: ${set.sold.map((comp) => `${comp.address ?? comp.source} ${comp.acres != null ? `${comp.acres.toFixed(2)}ac` : ''} @ $${(comp.pricePerAcre ?? 0).toLocaleString()}/ac`).join('; ')}.${thinWidening ? ` The supported range is widened ${Math.round(thinWidening * 100)}% for thin-market uncertainty.` : ''}`,
+        basis: `${conditionalIdentity ? 'Working discovery estimate from the retained parcel match. ' : ''}${set.sold.length} closed vacant-land sale(s) inside the subject's comparable acreage band, from ${sources}, at $${Math.round(low).toLocaleString()}–$${Math.round(high).toLocaleString()} per acre applied to ${acres.toFixed(2)} acres.`,
+        primaryBasis: `Raw comp indication $${Math.round(observedLow).toLocaleString()}–$${Math.round(observedHigh).toLocaleString()}/ac. Closed sales: ${set.sold.map((comp) => `${comp.address ?? comp.source} ${comp.acres != null ? `${comp.acres.toFixed(2)}ac` : ''} @ $${(comp.pricePerAcre ?? 0).toLocaleString()}/ac, weight ${(comp as WeightedSnapshotComp).weight ?? 'n/a'}/100`).join('; ')}.${thinWidening ? ` The supported range is widened ${Math.round(thinWidening * 100)}% for thin-market uncertainty.` : ''}`,
         workingValue: round(adjustedMid * acres),
         adjustments,
         // Confidence follows the evidence count, never the desire for a number.
@@ -755,9 +1003,7 @@ export function workingSetToSnapshotComps(
     caps: plan.caps,
     sold: set.sold,
     active: set.active,
-    // Improved rows never reach the working set, so this legacy lane stays empty
-    // rather than being reused for something it does not mean.
-    landHomeOnly: [],
+    landHomeOnly: set.landHomeOnly,
     rejected,
     duplicatesMerged: set.duplicatesRemoved,
     summaryLine: summary,

@@ -211,11 +211,26 @@ export interface BrowserDriver {
   /** ONE-PASS LandPortal capture on the deep-link full view: parcel fields + a
    *  wide parcel screenshot + all comparable rows + the real "Show on Map" comps
    *  map screenshot (mapReached proves it was clicked). Optional; live driver only. */
-  captureLandPortalVisuals?(url: string, opts: { timeoutMs: number }): Promise<{
+  captureLandPortalVisuals?(url: string, opts: { timeoutMs: number; captureLabels?: string[] }): Promise<{
     fields: Record<string, string>;
     parcelShotPath: string | null;
     compsMapShotPath: string | null;
     overlayShots?: Array<{ overlay: string; path: string; purpose: string }>;
+    /** Individually framed, semantic visual captures. The labels are stable
+     * inspection keys; a caller can request only a subset so a visual repair
+     * never replaces unrelated, already-accepted evidence. */
+    visualShots?: Array<{
+      label: string;
+      path: string;
+      kind: 'parcel_page' | 'overlay' | 'parcel_3d';
+      purpose: string;
+      overlay?: string;
+      soilDetails?: Array<{
+        symbol: string | null;
+        name: string | null;
+        fields: Record<string, string>;
+      }>;
+    }>;
     /** Overlays that were ATTEMPTED but produced no distinct rendered image
      *  (control absent, layer never painted, or capture identical to the base
      *  map). Recorded honestly as unavailable — never substituted. */
@@ -329,7 +344,8 @@ export interface BrowserFact {
    *  needs_verification, not_found, blocked. */
   status: 'extracted' | 'needs_verification' | 'not_found' | 'blocked';
   /** How the value was obtained (e.g. 'semantic field match', 'parcel search →
-   *  record', 'official source link'). Required provenance. */
+   *  record', 'interactive APN search → record'). A source URL alone is never
+   *  a fact. Required provenance. */
   extractionMethod?: string;
 }
 
@@ -339,6 +355,58 @@ export interface BrowserFact {
 export type BrowserSearchMode = 'parcel_fact' | 'deep_record';
 
 export type BrowserRunStatus = 'retrieved' | 'partial' | 'no_match' | 'parked' | 'blocked' | 'error';
+
+export type BrowserAttemptStage = 'navigate' | 'retrieve' | 'extract' | 'interpret';
+export interface BrowserAttemptStep {
+  stage: BrowserAttemptStage;
+  outcome: 'succeeded' | 'no_match' | 'unavailable' | 'failed' | 'skipped';
+  detail: string;
+  url?: string;
+}
+
+/**
+ * One source that the browser actually opened. `sourcesUsed` is routing
+ * context; this is execution truth and must never include a source that was
+ * merely discovered but not visited.
+ */
+export interface BrowserSourceAttempt {
+  sourceName: string;
+  sourceType: string;
+  sourceUrl: string;
+  attemptedAt: string;
+  result:
+    | 'retrieved'
+    | 'useful_indication'
+    | 'attempted_inconclusive'
+    | 'source_unavailable'
+    | 'not_found'
+    | 'execution_failure';
+  factCount: number;
+  note: string;
+  /** Final page reached after search/result navigation, when different from the
+   * routed landing page. */
+  reachedUrl?: string;
+  /** Identifier paths actually submitted, in order (for example `apn`, then
+   * `owner`). Merely available controls are not listed. */
+  searchMethods?: string[];
+  /** Practical alternate routes that were really exercised, not suggestions. */
+  alternateRoutesAttempted?: string[];
+  /** Exact subject-fact keys emitted from this source. A URL/link is never a
+   * subject fact and therefore never appears here. */
+  extractedFactKeys?: string[];
+  /** Stable machine-readable reason for a zero-fact attempt. */
+  failureCode?:
+    | 'no_subject_identifier'
+    | 'no_search_control'
+    | 'no_subject_match'
+    | 'record_not_reached'
+    | 'no_extractable_subject_fields'
+    | 'source_unavailable'
+    | 'timeout_or_cancelled'
+    | 'execution_failure';
+  /** Navigate → retrieve → extract → interpret trace for this exact source. */
+  steps?: BrowserAttemptStep[];
+}
 
 /** The normalized output of a browser service run. The structured `patch` +
  *  `fields` are the REAL output; the screenshot is only visual proof. */
@@ -355,6 +423,8 @@ export interface BrowserEvidence {
   facts: BrowserFact[];
   /** County source routing actually used (NETR vs search fallback), when county. */
   sourcesUsed: Array<{ type: string; url: string; origin: FactOrigin; confidence: number }>;
+  /** Per-source execution outcomes. Optional for older/non-county providers. */
+  sourceAttempts?: BrowserSourceAttempt[];
   /** ONE screenshot per successful property (LandPortal); county may add useful shots. */
   screenshots: BrowserScreenshot[];
   /** Actions that were NOT performed because they could spend money / write. */
@@ -402,6 +472,9 @@ export function emptyEvidence(service: BrowserServiceId, mode: BrowserMode): Bro
 
 export interface BrowserWorkflowInput {
   searchKey: BrowserSearchKey;
+  /** Canonical persistence scope for provider evidence. */
+  propertyCardId?: number;
+  dealCardId?: number;
   /** In workflow mode, only these fields are still needed (gap-fill). Empty =
    *  collect the full property. */
   neededFields?: string[];
