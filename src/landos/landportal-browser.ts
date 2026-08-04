@@ -37,6 +37,7 @@ import {
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform, platformKey } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
+import { withOwnedPages } from './browser-owned-pages.js';
 import { retrieveWithLearning } from './browser-learning.js';
 import { diagnoseFailure, attemptRecovery } from './browser-failure-diagnosis.js';
 import { recordNavigationRequirement } from './browser-navigation-model.js';
@@ -1580,43 +1581,6 @@ async function runLandPortalWithLearning(
     ev.note = `${ev.note} [navigation model ${platform} v${result.navigation?.version ?? '?'} learned${secs}]`;
   } else if (result.navigation) {
     ev.note = `${ev.note} [navigation model ${platform} v${result.navigation.version} reused]`;
-  }
-  return ev;
-}
-
-/**
- * BROWSER LIFECYCLE. Wrap one LandPortal run in an owned-page scope so every page
- * the job causes to exist — its own tabs, the comps map and parcel deep links the
- * site opens, any viewer — is closed afterwards. Cleanup runs on success, partial
- * completion, failure, timeout, cancellation, and visual-verification rejection
- * alike. Pages that were already open belong to the operator and are preserved.
- *
- * Staying logged in is never a reason to keep a page: logging in again is cheap,
- * an accumulating pile of authenticated LandPortal tabs is not.
- */
-async function withOwnedPages(
-  driver: BrowserDriver,
-  run: () => Promise<BrowserEvidence>,
-): Promise<BrowserEvidence> {
-  if (!driver.beginOwnedPageScope || !driver.closeOwnedPageScope) return run();
-  let token: string | null = null;
-  try { token = await driver.beginOwnedPageScope(); } catch { token = null; }
-  let ev: BrowserEvidence;
-  try {
-    ev = await run();
-  } catch (err) {
-    if (token) { try { await driver.closeOwnedPageScope(token); } catch { /* cleanup never masks the error */ } }
-    throw err;
-  }
-  if (token) {
-    try {
-      const cleanup = await driver.closeOwnedPageScope(token);
-      ev.browserCleanup = cleanup;
-      ev.note = `${ev.note} [browser cleanup: ${cleanup.closed} page(s) closed, ${cleanup.preserved} operator page(s) preserved${cleanup.failed ? `, ${cleanup.failed} failed to close` : ''}]`;
-    } catch (err) {
-      ev.browserCleanup = { closed: 0, failed: -1, preserved: 0 };
-      ev.note = `${ev.note} [browser cleanup FAILED: ${(err as Error)?.message ?? 'unknown'}]`;
-    }
   }
   return ev;
 }

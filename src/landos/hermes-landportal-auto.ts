@@ -115,6 +115,8 @@ export interface HermesLandPortalAutoDeps {
   invokeHermes?: (prompt: string, outputDirectory: string, timeoutMs: number, invocation: HermesLandPortalInvocation) => Promise<void>;
   importFile?: typeof importHermesLandPortalFile;
   validateFile?: typeof validateHermesLandPortalFileIdentity;
+  /** Tests inject true; production lanes always sweep their tabs. */
+  skipTabHygiene?: boolean;
 }
 
 type HermesStatusPayload = {
@@ -454,6 +456,52 @@ async function executeSpecialist(input: {
   }
 }
 
+// ── Lane tab hygiene (endpoint-level, finally-style) ─────────────────────
+//
+// The Hermes child drives the authenticated Chrome on the CDP endpoint from a
+// separate process, so no in-process page handle exists to track. The lane
+// therefore snapshots the endpoint's page ids before its specialists start
+// and, in a finally, closes only the LandPortal/Maps research pages that
+// appeared during the run — success, failure, and timeout alike. Operator
+// pages that already existed are never touched, and one authenticated
+// LandPortal tab is always left for login continuity.
+
+async function snapshotLanePages(cdpUrl: string): Promise<Set<string> | null> {
+  try {
+    const list = await (await fetch(`${cdpUrl}/json/list`, { signal: AbortSignal.timeout(5_000) })).json() as Array<{ id: string; type: string }>;
+    return new Set(list.filter((tab) => tab.type === 'page').map((tab) => tab.id));
+  } catch {
+    return null;
+  }
+}
+
+const LANE_RESEARCH_URL = /landportal\.com|google\.[a-z.]+\/maps|maps\.google\./i;
+
+async function closeLaneCreatedPages(cdpUrl: string, before: Set<string> | null): Promise<{ closed: number }> {
+  let closed = 0;
+  try {
+    const list = await (await fetch(`${cdpUrl}/json/list`, { signal: AbortSignal.timeout(5_000) })).json() as Array<{ id: string; type: string; url: string }>;
+    const pages = list.filter((tab) => tab.type === 'page');
+    const candidates = before
+      // Pages that appeared during this lane's run on research hosts are the
+      // lane's to close; everything that predates the run is preserved.
+      ? pages.filter((tab) => !before.has(tab.id) && LANE_RESEARCH_URL.test(tab.url ?? ''))
+      : [];
+    // Keep one authenticated LandPortal page alive even if the lane created it.
+    const landportalSurvivors = pages.filter((tab) => /landportal\.com/i.test(tab.url ?? '') && !candidates.some((candidate) => candidate.id === tab.id));
+    const closable = landportalSurvivors.length === 0 && candidates.length > 0
+      ? candidates.slice(0, -1)
+      : candidates;
+    for (const tab of closable) {
+      try {
+        const res = await fetch(`${cdpUrl}/json/close/${tab.id}`, { signal: AbortSignal.timeout(5_000) });
+        if (res.ok) closed += 1;
+      } catch { /* already gone */ }
+    }
+  } catch { /* endpoint offline — nothing to clean */ }
+  return { closed };
+}
+
 async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPortalAutoDeps): Promise<HermesLandPortalLaneOutcome> {
   const now = deps.now ?? (() => new Date().toISOString());
   const clockMs = deps.clockMs ?? (() => Date.now());
@@ -501,13 +549,28 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
   };
 
   publishLane('running', `Launching three controlled Hermes specialists for ${input.address}.`, null);
-  const executions = await Promise.all(HERMES_LANDPORTAL_SPECIALISTS.map((specialist) => {
-    const target = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS : HERMES_LANDPORTAL_TARGET_RUNTIME_MS;
-    const hardCeiling = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS : HERMES_LANDPORTAL_HARD_TIMEOUT_MS;
-    const configured = deps.specialistTimeoutMs?.[specialist] ?? deps.timeoutMs ?? target;
-    const timeoutMs = Math.min(hardCeiling, Math.max(1, configured));
-    return executeSpecialist({ lane: input, specialist, outputDirectory, timeoutMs, deps, reconcile, publish: publishWorkUnit });
-  }));
+  // Tab hygiene is skipped in tests (never touch a real operator browser from
+  // a test run) and when explicitly disabled; a production lane always sweeps
+  // its research tabs in the finally below, whatever the specialists did.
+  const tabHygiene = !deps.skipTabHygiene && !process.env.VITEST;
+  const pagesBefore = tabHygiene ? await snapshotLanePages(HERMES_LANDPORTAL_CDP_ENDPOINT) : null;
+  let executions: SpecialistExecution[];
+  try {
+    executions = await Promise.all(HERMES_LANDPORTAL_SPECIALISTS.map((specialist) => {
+      const target = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS : HERMES_LANDPORTAL_TARGET_RUNTIME_MS;
+      const hardCeiling = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS : HERMES_LANDPORTAL_HARD_TIMEOUT_MS;
+      const configured = deps.specialistTimeoutMs?.[specialist] ?? deps.timeoutMs ?? target;
+      const timeoutMs = Math.min(hardCeiling, Math.max(1, configured));
+      return executeSpecialist({ lane: input, specialist, outputDirectory, timeoutMs, deps, reconcile, publish: publishWorkUnit });
+    }));
+  } finally {
+    if (tabHygiene) {
+      const swept = await closeLaneCreatedPages(HERMES_LANDPORTAL_CDP_ENDPOINT, pagesBefore);
+      if (swept.closed > 0) {
+        logger.info({ runId: input.runId, dealCardId: input.dealCardId, closed: swept.closed }, 'hermes_landportal_lane_tabs_closed');
+      }
+    }
+  }
 
   const persistedCategories = currentCategories();
   const imports = executions.flatMap((execution) => execution.importResults);

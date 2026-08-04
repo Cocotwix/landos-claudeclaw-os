@@ -924,3 +924,133 @@ a.awv2-lp-link:hover { border-color: var(--awv2-brass); color: var(--awv2-brass-
 }
 .awv2-md-item .row .k { color: var(--awv2-bone-faint); }
 .awv2-md-item .row .v { color: var(--awv2-bone-dim); }
+
+/* ── Compact collapsed missing-diligence rows ─────────────────────────── */
+.awv2-md-list { display: flex; flex-direction: column; gap: 8px; }
+.awv2-md-row {
+  border: 1px solid var(--awv2-line);
+  border-radius: 10px;
+  background: var(--awv2-panel-2);
+}
+.awv2-md-row.urgent { border-color: var(--awv2-rust, #b0563a); }
+.awv2-md-row > summary {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 1.4fr) auto;
+  align-items: baseline;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.awv2-md-row > summary::-webkit-details-marker { display: none; }
+.awv2-md-row > summary::before { content: '▸'; position: absolute; margin-left: -2px; color: transparent; }
+.awv2-md-row[open] > summary { border-bottom: 1px solid var(--awv2-line); }
+.awv2-md-row > summary .t {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--awv2-brass);
+}
+.awv2-md-row.urgent > summary .t { color: var(--awv2-rust, #c96a4a); }
+.awv2-md-row > summary .st { font-size: 12.5px; color: var(--awv2-bone-dim); }
+.awv2-md-row > summary .nx { font-size: 12px; color: var(--awv2-bone-faint); white-space: nowrap; }
+.awv2-md-detail { padding: 10px 14px 12px; }
+.awv2-md-detail .row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.awv2-md-detail .row .k { color: var(--awv2-bone-faint); }
+.awv2-md-detail .row .v { color: var(--awv2-bone-dim); }
+@media (max-width: 900px) {
+  .awv2-md-row > summary { grid-template-columns: 1fr; gap: 4px; }
+  .awv2-md-row > summary .nx { white-space: normal; }
+}
+
+/* ── Concise Visual Buyer narrative + collapsed supporting evidence ───── */
+.awv2-vbn { display: flex; flex-direction: column; gap: 12px; }
+.awv2-vbn-section .h {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--awv2-brass);
+  margin-bottom: 4px;
+}
+.awv2-vbn-section p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--awv2-bone-dim);
+}
+.awv2-collapse { margin-top: 14px; border-top: 1px solid var(--awv2-line); }
+.awv2-collapse > summary {
+  padding: 10px 0 4px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  color: var(--awv2-brass);
+}
+.awv2-collapse > summary::-webkit-details-marker { display: none; }
+.awv2-collapse > summary::after { content: ' ▾'; color: var(--awv2-bone-faint); }
+.awv2-collapse[open] > summary::after { content: ' ▴'; }
+.awv2-collapse > summary:hover { color: var(--awv2-brass-bright); }
+.awv2-vba-details .awv2-vba { margin-top: 10px; }
+
+/* ── Soils & preliminary septic outlook ───────────────────────────────── */
+.awv2-septic-headline {
+  font-size: 15px;
+  color: var(--awv2-bone);
+  margin-bottom: 8px;
+}
+.awv2-septic-headline b { color: var(--awv2-brass-bright); }
+.awv2-soils-grid { margin: 12px 0; }
+
+/* ── Research status sub-line (statusbar) ─────────────────────────────── */
+.awv2-status-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--awv2-bone-faint);
+  max-width: 420px;
+}
+.awv2-status-sub b { color: var(--awv2-bone-dim); font-weight: 600; }
+
+/* ── Document-level scrolling on V2 workspace routes ──────────────────────
+   Full-page capture tools (FireShot et al.) stitch by scrolling the
+   DOCUMENT. The app shell's h-screen + overflow-hidden trapped the V2 page
+   inside .awv2's internal scroller, so the document reported one viewport
+   of height and captures stopped at ~25%. On routes that render the V2
+   workspace, the shell releases its viewport clamp and html/body own the
+   one vertical scrollbar; other dashboard routes keep their layout.
+   overflow-x uses clip (not hidden) because a hidden x-axis would force the
+   y-axis back into auto and recreate the nested scroller. */
+body:has(.awv2) > div > div[class*="h-screen"] {
+  height: auto !important;
+  min-height: 100vh;
+}
+body:has(.awv2) main[class*="overflow-hidden"] {
+  overflow: visible !important;
+}
+body:has(.awv2) .awv2 {
+  height: auto;
+  min-height: 100vh;
+  overflow-y: visible;
+  overflow-x: clip;
+}
+/* Desktop NAVIGATION sidebar only: pinned, self-scrolling column while the
+   document scrolls. Mobile keeps its fixed slide-in drawer untouched. The
+   Max dock is also an <aside> in the shell and MUST stay position:fixed —
+   pulling it into the flex row consumes ~390px and collapses the workspace
+   into a narrow column. */
+@media (min-width: 768px) {
+  body:has(.awv2) > div > div[class*="h-screen"] > aside:not([data-testid="max-dock"]) {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+  }
+}

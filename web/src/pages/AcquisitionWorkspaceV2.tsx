@@ -23,7 +23,8 @@ import {
   PropertyIntelligenceSection,
   type MarketContextView, type PiCompRow, type PiEvidenceItem, type PiFact,
   type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
-  type MissingDiligenceView,
+  type MissingDiligenceView, type AccessPresentationView, type SoilsSepticView,
+  type VisualBuyerNarrativeView, type ResearchStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
 import '../styles/workspace-v2.css';
 
@@ -87,7 +88,11 @@ interface IntelResp {
     snapshot?: SnapshotView;
     streetView?: StreetViewView | null;
     visualBuyerAnalysis?: VisualBuyerAnalysisView | null;
+    visualBuyerNarrative?: VisualBuyerNarrativeView | null;
     missingDiligence?: MissingDiligenceView | null;
+    access?: AccessPresentationView | null;
+    soilsSeptic?: SoilsSepticView | null;
+    researchStatus?: ResearchStatusView | null;
   };
   marketContext?: MarketContextView;
 }
@@ -152,7 +157,11 @@ export function AcquisitionWorkspaceV2() {
   const [soils, setSoils] = useState<SoilDetail[] | null>(null);
   const [streetView, setStreetView] = useState<StreetViewView | null>(null);
   const [vba, setVba] = useState<VisualBuyerAnalysisView | null>(null);
+  const [narrative, setNarrative] = useState<VisualBuyerNarrativeView | null>(null);
   const [missingDiligence, setMissingDiligence] = useState<MissingDiligenceView | null>(null);
+  const [accessView, setAccessView] = useState<AccessPresentationView | null>(null);
+  const [soilsSeptic, setSoilsSeptic] = useState<SoilsSepticView | null>(null);
+  const [researchStatus, setResearchStatus] = useState<ResearchStatusView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -172,7 +181,11 @@ export function AcquisitionWorkspaceV2() {
         setSoils(bu?.soilDetails ?? null);
         setStreetView(i?.propertyIntelligence?.streetView ?? null);
         setVba(i?.propertyIntelligence?.visualBuyerAnalysis ?? null);
+        setNarrative(i?.propertyIntelligence?.visualBuyerNarrative ?? null);
         setMissingDiligence(i?.propertyIntelligence?.missingDiligence ?? null);
+        setAccessView(i?.propertyIntelligence?.access ?? null);
+        setSoilsSeptic(i?.propertyIntelligence?.soilsSeptic ?? null);
+        setResearchStatus(i?.propertyIntelligence?.researchStatus ?? null);
       } catch (e) {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -237,10 +250,15 @@ export function AcquisitionWorkspaceV2() {
   const stageLabel = acq?.stageLabel || 'New lead';
   const nextActionLabel = acq?.nextAction?.label || snap.nextActions?.[0] || '';
   const nextActionReason = acq?.nextAction?.reason || '';
-  const researchProgress = (() => {
-    const m = snap.headline?.confidenceWhy?.match(/(\d+)\s+of\s+(\d+)/);
-    return m ? `${m[1]} of ${m[2]} research areas delivered` : (snap.status === 'complete_with_gaps' ? 'Complete with gaps' : '—');
-  })();
+  // Recomputed from current accepted research state (server re-derivation),
+  // never a stale snapshot count; the exact incomplete area is named below.
+  const researchProgress = researchStatus
+    ? researchStatus.headline
+    : (() => {
+        const m = snap.headline?.confidenceWhy?.match(/(\d+)\s+of\s+(\d+)/);
+        return m ? `${m[1]} of ${m[2]} research areas delivered` : (snap.status === 'complete_with_gaps' ? 'Complete with gaps' : '—');
+      })();
+  const incompleteArea = researchStatus?.incomplete?.[0] ?? null;
   const lastEvent = activity?.events?.[0];
   const lastActivity = lastEvent
     ? `${activityLabel(lastEvent.kind, lastEvent.summary)} · ${new Date(lastEvent.createdAt * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
@@ -312,6 +330,11 @@ export function AcquisitionWorkspaceV2() {
           <div class="awv2-status-item">
             <div class="k">Research</div>
             <div class="v"><b>{researchProgress}</b></div>
+            {incompleteArea && (
+              <div class="awv2-status-sub">
+                Missing: <b>{incompleteArea.label}</b>{incompleteArea.reason ? ` — ${incompleteArea.reason}` : ''}{incompleteArea.nextAction ? ` Next: ${incompleteArea.nextAction}` : ''}
+              </div>
+            )}
           </div>
           <div class="awv2-status-item">
             <div class="k">Last activity</div>
@@ -381,7 +404,7 @@ export function AcquisitionWorkspaceV2() {
               <ScoreCard title="Market score" view={scores.market} />
               <ScoreCard title="Seller score" view={scores.seller} />
             </div>
-            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} />
+            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} />
           </main>
         ) : (
         <main class="awv2-main">
@@ -414,6 +437,16 @@ export function AcquisitionWorkspaceV2() {
                 {floodPct && <div class="f"><span class="u">Flood overlay</span><span class="v warn">{floodPct}%</span></div>}
                 {slopePct && <div class="f"><span class="u">Avg slope</span><span class="v">{slopePct}%</span></div>}
                 {buildPct && <div class="f"><span class="u">Buildable</span><span class="v good">{buildPct}%</span></div>}
+                {accessView?.established && (
+                  <div class="f"><span class="u">Legal access</span><span class="v good">YES</span></div>
+                )}
+                {soilsSeptic && (
+                  <div class="f"><span class="u">Septic outlook</span>
+                    <span class={`v ${soilsSeptic.category === 'high' ? 'good' : 'warn'}`}>
+                      {soilsSeptic.category === 'low' ? 'LOW (PRELIM)' : soilsSeptic.category === 'high' ? 'FAVORABLE (PRELIM)' : soilsSeptic.category.toUpperCase()}
+                    </span>
+                  </div>
+                )}
               </div>
               <div class="awv2-hero-caption">
                 <b>{acres != null ? `${acres}-acre` : 'A'} vacant parcel</b> in {id.county || '—'} County
@@ -421,7 +454,9 @@ export function AcquisitionWorkspaceV2() {
                 {landlocked?.toLowerCase() === 'no' ? ', not flagged landlocked' : ''}
                 {wetPct && floodPct ? `, light wetlands (${wetPct}%) and flood (${floodPct}%) coverage` : ''}
                 {buildPct ? `, and ${Math.round(Number(buildPct))}% of the site shown buildable` : ''}.
-                {' '}Legal access, zoning, septic and utilities still need confirmation.
+                {' '}{accessView?.established
+                  ? `Legal access: ${accessView.legalAccess}. Apparent entrance: ${accessView.apparentEntrance.charAt(0).toLowerCase()}${accessView.apparentEntrance.slice(1)}. Zoning, septic and utilities still need confirmation.`
+                  : 'Legal access, zoning, septic and utilities still need confirmation.'}
                 {' '}{visualCount > 0 && <span>{visualCount} verified visuals on file → Evidence & Documents.</span>}
               </div>
               {snap.subjectParcelUrl && (
@@ -450,6 +485,12 @@ export function AcquisitionWorkspaceV2() {
                 <span class="v">{vba.overviewSummary.mainBuyerAppeal}</span>
                 <span class="k">Top visual concern</span>
                 <span class="v">{vba.overviewSummary.topConcern}</span>
+                {narrative?.overviewMarketLine && (
+                  <>
+                    <span class="k">Market context</span>
+                    <span class="v">{narrative.overviewMarketLine}</span>
+                  </>
+                )}
               </div>
               <button
                 type="button"
@@ -460,6 +501,38 @@ export function AcquisitionWorkspaceV2() {
                 }}
               >
                 Open the full Visual Buyer Analysis →
+              </button>
+            </section>
+          )}
+
+          {/* ── Septic outlook (compact, grounded in mapped soils) ── */}
+          {soilsSeptic && (
+            <section class="awv2-panel" aria-label="Septic outlook">
+              <div class="awv2-panel-title">
+                Septic outlook <span class="awv2-src-tag">Mapped soils · preliminary screening</span>
+              </div>
+              <div class="awv2-kv">
+                <span class="k">Preliminary outlook</span>
+                <span class="v"><b>{soilsSeptic.categoryLabel}</b></span>
+                <span class="k">Read</span>
+                <span class="v">
+                  {soilsSeptic.category === 'low'
+                    ? 'Mapped soils carry official limitations for a conventional in-ground system; engineered options stay possible.'
+                    : soilsSeptic.category === 'insufficient'
+                      ? 'Not enough retained soil data for a parcel-level read.'
+                      : 'Mapped soils suggest potentially suitable areas.'}
+                  {' '}Field testing remains required.
+                </span>
+              </div>
+              <button
+                type="button"
+                class="awv2-vbs-open"
+                onClick={(e) => {
+                  switchSection(e as unknown as MouseEvent, 'property-intelligence');
+                  requestAnimationFrame(() => document.getElementById('soils-septic')?.scrollIntoView({ behavior: 'smooth' }));
+                }}
+              >
+                Open Soils &amp; Preliminary Septic Outlook →
               </button>
             </section>
           )}

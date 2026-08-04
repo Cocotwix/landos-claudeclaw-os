@@ -73,11 +73,49 @@ export interface StreetViewView { available: boolean; observations: StreetViewOb
 export interface MissingDiligenceItemView {
   key: string; label: string; currentFinding: string;
   stillUnresolved: string; whyItMatters: string; nextSource: string;
+  shortStatus?: string; shortNext?: string; urgent?: boolean;
 }
 export interface MissingDiligenceView {
   items: MissingDiligenceItemView[];
   evidenceGaps: string[];
   passthrough: string[];
+}
+
+export interface AccessPresentationView {
+  established: boolean;
+  road: string | null;
+  legalAccess: string | null;
+  frontageFt: number | null;
+  apparentEntrance: string;
+  apparentEntranceConfirmed: boolean;
+  apparentEntranceObservation: string | null;
+}
+
+export interface SoilsSepticUnitView {
+  name: string; symbol?: string | null; slopeRange?: string | null;
+  drainageClass?: string | null; hydrologicGroup?: string | null;
+  waterTableDepthCm?: number | null; bedrockDepthCm?: number | null;
+  floodingFrequency?: string | null; pondingFrequency?: string | null;
+  septicRating?: string | null; limitationReasons?: string[];
+  parcelSharePct?: number | null;
+}
+export interface SoilsSepticView {
+  category: string; categoryLabel: string; conclusion: string;
+  supportingFactors: string[]; limitations: string[];
+  bestTestingAreas: string | null; confidence: string; confidenceWhy: string;
+  nextStep: string; parcelShareNote: string; units: SoilsSepticUnitView[];
+  source: string; screenedAt: string | null;
+}
+
+export interface VisualBuyerNarrativeView {
+  sections: Array<{ title: string; body: string }>;
+  overviewMarketLine: string | null;
+}
+
+export interface ResearchStatusView {
+  delivered: number; total: number; headline: string;
+  areas: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
+  incomplete: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
 }
 
 export interface VbaObservationView {
@@ -184,13 +222,16 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative }: {
   snap: PiSnapshot;
   market: MarketContextView | null;
   soils: SoilDetail[] | null;
   streetView: StreetViewView | null;
   vba: VisualBuyerAnalysisView | null;
   missingDiligence: MissingDiligenceView | null;
+  accessView?: AccessPresentationView | null;
+  soilsSeptic?: SoilsSepticView | null;
+  narrative?: VisualBuyerNarrativeView | null;
 }) {
   // Same-page evidence viewer: index into the ordered gallery, or null.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -315,16 +356,24 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <section class="awv2-panel">
           <div class="awv2-panel-title">Access &amp; road frontage</div>
           <div class="awv2-kv">
+            <Kv
+              k="Legal access"
+              v={accessView?.established ? accessView.legalAccess : null}
+              empty="Not established at discovery stage"
+            />
+            <Kv k="Apparent entrance" v={accessView ? accessView.apparentEntrance : null} empty="Not confirmed from retained imagery" />
             <Kv k="Road frontage" v={frontageFt ? `${Math.round(Number(frontageFt))} ft (LandPortal parcel panel)` : null} />
             <Kv k="Landlocked" v={landlocked ? landlocked.toUpperCase() : null} />
             <Kv k="Road" v={roadName ? `${roadName} (situs road)` : null} />
             <Kv k="Road relationship" v={byId.has('inspection-road_frontage_aerial') ? 'Frontage visible on the road-frontage aerial below' : null} empty="No frontage capture" />
-            <Kv k="Entrance / driveway" v={null} empty="Not confirmed — field or imagery confirmation required" />
           </div>
           {access?.detail && <div class="awv2-pi-note">{access.detail}</div>}
+          {accessView?.apparentEntranceObservation && (
+            <div class="awv2-pi-note"><b>Retained imagery basis:</b> {accessView.apparentEntranceObservation}</div>
+          )}
           {(access?.missing || []).length > 0 && (
             missingDiligence
-              ? <div class="awv2-pi-note">Legal access and frontage confirmation is tracked under Missing diligence below.</div>
+              ? <div class="awv2-pi-note">Survey-grade frontage and easement review are tracked under Missing diligence below.</div>
               : <div class="awv2-pi-note">Still required: {(access?.missing || []).slice(0, 4).join('; ')}{(access?.missing || []).length > 4 ? '…' : ''}</div>
           )}
         </section>
@@ -363,23 +412,69 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           {femaDescription && (
             <div class="awv2-pi-note"><b>FEMA flood zone description (LandPortal):</b> {femaDescription}</div>
           )}
-          {soils && soils.length > 0 ? (
-            <div class="awv2-pi-note">
-              {soils.map((s) => (
-                <div style="margin-bottom:6px">
-                  <b>{[s.symbol, s.name].filter(Boolean).join(' · ')}</b>
-                  {s.fields && Object.entries(s.fields)
-                    .filter(([k]) => /drainage|farmland|capability/i.test(k))
-                    .map(([k, v]) => <div>{k}: {v}</div>)}
-                </div>
-              ))}
-            </div>
+          {(soils && soils.length > 0) || soilsSeptic ? (
+            <div class="awv2-pi-note">Mapped soil units and the preliminary septic outlook are detailed under <b>Soils &amp; Preliminary Septic Outlook</b> below.</div>
           ) : (
             <div class="awv2-pi-note">Soil unit details are not retained for this parcel yet.</div>
           )}
           {wetlands?.detail && <div class="awv2-pi-note">{wetlands.detail}</div>}
         </section>
       </div>
+
+      {/* ── Soils & Preliminary Septic Outlook ── */}
+      <section class="awv2-panel" id="soils-septic">
+        <div class="awv2-panel-title">
+          Soils &amp; Preliminary Septic Outlook <span class="awv2-src-tag">{soilsSeptic?.source || 'LandPortal soil overlay'} · screening only</span>
+        </div>
+        {soilsSeptic ? (
+          <>
+            <div class={`awv2-septic-headline ${soilsSeptic.category}`}>
+              Preliminary Septic Outlook: <b>{soilsSeptic.categoryLabel}</b>
+            </div>
+            <div class="awv2-pi-note">{soilsSeptic.conclusion}</div>
+            <div class="awv2-mkt-grid awv2-soils-grid">
+              {soilsSeptic.units.map((u) => (
+                <div class="awv2-mkt-card">
+                  <div class="h">{[u.symbol, u.name].filter(Boolean).join(' · ')}</div>
+                  <div class="rows">
+                    <span class="k">Slope</span>
+                    {u.slopeRange ? <span class="v">{u.slopeRange}</span> : <span class="v empty">Not retained</span>}
+                    <span class="k">Drainage</span>
+                    {u.drainageClass ? <span class="v">{u.drainageClass}</span> : <span class="v empty">Not retained</span>}
+                    <span class="k">Hydrologic group</span>
+                    {u.hydrologicGroup ? <span class="v">{u.hydrologicGroup}</span> : <span class="v empty">Not retained</span>}
+                    <span class="k">Seasonal water table</span>
+                    {u.waterTableDepthCm != null ? <span class="v">≈{Math.round(u.waterTableDepthCm / 2.54)} in ({u.waterTableDepthCm} cm)</span> : <span class="v empty">Not retained</span>}
+                    <span class="k">Bedrock</span>
+                    {u.bedrockDepthCm != null ? <span class="v">{u.bedrockDepthCm} cm</span> : <span class="v">None mapped in profile</span>}
+                    <span class="k">Flooding / ponding</span>
+                    {u.floodingFrequency ? <span class="v">{u.floodingFrequency}{u.pondingFrequency ? ` / ${u.pondingFrequency}` : ''}</span> : <span class="v empty">Not retained</span>}
+                    <span class="k">Septic field rating</span>
+                    {u.septicRating ? <span class="v">{u.septicRating}{u.limitationReasons?.length ? ` — ${u.limitationReasons.join('; ')}` : ''}</span> : <span class="v empty">No official rating retained</span>}
+                    <span class="k">Parcel share</span>
+                    {u.parcelSharePct != null ? <span class="v">{u.parcelSharePct}%</span> : <span class="v empty">Not retained</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {soilsSeptic.supportingFactors.length > 0 && (
+              <div class="awv2-pi-note"><b>Supporting factors:</b> {soilsSeptic.supportingFactors.join(' ')}</div>
+            )}
+            {soilsSeptic.limitations.length > 0 && (
+              <div class="awv2-pi-note"><b>Primary possible limitations:</b> {soilsSeptic.limitations.join(' ')}</div>
+            )}
+            {soilsSeptic.bestTestingAreas && (
+              <div class="awv2-pi-note"><b>Best apparent areas for field testing:</b> {soilsSeptic.bestTestingAreas}</div>
+            )}
+            <div class="awv2-pi-note">
+              <b>Confidence:</b> {soilsSeptic.confidence} — {soilsSeptic.confidenceWhy} {soilsSeptic.parcelShareNote}
+            </div>
+            <div class="awv2-pi-note"><b>Required next step:</b> {soilsSeptic.nextStep}</div>
+          </>
+        ) : (
+          <div class="awv2-pi-note">No soil units are retained for this parcel yet, so no preliminary septic outlook can be stated.</div>
+        )}
+      </section>
 
       {/* ── Zoning, sale history, and assessment (LandPortal sidebar) ── */}
       <div class="awv2-grid cols-3">
@@ -484,44 +579,58 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         )}
       </section>
 
-      {/* ── Visual Buyer Analysis (multi-view) ── */}
+      {/* ── Visual Buyer Analysis: concise buyer narrative by default; the
+             detailed structured analysis stays available, collapsed. ── */}
       <section class="awv2-panel" id="visual-buyer-analysis">
         <div class="awv2-panel-title">
           Visual Buyer Analysis <span class="awv2-src-tag">Multi-view · {vba?.basedOn?.length ?? 0} evidence categories</span>
         </div>
-        {vba ? (
-          <div class="awv2-vba">
-            <div class="awv2-vba-col">
-              <div class="h brass">A · Directly observed features</div>
-              {(vba.observedFeatures || []).map((o) => (
-                <div class="awv2-pi-note"><b>{o.label}:</b> {o.detail}{o.views?.length ? <span class="awv2-sv-basis"> — {o.views.join(', ')}</span> : null}</div>
-              ))}
-              <div class="h brass" style="margin-top:12px">B · Buyer-oriented interpretation</div>
-              {(vba.buyerInterpretation || []).map((o) => (
-                <div class="awv2-pi-note"><b>{o.label}:</b> {o.detail}</div>
-              ))}
-            </div>
-            <div class="awv2-vba-col">
-              <div class="h rust">C · Unresolved diligence</div>
-              <ul>{(vba.unresolvedDiligence || []).map((d) => <li>{d}</li>)}</ul>
-              <div class="h brass" style="margin-top:12px">D · Potential buyer perspective</div>
-              <div class="awv2-pi-note"><b>Strongest advantages:</b> {(vba.buyerPerspective?.strongestAdvantages || []).join('; ')}</div>
-              <div class="awv2-pi-note"><b>Most important concerns:</b> {(vba.buyerPerspective?.importantConcerns || []).join('; ')}</div>
-              <div class="awv2-pi-note"><b>Best-fit buyers:</b> {(vba.buyerPerspective?.bestFitBuyers || []).join('; ')}</div>
-              <div class="awv2-pi-note"><b>Weaker-fit buyers:</b> {(vba.buyerPerspective?.weakerFitBuyers || []).join('; ')}</div>
-              <div class="awv2-pi-note"><b>Preliminary impression:</b> {vba.buyerPerspective?.preliminaryImpression || '—'}</div>
-              <div class="awv2-pi-note"><b>Would materially change value or strategy:</b> {(vba.buyerPerspective?.materialToValueOrStrategy || []).join('; ')}</div>
-              <div class="h" style="margin-top:12px">E · Confidence &amp; evidence reconciliation</div>
-              <div class="awv2-pi-note"><b>Supported by:</b> {(vba.evidenceReconciliation?.supportingViews || []).join(', ')}</div>
-              {(vba.evidenceReconciliation?.supersededConclusions || []).map((s) => (
-                <div class="awv2-pi-note"><b>Superseded:</b> {s.prior} → <b>{s.reconciled}</b> <span class="awv2-sv-basis">({s.strongerEvidence})</span></div>
-              ))}
-              <div class="awv2-pi-note"><b>Still uncertain:</b> {(vba.evidenceReconciliation?.remainingUncertain || []).join('; ')}</div>
-              <div class="awv2-pi-note"><b>Overall confidence:</b> {vba.evidenceReconciliation?.overallConfidence || '—'} — {vba.evidenceReconciliation?.confidenceWhy || ''}</div>
-            </div>
+        {narrative && narrative.sections.length > 0 ? (
+          <div class="awv2-vbn">
+            {narrative.sections.map((s) => (
+              <div class="awv2-vbn-section">
+                <div class="h">{s.title}</div>
+                <p>{s.body}</p>
+              </div>
+            ))}
           </div>
-        ) : (
+        ) : !vba ? (
           <div class="awv2-pi-note">No multi-view Visual Buyer Analysis has been produced for this subject yet.</div>
+        ) : null}
+        {vba && (
+          <details class="awv2-collapse awv2-vba-details">
+            <summary>View supporting observations and evidence</summary>
+            <div class="awv2-vba">
+              <div class="awv2-vba-col">
+                <div class="h brass">A · Directly observed features</div>
+                {(vba.observedFeatures || []).map((o) => (
+                  <div class="awv2-pi-note"><b>{o.label}:</b> {o.detail}{o.views?.length ? <span class="awv2-sv-basis"> — {o.views.join(', ')}</span> : null}</div>
+                ))}
+                <div class="h brass" style="margin-top:12px">B · Buyer-oriented interpretation</div>
+                {(vba.buyerInterpretation || []).map((o) => (
+                  <div class="awv2-pi-note"><b>{o.label}:</b> {o.detail}</div>
+                ))}
+              </div>
+              <div class="awv2-vba-col">
+                <div class="h rust">C · Unresolved diligence</div>
+                <ul>{(vba.unresolvedDiligence || []).map((d) => <li>{d}</li>)}</ul>
+                <div class="h brass" style="margin-top:12px">D · Potential buyer perspective</div>
+                <div class="awv2-pi-note"><b>Strongest advantages:</b> {(vba.buyerPerspective?.strongestAdvantages || []).join('; ')}</div>
+                <div class="awv2-pi-note"><b>Most important concerns:</b> {(vba.buyerPerspective?.importantConcerns || []).join('; ')}</div>
+                <div class="awv2-pi-note"><b>Best-fit buyers:</b> {(vba.buyerPerspective?.bestFitBuyers || []).join('; ')}</div>
+                <div class="awv2-pi-note"><b>Weaker-fit buyers:</b> {(vba.buyerPerspective?.weakerFitBuyers || []).join('; ')}</div>
+                <div class="awv2-pi-note"><b>Preliminary impression:</b> {vba.buyerPerspective?.preliminaryImpression || '—'}</div>
+                <div class="awv2-pi-note"><b>Would materially change value or strategy:</b> {(vba.buyerPerspective?.materialToValueOrStrategy || []).join('; ')}</div>
+                <div class="h" style="margin-top:12px">E · Confidence &amp; evidence reconciliation</div>
+                <div class="awv2-pi-note"><b>Supported by:</b> {(vba.evidenceReconciliation?.supportingViews || []).join(', ')}</div>
+                {(vba.evidenceReconciliation?.supersededConclusions || []).map((s) => (
+                  <div class="awv2-pi-note"><b>Superseded:</b> {s.prior} → <b>{s.reconciled}</b> <span class="awv2-sv-basis">({s.strongerEvidence})</span></div>
+                ))}
+                <div class="awv2-pi-note"><b>Still uncertain:</b> {(vba.evidenceReconciliation?.remainingUncertain || []).join('; ')}</div>
+                <div class="awv2-pi-note"><b>Overall confidence:</b> {vba.evidenceReconciliation?.overallConfidence || '—'} — {vba.evidenceReconciliation?.confidenceWhy || ''}</div>
+              </div>
+            </div>
+          </details>
         )}
       </section>
 
@@ -586,15 +695,24 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           <div class="awv2-panel-title">
             Missing diligence <span class="awv2-src-tag">Reconciled against accepted research</span>
           </div>
-          <div class="awv2-md-grid">
+          <div class="awv2-md-list">
+            {/* Compact, collapsed by default: name + status + short next action.
+                Expanding a row reveals the full reconciled record. The most
+                urgent items are visually prominent but stay collapsed. */}
             {missingDiligence.items.map((item) => (
-              <div class="awv2-md-item">
-                <div class="t">{item.label}</div>
-                <div class="row"><span class="k">Current finding</span><span class="v">{item.currentFinding}</span></div>
-                <div class="row"><span class="k">Still unresolved</span><span class="v">{item.stillUnresolved}</span></div>
-                <div class="row"><span class="k">Why it matters</span><span class="v">{item.whyItMatters}</span></div>
-                <div class="row"><span class="k">Next source</span><span class="v">{item.nextSource}</span></div>
-              </div>
+              <details class={`awv2-md-row${item.urgent ? ' urgent' : ''}`}>
+                <summary>
+                  <span class="t">{item.label}</span>
+                  <span class="st">{item.shortStatus || item.currentFinding.slice(0, 64)}</span>
+                  <span class="nx">{item.shortNext ? `Next: ${item.shortNext}` : ''}</span>
+                </summary>
+                <div class="awv2-md-detail">
+                  <div class="row"><span class="k">Current finding</span><span class="v">{item.currentFinding}</span></div>
+                  <div class="row"><span class="k">Still unresolved</span><span class="v">{item.stillUnresolved}</span></div>
+                  <div class="row"><span class="k">Why it matters</span><span class="v">{item.whyItMatters}</span></div>
+                  <div class="row"><span class="k">Next source</span><span class="v">{item.nextSource}</span></div>
+                </div>
+              </details>
             ))}
           </div>
           {missingDiligence.evidenceGaps.length > 0 && (

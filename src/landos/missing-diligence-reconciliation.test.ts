@@ -29,6 +29,9 @@ const screenedState = (overrides: Partial<DiscoveryDiligenceState> = {}): Discov
   septicConfirmed: false,
   officialRecordsRetrieved: false,
   valuationPriceable: false,
+  legalAccessRoad: null,
+  corridorRightsUnresolved: false,
+  septicOutlookLabel: null,
   ...overrides,
 });
 
@@ -94,7 +97,7 @@ describe('genuine official and legal diligence is preserved', () => {
     // Every item still states what remains unresolved; nothing is concluded.
     for (const item of result.items) expect(item.stillUnresolved.length).toBeGreaterThan(10);
     expect(text).not.toMatch(/legal access is (?:confirmed|established)(?! by recorded)/i);
-    expect(text).toMatch(/recorded instruments, not mapped proximity/);
+    expect(text).toMatch(/road abutment must be established by parcel evidence/i);
   });
 
   it('drops resolved-category items when official confirmation exists', () => {
@@ -106,6 +109,52 @@ describe('genuine official and legal diligence is preserved', () => {
     expect(keys).not.toContain('zoning');
     expect(keys).not.toContain('utilities');
     expect(keys).not.toContain('valuation');
+  });
+});
+
+describe('discovery-stage legal access rule', () => {
+  const accessState = () => screenedState({ legalAccessRoad: 'Onionville Road', corridorRightsUnresolved: true });
+
+  it('displays legal access as present and never as unresolved', () => {
+    const result = reconcileMissingDiligence(accessState(), [...STALE_MESSAGES, ...ACCESS_DUPLICATES]);
+    const access = result.items.find((item) => item.key === 'access');
+    expect(access?.currentFinding).toMatch(/Legal access: Yes, via Onionville Road/);
+    expect(access?.shortStatus).toMatch(/Legal access: Yes/);
+    const text = JSON.stringify(result);
+    expect(text).not.toMatch(/driveway (?:approval|permit)/i);
+    expect(text).not.toMatch(/public right[- ]of[- ]way contact/i);
+    expect(text).not.toMatch(/physical \/? ?driveway access/i);
+    expect(text).not.toMatch(/legal access unresolved/i);
+  });
+
+  it('keeps only genuine access follow-ups: survey, corridor rights, easements', () => {
+    const access = reconcileMissingDiligence(accessState(), []).items.find((item) => item.key === 'access');
+    expect(access?.stillUnresolved).toMatch(/surveyed frontage/i);
+    expect(access?.stillUnresolved).toMatch(/corridor/i);
+    expect(access?.stillUnresolved).toMatch(/easements/i);
+    expect(access?.urgent).toBe(false);
+  });
+
+  it('every item carries compact row fields and the urgent set is small', () => {
+    const result = reconcileMissingDiligence(accessState(), []);
+    for (const item of result.items) {
+      expect(item.shortStatus.length).toBeGreaterThan(0);
+      expect(item.shortNext.length).toBeGreaterThan(0);
+    }
+    const urgent = result.items.filter((item) => item.urgent);
+    expect(urgent.length).toBeGreaterThan(0);
+    expect(urgent.length).toBeLessThanOrEqual(3);
+  });
+
+  it('surfaces a grounded septic outlook in the septic row when retained', () => {
+    const result = reconcileMissingDiligence(
+      screenedState({ legalAccessRoad: 'Onionville Road', septicOutlookLabel: 'Low preliminary likelihood (conventional system)' }),
+      [],
+    );
+    const septic = result.items.find((item) => item.key === 'septic');
+    expect(septic?.currentFinding).toMatch(/Low preliminary likelihood/);
+    expect(septic?.currentFinding).toMatch(/no perc test exists yet/);
+    expect(septic?.shortNext).toMatch(/Perc test/);
   });
 });
 

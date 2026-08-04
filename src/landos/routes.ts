@@ -151,11 +151,24 @@ import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { PropertyResearchStore } from './property-research-store.js';
 import { getHermesLandPortalLaneProgress, runHermesLandPortalLane } from './hermes-landportal-auto.js';
 import { loadVisualBuyerAnalysis } from './visual-buyer-analysis.js';
+import { buildVisualBuyerNarrative } from './visual-buyer-narrative.js';
 import { reconcileMissingDiligence } from './missing-diligence-reconciliation.js';
+import {
+  apparentEntranceFromObservations,
+  normalizeDiscoveryAccessItems,
+  presentBuyerAnalysisAccessLanguage,
+  readDiscoveryAccess,
+} from './discovery-access-presentation.js';
+import { buildSoilsSepticOutlook, loadSoilsSepticScreening } from './soils-septic-outlook.js';
 import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
 import type { SnapshotComps, SnapshotEvidenceItem, SnapshotFact } from './property-intelligence-snapshot.js';
-import { jurisdictionLocalApnVariants, presentPropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
+import {
+  jurisdictionLocalApnVariants,
+  presentPropertyIntelligenceSnapshot,
+  rederiveSpecialistDelivery,
+  researchStatusFrom,
+} from './property-intelligence-snapshot.js';
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
 import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
 import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
@@ -7423,7 +7436,22 @@ export function registerLandosRoutes(app: Hono): void {
     const latest = propertyIntelligenceStore.latestRun(dealCardId);
     const progressRun = latest ?? primary;
     const storedSnapshot = primary?.snapshot ?? null;
-    let snapshot = storedSnapshot ? presentPropertyIntelligenceSnapshot(storedSnapshot) : null;
+    // Presentation-policy corrections applied at READ time, system-wide, with
+    // the stored run record untouched: the discovery-stage access rule (road
+    // abutment evidence displays legal access as present) and specialist
+    // delivery re-derived from the current accepted evidence (a stale
+    // "blocked — no screenshots retained" row never undercounts research).
+    const presentedSource = storedSnapshot
+      ? {
+          ...storedSnapshot,
+          dueDiligence: normalizeDiscoveryAccessItems(
+            storedSnapshot.dueDiligence,
+            storedSnapshot.identity.situs ?? storedSnapshot.identity.normalizedAddress,
+          ),
+          specialists: rederiveSpecialistDelivery(storedSnapshot.specialists, storedSnapshot.evidence),
+        }
+      : null;
+    let snapshot = presentedSource ? presentPropertyIntelligenceSnapshot(presentedSource) : null;
     if (snapshot) {
       const deal = getDealCard(dealCardId);
       const acquisition = getAcquisition(dealCardId);
@@ -7472,7 +7500,7 @@ export function registerLandosRoutes(app: Hono): void {
         activeListingCount: snapshot.comps.active.length,
         missionBlockers: currentBlockers,
       });
-      snapshot = presentPropertyIntelligenceSnapshot(storedSnapshot!, {
+      snapshot = presentPropertyIntelligenceSnapshot(presentedSource!, {
         strategies: synthesized.strategies,
         recommendation: synthesized.recommendation,
         extraBlockers: currentBlockers,
@@ -8064,6 +8092,65 @@ export function registerLandosRoutes(app: Hono): void {
       const unavailable = observations.some((item) => /unavailable/i.test(item.label));
       return { available: !unavailable, observations };
     })();
+    // Specialist delivery refresh against the FINAL merged evidence: the
+    // stored snapshot's evidence array can be empty while the read-time view
+    // merges 10+ accepted inspection visuals in above, so the re-derivation
+    // must run again here or a stale "blocked — no screenshots" row keeps
+    // undercounting delivered research areas.
+    if (snapshot) {
+      const refreshed = rederiveSpecialistDelivery(snapshot.specialists, snapshot.evidence);
+      const upgraded = refreshed.filter((record, index) => record !== snapshot!.specialists[index]);
+      if (upgraded.length) {
+        snapshot.specialists = refreshed;
+        const required = refreshed.filter((record) => record.role === 'required');
+        const delivered = required.filter((record) => record.status === 'completed' || record.status === 'partial');
+        snapshot.headline = {
+          ...snapshot.headline,
+          confidenceWhy: snapshot.headline.confidenceWhy.replace(
+            /\d+ of \d+ required specialists delivered/,
+            `${delivered.length} of ${required.length} required specialists delivered`,
+          ),
+        };
+        const upgradedLabels = upgraded.map((record) => record.label.toLowerCase());
+        snapshot.missingInformation = snapshot.missingInformation.filter((item) =>
+          !upgradedLabels.some((label) => String(item).toLowerCase().startsWith(`${label}: blocked`)));
+        if (snapshot.status === 'complete_with_gaps' && delivered.length === required.length) {
+          snapshot.status = 'complete';
+        }
+      }
+    }
+    // Discovery-stage access presentation: legal access (road abutment) and
+    // the separate, purely visual apparent-entrance read. Both are projections
+    // over accepted evidence; nothing is fabricated and the record is not
+    // modified.
+    const accessPresentation = (() => {
+      if (!snapshot) return null;
+      const situs = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
+      const read = readDiscoveryAccess(snapshot.dueDiligence, situs);
+      const entrance = apparentEntranceFromObservations(linkInspection?.visualObservations ?? [], read.road);
+      return {
+        established: read.established,
+        road: read.road,
+        legalAccess: read.display,
+        frontageFt: read.frontageFt,
+        apparentEntrance: entrance.display,
+        apparentEntranceConfirmed: entrance.confirmed,
+        apparentEntranceObservation: entrance.observation,
+      };
+    })();
+    // Soils & preliminary septic outlook: accepted overlay units joined with
+    // the retained official USDA screening. Preliminary category only — never
+    // a pass/fail or a fabricated percentage.
+    const soilsSeptic = (() => {
+      try {
+        return buildSoilsSepticOutlook(
+          soilDetailsForDealCard(dealCardId),
+          linkCardId != null ? loadSoilsSepticScreening(linkCardId) : null,
+        );
+      } catch {
+        return null;
+      }
+    })();
     // Missing-diligence reconciliation: the historical record keeps every
     // collector message, but the operator read supersedes any "not run /
     // remains in Resolution" claim whose category now has accepted
@@ -8097,6 +8184,11 @@ export function registerLandosRoutes(app: Hono): void {
         septicConfirmed: resolvedVerdict('septic'),
         officialRecordsRetrieved: false,
         valuationPriceable: snapshot.valuation.priceable === true,
+        legalAccessRoad: accessPresentation?.established ? accessPresentation.road : null,
+        corridorRightsUnresolved: (linkInspection?.visualObservations ?? []).some(
+          (item) => /corridor/i.test(item.label ?? '') && /unconfirmed|unresolved|unknown/i.test(item.detail ?? ''),
+        ),
+        septicOutlookLabel: soilsSeptic?.categoryLabel ?? null,
       };
       const raw = [
         ...snapshot.missingInformation.map((item) => String(item ?? '')),
@@ -8104,14 +8196,39 @@ export function registerLandosRoutes(app: Hono): void {
       ];
       return reconcileMissingDiligence(state, raw);
     })();
+    // Retained multi-view Visual Buyer Analysis (canonical read; the newest
+    // retained analysis supersedes any earlier interpretation), plus the
+    // concise buyer narrative that is the DEFAULT operator presentation.
+    // Display applies the discovery-stage access terminology; the persisted
+    // record itself is never rewritten.
+    const visualBuyerAnalysis = presentBuyerAnalysisAccessLanguage(
+      linkCardId != null ? loadVisualBuyerAnalysis(linkCardId) : null,
+      accessPresentation?.established === true,
+    );
+    const visualBuyerNarrative = buildVisualBuyerNarrative(visualBuyerAnalysis, {
+      legalAccessDisplay: accessPresentation?.established ? accessPresentation.legalAccess : null,
+      apparentEntranceDisplay: accessPresentation?.apparentEntrance ?? null,
+      marketInterpretation: (() => {
+        try {
+          const deal = getDealCard(dealCardId);
+          return deal ? marketContextFor(deal)?.interpretation ?? null : null;
+        } catch {
+          return null;
+        }
+      })(),
+    });
     return {
       snapshot,
       subjectParcel,
       streetView: streetViewProjection,
       missingDiligence,
-      // Retained multi-view Visual Buyer Analysis (canonical read; the newest
-      // retained analysis supersedes any earlier interpretation).
-      visualBuyerAnalysis: linkCardId != null ? loadVisualBuyerAnalysis(linkCardId) : null,
+      access: accessPresentation,
+      soilsSeptic,
+      visualBuyerAnalysis,
+      visualBuyerNarrative,
+      // Named research areas with the exact incomplete one, so the operator
+      // never has to guess what "N of M delivered" is missing.
+      researchStatus: snapshot ? researchStatusFrom(snapshot.specialists) : null,
       hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
       providerResearch: (() => {
         const deal = getDealCard(dealCardId);

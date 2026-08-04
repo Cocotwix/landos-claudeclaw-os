@@ -201,6 +201,24 @@ interface LanePageOwner {
 const browserWorkflowContext = new AsyncLocalStorage<BrowserWorkflowScope>();
 const lanePageRegistry = new Map<PageLike, LanePageOwner>();
 
+// Short-lived helper tabs (comp-detail enrichment, full-panel reads) are
+// registered under this lane so a watchdog-killed run can still reap them via
+// closeSurplusSessionPages: they carry the creating workflow's scope, and the
+// synthetic lane symbol can never collide with a driver's per-instance lane.
+const sessionTempLane = Symbol('landos-session-temp-tab');
+
+/** Track a short-lived session tab for workflow-scoped cleanup. */
+function trackTempSessionPage(page: PageLike): void {
+  lanePageRegistry.set(page, { lane: sessionTempLane, workflow: browserWorkflowContext.getStore() ?? null });
+}
+
+/** Untrack + close a short-lived session tab (used in finally paths). */
+async function releaseTempSessionPage(page: PageLike | null): Promise<void> {
+  if (!page) return;
+  lanePageRegistry.delete(page);
+  try { await (page as unknown as { close?: () => Promise<void> }).close?.(); } catch { /* already gone */ }
+}
+
 /** Create one opaque ownership boundary for a Deal Intelligence run. */
 export function createBrowserWorkflowScope(label: string): BrowserWorkflowScope {
   return Symbol(label);
@@ -1851,6 +1869,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           let detailPage: PageLike | null = null;
           try {
             detailPage = await state.browser.newPage();
+            trackTempSessionPage(detailPage);
             for (const raw of compCards.slice(0, 12)) {
               let card: { apn?: string | null; fips?: string | null; propertyId?: string | null } = {};
               try { card = JSON.parse(raw); } catch { continue; }
@@ -1875,8 +1894,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           } catch { /* the enrichment tab is best-effort */ } finally {
             // Always close the tab this capture opened — an enrichment tab left
             // behind is exactly the browser-cleanup regression the operator sees.
-            const closable = detailPage as unknown as { close?: () => Promise<void> } | null;
-            if (closable?.close) { try { await closable.close(); } catch { /* already gone */ } }
+            await releaseTempSessionPage(detailPage);
           }
         }
         return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, overlayMisses, terrainShotPath, compRows: compRows ?? [], compCards: compCards ?? [], compDetails, mapRows: mapRows ?? [], mapReached, capturedAtIso: now() };
@@ -1903,6 +1921,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await ensureBrowserSession(deps);
       if (!state.browser) return { url, fields: {}, snippets: [] };
       const page = await state.browser.newPage();
+      trackTempSessionPage(page);
       const FULL = (): { fields: Record<string, string>; snippets: string[] } => {
         const fields: Record<string, string> = {};
         const add = (k: string, v: string) => {
@@ -1930,7 +1949,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const out = await page.evaluate<{ fields: Record<string, string>; snippets: string[] }>(FULL as unknown as () => { fields: Record<string, string>; snippets: string[] });
         return { url: page.url(), fields: out.fields ?? {}, snippets: out.snippets ?? [] };
       } finally {
-        try { await (page as unknown as { close?: () => Promise<void> }).close?.(); } catch { /* leave the tab if close is unavailable */ }
+        await releaseTempSessionPage(page);
       }
     },
     async readLinks() {

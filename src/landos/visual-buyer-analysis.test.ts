@@ -171,7 +171,9 @@ describe('V2 projection (source contract)', () => {
   );
 
   it('serves the retained analysis in the PI read', () => {
-    expect(ROUTES_SRC).toMatch(/visualBuyerAnalysis: linkCardId != null \? loadVisualBuyerAnalysis\(linkCardId\) : null/);
+    expect(ROUTES_SRC).toMatch(/linkCardId != null \? loadVisualBuyerAnalysis\(linkCardId\) : null/);
+    expect(ROUTES_SRC).toMatch(/presentBuyerAnalysisAccessLanguage\(/);
+    expect(ROUTES_SRC).toMatch(/\bvisualBuyerAnalysis,\s*[\r\n]/);
   });
 
   it('renders the full analysis with sections A-E in Property Intelligence', () => {

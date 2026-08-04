@@ -353,6 +353,12 @@ export async function runBrockovichDataCenterMap(input: {
   if (!input.driver.configured() || !input.driver.evaluate) {
     return { ...base, status: 'unavailable', projects: [], screenshotPath: null, note: 'The live browser driver needed for the Brockovich map is unavailable.' };
   }
+  // BROWSER LIFECYCLE: the map page this screen opens is closed in a finally
+  // once the projects and screenshot are persisted — success or failure alike.
+  let pageScope: string | null = null;
+  if (input.driver.beginOwnedPageScope) {
+    try { pageScope = await input.driver.beginOwnedPageScope(); } catch { pageScope = null; }
+  }
   try {
     await input.driver.open(BROCKOVICH_MAP_URL, { timeoutMs: input.timeoutMs ?? 45_000 });
     const read = await input.driver.evaluate<MapDomRead>(PREPARE_AND_READ_MAP as unknown as () => MapDomRead, subject);
@@ -394,5 +400,9 @@ export async function runBrockovichDataCenterMap(input: {
       ...base, status: 'unavailable', projects: [], screenshotPath: null,
       note: `Brockovich browser-map attempt failed: ${(error as Error)?.message ?? String(error)}.`,
     };
+  } finally {
+    if (pageScope && input.driver.closeOwnedPageScope) {
+      try { await input.driver.closeOwnedPageScope(pageScope); } catch { /* cleanup never masks the outcome */ }
+    }
   }
 }

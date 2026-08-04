@@ -32,6 +32,7 @@ import {
 import type { PropertyPatch } from './normalized-property.js';
 import { planParcelSearch, pickParcelRecordLink, type FormInfo, type NavSearchKey } from './browser-navigator.js';
 import { planNetrWorkflow, buildNetrStateUrl, type NetrStep } from './browser-retrieval.js';
+import { withOwnedPages } from './browser-owned-pages.js';
 import { COUNTY_WORKFLOW_FOR, type DdField } from './missing-field-analysis.js';
 import {
   extractCountySources, officialSearchQuery, pickOfficialResult, netrIsStale,
@@ -486,14 +487,22 @@ export function makeCountyRecordsBrowser(deps: CountyRecordsBrowserDeps = {}): B
     label: 'County Records Browser (public-record research)',
     modes: ['workflow', 'ask'],
     configured() { return driver.configured(); },
-    runWorkflow(input, opts) { return runCountyWorkflow(input, driver, now, opts.timeoutMs, opts); },
+    // BROWSER LIFECYCLE: every county/GIS/assessor research page this job
+    // causes to exist is closed in a finally-style owned-page scope — after
+    // success, failure, timeout, or cancellation — once its facts are
+    // persisted. Operator pages are preserved.
+    runWorkflow(input, opts) {
+      return withOwnedPages(driver, () => runCountyWorkflow(input, driver, now, opts.timeoutMs, opts));
+    },
     async ask(question, ctx, opts) {
       const route = routeBrowserQuestion(question, ctx);
       const wf = COUNTY_WORKFLOW_FOR[route.intent as DdField] ?? 'assessor';
-      const ev = await runCountyWorkflow({ searchKey: route.searchKey, neededFields: [route.intent] }, driver, now, opts.timeoutMs);
-      ev.mode = 'ask';
-      if (ev.status !== 'parked' && ev.status !== 'error') ev.note = `Asked: "${route.intent}" → ${wf}. ${ev.note}`;
-      return ev;
+      return withOwnedPages(driver, async () => {
+        const ev = await runCountyWorkflow({ searchKey: route.searchKey, neededFields: [route.intent] }, driver, now, opts.timeoutMs);
+        ev.mode = 'ask';
+        if (ev.status !== 'parked' && ev.status !== 'error') ev.note = `Asked: "${route.intent}" → ${wf}. ${ev.note}`;
+        return ev;
+      });
     },
   };
 }

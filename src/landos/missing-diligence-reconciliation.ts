@@ -21,6 +21,12 @@ export interface MissingDiligenceItem {
   stillUnresolved: string;
   whyItMatters: string;
   nextSource: string;
+  /** Compact collapsed-row status, e.g. "Discovery screening retained". */
+  shortStatus: string;
+  /** Compact collapsed-row next action, e.g. "Perc test / soil evaluation". */
+  shortNext: string;
+  /** The two or three most decision-critical items render prominently. */
+  urgent: boolean;
 }
 
 export interface MissingDiligenceChecklist {
@@ -48,6 +54,17 @@ export interface DiscoveryDiligenceState {
   septicConfirmed: boolean;
   officialRecordsRetrieved: boolean;
   valuationPriceable: boolean;
+  /** Road name once discovery-stage legal access is established by road
+   *  abutment evidence (mapped frontage + no landlocked flag); null keeps
+   *  access honestly open. */
+  legalAccessRoad: string | null;
+  /** A mapped corridor crosses the parcel and its ownership/crossing rights
+   *  are unconfirmed — genuine access-family uncertainty that survives the
+   *  discovery-stage legal-access rule. */
+  corridorRightsUnresolved: boolean;
+  /** Preliminary septic outlook category label when a grounded soils
+   *  screening exists (e.g. "Low preliminary likelihood"). */
+  septicOutlookLabel: string | null;
 }
 
 interface CategoryMatcher {
@@ -79,21 +96,47 @@ const ft = (value: number): string => `${Math.round(value)} ft`;
 function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
   const items: MissingDiligenceItem[] = [];
 
-  // Legal access can only be resolved by recorded instruments — always open
-  // at discovery stage. This single item condenses every access-family warning.
-  items.push({
-    key: 'access',
-    label: 'Legal access and frontage confirmation',
-    currentFinding: state.frontageFt != null || state.streetViewComplete
-      ? [
-          state.frontageFt != null ? `LandPortal maps approximately ${ft(state.frontageFt)} of road frontage` : null,
-          state.streetViewComplete ? 'Street View shows direct road adjacency with no physical frontage barrier observed' : null,
-        ].filter(Boolean).join('; ') + '.'
-      : 'No mapped frontage or Street View pass is retained yet.',
-    stillUnresolved: 'Recorded access rights, surveyed frontage, public right-of-way contact, driveway approval, and road maintenance responsibility.',
-    whyItMatters: 'Legal access is established by recorded instruments, not mapped proximity; it gates buildability, financing, and value.',
-    nextSource: 'Recorded deed and easement documents, survey, county highway records, driveway permit authority.',
-  });
+  if (state.legalAccessRoad) {
+    // Discovery-stage legal access is PRESENT (the parcel abuts a road per
+    // accepted parcel evidence). Only the genuine follow-ups stay open:
+    // surveyed frontage, easements, and any unresolved corridor rights.
+    // Driveway-approval / permit language is never part of this workflow.
+    items.push({
+      key: 'access',
+      label: 'Access follow-ups (survey and easements)',
+      currentFinding: [
+        `Legal access: Yes, via ${state.legalAccessRoad} — the parcel abuts the road${state.frontageFt != null ? ` with approximately ${ft(state.frontageFt)} of mapped frontage` : ''} and is not flagged landlocked`,
+        state.streetViewComplete ? 'Street View confirms direct road adjacency' : null,
+      ].filter(Boolean).join('; ') + '.',
+      stillUnresolved: [
+        'Exact surveyed frontage',
+        state.corridorRightsUnresolved ? 'ownership and crossing rights of the corridor crossing the parcel' : null,
+        'any recorded easements affecting other portions of the parcel',
+      ].filter(Boolean).join('; ') + '.',
+      whyItMatters: 'Survey-grade frontage, corridor rights, and recorded easements refine boundaries and internal access; they do not gate discovery-stage legal access.',
+      nextSource: 'Boundary survey and recorded deed/easement documents.',
+      shortStatus: `Legal access: Yes, via ${state.legalAccessRoad}`,
+      shortNext: 'Survey + easement review',
+      urgent: false,
+    });
+  } else {
+    items.push({
+      key: 'access',
+      label: 'Legal access and frontage confirmation',
+      currentFinding: state.frontageFt != null || state.streetViewComplete
+        ? [
+            state.frontageFt != null ? `LandPortal maps approximately ${ft(state.frontageFt)} of road frontage` : null,
+            state.streetViewComplete ? 'Street View shows direct road adjacency with no physical frontage barrier observed' : null,
+          ].filter(Boolean).join('; ') + '.'
+        : 'No mapped frontage or Street View pass is retained yet.',
+      stillUnresolved: 'Road abutment evidence (mapped frontage or a landlocked determination), surveyed frontage, and any recorded easements.',
+      whyItMatters: 'Access gates buildability, financing, and value; road abutment must be established by parcel evidence.',
+      nextSource: 'LandPortal parcel mapping, recorded deed and easement documents, survey.',
+      shortStatus: 'Access not yet established',
+      shortNext: 'Confirm road abutment evidence',
+      urgent: true,
+    });
+  }
 
   if (!state.zoningOfficialConfirmed) {
     items.push({
@@ -105,6 +148,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
       stillUnresolved: 'Governing district, permitted uses, and dimensional standards from the official zoning authority.',
       whyItMatters: 'Zoning controls allowed uses, splits, and the buyer pool.',
       nextSource: 'Municipal zoning office, official zoning map, and ordinance.',
+      shortStatus: state.zoningCode ? `Discovery code ${state.zoningCode} only` : 'No zoning indication',
+      shortNext: 'Municipal zoning office',
+      urgent: true,
     });
   }
 
@@ -115,6 +161,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
     stillUnresolved: 'Surveyed boundary, monumented corners, and exact legal frontage.',
     whyItMatters: 'Mapped geometry is an indication; conveyance and build placement rely on a survey.',
     nextSource: 'Existing recorded survey or a new boundary survey.',
+    shortStatus: 'Mapped geometry retained',
+    shortNext: 'Boundary survey',
+    urgent: false,
   });
 
   if (!state.utilitiesConfirmed) {
@@ -127,6 +176,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
       stillUnresolved: 'Provider confirmation of electric service and any water or sewer availability at the parcel.',
       whyItMatters: 'Lines at the road are not proof of service; connection cost affects buyer appeal.',
       nextSource: 'Utility providers serving the road.',
+      shortStatus: state.streetViewComplete ? 'Lines visible at the road' : 'No observation yet',
+      shortNext: 'Provider confirmation',
+      urgent: false,
     });
   }
 
@@ -134,12 +186,17 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
     items.push({
       key: 'septic',
       label: 'Septic and perc feasibility',
-      currentFinding: state.soilUnitCount > 0
-        ? `LandPortal soil screening completed: ${state.soilUnitCount} accepted soil unit(s) with drainage, farmland, and capability attributes are retained.`
-        : 'Soil screening has not been run yet.',
+      currentFinding: state.septicOutlookLabel
+        ? `Preliminary septic outlook from the mapped soils: ${state.septicOutlookLabel}. ${state.soilUnitCount} accepted soil unit(s) with official soil characteristics are retained; no perc test exists yet.`
+        : state.soilUnitCount > 0
+          ? `LandPortal soil screening completed: ${state.soilUnitCount} accepted soil unit(s) with drainage, farmland, and capability attributes are retained.`
+          : 'Soil screening has not been run yet.',
       stillUnresolved: 'Perc test and county health department septic feasibility.',
       whyItMatters: 'Soil interpretation is not a passed perc test; septic feasibility gates homesite use.',
       nextSource: 'Perc test and the county health department.',
+      shortStatus: state.septicOutlookLabel ?? (state.soilUnitCount > 0 ? 'Soils screened, no perc test' : 'Not screened'),
+      shortNext: 'Perc test / soil evaluation',
+      urgent: true,
     });
   }
 
@@ -152,6 +209,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
     stillUnresolved: 'Jurisdictional wetlands delineation where development is planned.',
     whyItMatters: 'Mapped overlays are indications; jurisdictional findings control permits.',
     nextSource: 'Wetlands consultant or an Army Corps jurisdictional determination.',
+    shortStatus: state.wetlandsScreenedPct ? `Mapped ${state.wetlandsScreenedPct}` : 'Not screened',
+    shortNext: 'Delineation if building near mapped areas',
+    urgent: false,
   });
 
   items.push({
@@ -163,6 +223,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
     stillUnresolved: 'Official FEMA panel or survey-based determination where required.',
     whyItMatters: 'Insurance and lending decisions rely on the official determination.',
     nextSource: 'FEMA FIRM panel lookup or an elevation certificate.',
+    shortStatus: state.femaScreenedPct ? `Mapped ${state.femaScreenedPct}` : 'Not screened',
+    shortNext: 'FIRM panel lookup',
+    urgent: false,
   });
 
   if (!state.officialRecordsRetrieved) {
@@ -175,6 +238,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
       stillUnresolved: 'Official county, deed, title, and recorded-instrument retrieval.',
       whyItMatters: 'Ownership, easements, and restrictions live in the recorded instruments.',
       nextSource: 'County clerk/recorder and assessor records.',
+      shortStatus: state.identityVerified ? 'Identity verified, records pending' : 'Identity unverified',
+      shortNext: 'County clerk / recorder',
+      urgent: false,
     });
   }
 
@@ -186,6 +252,9 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
       stillUnresolved: 'One or more closed vacant-land sales inside the subject acreage band.',
       whyItMatters: 'Fair market value and every acquisition level stay locked without closed evidence.',
       nextSource: 'Comp providers and county transfer records.',
+      shortStatus: 'Not priceable yet',
+      shortNext: 'One closed in-band sale',
+      urgent: true,
     });
   }
 

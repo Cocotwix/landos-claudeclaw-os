@@ -1035,19 +1035,28 @@ export async function collectAccessUtilities(ctx: MissionContext): Promise<Speci
   const inspection = cardId ? loadPropertyInspection(cardId) : null;
   const frontage = hasVerifiedLandPortalSubject(inspection) ? str(inspection?.parcelFacts?.['Road Frontage']) : null;
   const landLocked = hasVerifiedLandPortalSubject(inspection) ? str(inspection?.parcelFacts?.['Land Locked']) : null;
+  // Discovery-stage operator rule: mapped frontage plus no landlocked flag
+  // means the parcel abuts a road, and legal access is displayed as PRESENT.
+  // Only survey-grade frontage and recorded easements stay open. Driveway or
+  // permit language is never part of this operator workflow.
+  const abutsRoad = !!frontage && /^no$/i.test(landLocked ?? '');
   if (frontage || landLocked) {
     const indication: SnapshotDueDiligenceItem = {
       key: 'access',
-      label: 'Road frontage and apparent access',
-      verdict: 'caution',
+      label: abutsRoad ? 'Legal access and road frontage' : 'Road frontage and apparent access',
+      verdict: abutsRoad ? 'good' : 'caution',
       headline: [
         frontage ? `${frontage} frontage shown` : null,
         landLocked ? `landlocked flag: ${landLocked}` : null,
       ].filter(Boolean).join('; '),
       grade: 'likely_indication',
-      detail: 'LandPortal parcel-panel indication only. Legal access still requires recorded-instrument review.',
+      detail: abutsRoad
+        ? 'LandPortal parcel evidence shows the parcel abuts the road with mapped frontage and no landlocked flag; discovery-stage legal access is displayed as present. Survey-grade frontage and recorded easements remain ordinary follow-ups.'
+        : 'LandPortal parcel-panel indication only. Road abutment has not been established by the retained parcel evidence yet.',
       sourceUrl: inspection?.parcelUrl ?? null,
-      missing: ['Recorded legal access has not been established.'],
+      missing: abutsRoad
+        ? ['Exact surveyed frontage (survey-grade confirmation).', 'Any recorded easements affecting other portions of the parcel.']
+        : ['Road abutment evidence (mapped frontage or a landlocked determination).'],
     };
     const accessIndex = items.findIndex((item) => item.key === 'access');
     if (accessIndex < 0) items.push(indication);
@@ -1055,20 +1064,19 @@ export async function collectAccessUtilities(ctx: MissionContext): Promise<Speci
   }
   const utilitiesCard = record.decisionCards.find((card) => card.key === 'utilities');
 
-  // Legal access is a recorded-instrument question. Mapped road contact is
-  // proximity evidence only and is labelled as such, never as legal access.
+  // When road abutment is NOT yet established, the unresolved access-family
+  // items stay visible; once it is, they would misstate the operator rule.
   const accessItem = items.find((item) => item.key === 'access');
-  if (accessItem) {
+  if (accessItem && !abutsRoad) {
     accessItem.missing = [
       ...accessItem.missing,
       ...record.accessStatus.unresolved,
-      'Legal access is established by a recorded instrument, not by mapped road proximity.',
     ];
   }
 
   return {
     status: items.length === 0 ? 'blocked' : items.some((item) => item.verdict === 'unknown') ? 'partial' : 'completed',
-    summary: `${frontage || landLocked ? 'The live LandPortal parcel collector supplied frontage/access indications; legal access remains unverified. ' : ''}${record.accessStatus.summary}${utilitiesCard ? ` Utilities: ${utilitiesCard.headline}` : ' Utility availability was not established.'} ${execution.summary}`,
+    summary: `${abutsRoad ? 'The live LandPortal parcel collector shows the parcel abutting the road; discovery-stage legal access is present. ' : frontage || landLocked ? 'The live LandPortal parcel collector supplied frontage/access indications. ' : ''}${abutsRoad ? '' : record.accessStatus.summary}${utilitiesCard ? ` Utilities: ${utilitiesCard.headline}` : ' Utility availability was not established.'} ${execution.summary}`,
     data: {
       items,
       accessStatus: frontage || /no/i.test(landLocked ?? '') ? 'public_road_proximity' : record.accessStatus.status,

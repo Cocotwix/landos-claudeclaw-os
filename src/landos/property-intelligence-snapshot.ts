@@ -744,6 +744,91 @@ export function presentPropertyIntelligenceSnapshot(
   };
 }
 
+/**
+ * Re-derive specialist delivery from the CURRENT accepted research state.
+ *
+ * A stored specialist row can go stale: the evidence_visuals specialist may
+ * still say "blocked — no screenshots retained" while accepted visual
+ * evidence has since landed on the record. The presented count must be
+ * recomputed from what is actually retained, never fabricated: a blocked row
+ * is upgraded only when the retained evidence directly contradicts its
+ * blocked claim. The stored run history is not modified.
+ */
+export function rederiveSpecialistDelivery(
+  specialists: SnapshotSpecialistRecord[],
+  evidence: SnapshotEvidenceItem[],
+): SnapshotSpecialistRecord[] {
+  return specialists.map((specialist) => {
+    if (
+      specialist.id === 'evidence_visuals'
+      && specialist.status === 'blocked'
+      && evidence.length > 0
+    ) {
+      return {
+        ...specialist,
+        status: 'completed' as const,
+        summary: `${evidence.length} accepted evidence item(s) are retained for the verified subject (re-derived from the current evidence record).`,
+        failureCategory: null,
+        failureMessage: null,
+      };
+    }
+    return specialist;
+  });
+}
+
+export interface ResearchAreaStatus {
+  id: string;
+  label: string;
+  delivered: boolean;
+  status: string;
+  /** Why the area is incomplete (only for undelivered areas). */
+  reason: string | null;
+  /** The next action required to complete it (only for undelivered areas). */
+  nextAction: string | null;
+}
+
+export interface ResearchStatusView {
+  delivered: number;
+  total: number;
+  headline: string;
+  areas: ResearchAreaStatus[];
+  incomplete: ResearchAreaStatus[];
+}
+
+/**
+ * Name every required research area and which one is incomplete, so the
+ * operator never has to guess what "7 of 8" is missing. Each required
+ * specialist is one research area; nothing is counted twice and the count is
+ * computed from the presented (re-derived) specialist state.
+ */
+export function researchStatusFrom(specialists: SnapshotSpecialistRecord[]): ResearchStatusView {
+  const required = specialists.filter((specialist) => specialist.role === 'required');
+  const areas: ResearchAreaStatus[] = required.map((specialist) => {
+    const delivered = contributedResult(specialist.status);
+    return {
+      id: specialist.id,
+      label: specialist.label,
+      delivered,
+      status: specialist.status,
+      reason: delivered ? null : (specialist.failureMessage ?? specialist.summary ?? `${specialist.label} did not deliver a result.`),
+      nextAction: delivered
+        ? null
+        : specialist.status === 'failed' && specialist.retryable
+          ? `Re-run Property Intelligence to retry ${specialist.label}.`
+          : `Complete ${specialist.label.toLowerCase()} and re-run the Property Intelligence join.`,
+    };
+  });
+  const incomplete = areas.filter((area) => !area.delivered);
+  const delivered = areas.length - incomplete.length;
+  return {
+    delivered,
+    total: areas.length,
+    headline: `${delivered} of ${areas.length} research areas delivered`,
+    areas,
+    incomplete,
+  };
+}
+
 const FACT_GRADE_STRENGTH: Readonly<Record<EvidenceGrade, number>> = {
   unavailable_public_record: 0,
   unresolved_question: 1,
