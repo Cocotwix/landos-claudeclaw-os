@@ -55,7 +55,7 @@ export type HermesLandPortalResultCategory = 'subject' | 'comps' | 'visuals';
 export interface HermesLandPortalVisualArtifact {
   key: string;
   label: string;
-  kind: 'parcel_page' | 'parcel_3d' | 'parcel_boundary' | 'overlay' | 'comparables_map';
+  kind: 'parcel_page' | 'parcel_3d' | 'parcel_boundary' | 'overlay' | 'comparables_map' | 'street_view';
   purpose: string;
   source_path: string;
   timestamp: string;
@@ -69,6 +69,21 @@ export interface HermesLandPortalVisualArtifact {
   obstructions: string[];
   overlay?: string | null;
   note?: string | null;
+  /**
+   * Overlay captures only: attests the colored overlay polygons (soil colors,
+   * yellow buildability area) had visibly finished rendering across the
+   * subject parcel before the screenshot. Soil and buildability captures are
+   * rejected without this attestation — base imagery alone is not overlay
+   * evidence.
+   */
+  overlay_rendered?: boolean | null;
+}
+
+/** Structured Street View observation with its evidentiary basis. */
+export interface HermesStreetViewObservation {
+  label: string;
+  detail: string;
+  basis: 'direct_observation' | 'reasonable_interpretation' | 'unconfirmed';
 }
 
 export interface HermesLandPortalSubject {
@@ -94,6 +109,23 @@ export interface HermesLandPortalSubject {
   buildability_pct?: number | null;
   lp_estimate_total?: number | null;
   lp_estimate_per_acre?: number | null;
+  // Clearly labeled sidebar fields captured whenever LandPortal displays them.
+  // Displayed values are preserved verbatim (the zoning code is never
+  // reinterpreted; the FEMA description is kept complete).
+  water_feature_type?: string | null;
+  zoning_code?: string | null;
+  fema_flood_zone_description?: string | null;
+  last_sale_price?: number | string | null;
+  last_sale_date?: string | null;
+  book_number?: number | string | null;
+  page_number?: number | string | null;
+  assessed_value?: number | string | null;
+  buildability_area_acres?: number | null;
+  // Street View outcome from the visuals work unit. Unavailability is recorded
+  // explicitly, never silently skipped.
+  street_view_available?: boolean | null;
+  street_view_note?: string | null;
+  street_view_observations?: HermesStreetViewObservation[];
   captured_at?: string | null;
   retrieved_at?: string | null;
   canonical_property_identifier?: string | number | null;
@@ -174,13 +206,17 @@ const compactApn = (value: unknown): string => text(value).toLowerCase().replace
 const money = (value: number): string => `$${Math.round(value).toLocaleString('en-US')}`;
 const percent = (value: number): string => `${value.toFixed(2)}%`;
 const HERMES_RESULT_CATEGORIES = new Set<HermesLandPortalResultCategory>(['subject', 'comps', 'visuals']);
-const HERMES_VISUAL_KINDS = new Set<HermesLandPortalVisualArtifact['kind']>(['parcel_page', 'parcel_3d', 'parcel_boundary', 'overlay', 'comparables_map']);
-const HERMES_VISUAL_VIEWS = new Set<LandPortalVisualView>(['parcel_context', 'road_frontage', 'wetlands', 'fema_flood', 'soil', 'contours', 'front_3d', 'rear_3d', 'comparables_map']);
+const HERMES_VISUAL_KINDS = new Set<HermesLandPortalVisualArtifact['kind']>(['parcel_page', 'parcel_3d', 'parcel_boundary', 'overlay', 'comparables_map', 'street_view']);
+const HERMES_VISUAL_VIEWS = new Set<LandPortalVisualView>(['parcel_context', 'road_frontage', 'wetlands', 'fema_flood', 'soil', 'contours', 'front_3d', 'rear_3d', 'default_3d', 'buildability', 'street_view', 'comparables_map']);
+/** Overlay views whose captures must attest visibly rendered overlay polygons. */
+const OVERLAY_RENDER_REQUIRED_VIEWS = new Set<LandPortalVisualView>(['soil', 'buildability']);
+const STREET_VIEW_BASES = new Set<HermesStreetViewObservation['basis']>(['direct_observation', 'reasonable_interpretation', 'unconfirmed']);
 const HERMES_CAMERA_SCALES = new Set<HermesLandPortalVisualArtifact['camera_scale']>(['parcel', 'context', 'county', 'national', 'unknown']);
 
 function visualKindForView(view: LandPortalVisualView): HermesLandPortalVisualArtifact['kind'] {
   if (view === 'comparables_map') return 'comparables_map';
-  if (view === 'front_3d' || view === 'rear_3d') return 'parcel_3d';
+  if (view === 'front_3d' || view === 'rear_3d' || view === 'default_3d') return 'parcel_3d';
+  if (view === 'street_view') return 'street_view';
   if (view === 'parcel_context' || view === 'road_frontage') return 'parcel_boundary';
   return 'overlay';
 }
@@ -330,6 +366,20 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
             obstructions: obstructionValues.map((item) => item.trim()).filter(Boolean),
             overlay: text(artifact.overlay) || null,
             note: [text(artifact.note), explicitlyNonObstructing ? obstructionNarrative : ''].filter(Boolean).join(' ') || null,
+            overlay_rendered: typeof artifact.overlay_rendered === 'boolean' ? artifact.overlay_rendered : null,
+          };
+        });
+      })();
+  const streetViewObservations = raw.street_view_observations == null
+    ? undefined
+    : (() => {
+        if (!Array.isArray(raw.street_view_observations)) throw new Error('Hermes JSON field "street_view_observations" must be an array.');
+        return raw.street_view_observations.map((entry, index): HermesStreetViewObservation => {
+          const observation = asDict(entry, `Hermes street view observation ${index + 1}`);
+          return {
+            label: requiredText(observation.label, `street_view_observations[${index}].label`),
+            detail: requiredText(observation.detail, `street_view_observations[${index}].detail`),
+            basis: enumText(observation.basis, `street_view_observations[${index}].basis`, STREET_VIEW_BASES),
           };
         });
       })();
@@ -342,6 +392,9 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
     specialist_category: specialistCategory,
     completed_categories: completedCategories,
     visual_artifacts: visualArtifacts,
+    street_view_available: typeof raw.street_view_available === 'boolean' ? raw.street_view_available : undefined,
+    street_view_note: text(raw.street_view_note) || undefined,
+    street_view_observations: streetViewObservations,
     comps,
   };
 }
@@ -539,6 +592,15 @@ const SUBJECT_FIELDS: Array<{ key: keyof HermesLandPortalSubject | 'landportal_p
   { key: 'buildability_pct', kind: 'fact' },
   { key: 'lp_estimate_total', kind: 'estimate' },
   { key: 'lp_estimate_per_acre', kind: 'estimate' },
+  { key: 'water_feature_type', kind: 'fact' },
+  { key: 'zoning_code', kind: 'fact' },
+  { key: 'fema_flood_zone_description', kind: 'fact' },
+  { key: 'last_sale_price', kind: 'fact' },
+  { key: 'last_sale_date', kind: 'fact' },
+  { key: 'book_number', kind: 'fact' },
+  { key: 'page_number', kind: 'fact' },
+  { key: 'assessed_value', kind: 'fact' },
+  { key: 'buildability_area_acres', kind: 'fact' },
 ];
 
 function subjectEvidence(input: CanonicalPropertyInput, subject: HermesLandPortalSubject, propertyId: string, fips: string | null, retrievedAt: string): {
@@ -657,6 +719,10 @@ function prepareVisuals(
       rejected.push({ artifact, reason: 'visual source_path must remain inside the property-specific Hermes output directory' });
       continue;
     }
+    if (OVERLAY_RENDER_REQUIRED_VIEWS.has(artifact.requested_view) && artifact.overlay_rendered !== true) {
+      rejected.push({ artifact, reason: `${artifact.requested_view} capture does not attest visibly rendered overlay polygons (overlay_rendered must be true); base imagery alone is not overlay evidence` });
+      continue;
+    }
     if (!/\.(?:png|jpe?g|webp)$/i.test(sourcePath) || !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
       rejected.push({ artifact, reason: 'visual source_path is not a retained PNG, JPEG, or WebP file' });
       continue;
@@ -746,6 +812,10 @@ function providerResult(input: {
   };
 }
 
+/** Displayed sidebar value preserved verbatim (numbers keep their shown form). */
+const displayed = (value: number | string | null | undefined): string | null =>
+  value == null ? null : typeof value === 'number' ? String(value) : text(value) || null;
+
 function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<string, string>): Record<string, string> {
   const candidates: Record<string, string | null> = {
     'Owner Name': text(subject.owner) || null,
@@ -767,6 +837,18 @@ function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<stri
     'Buildability total (%)': finite(subject.buildability_pct) == null ? null : percent(finite(subject.buildability_pct)!),
     'Estimate price': finite(subject.lp_estimate_total) == null ? null : money(finite(subject.lp_estimate_total)!),
     'Estimate PPA': finite(subject.lp_estimate_per_acre) == null ? null : money(finite(subject.lp_estimate_per_acre)!),
+    // Sidebar fields keep the exact LandPortal label and displayed value.
+    // Retained values are never overwritten (the filter below skips any label
+    // an earlier or stronger source already established).
+    'Buildability area (acres)': finite(subject.buildability_area_acres) == null ? null : String(finite(subject.buildability_area_acres)),
+    'Water Feature Type': displayed(subject.water_feature_type),
+    'Zoning Code': displayed(subject.zoning_code),
+    'FEMA Flood Zone Description': displayed(subject.fema_flood_zone_description),
+    'Last Sale Price': displayed(subject.last_sale_price),
+    'Last Sale Date': displayed(subject.last_sale_date),
+    'Book Number': displayed(subject.book_number),
+    'Page Number': displayed(subject.page_number),
+    'Assessed Value': displayed(subject.assessed_value),
   };
   return Object.fromEntries(Object.entries(candidates).filter(([label, value]) => !present(retained[label]) && present(value))) as Record<string, string>;
 }
@@ -1033,6 +1115,23 @@ export function importHermesLandPortalFile(
           }));
           if (!persisted.persistence.persisted) throw new Error(persisted.persistence.reason || 'Canonical visual persistence rejected the Hermes import.');
           const retainedInspection = loadPropertyInspection(card.id);
+          // Street View outcomes persist as visual observations: structured
+          // sightings keep their evidentiary basis, and unavailability is an
+          // explicit record rather than a silent skip.
+          const streetViewObservations = (subject.street_view_observations ?? []).map((observation) => ({
+            label: observation.label,
+            detail: observation.detail,
+            confidence: (observation.basis === 'direct_observation' ? 'medium' : 'low') as 'medium' | 'low',
+            evidence: `Street View — ${observation.basis.replace(/_/g, ' ')}`,
+          }));
+          if (subject.street_view_available === false) {
+            streetViewObservations.push({
+              label: 'Street View unavailable',
+              detail: text(subject.street_view_note) || 'LandPortal Street View was not available for this subject frontage.',
+              confidence: 'medium',
+              evidence: 'Street View availability check',
+            });
+          }
           savePropertyInspection(card.id, {
             parcelUrl: subject.subject_url,
             parcelUrlRecord: retainedInspection?.parcelUrlRecord ?? null,
@@ -1041,7 +1140,7 @@ export function importHermesLandPortalFile(
             comparablesCapturedAt: null,
             parcelFacts: {},
             assets: prepared.accepted.map(({ artifact, sourcePath, validation: visualValidation }) => ({ key: artifact.key, label: artifact.label, kind: artifact.kind, purpose: artifact.purpose, sourcePath, timestamp: artifact.timestamp, overlay: artifact.overlay ?? undefined, note: artifact.note ?? undefined, validation: visualValidation })),
-            overlays: [], visualObservations: [], comparables: [],
+            overlays: [], visualObservations: streetViewObservations, comparables: [],
             sources: [{ provider: 'LandPortal', stage: 'hermes_visuals_import', status: prepared.accepted.length ? 'used' : 'partial', resultKind: prepared.accepted.length ? 'retrieved' : 'attempted_inconclusive', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `${prepared.accepted.length} verified visual artifact(s) for ${subject.address} persisted independently; ${prepared.rejected.length} rejected.` }],
             evidence: prepared.accepted.map(({ artifact }) => ({ label: artifact.label, status: 'verified', detail: artifact.purpose, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url })),
           });

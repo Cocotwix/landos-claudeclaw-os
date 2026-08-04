@@ -17,8 +17,13 @@ import {
 } from 'lucide-preact';
 import { apiGet, dashboardToken } from '@/lib/api';
 import {
+  readSection, sectionHref, SECTION_SLUGS, type WorkspaceV2Section,
+} from '@/lib/workspace-v2-nav';
+import {
   PropertyIntelligenceSection,
   type MarketContextView, type PiCompRow, type PiEvidenceItem, type PiFact,
+  type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
+  type MissingDiligenceView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
 import '../styles/workspace-v2.css';
 
@@ -77,7 +82,15 @@ interface AcqResp {
   nextAction?: { label?: string; reason?: string };
 }
 interface ActivityResp { events?: { kind: string; summary: string; createdAt: number }[] }
-interface IntelResp { propertyIntelligence?: { snapshot?: SnapshotView }; marketContext?: MarketContextView }
+interface IntelResp {
+  propertyIntelligence?: {
+    snapshot?: SnapshotView;
+    streetView?: StreetViewView | null;
+    visualBuyerAnalysis?: VisualBuyerAnalysisView | null;
+    missingDiligence?: MissingDiligenceView | null;
+  };
+  marketContext?: MarketContextView;
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -92,18 +105,6 @@ const WORKSPACE_SECTIONS = [
   'Overview', 'Property Intelligence', 'Comps & Valuation', 'Market Intelligence',
   'Seller & Communications', 'Strategy', 'Evidence & Documents', 'Tasks & Timeline',
 ];
-// Sections that exist today; the rest stay visible "Soon" placeholders.
-const SECTION_SLUGS: Record<string, string> = {
-  Overview: 'overview',
-  'Property Intelligence': 'property-intelligence',
-};
-function sectionHref(slug: string): string {
-  const params = new URLSearchParams(window.location.search);
-  if (slug === 'overview') params.delete('section');
-  else params.set('section', slug);
-  const qs = params.toString();
-  return window.location.pathname + (qs ? `?${qs}` : '');
-}
 
 // The acquisition lifecycle this workspace will grow through. "New lead" is
 // what the record reports today; the ribbon shows where that sits.
@@ -122,15 +123,36 @@ export function AcquisitionWorkspaceV2() {
     const n = Number(q);
     return Number.isInteger(n) && n > 0 ? n : 81;
   })();
-  const section = new URLSearchParams(window.location.search).get('section') === 'property-intelligence'
-    ? 'Property Intelligence'
-    : 'Overview';
+  // Section switching is client-side: the record below is loaded once and
+  // reused across sections, so a tab change never reloads the document,
+  // refetches the property record, or reruns research. pushState keeps the
+  // URL shareable and back/forward working; popstate re-derives the section.
+  const [section, setSection] = useState<WorkspaceV2Section>(() => readSection(window.location.search));
+  useEffect(() => {
+    const onPop = () => setSection(readSection(window.location.search));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const switchSection = (e: MouseEvent, slug: string) => {
+    // Let modified clicks (new tab, etc.) behave like normal links.
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    const href = sectionHref(window.location.pathname, window.location.search, slug);
+    if (href !== window.location.pathname + window.location.search) {
+      window.history.pushState(null, '', href);
+    }
+    setSection(readSection(window.location.search));
+  };
 
   const [deal, setDeal] = useState<DealResp | null>(null);
   const [market, setMarket] = useState<MarketContextView | null>(null);
   const [snap, setSnap] = useState<SnapshotView | null>(null);
   const [acq, setAcq] = useState<AcqResp | null>(null);
   const [activity, setActivity] = useState<ActivityResp | null>(null);
+  const [soils, setSoils] = useState<SoilDetail[] | null>(null);
+  const [streetView, setStreetView] = useState<StreetViewView | null>(null);
+  const [vba, setVba] = useState<VisualBuyerAnalysisView | null>(null);
+  const [missingDiligence, setMissingDiligence] = useState<MissingDiligenceView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -138,14 +160,19 @@ export function AcquisitionWorkspaceV2() {
     let dead = false;
     (async () => {
       try {
-        const [d, i, a, act] = await Promise.all([
+        const [d, i, a, act, bu] = await Promise.all([
           apiGet<DealResp>(`/api/landos/deal-cards/${dealId}`),
           apiGet<IntelResp>(`/api/landos/deal-cards/${dealId}/property-intelligence`),
           apiGet<AcqResp>(`/api/landos/deal-cards/${dealId}/acquisition`).catch(() => null),
           apiGet<ActivityResp>(`/api/landos/deal-cards/${dealId}/activity`).catch(() => null),
+          apiGet<BrowseruseResp>(`/api/landos/deal-cards/${dealId}/browseruse`).catch(() => null),
         ]);
         if (dead) return;
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
+        setSoils(bu?.soilDetails ?? null);
+        setStreetView(i?.propertyIntelligence?.streetView ?? null);
+        setVba(i?.propertyIntelligence?.visualBuyerAnalysis ?? null);
+        setMissingDiligence(i?.propertyIntelligence?.missingDiligence ?? null);
       } catch (e) {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -239,7 +266,7 @@ export function AcquisitionWorkspaceV2() {
   }
   if (access?.missing?.some((m) => /legal access/i.test(m))) missingProperty.push('Legal access (recorded instruments)');
   if (id.hasParcelGeometry === false) missingProperty.push('Parcel boundary / survey');
-  missingProperty.push('Water features');
+  if (!(snap.facts || []).some((f) => f.key === 'lp_sidebar_water_feature_type' && f.value)) missingProperty.push('Water features');
   const missingValuation = val.priceable ? [] : ['A closed in-band land sale (price + date)'];
   const missingSeller: string[] = [];
   if (!seller?.name) missingSeller.push('Seller contact');
@@ -333,7 +360,15 @@ export function AcquisitionWorkspaceV2() {
           <div class="awv2-rail-title">Workspace</div>
           {WORKSPACE_SECTIONS.map((s) => (
             SECTION_SLUGS[s]
-              ? <a href={sectionHref(SECTION_SLUGS[s])} class={section === s ? 'active' : ''}>{s}</a>
+              ? (
+                <a
+                  href={sectionHref(window.location.pathname, window.location.search, SECTION_SLUGS[s])}
+                  class={section === s ? 'active' : ''}
+                  onClick={(e) => switchSection(e as unknown as MouseEvent, SECTION_SLUGS[s])}
+                >
+                  {s}
+                </a>
+              )
               : <span class="soon">{s}<span class="tag">Soon</span></span>
           ))}
         </nav>
@@ -346,7 +381,7 @@ export function AcquisitionWorkspaceV2() {
               <ScoreCard title="Market score" view={scores.market} />
               <ScoreCard title="Seller score" view={scores.seller} />
             </div>
-            <PropertyIntelligenceSection dealId={dealId} snap={snap} market={market} />
+            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} />
           </main>
         ) : (
         <main class="awv2-main">
@@ -401,6 +436,33 @@ export function AcquisitionWorkspaceV2() {
               )}
             </aside>
           </section>
+
+          {/* ── Visual Buyer Summary (grounded in the multi-view analysis) ── */}
+          {vba?.overviewSummary && (
+            <section class="awv2-panel" aria-label="Visual Buyer Summary">
+              <div class="awv2-panel-title">
+                Visual buyer summary <span class="awv2-src-tag">Multi-view visual analysis</span>
+              </div>
+              <div class="awv2-kv">
+                <span class="k">Physical character</span>
+                <span class="v">{vba.overviewSummary.physicalCharacter}</span>
+                <span class="k">Main buyer appeal</span>
+                <span class="v">{vba.overviewSummary.mainBuyerAppeal}</span>
+                <span class="k">Top visual concern</span>
+                <span class="v">{vba.overviewSummary.topConcern}</span>
+              </div>
+              <button
+                type="button"
+                class="awv2-vbs-open"
+                onClick={(e) => {
+                  switchSection(e as unknown as MouseEvent, 'property-intelligence');
+                  requestAnimationFrame(() => document.getElementById('visual-buyer-analysis')?.scrollIntoView({ behavior: 'smooth' }));
+                }}
+              >
+                Open the full Visual Buyer Analysis →
+              </button>
+            </section>
+          )}
 
           {/* ── Valuation + Seller ── */}
           <div class="awv2-grid cols-3-2">

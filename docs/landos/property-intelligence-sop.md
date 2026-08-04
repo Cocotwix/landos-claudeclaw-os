@@ -179,19 +179,95 @@ It must retrieve:
 - LandPortal comparables
 - Comp map evidence
 
+**Map-click precision and misclick recovery:**
+Every click on the LandPortal map can select a parcel; a click landing
+outside the subject boundary selects a neighboring parcel. Interior clicks
+(soil popups, overlay inspection) use points well inside the subject
+boundary, away from boundary lines. After every map click, the worker
+verifies the sidebar still shows the subject APN. If a different parcel
+loaded, the worker recovers in the same tab by navigating back to the
+retained canonical subject URL — never by opening another tab. One tab per
+work unit is an absolute budget. A click target that misclicks twice is
+skipped; three total recoveries end the popup-clicking workflow, and the
+verified captures and facts collected so far are handed back honestly.
+
+**G Maps base-map rule:**
+Before any base-map, overlay, or Street View workflow, open the base-map
+controls, select G Maps, and visually confirm G Maps is selected. Never
+assume it is already selected. The green Show on Map link beside the sidebar
+comparables opens a separate comparable page; it is never a base-map or
+overlay control and this rule does not apply to it.
+
 **Overlay workflow:**
-1. Open Base Maps and Overlays.
-2. Turn on only the selected overlay.
-3. Close the overlay panel using the top-right close control.
-4. Wait for the map to render.
-5. Inspect the subject parcel.
-6. Capture a clean screenshot only when required.
-7. Reopen the overlay panel.
-8. Turn off the prior overlay.
-9. Turn on the next overlay.
-10. Repeat.
+1. Select and visually confirm the G Maps base map.
+2. Open Base Maps and Overlays.
+3. Turn on only the selected overlay.
+4. Close the overlay panel using the top-right close control.
+5. Wait for the overlay to visibly finish rendering on the subject parcel.
+6. Inspect the subject parcel.
+7. Capture a clean screenshot only when required.
+8. Reopen the overlay panel.
+9. Turn off the prior overlay.
+10. Turn on the next overlay.
+11. Repeat.
 
 Do not capture screenshots with the overlay panel covering the parcel.
+
+**Default 3D capture:**
+Click the LandPortal 3D control and wait for the default 3D view to finish
+rendering. The initial default framing is the approved capture; do not
+rotate, tilt, zoom, or reposition the camera unless the default framing
+fails to show the correct subject parcel meaningfully. Close obstructing
+controls, confirm the subject parcel remains visible, capture the clean
+default view, and persist it as the primary 3D evidence. A 2D aerial or
+contour screenshot is never a substitute for the 3D capture.
+
+**Soil overlay rendering:**
+Enable the Soil Type overlay with G Maps selected and wait until the colored
+soil polygons have rendered across the subject parcel — never rely only on a
+short fixed delay. Confirm visible color differentiation inside the parcel
+and that the correct subject parcel remains selected, close the
+overlay-selection panel, then click representative areas inside the parcel
+and read each soil popup until every distinct soil unit is identified,
+deduplicating repeats. Preserve Map Unit Name, Drainage Class, Farmland
+Classification, Capability Class (non-irrigated), and other displayed
+material fields. Capture the screenshot only after the colored polygons are
+visibly present; the clean screenshot must show the colored soil regions and
+the subject boundary. A screenshot showing only base imagery without soil
+colors is rejected.
+
+**Buildability view:**
+In the sidebar Slope Analysis section, click Show Buildability. Wait until
+LandPortal highlights the buildable area in the yellow-toned overlay — never
+capture immediately. Confirm the yellow overlay has fully rendered, the
+correct subject parcel is still selected, the full parcel boundary is
+visible, and the highlighted buildable area is clearly visible. Close or
+collapse the sidebar and any obstructing popup, tooltip, menu, or
+overlay-selection panel, then capture a clean screenshot persisted with the
+category Buildability, plus the structured buildability percentage and
+acreage when displayed. Slope, contour, aerial, or 3D evidence is never a
+substitute for the dedicated buildability capture.
+
+**Street View workflow:**
+Confirm G Maps is selected and open Street View through the existing
+LandPortal map workflow. The pegman is placed on the public road along the
+subject frontage — on the blue Street View coverage line drawn on the road
+itself — never on the parcel interior, a driveway, or open ground beside the
+road; imagery exists only on the road. When no coverage line exists along
+the frontage road, Street View is recorded as unavailable with the road
+named. Confirm the opened scene corresponds to the correct subject frontage
+or immediate subject context, with the subject boundary visible in red when
+LandPortal provides that overlay. Capture an initial subject-facing
+view, rotate through a full scan (left, right, across the road, toward the
+parcel), move along the subject frontage with the navigation arrows where
+practical, and inspect the visible property border rather than one static
+view. Capture the most useful frontage and surrounding-context views. Record
+Street View unavailability explicitly rather than silently skipping it.
+Observations distinguish direct visual observation, reasonable
+interpretation, and unconfirmed conclusion; a feature is never called a
+railroad, public trail, private road, utility corridor, or legal access
+route unless the evidence supports it. When Street View resolves an earlier
+satellite interpretation, the stronger reconciled conclusion is preserved.
 
 ### 10A. Hermes bounded subject lookup
 
@@ -217,7 +293,19 @@ unverified suggestion is never the verified subject.
 
 For `verified_exact_subject`, extract the approved visible sidebar fields, the
 exact subject parcel URL, LP Estimate total and per-acre values, and visible
-comparable rows into the property-specific JSON handback. For `context_only`,
+comparable rows into the property-specific JSON handback.
+
+The approved sidebar fields include, whenever LandPortal displays them: Water
+Feature Type, Zoning Code, FEMA Flood Zone Description, Last Sale Price, Last
+Sale Date, Book Number, Page Number, and Assessed Value, in addition to the
+established identity, acreage, frontage, environmental, slope, buildability,
+and estimate fields. Each captured sidebar value preserves the exact LandPortal
+label and displayed value. The zoning code is stored verbatim (for example
+`01 - NOT Z`) and never reinterpreted. The FEMA flood zone description is kept
+complete. Monetary and date values are normalized only into fields LandOS
+already normalizes, and the displayed source value is always preserved
+alongside. LandPortal is recorded as the discovery-stage source; a stronger
+official record retrieved later is never overwritten by these sidebar values. For `context_only`,
 `no_match`, or `failed`, write an honest property-specific JSON handback with
 no subject facts and no comps, then stop. Only verified-exact-subject JSON may
 enter the existing Hermes importer; context-only and no-match results must not
@@ -229,9 +317,10 @@ navigate Market Research, or continue after the three approved searches are
 exhausted. The only permitted output file is the requested property-specific
 JSON. Target completion is under three minutes and the hard execution ceiling
 is five minutes for the subject and comps work units; the visuals work unit,
-whose captures require vision-verified clean-capture checks, has a
-twelve-minute ceiling. At the ceiling, return `no_match` or `failed` honestly
-instead of continuing to explore.
+whose expanded capture set (default 3D, rendered soil overlay with popup
+reads, buildability, multi-angle Street View) requires vision-verified
+clean-capture checks, has a twenty-minute ceiling. At the ceiling, return
+`no_match` or `failed` honestly instead of continuing to explore.
 
 **Conditional screenshot rules:**
 - Wetlands: research every parcel; capture only when wetlands affect the subject parcel.

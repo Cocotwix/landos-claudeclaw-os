@@ -785,7 +785,7 @@ export function loadVisualIntelligence(cardId: number): unknown | null {
 export interface LandPortalInspectionAsset {
   key: string;
   label: string;
-  kind: 'parcel_page' | 'parcel_3d' | 'parcel_boundary' | 'overlay' | 'comparables_map';
+  kind: 'parcel_page' | 'parcel_3d' | 'parcel_boundary' | 'overlay' | 'comparables_map' | 'street_view';
   purpose: string;
   storedPath: string;
   timestamp: string;

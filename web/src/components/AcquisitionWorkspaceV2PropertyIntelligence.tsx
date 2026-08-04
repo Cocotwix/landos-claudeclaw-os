@@ -1,20 +1,21 @@
 // Acquisition Workspace V2 — Property Intelligence section.
 //
 // A usable property-research workspace rendered from the latest accepted
-// canonical records each time it loads:
-//   GET /api/landos/deal-cards/:id/property-intelligence  (snapshot + marketContext)
-//   GET /api/landos/deal-cards/:id/browseruse             (retained soil details)
+// canonical records. The workspace page loads them once (snapshot,
+// marketContext, retained soil details) and passes them down, so switching
+// sections reuses the already-loaded record instead of refetching.
 // Values missing from the canonical data render as honestly missing; nothing
 // is fabricated. Market context is labeled as LandOS Market Research and is
 // never sourced from LandPortal market panels (SOP 10B).
-import { useEffect, useState } from 'preact/hooks';
-import { apiGet, dashboardToken } from '@/lib/api';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide-preact';
+import { dashboardToken } from '@/lib/api';
 
 // ── View types (structural; every field optional and defensive) ────────
 
 export interface PiFact { key: string; value: string; grade: string; label?: string; source?: string; note?: string }
 export interface PiDdItem { key: string; label: string; verdict: string; headline: string; detail?: string; missing?: string[] }
-export interface PiEvidenceItem { id: string; label: string; viewUrl: string; kind?: string }
+export interface PiEvidenceItem { id: string; label: string; viewUrl: string; kind?: string; sourceType?: string; sourceUrl?: string | null }
 export interface PiCompRow {
   key?: string; apn?: string | null; address?: string | null; lane?: string; source?: string;
   sourceUrl?: string | null; status?: string; dateIso?: string | null; price?: number | null;
@@ -61,8 +62,46 @@ export interface MarketContextView {
   interpretation: string;
 }
 
-interface SoilDetail { symbol?: string; name?: string; fields?: Record<string, string> }
-interface BrowseruseResp { soilDetails?: SoilDetail[] }
+export interface SoilDetail { symbol?: string; name?: string; fields?: Record<string, string> }
+export interface BrowseruseResp { soilDetails?: SoilDetail[] }
+
+export interface StreetViewObservationView {
+  label: string; detail: string; confidence?: string; evidence?: string;
+}
+export interface StreetViewView { available: boolean; observations: StreetViewObservationView[] }
+
+export interface MissingDiligenceItemView {
+  key: string; label: string; currentFinding: string;
+  stillUnresolved: string; whyItMatters: string; nextSource: string;
+}
+export interface MissingDiligenceView {
+  items: MissingDiligenceItemView[];
+  evidenceGaps: string[];
+  passthrough: string[];
+}
+
+export interface VbaObservationView {
+  label: string; detail: string; views?: string[]; basis?: string;
+}
+export interface VisualBuyerAnalysisView {
+  generatedAt?: string;
+  basedOn?: string[];
+  observedFeatures?: VbaObservationView[];
+  buyerInterpretation?: VbaObservationView[];
+  unresolvedDiligence?: string[];
+  buyerPerspective?: {
+    strongestAdvantages?: string[]; importantConcerns?: string[];
+    bestFitBuyers?: string[]; weakerFitBuyers?: string[];
+    preliminaryImpression?: string; materialToValueOrStrategy?: string[];
+  };
+  evidenceReconciliation?: {
+    supportingViews?: string[];
+    supersededConclusions?: Array<{ prior: string; reconciled: string; strongerEvidence: string }>;
+    remainingUncertain?: string[];
+    overallConfidence?: string; confidenceWhy?: string;
+  };
+  overviewSummary?: { physicalCharacter?: string; mainBuyerAppeal?: string; topConcern?: string };
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -96,7 +135,10 @@ function missingLabel(entry: unknown): string | null {
 
 const GALLERY_ORDER = [
   'inspection-close_parcel_aerial', 'inspection-road_frontage_aerial', 'inspection-parcel_context',
-  'inspection-front_side_3d', 'inspection-rear_side_3d', 'inspection-wetlands_overlay',
+  'inspection-default_3d', 'inspection-front_side_3d', 'inspection-rear_side_3d',
+  'inspection-street_view', 'inspection-street_view_2', 'inspection-street_view_3',
+  'inspection-street_view_4', 'inspection-street_view_5',
+  'inspection-buildability', 'inspection-wetlands_overlay',
   'inspection-fema_flood_overlay', 'inspection-soil_overlay', 'inspection-contour_terrain_view',
   'inspection-comps_map',
 ];
@@ -142,19 +184,16 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ dealId, snap, market }: {
-  dealId: number;
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence }: {
   snap: PiSnapshot;
   market: MarketContextView | null;
+  soils: SoilDetail[] | null;
+  streetView: StreetViewView | null;
+  vba: VisualBuyerAnalysisView | null;
+  missingDiligence: MissingDiligenceView | null;
 }) {
-  const [soils, setSoils] = useState<SoilDetail[] | null>(null);
-  useEffect(() => {
-    let dead = false;
-    apiGet<BrowseruseResp>(`/api/landos/deal-cards/${dealId}/browseruse`)
-      .then((r) => { if (!dead) setSoils(r?.soilDetails ?? null); })
-      .catch(() => { if (!dead) setSoils(null); });
-    return () => { dead = true; };
-  }, [dealId]);
+  // Same-page evidence viewer: index into the ordered gallery, or null.
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const id = snap.identity || {};
   const address = id.displayAddress || '';
@@ -165,6 +204,19 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
   // Acreage values with source, straight from graded facts.
   const facts = snap.facts || [];
   const fact = (key: string): PiFact | undefined => facts.find((f) => f.key === key);
+  // Retained LandPortal sidebar values (discovery-stage source, verbatim).
+  const sidebar = (name: string): string | null => fact(`lp_sidebar_${name}`)?.value || null;
+  const waterFeature = sidebar('water_feature_type');
+  const zoningCode = sidebar('zoning_code');
+  const femaDescription = sidebar('fema_flood_zone_description');
+  const lastSalePrice = sidebar('last_sale_price');
+  const lastSaleDate = sidebar('last_sale_date');
+  const bookNumber = sidebar('book_number');
+  const pageNumber = sidebar('page_number');
+  const assessedValue = sidebar('assessed_value');
+  const lastSalePriceUsd = lastSalePrice && /^[\d,.]+$/.test(lastSalePrice.trim())
+    ? usd(Number(lastSalePrice.replace(/,/g, '')))
+    : null;
   const acreageFacts: Array<{ label: string; fact: PiFact | undefined }> = [
     { label: 'Official record', fact: fact('discovery_official_record_acres') },
     { label: 'Verified LandPortal import', fact: fact('acres') },
@@ -202,7 +254,10 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
     ...GALLERY_ORDER.map((gid) => byId.get(gid)).filter((e): e is PiEvidenceItem => !!e),
     ...evidence.filter((e) => !GALLERY_ORDER.includes(e.id)),
   ];
-  const has3d = byId.has('inspection-front_side_3d') || byId.has('inspection-rear_side_3d');
+  const hasDefault3d = byId.has('inspection-default_3d');
+  const has3d = hasDefault3d || byId.has('inspection-front_side_3d') || byId.has('inspection-rear_side_3d');
+  const hasBuildabilityCapture = byId.has('inspection-buildability');
+  const hasStreetViewCapture = byId.has('inspection-street_view');
 
   const comps = snap.comps || {};
   const activeComps = comps.active || [];
@@ -221,7 +276,10 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
     if (label && !missing.includes(label)) missing.push(label);
   }
   if (!byId.has('inspection-comps_map')) missing.push('Show on Map comparable capture');
-  missing.push('Water features', 'Building information', 'Wider-context aerial', 'Street View capture');
+  if (!waterFeature) missing.push('Water features');
+  missing.push('Building information', 'Wider-context aerial');
+  if (!hasStreetViewCapture && streetView?.available !== false) missing.push('Street View capture');
+  if (!hasBuildabilityCapture) missing.push('Dedicated buildability capture');
 
   return (
     <>
@@ -265,7 +323,9 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
           </div>
           {access?.detail && <div class="awv2-pi-note">{access.detail}</div>}
           {(access?.missing || []).length > 0 && (
-            <div class="awv2-pi-note">Still required: {(access?.missing || []).slice(0, 4).join('; ')}{(access?.missing || []).length > 4 ? '…' : ''}</div>
+            missingDiligence
+              ? <div class="awv2-pi-note">Legal access and frontage confirmation is tracked under Missing diligence below.</div>
+              : <div class="awv2-pi-note">Still required: {(access?.missing || []).slice(0, 4).join('; ')}{(access?.missing || []).length > 4 ? '…' : ''}</div>
           )}
         </section>
       </div>
@@ -278,8 +338,17 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
             <Kv k="Average slope" v={slopePct ? `${slopePct}%` : null} />
             <Kv k="Slope bands" v={null} empty="Band breakdown not retained" />
             <Kv k="Buildability" v={buildPct ? `${buildPct}% shown${usableAcres ? ` (≈${usableAcres} of ${acres} ac)` : ''}` : null} />
+            <Kv k="Buildability view" v={hasBuildabilityCapture ? 'Dedicated yellow-overlay capture retained (gallery below)' : null} empty="No dedicated buildability capture" />
             <Kv k="Terrain" v={terrain?.detail || null} />
-            <Kv k="3D evidence" v={has3d ? 'Front and rear 3D views captured (gallery below)' : null} empty="No 3D captures" />
+            <Kv
+              k="3D evidence"
+              v={has3d
+                ? [hasDefault3d ? 'Default 3D view (primary)' : null,
+                   byId.has('inspection-front_side_3d') || byId.has('inspection-rear_side_3d') ? 'front/rear 3D views' : null]
+                    .filter(Boolean).join(' + ') + ' captured (gallery below)'
+                : null}
+              empty="No 3D captures"
+            />
           </div>
         </section>
 
@@ -287,9 +356,13 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
           <div class="awv2-panel-title">Environmental &amp; soils</div>
           <div class="awv2-kv">
             <Kv k="Wetlands" v={wetPct ? `${wetPct}%${approxAcres(wetPct) ? ` (≈${approxAcres(wetPct)} ac)` : ''} — parcel panel` : null} />
-            <Kv k="FEMA flood" v={floodPct ? `${floodPct}%${approxAcres(floodPct) ? ` (≈${approxAcres(floodPct)} ac)` : ''} — zone not retained` : null} />
+            <Kv k="FEMA flood" v={floodPct ? `${floodPct}%${approxAcres(floodPct) ? ` (≈${approxAcres(floodPct)} ac)` : ''}${femaDescription ? '' : ' — zone not retained'}` : null} />
+            <Kv k="Water feature" v={waterFeature ? `${waterFeature} — LandPortal sidebar` : null} empty="Not retained" />
             <Kv k="Contours" v={byId.has('inspection-contour_terrain_view') ? 'Contour view captured (gallery below)' : null} empty="No contour capture" />
           </div>
+          {femaDescription && (
+            <div class="awv2-pi-note"><b>FEMA flood zone description (LandPortal):</b> {femaDescription}</div>
+          )}
           {soils && soils.length > 0 ? (
             <div class="awv2-pi-note">
               {soils.map((s) => (
@@ -308,22 +381,147 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
         </section>
       </div>
 
+      {/* ── Zoning, sale history, and assessment (LandPortal sidebar) ── */}
+      <div class="awv2-grid cols-3">
+        <section class="awv2-panel">
+          <div class="awv2-panel-title">Zoning &amp; land use <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
+          <div class="awv2-kv">
+            <Kv k="Zoning code" v={zoningCode} empty="Not retained" />
+            <Kv k="Official zoning" v={zoning && zoning.verdict !== 'unknown' && zoning.verdict !== 'unresolved' ? zoning.headline : null} empty="Not confirmed — official record pending" />
+          </div>
+          {zoningCode && (
+            <div class="awv2-pi-note">
+              Displayed LandPortal sidebar value, stored verbatim. Discovery-stage
+              data only; it is not an official zoning determination.
+            </div>
+          )}
+        </section>
+
+        <section class="awv2-panel">
+          <div class="awv2-panel-title">Sale &amp; deed history <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
+          <div class="awv2-kv">
+            <Kv k="Last sale price" v={lastSalePrice ? `${lastSalePriceUsd ? `${lastSalePriceUsd} · ` : ''}displayed “${lastSalePrice}”` : null} empty="Not retained" />
+            <Kv k="Last sale date" v={lastSaleDate} empty="Not retained" />
+            <Kv k="Book number" v={bookNumber} empty="Not retained" />
+            <Kv k="Page number" v={pageNumber} empty="Not retained" />
+          </div>
+          {(lastSalePrice || bookNumber) && (
+            <div class="awv2-pi-note">
+              Values as displayed on the LandPortal sidebar. The recorded deed
+              remains the stronger source once retrieved.
+            </div>
+          )}
+        </section>
+
+        <section class="awv2-panel">
+          <div class="awv2-panel-title">Value &amp; assessment <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
+          <div class="awv2-kv">
+            <Kv k="Assessed value" v={assessedValue} empty="Not retained" />
+            <Kv k="LandPortal estimate" v={fact('lpEstimateTotal')?.value || null} empty="Not retained" />
+          </div>
+          {assessedValue && (
+            <div class="awv2-pi-note">
+              Assessed value as displayed on the LandPortal sidebar; county
+              assessment rolls remain the stronger official source.
+            </div>
+          )}
+        </section>
+      </div>
+
       {/* ── Visual evidence ── */}
       <section class="awv2-panel">
         <div class="awv2-panel-title">Visual evidence <span class="awv2-src-tag">LandPortal · verified subject</span></div>
         {gallery.length > 0 ? (
           <div class="awv2-gallery">
-            {gallery.map((e) => (
+            {gallery.map((e, index) => (
               <figure class="awv2-gallery-item" style="margin:0">
-                <a href={tok(e.viewUrl)} target="_blank" rel="noopener noreferrer" title={`Open ${e.label} full size (new tab)`}>
+                <button
+                  type="button"
+                  class="awv2-gallery-open"
+                  onClick={() => setViewerIndex(index)}
+                  title={`Open ${e.label} in the evidence viewer`}
+                >
                   <img src={tok(e.viewUrl)} alt={e.label} loading="lazy" />
-                </a>
+                </button>
                 <figcaption class="cap"><span>{e.label}</span>{e.kind && <span class="tag">{e.kind}</span>}</figcaption>
               </figure>
             ))}
           </div>
         ) : (
           <div class="awv2-pi-note">No accepted visual evidence is on file for this parcel.</div>
+        )}
+      </section>
+
+      {/* ── Street View observations ── */}
+      <section class="awv2-panel">
+        <div class="awv2-panel-title">
+          Street View observations <span class="awv2-src-tag">G Maps Street View via LandPortal</span>
+        </div>
+        {streetView ? (
+          streetView.available ? (
+            <>
+              <div class="awv2-pi-note">
+                {hasStreetViewCapture
+                  ? 'Street View was scanned along the subject frontage; captures are in the gallery above.'
+                  : 'Street View observations were recorded; no capture is retained yet.'}
+              </div>
+              {streetView.observations.filter((o) => !/unavailable/i.test(o.label)).map((o) => (
+                <div class="awv2-pi-note">
+                  <b>{o.label}:</b> {o.detail}
+                  {o.evidence && <span class="awv2-sv-basis"> — {o.evidence}</span>}
+                </div>
+              ))}
+            </>
+          ) : (
+            <div class="awv2-pi-note">
+              <b>Street View unavailable.</b>{' '}
+              {streetView.observations.find((o) => /unavailable/i.test(o.label))?.detail
+                || 'LandPortal Street View was not available for this subject frontage.'}
+            </div>
+          )
+        ) : (
+          <div class="awv2-pi-note">No Street View pass has been recorded for this subject yet.</div>
+        )}
+      </section>
+
+      {/* ── Visual Buyer Analysis (multi-view) ── */}
+      <section class="awv2-panel" id="visual-buyer-analysis">
+        <div class="awv2-panel-title">
+          Visual Buyer Analysis <span class="awv2-src-tag">Multi-view · {vba?.basedOn?.length ?? 0} evidence categories</span>
+        </div>
+        {vba ? (
+          <div class="awv2-vba">
+            <div class="awv2-vba-col">
+              <div class="h brass">A · Directly observed features</div>
+              {(vba.observedFeatures || []).map((o) => (
+                <div class="awv2-pi-note"><b>{o.label}:</b> {o.detail}{o.views?.length ? <span class="awv2-sv-basis"> — {o.views.join(', ')}</span> : null}</div>
+              ))}
+              <div class="h brass" style="margin-top:12px">B · Buyer-oriented interpretation</div>
+              {(vba.buyerInterpretation || []).map((o) => (
+                <div class="awv2-pi-note"><b>{o.label}:</b> {o.detail}</div>
+              ))}
+            </div>
+            <div class="awv2-vba-col">
+              <div class="h rust">C · Unresolved diligence</div>
+              <ul>{(vba.unresolvedDiligence || []).map((d) => <li>{d}</li>)}</ul>
+              <div class="h brass" style="margin-top:12px">D · Potential buyer perspective</div>
+              <div class="awv2-pi-note"><b>Strongest advantages:</b> {(vba.buyerPerspective?.strongestAdvantages || []).join('; ')}</div>
+              <div class="awv2-pi-note"><b>Most important concerns:</b> {(vba.buyerPerspective?.importantConcerns || []).join('; ')}</div>
+              <div class="awv2-pi-note"><b>Best-fit buyers:</b> {(vba.buyerPerspective?.bestFitBuyers || []).join('; ')}</div>
+              <div class="awv2-pi-note"><b>Weaker-fit buyers:</b> {(vba.buyerPerspective?.weakerFitBuyers || []).join('; ')}</div>
+              <div class="awv2-pi-note"><b>Preliminary impression:</b> {vba.buyerPerspective?.preliminaryImpression || '—'}</div>
+              <div class="awv2-pi-note"><b>Would materially change value or strategy:</b> {(vba.buyerPerspective?.materialToValueOrStrategy || []).join('; ')}</div>
+              <div class="h" style="margin-top:12px">E · Confidence &amp; evidence reconciliation</div>
+              <div class="awv2-pi-note"><b>Supported by:</b> {(vba.evidenceReconciliation?.supportingViews || []).join(', ')}</div>
+              {(vba.evidenceReconciliation?.supersededConclusions || []).map((s) => (
+                <div class="awv2-pi-note"><b>Superseded:</b> {s.prior} → <b>{s.reconciled}</b> <span class="awv2-sv-basis">({s.strongerEvidence})</span></div>
+              ))}
+              <div class="awv2-pi-note"><b>Still uncertain:</b> {(vba.evidenceReconciliation?.remainingUncertain || []).join('; ')}</div>
+              <div class="awv2-pi-note"><b>Overall confidence:</b> {vba.evidenceReconciliation?.overallConfidence || '—'} — {vba.evidenceReconciliation?.confidenceWhy || ''}</div>
+            </div>
+          </div>
+        ) : (
+          <div class="awv2-pi-note">No multi-view Visual Buyer Analysis has been produced for this subject yet.</div>
         )}
       </section>
 
@@ -366,9 +564,14 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
           <div class="awv2-panel-title">Comparables map</div>
           {byId.has('inspection-comps_map') ? (
             <figure class="awv2-gallery-item awv2-comps-map" style="margin:0">
-              <a href={tok(byId.get('inspection-comps_map')!.viewUrl)} target="_blank" rel="noopener noreferrer" title="Open the Show on Map capture full size (new tab)">
+              <button
+                type="button"
+                class="awv2-gallery-open"
+                onClick={() => setViewerIndex(gallery.findIndex((e) => e.id === 'inspection-comps_map'))}
+                title="Open the Show on Map capture in the evidence viewer"
+              >
                 <img src={tok(byId.get('inspection-comps_map')!.viewUrl)} alt="LandPortal Show on Map comparables" />
-              </a>
+              </button>
               <figcaption class="cap"><span>Show on Map comparable page</span></figcaption>
             </figure>
           ) : (
@@ -377,8 +580,35 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
         </section>
       </div>
 
-      {/* ── Missing diligence, one compact section ── */}
-      {(() => {
+      {/* ── Missing diligence: reconciled operator checklist ── */}
+      {missingDiligence ? (
+        <section class="awv2-missing">
+          <div class="awv2-panel-title">
+            Missing diligence <span class="awv2-src-tag">Reconciled against accepted research</span>
+          </div>
+          <div class="awv2-md-grid">
+            {missingDiligence.items.map((item) => (
+              <div class="awv2-md-item">
+                <div class="t">{item.label}</div>
+                <div class="row"><span class="k">Current finding</span><span class="v">{item.currentFinding}</span></div>
+                <div class="row"><span class="k">Still unresolved</span><span class="v">{item.stillUnresolved}</span></div>
+                <div class="row"><span class="k">Why it matters</span><span class="v">{item.whyItMatters}</span></div>
+                <div class="row"><span class="k">Next source</span><span class="v">{item.nextSource}</span></div>
+              </div>
+            ))}
+          </div>
+          {missingDiligence.evidenceGaps.length > 0 && (
+            <div class="awv2-missing-chips" style="margin-top:12px">
+              {missingDiligence.evidenceGaps.map((m) => <span class="awv2-chip">{m}</span>)}
+            </div>
+          )}
+          {missingDiligence.passthrough.length > 0 && (
+            <ul class="awv2-missing-lines">
+              {missingDiligence.passthrough.map((m) => <li>{m}</li>)}
+            </ul>
+          )}
+        </section>
+      ) : (() => {
         const uniqueMissing = [...new Set(missing)];
         const shortMissing = uniqueMissing.filter((m) => m.length <= 64);
         const longMissing = uniqueMissing.filter((m) => m.length > 64);
@@ -396,6 +626,144 @@ export function PropertyIntelligenceSection({ dealId, snap, market }: {
           </section>
         );
       })()}
+
+      {viewerIndex != null && gallery[viewerIndex] && (
+        <EvidenceViewer
+          items={gallery}
+          index={viewerIndex}
+          onNavigate={(next) => setViewerIndex(next)}
+          onClose={() => setViewerIndex(null)}
+        />
+      )}
     </>
+  );
+}
+
+// ── Same-page evidence viewer ──────────────────────────────────────────
+//
+// A large in-page lightbox over the workspace: largest retained image at
+// natural aspect ratio, zoom in/out/reset, wheel zoom, pointer panning,
+// previous/next, category + caption + source, close button and Escape.
+// No navigation away, no new tab, no external image library.
+
+const VIEWER_MIN_SCALE = 1;
+const VIEWER_MAX_SCALE = 8;
+const VIEWER_STEP = 1.4;
+
+function EvidenceViewer({ items, index, onNavigate, onClose }: {
+  items: PiEvidenceItem[];
+  index: number;
+  onNavigate: (index: number) => void;
+  onClose: () => void;
+}) {
+  const item = items[index];
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const drag = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  // Live index for the once-registered keydown listener: rapid successive
+  // presses must never hit a stale closure between effect flushes.
+  const indexRef = useRef(index);
+  indexRef.current = index;
+
+  const clampScale = (value: number) => Math.min(VIEWER_MAX_SCALE, Math.max(VIEWER_MIN_SCALE, value));
+  const resetView = () => { setScale(1); setOffset({ x: 0, y: 0 }); };
+  const zoomIn = () => setScale((s) => clampScale(s * VIEWER_STEP));
+  const zoomOut = () => setScale((s) => {
+    const next = clampScale(s / VIEWER_STEP);
+    if (next === VIEWER_MIN_SCALE) setOffset({ x: 0, y: 0 });
+    return next;
+  });
+  const prev = () => { resetView(); onNavigate((indexRef.current - 1 + items.length) % items.length); };
+  const next = () => { resetView(); onNavigate((indexRef.current + 1) % items.length); };
+
+  // Keyboard: Escape closes; arrows navigate. Focus starts on the close
+  // control so keyboard users are inside the dialog immediately. The page
+  // behind the modal stays scroll-locked while the viewer is open.
+  useEffect(() => {
+    closeRef.current?.focus();
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); next(); }
+      else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomIn(); }
+      else if (e.key === '-') { e.preventDefault(); zoomOut(); }
+      else if (e.key === '0') { e.preventDefault(); resetView(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = priorOverflow;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    if (e.deltaY < 0) zoomIn(); else zoomOut();
+  };
+  const onPointerDown = (e: PointerEvent) => {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    drag.current = { startX: e.clientX, startY: e.clientY, baseX: offset.x, baseY: offset.y };
+  };
+  const onPointerMove = (e: PointerEvent) => {
+    if (!drag.current) return;
+    setOffset({
+      x: drag.current.baseX + (e.clientX - drag.current.startX),
+      y: drag.current.baseY + (e.clientY - drag.current.startY),
+    });
+  };
+  const onPointerUp = () => { drag.current = null; };
+
+  return (
+    <div class="awv2-viewer" role="dialog" aria-modal="true" aria-label={`Evidence viewer: ${item.label}`}>
+      <div class="awv2-viewer-backdrop" onClick={onClose} />
+      <div class="awv2-viewer-body">
+        <div
+          class={`awv2-viewer-stage${scale > 1 ? ' zoomed' : ''}`}
+          onWheel={onWheel}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
+          <img
+            src={tok(item.viewUrl)}
+            alt={item.label}
+            draggable={false}
+            style={`transform: translate(${offset.x}px, ${offset.y}px) scale(${scale});`}
+          />
+        </div>
+
+        <div class="awv2-viewer-meta">
+          {item.kind && <span class="cat">{item.kind}</span>}
+          <span class="cap">{item.label}</span>
+          <span class="src">
+            {item.sourceType || 'LandPortal · verified subject'}
+            {item.sourceUrl ? (
+              <>
+                {' · '}
+                <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer">source</a>
+              </>
+            ) : null}
+          </span>
+          <span class="pos">{index + 1} / {items.length}</span>
+        </div>
+
+        <div class="awv2-viewer-controls" role="toolbar" aria-label="Evidence viewer controls">
+          <button type="button" onClick={prev} title="Previous image (←)" aria-label="Previous image"><ChevronLeft size={18} /></button>
+          <button type="button" onClick={zoomOut} title="Zoom out (−)" aria-label="Zoom out"><ZoomOut size={18} /></button>
+          <button type="button" onClick={resetView} title="Reset to fit (0)" aria-label="Reset to fit"><Maximize2 size={18} /></button>
+          <button type="button" onClick={zoomIn} title="Zoom in (+)" aria-label="Zoom in"><ZoomIn size={18} /></button>
+          <button type="button" onClick={next} title="Next image (→)" aria-label="Next image"><ChevronRight size={18} /></button>
+        </div>
+
+        <button ref={closeRef} type="button" class="awv2-viewer-close" onClick={onClose} title="Close (Esc)" aria-label="Close evidence viewer">
+          <X size={20} />
+        </button>
+      </div>
+    </div>
   );
 }

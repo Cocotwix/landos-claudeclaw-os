@@ -156,10 +156,11 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
       ? `Wetlands ${wetPct}${femaPct ? ` · FEMA coverage ${femaPct}` : ''}`
       : 'Needs verification';
 
-  // Water feature.
+  // Water feature. A displayed type (e.g. sidebar "Water Feature Type: River")
+  // is itself evidence a water feature is present.
   const waterYes = pick(fields, 'Water Feature');
-  const waterType = pick(fields, 'Water Feature type(s)', 'Water Feature type');
-  const waterPresent = waterYes != null && /^yes$/i.test(waterYes);
+  const waterType = pick(fields, 'Water Feature type(s)', 'Water Feature type', 'Water Feature Type');
+  const waterPresent = (waterYes != null && /^yes$/i.test(waterYes)) || (waterType != null && !/^no(?:ne)?$/i.test(waterType));
   const waterLabel = waterPresent ? `Yes${waterType ? `, ${waterType}` : ''}` : waterYes ? 'No' : null;
 
   // Valuation.

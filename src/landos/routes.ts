@@ -150,6 +150,8 @@ import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './pub
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { PropertyResearchStore } from './property-research-store.js';
 import { getHermesLandPortalLaneProgress, runHermesLandPortalLane } from './hermes-landportal-auto.js';
+import { loadVisualBuyerAnalysis } from './visual-buyer-analysis.js';
+import { reconcileMissingDiligence } from './missing-diligence-reconciliation.js';
 import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
 import type { SnapshotComps, SnapshotEvidenceItem, SnapshotFact } from './property-intelligence-snapshot.js';
@@ -7526,6 +7528,15 @@ export function registerLandosRoutes(app: Hono): void {
         if (/terrain/.test(compact)) return 'contour_terrain_view';
         if (/fema|floodplain|floodoverlay/.test(compact)) return 'fema_flood_overlay';
         if (/comparablesmap|compsmap/.test(compact)) return 'comps_map';
+        // Default 3D, buildability, and Street View captures are their own
+        // categories; numbered street views resolve before the bare one.
+        if (/default3d/.test(compact)) return 'default_3d';
+        if (/buildab/.test(compact)) return 'buildability';
+        if (/streetview2/.test(compact)) return 'street_view_2';
+        if (/streetview3/.test(compact)) return 'street_view_3';
+        if (/streetview4/.test(compact)) return 'street_view_4';
+        if (/streetview5|corridorcrossing/.test(compact)) return 'street_view_5';
+        if (/streetview/.test(compact)) return 'street_view';
         return null;
       };
       const retainedVisuals = new Map<string, NonNullable<ReturnType<typeof loadPropertyInspection>>['assets'][number]>();
@@ -7607,6 +7618,39 @@ export function registerLandosRoutes(app: Hono): void {
       if (estimateFacts.length) {
         const seenEstimateKeys = new Set(snapshot.facts.filter((fact) => /^lpEstimate/.test(fact.key)).map((fact) => fact.key));
         snapshot.facts = [...snapshot.facts, ...estimateFacts.filter((fact) => !seenEstimateKeys.has(fact.key))];
+      }
+      // Retained LandPortal sidebar fields, projected with their exact labels
+      // and displayed values. LandPortal is the discovery-stage source; a
+      // stronger official record keeps its own fact and is never overwritten.
+      const sidebarFactDefs: Array<{ key: string; labels: string[]; factLabel: string }> = [
+        { key: 'lp_sidebar_water_feature_type', labels: ['Water Feature Type', 'Water Feature type(s)', 'Water Feature type'], factLabel: 'Water Feature Type' },
+        { key: 'lp_sidebar_zoning_code', labels: ['Zoning Code'], factLabel: 'Zoning Code' },
+        { key: 'lp_sidebar_fema_flood_zone_description', labels: ['FEMA Flood Zone Description'], factLabel: 'FEMA Flood Zone Description' },
+        { key: 'lp_sidebar_last_sale_price', labels: ['Last Sale Price'], factLabel: 'Last Sale Price' },
+        { key: 'lp_sidebar_last_sale_date', labels: ['Last Sale Date'], factLabel: 'Last Sale Date' },
+        { key: 'lp_sidebar_book_number', labels: ['Book Number'], factLabel: 'Book Number' },
+        { key: 'lp_sidebar_page_number', labels: ['Page Number'], factLabel: 'Page Number' },
+        { key: 'lp_sidebar_assessed_value', labels: ['Assessed Value'], factLabel: 'Assessed Value' },
+      ];
+      const sidebarFacts = sidebarFactDefs.flatMap(({ key, labels, factLabel }) => {
+        const value = labels
+          .map((label) => str(retainedInspection?.parcelFacts?.[label]))
+          .find((candidate) => candidate && candidate !== '-');
+        if (!value) return [];
+        return [{
+          key,
+          label: `LandPortal sidebar · ${factLabel}`,
+          value,
+          grade: 'likely_indication' as const,
+          source: 'LandPortal authenticated parcel sidebar — discovery stage',
+          sourceUrl: retainedInspection?.parcelUrl ?? null,
+          retrievedAt: estimateCapturedAt,
+          note: 'Displayed LandPortal sidebar value retained verbatim. Discovery-stage source; a stronger official record supersedes it in its own lane.',
+        }];
+      });
+      if (sidebarFacts.length) {
+        const seenSidebarKeys = new Set(snapshot.facts.filter((fact) => /^lp_sidebar_/.test(fact.key)).map((fact) => fact.key));
+        snapshot.facts = [...snapshot.facts, ...sidebarFacts.filter((fact) => !seenSidebarKeys.has(fact.key))];
       }
       const persistedSpecialistStates = snapshot.specialists;
       const currentFact = (pattern: RegExp): string | null => {
@@ -8010,9 +8054,64 @@ export function registerLandosRoutes(app: Hono): void {
     if (linkInspection?.threeDCapture?.decision === 'not_applicable' && snapshot) {
       snapshot.missingInformation = snapshot.missingInformation.filter((item) => !/3d|terrain screenshot|imagery/i.test(item));
     }
+    // Retained Street View outcome for the subject: structured observations
+    // (each carrying its evidentiary basis) and the explicit availability
+    // record. Served from the durable inspection record; never fabricated.
+    const streetViewProjection = (() => {
+      const observations = (linkInspection?.visualObservations ?? [])
+        .filter((item) => /street view/i.test(`${item.evidence ?? ''} ${item.label ?? ''}`));
+      if (!observations.length) return null;
+      const unavailable = observations.some((item) => /unavailable/i.test(item.label));
+      return { available: !unavailable, observations };
+    })();
+    // Missing-diligence reconciliation: the historical record keeps every
+    // collector message, but the operator read supersedes any "not run /
+    // remains in Resolution" claim whose category now has accepted
+    // discovery-stage research, and condenses duplicates into one checklist.
+    const missingDiligence = (() => {
+      if (!snapshot) return null;
+      const num = (value: string | null | undefined, pattern: RegExp): string | null => {
+        const match = value ? value.match(pattern) : null;
+        return match ? match[1] : null;
+      };
+      const dd = new Map(snapshot.dueDiligence.map((item) => [item.key, item]));
+      // Conservative: a lane counts as officially resolved only on a clean
+      // verdict; unknown/caution/risk keep the diligence item visible.
+      const resolvedVerdict = (key: string): boolean => String(dd.get(key)?.verdict ?? '') === 'good';
+      const access = dd.get('access');
+      const terrain = dd.get('terrain');
+      const frontage = num(access?.headline, /([\d.]+)\s*ft frontage/);
+      const state = {
+        identityVerified: linkInspection?.parcelUrlRecord?.verifiedSubject === true && !!snapshot.identity.apn,
+        frontageFt: frontage != null ? Number(frontage) : null,
+        wetlandsScreenedPct: (() => { const value = num(dd.get('wetlands')?.headline, /(\d+(?:\.\d+)?)/); return value ? `${value}%` : null; })(),
+        femaScreenedPct: (() => { const value = num(dd.get('flood')?.headline, /(\d+(?:\.\d+)?)/); return value ? `${value}%` : null; })(),
+        femaDescription: str(linkInspection?.parcelFacts?.['FEMA Flood Zone Description']) || null,
+        soilUnitCount: soilDetailsForDealCard(dealCardId).length,
+        slopePct: num(terrain?.headline, /([\d.]+)%\s*average slope/),
+        buildabilityPct: num(terrain?.headline, /([\d.]+)%\s*buildability/),
+        streetViewComplete: !!streetViewProjection && streetViewProjection.available,
+        zoningCode: str(linkInspection?.parcelFacts?.['Zoning Code']) || null,
+        zoningOfficialConfirmed: resolvedVerdict('zoning'),
+        utilitiesConfirmed: resolvedVerdict('utilities'),
+        septicConfirmed: resolvedVerdict('septic'),
+        officialRecordsRetrieved: false,
+        valuationPriceable: snapshot.valuation.priceable === true,
+      };
+      const raw = [
+        ...snapshot.missingInformation.map((item) => String(item ?? '')),
+        ...(access?.missing ?? []),
+      ];
+      return reconcileMissingDiligence(state, raw);
+    })();
     return {
       snapshot,
       subjectParcel,
+      streetView: streetViewProjection,
+      missingDiligence,
+      // Retained multi-view Visual Buyer Analysis (canonical read; the newest
+      // retained analysis supersedes any earlier interpretation).
+      visualBuyerAnalysis: linkCardId != null ? loadVisualBuyerAnalysis(linkCardId) : null,
       hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
       providerResearch: (() => {
         const deal = getDealCard(dealCardId);

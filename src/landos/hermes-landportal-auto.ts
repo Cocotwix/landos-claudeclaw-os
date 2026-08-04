@@ -32,10 +32,12 @@ export const HERMES_LANDPORTAL_TARGET_RUNTIME_MS = 5 * 60_000;
 export const HERMES_LANDPORTAL_HARD_TIMEOUT_MS = 5 * 60_000;
 // Hermes v0.20.0 verifies each capture with vision-model checks before writing
 // its handback; the visuals work unit measurably cannot finish that loop inside
-// five minutes (it was killed mid final-check at eight). Subject and comps keep
-// the five-minute ceiling; only the visuals work unit gets the longer one.
-export const HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS = 12 * 60_000;
-export const HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS = 12 * 60_000;
+// five minutes (it was killed mid final-check at eight). The expanded capture
+// set (default 3D, rendered soil overlay with popup reads, buildability, and
+// the multi-angle Street View scan) was then killed mid-work at twelve, so the
+// visuals ceiling is twenty minutes. Subject and comps keep five.
+export const HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS = 20 * 60_000;
+export const HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS = 20 * 60_000;
 export const HERMES_LANDPORTAL_SPECIALISTS = ['subject', 'comps', 'visuals'] as const;
 
 export type HermesLandPortalSpecialist = typeof HERMES_LANDPORTAL_SPECIALISTS[number];
@@ -197,11 +199,13 @@ export function hermesLandPortalPrompt(
     canonical_property_identifier: input.landPortalPropertyId,
     output_file: outputFile,
     visual_artifact_directory: path.dirname(outputFile),
-    requested_visuals: specialist === 'visuals' ? ['parcel_context'] : [],
+    requested_visuals: specialist === 'visuals'
+      ? ['parcel_context', 'default_3d', 'soil', 'buildability', 'street_view']
+      : [],
     handback_mode: 'independent_specialist',
     completed_categories: [specialist],
     visual_artifact_fields: specialist === 'visuals'
-      ? ['key', 'label', 'kind', 'purpose', 'source_path', 'timestamp', 'requested_view', 'active_view', 'boundary_required', 'boundary_visible', 'tiles_loaded', 'camera_scale', 'clipped', 'obstructions']
+      ? ['key', 'label', 'kind', 'purpose', 'source_path', 'timestamp', 'requested_view', 'active_view', 'boundary_required', 'boundary_visible', 'tiles_loaded', 'camera_scale', 'clipped', 'obstructions', 'overlay_rendered']
       : [],
     // The importer accepts only these literal values; free-text camera notes
     // previously caused a verified visuals handback to be rejected wholesale.
@@ -210,6 +214,9 @@ export function hermesLandPortalPrompt(
         camera_scale: 'exactly one of: parcel | context | county | national | unknown',
         obstructions: 'array of obstruction descriptions; [] when the captured map area is clean',
         clean_capture: 'collapse the sidebar and close every panel, popup, and menu before the screenshot so only the map area is captured',
+        overlay_rendered: 'soil/buildability: true only once colored polygons visibly rendered, else rejected',
+        keys: 'exact keys: parcel_context, default_3d, soil_overlay, buildability, street_view(_2/_3)',
+        street_view: 'set street_view_available, street_view_note, street_view_observations [{label, detail, basis: direct_observation|reasonable_interpretation|unconfirmed}]',
       }
       : undefined,
   }, null, 2);

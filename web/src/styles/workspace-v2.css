@@ -719,3 +719,208 @@ a.awv2-lp-link:hover { border-color: var(--awv2-brass); color: var(--awv2-brass-
   text-align: center;
 }
 .awv2-state .t { color: var(--awv2-bone-dim); font-size: 15.5px; font-weight: 600; }
+
+/* ── Same-page evidence viewer (lightbox) ─────────────────────────────── */
+.awv2-gallery-item .awv2-gallery-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+.awv2-gallery-item .awv2-gallery-open:hover img { opacity: 0.92; }
+.awv2-gallery-item .awv2-gallery-open:focus-visible {
+  outline: 2px solid var(--awv2-brass);
+  outline-offset: -2px;
+}
+
+.awv2-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+.awv2-viewer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 8, 0.88);
+}
+.awv2-viewer-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  margin: 2.5vh 2.5vw;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 12px;
+  background: var(--awv2-panel);
+  overflow: hidden;
+}
+.awv2-viewer-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--awv2-ink);
+  cursor: grab;
+  touch-action: none;
+}
+.awv2-viewer-stage.zoomed { cursor: grabbing; }
+.awv2-viewer-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  transform-origin: center center;
+  transition: transform 60ms linear;
+}
+.awv2-viewer-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 64px 10px 16px;
+  border-top: 1px solid var(--awv2-line);
+  font-size: 13px;
+  color: var(--awv2-bone-dim);
+  min-height: 40px;
+  flex-wrap: wrap;
+}
+.awv2-viewer-meta .cat {
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-brass);
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 999px;
+  padding: 2px 9px;
+  background: var(--awv2-brass-soft);
+}
+.awv2-viewer-meta .cap { color: var(--awv2-bone); font-weight: 600; }
+.awv2-viewer-meta .src { color: var(--awv2-bone-faint); }
+.awv2-viewer-meta .src a { color: var(--awv2-brass); text-decoration: none; }
+.awv2-viewer-meta .src a:hover { text-decoration: underline; }
+.awv2-viewer-meta .pos {
+  margin-left: auto;
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  color: var(--awv2-bone-faint);
+}
+.awv2-viewer-controls {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 10px;
+  background: rgba(22, 26, 23, 0.92);
+}
+.awv2-viewer-controls button,
+.awv2-viewer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 8px;
+  background: var(--awv2-panel-2);
+  color: var(--awv2-bone-dim);
+  cursor: pointer;
+}
+.awv2-viewer-controls button:hover,
+.awv2-viewer-close:hover { color: var(--awv2-bone); border-color: var(--awv2-brass); }
+.awv2-viewer-controls button:focus-visible,
+.awv2-viewer-close:focus-visible {
+  outline: 2px solid var(--awv2-brass);
+  outline-offset: 1px;
+}
+.awv2-viewer-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+/* Street View observation basis tag */
+.awv2-sv-basis { color: var(--awv2-bone-faint); font-style: italic; }
+
+/* ── Visual Buyer Analysis ────────────────────────────────────────────── */
+.awv2-vba {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+@media (max-width: 1100px) { .awv2-vba { grid-template-columns: 1fr; } }
+.awv2-vba .h {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-dim);
+  margin-bottom: 6px;
+}
+.awv2-vba .h.brass { color: var(--awv2-brass); }
+.awv2-vba .h.rust { color: var(--awv2-rust); }
+.awv2-vba ul {
+  margin: 0 0 4px 18px;
+  padding: 0;
+  color: var(--awv2-bone-dim);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+/* Overview Visual Buyer Summary */
+.awv2-vbs-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 8px;
+  background: var(--awv2-panel-2);
+  color: var(--awv2-brass);
+  font-size: 13px;
+  cursor: pointer;
+}
+.awv2-vbs-open:hover { border-color: var(--awv2-brass); color: var(--awv2-brass-bright); }
+
+/* ── Reconciled missing-diligence checklist ───────────────────────────── */
+.awv2-md-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+.awv2-md-item {
+  border: 1px solid var(--awv2-line);
+  border-radius: 10px;
+  background: var(--awv2-panel-2);
+  padding: 12px 14px;
+}
+.awv2-md-item .t {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--awv2-brass);
+  margin-bottom: 8px;
+}
+.awv2-md-item .row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.awv2-md-item .row .k { color: var(--awv2-bone-faint); }
+.awv2-md-item .row .v { color: var(--awv2-bone-dim); }

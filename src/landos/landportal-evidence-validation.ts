@@ -9,6 +9,9 @@ export type LandPortalVisualView =
   | 'contours'
   | 'front_3d'
   | 'rear_3d'
+  | 'default_3d'
+  | 'buildability'
+  | 'street_view'
   | 'comparables_map';
 
 export interface LandPortalVisualValidationInput {
