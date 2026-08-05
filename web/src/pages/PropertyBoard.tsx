@@ -6,6 +6,7 @@ import { PageState } from '@/components/PageState';
 import { Pill } from '@/components/Pill';
 import { TrashCardButton } from '@/components/TrashCardButton';
 import { apiGet, apiPatch } from '@/lib/api';
+import { dealWorkspaceHref } from '@/lib/workspace-v2-nav';
 
 interface OpportunityCard {
   id: number;
@@ -66,8 +67,10 @@ export function PropertyBoard({ onOpenDeal, embedded = false }: { onOpenDeal?: (
   useEffect(() => { void load(); }, [entity]);
 
   function openDealCard(card: OpportunityCard) {
+    // Standalone and embedded boards both open the record's Acquisition
+    // Workspace V2, preserving the exact deal identity.
     if (onOpenDeal) onOpenDeal(card.dealCardId);
-    else navigate(`/landos?deal=${card.dealCardId}`);
+    else navigate(dealWorkspaceHref(card.dealCardId));
   }
 
   async function move(id: number, stage: string) {

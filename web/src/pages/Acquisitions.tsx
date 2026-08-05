@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'preact/hooks';
+import { useLocation } from 'wouter-preact';
 import { KanbanSquare, Plus, Library, FileText, MessagesSquare, HandCoins, ClipboardList, ArrowRight } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PropertyBoard } from '@/pages/PropertyBoard';
 import { Acquire } from '@/components/Acquire';
 import { DealCard } from '@/components/DealCard';
+import { dealWorkspaceHref, lastWorkspaceDealId } from '@/lib/workspace-v2-nav';
 
 // The Acquisitions department workspace (LandOS Vision & Architecture). One
 // cohesive department — pipeline, new lead, the deal library, and the Property
@@ -27,52 +29,57 @@ const SECTIONS: Array<{ id: AcqSection; label: string; icon: typeof KanbanSquare
 ];
 
 export function Acquisitions() {
+  const [, navigate] = useLocation();
   const [section, setSection] = useState<AcqSection>('pipeline');
-  const [dealId, setDealId] = useState<number | undefined>(undefined);
 
-  // Deep links: /dept/acquisitions?deal=<id> opens that property's Deal Card in
-  // the library; ?section=<id> opens a named section. Keeps old /landos?deal=
-  // links working via a redirect handled at the router level.
+  // Deep links: the old normal Deal Card route /dept/acquisitions?deal=<id>
+  // now redirects to Acquisition Workspace V2 for the same record (replace, so
+  // browser back does not loop); ?section=<id> opens a named section.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const deal = Number(q.get('deal'));
-    if (Number.isInteger(deal) && deal > 0) { setDealId(deal); setSection('library'); return; }
+    if (Number.isInteger(deal) && deal > 0) { navigate(dealWorkspaceHref(deal), { replace: true }); return; }
     const s = q.get('section');
     if (s && SECTIONS.some((x) => x.id === s)) setSection(s as AcqSection);
   }, []);
 
-  // Opening a lead lands on the canonical Deal Card and records the deep link in
-  // the URL, so every Acquisitions entry path renders the same full Property
-  // Intelligence workflow and a refresh restores that exact card.
+  // Every entry path (pipeline card, library row, new lead completion) opens
+  // the same record in Acquisition Workspace V2, preserving deal identity.
   function openDeal(id: number) {
-    setDealId(id);
-    setSection('library');
-    const url = new URL(window.location.href);
-    url.searchParams.set('deal', String(id));
-    url.searchParams.delete('section');
-    window.history.replaceState(null, '', url);
+    navigate(dealWorkspaceHref(id));
   }
 
-  function closeDeal() {
-    setDealId(undefined);
-    const url = new URL(window.location.href);
-    url.searchParams.delete('deal');
-    url.searchParams.set('section', 'library');
-    window.history.replaceState(null, '', url);
+  // Permanent Acquisition Workspace entry: return to the deal most recently
+  // worked in V2 this session; with none selected yet, land on the pipeline to
+  // pick an opportunity. Never opens V1 and never opens an empty workspace.
+  function openWorkspace() {
+    const last = lastWorkspaceDealId();
+    if (last) navigate(dealWorkspaceHref(last));
+    else setSection('pipeline');
   }
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader
         title="Acquisitions"
-        tabs={SECTIONS.map((s) => (
-          <Tab
-            key={s.id}
-            label={s.label}
-            active={section === s.id}
-            onClick={() => { setSection(s.id); if (s.id !== 'library' && s.id !== 'intel') setDealId(undefined); }}
-          />
-        ))}
+        tabs={
+          <>
+            {SECTIONS.map((s) => (
+              <Tab
+                key={s.id}
+                label={s.label}
+                active={section === s.id}
+                onClick={() => setSection(s.id)}
+              />
+            ))}
+            <Tab
+              key="workspace"
+              label="Acquisition Workspace"
+              active={false}
+              onClick={openWorkspace}
+            />
+          </>
+        }
       />
 
       {/* Pipeline — the Property Board. Clicking a property opens its Deal Card
@@ -86,49 +93,16 @@ export function Acquisitions() {
         </div>
       )}
 
-      {/* Deal Library — the saved-deal list. Clicking a row opens the actual Deal
-          Card (Property Intelligence Report) in place. When a deal was opened from
-          the pipeline / new lead, show that card with a back-to-library control. */}
+      {/* Deal Library — the saved-deal list. Every row opens that record in
+          Acquisition Workspace V2 via openDeal, identity preserved. */}
       {section === 'library' && (
-        dealId ? (
-          <div class="flex-1 flex flex-col min-h-0">
-            <div class="px-6 pt-3">
-              <button
-                type="button"
-                onClick={closeDeal}
-                class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
-              >
-                ← Deal Library
-              </button>
-            </div>
-            <DealCard dealCardId={dealId} entity="all" key={dealId} />
-          </div>
-        ) : (
-          // The list delegates its selected row back to this page so pipeline,
-          // library, and deep-link entry all open the same canonical card.
-          <DealCard entity="all" key="library-list" onOpenDeal={openDeal} />
-        )
+        <DealCard entity="all" key="library-list" onOpenDeal={openDeal} />
       )}
 
-      {/* Property Intelligence — the Deal Card is the living Property Intelligence
-          Report. Open a property from the library to review its full report. */}
+      {/* Property Intelligence — lives inside each deal's V2 workspace. Open a
+          property from the library to review its full report. */}
       {section === 'intel' && (
-        dealId ? (
-          <div class="flex-1 flex flex-col min-h-0">
-            <div class="px-6 pt-3">
-              <button
-                type="button"
-                onClick={() => setSection('library')}
-                class="px-3 py-1.5 rounded-md text-[12px] font-medium border border-[var(--color-border)] hover:bg-[var(--color-elevated)]"
-              >
-                ← Deal Library
-              </button>
-            </div>
-            <DealCard dealCardId={dealId} entity="all" key={`intel-${dealId}`} />
-          </div>
-        ) : (
-          <IntelIntro onOpenLibrary={() => setSection('library')} />
-        )
+        <IntelIntro onOpenLibrary={() => setSection('library')} />
       )}
 
       {section === 'discovery' && (

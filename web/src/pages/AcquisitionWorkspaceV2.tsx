@@ -12,12 +12,14 @@
 // nothing is fabricated. Only the Overview is built; the other workspace
 // sections are visible navigation placeholders.
 import { useEffect, useState } from 'preact/hooks';
+import { useLocation } from 'wouter-preact';
 import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
 } from 'lucide-preact';
 import { apiGet, dashboardToken } from '@/lib/api';
 import {
-  readSection, sectionHref, SECTION_SLUGS, type WorkspaceV2Section,
+  readSection, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
+  SECTION_SLUGS, type WorkspaceV2Section,
 } from '@/lib/workspace-v2-nav';
 import {
   PropertyIntelligenceSection,
@@ -123,11 +125,27 @@ function activityLabel(kind: string, summary: string): string {
 // ── Page ───────────────────────────────────────────────────────────────
 
 export function AcquisitionWorkspaceV2() {
+  const [, navigate] = useLocation();
+  // The record identity comes from ?deal=; without it, fall back to the deal
+  // most recently worked this session. With neither, this workspace has no
+  // identified record — never render an unidentified one; go pick from the
+  // pipeline instead.
   const dealId = (() => {
     const q = new URLSearchParams(window.location.search).get('deal');
     const n = Number(q);
-    return Number.isInteger(n) && n > 0 ? n : 81;
+    if (Number.isInteger(n) && n > 0) return n;
+    return lastWorkspaceDealId();
   })();
+  useEffect(() => {
+    if (dealId == null) { navigate('/dept/acquisitions', { replace: true }); return; }
+    // Canonicalize a session-restored deal into the URL so refresh and
+    // share/bookmark keep the exact record.
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('deal') !== String(dealId)) {
+      q.set('deal', String(dealId));
+      window.history.replaceState(null, '', `${window.location.pathname}?${q.toString()}`);
+    }
+  }, [dealId]);
   // Section switching is client-side: the record below is loaded once and
   // reused across sections, so a tab change never reloads the document,
   // refetches the property record, or reruns research. pushState keeps the
@@ -149,9 +167,15 @@ export function AcquisitionWorkspaceV2() {
     setSection(readSection(window.location.search));
   };
 
+  // Remember the deal + section the operator is using so every "back to the
+  // workspace" path this session restores this exact record and section.
+  useEffect(() => {
+    if (dealId != null) rememberWorkspaceDeal(dealId, SECTION_SLUGS[section] ?? 'overview');
+  }, [section, dealId]);
+
   const [deal, setDeal] = useState<DealResp | null>(null);
   const [market, setMarket] = useState<MarketContextView | null>(null);
-  const [snap, setSnap] = useState<SnapshotView | null>(null);
+  const [snapState, setSnap] = useState<SnapshotView | null>(null);
   const [acq, setAcq] = useState<AcqResp | null>(null);
   const [activity, setActivity] = useState<ActivityResp | null>(null);
   const [soils, setSoils] = useState<SoilDetail[] | null>(null);
@@ -166,6 +190,7 @@ export function AcquisitionWorkspaceV2() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (dealId == null) return;
     let dead = false;
     (async () => {
       try {
@@ -195,8 +220,9 @@ export function AcquisitionWorkspaceV2() {
     return () => { dead = true; };
   }, [dealId]);
 
+  if (dealId == null) return null;
   if (loading) return <div class="awv2"><div class="awv2-state">Loading the workspace…</div></div>;
-  if (error || !snap) {
+  if ((error || !snapState) && !deal?.dealCard) {
     return (
       <div class="awv2">
         <div class="awv2-state">
@@ -206,10 +232,24 @@ export function AcquisitionWorkspaceV2() {
       </div>
     );
   }
+  // A brand-new lead has its deal record but no property-intelligence snapshot
+  // yet. The workspace still opens on that exact record and states plainly that
+  // property identity resolution is pending; it fills in as research lands.
+  const pendingResolution = !snapState;
+  const snap: SnapshotView = snapState ?? {};
 
   // ── View model, straight from canonical data ─────────────────────────
   const id = snap.identity || {};
-  const address = id.displayAddress || deal?.dealCard?.title || '';
+  const card0 = deal?.dealCard?.propertyCards?.[0];
+  // Primary visible label: the address when known; otherwise the best
+  // available property identity (APN / owner / county+state) — never the
+  // internal deal number.
+  const bestIdentity = [
+    (id.apn || card0?.apn) ? `APN ${id.apn || card0?.apn}` : '',
+    id.owner || card0?.owner || '',
+    [id.county || card0?.county, id.state_ || card0?.state].filter(Boolean).join(', '),
+  ].filter(Boolean).join(' · ');
+  const address = id.displayAddress || deal?.dealCard?.title || bestIdentity || 'Property identity pending';
   const addrParts = address.split(',');
   const street = addrParts[0]?.trim() || address;
   const locality = addrParts.slice(1).join(',').trim();
@@ -313,6 +353,13 @@ export function AcquisitionWorkspaceV2() {
           {acres != null && <span class="mono">{acres} AC</span>}
           {id.county && <span class="mono">{id.county.toUpperCase()} COUNTY, {id.state_ || ''}</span>}
         </div>
+
+        {pendingResolution && (
+          <div class="awv2-pending" role="status">
+            Property identity resolution pending — research is still confirming this parcel.
+            This workspace is the record's permanent home and fills in as accepted results land.
+          </div>
+        )}
 
         <div class="awv2-stages" role="list" aria-label="Acquisition lifecycle">
           {LIFECYCLE.map((s, i) => {

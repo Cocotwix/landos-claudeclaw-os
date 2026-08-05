@@ -36,13 +36,19 @@ describe('Acquisitions is one cohesive department workspace', () => {
     expect(ACQ).toMatch(/<DealCard/);
   });
 
-  it('opens a Deal Card in-workspace from the pipeline (never bouncing to the spine)', () => {
-    // openDeal stays in-workspace (library section) and records the ?deal=
-    // deep link so a browser refresh restores the same canonical Deal Card.
-    expect(ACQ).toMatch(/function openDeal\(id: number\) \{[\s\S]*?setDealId\(id\);[\s\S]*?setSection\('library'\);[\s\S]*?searchParams\.set\('deal', String\(id\)\)/);
-    // The Deal Library click path routes to the full canonical Deal Card.
+  it('opens every record in Acquisition Workspace V2 (never Deal Card V1)', () => {
+    // openDeal routes pipeline cards, library rows, and new-lead completion to
+    // the same record's V2 workspace, preserving deal identity.
+    expect(ACQ).toMatch(/function openDeal\(id: number\) \{\s*navigate\(dealWorkspaceHref\(id\)\);\s*\}/);
+    // The Deal Library click path routes through openDeal.
     expect(ACQ).toMatch(/<DealCard entity="all" key="library-list" onOpenDeal=\{openDeal\}/);
-    expect(ACQ).toMatch(/<DealCard dealCardId=\{dealId\} entity="all" key=\{dealId\}/);
+    // No in-page V1 Deal Card render remains for a selected record.
+    expect(ACQ).not.toMatch(/<DealCard dealCardId=/);
+    // The old normal ?deal= route redirects to V2 for the same deal.
+    expect(ACQ).toMatch(/navigate\(dealWorkspaceHref\(deal\), \{ replace: true \}\)/);
+    // A permanent Acquisition Workspace entry exists inside the department.
+    expect(ACQ).toMatch(/label="Acquisition Workspace"/);
+    expect(ACQ).toMatch(/lastWorkspaceDealId\(\)/);
     expect(ACQ).not.toMatch(/LeadWorkspace/);
     // The workspace never renders the old feature tabs as its navigation.
     for (const bad of ['Cost Control', 'Org / Agents', 'Model Router', 'Command', 'Knowledge']) {
@@ -65,12 +71,13 @@ describe('Deal Card naming — the library is not a "Deal Card"', () => {
   });
 });
 
-describe('Property Board stays pipeline-only and opens the actual Deal Card', () => {
-  it('supports embedding + an open-in-place callback while keeping the legacy deep link', () => {
+describe('Property Board stays pipeline-only and opens Acquisition Workspace V2', () => {
+  it('supports embedding + an open callback; standalone opens the V2 workspace', () => {
     expect(BOARD).toMatch(/onOpenDeal\?: \(dealCardId: number\) => void/);
     expect(BOARD).toMatch(/embedded\?: boolean/);
-    // Legacy standalone behavior (old links) is preserved.
-    expect(BOARD).toMatch(/\/landos\?deal=\$\{[^}]+\}/);
+    // Standalone board rows open the record's V2 workspace, never V1.
+    expect(BOARD).toMatch(/navigate\(dealWorkspaceHref\(card\.dealCardId\)\)/);
+    expect(BOARD).not.toMatch(/\/landos\?deal=/);
     expect(BOARD).toMatch(/function openDealCard/);
   });
 });

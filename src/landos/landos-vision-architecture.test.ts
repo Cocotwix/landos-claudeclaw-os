@@ -161,9 +161,9 @@ describe('Mission Control is the executive dashboard', () => {
   });
 });
 
-describe('Property Board stays acquisitions pipeline and opens the Deal Card', () => {
-  it('still opens the canonical Deal Card via /landos?deal=', () => {
-    expect(BOARD).toMatch(/\/landos\?deal=\$\{[^}]+\}/);
+describe('Property Board stays acquisitions pipeline and opens the V2 workspace', () => {
+  it('opens the canonical record in Acquisition Workspace V2', () => {
+    expect(BOARD).toMatch(/navigate\(dealWorkspaceHref\(card\.dealCardId\)\)/);
     expect(BOARD).toMatch(/function openDealCard\(/);
   });
 

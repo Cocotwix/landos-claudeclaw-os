@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { useLocation } from 'wouter-preact';
 import { Check, X, Landmark } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
@@ -12,6 +13,7 @@ import { Acquire } from '@/components/Acquire';
 import { CostBoard } from '@/components/CostBoard';
 import { apiGet, apiPost } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+import { dealWorkspaceHref } from '@/lib/workspace-v2-nav';
 
 interface Approval {
   id: number;
@@ -67,6 +69,7 @@ const SECTIONS: Array<{ label: string; keys: string[]; hint: string }> = [
 ];
 
 export function LandOS() {
+  const [, navigate] = useLocation();
   const [view, setView] = useState<LandosView>('overview');
   const [entity, setEntity] = useState<EntityFilter>('all');
   const [selectedDealCardId, setSelectedDealCardId] = useState<number | undefined>(undefined);
@@ -75,14 +78,14 @@ export function LandOS() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
 
-  // Deep-link support: `?deal=<id>` opens that Deal Card directly (linkable/
-  // bookmarkable + deterministic operator QA). `?view=<view>` opens a named tab.
+  // Deep-link support: old `?deal=<id>` links redirect to that record's
+  // Acquisition Workspace V2 (identity preserved; replace keeps back sane).
+  // `?view=<view>` opens a named tab.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const deal = Number(q.get('deal'));
     if (Number.isInteger(deal) && deal > 0) {
-      setSelectedDealCardId(deal);
-      setView('dealcard');
+      navigate(dealWorkspaceHref(deal), { replace: true });
       return;
     }
     const v = q.get('view');
@@ -156,8 +159,10 @@ export function LandOS() {
       {view === 'org' && <OrgRoster />}
       {view === 'router' && <ModelRouterPanel />}
       {view === 'knowledge' && <KnowledgePanel />}
-      {view === 'acquire' && <Acquire entity={entity} onOpenDealCard={(id) => { setSelectedDealCardId(id); setView('dealcard'); }} />}
-      {view === 'dealcard' && <DealCard dealCardId={selectedDealCardId} entity={entity} />}
+      {/* New leads and list rows open Acquisition Workspace V2 — this legacy
+          spine surface never opens Deal Card V1 for a record. */}
+      {view === 'acquire' && <Acquire entity={entity} onOpenDealCard={(id) => navigate(dealWorkspaceHref(id))} />}
+      {view === 'dealcard' && <DealCard dealCardId={selectedDealCardId} entity={entity} onOpenDeal={(id) => navigate(dealWorkspaceHref(id))} />}
       {view === 'intake' && <IntakePlanner />}
       {view === 'costcontrol' && <CostBoard entity={entity} />}
 

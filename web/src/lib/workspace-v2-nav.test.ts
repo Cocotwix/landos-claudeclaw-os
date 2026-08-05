@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { readSection, sectionHref, SECTION_SLUGS } from './workspace-v2-nav';
+import {
+  readSection, sectionHref, SECTION_SLUGS,
+  dealWorkspaceHref, lastWorkspaceDealId, rememberWorkspaceDeal, WORKSPACE_V2_PATH,
+} from './workspace-v2-nav';
+
+function memStore() {
+  const m = new Map<string, string>();
+  return {
+    getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+    setItem: (k: string, v: string) => { m.set(k, v); },
+  };
+}
 
 describe('workspace V2 section navigation', () => {
   it('derives the section from the URL, defaulting to Overview', () => {
@@ -30,5 +41,42 @@ describe('workspace V2 section navigation', () => {
       const search = href.includes('?') ? href.slice(href.indexOf('?')) : '';
       expect(readSection(search)).toBe(label);
     }
+  });
+});
+
+describe('workspace V2 canonical deal routing', () => {
+  it('builds the canonical V2 href for a deal, identity preserved', () => {
+    expect(dealWorkspaceHref(81, memStore())).toBe(`${WORKSPACE_V2_PATH}?deal=81`);
+  });
+
+  it('restores the most recently used section for the same deal this session', () => {
+    const store = memStore();
+    rememberWorkspaceDeal(81, 'property-intelligence', store);
+    expect(dealWorkspaceHref(81, store)).toBe(`${WORKSPACE_V2_PATH}?deal=81&section=property-intelligence`);
+    // Overview stays the canonical bare URL.
+    rememberWorkspaceDeal(81, 'overview', store);
+    expect(dealWorkspaceHref(81, store)).toBe(`${WORKSPACE_V2_PATH}?deal=81`);
+    // A different deal has no remembered section.
+    expect(dealWorkspaceHref(82, store)).toBe(`${WORKSPACE_V2_PATH}?deal=82`);
+  });
+
+  it('never writes an unknown section slug into the URL', () => {
+    const store = memStore();
+    rememberWorkspaceDeal(81, 'not-a-real-section', store);
+    expect(dealWorkspaceHref(81, store)).toBe(`${WORKSPACE_V2_PATH}?deal=81`);
+  });
+
+  it('tracks the last deal worked in V2 for the permanent Acquisitions entry', () => {
+    const store = memStore();
+    expect(lastWorkspaceDealId(store)).toBe(null);
+    rememberWorkspaceDeal(81, 'overview', store);
+    rememberWorkspaceDeal(93, 'property-intelligence', store);
+    expect(lastWorkspaceDealId(store)).toBe(93);
+  });
+
+  it('is node-safe when no session storage exists', () => {
+    expect(lastWorkspaceDealId(null)).toBe(null);
+    expect(dealWorkspaceHref(81, null)).toBe(`${WORKSPACE_V2_PATH}?deal=81`);
+    expect(() => rememberWorkspaceDeal(81, 'overview', null)).not.toThrow();
   });
 });

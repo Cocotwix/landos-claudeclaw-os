@@ -27,6 +27,8 @@ import { Forge } from '@/pages/Forge';
 import { Department } from '@/pages/Department';
 import { Acquisitions } from '@/pages/Acquisitions';
 import { AcquisitionWorkspaceV2 } from '@/pages/AcquisitionWorkspaceV2';
+import { LegacyDealCard } from '@/pages/LegacyDealCard';
+import { WORKSPACE_V2_PATH } from '@/lib/workspace-v2-nav';
 import { BrowserConnect } from '@/pages/BrowserConnect';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 import { MaxDock } from '@/components/MaxDock';
@@ -61,8 +63,19 @@ export function App() {
           <Route path="/mission"><MissionControl /></Route>
           {/* Acquisitions is a full department workspace, not a generic hub. */}
           <Route path="/dept/acquisitions"><Acquisitions /></Route>
-          {/* V2 opportunity workspace — separate route; the Deal Card above is untouched. */}
+          {/* V2 opportunity workspace — the official operator workspace for every
+              lead, deal, and opportunity. */}
           <Route path="/dept/acquisitions/v2"><AcquisitionWorkspaceV2 /></Route>
+          {/* The normal Deal Card route opens V2 for the same record. Deal Card V1
+              stays reachable only through the hidden /legacy/deal/:id route. */}
+          <Route path="/deal/:id">
+            {(params: { id: string }) => {
+              const n = Number(params.id);
+              const ok = Number.isInteger(n) && n > 0;
+              return <Redirect to={ok ? `${WORKSPACE_V2_PATH}?deal=${n}` : '/dept/acquisitions'} replace />;
+            }}
+          </Route>
+          <Route path="/legacy/deal/:id">{(params: { id: string }) => <LegacyDealCard id={params.id} />}</Route>
           <Route path="/dept/market-research"><MarketResearch /></Route>
           <Route path="/dept/:slug">{(params: { slug: string }) => <Department slug={params.slug} />}</Route>
           <Route path="/landos"><LandOS /></Route>
