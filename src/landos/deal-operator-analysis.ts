@@ -960,14 +960,30 @@ function marketAnalysis(pkg: DealIntelligenceInputPackage, context: DealOperator
   };
 }
 
-function marketScore(pkg: DealIntelligenceInputPackage, market: OperatorMarketAnalysis): OperatorScore {
+/**
+ * Canonical comp counts for the market read. The snapshot comp lane applies a
+ * provider allowlist, source caps, and a never-downgrade guard, so its counts
+ * can lag the canonical Comps & Valuation registry. When the caller supplies
+ * the canonical counts, they govern — the Market score must never claim a
+ * different number of selected closed sales than Comps & Valuation displays.
+ */
+export interface CanonicalCompCounts {
+  sold: number;
+  active: number;
+}
+
+function marketScore(
+  pkg: DealIntelligenceInputPackage,
+  market: OperatorMarketAnalysis,
+  canonicalCounts?: CanonicalCompCounts | null,
+): OperatorScore {
   let score = 42;
   const positives: string[] = [];
   const deductions: string[] = [];
   const changes: string[] = [];
   const keys: string[] = [];
-  const sold = pkg.comps.sold.length;
-  const active = pkg.comps.active.length;
+  const sold = canonicalCounts ? canonicalCounts.sold : pkg.comps.sold.length;
+  const active = canonicalCounts ? canonicalCounts.active : pkg.comps.active.length;
   const countyBands = market.acreageBands.filter((band) => band.snapshotPeriod != null);
   const countySold = countyBands.reduce((sum, band) => sum + band.soldCount, 0);
   const countyActive = countyBands.reduce((sum, band) => sum + band.activeCount, 0);
@@ -998,6 +1014,9 @@ function marketScore(pkg: DealIntelligenceInputPackage, market: OperatorMarketAn
     keys.push('market:data_center_watch');
   } else if (market.dataCenters.status === 'not_run' || market.dataCenters.status === 'unavailable') {
     changes.push('A completed data-center and infrastructure search within 20 miles.');
+  }
+  if (canonicalCounts) {
+    changes.push('Counts shown here are the canonical Comps & Valuation registry counts, so the two sections always agree.');
   }
   keys.push(...pkg.comps.sold.map((comp) => `comp:${comp.key}`), ...pkg.comps.active.map((comp) => `comp:${comp.key}`));
   keys.push(...market.internalMetrics.map((metric) => `market:${metric.label}`));
@@ -1595,11 +1614,14 @@ export function buildDealOperatorAnalysis(input: {
   context: DealOperatorContext;
   previousSnapshot?: PropertyIntelligenceSnapshot | null;
   generatedAt: string;
+  /** Canonical Comps & Valuation counts; when supplied they govern the market
+   *  score's comp counts so the two operator sections cannot disagree. */
+  canonicalCompCounts?: CanonicalCompCounts | null;
 }): DealOperatorAnalysis {
   const { pkg, context } = input;
   const market = marketAnalysis(pkg, context);
   const property = propertyScore(pkg, context.visualAnalysis);
-  const marketScored = marketScore(pkg, market);
+  const marketScored = marketScore(pkg, market, input.canonicalCompCounts ?? null);
   const sellerScored = sellerScore(pkg, context.seller);
   const scores = { property, market: marketScored, seller: sellerScored };
   const values = valueAnalysis(pkg.valuation, context.seller);
@@ -1944,6 +1966,26 @@ function normalizedModelScore(
   };
 }
 
+/** Marker for the canonical comp-count sentence the market score must always carry. */
+const CANONICAL_COMP_COUNT_MARKER = /selected closed sale\(s\) and .* internal county-band sale\(s\)/i;
+
+/**
+ * Re-assert the deterministic canonical comp-count line on a model-reworded
+ * market score. The analyst may describe the market; it may not restate how
+ * many closed sales LandOS selected, because Comps & Valuation displays that
+ * count from the same registry.
+ */
+function withCanonicalCompCountLine(scored: OperatorScore, deterministic: OperatorScore): OperatorScore {
+  const canonicalLine = deterministic.strongestPositiveFactors.find((f) => CANONICAL_COMP_COUNT_MARKER.test(f));
+  if (!canonicalLine) return scored;
+  const withoutModelCount = scored.strongestPositiveFactors.filter((f) => !CANONICAL_COMP_COUNT_MARKER.test(f));
+  return {
+    ...scored,
+    strongestPositiveFactors: unique([canonicalLine, ...withoutModelCount]).slice(0, 5),
+    mainDeductions: scored.mainDeductions.filter((d) => !/no selected closed sale/i.test(d)),
+  };
+}
+
 function normalizedVisualObservations(
   raw: unknown,
   labels: Set<string>,
@@ -2027,10 +2069,16 @@ export async function runWholeCardOperatorAnalyst(input: {
       fallback.scores.property,
       unsupportedParcelTerrainScore(parsed.propertyScore, input.pkg),
     ),
-    market: normalizedModelScore(
-      parsed.marketScore,
+    // An analyst may reword the market read but never restate the comp counts:
+    // the canonical Comps & Valuation count line from the deterministic score
+    // is always re-asserted so the two operator sections cannot disagree.
+    market: withCanonicalCompCountLine(
+      normalizedModelScore(
+        parsed.marketScore,
+        fallback.scores.market,
+        marketScoreUsesPropertyConstraint(parsed.marketScore),
+      ),
       fallback.scores.market,
-      marketScoreUsesPropertyConstraint(parsed.marketScore),
     ),
     seller: fallback.scores.seller.score == null
       ? fallback.scores.seller

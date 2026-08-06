@@ -378,6 +378,7 @@ import { collectBrowserMarketIntelligence, makeNewsResearchBackend, type GrowthD
 import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/google-visual.js';
 import { isLeadType } from './db.js';
 import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
+import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuationLocations, type CompSelectionAction } from './comps-valuation.js';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
@@ -8006,11 +8007,22 @@ export function registerLandosRoutes(app: Hono): void {
           incomplete: snapshot.specialists.filter((item) => item.status !== 'completed').length,
         },
       };
+      // The Market score counts the SAME canonical comp registry the Comps &
+      // Valuation section displays. The snapshot comp lane applies a provider
+      // allowlist and a never-downgrade guard, so its counts can lag; the
+      // canonical projection governs so the two sections cannot disagree.
+      const canonicalCompsView = buildCompsValuationView(dealCardId);
       snapshot.operatorAnalysis = buildDealOperatorAnalysis({
         pkg: packageForRead,
         context,
         previousSnapshot: storedSnapshot,
         generatedAt: primary?.updatedAt ?? snapshot.completedAt ?? '',
+        canonicalCompCounts: canonicalCompsView
+          ? {
+              sold: canonicalCompsView.summary.acceptedCount,
+              active: canonicalCompsView.counts.active_competition ?? 0,
+            }
+          : null,
       });
       const bestCurrentStrategy = snapshot.valuation.priceable
         ? snapshot.operatorAnalysis.rankedStrategies[0]?.strategy ?? null
@@ -8290,6 +8302,9 @@ export function registerLandosRoutes(app: Hono): void {
         runId: row.runId, sequence: row.sequence, status: row.status,
         startedAt: row.startedAt, completedAt: row.completedAt, isPrimary: row.isPrimary,
       })),
+      // Comps & Valuation workspace: read-time projection over the canonical
+      // comp registry + retained research evidence. SELECT-only.
+      compsValuation: buildCompsValuationView(dealCardId),
     };
   };
 
@@ -8310,6 +8325,56 @@ export function registerLandosRoutes(app: Hono): void {
       // SOP 10B read-time join; never sourced from LandPortal market panels.
       marketContext: marketContextFor(deal),
     });
+  });
+
+  // Comps & Valuation workspace projection alone (post-selection refresh
+  // without re-reading the whole property-intelligence record). SELECT-only.
+  app.get('/api/landos/deal-cards/:id/comps-valuation', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const view = buildCompsValuationView(id);
+    if (!view) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ compsValuation: view });
+  });
+
+  // Operator valuation-comp selection: include / exclude (with reason) /
+  // restore an ELIGIBLE closed vacant-land sale. Preserves the record and the
+  // reason; never deletes evidence; recalculates immediately.
+  app.post('/api/landos/deal-cards/:id/comps-valuation/selection', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const compId = num(body.compId);
+    const action = str(body.action) as CompSelectionAction | undefined;
+    if (compId == null || !Number.isInteger(compId)) return c.json({ error: 'compId required' }, 400);
+    if (action !== 'include' && action !== 'exclude' && action !== 'restore') {
+      return c.json({ error: "action must be 'include', 'exclude', or 'restore'" }, 400);
+    }
+    const result = setCompValuationSelection({
+      dealCardId: id,
+      compId,
+      action,
+      reason: str(body.reason),
+      actor: str(body.actor) ?? 'tyler/manual',
+    });
+    if (!result.ok) return c.json({ error: result.error ?? 'selection rejected' }, 400);
+    return c.json({ compsValuation: buildCompsValuationView(id) });
+  });
+
+  // Bounded location resolution for the Comps & Valuation workspace: fill-only
+  // subject geocode, persisted-comp enrichment (existing comp-map path), and
+  // research-evidence addresses into the shared geocode cache. Free verified
+  // geocoders only — never county GIS, never a guessed point.
+  app.post('/api/landos/deal-cards/:id/comps-valuation/resolve-locations', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const result = await resolveCompsValuationLocations(id);
+    if (!result) return c.json({ error: 'deal card not found' }, 404);
+    landosAudit('landos/comps-valuation', 'comp_locations_resolved',
+      `deal ${id}: subject ${result.subjectResolved ? 'resolved' : 'unresolved'}; ${result.compsEnriched} comp location(s) enriched; ${result.evidenceResolved} evidence listing(s) resolved; ${result.unresolved} unresolved`,
+      { refTable: 'landos_deal_card', refId: id });
+    return c.json({ resolution: result, compsValuation: buildCompsValuationView(id) });
   });
 
   // Progress-only read for polling while a mission runs.

@@ -185,6 +185,17 @@ export interface CompRow {
   source_attributions_json: string;
   canonical_key: string;
   updated_at: number;
+  /** Operator valuation selection: 1 included, -1 excluded with reason, 0 undecided. */
+  valuation_selected: number;
+  valuation_selection_reason: string;
+  valuation_selection_updated_at: number;
+  /** Who made the selection: 'tyler/manual' or a 'landos/...' automation actor. */
+  valuation_selection_actor: string;
+  /** PersistedListingDetail JSON from the retained provider page; '' when the
+   *  page has never been visited. Holds the chosen listing image and its
+   *  provenance, the dated listing history, the source description, and the
+   *  reconciliation evidence that bound the page to this comparable. */
+  listing_detail_json: string;
 }
 
 export interface AddCompInput {
@@ -430,6 +441,46 @@ function safeSuggestion(address: string, suggestion: AddressSuggestion | undefin
   const tokens = firstLine.replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((token) => token.length >= 3 && !stop.has(token) && !/^\d+$/.test(token));
   const label = suggestion.label.toLowerCase();
   return tokens.length > 0 && tokens.some((token) => label.includes(token));
+}
+
+/**
+ * Bounded, free geocode of complete addresses into the shared geocode cache.
+ * Used for records that are NOT persisted comp rows (research-evidence
+ * listings, the subject address point). At most two focused attempts per
+ * address (US Census, then Photon), both state/zip-verified; misses are cached
+ * so they are never retried in a loop. Never fabricates a point.
+ */
+export async function geocodeAddressesToCache(
+  addresses: string[],
+  deps: { fetchImpl?: SuggestFetch } = {},
+): Promise<{ attempted: number; resolved: number; unresolved: number }> {
+  const db = getLandosDb();
+  const keyOf = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+  const cacheGet = db.prepare('SELECT lat, lng, provider FROM landos_geocode_cache WHERE address_key = ?');
+  const cachePut = db.prepare(`INSERT INTO landos_geocode_cache (address_key, lat, lng, provider, created_at)
+    VALUES (?, ?, ?, ?, strftime('%s','now'))
+    ON CONFLICT(address_key) DO UPDATE SET lat=excluded.lat, lng=excluded.lng, provider=excluded.provider, created_at=excluded.created_at`);
+  let attempted = 0;
+  let resolved = 0;
+  for (const address of addresses) {
+    const key = keyOf(address);
+    if (!key) continue;
+    const hit = cacheGet.get(key) as { lat: number | null; lng: number | null } | undefined;
+    if (hit) { if (typeof hit.lat === 'number' && typeof hit.lng === 'number') resolved++; continue; }
+    attempted++;
+    let point: { lat: number; lng: number } | undefined;
+    let provider = '';
+    for (const suggestProvider of [censusSuggestProvider(), photonProvider()]) {
+      const result = await suggestAddresses(address, {
+        providers: [suggestProvider], fetchImpl: deps.fetchImpl, cache: new SuggestCache(4), limit: 3,
+      });
+      const suggestion = result.suggestions.find((item) => safeSuggestion(address, item));
+      if (safeSuggestion(address, suggestion)) { point = suggestion.coordinates; provider = suggestion.source; break; }
+    }
+    cachePut.run(key, point?.lat ?? null, point?.lng ?? null, point ? provider : 'listing_and_geocode_v2');
+    if (point) resolved++;
+  }
+  return { attempted, resolved, unresolved: addresses.length - resolved };
 }
 
 /**

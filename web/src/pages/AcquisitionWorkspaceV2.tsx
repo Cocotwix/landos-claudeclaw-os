@@ -28,7 +28,13 @@ import {
   type MissingDiligenceView, type AccessPresentationView, type SoilsSepticView,
   type VisualBuyerNarrativeView, type ResearchStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
+import {
+  CompsValuationSection, type CompsValuationViewData,
+} from '../components/AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2.css';
+// Loaded AFTER the base sheet: the comps identity + readability corrections
+// deliberately override base values on equal specificity.
+import '../styles/workspace-v2-comps.css';
 
 // ── Minimal read-model types (fields this view consumes) ───────────────
 
@@ -95,6 +101,7 @@ interface IntelResp {
     access?: AccessPresentationView | null;
     soilsSeptic?: SoilsSepticView | null;
     researchStatus?: ResearchStatusView | null;
+    compsValuation?: CompsValuationViewData | null;
   };
   marketContext?: MarketContextView;
 }
@@ -186,6 +193,7 @@ export function AcquisitionWorkspaceV2() {
   const [accessView, setAccessView] = useState<AccessPresentationView | null>(null);
   const [soilsSeptic, setSoilsSeptic] = useState<SoilsSepticView | null>(null);
   const [researchStatus, setResearchStatus] = useState<ResearchStatusView | null>(null);
+  const [compsValuation, setCompsValuation] = useState<CompsValuationViewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -211,6 +219,7 @@ export function AcquisitionWorkspaceV2() {
         setAccessView(i?.propertyIntelligence?.access ?? null);
         setSoilsSeptic(i?.propertyIntelligence?.soilsSeptic ?? null);
         setResearchStatus(i?.propertyIntelligence?.researchStatus ?? null);
+        setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
       } catch (e) {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -314,6 +323,15 @@ export function AcquisitionWorkspaceV2() {
   const soldCount = snap.comps?.sold?.length ?? 0;
   const activeCount = snap.comps?.active?.length ?? 0;
   const askingCount = snap.comps?.askingReferences?.length ?? 0;
+  // Comps & Valuation is the valuation authority: Overview mirrors its summary
+  // so both surfaces always agree.
+  const cvSummary = compsValuation?.summary ?? null;
+  const cvCleaned = compsValuation?.cleaned ?? null;
+  const cvQuickFlip = compsValuation?.quickFlip ?? null;
+  const cvNegotiation = compsValuation?.negotiation ?? null;
+  const cvCandidateCount = (compsValuation?.counts?.candidate_closed_sale ?? 0)
+    + (compsValuation?.counts?.accepted_closed_sale ?? 0);
+  const cvActiveCount = compsValuation?.counts?.active_competition ?? 0;
 
   // Missing information, grouped compactly. Sourced from unresolved diligence,
   // valuation gaps, and the not-yet-collected seller record.
@@ -325,7 +343,11 @@ export function AcquisitionWorkspaceV2() {
   if (access?.missing?.some((m) => /legal access/i.test(m))) missingProperty.push('Legal access (recorded instruments)');
   if (id.hasParcelGeometry === false) missingProperty.push('Parcel boundary / survey');
   if (!(snap.facts || []).some((f) => f.key === 'lp_sidebar_water_feature_type' && f.value)) missingProperty.push('Water features');
-  const missingValuation = val.priceable ? [] : ['A closed in-band land sale (price + date)'];
+  const missingValuation = cvSummary
+    ? (cvSummary.status === 'supported' ? []
+      : cvSummary.status === 'provisional' ? ['A third credible closed vacant-land sale']
+        : ['Two credible closed vacant-land sales'])
+    : (val.priceable ? [] : ['A closed in-band land sale (price + date)']);
   const missingSeller: string[] = [];
   if (!seller?.name) missingSeller.push('Seller contact');
   if (!seller?.phone) missingSeller.push('Phone');
@@ -452,6 +474,16 @@ export function AcquisitionWorkspaceV2() {
               <ScoreCard title="Seller score" view={scores.seller} />
             </div>
             <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} />
+          </main>
+        ) : section === 'Comps & Valuation' ? (
+          <main class="awv2-main">
+            {/* ── Scores first: the operator's opening read ── */}
+            <div class="awv2-grid cols-3 awv2-scorestrip">
+              <ScoreCard title="Property score" view={scores.property} />
+              <ScoreCard title="Market score" view={scores.market} />
+              <ScoreCard title="Seller score" view={scores.seller} />
+            </div>
+            <CompsValuationSection dealId={dealId} initial={compsValuation} />
           </main>
         ) : (
         <main class="awv2-main">
@@ -588,8 +620,25 @@ export function AcquisitionWorkspaceV2() {
           <div class="awv2-grid cols-3-2">
             <section class="awv2-panel">
               <div class="awv2-panel-title">Valuation</div>
-              {!val.priceable && <div class="awv2-val-status">Not priceable yet · confidence {val.confidence || 'low'}</div>}
+              {cvSummary ? (
+                <div class={`awv2-val-status awv2-cv-status ${cvSummary.status}`}>
+                  {cvSummary.basisLabel ?? cvSummary.statusLabel}
+                  {cvSummary.confidence !== 'unavailable' && <span class="conf"> · confidence {cvSummary.confidence}</span>}
+                </div>
+              ) : (
+                !val.priceable && <div class="awv2-val-status">Not priceable yet · confidence {val.confidence || 'low'}</div>
+              )}
               <div class="awv2-val-figures">
+                {cvSummary?.fmv && (
+                  <div class="awv2-val-fig">
+                    <div class="k">Preliminary fair market value</div>
+                    <div class="v">{usd(cvSummary.fmv.central)}</div>
+                    <div class="s">
+                      median {cvSummary.medianPricePerAcre != null ? `${usd(cvSummary.medianPricePerAcre)}/ac` : '—'} × {cvSummary.workingAcres} acres
+                      {cvSummary.fmv.low != null && cvSummary.fmv.high != null ? ` · range ${usd(cvSummary.fmv.low)}–${usd(cvSummary.fmv.high)}` : ''}
+                    </div>
+                  </div>
+                )}
                 {perAcre && (
                   <div class="awv2-val-fig">
                     <div class="k">Asking-market indication</div>
@@ -607,28 +656,86 @@ export function AcquisitionWorkspaceV2() {
                   </div>
                 )}
                 <div class="awv2-val-fig">
-                  <div class="k">Closed-sale evidence</div>
-                  <div class="v">{soldCount}</div>
-                  <div class="s">{activeCount} active competitor · {askingCount} asking references</div>
+                  <div class="k">Supporting closed sales</div>
+                  <div class="v">{cvSummary ? cvSummary.acceptedCount : soldCount}</div>
+                  <div class="s">
+                    {cvSummary
+                      ? `${cvCandidateCount} closed-sale candidate${cvCandidateCount === 1 ? '' : 's'} · ${cvActiveCount} active competitor${cvActiveCount === 1 ? '' : 's'} retained`
+                      : `${activeCount} active competitor · ${askingCount} asking references`}
+                  </div>
                 </div>
               </div>
 
               <div class="awv2-ladder">
-                <div class="awv2-ladder-title">Acquisition levels — locked until fair market value is supported</div>
+                <div class="awv2-ladder-title">
+                  {cvSummary?.acquisitionLevels
+                    ? `Acquisition levels — from the ${cvSummary.status} central value`
+                    : 'Acquisition levels — locked until fair market value is supported'}
+                </div>
                 <div class="awv2-rungs">
-                  {[40, 50, 60].map((p) => (
+                  {([40, 50, 60] as const).map((p) => (
                     <div class="awv2-rung">
                       <div class="pct">{p}%</div>
                       <div class="lbl">of FMV</div>
-                      <div class="val">—</div>
+                      <div class="val">
+                        {cvSummary?.acquisitionLevels ? usd(cvSummary.acquisitionLevels[`pct${p}` as 'pct40' | 'pct50' | 'pct60']) : '—'}
+                      </div>
                     </div>
                   ))}
                 </div>
                 <div class="awv2-ladder-note">
-                  {val.notPriceableReason || 'Fair market value is not yet supported.'}
-                  {' '}<b>To price it: {val.nextActionToPrice || 'confirm one closed in-band sale.'}</b>
+                  {cvSummary?.acquisitionLevels
+                    ? (cvCleaned?.adoptedFmv != null
+                      ? `Derived from the adopted cleaned fair market value of ${usd(cvCleaned.adoptedFmv)}, which reconciles the cleaned average, cleaned median, and weighted direct-comp indications.`
+                      : cvSummary.status === 'provisional'
+                        ? `Provisional: automatically derived from ${cvSummary.acceptedCount} credible closed vacant-land sales; treat as a working figure, not a supported FMV.`
+                        : 'Derived from the median closed vacant-land sale price per acre in the valuation set.')
+                    : (cvSummary?.acquisitionLockedReason
+                      || val.notPriceableReason
+                      || 'Fair market value is not yet supported.')}
+                  {!cvSummary?.acquisitionLevels && (
+                    <>{' '}<b>To price it: {val.nextActionToPrice || 'confirm one closed in-band sale.'}</b></>
+                  )}
                 </div>
               </div>
+
+              {/* The same final recommendation Comps & Valuation shows — one
+                  set of numbers across both sections. */}
+              {cvNegotiation && (
+                <div class="awv2-ladder">
+                  <div class="awv2-ladder-title">Final recommended negotiation range</div>
+                  <div class="awv2-rungs">
+                    <div class="awv2-rung">
+                      <div class="pct">Opening</div>
+                      <div class="lbl">recommended</div>
+                      <div class="val">{usd(cvNegotiation.recommendedOpening)}</div>
+                    </div>
+                    <div class="awv2-rung">
+                      <div class="pct">Target</div>
+                      <div class="lbl">recommended</div>
+                      <div class="val">{usd(cvNegotiation.recommendedTarget)}</div>
+                    </div>
+                    <div class="awv2-rung ceiling">
+                      <div class="pct">Ceiling</div>
+                      <div class="lbl">technical max</div>
+                      <div class="val">{usd(cvNegotiation.hardCeiling)}</div>
+                    </div>
+                  </div>
+                  <div class="awv2-ladder-note">
+                    {cvQuickFlip
+                      ? `Technical quick-flip maximum is ${usd(cvQuickFlip.technicalMaxOffer)} (${cvQuickFlip.technicalMaxPctOfFmv}% of cleaned FMV) after ${usd(cvQuickFlip.totalNonAcquisitionCosts)} of non-acquisition costs and ${usd(cvQuickFlip.requiredProfit)} required profit.`
+                      : cvNegotiation.lines[0]}
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="button"
+                class="awv2-vbs-open"
+                onClick={(e) => switchSection(e as unknown as MouseEvent, 'comps-valuation')}
+              >
+                Open Comps &amp; Valuation →
+              </button>
 
               {(subjPpa || overallPpa) && (
                 <div class="awv2-market-context">

@@ -112,3 +112,67 @@ export function clusterByScreenDistance<T>(
 export function osmTileUrl(t: TileRef): string {
   return `https://tile.openstreetmap.org/${t.z}/${t.x}/${t.y}.png`;
 }
+
+// ── Base map layers ──────────────────────────────────────────────────────────
+//
+// Road stays the default and is unchanged. The aerial layer is USGS National Map
+// imagery: authoritative United States government imagery, nationwide coverage,
+// public domain, no API key, no account, no proxy and no cache — served as plain
+// XYZ raster tiles from the same renderer the road layer already uses. That is
+// the whole reason it qualified: it needed no new provider architecture and no
+// renderer migration.
+//
+// Note the Y/X order. ArcGIS MapServer tile paths are {z}/{row}/{col}, which is
+// {z}/{y}/{x} — the reverse of the XYZ convention OSM uses. Getting that
+// backwards silently serves tiles from the wrong hemisphere.
+//
+// OpenStreetMap tiles are NEVER proxied or re-hosted; they are requested
+// directly by the browser exactly as the OSM tile usage policy expects.
+
+export type BasemapId = 'road' | 'aerial';
+
+export interface BasemapSpec {
+  id: BasemapId;
+  label: string;
+  attribution: string;
+  maxZoom: number;
+}
+
+export const BASEMAPS: readonly BasemapSpec[] = [
+  {
+    id: 'road',
+    label: 'Road',
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+  },
+  {
+    id: 'aerial',
+    label: 'Aerial',
+    attribution: 'Imagery: USGS The National Map (public domain)',
+    maxZoom: 16,
+  },
+];
+
+/** The deepest zoom USGS ImageryOnly actually serves; z17+ returns 404. */
+export const AERIAL_MAX_ZOOM = 16;
+
+export function basemapTileUrl(t: TileRef, basemap: BasemapId): string {
+  if (basemap === 'aerial') {
+    // Past USGS coverage the request 404s, so the road tile is drawn instead —
+    // and the component MUST say so. Silently showing a road map under an
+    // "Aerial" button would let the operator believe they are looking at
+    // imagery of the parcel when they are not.
+    if (t.z > AERIAL_MAX_ZOOM) return osmTileUrl(t);
+    return `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/${t.z}/${t.y}/${t.x}`;
+  }
+  return osmTileUrl(t);
+}
+
+/** Attribution for what is ACTUALLY on screen, including the aerial-coverage gap. */
+export function basemapAttribution(basemap: BasemapId, zoom: number): string {
+  const spec = BASEMAPS.find((b) => b.id === basemap) ?? BASEMAPS[0];
+  if (basemap === 'aerial' && Math.round(zoom) > AERIAL_MAX_ZOOM) {
+    return `Aerial imagery ends at zoom ${AERIAL_MAX_ZOOM} — showing the road map at this zoom. © OpenStreetMap contributors`;
+  }
+  return spec.attribution;
+}

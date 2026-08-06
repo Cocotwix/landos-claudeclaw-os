@@ -19,6 +19,7 @@ describe('workspace V2 section navigation', () => {
     expect(readSection('?deal=81')).toBe('Overview');
     expect(readSection('?deal=81&section=property-intelligence')).toBe('Property Intelligence');
     expect(readSection('?section=property-intelligence&deal=81')).toBe('Property Intelligence');
+    expect(readSection('?deal=81&section=comps-valuation')).toBe('Comps & Valuation');
     expect(readSection('?deal=81&section=unknown-section')).toBe('Overview');
   });
 

@@ -1,0 +1,538 @@
+/* Comps Department completion sprint — record identity, map interaction, and
+   the readability correction.
+
+   Loaded AFTER workspace-v2.css so the readability values here win on equal
+   specificity. Three problems this sheet fixes:
+
+     1. Closed valuation evidence and live competition looked alike. Every
+        surface now carries the SAME shape + colour + badge, and SHAPE (not
+        colour alone) does the work, so the distinction survives colour-blind
+        vision and a small screen.
+     2. Hover and click did the same thing. Hover is now a temporary preview;
+        click pins a popup that survives the pointer leaving.
+     3. The workspace was readable only by leaning in. Type sizes, weights and
+        vertical rhythm are raised across cards, popups, filters and details.
+
+   This is a readability correction, NOT a redesign: the unified list-and-map
+   layout, the responsive breakpoints and every control are unchanged, and no
+   duplicated comp list is reintroduced. */
+
+/* ── Marker glyphs: one shape per record kind ───────────────────────────── */
+.awv2-cv-glyph {
+  display: inline-block; flex: none; vertical-align: middle;
+  border-width: 2px; border-style: solid; box-sizing: border-box;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  transition: width 90ms ease, height 90ms ease;
+}
+.awv2-cv-glyph.shape-circle { border-radius: 50%; }
+.awv2-cv-glyph.shape-square { border-radius: 2px; }
+.awv2-cv-glyph.shape-diamond { border-radius: 2px; transform: rotate(45deg); }
+/* A hollow triangle drawn from borders alone, so it needs no background. */
+.awv2-cv-glyph.shape-triangle {
+  border-radius: 0;
+  background: transparent !important;
+  border-left-width: 7px; border-right-width: 7px;
+  border-left-color: transparent !important;
+  border-right-color: transparent !important;
+  border-top-width: 0; border-bottom-width: 12px;
+  height: 0 !important; box-shadow: none;
+}
+.awv2-cv-glyph.shape-cross {
+  border: none; background: transparent !important; position: relative; box-shadow: none;
+}
+.awv2-cv-glyph.shape-cross::before,
+.awv2-cv-glyph.shape-cross::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 45%; height: 2px;
+  background: var(--awv2-bone-faint);
+}
+.awv2-cv-glyph.shape-cross::before { transform: rotate(45deg); }
+.awv2-cv-glyph.shape-cross::after { transform: rotate(-45deg); }
+.awv2-cv-glyph.selected { box-shadow: 0 0 0 3px rgba(240, 198, 116, 0.5); }
+
+/* ── The unmissable kind badge ──────────────────────────────────────────── */
+.awv2-cv-kind {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--awv2-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 4px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.awv2-cv-kind.kind-closed { color: #86efac; background: rgba(21, 128, 61, 0.18); border-color: rgba(21, 128, 61, 0.55); }
+.awv2-cv-kind.kind-active { color: #fdba74; background: rgba(234, 115, 23, 0.18); border-color: rgba(234, 115, 23, 0.6); }
+.awv2-cv-kind.kind-zeroWeight { color: var(--awv2-bone-faint); background: rgba(156, 163, 175, 0.12); border-color: rgba(156, 163, 175, 0.4); }
+.awv2-cv-kind.kind-improved { color: #cbbfa4; background: transparent; border-color: rgba(138, 133, 119, 0.6); border-style: dashed; }
+.awv2-cv-kind.kind-context { color: #d9a08f; background: transparent; border-color: rgba(168, 87, 74, 0.5); border-style: dashed; }
+.awv2-cv-kind.kind-excluded { color: var(--awv2-bone-faint); background: transparent; border-color: var(--awv2-line-strong); border-style: dotted; }
+.awv2-cv-kind.kind-subject { color: #93c5fd; background: rgba(37, 99, 235, 0.18); border-color: rgba(37, 99, 235, 0.6); }
+
+/* ── Markers: the button is a hit target; the glyph carries the identity ── */
+.awv2-cv-marker {
+  position: absolute; transform: translate(-50%, -50%);
+  background: transparent; border: none; border-radius: 0; box-shadow: none;
+  padding: 4px; display: grid; place-items: center; cursor: pointer; line-height: 0;
+}
+.awv2-cv-marker.selected { box-shadow: none; }
+.awv2-cv-map-cluster {
+  position: absolute; transform: translate(-50%, -50%);
+  border-radius: 50%; font-family: var(--awv2-mono); font-size: 12.5px; font-weight: 600;
+}
+
+/* ── Temporary hover preview ────────────────────────────────────────────── */
+.awv2-cv-hoverpreview {
+  position: absolute; transform: translate(-50%, calc(-100% - 16px));
+  z-index: 60; width: 320px; max-width: calc(100vw - 40px);
+  /* Kept in lockstep with PREVIEW_H in AcquisitionWorkspaceV2CompMap.tsx: the
+     clamp that keeps this panel on the canvas needs a height it can trust. */
+  max-height: 315px; overflow: hidden;
+  display: flex; gap: 10px; padding: 10px;
+  background: rgba(12, 14, 18, 0.97); border: 1px solid var(--awv2-line-strong);
+  border-radius: 8px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+  /* A preview must never intercept the click that pins the popup. */
+  pointer-events: none;
+}
+/* Near the top of the canvas there is no room above the marker, so the preview
+   flips below it. A half-cut panel is worse than no preview at all. */
+.awv2-cv-hoverpreview.below { transform: translate(-50%, 16px); }
+.awv2-cv-hoverpreview.cluster { width: 280px; }
+.awv2-cv-hoverpreview .body { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.awv2-cv-hoverpreview .addr { font-family: var(--awv2-serif); font-size: 14.5px; color: var(--awv2-bone); line-height: 1.3; }
+.awv2-cv-hoverpreview .role { font-family: var(--awv2-mono); font-size: 11px; color: var(--awv2-bone-dim); }
+.awv2-cv-hoverpreview .counts { font-family: var(--awv2-mono); font-size: 11.5px; color: var(--awv2-bone-dim); }
+.awv2-cv-hoverpreview .counts b { color: var(--awv2-bone); }
+/* The comparability sentence is capped so the preview's height stays
+   predictable and the clamp above can guarantee the whole panel fits — the
+   sentence itself must stay VISIBLE, so the cap is what keeps it on screen. */
+.awv2-cv-hoverpreview .why {
+  font-size: 12px; line-height: 1.45; color: var(--awv2-bone-faint);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.awv2-cv-hoverpreview .body { gap: 4px; }
+.awv2-cv-hoverpreview .addr { font-size: 14px; line-height: 1.25; }
+.awv2-cv-prevfacts { gap: 2px 12px; }
+.awv2-cv-prevfacts i { line-height: 1.25; }
+.awv2-cv-hoverpreview ul.mini { list-style: none; margin: 0; padding: 0; }
+.awv2-cv-hoverpreview ul.mini li {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--awv2-mono); font-size: 11px; color: var(--awv2-bone-dim); padding: 2px 0;
+}
+.awv2-cv-hoverpreview ul.mini li.more { color: var(--awv2-bone-faint); font-style: italic; }
+.awv2-cv-prevfacts { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+.awv2-cv-prevfacts span { font-family: var(--awv2-mono); font-size: 12px; color: var(--awv2-bone); }
+.awv2-cv-prevfacts i {
+  display: block; font-style: normal; font-size: 9.5px; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--awv2-bone-faint);
+}
+
+/* ── Pinned popup + cluster popup ───────────────────────────────────────── */
+.awv2-cv-map-detail.pinned { border-left-width: 4px; border-left-style: solid; }
+.awv2-cv-map-detail.pinned.kind-closed { border-left-color: #15803d; }
+.awv2-cv-map-detail.pinned.kind-active { border-left-color: #ea7317; }
+.awv2-cv-map-detail.pinned.kind-zeroWeight { border-left-color: #9ca3af; }
+.awv2-cv-map-detail.pinned.kind-excluded { border-left-color: var(--awv2-line-strong); }
+.awv2-cv-map-detail .grid span { font-size: 13px; }
+.awv2-cv-map-detail .grid i { font-size: 10px; }
+.awv2-cv-map-detail .head b { font-size: 16.5px; }
+.awv2-cv-map-detail .why { font-size: 13px; line-height: 1.6; }
+.awv2-cv-map-detail .head .prov { font-size: 11.5px; }
+.awv2-cv-clustergroup { margin-top: 10px; }
+.awv2-cv-clustergroup .gt {
+  font-family: var(--awv2-mono); font-size: 10.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--awv2-bone-dim);
+  border-bottom: 1px solid var(--awv2-line-strong); padding-bottom: 4px; margin-bottom: 2px;
+}
+.awv2-cv-clustergroup .gt .n { color: var(--awv2-bone); margin-left: 4px; }
+.awv2-cv-clusterlist { max-height: 300px; }
+.awv2-cv-clusterrow { gap: 10px; padding: 8px 2px; align-items: flex-start; }
+.awv2-cv-clusterrow .body { display: flex; flex-direction: column; gap: 4px; }
+.awv2-cv-clusterrow .addr { font-size: 13.5px; }
+.awv2-cv-clusterrow .facts { font-size: 11.5px; line-height: 1.5; }
+.awv2-cv-detailactions button,
+.awv2-cv-detailactions a { font-size: 12.5px; padding: 6px 12px; }
+
+/* ── Base-map layer switch ──────────────────────────────────────────────── */
+.awv2-cv-map-layers { display: inline-flex; gap: 4px; }
+.awv2-cv-map-layers button {
+  font-family: var(--awv2-mono); font-size: 11.5px; color: var(--awv2-bone-dim);
+  background: transparent; border: 1px solid var(--awv2-line-strong);
+  border-radius: 4px; padding: 3px 10px; cursor: pointer;
+}
+.awv2-cv-map-layers button.active { color: var(--awv2-bone); background: var(--awv2-brass-soft); border-color: rgba(201, 164, 92, 0.5); }
+
+/* ── Card readability + kind treatment ──────────────────────────────────── */
+.awv2-cv-card { grid-template-columns: 150px minmax(0, 1fr); gap: 14px; padding: 14px; }
+.awv2-cv-card.kind-closed { box-shadow: inset 4px 0 0 #15803d; }
+.awv2-cv-card.kind-active { box-shadow: inset 4px 0 0 #ea7317; }
+.awv2-cv-card.kind-zeroWeight { box-shadow: inset 4px 0 0 rgba(156, 163, 175, 0.5); }
+.awv2-cv-card.kind-excluded { opacity: 0.82; box-shadow: inset 4px 0 0 var(--awv2-line-strong); }
+.awv2-cv-card.selected.kind-closed { border-color: rgba(21, 128, 61, 0.55); }
+.awv2-cv-head { gap: 10px; row-gap: 6px; margin-bottom: 8px; }
+.awv2-cv-head .addr { font-size: 16.5px; line-height: 1.3; color: var(--awv2-bone); font-weight: 500; }
+.awv2-cv-head .role { font-size: 10.5px; padding: 3px 9px; }
+.awv2-cv-figs { gap: 10px 22px; margin-bottom: 10px; }
+.awv2-cv-figs .f { font-size: 13px; }
+.awv2-cv-figs .u { font-size: 10px; letter-spacing: 0.08em; }
+.awv2-cv-figs b { font-size: 15px; }
+/* The two or three figures that actually decide the record read largest. */
+.awv2-cv-figs .f.lead b { font-size: 17px; color: var(--awv2-bone); font-weight: 600; }
+.awv2-cv-figs .d { font-size: 12px; }
+.awv2-cv-why { font-size: 13.5px; line-height: 1.65; }
+.awv2-cv-actions { gap: 12px; margin-top: 10px; }
+.awv2-cv-link { font-size: 12.5px; }
+.awv2-cv-visualnote { font-size: 12.5px; line-height: 1.6; margin-bottom: 12px; }
+.awv2-cv-filter { font-size: 12.5px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 6px; }
+.awv2-cv-filter .n { font-size: 12px; }
+.awv2-cv-prov { font-size: 9.5px; padding: 3px 4px; }
+
+/* A proxy price is never allowed to read like a verified sale. */
+.awv2-cv-proxy,
+.awv2-cvd-proxy {
+  font-size: 12.5px; line-height: 1.6; color: var(--awv2-amber);
+  background: var(--awv2-amber-soft); border: 1px solid rgba(217, 161, 61, 0.45);
+  border-radius: 5px; padding: 8px 10px; margin: 8px 0;
+}
+
+/* ── Full details ───────────────────────────────────────────────────────── */
+.awv2-cvd { display: flex; flex-direction: column; gap: 20px; margin-top: 14px; }
+.awv2-cvd-section {
+  border-top: 1px solid var(--awv2-line-strong); padding-top: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.awv2-cvd-h {
+  font-family: var(--awv2-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--awv2-brass-bright); margin: 0;
+}
+.awv2-cvd-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 20px;
+}
+.awv2-cvd-fig { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.awv2-cvd-fig .l {
+  font-family: var(--awv2-mono); font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--awv2-bone-faint);
+}
+.awv2-cvd-fig .v {
+  font-family: var(--awv2-mono); font-size: 14.5px; font-weight: 500;
+  color: var(--awv2-bone); overflow-wrap: anywhere;
+}
+.awv2-cvd-fig.strong .v { font-size: 17px; font-weight: 600; }
+.awv2-cvd-fig.warn .v { color: var(--awv2-amber); }
+.awv2-cvd-body { font-size: 13.5px; line-height: 1.7; color: var(--awv2-bone-dim); margin: 0; }
+.awv2-cvd-body.diff { color: var(--awv2-amber); }
+.awv2-cvd-note { font-size: 12.5px; line-height: 1.65; color: var(--awv2-bone-faint); margin: 0; }
+.awv2-cvd-note.warn { color: var(--awv2-amber); }
+.awv2-cvd-note.stitched { color: var(--awv2-brass-bright); }
+
+.awv2-cvd-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Date, event and price share the first line; the attribution takes its own.
+   A four-column row squeezed the attribution to a few characters wide inside
+   the comp card, which broke "Redfin retained sale record" one letter per line. */
+.awv2-cvd-timeline li {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto;
+  grid-template-areas: "d e p" "s s s";
+  gap: 2px 10px; align-items: baseline; padding: 8px 10px; border-radius: 4px;
+  font-family: var(--awv2-mono); font-size: 13px; color: var(--awv2-bone-dim);
+  border-left: 3px solid var(--awv2-line-strong); background: var(--awv2-panel-2);
+}
+.awv2-cvd-timeline li .d { grid-area: d; color: var(--awv2-bone); }
+.awv2-cvd-timeline li .e { grid-area: e; color: var(--awv2-bone); }
+.awv2-cvd-timeline li .p { grid-area: p; color: var(--awv2-bone); text-align: right; white-space: nowrap; }
+.awv2-cvd-timeline li .s {
+  grid-area: s; font-size: 11.5px; color: var(--awv2-bone-faint); overflow-wrap: anywhere;
+}
+.awv2-cvd-timeline li.ev-sold { border-left-color: #15803d; }
+.awv2-cvd-timeline li.ev-listed,
+.awv2-cvd-timeline li.ev-relisted { border-left-color: #ea7317; }
+.awv2-cvd-timeline li.ev-withdrawn { border-left-color: var(--awv2-rust); }
+.awv2-cvd-timeline li.ev-price_change { border-left-color: var(--awv2-amber); }
+.awv2-cvd-timeline li.ev-pending,
+.awv2-cvd-timeline li.ev-back_on_market { border-left-color: var(--awv2-brass); }
+@media (max-width: 760px) {
+  .awv2-cvd-timeline li {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "d" "e" "p" "s";
+    gap: 2px;
+  }
+  .awv2-cvd-timeline li .p { text-align: left; }
+}
+
+.awv2-cvd-desc { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.awv2-cvd-descblock {
+  border: 1px solid var(--awv2-line); border-radius: 6px; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.awv2-cvd-descblock.source { background: rgba(255, 255, 255, 0.015); }
+.awv2-cvd-descblock.landos { border-color: rgba(143, 174, 124, 0.32); background: var(--awv2-moss-soft); }
+.awv2-cvd-descblock .dt {
+  font-family: var(--awv2-mono); font-size: 10.5px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--awv2-bone-dim);
+}
+.awv2-cvd-descblock .body { font-size: 13.5px; line-height: 1.75; color: var(--awv2-bone); margin: 0; }
+.awv2-cvd-descblock .line { font-size: 12.5px; line-height: 1.65; color: var(--awv2-bone-dim); margin: 0; }
+.awv2-cvd-descblock .line.claims { color: var(--awv2-amber); }
+.awv2-cvd-descblock .line.unresolved { color: var(--awv2-bone-faint); }
+.awv2-cvd-descblock .attr { font-size: 11.5px; line-height: 1.6; color: var(--awv2-bone-faint); margin: 0; font-style: italic; }
+.awv2-cvd-links { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.awv2-cvd-links a {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-brass-bright);
+  text-decoration: none; border-bottom: 1px dotted var(--awv2-brass);
+}
+.awv2-cvd-links .origin { font-family: var(--awv2-mono); font-size: 11.5px; color: var(--awv2-bone-faint); }
+
+/* ── Boundary overlays ──────────────────────────────────────────────────────
+   Drawn beneath every marker so a county outline can never swallow a comp, and
+   distinguished by LINE STYLE rather than colour alone — the outline still reads
+   correctly in a greyscale screenshot and to a colour-blind operator. */
+.awv2-cv-boundary-svg {
+  position: absolute; left: 0; top: 0; z-index: 10;
+  pointer-events: none; overflow: visible;
+}
+.awv2-cv-boundary-path {
+  pointer-events: stroke; cursor: help;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.85));
+}
+.awv2-cv-boundary-path:hover { stroke-width: 4; }
+.awv2-cv-boundary-label {
+  position: absolute; left: 12px; top: 12px; z-index: 45; max-width: 62%;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 12px; border-radius: 6px;
+  background: rgba(12, 14, 18, 0.95); border: 1px solid var(--awv2-line-strong);
+  pointer-events: none;
+}
+.awv2-cv-boundary-label b { font-family: var(--awv2-serif); font-size: 15px; color: var(--awv2-bone); }
+.awv2-cv-boundary-label span { font-size: 12px; line-height: 1.5; color: var(--awv2-bone-faint); }
+
+.awv2-cv-map-overlays {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 8px 0 10px;
+}
+.awv2-cv-map-overlays .ol {
+  font-family: var(--awv2-mono); font-size: 10.5px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--awv2-bone-faint);
+}
+.awv2-cv-map-overlays .src {
+  font-family: var(--awv2-mono); font-size: 11.5px; color: var(--awv2-bone-faint);
+}
+.awv2-cv-overlaybtn {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--awv2-mono); font-size: 12px; color: var(--awv2-bone-dim);
+  background: transparent; border: 1px solid var(--awv2-line-strong);
+  border-radius: 4px; padding: 5px 11px; cursor: pointer;
+}
+.awv2-cv-overlaybtn .sw { flex: none; }
+.awv2-cv-overlaybtn.active {
+  color: var(--awv2-bone); background: var(--awv2-brass-soft);
+  border-color: rgba(201, 164, 92, 0.5);
+}
+
+/* ── Expanded map: a second VIEW of the same map, never a second map ─────── */
+.awv2-cv-expandbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--awv2-mono); font-size: 12px; color: var(--awv2-bone);
+  background: var(--awv2-brass-soft); border: 1px solid rgba(201, 164, 92, 0.5);
+  border-radius: 4px; padding: 5px 12px; cursor: pointer;
+}
+.awv2-cv-expandbtn:hover { border-color: var(--awv2-brass); }
+/* The portal target is <body>, which is OUTSIDE the .awv2 subtree where every
+   --awv2-* token, font and colour is defined. So the overlay carries the `awv2`
+   class to bring the design tokens with it — without that the panel rendered
+   fully transparent and every colour fell back to a browser default. The layout
+   side-effects that class also carries (a page background, height:100% and its
+   own scroller) are neutralised right here, because this is a fixed overlay
+   rather than the page it borrows its tokens from. */
+.awv2.awv2-cv-expandwrap {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(6, 7, 10, 0.88);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  height: auto; overflow: hidden;
+}
+.awv2-cv-expandpanel {
+  width: min(1680px, 96vw); height: min(1000px, 94vh);
+  background: var(--awv2-panel);
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--awv2-panel); border: 1px solid var(--awv2-line-strong);
+  border-radius: 10px; padding: 18px 20px; overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
+}
+.awv2-cv-expandhead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--awv2-line-strong);
+}
+.awv2-cv-expandhead .t {
+  display: flex; flex-direction: column; gap: 3px; margin-right: auto;
+  font-family: var(--awv2-serif); font-size: 18px; color: var(--awv2-bone);
+}
+.awv2-cv-expandhead .t .sub {
+  font-family: var(--awv2-mono); font-size: 12px; color: var(--awv2-bone-faint);
+}
+.awv2-cv-modes { display: inline-flex; gap: 4px; }
+.awv2-cv-modes button {
+  font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-bone-dim);
+  background: transparent; border: 1px solid var(--awv2-line-strong);
+  border-radius: 4px; padding: 6px 14px; cursor: pointer;
+}
+.awv2-cv-modes button.active {
+  color: var(--awv2-bone); background: var(--awv2-brass-soft); border-color: rgba(201, 164, 92, 0.5);
+}
+.awv2-cv-expandclose {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-bone-dim);
+  background: transparent; border: 1px solid var(--awv2-line-strong);
+  border-radius: 4px; padding: 6px 14px; cursor: pointer;
+}
+.awv2-cv-expandclose:hover { color: var(--awv2-bone); border-color: var(--awv2-brass); }
+/* The expanded surface is the point of the mode: the canvas takes every pixel
+   the panel is not using for its controls and legend. */
+.awv2-cv-map.expanded { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.awv2-cv-map.expanded .awv2-cv-map-canvas { flex: 1; min-height: 0; height: auto; }
+/* In the inline map the popup stacks under the canvas, which is right there —
+   the map is one column of a two-column workspace. Expanded, that same stacking
+   took more than half the height and left the map smaller than the map it
+   replaced, so here the popup floats over the canvas instead. */
+.awv2-cv-map.expanded .awv2-cv-map-detail {
+  position: absolute; right: 16px; bottom: 60px; z-index: 70;
+  width: min(560px, 46%); max-height: calc(100% - 220px); overflow-y: auto;
+  background: var(--awv2-panel); border: 1px solid var(--awv2-line-strong);
+  border-radius: 8px; box-shadow: 0 18px 46px rgba(0, 0, 0, 0.66);
+}
+.awv2-cv-map.expanded .awv2-cv-map-legend { flex: none; }
+
+.awv2-cv-map-resolve {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 10px;
+}
+.awv2-cv-map-resolve span { font-size: 12.5px; line-height: 1.6; color: var(--awv2-bone-faint); }
+
+/* ── Photo count + gallery ──────────────────────────────────────────────── */
+.awv2-cv-photowrap { position: relative; line-height: 0; }
+.awv2-cv-photocount {
+  position: absolute; right: 6px; bottom: 6px; z-index: 3;
+  font-family: var(--awv2-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--awv2-bone); background: rgba(10, 12, 16, 0.88);
+  border: 1px solid var(--awv2-line-strong); border-radius: 4px; padding: 3px 7px;
+}
+
+.awv2-cvd-gallery { display: flex; flex-direction: column; gap: 10px; }
+.awv2-cvd-galleryframe {
+  position: relative; width: 100%; max-width: 720px;
+  aspect-ratio: 4 / 3; background: var(--awv2-panel-2);
+  border: 1px solid var(--awv2-line-strong); border-radius: 8px; overflow: hidden;
+}
+.awv2-cvd-galleryframe img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.awv2-cvd-galleryframe .nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 40px; height: 52px;
+  color: var(--awv2-bone); background: rgba(10, 12, 16, 0.72);
+  border: 1px solid var(--awv2-line-strong); border-radius: 6px; cursor: pointer;
+}
+.awv2-cvd-galleryframe .nav:hover { background: rgba(10, 12, 16, 0.92); border-color: var(--awv2-brass); }
+.awv2-cvd-galleryframe .nav.prev { left: 10px; }
+.awv2-cvd-galleryframe .nav.next { right: 10px; }
+.awv2-cvd-galleryframe .count {
+  position: absolute; right: 10px; bottom: 10px;
+  font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-bone);
+  background: rgba(10, 12, 16, 0.85); border: 1px solid var(--awv2-line-strong);
+  border-radius: 4px; padding: 4px 9px;
+}
+.awv2-cvd-gallerystrip {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; max-width: 720px;
+}
+.awv2-cvd-gallerystrip .thumb {
+  flex: none; width: 84px; height: 62px; padding: 0; cursor: pointer;
+  background: var(--awv2-panel-2); border: 1px solid var(--awv2-line);
+  border-radius: 4px; overflow: hidden; line-height: 0;
+}
+.awv2-cvd-gallerystrip .thumb.active { border-color: var(--awv2-brass); box-shadow: 0 0 0 2px var(--awv2-brass-soft); }
+.awv2-cvd-gallerystrip .thumb img { width: 100%; height: 100%; object-fit: cover; }
+.awv2-cvd-gallerymeta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+}
+.awv2-cvd-gallerymeta .prov {
+  font-family: var(--awv2-mono); font-size: 12px; color: var(--awv2-bone-dim);
+}
+.awv2-cvd-gallerymeta a {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-brass-bright);
+  text-decoration: none; border-bottom: 1px dotted var(--awv2-brass);
+}
+
+/* ── Listing description / LandOS notes / Source, as their own sections ──── */
+.awv2-cvd-descbody { font-size: 14.5px; line-height: 1.8; color: var(--awv2-bone); margin: 0; }
+.awv2-cvd-line { font-size: 13.5px; line-height: 1.7; color: var(--awv2-bone-dim); margin: 0; }
+.awv2-cvd-line.claims { color: var(--awv2-amber); }
+.awv2-cvd-line.unresolved { color: var(--awv2-bone-faint); }
+.awv2-cvd-attr { font-size: 12.5px; line-height: 1.65; color: var(--awv2-bone-faint); margin: 0; font-style: italic; }
+.awv2-cvd-source { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px; }
+.awv2-cvd-sourcelink {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--awv2-mono); font-size: 13.5px; color: var(--awv2-brass-bright);
+  text-decoration: none; border-bottom: 1px dotted var(--awv2-brass); padding-bottom: 2px;
+}
+
+/* ── Readability correction ─────────────────────────────────────────────────
+   The workspace was readable only by leaning in. Type, weight and vertical
+   rhythm are raised on the values an operator actually reads off a comp — the
+   address, the price, the $/acre, the acreage, the distance, the date and the
+   market time — plus every control label. The layout, the breakpoints and the
+   single unified list-and-map workspace are untouched. */
+.awv2-cv-card { gap: 16px; padding: 16px; }
+.awv2-cv-head .addr { font-size: 18px; font-weight: 600; letter-spacing: 0.005em; }
+.awv2-cv-head .role { font-size: 11px; padding: 4px 10px; }
+.awv2-cv-kind { font-size: 11px; padding: 4px 10px; }
+.awv2-cv-figs { gap: 12px 26px; margin-bottom: 12px; }
+.awv2-cv-figs .f { font-size: 13.5px; }
+.awv2-cv-figs .u { font-size: 10.5px; letter-spacing: 0.09em; }
+.awv2-cv-figs b { font-size: 16px; }
+.awv2-cv-figs .f.lead b { font-size: 19px; }
+.awv2-cv-figs .d { font-size: 12.5px; }
+.awv2-cv-why { font-size: 14px; line-height: 1.7; }
+.awv2-cv-actions { gap: 14px; margin-top: 12px; }
+.awv2-cv-link { font-size: 13.5px; }
+.awv2-cv-actions button { font-size: 13px; }
+.awv2-cv-filter { font-size: 13.5px; padding: 7px 14px; }
+.awv2-cv-filter .n { font-size: 13px; }
+.awv2-cv-map-layers button,
+.awv2-cv-map-zoom button { font-size: 12.5px; padding: 5px 12px; }
+.awv2-cv-map-shown { font-size: 12.5px; }
+.awv2-cv-visualnote { font-size: 13px; line-height: 1.7; margin-bottom: 14px; }
+
+/* Map popups carry the same figures as a card and were the smallest text on
+   screen; they are raised to match. */
+.awv2-cv-hoverpreview { width: 348px; padding: 12px; }
+.awv2-cv-hoverpreview .addr { font-size: 15.5px; line-height: 1.3; }
+.awv2-cv-hoverpreview .role { font-size: 12px; }
+.awv2-cv-hoverpreview .why { font-size: 13px; line-height: 1.55; }
+.awv2-cv-prevfacts span { font-size: 13px; }
+.awv2-cv-prevfacts i { font-size: 10px; }
+.awv2-cv-map-detail .head b { font-size: 18px; }
+.awv2-cv-map-detail .grid span { font-size: 14px; }
+.awv2-cv-map-detail .grid i { font-size: 10.5px; }
+.awv2-cv-map-detail .why { font-size: 14px; line-height: 1.7; }
+.awv2-cv-detailactions button,
+.awv2-cv-detailactions a { font-size: 13.5px; padding: 7px 14px; }
+.awv2-cv-clusterrow .addr { font-size: 14.5px; }
+.awv2-cv-clusterrow .facts { font-size: 12.5px; line-height: 1.6; }
+.awv2-cv-clustergroup .gt { font-size: 11px; }
+.awv2-cv-map-legend { font-size: 12.5px; }
+
+/* Full details is where the evidence is actually read, so it gets the largest
+   step up: section headings, figures and body copy. */
+.awv2-cvd { gap: 24px; margin-top: 18px; }
+.awv2-cvd-section { padding-top: 16px; gap: 12px; }
+.awv2-cvd-h { font-size: 12px; letter-spacing: 0.15em; }
+.awv2-cvd-grid { gap: 16px 24px; }
+.awv2-cvd-fig .l { font-size: 10.5px; }
+.awv2-cvd-fig .v { font-size: 15.5px; }
+.awv2-cvd-fig.strong .v { font-size: 19px; }
+.awv2-cvd-body { font-size: 14.5px; line-height: 1.8; }
+.awv2-cvd-note { font-size: 13px; line-height: 1.7; }
+.awv2-cvd-timeline li { font-size: 13.5px; padding: 9px 12px; }
+.awv2-cvd-timeline li .s { font-size: 12px; }
+
+@media (max-width: 900px) {
+  .awv2-cv-expandpanel { width: 100vw; height: 100vh; border-radius: 0; padding: 12px; }
+  .awv2-cv-expandwrap { padding: 0; }
+  .awv2-cvd-galleryframe { max-width: 100%; }
+}

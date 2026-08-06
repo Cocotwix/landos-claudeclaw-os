@@ -1329,6 +1329,25 @@ function createLandosSchema(db: Database.Database): void {
   addColumn('landos_comp', 'source_attributions_json', `source_attributions_json TEXT NOT NULL DEFAULT '[]'`);
   addColumn('landos_comp', 'canonical_key', `canonical_key TEXT NOT NULL DEFAULT ''`);
   addColumn('landos_comp', 'updated_at', `updated_at INTEGER NOT NULL DEFAULT 0`);
+  // Operator valuation-comp selection (Comps & Valuation workspace). Additive
+  // and reversible: 1 = included in the valuation set, -1 = operator-excluded
+  // with a retained reason, 0 = never decided. Never deletes or reclassifies
+  // the underlying evidence row.
+  addColumn('landos_comp', 'valuation_selected', `valuation_selected INTEGER NOT NULL DEFAULT 0`);
+  addColumn('landos_comp', 'valuation_selection_reason', `valuation_selection_reason TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'valuation_selection_updated_at', `valuation_selection_updated_at INTEGER NOT NULL DEFAULT 0`);
+  // Who made the valuation selection: 'tyler/manual' for the operator's own
+  // include/exclude, a 'landos/...' actor for automatic LandOS exclusions. The
+  // UI must never say "Excluded by the operator" for a LandOS-actor exclusion —
+  // it says "Excluded by LandOS" and stays restorable.
+  addColumn('landos_comp', 'valuation_selection_actor', `valuation_selection_actor TEXT NOT NULL DEFAULT ''`);
+  // Retained provider-page detail for one comparable: the chosen listing image
+  // with its provenance, the dated listing-history events, the source
+  // description, and the reconciliation evidence that proved the page belongs to
+  // this comparable. Stored as one JSON document (PersistedListingDetail) so a
+  // capture is atomic — an image is never persisted without the reconciliation
+  // that justified it. Empty string means the provider page was never visited.
+  addColumn('landos_comp', 'listing_detail_json', `listing_detail_json TEXT NOT NULL DEFAULT ''`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_landos_comp_canonical
            ON landos_comp(deal_card_id, canonical_key)`);
   // Normalize provider-echoed county names to the LandOS bare-name convention

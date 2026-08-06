@@ -5,12 +5,13 @@
 // full document navigation or refetch. These helpers are pure so the
 // URL/section contract stays testable in node.
 
-export type WorkspaceV2Section = 'Overview' | 'Property Intelligence';
+export type WorkspaceV2Section = 'Overview' | 'Property Intelligence' | 'Comps & Valuation';
 
 // Sections that exist today; the rest stay visible "Soon" placeholders.
 export const SECTION_SLUGS: Record<string, string> = {
   Overview: 'overview',
   'Property Intelligence': 'property-intelligence',
+  'Comps & Valuation': 'comps-valuation',
 };
 
 // ── Canonical workspace routing ────────────────────────────────────────
@@ -65,9 +66,11 @@ export function dealWorkspaceHref(dealId: number, store: KVStore | null = sessio
 
 /** Derive the active section from a location search string. */
 export function readSection(search: string): WorkspaceV2Section {
-  return new URLSearchParams(search).get('section') === 'property-intelligence'
-    ? 'Property Intelligence'
-    : 'Overview';
+  const slug = new URLSearchParams(search).get('section');
+  for (const [label, sectionSlug] of Object.entries(SECTION_SLUGS)) {
+    if (slug === sectionSlug && label !== 'Overview') return label as WorkspaceV2Section;
+  }
+  return 'Overview';
 }
 
 /**

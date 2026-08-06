@@ -1,0 +1,1814 @@
+// Comps & Valuation workspace projection + operator valuation-comp selection.
+//
+// One read-time projection over the canonical comp registry (landos_comp), the
+// canonical property-research evidence (provider comps not yet persisted as
+// registry rows, e.g. Redfin actives), and the retained LandPortal inspection
+// (sidebar / Show on Map surfaces and status provenance). Nothing here reruns
+// research or mutates evidence; the only writes are the operator's explicit
+// include/exclude decision (additive columns on the same landos_comp row) and
+// the bounded location-resolution action (existing geocode cache + fill-only
+// subject coordinates).
+//
+// Valuation is AUTOMATIC and PROVISIONAL: when at least two credible closed
+// vacant-land sales exist they form the default provisional valuation set with
+// no manual Include step (median sold price per acre × subject working acres).
+// Operator exclusions (with retained reasons) and restorations refine the set
+// and recalculate immediately. Asking references and active listings never
+// price the subject. Fewer than two credible closed sales after exclusions
+// returns the valuation to insufficient-evidence status and locks the 40/50/60%
+// acquisition levels.
+//
+// Comparable selection is PROXIMITY-FIRST (initial 10-mile radius, disclosed
+// expansion), never county-first: county stays visible and can shade
+// confidence, but never automatically disqualifies a sale. Distance is one
+// consistent straight-line (haversine) calculation from the subject point to
+// each comp's resolved location; unresolved locations show no distance and are
+// never guessed.
+
+import { getLandosDb, landosAudit, type LandosEntity } from './db.js';
+import { getComp, listComps, enrichCompCoordinates, geocodeAddressesToCache, type CompRow } from './comps.js';
+import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
+import { loadPropertyInspection, currentComparables, type LandPortalComparableRecord } from './property-card.js';
+import { PropertyResearchStore } from './property-research-store.js';
+import { GLOBAL_MIN_NET_PROFIT_USD, FLIP_STANDARD_BAND } from './offer-engine.js';
+import { propertyMarketContextFor, type PropertyMarketContext } from './property-market-context.js';
+import {
+  selectRecencyWindow, valuationAcreageBand, acreageSimilarity, exactMonthsOld,
+  type AcreageBand, type RecencyCandidate, type RecencyWindowSelection,
+} from './comp-recency-window.js';
+import { resolveCompVisual, tallyCompVisuals, type CompVisual, type CompVisualCounts } from './comp-visual.js';
+import { parseListingDetail } from './comp-listing-store.js';
+import {
+  buildCompListingProjection, type CompListingProjection, type CompTransactionKind,
+} from './comp-listing-projection.js';
+
+export type WorkspaceCompCategory =
+  | 'accepted_closed_sale'
+  | 'candidate_closed_sale'
+  | 'active_competition'
+  | 'asking_reference'
+  | 'improved_context'
+  | 'rejected'
+  | 'context_only';
+
+export const WORKSPACE_CATEGORY_LABELS: Readonly<Record<WorkspaceCompCategory, string>> = {
+  accepted_closed_sale: 'Closed vacant-land sale — in valuation set',
+  candidate_closed_sale: 'Candidate closed vacant-land sale',
+  active_competition: 'Active vacant-land competition',
+  asking_reference: 'Asking-market reference',
+  improved_context: 'Improved-property context',
+  rejected: 'Rejected or non-comparable',
+  context_only: 'Context only',
+};
+
+export const INITIAL_COMP_RADIUS_MILES = 10;
+/** Hard boundary of the property-specific comp search. Nothing new is
+ *  retrieved beyond this radius; prior retained evidence past it stays
+ *  visible as boundary context. */
+export const MAX_COMP_SEARCH_RADIUS_MILES = 20;
+
+/** Comparability role for closed vacant-land sales. Assigned only AFTER the
+ *  acreage band and the sale-recency window have selected the valuation set, so
+ *  a role can never contradict the window that produced it.
+ *
+ *  direct:                 in the selected window and acreage band, inside the
+ *                          initial 10-mile radius. Full valuation weight.
+ *  supporting:             in the selected window and band, 10–20 miles out or
+ *                          otherwise less similar. Reduced weight.
+ *  supplemental_historical: sold 25–30 months ago, admitted ONLY because 2 or
+ *                          fewer credible sales survived inside 24 months.
+ *                          Substantially reduced weight; leaves automatically.
+ *  boundary:               retained to define an upper or lower limit because of
+ *                          a documented difference (outside the acreage band,
+ *                          beyond the 20-mile boundary, or no resolved
+ *                          location). Zero valuation weight.
+ *  historical_context:     older than the selected window. Zero valuation weight. */
+export type CompValuationRole =
+  | 'direct' | 'supporting' | 'supplemental_historical' | 'boundary' | 'historical_context';
+
+export const VALUATION_ROLE_LABELS: Readonly<Record<CompValuationRole, string>> = {
+  direct: 'Direct comp',
+  supporting: 'Supporting comp',
+  supplemental_historical: 'Supplemental historical comp',
+  boundary: 'Boundary comp',
+  historical_context: 'Historical context',
+};
+
+/** Whether a record prices the subject is answered by `inValuationSet`, which
+ *  the acreage band and recency window decide. The role is the comparability
+ *  tier within that decision — never the membership test itself. */
+
+function radiusStageFor(distance: number | null): WorkspaceComp['radiusStage'] {
+  if (distance == null) return null;
+  if (distance <= INITIAL_COMP_RADIUS_MILES) return 'initial_10';
+  if (distance <= MAX_COMP_SEARCH_RADIUS_MILES) return 'expansion_20';
+  return 'beyond_20';
+}
+
+export interface WorkspaceComp {
+  /** landos_comp row id when persisted; null for research-evidence-only records. */
+  compId: number | null;
+  key: string;
+  category: WorkspaceCompCategory;
+  categoryLabel: string;
+  classificationReason: string;
+  /** May the operator include this record in the valuation set? */
+  eligibleForValuation: boolean;
+  selectedForValuation: boolean;
+  /** How the record entered the valuation set: default auto-selection or an explicit operator include. */
+  selectionMode: 'auto' | 'operator' | null;
+  operatorExcluded: boolean;
+  exclusionReason: string | null;
+  source: string;
+  sourceUrl: string | null;
+  origins: string[];
+  fromLandPortalSidebar: boolean;
+  fromLandPortalShowOnMap: boolean;
+  mergeStatus: string | null;
+  address: string | null;
+  apn: string | null;
+  county: string | null;
+  state: string | null;
+  /** Straight-line miles from the subject point; null when either location is unresolved. */
+  distanceMiles: number | null;
+  /** True when the resolved comp lies beyond the initial 10-mile radius. */
+  outsideInitialRadius: boolean | null;
+  lat: number | null;
+  lng: number | null;
+  locationResolved: boolean;
+  /** Where the coordinate came from (e.g. "LandPortal map point", "US Census address geocode"). */
+  locationSource: string | null;
+  locationMethod: 'provider_map_point' | 'address_geocode' | 'none';
+  locationResolvedAtIso: string | null;
+  statusLabel: string;
+  priceKind: 'sale' | 'list' | 'unknown';
+  price: number | null;
+  acres: number | null;
+  pricePerAcre: number | null;
+  dateIso: string | null;
+  /** Days on market for active listings, when the source supplied it. */
+  daysOnMarket: number | null;
+  soldBy: string | null;
+  buildingSqft: number | null;
+  propertyClass: 'land' | 'improved' | 'unknown';
+  thumbnailUrl: string | null;
+  /** The visual actually shown for this record, with honest provenance. Every
+   *  record has one; only a genuinely unresolvable location yields a
+   *  location_unresolved placeholder. */
+  visual: CompVisual;
+  acresDeltaFromSubject: number | null;
+  recencyMonths: number | null;
+  /** Whole months from the ACTUAL sale date to today, from exact calendar math
+   *  rather than a rounded 30.44-day approximation. */
+  monthsOld: number | null;
+  /** One-line comparability basis for the selected-set display. */
+  primaryComparability: string | null;
+  /** The most important difference from the subject (selected-set display). */
+  keyDifference: string | null;
+  /** Fields the source genuinely did not supply (shown quietly, never as banner noise). */
+  missingFields: string[];
+  /** Comparability role inside the closed-sale evidence. Null for records that
+   *  are not closed vacant-land sales. */
+  valuationRole: CompValuationRole | null;
+  /** True only when this record actually influences the cleaned FMV. */
+  inValuationSet: boolean;
+  /** Relative weight carried in the weighted indication; null when zero-weight. */
+  valuationWeight: number | null;
+  /** Why an otherwise credible closed sale carries no valuation weight. */
+  zeroWeightReason: string | null;
+  /** Which disclosed search stage covers the resolved location: the initial
+   *  10-mile radius, the 10-to-20-mile expansion, prior retained evidence
+   *  beyond 20 miles, or null while the location is unresolved. */
+  radiusStage: 'initial_10' | 'expansion_20' | 'beyond_20' | null;
+  /** Who recorded the exclusion: Tyler ('operator') or LandOS automation
+   *  ('landos'). Null when the record is not excluded. The UI must never say
+   *  "Excluded by the operator" for a LandOS exclusion. */
+  exclusionActor: 'operator' | 'landos' | null;
+  /** The one distinction the operator must never have to work out: closed
+   *  valuation evidence, current competition, or neither. Drives the marker
+   *  shape, the card badge, the popup heading, and the cluster grouping. */
+  transactionKind: CompTransactionKind;
+  /** Listing history, market time, transaction-price decision, descriptions and
+   *  evidence for this record. Never null for a persisted comp — when the
+   *  provider page has not been revisited it says so rather than going blank. */
+  listing: CompListingProjection | null;
+}
+
+export interface CompsValuationSummary {
+  workingAcres: number | null;
+  acceptedCount: number;
+  medianPricePerAcre: number | null;
+  ppaBand: { low: number; median: number; high: number } | null;
+  fmv: { low: number | null; central: number; high: number | null } | null;
+  acquisitionLevels: { pct40: number; pct50: number; pct60: number } | null;
+  acquisitionLockedReason: string | null;
+  status: 'supported' | 'provisional' | 'insufficient';
+  statusLabel: string;
+  /** e.g. "Provisional valuation based on 2 closed vacant-land sales". */
+  basisLabel: string;
+  statusReason: string;
+  confidence: 'high' | 'moderate' | 'low' | 'unavailable';
+  confidenceFactors: string[];
+  /** Proximity-first search band actually used, with disclosure. `withinInitial`
+   *  and `withinExpansion` are counted from resolved coordinates, so the
+   *  narrative can never claim an expansion the evidence contradicts. */
+  radius: {
+    initialMiles: number;
+    usedMiles: number | null;
+    expanded: boolean;
+    withinInitial: number;
+    withinExpansion: number;
+    beyondExpansion: number;
+    unresolved: number;
+    note: string;
+  };
+  /** Distance range across the supporting sales with resolved locations. */
+  distanceRange: { minMiles: number; maxMiles: number } | null;
+}
+
+export interface CompsValuationExplanation {
+  used: Array<{ key: string; line: string }>;
+  excluded: Array<{ key: string; line: string }>;
+  medianNote: string | null;
+  neededEvidence: string[];
+  strongestEvidence: string | null;
+  weakestEvidence: string | null;
+}
+
+export interface CompsValuationView {
+  dealCardId: number;
+  propertyCardId: number | null;
+  subject: {
+    address: string | null; apn: string | null; acres: number | null; county: string | null; state: string | null;
+    lat: number | null; lng: number | null; locationSource: string | null;
+  };
+  summary: CompsValuationSummary;
+  comps: WorkspaceComp[];
+  counts: Record<WorkspaceCompCategory, number> & { total: number };
+  /** Unique retained records vs records actually placeable on the map, whole
+   *  and per category, so the map legend and the evidence registry can never
+   *  disagree by more than the disclosed unresolved locations. */
+  mapCounts: {
+    retained: number;
+    mapped: number;
+    unresolved: number;
+    byCategory: Record<WorkspaceCompCategory, { retained: number; mapped: number; unresolved: number }>;
+  };
+  landPortal: { sidebarCount: number; showOnMapCount: number; mergedUniqueCount: number };
+  explanation: CompsValuationExplanation;
+  /** Cleaned FMV reconciliation over the documented cleaned closed-sale set. */
+  cleaned: CleanedValuation;
+  /** Bounded technical quick-flip underwriting (normal quick flip only). */
+  quickFlip: QuickFlipUnderwriting | null;
+  /** Final negotiation reconciliation of the simplified and technical methods. */
+  negotiation: NegotiationReconciliation | null;
+  /** LandOS Market Research acreage-band context (never LandPortal panels). */
+  marketContext: PropertyMarketContext;
+  /** Which acreage band and sale-recency window actually selected the valuation
+   *  set, with the counts that forced each decision. */
+  valuationWindow: RecencyWindowSelection;
+  /** Visual provenance tallies across every retained record. */
+  visualCounts: CompVisualCounts;
+}
+
+const round500 = (n: number): number => Math.round(n / 500) * 500;
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** One consistent straight-line distance for every source (miles, 0.1 precision). */
+export function haversineMiles(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 3958.7613; // mean Earth radius in miles
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const s = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(s)) * 10) / 10;
+}
+
+function monthsSince(dateIso: string | null, nowMs: number): number | null {
+  if (!dateIso) return null;
+  const t = Date.parse(dateIso);
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, (nowMs - t) / (1000 * 60 * 60 * 24 * 30.44));
+}
+
+function parseSoldBy(notes: string): string | null {
+  const m = /sold by ([^.]+)\./i.exec(notes);
+  return m ? m[1].trim() : null;
+}
+
+function parseBuildingSqft(notes: string): number | null {
+  const m = /building ([\d,]+)\s*sqft/i.exec(notes);
+  if (!m) return null;
+  const n = Number(m[1].replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseAttributions(json: string): Array<{ provider: string; url: string | null }> {
+  try {
+    const parsed = JSON.parse(json || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((row): row is { provider?: unknown; url?: unknown } => !!row && typeof row === 'object')
+      .map((row) => ({ provider: String(row.provider ?? '').trim(), url: typeof row.url === 'string' && row.url ? row.url : null }))
+      .filter((row) => row.provider.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+const compactApn = (apn: string | null | undefined): string =>
+  String(apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
+
+/** Best retained LandPortal capture for a persisted row, matched by APN. */
+function inspectionRowFor(apn: string, retained: LandPortalComparableRecord[]): LandPortalComparableRecord | null {
+  const key = compactApn(apn);
+  if (key.length < 5) return null;
+  return retained.find((row) => compactApn(row.apn) === key) ?? null;
+}
+
+/**
+ * Classification marker for a verified closed sale carrying an OPEN, unproven
+ * comparability question (suspected access, environmental, or arm's-length
+ * concern). LandOS may not assert a defect it has not evidenced, so the record
+ * is retained as context at reduced confidence instead of being excluded on
+ * inference — and it never enters the cleaned vacant-land value.
+ */
+const UNVERIFIED_CONTEXT_CLASSIFICATION = /unverified_concern_context/i;
+
+const STATUS_SOURCE_TEXT: Record<string, string> = {
+  detail_surface: "confirmed on the comparable's own LandPortal detail page",
+  card_attribute: 'stated by the LandPortal listing card',
+  row_text: 'stated in the LandPortal row text',
+  section_label: 'derived from the LandPortal section heading',
+};
+
+const money = (n: number): string => `$${Math.round(n).toLocaleString('en-US')}`;
+
+const GEOCODE_PROVIDER_TEXT: Record<string, string> = {
+  us_census: 'US Census address geocode',
+  photon: 'Photon (OSM) address geocode',
+};
+
+interface LocationLookup {
+  /** Read-only geocode-cache lookup by normalized full address. */
+  get(address: string | null | undefined): { lat: number; lng: number; provider: string; createdAt: number | null } | null;
+}
+
+interface ResolvedLocation {
+  lat: number | null;
+  lng: number | null;
+  resolved: boolean;
+  source: string | null;
+  method: 'provider_map_point' | 'address_geocode' | 'none';
+  resolvedAtIso: string | null;
+}
+
+const UNRESOLVED_LOCATION: ResolvedLocation = { lat: null, lng: null, resolved: false, source: null, method: 'none', resolvedAtIso: null };
+
+/** Resolve a persisted comp's location: provider/persisted coordinates first, then the retained geocode cache. Never guesses. */
+function locationForPersisted(row: CompRow, lookup: LocationLookup): ResolvedLocation {
+  const cached = lookup.get(row.address_desc);
+  if (typeof row.lat === 'number' && typeof row.lng === 'number') {
+    const fromGeocode = cached && Math.abs(cached.lat - row.lat) < 1e-6 && Math.abs(cached.lng - row.lng) < 1e-6;
+    return {
+      lat: row.lat, lng: row.lng, resolved: true,
+      source: fromGeocode
+        ? (GEOCODE_PROVIDER_TEXT[cached!.provider] ?? `${cached!.provider} address geocode`)
+        : `${row.source_label} map point`,
+      method: fromGeocode ? 'address_geocode' : 'provider_map_point',
+      resolvedAtIso: fromGeocode && cached!.createdAt
+        ? new Date(cached!.createdAt * 1000).toISOString()
+        : (row.retrieved_at || null),
+    };
+  }
+  if (cached) {
+    return {
+      lat: cached.lat, lng: cached.lng, resolved: true,
+      source: GEOCODE_PROVIDER_TEXT[cached.provider] ?? `${cached.provider} address geocode`,
+      method: 'address_geocode',
+      resolvedAtIso: cached.createdAt ? new Date(cached.createdAt * 1000).toISOString() : null,
+    };
+  }
+  return UNRESOLVED_LOCATION;
+}
+
+interface ClassifyContext {
+  subjectAcres: number | null;
+  subjectCounty: string | null;
+  subjectPoint: { lat: number; lng: number } | null;
+  retainedInspection: LandPortalComparableRecord[];
+  locations: LocationLookup;
+  nowMs: number;
+}
+
+function distanceFromSubject(ctx: ClassifyContext, loc: ResolvedLocation): number | null {
+  if (!ctx.subjectPoint || !loc.resolved || loc.lat == null || loc.lng == null) return null;
+  return haversineMiles(ctx.subjectPoint, { lat: loc.lat, lng: loc.lng });
+}
+
+function comparabilityLines(opts: {
+  acres: number | null; subjectAcres: number | null; distance: number | null;
+  county: string | null; subjectCounty: string | null; recencyMonths: number | null;
+}): { primary: string; difference: string | null } {
+  const bits: string[] = ['Verified closed vacant-land sale'];
+  if (opts.distance != null) bits.push(`${opts.distance} mi from the subject`);
+  if (opts.acres != null && opts.subjectAcres != null) {
+    const inBand = opts.acres >= opts.subjectAcres * 0.5 && opts.acres <= opts.subjectAcres * 2.5;
+    bits.push(`${opts.acres} ac ${inBand ? 'inside' : 'outside'} the 0.5×–2.5× subject acreage band`);
+  }
+  if (opts.recencyMonths != null) bits.push(`sold ${opts.recencyMonths} months ago`);
+  const differences: string[] = [];
+  if (opts.distance != null && opts.distance > INITIAL_COMP_RADIUS_MILES) {
+    differences.push(`${opts.distance} mi away, beyond the initial ${INITIAL_COMP_RADIUS_MILES}-mile radius`);
+  }
+  if (opts.acres != null && opts.subjectAcres != null) {
+    const delta = Math.round((opts.acres - opts.subjectAcres) * 100) / 100;
+    if (Math.abs(delta) >= opts.subjectAcres * 0.25) differences.push(`${delta > 0 ? '+' : ''}${delta} ac vs the subject`);
+  }
+  if (opts.county && opts.subjectCounty && opts.county.toLowerCase() !== opts.subjectCounty.toLowerCase()) {
+    differences.push(`${opts.county} County market, not the subject's ${opts.subjectCounty} County`);
+  }
+  if (opts.recencyMonths != null && opts.recencyMonths > 18) differences.push(`sale is ${opts.recencyMonths} months old`);
+  return { primary: `${bits.join('; ')}.`, difference: differences.length ? differences.join('; ') : null };
+}
+
+function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceComp {
+  const attributions = parseAttributions(row.source_attributions_json);
+  const fromSidebar = attributions.some((a) => /sidebar/i.test(a.provider));
+  const fromShowOnMap = attributions.some((a) => /show on map/i.test(a.provider));
+  const merged = /merged landportal sidebar \+ show on map/i.test(row.notes);
+  const soldBy = parseSoldBy(row.notes);
+  const buildingSqft = parseBuildingSqft(row.notes);
+  const improved = row.property_class === 'improved' || row.property_class === 'residential'
+    || row.property_class === 'manufactured' || (buildingSqft != null && buildingSqft >= 1500);
+  const priceKind: 'sale' | 'list' | 'unknown' =
+    row.price_kind === 'sale' ? 'sale' : row.price_kind === 'list' ? 'list' : 'unknown';
+  const inspection = inspectionRowFor(row.apn, ctx.retainedInspection);
+  const statusProvenance = inspection?.statusSource ? STATUS_SOURCE_TEXT[inspection.statusSource] ?? null : null;
+  const price = typeof row.price === 'number' && row.price > 0 ? row.price : null;
+  const acres = typeof row.acres === 'number' && row.acres > 0 ? row.acres : null;
+  const ppa = price != null && acres != null
+    ? Math.round((price / acres) * 100) / 100
+    : (typeof row.price_per_acre === 'number' && row.price_per_acre > 0 ? row.price_per_acre : null);
+  const dateIso = row.sale_or_list_date || null;
+  const operatorIncluded = row.valuation_selected === 1;
+  const operatorExcluded = row.valuation_selected === -1;
+  const location = locationForPersisted(row, ctx.locations);
+  const distance = distanceFromSubject(ctx, location);
+  const recencyMonths = (() => { const m = monthsSince(dateIso, ctx.nowMs); return m == null ? null : Math.round(m); })();
+
+  let category: WorkspaceCompCategory;
+  let reason: string;
+  let eligible = false;
+  let selectionMode: 'auto' | 'operator' | null = null;
+  let primaryComparability: string | null = null;
+  let keyDifference: string | null = null;
+
+  if (row.status === 'rejected') {
+    category = 'rejected';
+    reason = row.inclusion_reason || row.notes || 'Rejected by canonical comp reconciliation.';
+  } else if (improved && (priceKind === 'sale' || priceKind === 'list')) {
+    category = 'improved_context';
+    reason = priceKind === 'sale'
+      ? `Completed sale of an improved property${buildingSqft ? ` (${buildingSqft.toLocaleString('en-US')} sqft building on the parcel)` : ''}. The sale price includes structure value, so it cannot support vacant-land valuation without a separately established land component.`
+      : `Active listing of an improved property${buildingSqft ? ` (${buildingSqft.toLocaleString('en-US')} sqft building)` : ''}: retained as improved-property market context. Its asking price includes structure value and never enters the vacant-land sold-price median.`;
+  } else if (priceKind === 'sale' && price != null && acres != null && UNVERIFIED_CONTEXT_CLASSIFICATION.test(row.classification)) {
+    // A verified closed sale carrying an OPEN, unproven concern (suspected
+    // access, environmental, or arm's-length question). LandOS never asserts
+    // the defect it cannot evidence: the sale is retained, kept out of the
+    // cleaned value at reduced confidence, and stated as an open question.
+    category = 'context_only';
+    reason = `Source records a completed sale: ${money(price)} for ${acres} acres${dateIso ? ` on ${dateIso}` : ''}. ${row.inclusion_reason || 'An open comparability question is unresolved'}, so LandOS holds it out of the cleaned value at reduced confidence rather than asserting a defect it has not evidenced. Resolve the open question to move it into the cleaned set.`;
+  } else if (priceKind === 'sale' && price != null && acres != null) {
+    eligible = true;
+    const provenance = statusProvenance ? `Sold status ${statusProvenance}. ` : '';
+    const soldLine = `${provenance}Source records a completed sale: ${money(price)} for ${acres} acres${dateIso ? ` on ${dateIso}` : ''}${soldBy ? `, sold by ${soldBy}` : ''}.`;
+    const lines = comparabilityLines({
+      acres, subjectAcres: ctx.subjectAcres, distance,
+      county: row.county || null, subjectCounty: ctx.subjectCounty, recencyMonths,
+    });
+    primaryComparability = lines.primary;
+    keyDifference = lines.difference;
+    if (operatorExcluded) {
+      category = 'candidate_closed_sale';
+      const byLandos = !String(row.valuation_selection_actor ?? '').startsWith('tyler');
+      reason = byLandos
+        ? `${soldLine} Excluded from the valuation set by LandOS (restorable)${row.valuation_selection_reason ? `: ${row.valuation_selection_reason}` : '.'}`
+        : `${soldLine} Excluded from valuation by the operator${row.valuation_selection_reason ? `: ${row.valuation_selection_reason}` : '.'}`;
+    } else {
+      category = 'accepted_closed_sale';
+      selectionMode = operatorIncluded ? 'operator' : 'auto';
+      reason = operatorIncluded
+        ? `${soldLine} Included by the operator as valuation evidence.`
+        : `${soldLine} Automatically included in the provisional valuation set as a credible closed vacant-land sale; exclude it to remove it.`;
+    }
+  } else if (priceKind === 'sale') {
+    category = 'context_only';
+    reason = `Completed-sale record without ${price == null ? 'a usable sale price' : 'usable acreage'}, so a sold price per acre cannot be established.`;
+  } else if (priceKind === 'list') {
+    const isActive = row.days_on_market != null || !!row.listing_date || /active/i.test(row.classification);
+    category = isActive ? 'active_competition' : 'asking_reference';
+    reason = isActive
+      ? 'Currently listed for sale: live competition context. An asking price does not establish fair market value.'
+      : 'Asking price reference: indicates market positioning but does not establish fair market value.';
+  } else {
+    category = 'context_only';
+    reason = 'Transaction status is not stated by the source, so this record is retained as context only.';
+  }
+
+  const missing: string[] = [];
+  if (!row.address_desc) missing.push('address');
+  if (!row.thumbnail_url) missing.push('photo');
+  if (!dateIso) missing.push('date');
+  if (acres == null) missing.push('acreage');
+
+  const visual = resolveCompVisual({
+    thumbnailUrl: row.thumbnail_url || null,
+    sourceLabel: row.source_label,
+    lat: location.lat, lng: location.lng,
+    locationResolved: location.resolved,
+    addressOrApn: row.address_desc || (row.apn ? `APN ${row.apn}` : null),
+  });
+
+  // Closed evidence, live competition, or neither. Derived from the transaction
+  // the source actually documented, never from styling intent.
+  const transactionKind: CompTransactionKind = priceKind === 'sale'
+    ? 'closed'
+    : category === 'active_competition' || category === 'asking_reference'
+      ? 'active'
+      : 'context';
+
+  const listing = buildCompListingProjection({
+    detail: parseListingDetail(row.listing_detail_json),
+    transactionKind,
+    address: row.address_desc || null,
+    apn: row.apn || null,
+    county: row.county || null,
+    state: row.state || null,
+    acres,
+    subjectAcres: ctx.subjectAcres,
+    distanceMiles: distance,
+    lat: location.lat,
+    lng: location.lng,
+    sourceLabel: row.source_label,
+    sourceUrl: row.source_url || null,
+    retainedPrice: price,
+    retainedPriceKind: priceKind,
+    retainedDateIso: dateIso,
+    providerDaysOnMarket: typeof row.days_on_market === 'number' ? row.days_on_market : null,
+    retainedListingDateIso: row.listing_date || null,
+    propertyClass: improved ? 'improved' : 'land',
+    buildingSqft,
+    roadFrontageVerified: null,
+    visualProvenanceDetail: visual.detail,
+    // The card's own visual, so the gallery can never contradict the thumbnail
+    // sitting right next to it.
+    retainedVisual: visual.isPhotograph && visual.url
+      ? { url: visual.url, label: visual.label }
+      : null,
+    todayIso: new Date(ctx.nowMs).toISOString().slice(0, 10),
+  });
+
+  return {
+    compId: row.id,
+    key: `comp:${row.id}`,
+    category,
+    categoryLabel: WORKSPACE_CATEGORY_LABELS[category],
+    classificationReason: reason,
+    eligibleForValuation: eligible,
+    selectedForValuation: eligible && category === 'accepted_closed_sale',
+    selectionMode,
+    operatorExcluded,
+    exclusionReason: operatorExcluded ? (row.valuation_selection_reason || null) : null,
+    source: row.source_label,
+    sourceUrl: row.source_url || null,
+    origins: attributions.map((a) => a.provider),
+    fromLandPortalSidebar: fromSidebar,
+    fromLandPortalShowOnMap: fromShowOnMap,
+    mergeStatus: merged
+      ? 'Merged LandPortal sidebar + Show on Map records (deduplicated by APN, price, and acreage)'
+      : null,
+    address: row.address_desc || null,
+    apn: row.apn || null,
+    county: row.county || null,
+    state: row.state || null,
+    distanceMiles: distance,
+    outsideInitialRadius: distance != null ? distance > INITIAL_COMP_RADIUS_MILES : null,
+    lat: location.lat,
+    lng: location.lng,
+    locationResolved: location.resolved,
+    locationSource: location.source,
+    locationMethod: location.method,
+    locationResolvedAtIso: location.resolvedAtIso,
+    statusLabel: category === 'accepted_closed_sale' || category === 'candidate_closed_sale' ? 'Closed sale'
+      : category === 'improved_context' ? (priceKind === 'list' ? 'Active listing (improved)' : 'Closed sale (improved)')
+        : category === 'active_competition' ? 'Active listing'
+          : category === 'asking_reference' ? 'Asking reference'
+            : category === 'rejected' ? 'Rejected'
+              : 'Context',
+    priceKind,
+    price,
+    acres,
+    pricePerAcre: ppa,
+    dateIso,
+    daysOnMarket: typeof row.days_on_market === 'number' ? row.days_on_market : null,
+    soldBy,
+    buildingSqft,
+    propertyClass: improved ? 'improved' : (row.property_class === 'land' || row.property_class === 'vacant_land') ? 'land' : 'unknown',
+    thumbnailUrl: row.thumbnail_url || null,
+    visual,
+    acresDeltaFromSubject: acres != null && ctx.subjectAcres != null
+      ? Math.round((acres - ctx.subjectAcres) * 100) / 100 : null,
+    recencyMonths,
+    monthsOld: exactMonthsOld(dateIso, ctx.nowMs),
+    primaryComparability,
+    keyDifference,
+    missingFields: missing,
+    // Roles are assigned by the window pass in buildCompsValuationView, never
+    // here: a role must never contradict the selected recency window.
+    valuationRole: null,
+    inValuationSet: false,
+    valuationWeight: null,
+    zeroWeightReason: null,
+    radiusStage: radiusStageFor(distance),
+    exclusionActor: operatorExcluded
+      ? (String(row.valuation_selection_actor ?? '').startsWith('tyler') ? 'operator' : 'landos')
+      : null,
+    transactionKind,
+    listing,
+  };
+}
+
+interface EvidenceCompValue {
+  address?: unknown; price?: unknown; acres?: unknown; pricePerAcre?: unknown; url?: unknown;
+  status?: unknown; saleDate?: unknown; listingDate?: unknown; daysOnMarket?: unknown; thumbnailUrl?: unknown;
+}
+
+/** Provider comp evidence retained in the research record but not persisted in landos_comp. */
+function classifyEvidenceComp(
+  evidenceId: string,
+  providerId: string,
+  value: EvidenceCompValue,
+  sourceUrl: string | null,
+  ctx: ClassifyContext,
+): WorkspaceComp {
+  const status = String(value.status ?? '').toLowerCase();
+  const price = typeof value.price === 'number' && value.price > 0 ? value.price : null;
+  const acres = typeof value.acres === 'number' && value.acres > 0 ? value.acres : null;
+  const ppa = price != null && acres != null ? Math.round((price / acres) * 100) / 100
+    : (typeof value.pricePerAcre === 'number' && value.pricePerAcre > 0 ? value.pricePerAcre : null);
+  const isActive = status === 'active' || status === 'listed' || status === 'pending';
+  const isSold = status === 'sold';
+  const category: WorkspaceCompCategory = isActive ? 'active_competition' : isSold ? 'context_only' : 'asking_reference';
+  const source = /redfin/i.test(providerId) ? 'Redfin' : /zillow/i.test(providerId) ? 'Zillow' : /realtor/i.test(providerId) ? 'Realtor.com' : providerId;
+  const reason = isActive
+    ? `Active listing retained from ${source}: current competition context${price != null ? ` at an asking price of ${money(price)}` : ''}. An asking price does not establish fair market value.${acres == null ? ' The source did not publish acreage.' : ''}`
+    : isSold
+      ? `Sold record retained from ${source} research evidence only; it has not been promoted into the canonical comp registry, so it cannot support valuation.`
+      : `Priced reference retained from ${source} without a stated transaction status.`;
+  const address = typeof value.address === 'string' && value.address ? value.address : null;
+  const cached = ctx.locations.get(address);
+  const location: ResolvedLocation = cached
+    ? {
+        lat: cached.lat, lng: cached.lng, resolved: true,
+        source: GEOCODE_PROVIDER_TEXT[cached.provider] ?? `${cached.provider} address geocode`,
+        method: 'address_geocode',
+        resolvedAtIso: cached.createdAt ? new Date(cached.createdAt * 1000).toISOString() : null,
+      }
+    : UNRESOLVED_LOCATION;
+  const distance = distanceFromSubject(ctx, location);
+  const missing: string[] = [];
+  if (acres == null) missing.push('acreage');
+  if (!value.saleDate && !value.listingDate) missing.push('date');
+  missing.push('APN');
+  const dateIso = typeof value.saleDate === 'string' && value.saleDate ? value.saleDate
+    : typeof value.listingDate === 'string' && value.listingDate ? value.listingDate : null;
+  const thumbnailUrl = typeof value.thumbnailUrl === 'string' && value.thumbnailUrl ? value.thumbnailUrl : null;
+  const visual = resolveCompVisual({
+    thumbnailUrl,
+    sourceLabel: source,
+    lat: location.lat, lng: location.lng,
+    locationResolved: location.resolved,
+    addressOrApn: address,
+  });
+  const transactionKind: CompTransactionKind = isSold ? 'closed' : isActive ? 'active' : 'context';
+  // Research-evidence records have no landos_comp row, so there is no persisted
+  // provider capture for them. The projection still renders — it simply states
+  // that the provider page was never revisited rather than going blank.
+  const listing = buildCompListingProjection({
+    detail: null,
+    transactionKind,
+    address,
+    apn: null,
+    county: null,
+    state: null,
+    acres,
+    subjectAcres: ctx.subjectAcres,
+    distanceMiles: distance,
+    lat: location.lat,
+    lng: location.lng,
+    sourceLabel: source,
+    sourceUrl,
+    retainedPrice: price,
+    retainedPriceKind: isSold ? 'sale' : 'list',
+    retainedDateIso: dateIso,
+    providerDaysOnMarket: typeof value.daysOnMarket === 'number' && value.daysOnMarket >= 0 ? value.daysOnMarket : null,
+    retainedListingDateIso: typeof value.listingDate === 'string' && value.listingDate ? value.listingDate : null,
+    propertyClass: 'unknown',
+    buildingSqft: null,
+    roadFrontageVerified: null,
+    visualProvenanceDetail: visual.detail,
+    todayIso: new Date(ctx.nowMs).toISOString().slice(0, 10),
+  });
+  return {
+    compId: null,
+    key: `evidence:${evidenceId}`,
+    category,
+    categoryLabel: WORKSPACE_CATEGORY_LABELS[category],
+    classificationReason: reason,
+    eligibleForValuation: false,
+    selectedForValuation: false,
+    selectionMode: null,
+    operatorExcluded: false,
+    exclusionReason: null,
+    source,
+    sourceUrl,
+    origins: [source],
+    fromLandPortalSidebar: false,
+    fromLandPortalShowOnMap: false,
+    mergeStatus: null,
+    address,
+    apn: null,
+    county: null,
+    state: null,
+    distanceMiles: distance,
+    outsideInitialRadius: distance != null ? distance > INITIAL_COMP_RADIUS_MILES : null,
+    lat: location.lat,
+    lng: location.lng,
+    locationResolved: location.resolved,
+    locationSource: location.source,
+    locationMethod: location.method,
+    locationResolvedAtIso: location.resolvedAtIso,
+    statusLabel: isActive ? 'Active listing' : isSold ? 'Sold (evidence only)' : 'Reference',
+    priceKind: isSold ? 'sale' : 'list',
+    price,
+    acres,
+    pricePerAcre: ppa,
+    dateIso,
+    daysOnMarket: typeof value.daysOnMarket === 'number' && value.daysOnMarket >= 0 ? value.daysOnMarket : null,
+    soldBy: null,
+    buildingSqft: null,
+    propertyClass: 'unknown',
+    thumbnailUrl,
+    visual,
+    acresDeltaFromSubject: acres != null && ctx.subjectAcres != null
+      ? Math.round((acres - ctx.subjectAcres) * 100) / 100 : null,
+    recencyMonths: (() => { const m = monthsSince(dateIso, ctx.nowMs); return m == null ? null : Math.round(m); })(),
+    monthsOld: exactMonthsOld(dateIso, ctx.nowMs),
+    primaryComparability: null,
+    keyDifference: null,
+    missingFields: missing,
+    valuationRole: null,
+    inValuationSet: false,
+    valuationWeight: null,
+    zeroWeightReason: null,
+    radiusStage: radiusStageFor(distance),
+    exclusionActor: null,
+    transactionKind,
+    listing,
+  };
+}
+
+/**
+ * Proximity-first search-band disclosure, counted from resolved coordinates.
+ *
+ * Expansion is a FACT about the evidence, never an inference from the farthest
+ * record: the band expanded only when fewer than two credible closed sales were
+ * found inside the initial radius. When the initial radius already carries two
+ * or more sales, farther sales are additional retained evidence and the note
+ * says so — it must never claim an expansion was required.
+ */
+function radiusDisclosure(accepted: WorkspaceComp[]): CompsValuationSummary['radius'] {
+  const distances = accepted.map((c) => c.distanceMiles).filter((d): d is number => d != null);
+  const unresolved = accepted.length - distances.length;
+  const withinInitial = distances.filter((d) => d <= INITIAL_COMP_RADIUS_MILES).length;
+  const withinExpansion = distances.filter((d) => d > INITIAL_COMP_RADIUS_MILES && d <= MAX_COMP_SEARCH_RADIUS_MILES).length;
+  const beyondExpansion = distances.filter((d) => d > MAX_COMP_SEARCH_RADIUS_MILES).length;
+  const base = {
+    initialMiles: INITIAL_COMP_RADIUS_MILES,
+    withinInitial, withinExpansion, beyondExpansion, unresolved,
+  };
+  const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+  if (accepted.length === 0) {
+    return {
+      ...base, usedMiles: null, expanded: false,
+      note: 'No closed sales currently support the valuation, so no search band applies.',
+    };
+  }
+  if (!distances.length) {
+    return {
+      ...base, usedMiles: null, expanded: false,
+      note: `Supporting-sale distances are unavailable until their locations resolve (${unresolved} unresolved).`,
+    };
+  }
+  const tail = beyondExpansion > 0
+    ? ` ${beyondExpansion} previously retained ${plural(beyondExpansion, 'sale lies', 'sales lie')} beyond the ${MAX_COMP_SEARCH_RADIUS_MILES}-mile boundary and ${plural(beyondExpansion, 'is', 'are')} kept as boundary context only — nothing new was retrieved past ${MAX_COMP_SEARCH_RADIUS_MILES} miles.`
+    : '';
+  const unresolvedTail = unresolved > 0
+    ? ` ${unresolved} retained ${plural(unresolved, 'sale has', 'sales have')} an unresolved location and ${plural(unresolved, 'is', 'are')} excluded from the distance counts.`
+    : '';
+  const countyLine = ' Out-of-county sales are considered on proximity, never excluded by a county line.';
+
+  // Two or more credible closed sales inside the initial radius: no expansion
+  // was required, whatever the farthest retained sale happens to be.
+  if (withinInitial >= 2) {
+    const usedMiles = withinExpansion > 0 ? MAX_COMP_SEARCH_RADIUS_MILES : INITIAL_COMP_RADIUS_MILES;
+    const extra = withinExpansion > 0
+      ? ` A further ${withinExpansion} credible ${plural(withinExpansion, 'sale was', 'sales were')} retained between ${INITIAL_COMP_RADIUS_MILES} and ${MAX_COMP_SEARCH_RADIUS_MILES} miles as additional corroboration, not because the initial radius came up short.`
+      : '';
+    return {
+      ...base, usedMiles, expanded: false,
+      note: `${withinInitial} credible closed vacant-land ${plural(withinInitial, 'sale lies', 'sales lie')} inside the initial ${INITIAL_COMP_RADIUS_MILES}-mile radius, so no expansion was required.${extra}${tail}${unresolvedTail}${countyLine}`,
+    };
+  }
+  // Fewer than two inside the initial radius: the band genuinely expanded, and
+  // it counts as expanded whether the farther sales landed inside the 10-to-20
+  // ring or are previously retained evidence past the boundary.
+  const reliedOnFarther = withinExpansion > 0 || beyondExpansion > 0;
+  const usedMiles = reliedOnFarther ? MAX_COMP_SEARCH_RADIUS_MILES : INITIAL_COMP_RADIUS_MILES;
+  const added = withinExpansion > 0
+    ? ` and added ${withinExpansion} credible ${plural(withinExpansion, 'sale', 'sales')} in that ring`
+    : ' without finding a further credible sale inside the boundary';
+  return {
+    ...base, usedMiles, expanded: reliedOnFarther,
+    note: `Only ${withinInitial} credible closed vacant-land ${plural(withinInitial, 'sale lies', 'sales lie')} inside the initial ${INITIAL_COMP_RADIUS_MILES}-mile radius, so the search band expanded to ${MAX_COMP_SEARCH_RADIUS_MILES} miles (disclosed, never unbounded)${added}.${tail}${unresolvedTail}${countyLine}`,
+  };
+}
+
+/** Pure valuation over the provisional (auto + operator) closed vacant-land sale set. */
+export function computeCompsValuation(
+  accepted: WorkspaceComp[],
+  subjectAcres: number | null,
+  nowMs: number,
+  opts: { subjectCounty?: string | null } = {},
+): { summary: CompsValuationSummary; medianNote: string | null } {
+  const observations = accepted
+    .map((c) => ({ comp: c, ppa: c.price != null && c.acres != null ? c.price / c.acres : null }))
+    .filter((o): o is { comp: WorkspaceComp; ppa: number } => o.ppa != null && Number.isFinite(o.ppa) && o.ppa > 0);
+  const ppas = observations.map((o) => o.ppa);
+  const count = ppas.length;
+  const mid = median(ppas);
+  const radius = radiusDisclosure(observations.map((o) => o.comp));
+
+  // Fewer than two credible closed vacant-land sales → insufficient evidence.
+  const status: CompsValuationSummary['status'] = count >= 3 ? 'supported' : count === 2 ? 'provisional' : 'insufficient';
+  const statusLabel = status === 'supported' ? 'Supported valuation'
+    : status === 'provisional' ? 'Provisional valuation' : 'Insufficient closed-sale evidence';
+  const basisLabel = count >= 2
+    ? `${statusLabel} based on ${count} closed vacant-land sale${count === 1 ? '' : 's'}`
+    : 'Insufficient closed-sale evidence';
+
+  if (count < 2 || mid == null || subjectAcres == null || subjectAcres <= 0) {
+    const reason = subjectAcres == null || subjectAcres <= 0
+      ? 'The subject working acreage is not established, so no per-acre value can be applied.'
+      : count === 1
+        ? 'Only one credible closed vacant-land sale remains in the valuation set. At least two are required before a provisional value can be stated; restore or add a second credible closed sale.'
+        : 'No credible closed vacant-land sale currently supports valuation. Asking references and active listings indicate market positioning but do not establish fair market value.';
+    return {
+      summary: {
+        workingAcres: subjectAcres,
+        acceptedCount: count,
+        medianPricePerAcre: null,
+        ppaBand: null,
+        fmv: null,
+        acquisitionLevels: null,
+        acquisitionLockedReason: 'Fair market value and the 40%, 50%, and 60% acquisition levels remain locked until at least two credible closed vacant-land sales support the valuation.',
+        status: 'insufficient',
+        statusLabel: 'Insufficient closed-sale evidence',
+        basisLabel: 'Insufficient closed-sale evidence',
+        statusReason: reason,
+        confidence: 'unavailable',
+        confidenceFactors: [count === 1
+          ? 'A single closed vacant-land sale cannot establish a defensible median, so confidence cannot be stated.'
+          : 'No closed vacant-land sale is in the valuation set, so confidence cannot be established.'],
+        radius,
+        distanceRange: null,
+      },
+      medianNote: null,
+    };
+  }
+
+  const low = Math.min(...ppas);
+  const high = Math.max(...ppas);
+  const dispersion = mid > 0 ? (high - low) / mid : 0;
+  const hasBand = count >= 2 && high > low;
+  const central = round500(mid * subjectAcres);
+  const fmv = {
+    low: hasBand ? round500(low * subjectAcres) : null,
+    central,
+    high: hasBand ? round500(high * subjectAcres) : null,
+  };
+
+  const recencies = observations
+    .map((o) => monthsSince(o.comp.dateIso, nowMs))
+    .filter((m): m is number => m != null);
+  const newestMonths = recencies.length ? Math.min(...recencies) : null;
+  const oldestMonths = recencies.length ? Math.max(...recencies) : null;
+  const distances = observations.map((o) => o.comp.distanceMiles).filter((d): d is number => d != null);
+  const distanceRange = distances.length
+    ? { minMiles: Math.min(...distances), maxMiles: Math.max(...distances) }
+    : null;
+
+  const factors: string[] = [];
+  factors.push(`${count} credible closed vacant-land sale${count === 1 ? '' : 's'} support${count === 1 ? 's' : ''} the cleaned valuation set.`);
+  if (distanceRange) {
+    // Counted from resolved coordinates, so this can never assert an expansion
+    // the evidence contradicts.
+    const ringText = radius.withinExpansion > 0
+      ? `${radius.withinInitial} inside the initial ${radius.initialMiles}-mile radius and ${radius.withinExpansion} between ${radius.initialMiles} and ${MAX_COMP_SEARCH_RADIUS_MILES} miles`
+      : `all ${radius.withinInitial} inside the initial ${radius.initialMiles}-mile radius`;
+    factors.push(`Supporting sales lie ${distanceRange.minMiles}–${distanceRange.maxMiles} miles from the subject: ${ringText}${radius.beyondExpansion > 0 ? `, plus ${radius.beyondExpansion} retained beyond ${MAX_COMP_SEARCH_RADIUS_MILES} miles as boundary context` : ''}.`);
+  } else {
+    factors.push('Supporting-sale distances are unresolved, which weakens locational support.');
+  }
+  const subjectCounty = opts.subjectCounty ?? null;
+  if (subjectCounty) {
+    const outOfCounty = observations.filter((o) => o.comp.county && o.comp.county.toLowerCase() !== subjectCounty.toLowerCase());
+    factors.push(outOfCounty.length === 0
+      ? `All supporting sales are in the subject's ${subjectCounty} County market.`
+      : `${outOfCounty.length} supporting sale${outOfCounty.length === 1 ? ' is' : 's are'} outside ${subjectCounty} County; county is weighed as a market-relationship factor, never an automatic exclusion.`);
+  }
+  if (newestMonths != null && oldestMonths != null) {
+    factors.push(`Sale recency spans roughly ${Math.round(newestMonths)} to ${Math.round(oldestMonths)} months before today.`);
+  } else {
+    factors.push('Sale dates are incomplete, which weakens recency support.');
+  }
+  if (count >= 2) {
+    factors.push(`Sold price per acre ranges ${money(low)}–${money(high)} (spread ${(dispersion * 100).toFixed(0)}% of the median).`);
+  }
+  const inBand = observations.filter((o) => o.comp.acres != null && subjectAcres != null
+    && o.comp.acres >= subjectAcres * 0.5 && o.comp.acres <= subjectAcres * 2.5).length;
+  factors.push(`${inBand} of ${count} supporting sale${count === 1 ? '' : 's'} fall inside the 0.5×–2.5× subject acreage band.`);
+  const noDistance = observations.filter((o) => o.comp.distanceMiles == null).length;
+  if (noDistance > 0) factors.push(`${noDistance} supporting sale${noDistance === 1 ? '' : 's'} lack${noDistance === 1 ? 's' : ''} a computed distance from the subject.`);
+  const corroborated = observations.filter((o) => o.comp.fromLandPortalSidebar && o.comp.fromLandPortalShowOnMap).length;
+  if (corroborated > 0) factors.push(`${corroborated} supporting sale${corroborated === 1 ? ' is' : 's are'} corroborated by two independent LandPortal surfaces (transaction certainty).`);
+
+  let confidence: CompsValuationSummary['confidence'];
+  if (count >= 4 && dispersion <= 0.35 && newestMonths != null && newestMonths <= 18) confidence = 'high';
+  else if (count >= 3 && dispersion <= 0.8) confidence = 'moderate';
+  else if (count === 2 && dispersion <= 0.35 && newestMonths != null && newestMonths <= 24 && noDistance === 0) confidence = 'moderate';
+  else confidence = 'low';
+  if (confidence !== 'high') {
+    factors.push(count < 3
+      ? 'Two closed sales keep the valuation provisional; a third credible in-band closed sale would materially strengthen it.'
+      : dispersion > 0.35
+        ? 'Per-acre spread across the supporting sales is wide enough to hold confidence below high.'
+        : 'Recency or coverage keeps confidence below high.');
+  }
+
+  const statusReason = status === 'supported'
+    ? `${count} credible closed vacant-land sales establish a defensible median sold price per acre.`
+    : `Provisional valuation based on ${count} closed vacant-land sales, automatically selected as the default set; refine it with the exclude and restore controls below.`;
+
+  const medianNote = `Median of ${count} sold price${count === 1 ? '' : 's'} per acre = ${money(mid)}/ac × ${subjectAcres} working acres = ${money(mid * subjectAcres)} (rounded to ${money(central)}).${count % 2 === 0 && count > 1 ? ' With an even count the median averages the two middle values.' : ''}`;
+
+  return {
+    summary: {
+      workingAcres: subjectAcres,
+      acceptedCount: count,
+      medianPricePerAcre: Math.round(mid),
+      ppaBand: hasBand ? { low: Math.round(low), median: Math.round(mid), high: Math.round(high) } : null,
+      fmv,
+      acquisitionLevels: {
+        pct40: round500(central * 0.4),
+        pct50: round500(central * 0.5),
+        pct60: round500(central * 0.6),
+      },
+      acquisitionLockedReason: null,
+      status,
+      statusLabel,
+      basisLabel,
+      statusReason,
+      confidence,
+      confidenceFactors: factors,
+      radius,
+      distanceRange,
+    },
+    medianNote,
+  };
+}
+
+// ── Cleaned fair-market-value reconciliation ─────────────────────────────────
+// The median stays visible but never stands alone: the adopted cleaned FMV
+// reconciles the cleaned average, cleaned median, the distance/recency/acreage
+// weighted direct-comp indication, and active-competition support, in plain
+// language. Sales leave the cleaned set only through a documented exclusion.
+
+export interface CleanedValuation {
+  cleanedCount: number;
+  directCount: number;
+  supportingCount: number;
+  /** Months 25–30, admitted only under the exceptional expansion. */
+  supplementalHistoricalCount: number;
+  boundaryCount: number;
+  /** Sales older than the selected window: visible, zero valuation weight. */
+  historicalContextCount: number;
+  excludedCount: number;
+  cleanedAvgPpa: number | null;
+  cleanedMedianPpa: number | null;
+  avgIndication: number | null;
+  medianIndication: number | null;
+  weightedPpa: number | null;
+  weightedIndication: number | null;
+  lowObservedPpa: number | null;
+  highObservedPpa: number | null;
+  lowObservedIndication: number | null;
+  highObservedIndication: number | null;
+  activeCompetition: {
+    count: number;
+    minAskPpa: number | null;
+    maxAskPpa: number | null;
+    staleCount: number;
+    executableLow: number | null;
+    executableHigh: number | null;
+    note: string;
+  } | null;
+  adoptedFmv: number | null;
+  retailRangeLow: number | null;
+  retailRangeHigh: number | null;
+  confidence: 'high' | 'moderate' | 'low' | 'unavailable';
+  /** Plain-language reconciliation: what each method supports and what was adopted. */
+  reconciliationLines: string[];
+  /** True when at least two credible closed sales lie inside the 20-mile boundary. */
+  directEvidenceSufficient: boolean;
+  /** Shown when direct evidence is thin. Null when sufficient. */
+  insufficiencyWarning: string | null;
+}
+
+/**
+ * Distance / recency / acreage-similarity weight for one sale in the valuation
+ * set. Acreage similarity is CONTINUOUS inside the band, so an 11.5-acre sale
+ * outweighs a 5-acre or 20-acre sale when distance and recency are comparable.
+ * Supplemental historical records (months 25–30) carry a substantially reduced
+ * multiplier so they can support a thin set without governing it.
+ */
+export function cleanedWeight(
+  c: WorkspaceComp,
+  subjectAcres: number | null,
+  band: AcreageBand | null,
+): number {
+  const d = c.distanceMiles;
+  const m = c.monthsOld;
+  const wDist = d == null ? 0.5 : d <= 5 ? 3 : d <= 10 ? 2 : d <= 20 ? 1 : 0.5;
+  const wRec = m == null ? 0.5 : m <= 6 ? 3 : m <= 12 ? 2.5 : m <= 24 ? 1.5 : 0.75;
+  const wAcre = 0.5 + 2.5 * acreageSimilarity(c.acres, subjectAcres, band);
+  const base = wDist + wRec + wAcre;
+  return c.valuationRole === 'supplemental_historical' ? base * 0.35 : base;
+}
+
+export function computeCleanedValuation(
+  comps: WorkspaceComp[],
+  subjectAcres: number | null,
+  _nowMs: number,
+  band: AcreageBand | null = valuationAcreageBand(subjectAcres),
+): CleanedValuation {
+  // Only records the acreage band and the recency window actually selected can
+  // price the subject. Boundary and historical-context sales stay visible with
+  // zero weight and never reach these numbers.
+  const cleaned = comps.filter((c) => c.inValuationSet
+    && c.price != null && c.acres != null && c.acres > 0);
+  const excluded = comps.filter((c) => c.category === 'candidate_closed_sale' && c.operatorExcluded);
+  const actives = comps.filter((c) => c.category === 'active_competition'
+    && c.price != null && c.acres != null && c.acres > 0);
+
+  const ppas = cleaned.map((c) => (c.price as number) / (c.acres as number));
+  const directCount = cleaned.filter((c) => c.valuationRole === 'direct').length;
+  const supportingCount = cleaned.filter((c) => c.valuationRole === 'supporting').length;
+  const supplementalCount = cleaned.filter((c) => c.valuationRole === 'supplemental_historical').length;
+  // Boundary sales inside the valuation set define its limits at the lowest
+  // weight; out-of-band records are reported separately by the window and are
+  // never tallied here, so no record appears under two labels.
+  const boundaryCount = cleaned.filter((c) => c.valuationRole === 'boundary').length;
+  const historicalCount = comps.filter((c) => c.valuationRole === 'historical_context').length;
+
+  const inBoundary = cleaned.filter((c) => c.distanceMiles != null && c.distanceMiles <= MAX_COMP_SEARCH_RADIUS_MILES).length;
+  const directEvidenceSufficient = inBoundary >= 2;
+  const insufficiencyWarning = directEvidenceSufficient ? null
+    : 'Insufficient credible closed vacant land sales within the 20 mile direct comp radius.';
+
+  const empty: CleanedValuation = {
+    cleanedCount: ppas.length, directCount, supportingCount,
+    supplementalHistoricalCount: supplementalCount, boundaryCount,
+    historicalContextCount: historicalCount,
+    excludedCount: excluded.length,
+    cleanedAvgPpa: null, cleanedMedianPpa: null, avgIndication: null, medianIndication: null,
+    weightedPpa: null, weightedIndication: null,
+    lowObservedPpa: null, highObservedPpa: null, lowObservedIndication: null, highObservedIndication: null,
+    activeCompetition: null, adoptedFmv: null, retailRangeLow: null, retailRangeHigh: null,
+    confidence: 'unavailable',
+    reconciliationLines: [
+      ppas.length === 0
+        ? 'No credible closed vacant-land sale is in the cleaned set, so no cleaned fair market value can be stated.'
+        : 'Fewer than two credible closed vacant-land sales remain in the cleaned set, so the cleaned fair market value stays unstated.',
+    ],
+    directEvidenceSufficient,
+    insufficiencyWarning,
+  };
+  if (ppas.length < 2 || subjectAcres == null || subjectAcres <= 0) return empty;
+
+  const avg = ppas.reduce((s, v) => s + v, 0) / ppas.length;
+  const med = median(ppas) as number;
+  const low = Math.min(...ppas);
+  const high = Math.max(...ppas);
+  let weightSum = 0;
+  let weightedAcc = 0;
+  for (const c of cleaned) {
+    const w = cleanedWeight(c, subjectAcres, band);
+    weightSum += w;
+    weightedAcc += w * ((c.price as number) / (c.acres as number));
+  }
+  const weighted = weightSum > 0 ? weightedAcc / weightSum : med;
+
+  const avgInd = round500(avg * subjectAcres);
+  const medInd = round500(med * subjectAcres);
+  const weightedInd = round500(weighted * subjectAcres);
+  // Adopted cleaned FMV: the weighted direct-comp indication leads (it carries
+  // distance, recency, and acreage similarity), reconciled against the cleaned
+  // median and cleaned average in equal parts.
+  const adopted = round500((weighted * 0.5 + med * 0.25 + avg * 0.25) * subjectAcres);
+
+  // Active competition: executable support assumes a bounded negotiation
+  // discount from asking (a labeled operating assumption, not a market fact).
+  // A listing sitting far beyond a normal marketing period is an aspirational
+  // ask and never becomes executable support.
+  const ASK_DISCOUNT = 0.9;
+  const STALE_DOM = 180;
+  const allAskPpas = actives.map((c) => (c.price as number) / (c.acres as number));
+  const usable = actives
+    .filter((c) => c.daysOnMarket == null || c.daysOnMarket <= STALE_DOM)
+    .map((c) => (c.price as number) / (c.acres as number));
+  const staleCount = actives.length - usable.length;
+  const activeBlock = actives.length ? {
+    count: actives.length,
+    minAskPpa: allAskPpas.length ? Math.round(Math.min(...allAskPpas)) : null,
+    maxAskPpa: allAskPpas.length ? Math.round(Math.max(...allAskPpas)) : null,
+    staleCount,
+    executableLow: usable.length ? round500(Math.min(...usable) * ASK_DISCOUNT * subjectAcres) : null,
+    executableHigh: usable.length ? round500(Math.max(...usable) * ASK_DISCOUNT * subjectAcres) : null,
+    note: `Executable support assumes roughly ${Math.round((1 - ASK_DISCOUNT) * 100)}% negotiation off asking (operating assumption)${staleCount ? `; ${staleCount} stale listing${staleCount === 1 ? '' : 's'} (>${STALE_DOM} days on market) excluded as aspirational` : ''}. Asking prices never enter the sold-price calculations.`,
+  } : null;
+
+  const retailLow = Math.min(medInd, avgInd, weightedInd);
+  const retailHigh = Math.max(medInd, avgInd, weightedInd);
+
+  const directSet = cleaned.filter((c) => c.valuationRole === 'direct');
+  const directPpas = directSet.map((c) => (c.price as number) / (c.acres as number));
+  const directMed = median(directPpas);
+  const directDispersion = directMed && directPpas.length >= 2
+    ? (Math.max(...directPpas) - Math.min(...directPpas)) / directMed : null;
+  const newest = directSet.map((c) => c.monthsOld).filter((m): m is number => m != null);
+  const newestMonths = newest.length ? Math.min(...newest) : null;
+  // A strong direct-comp core RAISES confidence; its absence must not by itself
+  // force the floor. Otherwise a deal whose locations have not resolved reports
+  // low confidence no matter how many consistent recent sales support it.
+  const setDispersion = med > 0 ? (high - low) / med : 0;
+  let confidence: CleanedValuation['confidence'];
+  if (directCount >= 5 && directDispersion != null && directDispersion <= 0.5 && newestMonths != null && newestMonths <= 6) confidence = 'high';
+  else if (directCount >= 3 || (ppas.length >= 3 && setDispersion <= 0.8)) confidence = 'moderate';
+  else if (ppas.length >= 2) confidence = 'low';
+  else confidence = 'unavailable';
+
+  const lines: string[] = [
+    `Cleaned average supports ${money(avgInd)} (${money(Math.round(avg))}/ac across ${ppas.length} sales).`,
+    `Cleaned median supports ${money(medInd)} (${money(Math.round(med))}/ac).`,
+    `Weighted direct comps support ${money(weightedInd)} (${money(Math.round(weighted))}/ac, weighting distance, recency, and acreage similarity).`,
+  ];
+  if (activeBlock?.executableLow != null && activeBlock.executableHigh != null) {
+    lines.push(`Active competition supports an executable range of ${money(activeBlock.executableLow)} to ${money(activeBlock.executableHigh)}.`);
+  }
+  lines.push(`Adopted cleaned FMV is ${money(adopted)}: the weighted direct-comp indication leads, reconciled against the cleaned median and average. ${directCount} direct and ${supportingCount} supporting${supplementalCount ? ` plus ${supplementalCount} supplemental historical` : ''} sale${directCount + supportingCount + supplementalCount === 1 ? '' : 's'} price it; ${boundaryCount} boundary and ${historicalCount} historical-context sale${boundaryCount + historicalCount === 1 ? '' : 's'} stay visible at zero weight, and ${excluded.length} sale${excluded.length === 1 ? '' : 's'} sit outside the set with a retained reason.`);
+  if (directDispersion != null && directDispersion > 0.5) {
+    lines.push(`Direct sales spread ${Math.round(directDispersion * 100)}% of their median per acre — a real range, not artificially narrowed.`);
+  }
+
+  return {
+    cleanedCount: ppas.length, directCount, supportingCount,
+    supplementalHistoricalCount: supplementalCount, boundaryCount,
+    historicalContextCount: historicalCount,
+    excludedCount: excluded.length,
+    cleanedAvgPpa: Math.round(avg), cleanedMedianPpa: Math.round(med),
+    avgIndication: avgInd, medianIndication: medInd,
+    weightedPpa: Math.round(weighted), weightedIndication: weightedInd,
+    lowObservedPpa: Math.round(low), highObservedPpa: Math.round(high),
+    lowObservedIndication: round500(low * subjectAcres), highObservedIndication: round500(high * subjectAcres),
+    activeCompetition: activeBlock,
+    adoptedFmv: adopted,
+    retailRangeLow: retailLow, retailRangeHigh: retailHigh,
+    confidence,
+    reconciliationLines: lines,
+    directEvidenceSufficient,
+    insufficiencyWarning,
+  };
+}
+
+// ── Technical quick-flip underwriting (bounded; normal quick flip only) ──────
+
+export interface QuickFlipAssumption {
+  key: string;
+  label: string;
+  /** Display value, e.g. "7% of sale price" or "$10,000". */
+  value: string;
+  basis: 'landos_operating_assumption' | 'market_research' | 'derived';
+  note: string;
+}
+
+export interface QuickFlipUnderwriting {
+  expectedSalePrice: number;
+  expectedMarketingDays: number | null;
+  sellingCosts: number;
+  sellerClosingCosts: number;
+  carryingCosts: number;
+  financingCosts: number;
+  improvementCosts: number;
+  riskReserve: number;
+  requiredProfit: number;
+  totalNonAcquisitionCosts: number;
+  technicalMaxOffer: number;
+  /** Technical maximum as a percentage of the adopted cleaned FMV (rounded). */
+  technicalMaxPctOfFmv: number;
+  assumptions: QuickFlipAssumption[];
+  confidenceNote: string;
+}
+
+const QUICK_FLIP = {
+  sellingCostPct: 0.07,
+  sellerClosingPct: 0.02,
+  carryingCostPct: 0.015,
+  riskReservePct: 0.05,
+  profitPctOfSale: 0.2,
+} as const;
+
+export function computeQuickFlipUnderwriting(
+  adoptedFmv: number | null,
+  expectedMarketingDays: number | null,
+): QuickFlipUnderwriting | null {
+  if (adoptedFmv == null || adoptedFmv <= 0) return null;
+  const price = adoptedFmv;
+  const selling = Math.round(price * QUICK_FLIP.sellingCostPct);
+  const closing = Math.round(price * QUICK_FLIP.sellerClosingPct);
+  const carrying = Math.round(price * QUICK_FLIP.carryingCostPct);
+  const financing = 0;
+  const improvements = 0;
+  const reserve = Math.round(price * QUICK_FLIP.riskReservePct);
+  const requiredProfit = Math.max(GLOBAL_MIN_NET_PROFIT_USD, round500(price * QUICK_FLIP.profitPctOfSale));
+  const total = selling + closing + carrying + financing + improvements + reserve + requiredProfit;
+  const mao = round500(price - total);
+  return {
+    expectedSalePrice: price,
+    expectedMarketingDays,
+    sellingCosts: selling,
+    sellerClosingCosts: closing,
+    carryingCosts: carrying,
+    financingCosts: financing,
+    improvementCosts: improvements,
+    riskReserve: reserve,
+    requiredProfit,
+    totalNonAcquisitionCosts: total - requiredProfit,
+    technicalMaxOffer: mao,
+    technicalMaxPctOfFmv: Math.round((mao / price) * 100),
+    assumptions: [
+      { key: 'expected_sale', label: 'Expected executable sale price', value: money(price), basis: 'derived', note: 'The adopted cleaned FMV; revise if a faster-sale discount is intended.' },
+      { key: 'selling', label: 'Selling / brokerage costs', value: '7% of sale price', basis: 'landos_operating_assumption', note: 'Brokerage plus marketing; operator revisable.' },
+      { key: 'closing', label: 'Seller closing costs', value: '2% of sale price', basis: 'landos_operating_assumption', note: 'Transfer tax, title, recording; operator revisable.' },
+      { key: 'carrying', label: 'Carrying costs', value: '1.5% of sale price', basis: expectedMarketingDays != null ? 'market_research' : 'landos_operating_assumption', note: expectedMarketingDays != null ? `Taxes/insurance across roughly ${Math.ceil((expectedMarketingDays + 45) / 30)} months of marketing plus closing (median ${expectedMarketingDays} days on market from LandOS Market Research).` : 'Taxes/insurance across an assumed marketing period; no Market Research days-on-market record was available.' },
+      { key: 'financing', label: 'Financing costs', value: '$0', basis: 'landos_operating_assumption', note: 'Cash acquisition assumed; revise if financed.' },
+      { key: 'improvements', label: 'Known necessary improvements', value: '$0', basis: 'derived', note: 'No necessary improvement is documented in retained evidence; not a verified property fact.' },
+      { key: 'reserve', label: 'Risk reserve', value: '5% of sale price', basis: 'landos_operating_assumption', note: 'Covers survey, minor title or access surprises; operator revisable.' },
+      { key: 'profit', label: 'Required minimum profit', value: `max($${GLOBAL_MIN_NET_PROFIT_USD.toLocaleString('en-US')}, 20% of sale price)`, basis: 'landos_operating_assumption', note: 'The LandOS global minimum net profit baseline, scaled by the standard quick-flip margin target.' },
+    ],
+    confidenceNote: 'Cost percentages are LandOS operating assumptions, clearly labeled and operator revisable — none is presented as a verified property fact.',
+  };
+}
+
+// ── Final negotiation reconciliation ─────────────────────────────────────────
+
+export interface NegotiationReconciliation {
+  recommendedOpening: number;
+  recommendedTarget: number;
+  hardCeiling: number;
+  ceilingBasis: 'technical_inside_band' | 'technical_above_band' | 'technical_below_band';
+  standardBand: { pct40: number; pct50: number; pct60: number };
+  lines: string[];
+  remainingAssumptions: string[];
+}
+
+export function reconcileNegotiation(
+  cleaned: CleanedValuation,
+  quickFlip: QuickFlipUnderwriting | null,
+  acquisitionLevels: { pct40: number; pct50: number; pct60: number } | null,
+): NegotiationReconciliation | null {
+  if (!quickFlip || cleaned.adoptedFmv == null) return null;
+  const fmv = cleaned.adoptedFmv;
+  const band = acquisitionLevels ?? {
+    pct40: round500(fmv * 0.4), pct50: round500(fmv * 0.5), pct60: round500(fmv * 0.6),
+  };
+  const mao = quickFlip.technicalMaxOffer;
+  const lines: string[] = [];
+  let basis: NegotiationReconciliation['ceilingBasis'];
+  let opening = band.pct40;
+  let target = band.pct50;
+  let ceiling = mao;
+
+  if (mao >= band.pct40 && mao <= band.pct60) {
+    basis = 'technical_inside_band';
+    lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) falls inside the standard ${FLIP_STANDARD_BAND.low}%–${FLIP_STANDARD_BAND.high}% reference range, so the simplified range governs the negotiation and the technical maximum caps it.`);
+    target = Math.min(band.pct50, mao);
+  } else if (mao > band.pct60) {
+    basis = 'technical_above_band';
+    lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) sits above the ${FLIP_STANDARD_BAND.high}% reference. Paying above ${FLIP_STANDARD_BAND.high}% appears supportable because the absolute profit at the ceiling still clears the $${GLOBAL_MIN_NET_PROFIT_USD.toLocaleString('en-US')} minimum — but confirm the executable sale price and cost assumptions before relying on it. The offer is not automatically capped at ${FLIP_STANDARD_BAND.high}%.`);
+  } else {
+    basis = 'technical_below_band';
+    ceiling = mao;
+    opening = Math.min(band.pct40, round500(mao * 0.85));
+    target = Math.min(band.pct50, round500(mao * 0.95));
+    lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) is below the ${FLIP_STANDARD_BAND.low}% reference, so the ceiling is lowered below the standard band — the ${FLIP_STANDARD_BAND.low}% level is not treated as a floor. Cost, risk-reserve, and required-profit loads on this price point drive the reduction.`);
+  }
+  lines.push(`Standard reference: ${money(band.pct40)} opening (40%), ${money(band.pct50)} target (50%), ${money(band.pct60)} upper reference (60%).`);
+  return {
+    recommendedOpening: opening,
+    recommendedTarget: target,
+    hardCeiling: ceiling,
+    ceilingBasis: basis,
+    standardBand: band,
+    lines,
+    remainingAssumptions: [
+      'Executable sale price equals the adopted cleaned FMV (no forced-sale discount applied).',
+      'Selling, closing, carrying, and reserve percentages are LandOS operating assumptions pending operator confirmation.',
+      'No necessary improvement costs are documented; any discovered site work lowers the ceiling.',
+      'Creek/water-feature influence on the subject has no structured fact yet and is not priced.',
+    ],
+  };
+}
+
+function evidenceQuality(c: WorkspaceComp, subjectAcres: number | null): number {
+  let score = 0;
+  if (c.recencyMonths != null) score += Math.max(0, 4 - c.recencyMonths / 6);
+  if (c.acres != null && subjectAcres != null) {
+    const ratio = c.acres / subjectAcres;
+    const band = ratio >= 1 ? ratio : 1 / ratio;
+    score += Math.max(0, 3 - (band - 1) * 2);
+  }
+  if (c.distanceMiles != null) score += Math.max(0, 3 - c.distanceMiles / 10);
+  if (c.fromLandPortalSidebar && c.fromLandPortalShowOnMap) score += 2;
+  if (c.sourceUrl) score += 1;
+  if (c.dateIso) score += 1;
+  return score;
+}
+
+/** Proximity-first display order inside each category: resolved distance first, then address. */
+const CATEGORY_SORT_ORDER: WorkspaceCompCategory[] = [
+  'accepted_closed_sale', 'candidate_closed_sale', 'active_competition',
+  'asking_reference', 'improved_context', 'context_only', 'rejected',
+];
+
+function compareComps(a: WorkspaceComp, b: WorkspaceComp): number {
+  const cat = CATEGORY_SORT_ORDER.indexOf(a.category) - CATEGORY_SORT_ORDER.indexOf(b.category);
+  if (cat !== 0) return cat;
+  const da = a.distanceMiles ?? Number.POSITIVE_INFINITY;
+  const db = b.distanceMiles ?? Number.POSITIVE_INFINITY;
+  if (da !== db) return da - db;
+  return (a.address ?? '').localeCompare(b.address ?? '');
+}
+
+export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: number } = {}): CompsValuationView | null {
+  const deal = getDealCard(dealCardId);
+  if (!deal) return null;
+  const nowMs = opts.nowMs ?? Date.now();
+  const subjectResolution = resolveSubjectPropertyCard(deal);
+  const subjectCard = subjectResolution.card as Record<string, unknown> | null;
+  const propertyCardId = subjectResolution.cardId;
+  const subjectAcres = subjectCard && typeof subjectCard.acres === 'number' && subjectCard.acres > 0 ? subjectCard.acres : null;
+
+  const db = getLandosDb();
+  const cacheGet = db.prepare('SELECT lat, lng, provider, created_at FROM landos_geocode_cache WHERE address_key = ?');
+  const locations: LocationLookup = {
+    get(address) {
+      const key = (address ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!key) return null;
+      const hit = cacheGet.get(key) as { lat: number | null; lng: number | null; provider: string; created_at: number | null } | undefined;
+      if (!hit || typeof hit.lat !== 'number' || typeof hit.lng !== 'number') return null;
+      return { lat: hit.lat, lng: hit.lng, provider: hit.provider, createdAt: hit.created_at ?? null };
+    },
+  };
+
+  // Subject point: retained property-card coordinates first, then the retained
+  // geocode of the subject's full address. Never guessed.
+  const subjectAddress = subjectCard ? String(subjectCard.active_input_address ?? '') || null : null;
+  const subjectCity = subjectCard ? String(subjectCard.city ?? '') || null : null;
+  const subjectState = subjectCard ? String(subjectCard.state ?? '') || null : null;
+  let subjectPoint: { lat: number; lng: number } | null = null;
+  let subjectLocationSource: string | null = null;
+  if (subjectCard && typeof subjectCard.lat === 'number' && typeof subjectCard.lng === 'number') {
+    subjectPoint = { lat: subjectCard.lat, lng: subjectCard.lng };
+    subjectLocationSource = 'Retained subject property-card coordinates';
+  } else if (subjectAddress) {
+    const cached = locations.get(subjectFullAddress(subjectAddress, subjectCity, subjectState));
+    if (cached) {
+      subjectPoint = { lat: cached.lat, lng: cached.lng };
+      subjectLocationSource = GEOCODE_PROVIDER_TEXT[cached.provider] ?? `${cached.provider} address geocode`;
+    }
+  }
+
+  const subject = {
+    address: subjectAddress,
+    apn: subjectCard ? String(subjectCard.apn ?? '') || null : null,
+    acres: subjectAcres,
+    county: subjectCard ? String(subjectCard.county ?? '') || null : null,
+    state: subjectState,
+    lat: subjectPoint?.lat ?? null,
+    lng: subjectPoint?.lng ?? null,
+    locationSource: subjectLocationSource,
+  };
+
+  const inspection = propertyCardId != null ? loadPropertyInspection(propertyCardId) : null;
+  const retainedInspection = inspection ? currentComparables(inspection) : [];
+  const ctx: ClassifyContext = {
+    subjectAcres,
+    subjectCounty: subject.county,
+    subjectPoint,
+    retainedInspection,
+    locations,
+    nowMs,
+  };
+
+  const persisted = listComps({ dealCardId }).map((row) => classifyPersistedComp(row, ctx));
+
+  // Research-record comp evidence not already represented by a persisted row
+  // (matched by source URL or compacted APN). Display-only; never selectable.
+  const persistedUrls = new Set(persisted.map((c) => c.sourceUrl).filter(Boolean) as string[]);
+  const persistedApns = new Set(persisted.map((c) => compactApn(c.apn)).filter((k) => k.length >= 5));
+  const persistedAddresses = new Set(persisted.map((c) => (c.address ?? '').replace(/\s+/g, ' ').trim().toLowerCase()).filter(Boolean));
+  const evidenceComps: WorkspaceComp[] = [];
+  if (propertyCardId != null) {
+    const record = new PropertyResearchStore().loadForProperty(propertyCardId);
+    for (const item of record?.evidence ?? []) {
+      if (item.kind !== 'comp') continue;
+      const value = (item.value ?? {}) as EvidenceCompValue & { apn?: unknown };
+      const url = typeof value.url === 'string' && value.url ? value.url : item.sourceUrl ?? null;
+      if (url && persistedUrls.has(url)) continue;
+      const apnKey = compactApn(typeof value.apn === 'string' ? value.apn : null);
+      if (apnKey.length >= 5 && persistedApns.has(apnKey)) continue;
+      const addressKey = typeof value.address === 'string' ? value.address.replace(/\s+/g, ' ').trim().toLowerCase() : '';
+      if (addressKey && persistedAddresses.has(addressKey)) continue;
+      evidenceComps.push(classifyEvidenceComp(item.id, item.providerId, value, url, ctx));
+    }
+  }
+
+  const comps = [...persisted, ...evidenceComps].sort(compareComps);
+
+  // ── Acreage band + sale-recency window ────────────────────────────────────
+  // Every credible closed vacant-land sale is offered to the selector; the
+  // selector decides which of them may influence value, and the roles below are
+  // derived from its decision so a role can never contradict the window.
+  const closedSales = comps.filter((c) => c.category === 'accepted_closed_sale'
+    && c.price != null && c.acres != null && c.acres > 0);
+  const candidates: RecencyCandidate[] = closedSales.map((c) => ({
+    key: c.key, dateIso: c.dateIso, acres: c.acres, credible: true,
+  }));
+  const valuationWindow = selectRecencyWindow(candidates, subjectAcres, nowMs);
+  const band = valuationWindow.acreageBand;
+
+  // Set membership is decided by the acreage band and the recency window ALONE.
+  // The role below is the comparability tier WITHIN that decision, so proximity
+  // can shade a sale's weight but can never quietly delete it, and an
+  // out-of-band or out-of-window sale can never price the subject.
+  for (const c of closedSales) {
+    const bucket = valuationWindow.bucketByKey[c.key];
+    const d = c.distanceMiles;
+    c.inValuationSet = bucket === 'primary' || bucket === 'supplemental_historical';
+
+    if (bucket === 'out_of_band') {
+      c.valuationRole = 'boundary';
+      c.zeroWeightReason = band
+        ? `${c.acres} acres sits outside the ${band.label} valuation band for the ${subjectAcres}-acre subject, so it defines an upper or lower limit rather than pricing the subject. It cannot influence the cleaned FMV unless it is explicitly restored.`
+        : 'Outside the valuation acreage band.';
+    } else if (bucket === 'historical_context') {
+      c.valuationRole = 'historical_context';
+      c.zeroWeightReason = `Sold ${c.dateIso ?? 'on an unstated date'}, before the ${valuationWindow.selectedMonths}-month cutoff of ${valuationWindow.cutoffIso}. Retained as historical context at zero valuation weight.`;
+    } else if (bucket === 'supplemental_historical') {
+      c.valuationRole = 'supplemental_historical';
+    } else if (d != null && d > MAX_COMP_SEARCH_RADIUS_MILES) {
+      // Previously retained evidence past the search boundary: a documented
+      // locational difference, so it defines a limit at the lowest weight
+      // rather than leading the value.
+      c.valuationRole = 'boundary';
+    } else if (d == null) {
+      // An unresolved location is MISSING METADATA, not a documented difference
+      // from the subject. It must not silently delete a credible in-window sale
+      // (when the subject's own point is unresolved, that would delete every
+      // sale at once). It supports the value at the lowest distance weight, and
+      // the missing location stays disclosed everywhere it is shown.
+      c.valuationRole = 'supporting';
+    } else {
+      c.valuationRole = d <= INITIAL_COMP_RADIUS_MILES ? 'direct' : 'supporting';
+    }
+
+    c.valuationWeight = c.inValuationSet
+      ? Math.round(cleanedWeight(c, subjectAcres, band) * 1000) / 1000
+      : null;
+  }
+  // An excluded closed sale is its own state, never also counted as a boundary
+  // comp — one record must not appear under two labels in the same tally.
+  for (const c of comps) {
+    if (c.category === 'candidate_closed_sale' && c.operatorExcluded) {
+      c.zeroWeightReason = c.exclusionReason
+        ? `Excluded from the valuation set: ${c.exclusionReason}`
+        : 'Excluded from the valuation set.';
+    }
+  }
+
+  const accepted = comps.filter((c) => c.inValuationSet);
+  const computed = computeCompsValuation(accepted, subjectAcres, nowMs, { subjectCounty: subject.county });
+  let summary = computed.summary;
+  const medianNote = computed.medianNote;
+
+  const counts = Object.keys(WORKSPACE_CATEGORY_LABELS).reduce((acc, key) => {
+    acc[key as WorkspaceCompCategory] = comps.filter((c) => c.category === key).length;
+    return acc;
+  }, {} as Record<WorkspaceCompCategory, number>) as CompsValuationView['counts'];
+  counts.total = comps.length;
+
+  const byCategory = Object.keys(WORKSPACE_CATEGORY_LABELS).reduce((acc, key) => {
+    const inCategory = comps.filter((c) => c.category === key);
+    acc[key as WorkspaceCompCategory] = {
+      retained: inCategory.length,
+      mapped: inCategory.filter((c) => c.locationResolved).length,
+      unresolved: inCategory.filter((c) => !c.locationResolved).length,
+    };
+    return acc;
+  }, {} as Record<WorkspaceCompCategory, { retained: number; mapped: number; unresolved: number }>);
+  const mapCounts = {
+    retained: comps.length,
+    mapped: comps.filter((c) => c.locationResolved).length,
+    unresolved: comps.filter((c) => !c.locationResolved).length,
+    byCategory,
+  };
+
+  // Cleaned FMV reconciliation, bounded quick-flip underwriting, and the final
+  // negotiation reconciliation — all pure reads over the same classified set.
+  const cleaned = computeCleanedValuation(comps, subjectAcres, nowMs, band);
+
+  // One value everywhere: once an adopted cleaned FMV exists, the central FMV
+  // and the 40/50/60 acquisition levels derive from IT (the median stays
+  // visible in the ppaBand and medianNote, but never governs alone).
+  if (cleaned.adoptedFmv != null && summary.fmv != null && summary.acquisitionLevels != null) {
+    // ONE confidence everywhere. The adopted cleaned FMV is the decision number,
+    // so its confidence governs every surface that shows a confidence — the
+    // Overview, the Market Score, and the decision strip can never disagree.
+    // The full-set spread stays visible as a stated factor rather than being
+    // hidden behind the upgraded rating.
+    const spreadFactor = cleaned.lowObservedPpa != null && cleaned.highObservedPpa != null && cleaned.cleanedMedianPpa
+      ? `Across the whole ${cleaned.cleanedCount}-sale valuation set, sold price per acre spans ${money(cleaned.lowObservedPpa)}–${money(cleaned.highObservedPpa)} (${Math.round(((cleaned.highObservedPpa - cleaned.lowObservedPpa) / cleaned.cleanedMedianPpa) * 100)}% of the median); confidence is rated on the ${cleaned.directCount} direct comps that lead the weighted indication.`
+      : null;
+    summary = {
+      ...summary,
+      fmv: { ...summary.fmv, central: cleaned.adoptedFmv },
+      acquisitionLevels: {
+        pct40: round500(cleaned.adoptedFmv * 0.4),
+        pct50: round500(cleaned.adoptedFmv * 0.5),
+        pct60: round500(cleaned.adoptedFmv * 0.6),
+      },
+      confidence: cleaned.confidence,
+      confidenceFactors: spreadFactor
+        ? [...summary.confidenceFactors, spreadFactor]
+        : summary.confidenceFactors,
+    };
+  }
+  const marketContext = propertyMarketContextFor({
+    county: subjectCard ? String(subjectCard.fips ?? '') || String(subjectCard.county ?? '') || null : null,
+    state: subject.state,
+    zip: subjectCard ? String(subjectCard.zip ?? '') || null : null,
+    acres: subjectAcres,
+  });
+  const expectedMarketingDays = marketContext.subjectBand.metrics?.medianDaysOnMarket
+    ?? marketContext.county.metrics?.medianDaysOnMarket ?? null;
+  const quickFlip = computeQuickFlipUnderwriting(cleaned.adoptedFmv, expectedMarketingDays);
+  const negotiation = reconcileNegotiation(cleaned, quickFlip, summary.acquisitionLevels);
+
+  const sidebarCount = persisted.filter((c) => c.fromLandPortalSidebar).length;
+  const showOnMapCount = persisted.filter((c) => c.fromLandPortalShowOnMap).length;
+  const mergedUniqueCount = persisted.filter((c) => c.fromLandPortalSidebar || c.fromLandPortalShowOnMap).length;
+
+  const used = accepted.map((c) => ({
+    key: c.key,
+    line: `${c.address ?? c.apn ?? 'Comparable'}: ${c.price != null ? money(c.price) : '—'} / ${c.acres ?? '—'} ac = ${c.pricePerAcre != null ? `${money(c.pricePerAcre)}/ac` : '—'}${c.dateIso ? `, sold ${c.dateIso}` : ''}${c.distanceMiles != null ? `, ${c.distanceMiles} mi from the subject` : ''}.`,
+  }));
+  const excluded = comps
+    .filter((c) => !c.inValuationSet)
+    .map((c) => ({
+      key: c.key,
+      line: `${c.address ?? c.apn ?? c.source}: ${c.valuationRole ? VALUATION_ROLE_LABELS[c.valuationRole] : c.categoryLabel} — ${c.zeroWeightReason ?? c.classificationReason}`,
+    }));
+
+  const neededEvidence: string[] = [];
+  if (summary.status !== 'supported') {
+    const bandText = subjectAcres != null
+      ? `${Math.round(subjectAcres * 0.5 * 10) / 10}–${Math.round(subjectAcres * 2.5 * 10) / 10} acres (0.5×–2.5× of the ${subjectAcres}-acre subject)`
+      : 'the subject acreage band';
+    neededEvidence.push(`${summary.status === 'insufficient' ? 'At least two credible' : `${3 - summary.acceptedCount} more credible`} closed vacant-land sale${summary.status === 'insufficient' ? 's' : (3 - summary.acceptedCount) === 1 ? '' : 's'} inside or reasonably near ${bandText} ${summary.status === 'insufficient' ? 'are' : 'would be'} needed ${summary.status === 'insufficient' ? 'before a provisional value can be stated' : 'to move the valuation from provisional to supported'}.`);
+    const excludedCandidates = comps.filter((c) => c.category === 'candidate_closed_sale' && c.operatorExcluded);
+    if (excludedCandidates.length) {
+      neededEvidence.push(`${excludedCandidates.length} operator-excluded closed sale${excludedCandidates.length === 1 ? '' : 's'} (${excludedCandidates.map((c) => c.address ?? c.apn).join('; ')}) can be restored to the valuation set.`);
+    }
+    if (summary.status === 'insufficient') {
+      neededEvidence.push('A recent closed sale with confirmed vacant-land status, price, acreage, and date would materially change the stated value.');
+    }
+  }
+
+  const rankedAccepted = [...accepted].sort((a, b) => evidenceQuality(b, subjectAcres) - evidenceQuality(a, subjectAcres));
+  const strongest = rankedAccepted[0] ?? null;
+  const weakest = rankedAccepted.length > 1 ? rankedAccepted[rankedAccepted.length - 1] : null;
+
+  return {
+    dealCardId,
+    propertyCardId,
+    subject,
+    summary,
+    comps,
+    counts,
+    mapCounts,
+    landPortal: { sidebarCount, showOnMapCount, mergedUniqueCount },
+    cleaned,
+    quickFlip,
+    negotiation,
+    marketContext,
+    valuationWindow,
+    visualCounts: tallyCompVisuals(comps.map((c) => c.visual)),
+    explanation: {
+      used,
+      excluded,
+      medianNote,
+      neededEvidence,
+      strongestEvidence: strongest
+        ? `${strongest.address ?? strongest.apn}: ${strongest.recencyMonths != null ? `${strongest.recencyMonths} months old` : 'undated'}, ${strongest.acres ?? '—'} ac${strongest.distanceMiles != null ? `, ${strongest.distanceMiles} mi away` : ''}${strongest.fromLandPortalSidebar && strongest.fromLandPortalShowOnMap ? ', corroborated by both LandPortal surfaces' : ''}.`
+        : null,
+      weakestEvidence: weakest
+        ? `${weakest.address ?? weakest.apn}: ${weakest.recencyMonths != null ? `${weakest.recencyMonths} months old` : 'undated'}, ${weakest.acres ?? '—'} ac${weakest.acresDeltaFromSubject != null ? ` (${weakest.acresDeltaFromSubject > 0 ? '+' : ''}${weakest.acresDeltaFromSubject} ac vs subject)` : ''}${weakest.distanceMiles != null ? `, ${weakest.distanceMiles} mi away` : ''}.`
+        : null,
+    },
+  };
+}
+
+function subjectFullAddress(address: string, city: string | null, state: string | null): string {
+  return [address, city, state].filter(Boolean).join(', ');
+}
+
+export type CompSelectionAction = 'include' | 'exclude' | 'restore';
+
+export interface CompSelectionResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Operator include/exclude for the valuation comp set. Only eligible closed
+ * vacant-land sales can be included; exclusion preserves the record and the
+ * operator's reason; restore returns the row to the automatic provisional set.
+ * Never deletes evidence, never changes comp status.
+ */
+export function setCompValuationSelection(opts: {
+  dealCardId: number;
+  compId: number;
+  action: CompSelectionAction;
+  reason?: string;
+  actor?: string;
+}): CompSelectionResult {
+  const row = getComp(opts.compId);
+  if (!row || row.deal_card_id !== opts.dealCardId) return { ok: false, error: 'comp not found on this deal' };
+  if (opts.action === 'include' || opts.action === 'restore') {
+    const deal = getDealCard(opts.dealCardId);
+    const subjectAcres = (() => {
+      const card = resolveSubjectPropertyCard(deal).card as Record<string, unknown> | null;
+      return card && typeof card.acres === 'number' && card.acres > 0 ? card.acres : null;
+    })();
+    const inspection = row.card_id != null ? loadPropertyInspection(row.card_id) : null;
+    const view = classifyPersistedComp(row, {
+      subjectAcres,
+      subjectCounty: null,
+      subjectPoint: null,
+      retainedInspection: inspection ? currentComparables(inspection) : [],
+      locations: { get: () => null },
+      nowMs: Date.now(),
+    });
+    if (!view.eligibleForValuation) {
+      return {
+        ok: false,
+        error: `Only an eligible closed vacant-land sale can support valuation. This record is classified as: ${view.categoryLabel}. ${view.classificationReason}`,
+      };
+    }
+  }
+  // exclude → -1 with reason; include → explicit operator 1; restore → back to
+  // the automatic provisional default (0).
+  const selected = opts.action === 'exclude' ? -1 : opts.action === 'include' ? 1 : 0;
+  const reason = opts.action === 'exclude' ? String(opts.reason ?? '').trim().slice(0, 300) : '';
+  const actor = (opts.actor ?? 'tyler/manual').trim() || 'tyler/manual';
+  getLandosDb().prepare(
+    `UPDATE landos_comp SET valuation_selected = ?, valuation_selection_reason = ?,
+       valuation_selection_actor = ?,
+       valuation_selection_updated_at = strftime('%s','now') WHERE id = ?`,
+  ).run(selected, reason, selected === 0 ? '' : actor, opts.compId);
+  landosAudit(opts.actor ?? 'tyler/manual', 'comp_valuation_selection',
+    `deal ${opts.dealCardId} comp ${opts.compId} ${opts.action}${reason ? ` (${reason})` : ''}`, {
+      entity: row.entity as LandosEntity, refTable: 'landos_comp', refId: opts.compId,
+    });
+  return { ok: true };
+}
+
+export interface LocationResolutionResult {
+  subjectResolved: boolean;
+  subjectSource: string | null;
+  compsEnriched: number;
+  evidenceResolved: number;
+  unresolved: number;
+}
+
+/**
+ * Bounded location resolution for the Comps & Valuation workspace: fill-only
+ * subject coordinates (full-address geocode through the existing verified
+ * providers), persisted-comp enrichment through the existing comp-map path,
+ * and research-evidence listing addresses geocoded into the shared cache. No
+ * county GIS, no paid providers, no guessed points; at most two focused
+ * attempts per address, and misses stay honestly unresolved.
+ */
+export async function resolveCompsValuationLocations(
+  dealCardId: number,
+  deps: Parameters<typeof enrichCompCoordinates>[1] = {},
+): Promise<LocationResolutionResult | null> {
+  const deal = getDealCard(dealCardId);
+  if (!deal) return null;
+  const db = getLandosDb();
+  const subjectResolution = resolveSubjectPropertyCard(deal);
+  const subjectCard = subjectResolution.card as Record<string, unknown> | null;
+  const propertyCardId = subjectResolution.cardId;
+
+  let subjectResolved = false;
+  let subjectSource: string | null = null;
+  const subjectAddress = subjectCard ? String(subjectCard.active_input_address ?? '') || null : null;
+  if (subjectCard && typeof subjectCard.lat === 'number' && typeof subjectCard.lng === 'number') {
+    subjectResolved = true;
+    subjectSource = 'Retained subject property-card coordinates';
+  } else if (subjectAddress && propertyCardId != null) {
+    const full = subjectFullAddress(subjectAddress, String(subjectCard?.city ?? '') || null, String(subjectCard?.state ?? '') || null);
+    await geocodeAddressesToCache([full], deps);
+    const key = full.replace(/\s+/g, ' ').trim().toLowerCase();
+    const hit = db.prepare('SELECT lat, lng, provider FROM landos_geocode_cache WHERE address_key = ?').get(key) as
+      | { lat: number | null; lng: number | null; provider: string } | undefined;
+    if (hit && typeof hit.lat === 'number' && typeof hit.lng === 'number') {
+      // Fill-only: never overwrites previously accepted coordinates.
+      db.prepare('UPDATE landos_property_card SET lat = ?, lng = ? WHERE id = ? AND lat IS NULL AND lng IS NULL')
+        .run(hit.lat, hit.lng, propertyCardId);
+      subjectResolved = true;
+      subjectSource = GEOCODE_PROVIDER_TEXT[hit.provider] ?? `${hit.provider} address geocode`;
+      landosAudit('landos/comps-valuation', 'subject_location_resolved',
+        `deal ${dealCardId} subject point resolved by ${subjectSource} (fill-only address geocode; no GIS)`, {
+          refTable: 'landos_property_card', refId: propertyCardId,
+        });
+    }
+  }
+
+  const enrichment = await enrichCompCoordinates(dealCardId, deps);
+
+  // Research-evidence listing addresses (not persisted comp rows) go into the
+  // shared geocode cache so the projection can place and measure them.
+  let evidenceResolved = 0;
+  let evidenceAttempted = 0;
+  if (propertyCardId != null) {
+    const record = new PropertyResearchStore().loadForProperty(propertyCardId);
+    const addresses = (record?.evidence ?? [])
+      .filter((item) => item.kind === 'comp')
+      .map((item) => (item.value as { address?: unknown } | null)?.address)
+      .filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
+    if (addresses.length) {
+      const result = await geocodeAddressesToCache(addresses, { fetchImpl: deps.fetchImpl });
+      evidenceResolved = result.resolved;
+      evidenceAttempted = addresses.length;
+    }
+  }
+
+  return {
+    subjectResolved,
+    subjectSource,
+    compsEnriched: enrichment.enriched,
+    evidenceResolved,
+    unresolved: enrichment.unresolved + Math.max(0, evidenceAttempted - evidenceResolved) + (subjectResolved ? 0 : 1),
+  };
+}
