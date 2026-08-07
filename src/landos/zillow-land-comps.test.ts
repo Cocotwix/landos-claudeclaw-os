@@ -61,7 +61,7 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
 
   it('returns retrieved comps when the disposable session yields land listings', async () => {
     const r = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(rawListings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(rawListings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.status).toBe('retrieved');
     expect(r.comps).toHaveLength(1);
@@ -76,7 +76,7 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
       { address: '4500 64th Ave', price: 65_000, acres: 0.4, url: 'unknown' },
     ];
     const r = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(rows) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(rows) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.comps.map((comp) => comp.address)).toEqual(['1810 Wells AVE, LEHIGH ACRES, FL 33972']);
     expect(r.note).toMatch(/rejected 3 row/i);
@@ -84,7 +84,7 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
 
   it('reports blocked (never throws) when anti-bot fires with no listings', async () => {
     const r = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect([], true) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect([], true) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.status).toBe('blocked');
     expect(r.comps).toHaveLength(0);
@@ -97,14 +97,14 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
       { address: '1814 Wells AVE, LEHIGH ACRES, FL 33972', price: 27_000, acres: 0.45, url: 's', status: 'sold' },
     ];
     const result = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(mixed) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(mixed) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(result.comps.map((comp) => comp.address)).toEqual(['1814 Wells AVE, LEHIGH ACRES, FL 33972']);
     expect(result.comps.every((comp) => comp.status === 'sold')).toBe(true);
   });
 
   it('is disabled without a locality (no city/state)', async () => {
-    const r = await fetchZillowLandComps({ subjectAcres: 0.25 }, { force: true, resolveChrome: chrome, connect: (async () => null) as never });
+    const r = await fetchZillowLandComps({ subjectAcres: 0.25 }, { force: true, connect: (async () => null) as never });
     expect(r.status).toBe('disabled');
   });
 
@@ -133,7 +133,7 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
       },
       async close() {},
     });
-    const result = await fetchZillowLandComps(input, { force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: connect as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1 });
+    const result = await fetchZillowLandComps(input, { force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1 });
     expect(result.status).toBe('retrieved');
     expect(result.routeTried).toContain('/lehigh-acres-fl/');
     expect(result.note).toMatch(/automatically correcting 1 wrong-geography route/i);

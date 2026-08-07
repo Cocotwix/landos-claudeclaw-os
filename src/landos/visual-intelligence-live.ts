@@ -22,6 +22,7 @@
 // build never launches or connects to a browser.
 
 import os from 'node:os';
+import { automationBrowserConfig } from './automation-browser.js';
 import path from 'node:path';
 import { landosArtifactPath } from './storage-profile.js';
 import fs from 'node:fs';
@@ -49,7 +50,7 @@ export type LiveSessionStatus = 'live' | 'auth_needed' | 'unreachable' | 'disabl
 export function sessionBlocker(status: LiveSessionStatus): string {
   switch (status) {
     case 'disabled': return 'CDP unavailable — live browser is disabled. Set BROWSER_INTEL_LIVE=1 and Start Browser Intelligence.';
-    case 'unreachable': return 'CDP unavailable — no Chrome answering on the debugging port (:9222). Start Browser Intelligence.';
+    case 'unreachable': return `CDP unavailable — the LandOS automation browser is not answering at ${automationBrowserConfig().endpoint}. Start Browser Intelligence.`;
     case 'auth_needed': return 'auth/session missing — connected, but LandPortal is not logged in. Open LandPortal in the session, sign in, then retry.';
     default: return '';
   }
@@ -299,11 +300,12 @@ export async function defaultLiveVisualDeps(): Promise<LiveVisualDeps> {
       const res = await session.withWorkingPage(async (page) => {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
         await new Promise((r) => setTimeout(r, opts.settleMs));
-        // Activate the tab only inside the LandOS-spawned offscreen window; a
-        // visible pre-existing Chrome is never raised over the operator's work.
-        if (session.browserSpawnedInBackground()) {
-          await (page as { bringToFront?: () => Promise<void> }).bringToFront?.();
-        }
+        // NO ACTIVATION. Raising even an offscreen window makes Chrome the
+        // Windows foreground application and pulls focus out of whatever the
+        // operator is typing into. The owned browser launches with
+        // --disable-backgrounding-occluded-windows, --disable-renderer-
+        // backgrounding and --disable-background-timer-throttling precisely so
+        // an unactivated tab keeps painting and screenshots stay full fidelity.
         await page.screenshot({ path: outPath });
         try { return fs.existsSync(outPath) && fs.statSync(outPath).size > 0; } catch { return false; }
       });

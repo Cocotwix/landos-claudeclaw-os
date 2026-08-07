@@ -8,14 +8,12 @@
 // journey. QA drives its OWN new tab and closes only that tab on dispose;
 // it never closes operator tabs and never touches cookies or credentials.
 
-import { spawn as nodeSpawn } from 'child_process';
 import {
-  CHROME_CANDIDATE_PATHS,
   readSessionConfig,
-  resolveChromePath,
   verifyChromeCdpEndpoint,
   type BrowserSessionConfig,
 } from '../browser-session.js';
+import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwnership } from '../automation-browser.js';
 import type { QaBrowserFactory, QaBrowserSession, QaPageDriver } from './operator-qa-runner.js';
 
 /** Marker appended to every QA-navigated localhost URL so stale tabs from a
@@ -50,6 +48,10 @@ interface PuppeteerBrowser {
 /** Connect ONLY after the endpoint's /json/version proves it is genuine Google
  * Chrome — never Edge or an embedded third-party runtime squatting the port. */
 async function connectCdp(cdpUrl: string): Promise<PuppeteerBrowser | null> {
+  // Ownership, not browser-type: the process behind this port must be OUR
+  // Chrome on OUR profile.
+  const ownership = await verifyAutomationOwnership(automationBrowserConfig());
+  if (!ownership.owned) return null;
   const identity = await verifyChromeCdpEndpoint(cdpUrl);
   if (!identity.ok) return null;
   try {
@@ -65,17 +67,6 @@ async function connectCdp(cdpUrl: string): Promise<PuppeteerBrowser | null> {
   } catch {
     return null;
   }
-}
-
-const withPort = (cdpUrl: string, port: string): string => cdpUrl.replace(/:\d+/, `:${port}`);
-
-/** Candidate CDP endpoints: the configured port first, then fallbacks so a
- * foreign runtime squatting the default port never blocks (or receives) QA. */
-function candidateCdpUrls(config: BrowserSessionConfig): string[] {
-  const configured = config.cdpUrl;
-  const port = configured.match(/:(\d+)/)?.[1] ?? '9222';
-  const fallbacks = ['9223', '9224', '9225'].filter((candidate) => candidate !== port);
-  return [configured, ...fallbacks.map((candidate) => withPort(configured, candidate))];
 }
 
 /** Close stale tabs left by a previously crashed/killed QA run. Only pages
@@ -100,23 +91,16 @@ async function closeStaleQaTabs(browser: PuppeteerBrowser): Promise<number> {
   return closed;
 }
 
-function launchChrome(config: BrowserSessionConfig, cdpUrl: string): string | null {
-  const chrome = resolveChromePath(config.chromePath);
-  if (!chrome.path) return `Google Chrome not found. Checked: ${[config.chromePath, ...CHROME_CANDIDATE_PATHS].filter(Boolean).join('; ')}`;
-  const port = cdpUrl.match(/:(\d+)/)?.[1] ?? '9222';
-  const child = nodeSpawn(
-    chrome.path,
-    [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${config.profileDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      'about:blank',
-    ],
-    { detached: true, stdio: 'ignore' },
-  );
-  child.unref();
-  return null;
+/**
+ * Start the OWNED automation browser. QA never launches a Chrome of its own.
+ *
+ * The removed implementation spawned Chrome with no window-position flags, so
+ * the QA browser opened onscreen in the foreground; and it fell back to port
+ * 9222, which on a real workstation belongs to whatever grabbed it first.
+ */
+async function launchChrome(): Promise<string | null> {
+  const result = await launchAutomationBrowser();
+  return result.error;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -218,37 +202,22 @@ function wrapPage(page: PuppeteerPage): QaPageDriver {
 export function realBrowserFactory(options: { headed?: boolean } = {}): QaBrowserFactory {
   void options;
   return async (): Promise<QaBrowserSession> => {
-    const config = readSessionConfig();
-    const candidates = candidateCdpUrls(config);
+    // ONE owned endpoint. The removed implementation scanned ports 9222-9225 and
+    // attached to whatever genuine Chrome answered first — which is precisely
+    // "a runner that can fall back to an arbitrary browser". If the operator's
+    // Chrome had ever carried a debugging port in that range, QA would have
+    // driven it, and closed tabs in it.
+    const owned = automationBrowserConfig();
+    const connectedUrl = owned.endpoint;
+    const launchError = await launchChrome();
+    if (launchError) throw new Error(launchError);
     let browser: PuppeteerBrowser | null = null;
-    let connectedUrl: string | null = null;
-    const squatters: string[] = [];
-    let launchTarget: string | null = null;
-    for (const cdpUrl of candidates) {
-      const identity = await verifyChromeCdpEndpoint(cdpUrl);
-      if (identity.ok) {
-        browser = await connectCdp(cdpUrl);
-        if (browser) { connectedUrl = cdpUrl; break; }
-      } else if (identity.answering) {
-        squatters.push(`${cdpUrl}: ${identity.reason}`);
-      } else if (!launchTarget) {
-        launchTarget = cdpUrl; // first silent port — safe for our own launch
-      }
-    }
-    if (!browser && launchTarget) {
-      const launchError = launchChrome(config, launchTarget);
-      if (launchError) throw new Error(launchError);
-      for (let attempt = 0; attempt < 30 && !browser; attempt += 1) {
-        await sleep(500);
-        browser = await connectCdp(launchTarget);
-      }
-      if (browser) connectedUrl = launchTarget;
+    for (let attempt = 0; attempt < 30 && !browser; attempt += 1) {
+      browser = await connectCdp(connectedUrl);
+      if (!browser) await sleep(500);
     }
     if (!browser) {
-      throw new Error([
-        `no verified Google Chrome reachable on any candidate CDP endpoint (${candidates.join(', ')}).`,
-        squatters.length ? `Foreign runtimes refused: ${squatters.join(' | ')}` : 'Launch failed or the ports are blocked.',
-      ].join(' '));
+      throw new Error(`the LandOS automation browser at ${connectedUrl} (profile ${owned.profileDir}) could not be reached. LandOS will not attach to any other browser.`);
     }
     const staleClosed = await closeStaleQaTabs(browser);
     const page = await browser.newPage();

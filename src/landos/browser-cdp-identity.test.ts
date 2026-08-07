@@ -61,12 +61,18 @@ describe('CDP endpoint identity classification', () => {
 });
 
 describe('browser layers enforce the identity gate and QA tab hygiene (source contract)', () => {
-  it('qa-browser verifies the endpoint before every connect and scans fallback ports', () => {
-    expect(QA_BROWSER).toContain('verifyChromeCdpEndpoint');
+  it('qa-browser connects ONLY to the owned endpoint and never scans for one', () => {
+    // This contract is deliberately inverted from its previous form. QA used to
+    // scan ports 9222-9225 and attach to the first genuine Chrome that answered
+    // — a runner that could fall back to an arbitrary browser, including the
+    // operator's, and close tabs in it. The scan is gone.
+    expect(QA_BROWSER).not.toContain('candidateCdpUrls');
+    expect(QA_BROWSER).toContain('automationBrowserConfig');
+
     const connectBody = QA_BROWSER.match(/async function connectCdp[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(connectBody).toContain('verifyChromeCdpEndpoint');
-    expect(connectBody.indexOf('verifyChromeCdpEndpoint')).toBeLessThan(connectBody.indexOf("import('puppeteer-core')"));
-    expect(QA_BROWSER).toContain('candidateCdpUrls');
+    expect(connectBody).toContain('verifyAutomationOwnership');
+    // Ownership is proven BEFORE puppeteer is ever handed the endpoint.
+    expect(connectBody.indexOf('verifyAutomationOwnership')).toBeLessThan(connectBody.indexOf("import('puppeteer-core')"));
   });
 
   it('QA-navigated localhost pages carry the QA marker and stale marked tabs are closed on connect', () => {
@@ -87,11 +93,21 @@ describe('browser layers enforce the identity gate and QA tab hygiene (source co
     expect(disposeBody).toContain('disconnect');
   });
 
-  it('browser-session refuses to attach or launch when a foreign runtime answers the port', () => {
+  it('browser-session attaches only to the browser LandOS PROVES it owns', () => {
+    // Superseded the old "is a foreign runtime answering?" contract. Checking
+    // the browser TYPE was never enough: the operator's Chrome is genuine
+    // Google Chrome, so a type-only gate would have attached to it the moment
+    // it carried a debugging port. Ownership is now proven against the exact
+    // --user-data-dir, and both paths fail closed rather than falling back.
     const ensureBody = SESSION.match(/export async function ensureBrowserSession[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(ensureBody).toContain('verifyChromeCdpEndpoint');
-    expect(ensureBody).toMatch(/identity\.answering && !identity\.ok/);
+    expect(ensureBody).toContain('verifyAutomationOwnership');
+    expect(ensureBody).toMatch(/if \(!ownership\.owned\)/);
+    expect(ensureBody).toContain("state.status = 'unreachable'");
+
     const startBody = SESSION.match(/export async function startBrowserSession[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(startBody).toContain('verifyChromeCdpEndpoint');
+    // Launching is delegated to the single owner module; this module no longer
+    // spawns Chrome, so it no longer carries its own identity gate.
+    expect(startBody).toContain('launchAutomationBrowser');
+    expect(startBody).not.toContain('--remote-debugging-port');
   });
 });

@@ -1108,11 +1108,11 @@ async function doVerifySweep(opts: VerifySweepOptions): Promise<VerifySweepResul
         return false;
       })(30 * 60 * 1000);
       if (!settled) { dlog('grid never settled within 30 minutes'); return { stalled: true } as const; }
-      // Activate the tab only inside the LandOS-spawned offscreen window; a
-      // visible pre-existing Chrome is never raised over the operator's work.
-      if (browserSpawnedInBackground()) {
-        await (page.bringToFront?.() ?? Promise.resolve()).catch(() => { /* best effort */ });
-      }
+      // NO ACTIVATION. Raising even an offscreen window makes Chrome the
+      // Windows foreground application and pulls focus out of whatever the
+      // operator is typing into. The grid has already been polled to a settled
+      // state above, and the owned browser's anti-throttle flags keep an
+      // unactivated tab running, so activation bought nothing here.
 
       let visited = 0;
       for (const st of targetStates) {

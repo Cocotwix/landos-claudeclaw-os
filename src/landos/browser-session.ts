@@ -21,6 +21,7 @@ import { spawn as nodeSpawn } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwnership } from './automation-browser.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
 import { contextZoomOutSteps, parseAcresFromFields, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN } from './parcel-visual-framing.js';
@@ -129,12 +130,20 @@ export function readSessionConfig(env?: Record<string, string | undefined>): Bro
   const get = (k: string) => (proc[k] ?? fileVals[k] ?? '').trim();
   const flag = get('BROWSER_INTEL_LIVE').toLowerCase();
   const fg = get('BROWSER_INTEL_FOREGROUND').toLowerCase();
+  // The endpoint, profile and executable are OWNED by automation-browser.ts —
+  // this module never invents its own. That is why the old
+  // `|| 'http://127.0.0.1:9222'` default is gone: 9222 is the port every other
+  // tool grabs (msedgewebview2 holds it on this machine), and defaulting to it
+  // is how automation ends up pointed at a browser LandOS does not own.
+  const owned = automationBrowserConfig(env);
   return {
     enabled: flag === '1' || flag === 'true' || flag === 'yes',
-    cdpUrl: get('BROWSER_INTEL_CDP_URL') || 'http://127.0.0.1:9222',
+    cdpUrl: owned.endpoint,
     screenshotDir: get('BROWSER_INTEL_SHOT_DIR') || landosArtifactPath('browser-shots'),
-    chromePath: get('BROWSER_INTEL_CHROME_PATH') || undefined,
-    profileDir: get('BROWSER_INTEL_PROFILE_DIR') || path.join(os.homedir(), '.landos-chrome'),
+    chromePath: owned.chromePath ?? undefined,
+    profileDir: owned.profileDir,
+    // Retained for the operator's explicit "Open LandPortal" login action only.
+    // Research never reads it; there is no foreground research path.
     foreground: fg === '1' || fg === 'true' || fg === 'yes',
   };
 }
@@ -220,9 +229,28 @@ async function releaseTempSessionPage(page: PageLike | null): Promise<void> {
 }
 
 /** Create one opaque ownership boundary for a Deal Intelligence run. */
+/**
+ * Every workflow scope that has been created and not yet cleaned up.
+ *
+ * Scope-owned cleanup alone left tabs behind: work that runs AFTER a run's
+ * cleanup (the post-run visual capture) opens fresh pages, and pages opened by
+ * transports that never registered an owner were invisible to it. Two
+ * sequential properties grew the tab set from 1 to 6.
+ *
+ * Counting live scopes lets the LAST run standing sweep everything the browser
+ * is still holding, without a concurrent run's live page ever being closed
+ * underneath it.
+ */
+const activeWorkflowScopes = new Set<BrowserWorkflowScope>();
+
 export function createBrowserWorkflowScope(label: string): BrowserWorkflowScope {
-  return Symbol(label);
+  const scope = Symbol(label);
+  activeWorkflowScopes.add(scope);
+  return scope;
 }
+
+/** Test-only: how many runs currently hold a browser ownership scope. */
+export function _activeWorkflowScopeCount(): number { return activeWorkflowScopes.size; }
 
 /** Run async work inside a browser ownership boundary. AsyncLocalStorage keeps
  * the token attached to every specialist continuation without route globals. */
@@ -276,8 +304,13 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
   // Chrome — Edge, Lenovo Vantage's embedded runtime, an Electron shell — we
   // refuse to attach rather than drive a browser LandOS does not own.
   if (!deps.puppeteer) {
-    const identity = await verifyChromeCdpEndpoint(cfg.cdpUrl);
-    if (identity.answering && !identity.ok) {
+    // OWNERSHIP, not merely browser-type. The old check asked "is a Chrome
+    // answering?" and would have attached to the operator's own Chrome the
+    // moment it had a debugging port. This asks "is this MY Chrome, on MY
+    // profile?" and fails closed when it is not.
+    const ownership = await verifyAutomationOwnership(automationBrowserConfig());
+    if (!ownership.owned) {
+      if (ownership.answering) logger.warn({ reason: ownership.reason }, 'browser_session_refused_unowned_endpoint');
       state.browser = null;
       state.status = 'unreachable';
       return 'unreachable';
@@ -500,6 +533,49 @@ export async function closeSurplusSessionPages(
     if (typeof closable.close !== 'function') continue;
     try { await closable.close(); closed += 1; lanePageRegistry.delete(page); } catch { /* already gone */ }
   }
+
+  // RELEASE THE CACHED LANDPORTAL WORKING TAB. It used to be held open across
+  // leads, leaving a landportal.com tab after every run. Nothing is lost:
+  // LandPortal authentication lives in the persistent profile on disk, not in
+  // an open tab, so the next run opens a fresh tab and is still signed in.
+  if (state.workingPage) {
+    const working = state.workingPage as unknown as { close?: () => Promise<void> };
+    if (typeof working.close === 'function') {
+      try { await working.close(); closed += 1; } catch { /* already gone */ }
+    }
+    lanePageRegistry.delete(state.workingPage);
+    state.workingPage = null;
+  }
+
+  // FINAL SWEEP. When this was the last run holding a scope, nothing else can
+  // legitimately still own a page, so everything except one inert control page
+  // is closed. Without this, pages opened after a run's own cleanup survived
+  // indefinitely and accumulated run over run.
+  activeWorkflowScopes.delete(scope);
+  if (activeWorkflowScopes.size === 0) {
+    let remaining: PageLike[] = [];
+    try { remaining = await browser.pages(); } catch { remaining = []; }
+    // Chrome exits with its last page, so exactly one is RETAINED rather than
+    // closed-and-reopened: retaining avoids creating a page at all, and page
+    // creation is itself an activation this module must never perform.
+    let kept = false;
+    for (const page of remaining) {
+      let url = '';
+      try { url = page.url(); } catch { /* treat as closable */ }
+      if (!kept) {
+        kept = true;
+        if (url && url !== 'about:blank') {
+          try { await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5_000 }); } catch { /* inert either way */ }
+        }
+        lanePageRegistry.delete(page);
+        continue;
+      }
+      const closable = page as unknown as { close?: () => Promise<void> };
+      if (typeof closable.close !== 'function') continue;
+      try { await closable.close(); closed += 1; lanePageRegistry.delete(page); } catch { /* already gone */ }
+    }
+  }
+
   let after = pages.length - closed;
   try { after = (await browser.pages()).length; } catch { /* keep the computed count */ }
   return {
@@ -556,11 +632,6 @@ export function resolveChromePath(configured?: string): { path: string | null; c
   return { path: null, checked };
 }
 
-function portFromCdp(cdpUrl: string): number {
-  const m = cdpUrl.match(/:(\d+)/);
-  return m ? Number(m[1]) : 9222;
-}
-
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface StartSessionDeps extends SessionDeps {
@@ -601,48 +672,37 @@ export async function startBrowserSession(deps: StartSessionDeps = {}): Promise<
   if (pre === 'live' || pre === 'auth_needed') {
     return { status: pre, launched: false, reused: true, chromePath: null, profileDir: cfg.profileDir, error: null, health: await health0() };
   }
-  // A foreign runtime squatting on the port would swallow the launch: Chrome
-  // could not bind it, and attaching would drive a browser we do not own.
-  if (!deps.puppeteer) {
-    const identity = await verifyChromeCdpEndpoint(cfg.cdpUrl);
-    if (identity.answering && !identity.ok) {
-      return {
-        status: 'unreachable', launched: false, reused: false, chromePath: null, profileDir: cfg.profileDir,
-        error: `${identity.reason} Set BROWSER_INTEL_CDP_URL to a free port (for example http://127.0.0.1:9223) and restart LandOS.`,
-        health: await health0(),
-      };
-    }
-  }
-  // Launch Google Chrome with the LandOS profile + remote debugging.
-  const chrome = resolveChromePath(cfg.chromePath);
-  if (!chrome.path) {
+  // THE ONLY LAUNCH PATH. This module no longer spawns Chrome itself: the
+  // automation-browser owner does, always offscreen, always on the owned
+  // profile and port, and it refuses to attach to anything it cannot prove it
+  // owns. There is deliberately no foreground variant — a research run must
+  // never be able to put a window on the operator's screen.
+  let launchAttempted = false;
+  const owned = await launchAutomationBrowser({
+    // Honour an injected session config (tests) by projecting it onto the
+    // owner's shape, so the launch still goes through the single owned path.
+    config: {
+      endpoint: cfg.cdpUrl,
+      port: Number(cfg.cdpUrl.match(/:(\d+)/)?.[1] ?? automationBrowserConfig().port),
+      profileDir: cfg.profileDir,
+      chromePath: cfg.chromePath ?? automationBrowserConfig().chromePath,
+      chromeChecked: [],
+    },
+    spawn: deps.spawn ? (cmd: string, args: string[]) => { launchAttempted = true; deps.spawn!(cmd, args); return {}; } : undefined,
+    // With an injected puppeteer there is no real browser to interrogate, so
+    // ownership is asserted by the injected connection instead of the OS.
+    verifyOwnership: deps.puppeteer
+      ? async () => ({ owned: launchAttempted, answering: launchAttempted, pid: null, browser: 'injected', reason: launchAttempted ? null : 'not launched' })
+      : undefined,
+  });
+  if (owned.error) {
     return {
-      status: 'unreachable', launched: false, reused: false, chromePath: null, profileDir: cfg.profileDir,
-      error: `Google Chrome was not found. Checked: ${chrome.checked.join(' ; ')}. Install Chrome or set BROWSER_INTEL_CHROME_PATH. (Edge is never used.)`,
-      health: await health0(),
+      status: 'unreachable', launched: false, reused: false, chromePath: owned.chromePath, profileDir: owned.profileDir,
+      error: owned.error, health: await health0(),
     };
   }
-  const port = portFromCdp(cfg.cdpUrl);
-  const spawnImpl = deps.spawn ?? defaultSpawn;
-  // BACKGROUND BY DEFAULT: a Chrome LandOS launches itself must never open over
-  // or steal focus from the operator's work. The window goes far offscreen and
-  // keeps rendering (anti-throttle flags); the persistent profile keeps the
-  // LandPortal login either way. BROWSER_INTEL_FOREGROUND=1 restores a visible
-  // window for manual operator sessions (e.g. a one-time captcha/2FA login).
-  const background = cfg.foreground !== true;
-  try {
-    spawnImpl(chrome.path, [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${cfg.profileDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      ...(background ? BACKGROUND_CHROME_ARGS : []),
-      LANDPORTAL_SESSION_URL,
-    ]);
-    state.launchedBackground = background;
-  } catch (err) {
-    return { status: 'unreachable', launched: false, reused: false, chromePath: chrome.path, profileDir: cfg.profileDir, error: `Failed to launch Chrome: ${(err as Error)?.message ?? 'unknown'}.`, health: await health0() };
-  }
+  state.launchedBackground = true;
+  const chrome = { path: owned.chromePath };
   // Poll for the CDP endpoint to come up, then connect.
   const maxPolls = deps.maxPolls ?? 20;
   const pollMs = deps.pollMs ?? 500;

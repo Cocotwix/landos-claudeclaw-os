@@ -16,7 +16,8 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
-import { resolveChromePath, readSessionConfig } from './browser-session.js';
+import { readSessionConfig } from './browser-session.js';
+import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { parseListingStatus, type CompStatus } from './comp-extraction.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
@@ -66,7 +67,16 @@ export interface RedfinFetchInput {
   dateWindowMonths?: 12 | 24;
 }
 
-export interface RawRedfinListing { address: string | null; price: number | null; acres: number | null; sqftLot: number | null; residential: boolean; url: string | null; status?: string | null }
+export interface RawRedfinListing {
+  address: string | null;
+  price: number | null;
+  acres: number | null;
+  sqftLot: number | null;
+  residential: boolean;
+  url: string | null;
+  status?: string | null;
+  thumbnailUrl?: string | null;
+}
 
 // ── Pure helpers (unit-tested; no browser) ──────────────────────────────────
 
@@ -116,12 +126,30 @@ export function normalizeRedfinListings(
     seen.add(key);
     const parsed = r.status ? parseListingStatus(r.status) : 'unknown';
     const status: CompStatus = parsed === 'unknown' && mode === 'active' ? 'active' : parsed;
+    const explicitSoldDate = mode === 'sold' && r.status
+      ? (() => {
+          const match = r.status.match(/\bsold(?:\s+on)?\s+([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\b/i);
+          if (!match) return null;
+          const parsedDate = Date.parse(match[1]);
+          return Number.isFinite(parsedDate) ? new Date(parsedDate).toISOString().slice(0, 10) : null;
+        })()
+      : null;
     // A sold-filter URL is a search request, not transaction evidence. Redfin
-    // sometimes returns an active or unlabeled card on that page; neither may
-    // be relabeled as a closed sale.
-    if (mode === 'sold' && status !== 'sold') continue;
+    // sometimes returns a current home, active or unlabeled card on that page.
+    // A closed land sale therefore needs its own explicit sold date.
+    if (mode === 'sold' && (status !== 'sold' || !explicitSoldDate)) continue;
     if (mode === 'active' && status === 'sold') continue;
-    out.push({ address: r.address.replace(/\s+/g, ' ').trim(), price, acres, pricePerAcre: acres ? Math.round(price / acres) : null, status, url: r.url ?? null, source: 'Redfin' });
+    out.push({
+      address: r.address.replace(/\s+/g, ' ').trim(),
+      price,
+      acres,
+      pricePerAcre: acres ? Math.round(price / acres) : null,
+      status,
+      url: r.url ?? null,
+      source: 'Redfin',
+      soldDate: explicitSoldDate,
+      thumbnailUrl: r.thumbnailUrl ?? null,
+    });
   }
   return out.slice(0, 8);
 }
@@ -129,11 +157,15 @@ export function normalizeRedfinListings(
 // ── Disposable-profile browser capture (injectable) ─────────────────────────
 
 export interface RedfinFetchDeps {
-  resolveChrome?: () => { path: string | null; checked: string[] };
-  spawn?: (cmd: string, args: string[]) => { kill?: () => void };
+  /**
+   * Open a disposable, cookie-isolated session. The default is an incognito
+   * context of the ONE owned automation browser.
+   *
+   * There is deliberately no `spawn`, `resolveChrome` or `port` dep any more:
+   * this lane may not launch a browser. Every alternate Chrome launch path was
+   * removed, not merely backgrounded.
+   */
   connect?: (browserURL: string) => Promise<RedfinBrowserLike | null>;
-  /** Debug port for the DISPOSABLE Redfin Chrome — MUST differ from LandPortal (9222) and Zillow (9334). */
-  port?: number;
   timeoutMs?: number;
   settleMs?: number;
   /** Wait for location autocomplete suggestions (default 2500ms; tests shorten). */
@@ -152,18 +184,13 @@ export interface RedfinBrowserLike { newPage(): Promise<RedfinPageLike>; close()
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const defaultSpawn = (cmd: string, args: string[]) => {
-  const child = nodeSpawn(cmd, args, { detached: true, stdio: 'ignore' });
-  child.unref();
-  return { kill: () => { try { child.kill(); } catch { /* ignore */ } } };
-};
-
-async function defaultConnect(browserURL: string): Promise<RedfinBrowserLike | null> {
+/** A disposable incognito context inside the owned automation browser. Returns
+ *  null (never a fallback browser) when LandOS cannot prove it owns one. */
+async function defaultConnect(_browserURL: string): Promise<RedfinBrowserLike | null> {
   try {
-    const mod = (await import('puppeteer-core')) as unknown as { connect?: (o: { browserURL: string }) => Promise<RedfinBrowserLike>; default?: { connect: (o: { browserURL: string }) => Promise<RedfinBrowserLike> } };
-    const connect = mod.connect ?? mod.default?.connect;
-    if (!connect) return null;
-    return await connect({ browserURL });
+    // The handle is a real puppeteer context+page behind a narrower structural
+    // type; the cast is the type boundary, not a behavioural one.
+    return await openDisposableContextHandle('redfin') as unknown as RedfinBrowserLike;
   } catch {
     return null;
   }
@@ -213,8 +240,13 @@ const EXTRACT_REDFIN = (): RawRedfinListing[] => {
     // Residential ONLY when a POSITIVE bed/bath count is present (Redfin land cards
     // still render "— beds / — baths" placeholders, which must NOT flag as a home).
     const residential = /\b[1-9]\d*\s*(?:beds?|bd)\b/i.test(txt) || /\b[1-9]\d*\s*(?:baths?|ba)\b/i.test(txt);
-    const link = ((c.querySelector('a[href*="/FL/"],a[href*="/home/"],a[href]') || {}) as any).href || null;
-    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, sqftLot, address, residential, url: link, status: statusText }); }
+    const link = ((c.querySelector('a[href*="/home/"],a[href]') || {}) as any).href || null;
+    const image: any = c.querySelector('img[src],img[data-src]');
+    const thumbnailUrl = (image?.currentSrc || image?.src || image?.getAttribute?.('data-src') || '').trim() || null;
+    if (price && address && !seen.has(address)) {
+      seen.add(address);
+      out.push({ price, acres, sqftLot, address, residential, url: link, status: statusText, thumbnailUrl });
+    }
   }
   return out;
 };
@@ -311,26 +343,21 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
   }
   if (!state || queries.length === 0) return { status: 'disabled', comps: [], note: 'No coordinates, ZIP, city, or county with state for a Redfin land search.', routeTried: '', filtersUsed };
 
-  const chrome = (deps.resolveChrome ?? (() => resolveChromePath()))();
-  if (!chrome.path) return { status: 'disabled', comps: [], note: 'Google Chrome not found for a disposable Redfin session.', routeTried: '', filtersUsed };
-
-  const spawnImpl = deps.spawn ?? defaultSpawn;
+  // Redfin runs in a DISPOSABLE INCOGNITO CONTEXT of the ONE owned automation
+  // browser. Its former throwaway-profile Chrome had no remembered window
+  // position, so it opened centre-screen in the foreground over the operator's
+  // work for the duration of the lane.
   const connect = deps.connect ?? defaultConnect;
-  const port = deps.port ?? 9335; // separate from LandPortal (9222) and Zillow (9334)
   const timeoutMs = deps.timeoutMs ?? 30000;
   const settleMs = deps.settleMs ?? 5000;
   const suggestionSettleMs = deps.suggestionSettleMs ?? 2500;
   const scrollSettleMs = deps.scrollSettleMs ?? 800;
-  const profileDir = path.join(os.tmpdir(), `landos-redfin-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
   let routeTried = REDFIN_HOME;
 
-  let child: { kill?: () => void } | null = null;
   let browser: RedfinBrowserLike | null = null;
   try {
-    try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* ignore */ }
-    child = spawnImpl(chrome.path, [`--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', '--disable-blink-features=AutomationControlled', 'about:blank']);
-    for (let i = 0; i < 12 && !browser; i++) { browser = await connect(`http://127.0.0.1:${port}`); if (!browser) await sleep(600); }
-    if (!browser) return { status: 'error', comps: [], note: 'Disposable Chrome for Redfin did not start.', routeTried, filtersUsed };
+    browser = await connect(automationBrowserConfig().endpoint);
+    if (!browser) return { status: 'error', comps: [], note: 'The LandOS automation browser is not available for Redfin.', routeTried, filtersUsed };
 
     const page = await browser.newPage();
     try { await page.setViewport?.({ width: 1400, height: 950 }); } catch { /* best-effort */ }
@@ -370,8 +397,8 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
   } catch (e) {
     return { status: 'error', comps: [], note: `Redfin capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried, filtersUsed };
   } finally {
+    // Disposes the incognito context and every page it handed out — on success,
+    // error, timeout and early return alike. Never closes the owned browser.
     try { if (browser) await browser.close(); } catch { /* ignore */ }
-    try { child?.kill?.(); } catch { /* ignore */ }
-    try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }

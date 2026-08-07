@@ -301,7 +301,10 @@ describe('Start Browser Intelligence (launch + connect, Chrome only)', () => {
     expect(args).not.toContain('--headless');
   });
 
-  it('BROWSER_INTEL_FOREGROUND opts back into a visible window (no offscreen flags)', async () => {
+  it('CANNOT be talked into a visible window — foreground is no longer reachable', async () => {
+    // There is deliberately no onscreen launch any more. A window that can be
+    // placed onscreen is a window that can cover the operator's work, and the
+    // old BROWSER_INTEL_FOREGROUND opt-out was a standing way to get one.
     const calls: Array<{ cmd: string; args: string[] }> = [];
     let up = false;
     const spawn: SpawnLike = (cmd, args) => { up = true; calls.push({ cmd, args }); };
@@ -310,9 +313,8 @@ describe('Start Browser Intelligence (launch + connect, Chrome only)', () => {
     const r = await startBrowserSession({ config: { ...LIVE, chromePath: process.execPath, foreground: true }, puppeteer: pup, spawn, maxPolls: 5, pollMs: 1 });
     expect(r.launched).toBe(true);
     const args = calls[0].args.join(' ');
-    expect(args).not.toContain('--window-position');
-    expect(args).not.toContain('--disable-backgrounding-occluded-windows');
-    expect(args).toContain('--remote-debugging-port=9222'); // core flags intact
+    expect(args).toContain('--window-position=-32000,-32000');
+    expect(args).toContain('--disable-backgrounding-occluded-windows');
   });
 
   it('background is the DEFAULT: foreground only via BROWSER_INTEL_FOREGROUND', () => {

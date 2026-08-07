@@ -259,7 +259,7 @@ export interface PersistedVisualReaders {
 /** Exact, actionable blocker for sources that require a live authenticated
  *  browser session that is not wired in this environment. */
 export const LIVE_BROWSER_BLOCKER =
-  'No authenticated live-browser backend connected. Requires Chrome CDP on :9222 + BROWSER_INTEL_LIVE=1 + a signed-in LandPortal session, then a server restart. No visual was fabricated.';
+  'No authenticated live-browser backend connected. Requires the LandOS automation browser on its owned CDP endpoint + BROWSER_INTEL_LIVE=1 + a signed-in LandPortal session, then a server restart. No visual was fabricated.';
 
 function classifyGoogleService(service: string): VisualSourceKind | null {
   const s = service.toLowerCase();

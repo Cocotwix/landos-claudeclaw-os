@@ -15,6 +15,7 @@
 // provider absence, never fabricated rows).
 
 import { getLandosDb } from './db.js';
+import { automationBrowserConfig, verifyAutomationOwnership } from './automation-browser.js';
 import { US_STATES, type AcreageBand } from './market-matrix.js';
 import { drillDeepPageState, isSupportedBand } from './browser-playbook-landportal-market.js';
 import { LP, withArgs, clickExactText, setSelect, readLoginLike, dismissDialogs, gridDataReady } from './browser-playbook-landportal-market-live.js';
@@ -146,7 +147,14 @@ export async function runBandCollection(band: AcreageBand, opts: BandRunOptions 
   const snap = getOrCreateMrSnapshot({ quarter, filters: fixedInitialFilters(band), provider: MR_PROVIDER });
 
   const puppeteer = (await import('puppeteer-core')) as unknown as { connect(o: object): Promise<{ newPage(): Promise<unknown>; disconnect(): Promise<void> }> };
-  const browser = await puppeteer.connect({ browserURL: opts.cdpUrl ?? 'http://127.0.0.1:9222', protocolTimeout: 120_000, defaultViewport: null });
+  // The OWNED endpoint, never a bare 9222 default. On a real workstation 9222
+  // belongs to whatever grabbed it first (msedgewebview2, here), and connecting
+  // blind is how automation ends up driving a browser LandOS does not own.
+  const owned = automationBrowserConfig();
+  const endpoint = opts.cdpUrl ?? owned.endpoint;
+  const ownership = await verifyAutomationOwnership(owned);
+  if (!ownership.owned) throw new Error(ownership.reason ?? 'The LandOS automation browser is not available.');
+  const browser = await puppeteer.connect({ browserURL: endpoint, protocolTimeout: 120_000, defaultViewport: null });
   const page = await browser.newPage() as {
     goto(u: string, o?: object): Promise<unknown>;
     evaluate<T>(fn: ((...a: never[]) => T) | string, ...args: unknown[]): Promise<T>;

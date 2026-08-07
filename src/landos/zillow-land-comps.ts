@@ -14,7 +14,8 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
-import { resolveChromePath, readSessionConfig } from './browser-session.js';
+import { readSessionConfig } from './browser-session.js';
+import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { parseZillowStructured, parseListingStatus, zillowListResults, type CompStatus } from './comp-extraction.js';
 import { addressStateCode } from './comp-registry.js';
 
@@ -218,14 +219,15 @@ export function normalizeZillowListings(
 // ── Disposable-profile browser capture (injectable) ─────────────────────────
 
 export interface ZillowFetchDeps {
-  /** Resolve the Chrome executable (default = shared resolver). */
-  resolveChrome?: () => { path: string | null; checked: string[] };
-  /** Launch Chrome detached (default = child_process spawn). */
-  spawn?: (cmd: string, args: string[]) => { kill?: () => void };
-  /** Connect puppeteer to the disposable Chrome (default = puppeteer-core). */
+  /**
+   * Open a disposable, cookie-isolated session. The default is an incognito
+   * context of the ONE owned automation browser.
+   *
+   * There is deliberately no `spawn`, `resolveChrome` or `port` dep any more:
+   * this lane may not launch a browser. Every alternate Chrome launch path was
+   * removed, not merely backgrounded.
+   */
   connect?: (browserURL: string) => Promise<ZillowBrowserLike | null>;
-  /** Debug port for the DISPOSABLE Chrome — MUST differ from BROWSER_INTEL_CDP_URL. */
-  port?: number;
   timeoutMs?: number;
   /** Settle after navigation before reading (default 6000ms; tests pass small). */
   settleMs?: number;
@@ -246,18 +248,13 @@ export interface ZillowBrowserLike { newPage(): Promise<ZillowPageLike>; close()
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const defaultSpawn = (cmd: string, args: string[]) => {
-  const child = nodeSpawn(cmd, args, { detached: true, stdio: 'ignore' });
-  child.unref();
-  return { kill: () => { try { child.kill(); } catch { /* ignore */ } } };
-};
-
-async function defaultConnect(browserURL: string): Promise<ZillowBrowserLike | null> {
+/** A disposable incognito context inside the owned automation browser. Returns
+ *  null (never a fallback browser) when LandOS cannot prove it owns one. */
+async function defaultConnect(_browserURL: string): Promise<ZillowBrowserLike | null> {
   try {
-    const mod = (await import('puppeteer-core')) as unknown as { connect?: (o: { browserURL: string }) => Promise<ZillowBrowserLike>; default?: { connect: (o: { browserURL: string }) => Promise<ZillowBrowserLike> } };
-    const connect = mod.connect ?? mod.default?.connect;
-    if (!connect) return null;
-    return await connect({ browserURL });
+    // The handle is a real puppeteer context+page behind a narrower structural
+    // type; the cast is the type boundary, not a behavioural one.
+    return await openDisposableContextHandle('zillow') as unknown as ZillowBrowserLike;
   } catch {
     return null;
   }
@@ -417,23 +414,19 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
   }
   if (!state || routes.length === 0) return finish({ status: 'disabled', comps: [], note: 'No coordinates, ZIP, city, or county with state for a Zillow land search.', routeTried: url });
 
-  const chrome = (deps.resolveChrome ?? (() => resolveChromePath()))();
-  if (!chrome.path) return finish({ status: 'disabled', comps: [], note: 'Google Chrome not found for a disposable Zillow session.', routeTried: url });
-
-  const spawnImpl = deps.spawn ?? defaultSpawn;
+  // Zillow runs in a DISPOSABLE INCOGNITO CONTEXT of the ONE owned automation
+  // browser. It used to launch its own Chrome on a throwaway profile — and a
+  // throwaway profile remembers no window position, so that Chrome opened
+  // centre-screen in the foreground, over the operator's work, for the length of
+  // the lane. The context gives the same cookie isolation with no second
+  // process and no window that can appear.
   const connect = deps.connect ?? defaultConnect;
-  // Separate debug port from the LandPortal session (BROWSER_INTEL_CDP_URL = 9222).
-  const port = deps.port ?? 9334;
   const timeoutMs = deps.timeoutMs ?? 30000;
-  const profileDir = path.join(os.tmpdir(), `landos-zillow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
 
-  let child: { kill?: () => void } | null = null;
   let browser: ZillowBrowserLike | null = null;
   try {
-    try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* ignore */ }
-    child = spawnImpl(chrome.path, [`--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', '--disable-blink-features=AutomationControlled', 'about:blank']);
-    for (let i = 0; i < 12 && !browser; i++) { browser = await connect(`http://127.0.0.1:${port}`); if (!browser) await sleep(600); }
-    if (!browser) return finish({ status: 'error', comps: [], note: 'Disposable Chrome for Zillow did not start.', routeTried: url });
+    browser = await connect(automationBrowserConfig().endpoint);
+    if (!browser) return finish({ status: 'error', comps: [], note: 'The LandOS automation browser is not available for Zillow.', routeTried: url });
 
     const settleMs = deps.settleMs ?? 6000;
     const scrollSettleMs = deps.scrollSettleMs ?? 800;
@@ -516,8 +509,8 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
   } catch (e) {
     return finish({ status: 'error', comps: [], note: `Zillow capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried: url });
   } finally {
+    // Disposes the incognito context and every page it handed out — on success,
+    // error, timeout and early return alike. Never closes the owned browser.
     try { if (browser) await browser.close(); } catch { /* ignore */ }
-    try { child?.kill?.(); } catch { /* ignore */ }
-    try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }

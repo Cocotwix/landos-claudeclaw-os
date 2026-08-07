@@ -70,7 +70,7 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
 
   it('retrieves land comps via the search box → resolved city → land page', async () => {
     const r = await fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(HREFS, listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(HREFS, listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.status).toBe('retrieved');
     expect(r.comps).toHaveLength(1);
@@ -79,7 +79,7 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
 
   it('uses the public sold-land filter but refuses to mark ambiguous rows sold', async () => {
     const r = await fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(HREFS, listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(HREFS, listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.filtersUsed).toContain('include=sold');
     expect(r.routeTried).toContain('include=sold');
@@ -89,7 +89,7 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
   it('accepts a sold-board row only when the row itself states sold', async () => {
     const soldListings = listings.map((listing) => ({ ...listing, status: 'Sold on May 2, 2025' }));
     const r = await fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(HREFS, soldListings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(HREFS, soldListings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.comps).toHaveLength(1);
     expect(r.comps[0].status).toBe('sold');
@@ -97,20 +97,20 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
 
   it('reports none when the search dropdown surfaces no city page', async () => {
     const r = await fetchRedfinLandComps({ city: 'Nowhere', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect('no city here', listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect('no city here', listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.status).toBe('none');
   });
 
   it('reports blocked (never throws) when anti-bot fires with no listings', async () => {
     const r = await fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: fakeConnect(HREFS, [], true) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect(HREFS, [], true) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.status).toBe('blocked');
   });
 
   it('is disabled without a locality', async () => {
-    const r = await fetchRedfinLandComps({ subjectAcres: 0.25 }, { force: true, resolveChrome: chrome, connect: (async () => null) as never });
+    const r = await fetchRedfinLandComps({ subjectAcres: 0.25 }, { force: true, connect: (async () => null) as never });
     expect(r.status).toBe('disabled');
   });
 
@@ -146,7 +146,7 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
       },
       async close() {},
     });
-    const result = await fetchRedfinLandComps(input, { force: true, resolveChrome: chrome, spawn: () => ({ kill() {} }), connect: connect as never, timeoutMs: 10, settleMs: 1, suggestionSettleMs: 1, scrollSettleMs: 1 });
+    const result = await fetchRedfinLandComps(input, { force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, suggestionSettleMs: 1, scrollSettleMs: 1 });
     expect(result.status).toBe('retrieved');
     expect(result.routeTried).toContain('/zipcode/33971/');
     expect(result.note).toMatch(/automatically correcting 1 wrong-geography route/i);

@@ -718,35 +718,33 @@ async function createLocalBrowserPairing(dashboardToken, fetchImpl = fetch) {
   return validateBrowserPairingResponse(body, dashboardToken);
 }
 
-async function openPairingInChrome(pairingUrl, source = process.env, spawnImpl = spawn) {
-  const chromePath = findChrome(source);
-  if (!chromePath) throw new Error('Google Chrome is not installed in a supported location.');
-  const browserEnvironment = { ...source };
-  for (const key of Object.keys(browserEnvironment)) {
-    if (key.toUpperCase() === 'DASHBOARD_TOKEN') delete browserEnvironment[key];
-  }
-  await new Promise((resolve, reject) => {
-    const child = spawnImpl(chromePath, [pairingUrl], {
-      cwd: ROOT,
-      env: browserEnvironment,
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false,
-    });
-    child.once('error', reject);
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
-    });
-  });
+/**
+ * Hand the operator their pairing URL. LandOS does NOT open it.
+ *
+ * This used to spawn `chrome.exe <pairingUrl>` with no --user-data-dir, which
+ * Windows resolves by handing the URL to the operator's ALREADY-RUNNING Chrome
+ * and raising that window — LandOS reaching directly into the interactive
+ * session it must never touch. Launching it in the automation browser instead
+ * would be no use either: that window lives offscreen by design.
+ *
+ * So the operator opens it, in whichever browser they choose. Nothing is spawned.
+ */
+async function openPairingInChrome(pairingUrl) {
+  return {
+    opened: false,
+    url: pairingUrl,
+    note: 'LandOS does not open browsers. Open the pairing URL above in your own browser.',
+  };
 }
 
 async function commandPair() {
   const dashboardToken = await readDashboardToken();
   const pairingUrl = await createLocalBrowserPairing(dashboardToken);
-  await openPairingInChrome(pairingUrl);
-  console.log('Opened a five-minute, single-use LandOS pairing in Google Chrome.');
-  console.log(`After pairing, LandOS will open ${URL}${BROWSER_PAIRING_RETURN_TO}.`);
+  const handoff = await openPairingInChrome(pairingUrl);
+  console.log('Five-minute, single-use LandOS pairing URL:');
+  console.log(`  ${handoff.url}`);
+  console.log(handoff.note);
+  console.log(`After pairing, continue at ${URL}${BROWSER_PAIRING_RETURN_TO}.`);
   return 0;
 }
 
