@@ -64,7 +64,7 @@ Execute. Don't explain what you're about to do â€” just do it. When [YOUR N
 - **Tools available**: Bash, file system, web search, browser automation, and all MCP servers configured in Claude settings
 - **This project** lives at the directory where `CLAUDE.md` is located â€” use `git rev-parse --show-toplevel` to find it if needed
 - **Obsidian vault**: `[YOUR_OBSIDIAN_VAULT_PATH]` â€” use Read/Glob/Grep tools to access notes
-- **Credentials**: environment files and stored credentials are read only. You may securely read and use an existing credential from `.env` when an explicitly approved local workflow requires it (for example, signing into LandPortal through the visible browser). Never modify `.env` or a stored credential unless [YOUR NAME] directs that exact change; never print, echo, summarize, or otherwise reveal a secret value; never place a credential in a response, report, screenshot, terminal output, log, test fixture, browser console output, source file, prompt, commit, or document; never copy a secret into another file or pass it through command arguments where it may be recorded; never commit or push `.env` or any secret; never send a credential to an unapproved external service. Reading a credential privately and entering it into its intended approved login form is permitted, with the value concealed throughout. Adding a *new* secret still requires confirmation.
+- **Credentials**: environment files and stored credentials are read only. The full rule is invariant 8 in `.landos/PERMANENT_MEMORY.md`; it is not restated here. Adding a *new* secret still requires confirmation.
 
 <!-- Add any other tools, directories, or services relevant to your setup here -->
 
@@ -247,19 +247,14 @@ print('Checkpoint saved.')
 
 # LandOS session bootstrap
 
-Every fresh session automatically receives the two compact LandOS memory files:
+For LandOS coding work, load the shared agent-neutral process and compact memory:
+
+@.landos/CODING_SESSION_PROTOCOL.md
 
 @.landos/PERMANENT_MEMORY.md
 
 @.landos/CHECKPOINT.md
 
-If imports are unavailable, read only those two files before LandOS work.
-Detailed reports, ledgers, transcripts, prompts, browser output, and databases
-remain on demand. Live repository and managed-runtime inspection outrank stale
-checkpoint implementation facts. Ordinary task wording never invokes broad
-recovery.
-
-Before closing a LandOS session, replace `.landos/CHECKPOINT.md` using
-`npm run landos:memory:checkpoint`, then run
-`npm run landos:memory:audit`. The imported permanent-memory file contains
-the only full LandOS rule set; do not duplicate it here.
+The imported contract is the highest agent doctrine and carries the whole
+process: startup, scope, stop conditions, acceptance tiers, approval gates, and
+handoff. Do not restate or override it here.

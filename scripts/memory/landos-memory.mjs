@@ -25,6 +25,7 @@ export const BUDGETS = {
 };
 export const PERMANENT_MEMORY_PATH = '.landos/PERMANENT_MEMORY.md';
 export const CHECKPOINT_PATH = '.landos/CHECKPOINT.md';
+export const CODING_SESSION_PROTOCOL_PATH = '.landos/CODING_SESSION_PROTOCOL.md';
 export const VERIFICATION_PATH = '.landos/verification-results.json';
 export const ACCEPTANCE_PATH = 'docs/landos/Fresh_Session_Acceptance.md';
 export const HISTORY_FILES = [
@@ -145,6 +146,94 @@ export function checkStaleness(checkpointText, {
   return { status: reasons.length ? 'stale' : 'fresh', reasons };
 }
 
+export const CHECKPOINT_SECTIONS = [
+  'Current Active Task',
+  'Exact Operator Outcome',
+  'Current State',
+  'Completed and Proven',
+  'Remaining Work',
+  'Exact Next Action',
+  'Relevant Files',
+  'Relevant Records',
+  'Known Blockers',
+  'Do Not Inspect or Modify',
+  'Runtime State',
+  'Verification Required',
+  'Completed and Protected',
+];
+
+function topLevelSections(text) {
+  const headings = [...text.matchAll(/^# ([^#\n].*)$/gm)];
+  const sections = new Map();
+  headings.forEach((match, index) => {
+    const name = match[1].trim();
+    const start = (match.index ?? 0) + match[0].length;
+    const end = headings[index + 1]?.index ?? text.length;
+    const bodies = sections.get(name) ?? [];
+    bodies.push(text.slice(start, end).trim());
+    sections.set(name, bodies);
+  });
+  return sections;
+}
+
+function checkpointContentWithoutDerived(text) {
+  return text.replace(/<!-- DERIVED:START -->[\s\S]*?<!-- DERIVED:END -->/g, '').trim();
+}
+
+export function validateCheckpoint(text, { permanentText = '' } = {}) {
+  const issues = [];
+  const warnings = [];
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > BUDGETS.checkpointMaxBytes) {
+    issues.push(`checkpoint is excessively large: ${bytes} bytes exceeds ${BUDGETS.checkpointMaxBytes}`);
+  }
+
+  const sections = topLevelSections(text);
+  for (const name of CHECKPOINT_SECTIONS) {
+    const count = sections.get(name)?.length ?? 0;
+    if (count === 0) issues.push(`checkpoint missing required section: ${name}`);
+    else if (count > 1) issues.push(`checkpoint has multiple competing sections: ${name}`);
+  }
+
+  const activeBodies = sections.get('Current Active Task') ?? [];
+  const active = activeBodies[0]?.trim() ?? '';
+  if (!active) issues.push('Current Active Task is missing or empty');
+  const activeListItems = active.split(/\r?\n/).filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line));
+  if (activeListItems.length > 1) issues.push('multiple competing active tasks are present');
+
+  const nextAction = sections.get('Exact Next Action')?.[0]?.trim() ?? '';
+  if (!nextAction) issues.push('Exact Next Action is missing or empty');
+  else if (nextAction.length < 40) issues.push('Exact Next Action is too vague');
+
+  const relevantFiles = sections.get('Relevant Files')?.[0]?.trim() ?? '';
+  if (!relevantFiles) issues.push('Relevant Files is missing or empty');
+  else if (!/`[^`]+[\\/][^`]+`/.test(relevantFiles)) issues.push('Relevant Files does not name a repository path');
+
+  const taskContent = checkpointContentWithoutDerived(text);
+  const placeholders = [
+    /\bTBD\b/i,
+    /\bTODO\b/i,
+    /\bplaceholder\b/i,
+    /fill (?:this|me) in/i,
+    /continue working on (?:the )?(?:deal card|task|project)/i,
+    /(?:task|next action) (?:goes|here)/i,
+    /unknown task/i,
+  ];
+  if (placeholders.some((pattern) => pattern.test(taskContent))) {
+    issues.push('checkpoint contains obvious placeholder or vague handoff language');
+  }
+
+  if (/^# LandOS Permanent Operating Memory$/m.test(text)) {
+    issues.push('checkpoint duplicates the permanent-memory document');
+  } else if (permanentText) {
+    const duplicated = findDuplicateLines({ permanent: permanentText, checkpoint: taskContent });
+    if (duplicated.length >= 3) issues.push('checkpoint duplicates substantial permanent-memory content');
+    else if (duplicated.length > 0) warnings.push('checkpoint repeats a long permanent-memory line; keep responsibilities separate');
+  }
+
+  return { issues, warnings, pass: issues.length === 0, bytes };
+}
+
 export function resolveClaudeAutoMemoryPath(root) {
   const projectSlug = path.resolve(root).replace(/[:\\\\/]/g, '-');
   return path.join(homedir(), '.claude', 'projects', projectSlug, 'memory', 'MEMORY.md');
@@ -160,7 +249,7 @@ export function resolveBootstrapProfiles(root) {
   if (existsSync(autoMemory)) claudeFiles.push(autoMemory);
   const agents = readIfExists(root, 'AGENTS.md') ?? '';
   const codingFiles = ['AGENTS.md'];
-  for (const rel of [PERMANENT_MEMORY_PATH, CHECKPOINT_PATH]) {
+  for (const rel of [CODING_SESSION_PROTOCOL_PATH, PERMANENT_MEMORY_PATH, CHECKPOINT_PATH]) {
     if (agents.includes(rel)) codingFiles.push(rel);
   }
   return { claudeCode: [...new Set(claudeFiles)], codingAgent: [...new Set(codingFiles)] };
@@ -291,6 +380,10 @@ export function buildAudit(root) {
   }
   const permanent = readIfExists(root, PERMANENT_MEMORY_PATH) ?? '';
   issues.push(...permanentRuleProblems(permanent));
+  const checkpoint = readIfExists(root, CHECKPOINT_PATH) ?? '';
+  const checkpointValidation = validateCheckpoint(checkpoint, { permanentText: permanent });
+  issues.push(...checkpointValidation.issues.map((item) => `checkpoint validation: ${item}`));
+  warnings.push(...checkpointValidation.warnings.map((item) => `checkpoint validation: ${item}`));
   for (const [profile, value] of Object.entries(status.profiles)) {
     const texts = Object.fromEntries(value.files.map((item) => [item.file, readIfExists(root, item.file) ?? '']));
     warnings.push(...findDuplicateLines(texts).map((dup) => `duplicate content in ${profile}: ${dup.files.join(' + ')}`));
@@ -350,14 +443,20 @@ export function sprintDerivedLines(root) {
   const capabilities = jsonIfExists(root, CAPABILITIES_PATH);
   const frozen = capabilities?.capabilities?.length ?? 0;
   return [
-    `- **Active sprint:** ${ledger.sprintId} (${ledger.sprintStatus}); ${accepted}/${workstreams.length} accepted, ${passed} QA-passed; current workstream ${inFlight ? `${inFlight.id} (${inFlight.status})` : 'none in flight'}; ${openFindings} open QA findings.`,
+    ledger.sprintStatus === 'active'
+      ? `- **Active sprint:** ${ledger.sprintId}; ${accepted}/${workstreams.length} accepted, ${passed} QA-passed; current workstream ${inFlight ? `${inFlight.id} (${inFlight.status})` : 'none in flight'}; ${openFindings} open QA findings.`
+      : `- **Prior tracked sprint:** ${ledger.sprintId} (${ledger.sprintStatus}); it is not the Current Active Task.`,
     `- **Sprint ledger:** .landos/sprints/${ledger.sprintId}/ledger.json; proof report .landos/sprints/${ledger.sprintId}/report.md; frozen capabilities: ${frozen} (${CAPABILITIES_PATH}).`,
   ];
 }
-export function refreshCheckpoint(root, { now = new Date() } = {}) {
+export function refreshCheckpoint(root, {
+  now = new Date(),
+  replacementText = null,
+  dryRun = false,
+} = {}) {
   const file = path.join(root, CHECKPOINT_PATH);
   if (!existsSync(file)) throw new Error(`${CHECKPOINT_PATH} missing`);
-  const current = readFileSync(file, 'utf8');
+  const current = replacementText ?? readFileSync(file, 'utf8');
   const head = gitShortHead(root) ?? 'unknown';
   const dirtyCount = gitDirtyCount(root);
   const verification = jsonIfExists(root, VERIFICATION_PATH) ?? {};
@@ -385,11 +484,20 @@ export function refreshCheckpoint(root, { now = new Date() } = {}) {
   ].join('\n');
   const next = current.includes('<!-- DERIVED:START -->')
     ? current.replace(/<!-- DERIVED:START -->[\s\S]*?<!-- DERIVED:END -->/, block)
-    : current.replace(/^# [^\n]+\n/, (heading) => heading + '\n' + block + '\n');
-  const bytes = Buffer.byteLength(next, 'utf8');
-  if (bytes > BUDGETS.checkpointMaxBytes) throw new Error(`refusing checkpoint write: ${bytes} bytes exceeds ${BUDGETS.checkpointMaxBytes}`);
-  writeFileSync(file, next, 'utf8');
-  return { path: CHECKPOINT_PATH, generated: now.toISOString(), head, dirtyCount, bytes };
+    : current.replace(/^# Current State\s*$/m, (heading) => `${heading}\n\n${block}`);
+  const permanent = readIfExists(root, PERMANENT_MEMORY_PATH) ?? '';
+  const validation = validateCheckpoint(next, { permanentText: permanent });
+  if (!validation.pass) throw new Error(`refusing checkpoint write: ${validation.issues.join('; ')}`);
+  if (!dryRun) writeFileSync(file, next, 'utf8');
+  return {
+    path: CHECKPOINT_PATH,
+    generated: now.toISOString(),
+    head,
+    dirtyCount,
+    bytes: validation.bytes,
+    dryRun,
+    warnings: validation.warnings,
+  };
 }
 
 function walkMarkdown(root, rel, output) {
@@ -503,8 +611,31 @@ function main() {
     return;
   }
   if (command === 'checkpoint') {
-    const result = refreshCheckpoint(root);
-    console.log(json ? JSON.stringify(result, null, 2) : `Checkpoint replaced: ${result.generated} @ ${result.head}; ${result.bytes} bytes`);
+    const sourceIndex = args.indexOf('--source');
+    const sourcePath = sourceIndex >= 0 ? args[sourceIndex + 1] : null;
+    if (sourceIndex >= 0 && !sourcePath) throw new Error('--source requires a checkpoint markdown path');
+    const replacementText = sourcePath
+      ? readFileSync(path.isAbsolute(sourcePath) ? sourcePath : path.join(root, sourcePath), 'utf8')
+      : null;
+    const result = refreshCheckpoint(root, { replacementText, dryRun: args.includes('--dry-run') });
+    console.log(json
+      ? JSON.stringify(result, null, 2)
+      : result.dryRun
+        ? `Checkpoint replacement dry-run passed: ${result.bytes} bytes; current file unchanged`
+        : `Checkpoint replaced: ${result.generated} @ ${result.head}; ${result.bytes} bytes`);
+    return;
+  }
+  if (command === 'validate') {
+    const checkpoint = readIfExists(root, CHECKPOINT_PATH) ?? '';
+    const permanent = readIfExists(root, PERMANENT_MEMORY_PATH) ?? '';
+    const result = validateCheckpoint(checkpoint, { permanentText: permanent });
+    if (json) console.log(JSON.stringify(result, null, 2));
+    else {
+      result.warnings.forEach((item) => console.log(`WARN: ${item}`));
+      result.issues.forEach((item) => console.log(`FAIL: ${item}`));
+      console.log(result.pass ? 'CHECKPOINT VALID' : 'CHECKPOINT INVALID');
+    }
+    process.exitCode = result.pass ? 0 : 1;
     return;
   }
   if (command === 'retrieve') {
@@ -522,11 +653,8 @@ function main() {
     }
     return;
   }
-  console.error('Use status | audit | checkpoint | retrieve <specific query>.');
+  console.error('Use status | audit | checkpoint [--source file] [--dry-run] | validate | retrieve <specific query>.');
   process.exitCode = 2;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
-
-
-
 

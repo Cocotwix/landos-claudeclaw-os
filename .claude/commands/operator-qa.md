@@ -9,14 +9,23 @@ engineering QA.
 
 ## Required Context
 
-Read:
+Read only:
 
-1. `LANDOS_CURRENT_STATE.md`
-2. `.landos/CHAT_CONTEXT.md`
-3. `.landos/CURRENT_SPRINT.md`
-4. `.landos/CONTINUITY_PROTOCOL.md`
-5. `.landos/HANDOVER.md`
-6. `.landos/OPERATOR_QA.md`
+1. `.landos/CODING_SESSION_PROTOCOL.md` (skip if already loaded this session)
+2. `.landos/CHECKPOINT.md` (skip if already loaded this session)
+
+Do not load `.landos/HANDOVER.md`, `.landos/OPERATOR_QA.md`,
+`.landos/CHAT_CONTEXT.md`, `.landos/CURRENT_SPRINT.md`,
+`.landos/CONTINUITY_PROTOCOL.md`, or `LANDOS_CURRENT_STATE.md`. Those are
+retired or history-only. Retrieve a specific past fact with
+`npm run landos:memory:retrieve -- <query>` and read only the returned excerpt.
+
+## Proportionality
+
+This command is for Tier 2 and Tier 3 changes as defined by the contract. A
+Tier 1 change (no owner-visible effect) does not get an Operator QA pass. Check
+only the sections the change actually touched; record anything else you notice
+as a deferred finding rather than expanding this pass.
 
 ## QA Standard
 
@@ -27,7 +36,10 @@ Stronger test:
 
 > Would Tyler actually use this instead of the existing tool?
 
-If no, continue improving unless an approval gate blocks progress.
+If no, record what is missing and report it. Improve only within the accepted
+request's scope; a gap outside it is a deferred finding, not new work. Stop when
+Tyler accepts the outcome, when an approval gate is reached, or when the
+remaining gap is out of scope.
 
 For Property Card work, check:
 

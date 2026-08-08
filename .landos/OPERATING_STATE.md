@@ -1,4 +1,10 @@
-# LandOS Current State
+# LandOS Current State (SUPERSEDED — history only)
+
+**Superseded 2026-08-08.** Do not load this file as doctrine, follow it as an
+operating rule, or copy it into an agent instruction file.
+`.landos/CODING_SESSION_PROTOCOL.md`, the canonical LandOS Coding-Agent
+Operating Contract, is the authority for scope, stop conditions, acceptance,
+and approval gates. The content below is retained as history.
 
 LandOS is the main app built on ClaudeClaw.
 Departments are internal apps inside LandOS.
@@ -16,8 +22,10 @@ For pre-contract work, LandOS uses approved provider data (LandPortal, Realie, C
 - Prefer source labels and confidence labels over implied certainty.
 - Keep area-level context available even when parcel verification is incomplete.
 - Treat technical run details as support material, not the main business surface.
-- Default is autonomy. Continue until the business outcome is complete unless a
-  hard approval gate is reached.
+- RETIRED DIRECTIVE (2026-08-08): this line formerly required continuing until
+  the business outcome was complete unless a hard approval gate was reached. It
+  had no terminal condition and is replaced by the stop conditions in
+  `.landos/CODING_SESSION_PROTOCOL.md`.
 - Every implementation sprint ends with engineering QA, Operator QA, Business
   QA, and session-memory updates.
 - Passing tests is not enough if Tyler cannot use the dashboard or the

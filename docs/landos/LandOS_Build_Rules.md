@@ -1,7 +1,20 @@
-# LandOS Build Rules
+# LandOS Build Rules (SUPERSEDED — history only)
 
-Autonomy policy and safety rules for LandOS, ClaudeClaw-based systems, Codex,
-Claude Code, and future build agents.
+**Superseded 2026-08-08 by `.landos/CODING_SESSION_PROTOCOL.md`, the canonical
+LandOS Coding-Agent Operating Contract.** Do not load this file as doctrine, do
+not follow it as an operating rule, and do not copy it into an agent
+instruction file. Its still-valid rules were absorbed into the contract
+(approval gates, source-of-truth hierarchy, reporting standard, output
+discipline, repo/business-data boundary) and `.landos/PERMANENT_MEMORY.md`
+(identity and safety invariants).
+
+Where this file and the contract disagree, the contract wins. In particular the
+"continue until the business outcome is complete" and "avoid premature
+stopping" language below is retired: it had no terminal condition and drove
+scope expansion and work continuing past operator acceptance. The contract's
+stop conditions and proportionate acceptance tiers replace it.
+
+The content below is retained as history.
 
 ---
 

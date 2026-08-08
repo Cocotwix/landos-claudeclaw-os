@@ -58,7 +58,58 @@ function makeRoot(ledger: Record<string, unknown> | null): string {
   fs.mkdirSync(path.join(root, '.landos'), { recursive: true });
   fs.writeFileSync(
     path.join(root, '.landos', 'CHECKPOINT.md'),
-    '# LandOS Current Checkpoint\n\n## Current unfinished work\n\n- none.\n',
+    `# Current Active Task
+
+Exercise checkpoint sprint integration.
+
+# Exact Operator Outcome
+
+The focused sprint fixture is represented accurately.
+
+# Current State
+
+Ready for checkpoint refresh.
+
+# Completed and Proven
+
+Nothing yet.
+
+# Remaining Work
+
+Run the fixture.
+
+# Exact Next Action
+
+Run the focused checkpoint integration test and inspect only this fixture.
+
+# Relevant Files
+
+- \`src/landos/sprint-system/checkpoint-integration.test.ts\`
+
+# Relevant Records
+
+Fixture sprint only.
+
+# Known Blockers
+
+None.
+
+# Do Not Inspect or Modify
+
+Operating records.
+
+# Runtime State
+
+Not required.
+
+# Verification Required
+
+Focused automated test.
+
+# Completed and Protected
+
+Permanent memory is outside this fixture.
+`,
     'utf8',
   );
   if (ledger) {
@@ -80,7 +131,7 @@ describe('checkpoint sprint integration', () => {
     const { code } = runTool(['checkpoint', '--root', root]);
     expect(code).toBe(0);
     const checkpoint = fs.readFileSync(path.join(root, '.landos', 'CHECKPOINT.md'), 'utf8');
-    expect(checkpoint).toContain('**Active sprint:** sprint-x (complete)');
+    expect(checkpoint).toContain('**Prior tracked sprint:** sprint-x (complete)');
     expect(checkpoint).toContain('.landos/sprints/sprint-x/ledger.json');
     expect(checkpoint).toContain('.landos/sprints/sprint-x/report.md');
     expect(checkpoint).not.toContain('combined');
@@ -121,7 +172,7 @@ describe('checkpoint sprint integration', () => {
     const { code } = runTool(['checkpoint', '--root', root]);
     expect(code).toBe(0);
     const checkpoint = fs.readFileSync(path.join(root, '.landos', 'CHECKPOINT.md'), 'utf8');
-    expect(checkpoint).toContain('**Active sprint:** sprint-x (active)');
+    expect(checkpoint).toContain('**Active sprint:** sprint-x;');
     expect(checkpoint).toContain('current workstream ws1 (browser_qa_failed)');
     expect(checkpoint).toContain('1 open QA findings');
   });

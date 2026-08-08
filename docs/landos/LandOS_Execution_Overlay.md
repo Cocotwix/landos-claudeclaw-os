@@ -1,10 +1,20 @@
-# LandOS Execution Overlay
+# LandOS Execution Overlay (SUPERSEDED — history only)
 
-A reusable execution standard for Claude Code sessions, Codex sessions, and
-future LandOS agents.
+**Superseded 2026-08-08 by `.landos/CODING_SESSION_PROTOCOL.md`, the canonical
+LandOS Coding-Agent Operating Contract.** Do not load this file as doctrine, do
+not follow it as an operating rule, and do not copy it into an agent
+instruction file. Its still-valid rules were absorbed into the contract
+(approval gates, source-of-truth hierarchy, inspect-then-execute, context
+separation, cost and security discipline, final report standard) and
+`.landos/PERMANENT_MEMORY.md` (the parcel-identity and no-geocoder invariants).
 
-This overlay controls execution posture. `docs/landos/LandOS_Build_Rules.md`
-is the authority for approval gates.
+Where this file and the contract disagree, the contract wins. In particular
+"prefer the largest safe sprint" and "continue improving until yes" below are
+retired: they had no terminal condition and drove adjacent-scope expansion and
+disproportionate acceptance. The contract's stop conditions and proportionate
+acceptance tiers replace them.
+
+The content below is retained as history.
 
 ---
 

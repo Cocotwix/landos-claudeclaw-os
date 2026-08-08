@@ -1,9 +1,11 @@
 # LandOS Staged Sprint Lifecycle (optional supporting process)
 
-This is optional bookkeeping and QA infrastructure. It may be used when it
-materially helps deliver or protect an owner-visible business outcome. It is
-not the authority for scope, sequencing, effort, acceptance, or completion;
-`AGENTS.md` and the personally verified live operator outcome outrank it.
+This is optional bookkeeping and QA infrastructure for Tier 3 sprints with more
+than two real workstreams. It is not the authority for scope, sequencing,
+effort, acceptance, or completion. `.landos/CODING_SESSION_PROTOCOL.md`, the
+canonical LandOS Coding-Agent Operating Contract, outranks this document, and
+so does the personally verified live operator outcome. Below Tier 3 this
+lifecycle must not be used and no ledger may be created.
 Repository tooling (`npm run landos:sprint`, `npm run landos:operator-qa`)
 must never displace implementation, force the wrong work order, consume the
 majority of a session, or convert internal gate success into a completion

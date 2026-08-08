@@ -5,8 +5,8 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 // Tests for the LandOS durable-memory bootstrap (2026-07-14 repair).
-// The system: CLAUDE.md auto-imports .landos/PERMANENT_MEMORY.md (Layer A)
-// and .landos/CHECKPOINT.md (Layer B); everything else is on-demand history.
+// The system: both coding-agent bootstraps point to one shared protocol,
+// permanent memory, and one replace-in-place checkpoint.
 // Tooling lives in scripts/memory/landos-memory.mjs (offline, dependency-free).
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -15,6 +15,8 @@ const TOOL = path.join(REPO_ROOT, 'scripts', 'memory', 'landos-memory.mjs');
 const PERMANENT = path.join(REPO_ROOT, '.landos', 'PERMANENT_MEMORY.md');
 const CHECKPOINT = path.join(REPO_ROOT, '.landos', 'CHECKPOINT.md');
 const CLAUDE_MD = path.join(REPO_ROOT, 'CLAUDE.md');
+const AGENTS_MD = path.join(REPO_ROOT, 'AGENTS.md');
+const PROTOCOL = path.join(REPO_ROOT, '.landos', 'CODING_SESSION_PROTOCOL.md');
 const CONTINUE_CMD = path.join(REPO_ROOT, '.claude', 'commands', 'continue-landos.md');
 
 function runTool(args: string[], cwd: string): { out: string; code: number } {
@@ -48,6 +50,68 @@ afterAll(() => {
   for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
 });
 
+function validCheckpoint(task = 'Inspect the focused fixture behavior.'): string {
+  const today = new Date().toISOString();
+  return `# Current Active Task
+
+${task}
+
+# Exact Operator Outcome
+
+The focused fixture behavior is proven without unrelated changes.
+
+# Current State
+
+<!-- DERIVED:START -->
+- **Generated:** ${today}
+- **HEAD at generation:** \`abcdef1\`
+- **Worktree:** clean at refresh time.
+<!-- DERIVED:END -->
+
+Ready for the next focused action.
+
+# Completed and Proven
+
+Nothing yet.
+
+# Remaining Work
+
+Run the focused fixture check.
+
+# Exact Next Action
+
+Inspect the named fixture file and run the focused memory-tool validation.
+
+# Relevant Files
+
+- \`src/landos/memory-bootstrap.test.ts\`
+
+# Relevant Records
+
+No operating record.
+
+# Known Blockers
+
+None.
+
+# Do Not Inspect or Modify
+
+Unrelated application files.
+
+# Runtime State
+
+Not required.
+
+# Verification Required
+
+Focused automated test.
+
+# Completed and Protected
+
+Permanent memory remains unchanged.
+`;
+}
+
 function makeFixture(overrides: {
   claudeMd?: string;
   permanent?: string;
@@ -58,7 +122,6 @@ function makeFixture(overrides: {
   fixtureRoots.push(root);
   mkdirSync(path.join(root, '.landos'), { recursive: true });
   mkdirSync(path.join(root, '.claude', 'commands'), { recursive: true });
-  const today = new Date().toISOString().slice(0, 10);
   writeFileSync(
     path.join(root, 'CLAUDE.md'),
     overrides.claudeMd ??
@@ -70,8 +133,7 @@ function makeFixture(overrides: {
   );
   writeFileSync(
     path.join(root, '.landos', 'CHECKPOINT.md'),
-    overrides.checkpoint ??
-      `# Checkpoint\n\n- **Generated:** ${today}\n- **HEAD at generation:** \`abcdef1\`\n\nNext: nothing.\n`,
+    overrides.checkpoint ?? validCheckpoint(),
   );
   writeFileSync(
     path.join(root, '.claude', 'commands', 'continue-landos.md'),
@@ -82,15 +144,30 @@ function makeFixture(overrides: {
 
 describe('LandOS memory bootstrap: real repository state', () => {
   const claudeMd = readFileSync(CLAUDE_MD, 'utf8');
+  const agentsMd = readFileSync(AGENTS_MD, 'utf8');
+  const protocol = readFileSync(PROTOCOL, 'utf8');
   const permanent = readFileSync(PERMANENT, 'utf8');
   const checkpoint = readFileSync(CHECKPOINT, 'utf8');
   const continueCmd = readFileSync(CONTINUE_CMD, 'utf8');
 
-  it('CLAUDE.md imports exactly the two Layer A/B memory files', () => {
+  it('CLAUDE.md imports the shared protocol and both compact memory files', () => {
     const imports = [...claudeMd.matchAll(/^@(\.landos\/[A-Za-z0-9_./-]+\.md)\s*$/gm)].map(
       (m) => m[1],
     );
-    expect(imports).toEqual(['.landos/PERMANENT_MEMORY.md', '.landos/CHECKPOINT.md']);
+    expect(imports).toEqual([
+      '.landos/CODING_SESSION_PROTOCOL.md',
+      '.landos/PERMANENT_MEMORY.md',
+      '.landos/CHECKPOINT.md',
+    ]);
+    expect(agentsMd).toMatch(/CODING_SESSION_PROTOCOL\.md/);
+  });
+
+  it('keeps the complete coding-session process agent-neutral and out of bootstraps', () => {
+    expect(protocol).toMatch(/Codex, Claude Code,[\s\S]*future coding agents/);
+    expect(protocol).toMatch(/Do not automatically perform a broad repository audit/);
+    expect(protocol).toMatch(/Exact Next Action/);
+    expect(agentsMd.length).toBeLessThan(1200);
+    expect(claudeMd.match(/## Required startup/g) ?? []).toHaveLength(0);
   });
 
   it('permanent memory stays within its 4 KB budget', () => {
@@ -126,8 +203,7 @@ describe('LandOS memory bootstrap: real repository state', () => {
       // and no line is a pasted terminal/log dump.
       expect(text).not.toMatch(/\x1b\[[0-9;]*m/);
     }
-    // Checkpoint links to detailed reports instead of embedding them.
-    expect(checkpoint).toMatch(/docs\/landos\//);
+    expect(checkpoint).toMatch(/# Exact Next Action/);
   });
 
   it('memory files exclude tokenized URLs and secret-shaped values', () => {
@@ -166,14 +242,11 @@ describe('LandOS memory bootstrap: real repository state', () => {
     // kit's /continue auto-fired on "continue"/"status" wording â€” rejected).
     expect(continueCmd).not.toMatch(/auto-invoke/i);
     expect(continueCmd).toMatch(/must not trigger/i);
-    // CLAUDE.md bootstrap states the same rule for plain wording.
-    expect(claudeMd).toMatch(
-      /Ordinary task wording never invokes broad\s+recovery/,
-    );
+    expect(protocol).toMatch(/Do not automatically perform a broad repository audit/);
   });
 
   it('live repository state overrides stale checkpoint narrative', () => {
-    expect(checkpoint).toMatch(/override anything written here/i);
+    expect(protocol).toMatch(/working tree and live in-scope evidence as authoritative/i);
     expect(readFileSync(PERMANENT, 'utf8')).toMatch(/override memory-file\s+narrative/i);
   });
 
@@ -273,14 +346,15 @@ describe('LandOS memory sprint completion contracts', () => {
     };
     expect(result.profiles.codingAgent.files.map((item) => item.file)).toEqual([
       'AGENTS.md',
+      '.landos/CODING_SESSION_PROTOCOL.md',
       '.landos/PERMANENT_MEMORY.md',
       '.landos/CHECKPOINT.md',
     ]);
     expect(result.profiles.codingAgent.estimatedTokens).toBeLessThan(10_000);
     const agents = readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf8');
     expect(agents).toMatch(/This is the LandOS repository/);
-    expect(agents).toMatch(/store\/landos\.db/);
-    expect(agents).toMatch(/docs\/landos\//);
+    expect(agents).toMatch(/CODING_SESSION_PROTOCOL\.md/);
+    expect(agents).toMatch(/do not start with a broad repository audit/);
   });
 
   it('accounts for Claude auto-memory entrypoint without preloading its topic files', () => {
@@ -317,15 +391,59 @@ describe('LandOS memory sprint completion contracts', () => {
 
   it('replaces checkpoint metadata repeatably and stays bounded', () => {
     const root = makeFixture({
-      checkpoint:
-        '# Checkpoint\n\n- **Generated:** 2026-01-01\n- **HEAD at generation:** abcdef1\n\n## Current unfinished work\n\nKeep this concise.\n',
+      checkpoint: validCheckpoint('Keep the focused checkpoint replacement concise.'),
     });
     expect(runTool(['checkpoint'], root).code).toBe(0);
     expect(runTool(['checkpoint'], root).code).toBe(0);
     const text = readFileSync(path.join(root, '.landos', 'CHECKPOINT.md'), 'utf8');
     expect((text.match(/DERIVED:START/g) ?? []).length).toBe(1);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8192);
-    expect(text).toMatch(/Current unfinished work/);
+    expect(text).toMatch(/# Current Active Task/);
+    expect(text).toMatch(/Keep the focused checkpoint replacement concise/);
+  });
+
+  it('validates required active-task, next-action, and relevant-file sections', () => {
+    const root = makeFixture({ checkpoint: '# Current Active Task\n\nA task without the remaining required sections.\n' });
+    const { out, code } = runTool(['validate'], root);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/Exact Next Action/);
+    expect(out).toMatch(/Relevant Files/);
+  });
+
+  it('rejects vague placeholder language and competing active tasks', () => {
+    const root = makeFixture({
+      checkpoint: validCheckpoint('First task.').replace(
+        '# Exact Operator Outcome',
+        '# Current Active Task\n\nSecond task.\n\n# Exact Operator Outcome',
+      ).replace(
+        'Inspect the named fixture file and run the focused memory-tool validation.',
+        'Continue working on the Deal Card.',
+      ),
+    });
+    const { out, code } = runTool(['validate'], root);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/multiple competing sections: Current Active Task/);
+    expect(out).toMatch(/placeholder or vague handoff language/);
+  });
+
+  it('dry-runs a replacement, then replaces and restores without changing permanent memory', () => {
+    const root = makeFixture({ checkpoint: validCheckpoint('Original active task.') });
+    const checkpointPath = path.join(root, '.landos', 'CHECKPOINT.md');
+    const permanentPath = path.join(root, '.landos', 'PERMANENT_MEMORY.md');
+    const originalCheckpoint = readFileSync(checkpointPath, 'utf8');
+    const originalPermanent = readFileSync(permanentPath, 'utf8');
+    const temporary = path.join(root, 'temporary-checkpoint.md');
+    const restore = path.join(root, 'restore-checkpoint.md');
+    writeFileSync(temporary, validCheckpoint('Temporary replacement task.'));
+    writeFileSync(restore, originalCheckpoint);
+
+    expect(runTool(['checkpoint', '--source', temporary, '--dry-run'], root).code).toBe(0);
+    expect(readFileSync(checkpointPath, 'utf8')).toBe(originalCheckpoint);
+    expect(runTool(['checkpoint', '--source', temporary], root).code).toBe(0);
+    expect(readFileSync(checkpointPath, 'utf8')).toMatch(/Temporary replacement task/);
+    expect(runTool(['checkpoint', '--source', restore], root).code).toBe(0);
+    expect(readFileSync(checkpointPath, 'utf8')).toMatch(/Original active task/);
+    expect(readFileSync(permanentPath, 'utf8')).toBe(originalPermanent);
   });
 
   it('memory tooling does not modify property/operator database bytes', () => {

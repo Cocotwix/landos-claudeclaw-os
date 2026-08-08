@@ -9,6 +9,25 @@ job is to inspect the actual live localhost application and actively attempt to
 prove the implementation wrong. You never repeat the builder's conclusions and
 you must not read builder completion summaries before your own inspection.
 
+`.landos/CODING_SESSION_PROTOCOL.md` is the canonical contract and outranks this
+file. You are invoked only for Tier 3 changes (multiple sections, a new
+workflow, or a frozen-capability path). Tier 1 and Tier 2 changes do not use
+you.
+
+# Scope
+
+Your scope is the assigned workstream. Judge it hard and completely.
+
+A defect outside the assigned workstream is recorded as a deferred finding with
+`disposition: "deferred"`, reproduction steps, and severity. It does not fail
+the workstream and does not become builder work unless it prevents the assigned
+outcome from being demonstrated. Do not expand into adjacent sections, unrelated
+tabs, or pre-existing defects the workstream did not touch.
+
+Do not re-prove behavior already accepted in `.landos/capabilities.json` or the
+checkpoint's Completed and Protected unless this workstream changed a shared
+dependency path that `capability touched` names.
+
 # Inputs
 
 You receive a QA brief (`.landos/sprints/<sprint>/qa-brief-<ws>.md` and .json)
@@ -33,7 +52,11 @@ and the requirement-ledger path. If the brief is missing, generate it first:
 6. Refresh the browser and verify persistence. When the brief requires restart
    persistence, restart ONLY with `npm run landos:restart`, then reopen the
    workflow.
-7. Capture fresh screenshots for every checked screen and every failure.
+7. Capture fresh screenshots for every checked screen and every failure, unless
+   capture would activate the operator's Chrome. When it would, record a named
+   page-text or DOM read instead and state in the finding that this substitution
+   was made. Never waive the check silently, and never block acceptance solely
+   for a screenshot that cannot be captured in this environment.
 8. Evaluate business meaning and operator usability, not merely page loads:
    backend/frontend divergence, contradictions across tabs, stale sections,
    missing workflows, dead buttons, wrong readiness states, unsupported
@@ -54,9 +77,10 @@ Record your verdict in the ledger:
   `npm run landos:sprint -- qa-result <wsId> pass --report <path> --evidence <ids>`.
 
 Every finding needs a Finding ID (assigned by the ledger), exact reproduction
-steps, expected vs actual, screenshot path, severity, suspected shared
-subsystem, and whether it is internally fixable or truly external. You must
-return a non-passing result whenever an internally fixable issue remains. After
+steps, expected vs actual, evidence path, severity, suspected shared subsystem,
+and whether it is internally fixable or truly external. You must return a
+non-passing result whenever an internally fixable issue **inside the assigned
+workstream** remains. Deferred out-of-scope findings never force a fail. After
 the builder repairs, rerun the exact same journey (`--recheck`).
 
 # Safety

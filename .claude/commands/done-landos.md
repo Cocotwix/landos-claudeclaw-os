@@ -1,48 +1,40 @@
 ---
-description: "Close a LandOS session: refresh the compact checkpoint + QA ledgers"
+description: "Close a LandOS session: replace the compact active handoff"
 ---
 
-# /done-landos (v2 — compact)
+# /done-landos
 
-Close the current LandOS work session. A session is not complete until
-engineering QA, Operator QA, Business QA, and memory updates are handled or a
-true approval gate blocks completion.
+Close the current LandOS coding session without confusing backend progress with
+owner-visible completion.
 
 ## 1. Verify
 
-- `git status --short` and `git log --oneline -5`.
-- Summarize tests/builds run and results.
-- Summarize Operator QA / Business QA if they ran.
+- Run `git status --short`.
+- Record focused tests, typecheck, builds, managed restart, and operator QA only
+  when they actually ran.
 
-## 2. Refresh the checkpoint (replace, never append)
+## 2. Replace the checkpoint handoff
 
-Run `npm run landos:memory:checkpoint` to replace derived git, verification, and managed-runtime metadata in `.landos/CHECKPOINT.md`. Update its compact business sections only from live files and current acceptance evidence. It must contain:
+Update `.landos/CHECKPOINT.md`, then run
+`npm run landos:memory:checkpoint`. Keep exactly the section structure required
+by `.landos/CODING_SESSION_PROTOCOL.md` and one Current Active Task. A newly
+selected task replaces the prior active task; only important proven behavior
+moves to Completed and Protected.
 
-- Generated date, HEAD hash at generation, dirty-worktree warning.
-- Latest test/build status (with date), runtime status (with timestamp).
-- Recently completed work (short bullets, link to detailed reports in
-  `docs/landos/` — never paste report contents).
-- Current unfinished work, blockers, pending Tyler decisions.
-- Relevant changed areas and the next recommended priority.
+The checkpoint command replaces derived metadata in place and validates useful
+task, next-action, file-scope, size, placeholder, duplication, and single-task
+requirements. It never appends session history or changes permanent memory.
 
-Keep it ≤ 8 KB. Exclude: full prompts, full reports, transcripts, raw logs,
-browser/MCP output, secrets, tokenized URLs, property identifiers.
+## 3. Audit
 
-## 3. Append history only where it belongs
-
-- `.landos/OPERATOR_QA.md`: one concise entry, only if operator QA ran.
-- `.landos/BUSINESS_QA.md`: one concise entry, only if a department was
-  evaluated.
-- `.landos/HANDOVER.md`: optional short closeout entry (history file; never
-  auto-loaded).
-
-## 4. Audit
-
-Run `npm run landos:memory:audit`. Fix any budget, duplicate, staleness, or
-excluded-content violations before ending the session.
+Run `npm run landos:memory:audit`. Fix checkpoint validation, budget, duplicate,
+staleness, or excluded-content failures before ending the session.
 
 ## Rules
 
+- Follow the shared coding-session protocol and permanent-memory safety rules.
 - Do not push, deploy, or commit without Tyler approval.
 - Do not write secrets, tokens, `.env` contents, or private property data.
-- Do not stop early when the blocker is safely fixable.
+- Do not stop early when an in-scope blocker is safely fixable. An out-of-scope
+  blocker is recorded in Remaining Work, not fixed.
+- Do not begin the next task or sprint after closing this one.

@@ -4,10 +4,13 @@ description: "Run a LandOS sprint through the enforced staged lifecycle (ledger,
 
 # /landos-sprint
 
-Use this whenever a substantial LandOS prompt arrives (any prompt with more
-than one project, or any change that alters what Tyler sees in the dashboard).
+Use this only for a Tier 3 sprint with more than two real workstreams, as
+defined by `.landos/CODING_SESSION_PROTOCOL.md`. That contract is the canonical
+authority and outranks this command and the lifecycle document. A Tier 1 or
+Tier 2 change must not create a ledger; the ledger is overhead below that
+threshold.
 
-Read `docs/landos/Staged_Sprint_Lifecycle.md` and follow it exactly. In brief:
+Read `docs/landos/Staged_Sprint_Lifecycle.md` for the mechanics. In brief:
 
 1. Decompose the prompt into a plan JSON (workstreams with the 19 ledger
    fields; preserve the prompt verbatim) and run
@@ -24,6 +27,9 @@ Read `docs/landos/Staged_Sprint_Lifecycle.md` and follow it exactly. In brief:
    the final combined regression and review, then `complete`.
 6. `capability freeze` for newly accepted capabilities, then
    `npm run landos:memory:checkpoint` and `npm run landos:memory:audit`.
+
+Scope: the sprint's accepted prompt. Findings outside it are recorded with a
+deferred disposition and do not block acceptance.
 
 Rules that never bend: the live operator experience is the acceptance
 standard; completion claims require `[E:<id>]` ledger evidence; internally
