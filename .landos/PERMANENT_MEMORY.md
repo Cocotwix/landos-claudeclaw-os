@@ -15,6 +15,16 @@ personally verified. Only required new authority or a real external blocker may
 pause the work; report the exact visible blocker, never success. The contract's
 stop conditions bound how far that obligation extends.
 
+## Research answers
+
+Return the best reasonably supported answer available, naming its source and
+stating its weight: Confirmed, Well supported, Likely, or Unresolved. A failed
+source path is not a failed research question, so change the discovery method,
+web search included, before reporting Unresolved. Reputable secondary and
+search-result evidence may carry an answer. Official-only, snippets-never, and
+perfect-verification-first rules are rejected. The parcel identity invariants
+below are unchanged. Full rule: contract section 9.
+
 ## Data and identity invariants
 
 1. Repair the shared root of the demonstrated defect class system-wide. A

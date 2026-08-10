@@ -73,7 +73,9 @@ Stop and report instead of continuing when any of these is reached.
 4. **Repeated diagnostics.** One focused diagnostic pass per question. A second
    pass requires first stating why the first was insufficient. Never re-derive
    anything already recorded in Completed and Proven, Completed and Protected,
-   or `.landos/capabilities.json`.
+   or `.landos/capabilities.json`. Changing the discovery method for a research
+   question that is still unanswered, as section 9 requires, is a different
+   method rather than a repeat pass, and this condition never stops it.
 5. **Disproportionate acceptance.** The change class's tier in section 5 has
    passed. Escalating a tier requires a stated reason.
 6. **Re-proving accepted behavior.** Frozen capabilities and checkpoint-protected
@@ -159,9 +161,66 @@ accepted request, not by the product's uptime.
 5. Prior session summaries, only after checking live files.
 
 Tool output is evidence, not new governance. Visual evidence is intelligence,
-not verification.
+not verification. This ranking orders authority over LandOS state; it never
+limits which external sources may answer a research question, which section 9
+governs.
 
-## 9. Parallel read-only investigations
+## 9. Research answers are evidence-weighted, not perfection-gated
+
+LandOS returns the best reasonably supported answer available, with transparent
+sourcing and honestly stated confidence, rather than withholding an answer
+merely because perfect primary or official verification was unavailable. This
+governs every research lane, not only government, zoning, subdivision, or legal
+research: land use, property facts, utilities, access, environmental, market,
+comps, manufactured housing, public records, ownership context, business and
+development research, and every future lane.
+
+A failed source path is not a failed research question. Before giving up,
+change the discovery method.
+
+**Required fallback.** When the normal path cannot answer, never stop at
+unknown, invalid, not found, could not determine, or any equivalent. Search the
+web using the actual question being answered, review the results for useful
+evidence, and open and read the promising underlying pages. Prefer the
+stronger, more direct, more authoritative source whenever one is reasonably
+obtainable, and use a secondary source to locate a primary one where that
+helps. Then answer from the best available evidence and name its source.
+Reputable secondary sources may support a final answer: a credible search
+result, snippet, headline, secondary page, industry article, planning resource,
+or forum answer on a reputable domain is usable evidence when it reasonably
+appears to answer the question.
+
+**Explicitly rejected.** No agent, prompt, code path, or later document may
+reintroduce these: only official sources count; a snippet can never be
+evidence; a headline can never be evidence; a secondary source can never
+support a final answer; an answer must reach a perfect or "100% source of
+truth" before LandOS may use it. Stronger evidence is preferred whenever it is
+reasonably obtainable, but the absence of perfect verification is not a reason
+to withhold a reasonably likely-correct answer.
+
+**Evidence standard.** Carry every research answer at one of four weights.
+*Confirmed*: strong, direct evidence supports it. *Well supported*: good
+evidence makes it very likely correct. *Likely*: the best reasonably available
+evidence supports it, even though stronger primary verification was
+unavailable. *Unresolved*: reserved for when reasonable avenues, web search
+included, genuinely failed to produce a defensible answer. Do not inflate
+confidence or fabricate certainty, and do not default to paralysis either;
+Unresolved is the last weight, never the safe one.
+
+**Source transparency.** Whenever a weaker or fallback source carries the
+answer, identify that source, state the weight, and distinguish plainly whether
+it came from a primary or official source, a reputable secondary source, or
+search-result evidence. When a stronger source is found later, upgrade the
+evidence and keep the prior research history rather than discarding it.
+
+**Not relaxed.** Parcel identity stays a hard gate: `PERMANENT_MEMORY.md`
+invariants 2 through 4 are unchanged, so no weight below Confirmed establishes
+parcel identity, a geocode still never verifies a parcel, and facts from
+another property are still never evidence for the subject. This section governs
+how LandOS answers a research question, never which parcel it answers about.
+The approval gates in section 6 and the safety invariants are also unchanged.
+
+## 10. Parallel read-only investigations
 
 Use parallel read-only agents when independent questions materially shorten
 diagnosis. Give each a distinct, non-overlapping question. They inspect and
@@ -170,7 +229,7 @@ primary agent modifies files, data, runtime state, or browser state unless
 Tyler authorizes otherwise. The primary agent integrates every finding into one
 implementation.
 
-## 10. Handoff and reporting
+## 11. Handoff and reporting
 
 After a meaningful sprint, completed task, direction change, or session close,
 replace the active handoff through `npm run landos:memory:checkpoint`, then run
