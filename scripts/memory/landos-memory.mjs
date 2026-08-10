@@ -65,7 +65,12 @@ export function gitShortHead(root) {
   return git(root, ['rev-parse', '--short', 'HEAD']);
 }
 export function gitDirtyCount(root) {
-  const output = git(root, ['status', '--short']);
+  // `--untracked-files=all` is required: the default collapses a wholly
+  // untracked directory into one `?? dir/` line however many files it holds,
+  // so counting status lines understates the work in progress a fresh agent
+  // must preserve. With -uall every uncommitted file gets its own line at any
+  // depth, so the line count is the file count.
+  const output = git(root, ['status', '--short', '--untracked-files=all']);
   return output === null ? null : output.split(/\r?\n/).filter(Boolean).length;
 }
 

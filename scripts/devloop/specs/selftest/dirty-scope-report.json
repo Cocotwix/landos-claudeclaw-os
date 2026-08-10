@@ -1,0 +1,62 @@
+{
+  "task": "dirty scope report",
+  "mode": "selftest",
+  "operatorOutcome": "A LandOS developer can pipe `git status --short` into one helper and immediately see how the dirty worktree breaks down by area, and which of those paths must never be staged.",
+  "allowedPaths": [
+    "scripts/dev/"
+  ],
+  "builders": [
+    "cc",
+    "codex"
+  ],
+  "startingBuilderId": "cc",
+  "builderBrief": "Create `scripts/dev/dirty-scope-report.mjs`, a dependency-free ESM module for LandOS development use.\n\nIt exports one function:\n\n  summarizeDirtyScope(gitStatusShortText) -> { totalPaths, areas, protectedPaths }\n\n- The input is the raw text of `git status --short`. Handle porcelain status prefixes, rename lines of the form `R  old -> new` (report the new path), and quoted paths. Normalise backslashes to forward slashes. Ignore blank lines.\n- `totalPaths` is the number of distinct changed paths.\n- `areas` groups paths by their top-level directory. A file at the repository root uses the area name `(root)`. Each entry is `{ area, count }`. Sort by count descending, then area name ascending.\n- `protectedPaths` lists the changed paths that must never be staged, such as `.env`. Sort ascending.\n- Importing the module must have no side effects.\n\nAlso create `scripts/dev/dirty-scope-report.test.mjs` covering the behaviour with `node:test` and `node:assert/strict`, runnable with `node --test scripts/dev/dirty-scope-report.test.mjs`. Use no third-party dependencies.",
+  "checks": [
+    {
+      "id": "module-exists",
+      "kind": "file-exists",
+      "path": "scripts/dev/dirty-scope-report.mjs",
+      "requirement": "scripts/dev/dirty-scope-report.mjs exists"
+    },
+    {
+      "id": "tests-exist",
+      "kind": "file-exists",
+      "path": "scripts/dev/dirty-scope-report.test.mjs",
+      "requirement": "scripts/dev/dirty-scope-report.test.mjs exists"
+    },
+    {
+      "id": "builder-tests-green",
+      "kind": "command",
+      "command": "node --test scripts/dev/dirty-scope-report.test.mjs",
+      "requirement": "the builder's own node:test suite passes"
+    },
+    {
+      "id": "shape-and-grouping",
+      "kind": "module-probe",
+      "timeoutMs": 90000,
+      "probeFile": "scripts/devloop/specs/selftest/probes/dirty-scope-shape.mjs",
+      "requirement": "summarizeDirtyScope is exported and returns { totalPaths, areas, protectedPaths }, grouping by top-level segment with '(root)' for root-level files, sorted by count descending then area ascending, and returning zeros for a clean tree"
+    },
+    {
+      "id": "protected-paths-broad",
+      "kind": "module-probe",
+      "timeoutMs": 90000,
+      "probeFile": "scripts/devloop/specs/selftest/probes/dirty-scope-protected.mjs",
+      "requirement": "protectedPaths flags every never-stage class at any depth, not only .env: any .env* path, anything under store/, anything under logs/ or ending in .log, and any database file ending in .db, .sqlite or .sqlite3; ordinary source paths are never flagged; the list is sorted ascending",
+      "next": "Widen the never-stage rule in scripts/dev/dirty-scope-report.mjs so protectedPaths covers .env* paths, everything under store/, everything under logs/ or ending in .log, and database files ending in .db, .sqlite or .sqlite3, at any depth, while leaving ordinary source paths unflagged."
+    },
+    {
+      "id": "cli-contract",
+      "kind": "module-probe",
+      "timeoutMs": 90000,
+      "probeFile": "scripts/devloop/specs/selftest/probes/dirty-scope-cli.mjs",
+      "requirement": "running `git status --short | node scripts/dev/dirty-scope-report.mjs` prints one `<area> <count>` line per area followed by a final `protected: <count>` line, exits 1 when any protected path is dirty and exits 0 otherwise, and importing the module still has no side effects",
+      "next": "Add a command-line entry point to scripts/dev/dirty-scope-report.mjs, guarded so that importing the module still does nothing. When run directly it reads `git status --short` text from stdin, prints one line per area as `<area> <count>` in the same order as the areas array, prints a final line `protected: <count>`, then exits with code 1 if protectedPaths is non-empty and code 0 if it is empty. Empty stdin exits 0."
+    },
+    {
+      "id": "scope-containment",
+      "kind": "scope-containment",
+      "requirement": "no file outside scripts/dev/ was created, modified or deleted during the attempt"
+    }
+  ]
+}

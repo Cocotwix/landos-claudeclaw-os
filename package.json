@@ -28,6 +28,8 @@
     "landos:memory:checkpoint": "node scripts/memory/landos-memory.mjs checkpoint",
     "landos:memory:retrieve": "node scripts/memory/landos-memory.mjs retrieve",
     "landos:sprint": "tsx scripts/sprint/landos-sprint-cli.ts",
+    "landos:devloop": "node scripts/devloop/devloop-cli.mjs",
+    "landos:devloop:test": "node --test scripts/devloop/devloop.test.mjs",
     "landos:data:backup": "node scripts/data/landos-business-backup.mjs backup",
     "landos:data:restore": "node scripts/data/landos-business-backup.mjs restore",
     "landos:data:drill": "node scripts/data/landos-business-backup.mjs drill",

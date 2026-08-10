@@ -1,0 +1,39 @@
+{
+  "task": "runtime test checkout independence",
+  "operatorOutcome": "`node --test scripts/runtime/landos-runtime.test.mjs` passes in any checkout of this repository, including a git worktree or CI checkout whose directory is not named `claudeclaw-os`, while still proving that sanitizeEnvironment sets LANDOS_RUNTIME_ROOT to the repository root.",
+  "allowedPaths": ["scripts/runtime/landos-runtime.test.mjs"],
+  "builders": ["cc", "codex"],
+  "startingBuilderId": "cc",
+  "builderBrief": "Fix a real defect in this repository's runtime test suite.\n\n`scripts/runtime/landos-runtime.test.mjs` contains the test `environment sanitizer deduplicates PATH casing and keeps useful entries`. Its last assertion is:\n\n    assert.equal(result.LANDOS_RUNTIME_ROOT.toLowerCase().endsWith('claudeclaw-os'), true);\n\nThat asserts the checkout directory is named `claudeclaw-os`. It passes only by accident of one machine's folder name. In a git worktree, a clone under another name, or a CI checkout, this single assertion fails while the other twelve tests pass, so the suite reports a false failure. Confirm it yourself: this working directory is not named `claudeclaw-os`, and `node --test scripts/runtime/landos-runtime.test.mjs` currently fails on exactly that line.\n\nThe production code is correct. `sanitizeEnvironment` sets `LANDOS_RUNTIME_ROOT` to `ROOT`, the repository root the module computes from its own location, and `ROOT` is already imported by this test file. The test's expectation is the thing that is wrong.\n\nRepair the assertion so it proves the real property: that `LANDOS_RUNTIME_ROOT` is the repository root of whatever checkout the suite is running in, independent of that directory's name. Keep the assertion meaningful; do not delete it, do not weaken it to something trivially true, and do not remove any other test. Change nothing outside `scripts/runtime/landos-runtime.test.mjs`; the runtime module itself must not be touched.\n\nNo third-party dependencies are available in this working directory, and none are needed.",
+  "checks": [
+    {
+      "id": "suite-green-any-checkout",
+      "kind": "command",
+      "command": "node --test scripts/runtime/landos-runtime.test.mjs",
+      "timeoutMs": 180000,
+      "requirement": "`node --test scripts/runtime/landos-runtime.test.mjs` exits 0 in this checkout, whose directory is not named claudeclaw-os",
+      "next": "Make the whole runtime suite pass in a checkout whose directory is not named `claudeclaw-os`, by repairing the LANDOS_RUNTIME_ROOT assertion in scripts/runtime/landos-runtime.test.mjs rather than by changing runtime behaviour."
+    },
+    {
+      "id": "decoupled-not-deleted",
+      "kind": "module-probe",
+      "timeoutMs": 90000,
+      "probeFile": "scripts/devloop/specs/probes/runtime-test-decoupled.mjs",
+      "requirement": "scripts/runtime/landos-runtime.test.mjs no longer contains the literal checkout name `claudeclaw-os` anywhere, still asserts on LANDOS_RUNTIME_ROOT, and still declares at least 13 tests",
+      "next": "Repair the assertion instead of removing it: scripts/runtime/landos-runtime.test.mjs must contain no `claudeclaw-os` literal, must still assert on LANDOS_RUNTIME_ROOT, and must keep all 13 existing tests."
+    },
+    {
+      "id": "runtime-behaviour-unchanged",
+      "kind": "module-probe",
+      "timeoutMs": 90000,
+      "probeFile": "scripts/devloop/specs/probes/runtime-root-behavior.mjs",
+      "requirement": "scripts/runtime/landos-runtime.mjs still exports ROOT and sanitizeEnvironment, ROOT is the checkout being evaluated, and sanitizeEnvironment still sets LANDOS_RUNTIME_ID, sets LANDOS_RUNTIME_ROOT to ROOT, and collapses PATH casing to a single Path key that keeps the supplied entries",
+      "next": "Leave scripts/runtime/landos-runtime.mjs exactly as it is. The defect is in the test's expectation, not in sanitizeEnvironment."
+    },
+    {
+      "id": "scope-containment",
+      "kind": "scope-containment",
+      "requirement": "no file other than scripts/runtime/landos-runtime.test.mjs was created, modified or deleted during the attempt"
+    }
+  ]
+}
