@@ -187,22 +187,31 @@ describe('stale access language filter', () => {
 });
 
 describe('four-tier access evidence projection', () => {
+  // Every visual item names the capture it was read from: the presentation
+  // path always demands the artifact, so an unbacked scene cannot render.
+  const parcelFlag = {
+    tier: 'parcel_flag', statement: 'Land Locked: Yes', sourceLabel: 'LandPortal',
+    sourceKind: 'landportal_parcel_flag', basis: 'source_stated', weight: 'likely',
+  } as const;
+  const aerial = {
+    tier: 'apparent_physical', statement: 'Apparent gravel drive', sourceLabel: 'Satellite',
+    sourceKind: 'satellite_imagery', basis: 'direct_observation', weight: 'well_supported',
+    artifactRef: 'inspection-aerial',
+  } as const;
+
   it('delegates to the evidence ladder without collapsing listing or imagery evidence into verified legal access', () => {
     const result = presentDiscoveryAccessEvidence([
-      { tier: 'parcel_flag', statement: 'Land Locked: Yes', sourceLabel: 'LandPortal', sourceKind: 'landportal_parcel_flag', basis: 'source_stated', weight: 'likely' },
-      { tier: 'apparent_physical', statement: 'Apparent gravel drive', sourceLabel: 'Satellite', sourceKind: 'satellite_imagery', basis: 'direct_observation', weight: 'well_supported' },
+      parcelFlag,
+      aerial,
       { tier: 'reported_legal', statement: 'Listing reports an easement', sourceLabel: 'Prior listing', sourceKind: 'listing', basis: 'source_stated', weight: 'likely' },
-    ]);
+    ], { retainedArtifacts: ['inspection-aerial'] });
     expect(result).toMatchObject({ parcelFlagged: true, apparentPhysicalAccess: true, reportedLegalAccess: true, verifiedLegalAccess: false });
     expect(result.items).toHaveLength(3);
     expect(result.outstanding.join(' ')).toMatch(/recorded instrument/i);
   });
 
   it('projects exactly four rungs so a surface renders each concept once', () => {
-    const result = presentDiscoveryAccessEvidence([
-      { tier: 'parcel_flag', statement: 'Land Locked: Yes', sourceLabel: 'LandPortal', sourceKind: 'landportal_parcel_flag', basis: 'source_stated', weight: 'likely' },
-      { tier: 'apparent_physical', statement: 'Apparent gravel drive', sourceLabel: 'Satellite', sourceKind: 'satellite_imagery', basis: 'direct_observation', weight: 'well_supported' },
-    ]);
+    const result = presentDiscoveryAccessEvidence([parcelFlag, aerial], { retainedArtifacts: ['inspection-aerial'] });
     expect(result.rungs.map((rung) => rung.tier)).toEqual(['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal']);
     expect(result.rungs.filter((rung) => rung.status === 'not_evidenced').map((rung) => rung.tier))
       .toEqual(['reported_legal', 'verified_legal']);
@@ -213,5 +222,47 @@ describe('four-tier access evidence projection', () => {
       const occurrences = result.operatorConclusion.split(rung.statement).length - 1;
       expect(occurrences).toBe(1);
     }
+  });
+
+  it('keeps the parcel source\'s own stated condition rather than a canned one', () => {
+    const result = presentDiscoveryAccessEvidence([{
+      ...parcelFlag,
+      statement: 'Land Locked: No. LandPortal reports 264 ft of frontage on Elk Lake Road',
+    }]);
+    expect(result.rungs[0].statement).toMatch(/Land Locked: No\. LandPortal reports 264 ft of frontage on Elk Lake Road\./);
+    expect(result.rungs[0].statement).not.toMatch(/flags this parcel as land locked/i);
+  });
+
+  it('drops a stored Street View statement whose capture was never retained', () => {
+    const stored = [{
+      tier: 'apparent_physical' as const,
+      statement: 'A fenced/gated gravel entrance is visible in the Street View scene.',
+      sourceLabel: 'Retained visual observation — Street View',
+      sourceKind: 'street_view' as const,
+      basis: 'direct_observation' as const,
+      weight: 'well_supported' as const,
+      artifactRef: 'street-view-capture-1',
+    }];
+    const orphaned = presentDiscoveryAccessEvidence(stored, { retainedArtifacts: ['inspection-aerial'] });
+    expect(orphaned.apparentPhysicalAccess).toBe(false);
+    expect(orphaned.operatorConclusion).not.toMatch(/gated gravel entrance/i);
+    expect(orphaned.rejected[0].reason).toMatch(/orphaned/i);
+    // No artifact reference at all is refused the same way.
+    expect(presentDiscoveryAccessEvidence([{ ...stored[0], artifactRef: null }]).items).toHaveLength(0);
+    // With the capture actually retained, the same observation is admissible.
+    const backed = presentDiscoveryAccessEvidence(stored, { retainedArtifacts: ['street-view-capture-1'] });
+    expect(backed.apparentPhysicalAccess).toBe(true);
+  });
+
+  it('accepts listing-derived tier-2 support and never promotes it to a legal rung', () => {
+    const result = presentDiscoveryAccessEvidence([
+      { tier: 'apparent_physical', statement: 'Listing directions: turn left onto the dirt drive.', sourceLabel: 'Listing', sourceKind: 'listing', basis: 'source_stated', weight: 'likely' },
+      { tier: 'reported_legal', statement: 'Driveway: Dirt', sourceLabel: 'Listing', sourceKind: 'listing', basis: 'source_stated', weight: 'likely' },
+    ]);
+    expect(result.apparentPhysicalAccess).toBe(true);
+    expect(result.reportedLegalAccess).toBe(false);
+    expect(result.verifiedLegalAccess).toBe(false);
+    expect(result.demoted[0].fromTier).toBe('reported_legal');
+    expect(result.rungs[2].status).toBe('not_evidenced');
   });
 });

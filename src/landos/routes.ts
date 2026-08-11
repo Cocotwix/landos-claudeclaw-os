@@ -8472,6 +8472,23 @@ export function registerLandosRoutes(app: Hono): void {
       const situs = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
       const read = readDiscoveryAccess(snapshot.dueDiligence, situs);
       const entrance = apparentEntranceFromObservations(linkInspection?.visualObservations ?? [], read.road);
+      // The captures actually retained for this subject. Every reference a
+      // visual access observation may legitimately cite — the evidence id, the
+      // served view URL, the content hash — so an observation naming a capture
+      // that is absent is dropped by the ladder instead of displayed.
+      const retainedAccessArtifacts = [
+        ...(snapshot?.evidence ?? [])
+          .filter((item) => item.viewUrl && (item.kind === 'screenshot' || item.kind === 'map' || item.kind === 'overlay'))
+          .flatMap((item) => [item.id, item.viewUrl, item.sha256]),
+        // Accepted inspection captures, which is what a worker handback names
+        // in `artifact_key`. A rejected or missing asset never counts.
+        ...(linkInspection?.assets ?? [])
+          .filter((asset) => asset.validation?.status === 'accepted')
+          .flatMap((asset) => [asset.key, asset.storedPath]),
+      ].filter((value): value is string => !!value);
+      // The Street View capture the entrance observation must cite. Null when
+      // no usable capture was retained: the observation is then orphaned.
+      const retainedStreetViewCapture = streetViewProjection?.available ? streetViewProjection.screenshot : null;
       const canonicalAccessEvidence: AccessEvidenceItem[] = linkCardId == null
         ? []
         : (propertyResearchStore.loadForProperty(linkCardId)?.evidence ?? [])
@@ -8483,7 +8500,7 @@ export function registerLandosRoutes(app: Hono): void {
             const basis = String(value.basis ?? '');
             const weight = String(value.weight ?? '');
             if (!['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal'].includes(tier)
-              || !['landportal_parcel_flag', 'satellite_imagery', 'street_view', 'listing', 'official_record', 'other'].includes(sourceKind)
+              || !['landportal_parcel_flag', 'satellite_imagery', 'street_view', 'listing', 'listing_photo', 'official_record', 'other'].includes(sourceKind)
               || !['source_stated', 'direct_observation', 'reasonable_interpretation', 'recorded_instrument'].includes(basis)
               || !['confirmed', 'well_supported', 'likely', 'unresolved'].includes(weight)) return [];
             return [{
@@ -8495,6 +8512,11 @@ export function registerLandosRoutes(app: Hono): void {
               weight: weight as AccessEvidenceItem['weight'],
               sourceUrl: typeof value.source_url === 'string' ? value.source_url : entry.sourceUrl,
               observedAt: typeof value.observed_at === 'string' ? value.observed_at : entry.retrievedAt,
+              // The capture the stored statement claims to have read. Absent
+              // means the ladder drops it rather than rendering it.
+              artifactRef: typeof value.artifact_key === 'string' ? value.artifact_key
+                : typeof value.artifactRef === 'string' ? value.artifactRef
+                : null,
             }];
           });
       if (read.landlocked === 'yes' && !canonicalAccessEvidence.some((item) => item.tier === 'parcel_flag')) {
@@ -8513,7 +8535,9 @@ export function registerLandosRoutes(app: Hono): void {
         // Credit the observation record's own evidence wording and confidence.
         // Attributing it to LandPortal contradicted the Street View panel on the
         // same page, which reports that no LandPortal Street View coverage was
-        // confirmed for this frontage.
+        // confirmed for this frontage. The observation cites the retained
+        // capture it was read from; with no capture retained it cites nothing
+        // and the guard drops it instead of rendering an orphaned scene.
         const attribution = apparentEntranceAttribution(entrance);
         canonicalAccessEvidence.push({
           tier: 'apparent_physical',
@@ -8524,17 +8548,29 @@ export function registerLandosRoutes(app: Hono): void {
           weight: attribution.weight,
           sourceUrl: linkInspection?.parcelUrl ?? null,
           observedAt: linkInspection?.sources.find((source) => source.provider === 'LandPortal')?.attemptedAt ?? null,
+          artifactRef: retainedStreetViewCapture,
         });
       }
-      const reconciliation = presentDiscoveryAccessEvidence(canonicalAccessEvidence);
+      // Every item — stored, parcel-flag or entrance-derived — goes through the
+      // one guard, against the captures actually retained.
+      const reconciliation = presentDiscoveryAccessEvidence(canonicalAccessEvidence, {
+        retainedArtifacts: [...retainedAccessArtifacts, ...(retainedStreetViewCapture ? [retainedStreetViewCapture] : [])],
+      });
+      // The entrance line is a visual claim like any other: it is shown only
+      // while the ladder still carries a backed apparent-physical observation.
+      // An orphaned observation reverts to the honest not-confirmed line rather
+      // than surviving because it was once stored.
+      const entranceSupported = entrance.confirmed && reconciliation.apparentPhysicalAccess;
       return {
         established: read.established,
         road: read.road,
         legalAccess: read.display,
         frontageFt: read.frontageFt,
-        apparentEntrance: entrance.display,
-        apparentEntranceConfirmed: entrance.confirmed,
-        apparentEntranceObservation: entrance.observation,
+        apparentEntrance: entranceSupported ? entrance.display : 'Not confirmed from retained imagery',
+        apparentEntranceConfirmed: entranceSupported,
+        apparentEntranceObservation: entranceSupported ? entrance.observation : null,
+        /** True when a stored entrance claim was dropped for citing no capture. */
+        apparentEntranceOrphaned: entrance.confirmed && !entranceSupported,
         evidence: reconciliation,
       };
     })();

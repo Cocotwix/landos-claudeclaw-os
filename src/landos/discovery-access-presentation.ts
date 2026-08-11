@@ -23,9 +23,29 @@ import {
   type AccessEvidenceReconciliation,
 } from './access-evidence-ladder.js';
 
-/** Canonical operator projection for source-separated access evidence. */
-export function presentDiscoveryAccessEvidence(items: AccessEvidenceItem[]): AccessEvidenceReconciliation {
-  return reconcileAccessEvidence(items);
+export interface DiscoveryAccessPresentationOptions {
+  /**
+   * References of the captures actually retained for this subject (evidence
+   * ids, view URLs or hashes). Supplying them drops orphaned observations —
+   * a stored Street View statement whose capture is absent is not displayed.
+   */
+  retainedArtifacts?: Iterable<string> | null;
+}
+
+/**
+ * Canonical operator projection for source-separated access evidence. Every
+ * item goes through the ladder's admission guard, and the presentation always
+ * demands the retained artifact behind a visual observation: nothing renders
+ * that no image or capture backs.
+ */
+export function presentDiscoveryAccessEvidence(
+  items: AccessEvidenceItem[],
+  options: DiscoveryAccessPresentationOptions = {},
+): AccessEvidenceReconciliation {
+  return reconcileAccessEvidence(items, {
+    requireVisualArtifact: true,
+    retainedArtifacts: options.retainedArtifacts ?? null,
+  });
 }
 
 const ROAD_SUFFIX: Record<string, string> = {

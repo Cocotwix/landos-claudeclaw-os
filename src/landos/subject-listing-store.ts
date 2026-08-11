@@ -7,6 +7,7 @@
 
 import { getLandosDb } from './db.js';
 import {
+  mergeRetainedListingRecords,
   projectExactAddressListingEvidence,
   type ExactAddressListingEvidenceView,
   type ExtractedListingEvidence,
@@ -33,6 +34,17 @@ export interface PersistedSubjectListingDetail {
   };
   retainedPages: ExtractedListingEvidence[];
   retainedAtIso: string | null;
+  /**
+   * How this visit changed the retained set. Optional so payloads written
+   * before record-level merging existed still parse and keep their evidence.
+   */
+  retention?: {
+    mergedRecordCount: number;
+    newRecordCount: number;
+    refreshedRecordCount: number;
+    preservedRecordCount: number;
+    note: string;
+  };
   projection: ExactAddressListingEvidenceView;
   createdAtIso: string;
   updatedAtIso: string;
@@ -126,17 +138,27 @@ export function saveSubjectListingDetail(input: {
   const newlyStored = input.result.status === 'retrieved' && input.result.pages.length > 0
     ? input.result.pages
     : [];
-  const retainedPages = newlyStored.length ? newlyStored : prior?.retainedPages ?? [];
-  const retainedAtIso = newlyStored.length
-    ? newlyStored.map((page) => page.retrievedAt).filter((value): value is string => !!value).sort().pop() ?? input.completedAtIso
-    : prior?.retainedAtIso ?? null;
+  // Retention MERGES by canonical record identity. A revisit that only returns
+  // the stale duplicate refreshes that one record; every other previously
+  // retained record survives as secondary evidence rather than being replaced.
+  const merge = mergeRetainedListingRecords(prior?.retainedPages ?? [], newlyStored);
+  const retainedPages = merge.pages;
+  const retainedAtIso = retainedPages
+    .map((page) => page.retrievedAt)
+    .filter((value): value is string => !!value)
+    .sort()
+    .pop()
+    ?? (newlyStored.length ? input.completedAtIso : prior?.retainedAtIso ?? null);
+  const retentionNote = !newlyStored.length
+    ? 'Previously retained listing evidence remains available with its original retrieval time.'
+    : merge.preservedRecordCount
+      ? `${merge.newRecordCount} new and ${merge.refreshedRecordCount} refreshed record(s) were merged; ${merge.preservedRecordCount} previously retained record(s) were preserved as secondary evidence.`
+      : `${merge.newRecordCount} new and ${merge.refreshedRecordCount} refreshed record(s) were merged into the retained subject evidence.`;
   const projection = projectExactAddressListingEvidence({
     status: retainedPages.length ? 'retrieved' : input.result.status,
     queries: input.result.queries,
     pages: retainedPages,
-    note: retainedPages.length && !newlyStored.length
-      ? `${input.result.note} Previously retained listing evidence remains available with its original retrieval time.`
-      : input.result.note,
+    note: `${input.result.note} ${retentionNote}`.trim(),
   });
   if (!projection) {
     return {
@@ -164,6 +186,13 @@ export function saveSubjectListingDetail(input: {
     },
     retainedPages,
     retainedAtIso,
+    retention: {
+      mergedRecordCount: retainedPages.length,
+      newRecordCount: merge.newRecordCount,
+      refreshedRecordCount: merge.refreshedRecordCount,
+      preservedRecordCount: merge.preservedRecordCount,
+      note: retentionNote,
+    },
     projection,
     createdAtIso,
     updatedAtIso: input.completedAtIso,
@@ -194,7 +223,7 @@ export function saveSubjectListingDetail(input: {
     retainedSourceCount: retainedPages.length,
     newlyStoredSourceCount: newlyStored.length,
     reason: newlyStored.length
-      ? `${newlyStored.length} exact-address listing source(s) persisted for the canonical subject`
+      ? `${newlyStored.length} exact-address listing source(s) persisted for the canonical subject; ${retentionNote}`
       : retainedPages.length
         ? 'latest attempt persisted; previously retained subject listing evidence was preserved'
         : 'exact-address attempt persisted; no subject listing evidence was exposed',

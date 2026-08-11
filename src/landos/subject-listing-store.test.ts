@@ -43,6 +43,15 @@ beforeEach(() => {
   };
 });
 
+function staleRedfinPage() {
+  return extractListingEvidence({
+    url: 'https://www.redfin.com/MI/Williamsburg/9490-Elk-Lake-Rd-49690/home/143868919',
+    retrievedAt: '2026-08-12T14:15:00.000Z',
+    text: `Listing status: Off market. 9490 Elk Lake Rd. 60 acres. MLS # 80071245.
+      This home is no longer available.`,
+  });
+}
+
 function zillowPage(exposesEngagement = true) {
   return extractListingEvidence({
     url: 'https://www.zillow.com/homedetails/9490-Elk-Lake-Rd-Williamsburg-MI-49690/243126665_zpid/',
@@ -100,12 +109,19 @@ describe('subject listing detail persistence', () => {
     });
     const signal = loadSubjectListingDetail(property.propertyCardId)?.projection.listingCard?.zillowEngagement;
     expect(signal).toEqual({
-      provider: 'zillow', views: null, saves: null,
+      provider: 'zillow',
+      sourceLabel: 'zillow.com',
+      sourceUrl: 'https://www.zillow.com/homedetails/9490-Elk-Lake-Rd-Williamsburg-MI-49690/243126665_zpid/',
+      views: null, saves: null,
       viewsAvailability: 'unavailable', savesAvailability: 'unavailable',
+      listingAgeDays: 23, listingAgeAvailability: 'available',
+      photoCount: 2, photoCountAvailability: 'available',
+      priceChangeCount: null, priceChangeAvailability: 'unavailable',
       retrievedAt: '2026-08-11T14:15:00.000Z',
     });
     expect(signal?.views).not.toBe(0);
     expect(signal?.saves).not.toBe(0);
+    expect(signal?.priceChangeCount).not.toBe(0);
   });
 
   it('records a blocked revisit without erasing previously retained listing facts or photos', () => {
@@ -124,6 +140,100 @@ describe('subject listing detail persistence', () => {
     expect(stored.latestAttempt.status).toBe('blocked');
     expect(stored.projection.listingCard?.primaryPhotoUrl).toContain('primary.jpg');
     expect(stored.projection.note).toMatch(/previously retained listing evidence remains/i);
+  });
+
+  it('merges a revisit by record identity instead of replacing the retained set', () => {
+    saveSubjectListingDetail({
+      propertyCardId: property.propertyCardId, dealCardId: property.dealCardId,
+      canonicalAddress: property.address, completedAtIso: '2026-08-11T14:15:01.000Z',
+      result: { status: 'retrieved', queries: [property.address], pages: [zillowPage()], note: 'Read.' },
+    });
+    // The revisit returns ONLY the stale off-market duplicate for the same property.
+    const write = saveSubjectListingDetail({
+      propertyCardId: property.propertyCardId, dealCardId: property.dealCardId,
+      canonicalAddress: property.address, completedAtIso: '2026-08-12T14:15:01.000Z',
+      result: { status: 'retrieved', queries: [property.address], pages: [staleRedfinPage()], note: 'Read.' },
+    });
+    expect(write).toMatchObject({ persisted: true, retainedSourceCount: 2, newlyStoredSourceCount: 1 });
+
+    const stored = loadSubjectListingDetail(property.propertyCardId)!;
+    expect(stored.retainedPages).toHaveLength(2);
+    expect(stored.retention).toMatchObject({ mergedRecordCount: 2, newRecordCount: 1, preservedRecordCount: 1 });
+    // The good current evidence survives the thinner revisit and stays current.
+    expect(stored.projection.listingCard?.primaryPhotoUrl).toContain('primary.jpg');
+    expect(stored.projection.listingCard?.currentPrice).toBe(1_450_000);
+    expect(stored.projection.reconciliation?.canonical.recordCount).toBe(2);
+    expect(stored.projection.reconciliation?.currentRecord?.sourceUrl).toContain('zillow.com');
+    expect(stored.projection.reconciliation?.supersededRecords[0]).toMatchObject({ listingStatusCode: 'off_market' });
+    expect(getLandosDb().prepare('SELECT count(*) AS n FROM landos_property_card').get()).toMatchObject({ n: 1 });
+  });
+
+  it('refreshes the same record in place without losing facts the revisit dropped', () => {
+    saveSubjectListingDetail({
+      propertyCardId: property.propertyCardId, dealCardId: property.dealCardId,
+      canonicalAddress: property.address, completedAtIso: '2026-08-11T14:15:01.000Z',
+      result: { status: 'retrieved', queries: [property.address], pages: [zillowPage()], note: 'Read.' },
+    });
+    const thinner = extractListingEvidence({
+      url: 'https://www.zillow.com/homedetails/9490-Elk-Lake-Rd-Williamsburg-MI-49690/243126665_zpid/',
+      retrievedAt: '2026-08-12T14:15:00.000Z',
+      text: 'Listing status: Active. 9490 Elk Lake Rd.',
+    });
+    const write = saveSubjectListingDetail({
+      propertyCardId: property.propertyCardId, dealCardId: property.dealCardId,
+      canonicalAddress: property.address, completedAtIso: '2026-08-12T14:15:01.000Z',
+      result: { status: 'retrieved', queries: [property.address], pages: [thinner], note: 'Read.' },
+    });
+    expect(write).toMatchObject({ retainedSourceCount: 1, newlyStoredSourceCount: 1 });
+    const stored = loadSubjectListingDetail(property.propertyCardId)!;
+    expect(stored.retention).toMatchObject({ mergedRecordCount: 1, newRecordCount: 0, refreshedRecordCount: 1 });
+    expect(stored.retainedPages[0]).toMatchObject({ retrievedAt: '2026-08-12T14:15:00.000Z', yearBuilt: 2001, beds: 4 });
+    expect(stored.projection.listingCard?.primaryPhotoUrl).toContain('primary.jpg');
+  });
+
+  // A stored value re-enters the operator's read through the retention merge,
+  // with a current retrieval time, so it is re-tested on the way in.
+  it('drops a retained value that could not be captured today and falls through to the next-best record', () => {
+    const STORED_JUNK_BROKERAGE = 'services , Consumer protection notice California DRE #01937601 Contact '
+      + 'Homes.com Brokerage About Us Advertise Terms of Use Builder Terms of Use Privacy Notice E';
+    const homesUrl = 'https://www.homes.com/property/9490-elk-lake-rd-williamsburg-mi/123/';
+    const homesRecord = {
+      ...extractListingEvidence({
+        url: homesUrl,
+        retrievedAt: '2026-08-12T14:15:00.000Z',
+        text: 'Listing status: Active. 9490 Elk Lake Rd. Current price: $1,450,000. Single-family home, 60 acres.',
+      }),
+      // Stored by an earlier visit, before these fields were tested at all.
+      brokerage: STORED_JUNK_BROKERAGE,
+      mls: 'Data',
+    };
+    const redfinRecord = extractListingEvidence({
+      url: 'https://www.redfin.com/MI/Williamsburg/9490-Elk-Lake-Rd-49690/home/143868919',
+      retrievedAt: '2026-08-11T14:15:00.000Z',
+      text: `Listing status: Active. 9490 Elk Lake Rd. Current price: $1,450,000. Single-family home, 60 acres.
+        Listed by: Kathy Wittbrodt. MLS # 80071245.`,
+    });
+
+    saveSubjectListingDetail({
+      propertyCardId: property.propertyCardId, dealCardId: property.dealCardId,
+      canonicalAddress: property.address, completedAtIso: '2026-08-12T14:15:01.000Z',
+      result: { status: 'retrieved', queries: [property.address], pages: [homesRecord, redfinRecord], note: 'Read.' },
+    });
+
+    const stored = loadSubjectListingDetail(property.propertyCardId)!;
+    const homes = stored.retainedPages.find((page) => page.sourceUrl === homesUrl)!;
+    expect(homes.brokerage).toBeNull();
+    expect(homes.mls).toBeNull();
+    expect(JSON.stringify(stored.retainedPages)).not.toContain('Terms of Use');
+    // The card source is the freshest record; the brokerage falls through.
+    expect(stored.projection.listingCard).toMatchObject({
+      sourceLabel: 'homes.com',
+      brokerage: 'Kathy Wittbrodt',
+      mls: '80071245',
+    });
+    expect(stored.projection.listingCard?.fieldSources.brokerage).toMatchObject({
+      sourceLabel: 'redfin.com', fromCardSource: false,
+    });
   });
 
   it('refuses to create listing evidence for a missing canonical property/deal link', () => {

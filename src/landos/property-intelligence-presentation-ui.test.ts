@@ -12,10 +12,14 @@ const PI_SRC = fs.readFileSync(
   path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx'),
   'utf8',
 );
+const OVERVIEW_SRC = fs.readFileSync(
+  path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2Overview.tsx'),
+  'utf8',
+);
 const PAGE_SRC = [
-  'web/src/pages/AcquisitionWorkspaceV2.tsx',
-  'web/src/components/AcquisitionWorkspaceV2Overview.tsx',
-].map((file) => fs.readFileSync(path.join(process.cwd(), file), 'utf8')).join('\n');
+  fs.readFileSync(path.join(process.cwd(), 'web/src/pages/AcquisitionWorkspaceV2.tsx'), 'utf8'),
+  OVERVIEW_SRC,
+].join('\n');
 const CSS_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/styles/workspace-v2.css'), 'utf8');
 const PI_CSS_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/styles/workspace-v2-property-intelligence.css'), 'utf8');
 const GIS_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2OfficialParcelGis.tsx'), 'utf8');
@@ -120,13 +124,56 @@ describe('operator-question hierarchy', () => {
     expect(PI_SRC).toMatch(/workspace-v2-property-intelligence\.css/);
   });
 
-  it('puts public listing context next to the subject with honest Zillow engagement and photos', () => {
-    expect(PI_SRC).toMatch(/Current listing \/ public property context/);
-    expect(PI_SRC).toMatch(/primaryListing\.family\.toLowerCase\(\)\.includes\('zillow'\)/);
+  it('puts the reconciled public listing next to the subject with availability-gated engagement', () => {
+    expect(PI_SRC).toMatch(/Current public listing/);
+    // The reconciled subject decides the current record. Picking whichever
+    // source sorted first is what let a stale off-market duplicate speak for an
+    // actively listed property.
+    expect(PI_SRC).toMatch(/exactAddressListings\?\.listingCard/);
+    expect(PI_SRC).toMatch(/reconciliation\?\.currentRecord\?\.sourceUrl/);
+    expect(PI_SRC).not.toMatch(/primaryListing\.family\.toLowerCase\(\)\.includes\('zillow'\)/);
+    // Engagement is read per provider from its own availability flag, so an
+    // unpublished measure is unavailable and never zero.
+    expect(PI_SRC).toMatch(/engagementMeasure\(signal\.views, signal\.viewsAvailability\)/);
+    expect(PI_SRC).toMatch(/engagementMeasure\(signal\.saves, signal\.savesAvailability\)/);
+    expect(PI_SRC).toMatch(/availability === 'available' && value != null/);
     expect(PI_SRC).toContain('Not collected (never shown as zero)');
     expect(PI_SRC).toMatch(/Engagement retrieved/);
-    expect(PI_SRC).toMatch(/listingPhotos\[listingPhotoIndex\]/);
-    expect(PI_SRC).toMatch(/Open \{primaryListing\.sourceLabel\} listing/);
+    expect(PI_SRC).toMatch(/Open \{listingCard\.sourceLabel\} listing/);
+    // The reconciliation itself is readable, and superseded records are kept.
+    expect(PI_SRC).toMatch(/data-testid="ea-superseded-record"/);
+    expect(PI_SRC).toMatch(/reconciliation\.canonical\.identityNote/);
+  });
+
+  it('separates the listing block into status, listing-reported facts and imagery without repeating it', () => {
+    // One panel per question, each rendered exactly once.
+    // Exactly two rendered titles: the reconciled card and the unresolved fallback.
+    expect(PI_SRC.match(/awv2-panel-title">\s*Current public listing/g)).toHaveLength(2);
+    expect(PI_SRC.match(/awv2-panel-title">\s*Listing-reported property intelligence/g)).toHaveLength(1);
+    expect(PI_SRC.match(/id="listing-reported-intelligence"/g)).toHaveLength(1);
+    expect(PI_SRC.match(/id="listing-imagery"/g)).toHaveLength(1);
+    // Improvement facts live in exactly one panel, at listing weight.
+    expect(PI_SRC).toMatch(/never an assessor or recorded fact/);
+    expect(PI_SRC.match(/<Kv k="Year built"/g)).toHaveLength(1);
+    expect(PI_SRC.match(/<Kv k="Beds \/ baths"/g)).toHaveLength(1);
+  });
+
+  it('surfaces listing imagery through the existing gallery and never substitutes a photo', () => {
+    expect(PI_SRC).toMatch(/<AcquisitionWorkspaceV2CompPhotoGallery/);
+    expect(PI_SRC).toMatch(/listingCard\.primaryPhotoUrl, \.\.\.\(listingCard\.additionalPhotoUrls \?\? \[\]\)/);
+    expect(PI_SRC).toContain('No listing photograph was retained for this subject, so none is shown.');
+    // No second image subsystem: the manual one-off carousel is gone.
+    expect(PI_SRC).not.toMatch(/setListingPhotoIndex/);
+  });
+
+  it('reads physical access and legal access as two separate questions', () => {
+    expect(PI_SRC).toMatch(/Physical access evidence — what the retained evidence shows, never legal proof/);
+    expect(PI_SRC).toMatch(/Legal access status — only what a source reports or a recorded instrument proves/);
+    expect(PI_SRC).toMatch(/ACCESS_GROUPS\.map/);
+    // Driveway and directions wording supports tier 2 only, and appears once.
+    expect(PI_SRC.match(/Listing-reported driveway \/ directions wording/g)).toHaveLength(1);
+    expect(PI_SRC).toMatch(/supporting apparent physical access only/);
+    expect(PI_SRC).not.toMatch(/Listing-reported access wording/);
   });
 
   it('renders Street View findings only when a real panorama capture exists', () => {
@@ -151,9 +198,72 @@ describe('operator-question hierarchy', () => {
   });
 
   it('loads lane-owned responsive styles', () => {
-    expect(PI_CSS_SRC).toMatch(/\.awv2-listing-layout/);
+    expect(PI_CSS_SRC).toMatch(/\.awv2-listing-metrics/);
+    expect(PI_CSS_SRC).toMatch(/\.awv2-listing-engagement/);
     expect(PI_CSS_SRC).toMatch(/\.awv2-access-ladder/);
+    expect(PI_CSS_SRC).toMatch(/\.awv2-access-group/);
     expect(PI_CSS_SRC).toMatch(/\.awv2-lu-operator-summary/);
+  });
+});
+
+describe('Overview listing card', () => {
+  it('tells the truth when the reconciled subject has a supported current listing', () => {
+    // The subject's reconciled listing state decides the card. Overview no
+    // longer re-derives one from whichever retained source sorted first.
+    expect(OVERVIEW_SRC).toMatch(/exactAddressListings\?\.listingCard \?\? null/);
+    expect(OVERVIEW_SRC).not.toMatch(/No active public listing retained/);
+    expect(OVERVIEW_SRC).not.toMatch(/for\[\\s_-\]\?sale/);
+    // Summary-first listing facts: status, both prices, age, MLS, brokerage.
+    expect(OVERVIEW_SRC).toMatch(/\{listing\.statusLabel\}/);
+    expect(OVERVIEW_SRC).toMatch(/Current asking price/);
+    expect(OVERVIEW_SRC).toMatch(/Original list price/);
+    expect(OVERVIEW_SRC).toMatch(/Listing age/);
+    expect(OVERVIEW_SRC).toMatch(/listing\.mlsNumbers\.length \? listing\.mlsNumbers\.join/);
+    expect(OVERVIEW_SRC).toMatch(/listing\.brokerage \|\| listing\.listingAgent/);
+    expect(OVERVIEW_SRC).toMatch(/listingFacts\.join\(' · '\)/);
+    expect(OVERVIEW_SRC).toMatch(/latestPriceChange\(listing, formatUsd\)/);
+    // A way into the photos and the full evidence, without a research dump.
+    expect(OVERVIEW_SRC).toMatch(/Open listing &amp; photos/);
+    expect(OVERVIEW_SRC).toMatch(/openListingEvidence/);
+    expect(OVERVIEW_SRC).toMatch(/exact-address-listing-evidence/);
+  });
+
+  it('reads engagement from published availability and never renders it as zero', () => {
+    // Zillow keeps its two operator-familiar tiles, stated as uncollected when
+    // Zillow published nothing; every other provider appears only when it did.
+    expect(OVERVIEW_SRC).toMatch(/zillowEngagement\?\.viewsAvailability === 'available'/);
+    expect(OVERVIEW_SRC).toMatch(/zillowEngagement\?\.savesAvailability === 'available'/);
+    expect(OVERVIEW_SRC).toMatch(/Not collected \(never shown as zero\)/);
+    expect(OVERVIEW_SRC).toMatch(/signal\.viewsAvailability === 'available' && signal\.views != null/);
+    expect(OVERVIEW_SRC).toMatch(/signal\.savesAvailability === 'available' && signal\.saves != null/);
+    // No zero-filled engagement tile can be produced on this surface.
+    expect(OVERVIEW_SRC).not.toMatch(/views \?\? 0/);
+    expect(OVERVIEW_SRC).not.toMatch(/saves \?\? 0/);
+  });
+
+  it('never renders the dedicated Zillow tiles alongside a per-provider Zillow tile', () => {
+    // "Zillow views 134" beside "zillow.com views 134" is one measure shown
+    // twice. Zillow is excluded from the per-provider tiles BY PROVIDER, so a
+    // second Zillow read can never re-render the same counter.
+    expect(OVERVIEW_SRC).toMatch(/engagementByProvider\.filter\(\(signal\) => signal\.provider !== 'zillow'\)/);
+    expect(OVERVIEW_SRC).not.toMatch(/signal !== zillowEngagement/);
+    // The dedicated tiles still exist, and still state an unpublished measure.
+    expect(OVERVIEW_SRC).toMatch(/<span>Zillow views<\/span>/);
+    expect(OVERVIEW_SRC).toMatch(/<span>Zillow saves<\/span>/);
+  });
+
+  it('states an off-market subject as itself instead of claiming nothing was retained', () => {
+    expect(OVERVIEW_SRC).toMatch(/listing\.onMarket \? 'active' : 'retained'/);
+    expect(OVERVIEW_SRC).toMatch(/!listing\.onMarket && <p class="listing-price-change">\{listing\.statusNote\}<\/p>/);
+    expect(OVERVIEW_SRC).toMatch(/No public listing record retained/);
+  });
+
+  it('carries no malformed JSX closing tags on any V2 surface', () => {
+    // The defect report named `<\span>`, `<\h2>` and `<\div>` in the listing
+    // metrics, septic and valuation sections. This keeps them impossible.
+    for (const src of [PI_SRC, PAGE_SRC]) {
+      expect(src).not.toMatch(/<\\\s*[A-Za-z]/);
+    }
   });
 });
 

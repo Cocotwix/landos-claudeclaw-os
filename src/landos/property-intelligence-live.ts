@@ -1439,10 +1439,13 @@ function exactAddressProviderAdapter(execute: () => Promise<ExactAddressWebResul
         kind: 'fact',
         validation: { valid: true, reasons: [] },
       };
+      // A listing now yields reported-legal wording AND tier-2 apparent-physical
+      // support (driveway/directions wording, listing photography), so the field
+      // must name the tier the item actually occupies rather than assume one.
       return [base, ...listingAccessEvidenceItems(page).map((access, index): NormalizedPropertyEvidence => ({
         ...base,
         id: `exact-address:${pageIndex}:access:${index + 1}`,
-        field: `access_evidence.reported_legal.exact_address.${pageIndex + 1}.${index + 1}`,
+        field: `access_evidence.${access.tier}.exact_address.${pageIndex + 1}.${index + 1}`,
         value: access,
         sourceUrl: access.sourceUrl ?? page.sourceUrl,
       }))];

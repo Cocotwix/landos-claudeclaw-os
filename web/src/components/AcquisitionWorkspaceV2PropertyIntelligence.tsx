@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide-preact';
 import { dashboardToken } from '@/lib/api';
+import { AcquisitionWorkspaceV2CompPhotoGallery, type CvCompPhoto } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
 import { LandUsePanel, type LandUseView } from './AcquisitionWorkspaceV2LandUse';
 import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
@@ -154,8 +155,37 @@ export interface ResearchStatusView {
   incomplete: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
 }
 
-/** Mirrors ExactAddressListingEvidenceView in src/landos/exact-address-web-discovery.ts. */
+/** The six listing states LandOS recognises. `unknown` is never read as active. */
+export type ListingStatusCodeView = 'active' | 'pending' | 'contingent' | 'sold' | 'off_market' | 'unknown';
+export type EngagementAvailabilityView = 'available' | 'unavailable';
+
+/**
+ * One provider's published engagement in that provider's own terms. Every
+ * measure carries its own availability, so an absent count renders as
+ * unavailable and NEVER as zero.
+ */
+export interface ListingEngagementSignalView {
+  provider: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  views: number | null;
+  saves: number | null;
+  viewsAvailability: EngagementAvailabilityView;
+  savesAvailability: EngagementAvailabilityView;
+  listingAgeDays: number | null;
+  listingAgeAvailability: EngagementAvailabilityView;
+  photoCount: number | null;
+  photoCountAvailability: EngagementAvailabilityView;
+  priceChangeCount: number | null;
+  priceChangeAvailability: EngagementAvailabilityView;
+  retrievedAt: string | null;
+}
+
+export interface ListingEventView { date: string | null; event: string; price: number | null }
+
+/** Mirrors ListingEvidenceSourceView in src/landos/exact-address-web-discovery.ts. */
 export interface ExactAddressListingSourceView {
+  evidenceLabel?: 'Listing-reported';
   sourceLabel: string;
   family: string;
   sourceUrl: string;
@@ -163,42 +193,128 @@ export interface ExactAddressListingSourceView {
   propertyType: string | null;
   buildingSqft: number | null;
   acres: number | null;
+  streetAddress?: string | null;
+  normalizedStreetAddress?: string | null;
+  apn?: string | null;
   listingStatus: string | null;
+  listingStatusCode?: ListingStatusCodeView;
+  listingStatusLabel?: string;
   listingStatusDate: string | null;
   price: number | null;
-  utilities: string[];
-  well: boolean | null;
-  septic: boolean | null;
-  accessStatements: string[];
-  drivewayStatements: string[];
-  accessLanguageNote: string;
-  provenanceNote: string;
   originalListPrice?: number | null;
-  listDate?: string | null;
+  listingDate?: string | null;
   daysOnMarket?: number | null;
-  views?: number | null;
-  saves?: number | null;
-  zillowViews?: number | null;
-  zillowSaves?: number | null;
-  engagementRetrievedAt?: string | null;
-  priceHistory?: Array<{ date?: string | null; price?: number | null; event?: string | null }>;
-  photos?: string[];
-  photoUrls?: string[];
-  primaryPhotoUrl?: string | null;
   beds?: number | null;
   baths?: number | null;
   yearBuilt?: number | null;
-  brokerage?: string | null;
-  mls?: string | null;
+  utilities: string[];
+  well: boolean | null;
+  septic: boolean | null;
+  structures?: string[];
   description?: string | null;
   features?: string[];
+  brokerage?: string | null;
+  listingAgent?: string | null;
+  mls?: string | null;
+  listingHistory?: ListingEventView[];
+  photoUrls?: string[];
+  engagement?: ListingEngagementSignalView | null;
+  accessStatements: string[];
+  drivewayStatements: string[];
+  directionsStatements?: string[];
+  accessLanguageNote: string;
+  provenanceNote: string;
 }
+
+/** One retained record's place in the reconciliation, and why it holds it. */
+export interface ReconciledRecordRefView {
+  sourceUrl: string;
+  sourceLabel: string;
+  family: string;
+  listingStatusCode: ListingStatusCodeView;
+  listingStatusLabel: string;
+  retrievedAt: string | null;
+  mls: string | null;
+  reason: string;
+}
+
+/** Which retained records are one physical subject, and which one is current. */
+export interface SubjectReconciliationViewData {
+  subjectCount: number;
+  canonical: {
+    recordCount: number;
+    sourceUrls: string[];
+    matchedOn: string[];
+    normalizedStreetAddress: string | null;
+    apn: string | null;
+    mlsNumbers: string[];
+    identityNote: string;
+  };
+  currentRecord: ReconciledRecordRefView | null;
+  supersededRecords: ReconciledRecordRefView[];
+  otherRecords: ReconciledRecordRefView[];
+  statement: string;
+}
+
+/** The reconciled subject's current public listing. Mirrors `listingCard`. */
+export interface ListingCardView {
+  active: boolean;
+  onMarket: boolean;
+  statusCode: ListingStatusCodeView;
+  statusLabel: string;
+  status: string | null;
+  statusNote: string;
+  currentPrice: number | null;
+  originalListPrice: number | null;
+  listingDate: string | null;
+  daysOnMarket: number | null;
+  listingAgeDays: number | null;
+  listingAgeBasis: 'reported' | 'derived_from_listing_date' | 'unavailable';
+  priceChanges: ListingEventView[];
+  priceHistory: ListingEventView[];
+  acres: number | null;
+  mls: string | null;
+  mlsNumbers: string[];
+  brokerage: string | null;
+  listingAgent: string | null;
+  description: string | null;
+  features: string[];
+  drivewayStatements: string[];
+  directionsStatements: string[];
+  listingUrl: string;
+  sourceLabel: string;
+  additionalSourceUrls: string[];
+  primaryPhotoUrl: string | null;
+  additionalPhotoUrls: string[];
+  photoCount: number | null;
+  improvementFacts: {
+    propertyType: string | null;
+    buildingSqft: number | null;
+    beds: number | null;
+    baths: number | null;
+    yearBuilt: number | null;
+    structures: string[];
+    utilities: string[];
+    well: boolean | null;
+    septic: boolean | null;
+  };
+  zillowEngagement: ListingEngagementSignalView | null;
+  engagementByProvider: ListingEngagementSignalView[];
+  engagementNote: string;
+  supplementedFrom: string[];
+  evidenceLabel: 'Listing-reported';
+}
+
+/** Mirrors ExactAddressListingEvidenceView in src/landos/exact-address-web-discovery.ts. */
 export interface ExactAddressListingsView {
   status: string;
   note: string;
   queries: string[];
   retrievedAtIso: string | null;
   sources: ExactAddressListingSourceView[];
+  /** Absent on projections persisted before subject reconciliation existed. */
+  reconciliation?: SubjectReconciliationViewData | null;
+  listingCard?: ListingCardView | null;
   subjectRead: { improved: boolean; buildingSqft: number | null; acres: number | null; statement: string } | null;
   disclaimer: string;
 }
@@ -234,6 +350,61 @@ const num = (s: string | null | undefined, re: RegExp): string | null => {
   return m ? m[1] : null;
 };
 const usd = (n: number) => '$' + Math.round(n).toLocaleString('en-US');
+
+/** A measure the provider never published is unavailable, and NEVER zero. */
+const engagementMeasure = (
+  value: number | null | undefined,
+  availability: EngagementAvailabilityView | undefined,
+): string => (availability === 'available' && value != null
+  ? value.toLocaleString('en-US')
+  : 'Not collected (never shown as zero)');
+
+const listingEventLine = (event: ListingEventView): string =>
+  [event.date, event.event, event.price != null ? usd(event.price) : null].filter(Boolean).join(' · ');
+
+/** A listing that did not report a feature is unreported, not a denial. */
+const listingReported = (value: boolean | null | undefined): string | null =>
+  (value === true ? 'Reported present' : value === false ? 'Reported absent' : null);
+
+/**
+ * Structures captured from an unpunctuated marketplace page can be the whole
+ * document, navigation included. A retained value that long is not concise
+ * property evidence, so it is omitted here rather than shown to the operator:
+ * "No additional structure published" is the honest read of a value LandOS
+ * cannot present. Newly captured, clause-bounded values pass through untouched.
+ */
+const STRUCTURE_MAX_WORDS = 30;
+const STRUCTURE_MAX_CHARS = 240;
+const conciseStructures = (structures: string[]): string[] => {
+  const kept = structures.filter((structure) => structure.trim().split(/\s+/).length <= STRUCTURE_MAX_WORDS);
+  // Many short fragments still add up to a page dump once joined, so the whole
+  // value is dropped unless it reads as concise structure evidence.
+  return kept.join(', ').length <= STRUCTURE_MAX_CHARS ? kept : [];
+};
+
+const ACCESS_TIER_LABEL = {
+  parcel_flag: 'LandPortal parcel flag',
+  apparent_physical: 'Apparent physical route',
+  reported_legal: 'Reported legal / easement access',
+  verified_legal: 'Verified recorded legal access',
+} as const;
+
+/**
+ * The same four rungs, read as the two different questions they answer. What
+ * can be seen never migrates into what is legally held.
+ */
+const ACCESS_GROUPS = [
+  {
+    key: 'physical',
+    title: 'Physical access evidence — what the retained evidence shows, never legal proof',
+    tiers: ['parcel_flag', 'apparent_physical'] as Array<keyof typeof ACCESS_TIER_LABEL>,
+  },
+  {
+    key: 'legal',
+    title: 'Legal access status — only what a source reports or a recorded instrument proves',
+    tiers: ['reported_legal', 'verified_legal'] as Array<keyof typeof ACCESS_TIER_LABEL>,
+  },
+] as const;
 
 function fmtMetric(key: keyof MarketContextMetricsView, v: number | null): string | null {
   if (v === null) return null;
@@ -428,13 +599,35 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     };
   });
   const listingSources = exactAddressListings?.sources ?? [];
-  const primaryListing = listingSources.find((source) => source.family.toLowerCase().includes('zillow')) ?? listingSources[0] ?? null;
-  const listingPhotos = primaryListing
-    ? [...new Set([primaryListing.primaryPhotoUrl, ...(primaryListing.photos ?? []), ...(primaryListing.photoUrls ?? [])].filter((url): url is string => !!url))]
-    : [];
-  const listingViews = primaryListing?.views ?? primaryListing?.zillowViews ?? null;
-  const listingSaves = primaryListing?.saves ?? primaryListing?.zillowSaves ?? null;
-  const [listingPhotoIndex, setListingPhotoIndex] = useState(0);
+  // The reconciled subject decides which record is current. Picking whichever
+  // source happened to sort first is exactly how a stale off-market duplicate
+  // kept speaking for an actively listed property.
+  const reconciliation = exactAddressListings?.reconciliation ?? null;
+  const listingCard = exactAddressListings?.listingCard ?? null;
+  const currentRecordUrl = reconciliation?.currentRecord?.sourceUrl ?? listingCard?.listingUrl ?? null;
+  const primaryListing = listingSources.find((source) => source.sourceUrl === currentRecordUrl)
+    ?? listingSources[0]
+    ?? null;
+  const listingPhotoUrls = [...new Set((listingCard
+    ? [listingCard.primaryPhotoUrl, ...(listingCard.additionalPhotoUrls ?? [])]
+    : (primaryListing?.photoUrls ?? [])).filter((url): url is string => !!url))];
+  const listingPhotos: CvCompPhoto[] = listingPhotoUrls.map((url, index) => ({
+    url: url.startsWith('/api/') ? tok(url) : url,
+    sequence: index + 1,
+    label: index === 0 ? 'Primary listing photograph' : `Listing photograph ${index + 1}`,
+    provider: listingCard?.sourceLabel ?? primaryListing?.sourceLabel ?? 'Listing source',
+    context: index === 0 ? 'hero' : 'gallery',
+  }));
+  const engagementSignals = listingCard?.engagementByProvider
+    ?? (primaryListing?.engagement ? [primaryListing.engagement] : []);
+  const improvementFacts = listingCard?.improvementFacts ?? null;
+  // Driveway and directions wording is tier-2 support and is rendered in the
+  // access ladder only, so the same sentence never appears in two panels.
+  const listingAccessWording = [...new Set([
+    ...(listingCard?.drivewayStatements ?? primaryListing?.drivewayStatements ?? []),
+    ...(listingCard?.directionsStatements ?? primaryListing?.directionsStatements ?? []),
+  ].filter((text) => !!text?.trim()))];
+  const listingUtilities = improvementFacts?.utilities ?? primaryListing?.utilities ?? [];
   const canonicalAcres = acres == null ? null : `${Number(acres).toLocaleString('en-US', { maximumFractionDigits: 2 })} AC`;
 
   // Missing diligence, grouped once, honestly.
@@ -448,7 +641,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     if (label && !missing.includes(label)) missing.push(label);
   }
   if (!waterFeature) missing.push('Water features');
-  if (!primaryListing?.buildingSqft && !landPortalImprovement) missing.push('Building information');
+  if (!(improvementFacts?.buildingSqft ?? primaryListing?.buildingSqft) && !landPortalImprovement) missing.push('Building information');
   if (!byId.has('inspection-parcel_context')) missing.push('Wider-context aerial');
   if (!hasStreetViewCapture && streetView?.available !== false) missing.push('Street View capture');
   if (!hasBuildabilityCapture && !landPortalBuildability) missing.push('Dedicated buildability capture');
@@ -481,68 +674,106 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           {valuationSummary && <p class="awv2-pi-note">Canonical valuation state: {valuationSummary.acceptedCount} accepted comp{valuationSummary.acceptedCount === 1 ? '' : 's'} · {valuationSummary.status}.</p>}
         </section>
 
-        {/* Current listing / public property context from the existing exact-address lane. */}
+        {/* ── Current public listing ──
+            One block: the reconciled subject's live market state and the money
+            facts attached to it. What the listing SAYS the property is lives in
+            the next panel, its photographs in the one after that, and its
+            access wording only in the access ladder. Nothing is repeated. */}
         {exactAddressListings ? (
           <section class="awv2-panel awv2-listing-card" id="exact-address-listing-evidence">
             <div class="awv2-panel-title">
-              Current listing / public property context
+              Current public listing
               <span class="awv2-src-tag">Exact-address web discovery · {exactAddressListings.status}</span>
             </div>
-            {primaryListing ? (
-              <div class="awv2-listing-layout">
-                {listingPhotos.length > 0 && (
-                  <div class="awv2-listing-photos">
-                    <img src={listingPhotos[listingPhotoIndex].startsWith('/api/') ? tok(listingPhotos[listingPhotoIndex]) : listingPhotos[listingPhotoIndex]} alt={`${primaryListing.sourceLabel} subject listing photo ${listingPhotoIndex + 1}`} />
-                    {listingPhotos.length > 1 && (
-                      <div class="awv2-listing-photo-controls">
-                        <button type="button" onClick={() => setListingPhotoIndex((listingPhotoIndex - 1 + listingPhotos.length) % listingPhotos.length)}>Previous</button>
-                        <span>{listingPhotoIndex + 1} / {listingPhotos.length}</span>
-                        <button type="button" onClick={() => setListingPhotoIndex((listingPhotoIndex + 1) % listingPhotos.length)}>Next</button>
-                      </div>
-                    )}
+            {listingCard ? (
+              <>
+                <div class={`awv2-listing-status ${listingCard.onMarket ? 'on-market' : 'off-market'}`}>
+                  <strong>{listingCard.statusLabel}</strong>
+                  <span>{listingCard.currentPrice != null ? usd(listingCard.currentPrice) : 'No asking price published'}</span>
+                </div>
+                <div class="awv2-pi-note">{listingCard.statusNote}</div>
+                <div class="awv2-listing-metrics">
+                  <div><span>Current asking price</span><b>{listingCard.currentPrice != null ? usd(listingCard.currentPrice) : 'Unavailable'}</b></div>
+                  <div><span>Original list price</span><b>{listingCard.originalListPrice != null ? usd(listingCard.originalListPrice) : 'Unavailable'}</b></div>
+                  <div>
+                    <span>Listing age</span>
+                    <b>{listingCard.listingAgeDays != null ? `${listingCard.listingAgeDays} days` : 'Unavailable'}</b>
+                    <small>{listingCard.listingAgeBasis === 'reported'
+                      ? 'Days on market as the listing reports it'
+                      : listingCard.listingAgeBasis === 'derived_from_listing_date'
+                        ? `Derived from the listing date${listingCard.listingDate ? ` ${listingCard.listingDate}` : ''}`
+                        : 'Neither days on market nor a listing date was published'}</small>
+                  </div>
+                  <div><span>Acreage (listing-reported)</span><b>{listingCard.acres != null ? `${listingCard.acres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : 'Unavailable'}</b></div>
+                  <div>
+                    <span>MLS number</span>
+                    <b>{listingCard.mlsNumbers.length ? listingCard.mlsNumbers.join(' · ') : listingCard.mls || 'Unavailable'}</b>
+                    {listingCard.mlsNumbers.length > 1 && <small>One physical property published by more than one MLS feed.</small>}
+                  </div>
+                  {/* One listing routinely publishes the agent as its brokerage
+                      line too, so the same name is not printed twice. */}
+                  <div><span>Brokerage / listing agent</span><b>{[...new Set([listingCard.brokerage, listingCard.listingAgent].filter(Boolean))].join(' · ') || 'Unavailable'}</b></div>
+                </div>
+                {listingCard.priceHistory.length > 0 && (
+                  <div class="awv2-listing-history">
+                    <b>{listingCard.priceChanges.length ? `${listingCard.priceChanges.length} retained price change(s)` : 'Retained listing events'}</b>
+                    {listingCard.priceHistory.map((event) => <div class="awv2-sv-basis">{listingEventLine(event)}</div>)}
                   </div>
                 )}
-                <div>
-                  <div class="awv2-listing-status">
-                    <strong>{primaryListing.listingStatus || 'Listing status not published'}</strong>
-                    {primaryListing.price != null && <span>{usd(primaryListing.price)}</span>}
-                  </div>
-                  <div class="awv2-listing-metrics">
-                    <div><span>Listing age</span><b>{primaryListing.daysOnMarket != null ? `${primaryListing.daysOnMarket} days` : primaryListing.listDate || 'Unavailable'}</b></div>
-                    <div><span>Zillow views</span><b>{primaryListing.family.toLowerCase().includes('zillow') && listingViews != null && listingViews > 0 ? listingViews.toLocaleString('en-US') : 'Not collected (never shown as zero)'}</b></div>
-                    <div><span>Zillow saves</span><b>{primaryListing.family.toLowerCase().includes('zillow') && listingSaves != null && listingSaves > 0 ? listingSaves.toLocaleString('en-US') : 'Not collected (never shown as zero)'}</b></div>
-                    <div><span>Original list price</span><b>{primaryListing.originalListPrice != null ? usd(primaryListing.originalListPrice) : 'Unavailable'}</b></div>
-                    <div><span>Price changes</span><b>{primaryListing.priceHistory?.length ? `${primaryListing.priceHistory.length} retained event(s)` : 'Unavailable'}</b></div>
-                  </div>
-                  <div class="awv2-listing-facts">
-                    {[primaryListing.propertyType,
-                      primaryListing.buildingSqft != null ? `${primaryListing.buildingSqft.toLocaleString('en-US')} sqft` : null,
-                      primaryListing.beds != null ? `${primaryListing.beds} beds` : null,
-                      primaryListing.baths != null ? `${primaryListing.baths} baths` : null,
-                      primaryListing.yearBuilt != null ? `Built ${primaryListing.yearBuilt}` : null,
-                      primaryListing.well === true ? 'Well' : null,
-                      primaryListing.septic === true ? 'Septic' : null,
-                      ...(primaryListing.utilities ?? [])].filter(Boolean).map((value) => <span>{value}</span>)}
-                  </div>
-                  {(primaryListing.brokerage || primaryListing.mls) && <div class="awv2-pi-note">{[primaryListing.brokerage, primaryListing.mls].filter(Boolean).join(' · ')}</div>}
-                  <a class="awv2-listing-link" href={primaryListing.sourceUrl} target="_blank" rel="noreferrer">Open {primaryListing.sourceLabel} listing</a>
-                  <div class="awv2-sv-basis">Engagement retrieved {primaryListing.engagementRetrievedAt || primaryListing.retrievedAt || exactAddressListings.retrievedAtIso || 'time unavailable'} · interest signal, not proof of value.</div>
+                <div class="awv2-listing-engagement">
+                  {engagementSignals.length > 0 ? engagementSignals.map((signal) => (
+                    <div class="awv2-listing-engagement-row">
+                      <b>{signal.sourceLabel} engagement</b>
+                      <span>Views: {engagementMeasure(signal.views, signal.viewsAvailability)}</span>
+                      <span>Saves: {engagementMeasure(signal.saves, signal.savesAvailability)}</span>
+                      <span>Photos: {engagementMeasure(signal.photoCount, signal.photoCountAvailability)}</span>
+                      <span>Price changes: {engagementMeasure(signal.priceChangeCount, signal.priceChangeAvailability)}</span>
+                      <span class="awv2-sv-basis">Engagement retrieved {signal.retrievedAt || 'time unavailable'} · interest signal, not proof of value.</span>
+                    </div>
+                  )) : <div class="awv2-pi-note">No provider published engagement for this subject: Not collected (never shown as zero).</div>}
+                  <div class="awv2-sv-basis">{listingCard.engagementNote}</div>
                 </div>
-              </div>
+                <a class="awv2-listing-link" href={listingCard.listingUrl} target="_blank" rel="noreferrer">Open {listingCard.sourceLabel} listing</a>
+                {listingCard.additionalSourceUrls.length > 0 && (
+                  <div class="awv2-sv-basis">
+                    {listingCard.additionalSourceUrls.length} further retained record(s) of the same physical subject:{' '}
+                    {listingCard.additionalSourceUrls.map((url, index) => <><a href={url} target="_blank" rel="noreferrer">record {index + 1}</a>{' '}</>)}
+                  </div>
+                )}
+                {listingCard.supplementedFrom.length > 0 && (
+                  <div class="awv2-sv-basis">Stable facts were filled from {listingCard.supplementedFrom.join(', ')}; status, price and dates come only from the current record.</div>
+                )}
+              </>
             ) : (
               <div class="awv2-pi-note">{exactAddressListings.note || 'No property-specific listing page was retained.'}</div>
             )}
+            {reconciliation && (
+              <details class="awv2-collapse awv2-listing-details">
+                <summary>How these records reconciled into one physical subject</summary>
+                <div class="awv2-pi-note" data-testid="ea-reconciliation">{reconciliation.statement}</div>
+                <div class="awv2-pi-note">{reconciliation.canonical.identityNote}</div>
+                {reconciliation.currentRecord && (
+                  <div class="awv2-pi-note" data-testid="ea-current-record">
+                    <b>Current record — {reconciliation.currentRecord.sourceLabel}</b> ({reconciliation.currentRecord.listingStatusLabel}): {reconciliation.currentRecord.reason}
+                  </div>
+                )}
+                {reconciliation.supersededRecords.map((record) => (
+                  <div class="awv2-pi-note" data-testid="ea-superseded-record">
+                    <b>{record.sourceLabel}</b> ({record.listingStatusLabel}): {record.reason} <a href={record.sourceUrl} target="_blank" rel="noreferrer">source</a>
+                  </div>
+                ))}
+                {reconciliation.otherRecords.map((record) => (
+                  <div class="awv2-pi-note" data-testid="ea-other-record">
+                    <b>{record.sourceLabel}</b> ({record.listingStatusLabel}): {record.reason} <a href={record.sourceUrl} target="_blank" rel="noreferrer">source</a>
+                  </div>
+                ))}
+              </details>
+            )}
             <details class="awv2-collapse awv2-listing-details">
-              <summary>Listing details and source provenance</summary>
-              {exactAddressListings.subjectRead && <div class="awv2-pi-note" data-testid="ea-subject-read"><b>Resolved subject context:</b> {exactAddressListings.subjectRead.statement}</div>}
+              <summary>Retained records and source provenance</summary>
               {listingSources.map((source) => (
                 <div class="awv2-pi-note" data-testid="ea-listing-source">
-                  <b>{source.sourceLabel}</b> · {source.provenanceNote} <a href={source.sourceUrl} target="_blank" rel="noreferrer">source</a>
-                  {source.accessLanguageNote && <div class="awv2-sv-basis">{source.accessLanguageNote}</div>}
-                  {source.description && <p>{source.description}</p>}
-                  {(source.features ?? []).length > 0 && <div>{source.features!.join(' · ')}</div>}
-                  {(source.priceHistory ?? []).length > 0 && <div>{source.priceHistory!.map((row) => [row.date, row.event, row.price != null ? usd(row.price) : null].filter(Boolean).join(' · ')).join(' | ')}</div>}
-                  {[...source.accessStatements, ...source.drivewayStatements].map((text) => <div class="awv2-sv-basis">Listing-reported access wording: “{text}”</div>)}
+                  <b>{source.sourceLabel}</b> · {source.listingStatusLabel || source.listingStatus || 'Status not published'} · {source.provenanceNote} <a href={source.sourceUrl} target="_blank" rel="noreferrer">source</a>
                 </div>
               ))}
               <div class="awv2-pi-note">{exactAddressListings.disclaimer}</div>
@@ -550,12 +781,76 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           </section>
         ) : (
           <section class="awv2-panel" id="exact-address-listing-evidence">
-            <div class="awv2-panel-title">Current listing / public property context</div>
+            <div class="awv2-panel-title">Current public listing</div>
             <div class="awv2-pi-note">Exact-address discovery has not returned a retained public-property result yet.</div>
           </section>
         )}
 
-        {/* ── Access & road frontage ── */}
+        {/* ── Listing-reported property intelligence ──
+            What the listing SAYS the property is, kept at listing weight. It is
+            never promoted into an assessor, government or recorded fact. */}
+        {listingCard && improvementFacts && (
+          <section class="awv2-panel" id="listing-reported-intelligence">
+            <div class="awv2-panel-title">
+              Listing-reported property intelligence
+              <span class="awv2-src-tag">{listingCard.evidenceLabel} · never an assessor or recorded fact</span>
+            </div>
+            <div class="awv2-kv">
+              <Kv k="Property / improvement type" v={improvementFacts.propertyType} empty="Not published by the listing" />
+              <Kv k="Building sqft" v={improvementFacts.buildingSqft != null ? `${improvementFacts.buildingSqft.toLocaleString('en-US')} sqft` : null} empty="Not published by the listing" />
+              <Kv k="Beds / baths" v={improvementFacts.beds != null || improvementFacts.baths != null
+                ? [improvementFacts.beds != null ? `${improvementFacts.beds} beds` : null, improvementFacts.baths != null ? `${improvementFacts.baths} baths` : null].filter(Boolean).join(' · ')
+                : null} empty="Not published by the listing" />
+              <Kv k="Year built" v={improvementFacts.yearBuilt != null ? String(improvementFacts.yearBuilt) : null} empty="Not published by the listing" />
+              <Kv k="Structures" v={conciseStructures(improvementFacts.structures).join(', ') || null} empty="No additional structure published" />
+              <Kv k="Utilities" v={listingUtilities.length ? listingUtilities.join(', ') : null} empty="No utility detail published" />
+              <Kv k="Well" v={listingReported(improvementFacts.well)} empty="Not published by the listing" />
+              <Kv k="Septic" v={listingReported(improvementFacts.septic)} empty="Not published by the listing" />
+            </div>
+            {listingCard.features.length > 0 && <div class="awv2-pi-note">Notable listing-reported features: {listingCard.features.join(' · ')}</div>}
+            {exactAddressListings?.subjectRead && (
+              <div class="awv2-pi-note" data-testid="ea-subject-read"><b>Resolved subject context:</b> {exactAddressListings.subjectRead.statement}</div>
+            )}
+            {listingCard.description && (
+              <details class="awv2-collapse awv2-listing-details">
+                <summary>Listing description, verbatim</summary>
+                <p>{listingCard.description}</p>
+              </details>
+            )}
+          </section>
+        )}
+
+        {/* ── Listing imagery ──
+            Subject evidence, not decoration, rendered through the existing
+            gallery. An absent photograph stays absent: no substitution. */}
+        {listingCard && (
+          <section class="awv2-panel" id="listing-imagery">
+            <div class="awv2-panel-title">
+              Listing imagery
+              <span class="awv2-src-tag">{listingCard.evidenceLabel} · {listingPhotos.length} retained photograph{listingPhotos.length === 1 ? '' : 's'}</span>
+            </div>
+            {listingPhotos.length > 0 ? (
+              <>
+                <AcquisitionWorkspaceV2CompPhotoGallery
+                  photos={listingPhotos}
+                  address={address || 'the subject property'}
+                  sourcePage={listingCard.listingUrl}
+                  provider={listingCard.sourceLabel}
+                  fallbackNote={null}
+                />
+                <div class="awv2-sv-basis">Listing photography supports apparent physical condition and access only. It never establishes a legal, recorded or government fact.</div>
+              </>
+            ) : (
+              <div class="awv2-pi-note">No listing photograph was retained for this subject, so none is shown. LandOS never substitutes another property&apos;s photograph.</div>
+            )}
+          </section>
+        )}
+
+        {/* ── Access & road frontage ──
+            Physical evidence and legal status are read as two different
+            questions, so an observed entrance can never be mistaken for a
+            recorded right. Listing driveway and directions wording appears
+            once, as tier-2 support, and nowhere else on this page. */}
         <section class="awv2-panel" id="access-road-frontage">
           <div class="awv2-panel-title">Access &amp; road frontage</div>
           <div class="awv2-kv">
@@ -563,11 +858,21 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             <Kv k="Road" v={roadName ? `${roadName} (situs road)` : null} />
           </div>
           <div class="awv2-access-ladder" aria-label="Four-part access evidence ladder">
-            {accessRungs.map((rung, index) => (
-              <div class="awv2-access-rung">
-                <span class="step">{index + 1}</span>
-                <div><b>{({ parcel_flag: 'LandPortal parcel flag', apparent_physical: 'Apparent physical route', reported_legal: 'Reported legal / easement access', verified_legal: 'Verified recorded legal access' } as const)[rung.tier]}</b><p>{rung.statement}</p></div>
-                <span class="weight">{rung.weight || 'Unresolved'}</span>
+            {ACCESS_GROUPS.map((group) => (
+              <div class={`awv2-access-group ${group.key}`}>
+                <div class="awv2-access-group-title">{group.title}</div>
+                {accessRungs.map((rung, index) => (
+                  group.tiers.includes(rung.tier) ? (
+                    <div class="awv2-access-rung">
+                      <span class="step">{index + 1}</span>
+                      <div><b>{ACCESS_TIER_LABEL[rung.tier]}</b><p>{rung.statement}</p></div>
+                      <span class="weight">{rung.weight || 'Unresolved'}</span>
+                    </div>
+                  ) : null
+                ))}
+                {group.key === 'physical' && listingAccessWording.length > 0 && listingAccessWording.map((text) => (
+                  <div class="awv2-sv-basis">Listing-reported driveway / directions wording, supporting apparent physical access only: “{text}”</div>
+                ))}
               </div>
             ))}
           </div>
@@ -593,7 +898,9 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             <Kv k="Buildability" v={landPortalBuildability || (buildPct ? `${buildPct}% shown` : null)} />
             <Kv k="Buildability view" v={hasBuildabilityCapture ? 'Dedicated yellow-overlay capture retained (gallery below)' : null} empty="No dedicated buildability capture" />
             <Kv k="Terrain" v={landPortalTerrain || terrain?.detail || null} />
-            <Kv k="Improvement context" v={landPortalImprovement || (exactAddressListings?.subjectRead?.improved ? exactAddressListings.subjectRead.statement : null)} empty="No improvement fact supplied" />
+            {/* The listing's own read is stated once, in its own panel; this
+                points at it rather than reprinting the same sentence. */}
+            <Kv k="Improvement context" v={landPortalImprovement || (listingCard ? 'Stated under Listing-reported property intelligence above, at listing weight.' : null)} empty="No improvement fact supplied" />
             <Kv k="Parcel context" v={landPortalParcelContext} empty="No parcel-context fact supplied" />
             <Kv
               k="3D evidence"
@@ -650,7 +957,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <div class="awv2-pi-question-read">
           <div><span>Utilities</span><b>{utilities?.headline || 'Not yet resolved'}</b></div>
           <div><span>Septic</span><b>{soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required'}</b></div>
-          <div><span>Listing-reported context</span><b>{primaryListing?.utilities?.length ? primaryListing.utilities.join(', ') : 'No utility detail retained from listing'}</b></div>
+          <div><span>Listing-reported context</span><b>{listingUtilities.length ? listingUtilities.join(', ') : 'No utility detail retained from listing'}</b></div>
         </div>
         {(utilities?.detail || septic?.detail) && (
           <details class="awv2-collapse"><summary>Supporting utility and septic evidence</summary><div class="awv2-pi-note">{[utilities?.detail, septic?.detail].filter(Boolean).join(' ')}</div></details>

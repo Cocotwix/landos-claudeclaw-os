@@ -1,8 +1,13 @@
 import { ExternalLink } from 'lucide-preact';
 
+import { dashboardToken } from '@/lib/api';
+
 import type {
   AccessPresentationView,
   ExactAddressListingsView,
+  ListingCardView,
+  ListingEngagementSignalView,
+  ListingEventView,
   PiEvidenceItem,
   PiFact,
   ResearchStatusView,
@@ -57,29 +62,6 @@ export interface OverviewSnapshotView {
   };
 }
 
-interface ListingDetail {
-  sourceLabel: string;
-  sourceUrl: string;
-  retrievedAt: string | null;
-  propertyType: string | null;
-  buildingSqft: number | null;
-  listingStatus: string | null;
-  listingStatusDate: string | null;
-  price: number | null;
-  views?: number | null;
-  saves?: number | null;
-  daysOnMarket?: number | null;
-  listingAgeDays?: number | null;
-  originalListPrice?: number | null;
-  priceHistory?: Array<{ price?: number | null; date?: string | null }>;
-  photoUrls?: string[];
-  photos?: Array<string | { url?: string | null }>;
-  beds?: number | null;
-  baths?: number | null;
-  yearBuilt?: number | null;
-  improvementType?: string | null;
-}
-
 type ResearchStatusDetail = ResearchStatusView & {
   questionsResolved?: number;
   questionsTotal?: number;
@@ -116,13 +98,39 @@ interface OverviewSectionProps {
 
 const unique = (items: Array<string | null | undefined>) => Array.from(new Set(items.filter((item): item is string => !!item?.trim())));
 
-function engagementValue(value: number | null | undefined): string {
-  return value == null ? 'Not collected (never shown as zero)' : value.toLocaleString('en-US');
+const listingPhotoSrc = (url: string): string => (url.startsWith('/api/')
+  ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`
+  : url);
+
+/**
+ * Engagement reaches Overview ONLY when the provider actually published it.
+ * An absent measure is left off the card entirely: it is never rendered as
+ * zero and never inferred. The full per-provider read lives in Property
+ * Intelligence.
+ */
+function availableEngagement(signals: ListingEngagementSignalView[]): Array<{ label: string; value: string }> {
+  const tiles: Array<{ label: string; value: string }> = [];
+  for (const signal of signals) {
+    if (signal.viewsAvailability === 'available' && signal.views != null) {
+      tiles.push({ label: `${signal.sourceLabel} views`, value: signal.views.toLocaleString('en-US') });
+    }
+    if (signal.savesAvailability === 'available' && signal.saves != null) {
+      tiles.push({ label: `${signal.sourceLabel} saves`, value: signal.saves.toLocaleString('en-US') });
+    }
+  }
+  return tiles;
 }
 
-function listingPhotos(listing: ListingDetail): string[] {
-  const objectPhotos = (listing.photos ?? []).map((photo) => typeof photo === 'string' ? photo : photo.url).filter((url): url is string => !!url);
-  return unique([...(listing.photoUrls ?? []), ...objectPhotos]);
+/** The most recent retained price change, when one is genuinely retained. */
+function latestPriceChange(card: ListingCardView, usd: (value: number) => string): string | null {
+  const changes = card.priceChanges.filter((event) => event.price != null);
+  const latest: ListingEventView | undefined = changes[changes.length - 1];
+  if (!latest) return null;
+  // A reduction row publishes either the new asking price ("reduced to
+  // $1,450,000") or the amount it came down by ("Price cut: $145K"). Saying
+  // "to" for the second states the discount as the price.
+  const preposition = latest.isReductionAmount ? 'by' : 'to';
+  return `${latest.event}${latest.date ? ` ${latest.date}` : ''} ${preposition} ${usd(latest.price!)}`;
 }
 
 function ScoreCard({ view }: { view?: OverviewScoreView }) {
@@ -192,16 +200,37 @@ export function OverviewSection({
     ...canonicalActions,
   ]);
 
-  const listings = (exactAddressListings?.sources ?? []) as ListingDetail[];
-  const activeListings = listings.filter((listing) => /active|for[\s_-]?sale/i.test(listing.listingStatus ?? ''));
-  const zillow = listings.find((item) => /zillow/i.test(item.sourceLabel)) ?? null;
-  const topLevelActive = /active|for[\s_-]?sale/i.test(exactAddressListings?.status ?? '');
-  const listing = activeListings.find((item) => /zillow/i.test(item.sourceLabel))
-    ?? activeListings[0]
-    ?? (topLevelActive ? zillow ?? listings[0] ?? null : null);
-  const listingPhoto = listing ? listingPhotos(listing)[0] : null;
-  const listingDays = listing?.daysOnMarket ?? listing?.listingAgeDays ?? null;
-  const reductions = listing?.priceHistory?.filter((row, index, rows) => index > 0 && row.price != null && rows[index - 1]?.price != null && row.price! < rows[index - 1]!.price!) ?? [];
+  // The reconciled subject decides whether a public listing exists. Overview no
+  // longer re-derives it from whichever retained source sorted first, which is
+  // how an actively listed subject was reported as having no listing at all.
+  const listing = exactAddressListings?.listingCard ?? null;
+  const listingPhoto = listing?.primaryPhotoUrl ? listingPhotoSrc(listing.primaryPhotoUrl) : null;
+  const listingDays = listing?.listingAgeDays ?? null;
+  // Zillow keeps its own two tiles because the operator reads them every time;
+  // an unpublished measure states that plainly instead of showing a zero. Every
+  // other provider appears only where it actually published something, and
+  // Zillow is excluded BY PROVIDER rather than by object identity: a second
+  // Zillow read is the same measure, and rendering it beside the dedicated
+  // tiles is how "Zillow views" and "zillow.com views" both appeared.
+  const zillowEngagement = listing?.zillowEngagement ?? null;
+  const zillowViews = zillowEngagement?.viewsAvailability === 'available' ? zillowEngagement.views : null;
+  const zillowSaves = zillowEngagement?.savesAvailability === 'available' ? zillowEngagement.saves : null;
+  const engagementTiles = listing
+    ? availableEngagement(listing.engagementByProvider.filter((signal) => signal.provider !== 'zillow'))
+    : [];
+  const priceChange = listing ? latestPriceChange(listing, formatUsd) : null;
+  const listingFacts = listing ? unique([
+    listing.improvementFacts.propertyType,
+    listing.improvementFacts.buildingSqft != null ? `${Math.round(listing.improvementFacts.buildingSqft).toLocaleString('en-US')} sqft` : null,
+    listing.improvementFacts.beds != null ? `${listing.improvementFacts.beds} beds` : null,
+    listing.improvementFacts.baths != null ? `${listing.improvementFacts.baths} baths` : null,
+    listing.improvementFacts.yearBuilt != null ? `built ${listing.improvementFacts.yearBuilt}` : null,
+    listing.acres != null ? `${listing.acres.toLocaleString('en-US', { maximumFractionDigits: 2 })} acres` : null,
+  ]) : [];
+  const openListingEvidence = () => {
+    onOpenSection('property-intelligence');
+    requestAnimationFrame(() => document.getElementById('exact-address-listing-evidence')?.scrollIntoView({ behavior: 'smooth' }));
+  };
 
   const accessTiers = [
     {
@@ -260,36 +289,39 @@ export function OverviewSection({
         </div>
       </section>
 
-      <section class={`awv2-overview-listing ${listing ? 'active' : 'inactive'}`} aria-label="Current listing and public marketing">
-        {listingPhoto && <img src={listingPhoto} alt={`Listing photo for ${address}`} />}
+      <section class={`awv2-overview-listing ${listing ? (listing.onMarket ? 'active' : 'retained') : 'inactive'}${listing && !listingPhoto ? ' no-photo' : ''}`} aria-label="Current listing and public marketing">
+        {listing && listingPhoto && <img src={listingPhoto} alt={`Listing photo for ${address}`} />}
         <div class="content">
           <div class="eyebrow">Current listing / public marketing</div>
           {listing ? (
             <>
-              <div class="heading"><h2>{listing.listingStatus || 'Active listing'}</h2><span>{listing.sourceLabel} · listing-reported evidence</span></div>
-              <div class="metrics">
-                <div><span>Current price</span><b>{listing.price != null ? formatUsd(listing.price) : 'Unavailable'}</b></div>
-                <div><span>Listing age</span><b>{listingDays != null ? `${listingDays} days` : 'Unavailable'}</b></div>
-                <div><span>Zillow views</span><b>{engagementValue(zillow?.views)}</b></div>
-                <div><span>Zillow saves</span><b>{engagementValue(zillow?.saves)}</b></div>
-                <div><span>Price changes</span><b>{reductions.length || (listing.originalListPrice != null && listing.price != null && listing.originalListPrice !== listing.price) ? `${Math.max(1, reductions.length)} retained` : 'None retained'}</b></div>
+              <div class="heading">
+                <h2>{listing.statusLabel}</h2>
+                <span>{listing.sourceLabel} · {listing.evidenceLabel} evidence</span>
               </div>
-              <p class="listing-facts">{unique([
-                listing.improvementType || listing.propertyType,
-                listing.buildingSqft != null ? `${Math.round(listing.buildingSqft).toLocaleString('en-US')} sqft` : null,
-                listing.beds != null ? `${listing.beds} beds` : null,
-                listing.baths != null ? `${listing.baths} baths` : null,
-                listing.yearBuilt != null ? `built ${listing.yearBuilt}` : null,
-              ]).join(' · ') || 'Additional improvement facts were not retained from the listing.'}</p>
+              <div class="metrics">
+                <div><span>Current asking price</span><b>{listing.currentPrice != null ? formatUsd(listing.currentPrice) : 'Unavailable'}</b></div>
+                <div><span>Original list price</span><b>{listing.originalListPrice != null ? formatUsd(listing.originalListPrice) : 'Unavailable'}</b></div>
+                <div><span>Listing age</span><b>{listingDays != null ? `${listingDays} days` : 'Unavailable'}</b></div>
+                <div><span>MLS number</span><b>{listing.mlsNumbers.length ? listing.mlsNumbers.join(' · ') : listing.mls || 'Unavailable'}</b></div>
+                <div><span>Brokerage</span><b>{listing.brokerage || listing.listingAgent || 'Unavailable'}</b></div>
+                <div><span>Zillow views</span><b>{zillowViews != null ? zillowViews.toLocaleString('en-US') : 'Not collected (never shown as zero)'}</b></div>
+                <div><span>Zillow saves</span><b>{zillowSaves != null ? zillowSaves.toLocaleString('en-US') : 'Not collected (never shown as zero)'}</b></div>
+                {engagementTiles.map((tile) => <div><span>{tile.label}</span><b>{tile.value}</b></div>)}
+              </div>
+              <p class="listing-facts">{listingFacts.join(' · ') || 'Additional improvement facts were not retained from the listing.'}</p>
+              {priceChange && <p class="listing-price-change">Price history: {listing.priceChanges.length} retained change{listing.priceChanges.length === 1 ? '' : 's'}, most recently {priceChange}.</p>}
+              {!listing.onMarket && <p class="listing-price-change">{listing.statusNote}</p>}
               <div class="listing-links">
-                <a href={listing.sourceUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open listing &amp; photos</a>
-                <span>Engagement retrieved {zillow?.retrievedAt || exactAddressListings?.retrievedAtIso || 'timestamp unavailable'} · interest signal, not proof of value</span>
+                <a href={listing.listingUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open listing &amp; photos</a>
+                <button type="button" onClick={openListingEvidence}>Listing evidence, photos &amp; reconciliation →</button>
+                <span>{listing.photoCount != null ? `${listing.photoCount} listing photo${listing.photoCount === 1 ? '' : 's'} retained` : 'No listing photo retained'} · engagement retrieved {zillowEngagement?.retrievedAt || exactAddressListings?.retrievedAtIso || 'timestamp unavailable'} · interest signal, not proof of value</span>
               </div>
             </>
           ) : (
             <>
-              <h2>No active public listing retained</h2>
-              <p>{exactAddressListings?.note || 'Exact-address discovery has not retained an active or recently marketed listing for this subject.'}</p>
+              <h2>No public listing record retained</h2>
+              <p>{exactAddressListings?.note || 'Exact-address discovery has not retained a public listing record for this subject.'}</p>
             </>
           )}
         </div>
