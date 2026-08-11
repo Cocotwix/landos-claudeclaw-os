@@ -15,7 +15,10 @@ ends in a machine-detectable state. Tyler manages LandOS, not the coding agents.
 # Current State
 
 - **Generated:** 2026-08-11T03:25Z
-- **HEAD at generation:** `a0c1ec3`, equal to origin/main.
+- **HEAD at generation:** `a0c1ec3` — the accepted CODE baseline. The
+  checkpoint-only closeout commits that carry this file advance HEAD past it BY
+  DESIGN, so the audit's HEAD mismatch is expected. It is not drift, and must
+  not trigger another checkpoint rewrite or a change to this recorded baseline.
 - **Worktree:** clean. 0 dirty paths, 0 staged files.
 - **Tests:** full suite 6,048 passing across 445 files, 0 failures, verified by
   three consecutive runs. Harness suite 28 passing; legacy devloop suite 18.
