@@ -34,6 +34,17 @@ export interface ValuationInput {
   constraints: string[];
   /** Risks severe enough to withhold a confident conclusion. */
   hardRisks: string[];
+  /** Numeric subject adjustments must be explicit and evidence-qualified. */
+  valueAdjustments?: ValuationAdjustmentInput[];
+}
+
+export interface ValuationAdjustmentInput {
+  label: string;
+  /** Signed percentage: -10 is a deduction; +5 is a premium. */
+  percent: number;
+  evidence: string;
+  reliability: 'verified' | 'supported' | 'questionable';
+  alreadyReflectedInComps?: boolean;
 }
 
 interface CompObservation {
@@ -42,6 +53,7 @@ interface CompObservation {
   acres: number;
   price: number;
   dateIso: string | null;
+  weight: number;
 }
 
 function observations(decisions: CompPolicyDecision[]): CompObservation[] {
@@ -59,6 +71,7 @@ function observations(decisions: CompPolicyDecision[]): CompObservation[] {
       acres,
       price: price ?? derivedPpa * acres,
       dateIso: decision.candidate.saleOrListDate ?? null,
+      weight: 1,
     });
   }
   return out;
@@ -78,6 +91,18 @@ function percentile(values: number[], p: number): number {
   const high = Math.ceil(index);
   if (low === high) return sorted[low];
   return sorted[low] + (sorted[high] - sorted[low]) * (index - low);
+}
+
+function weightedPercentile(observations: CompObservation[], p: number): number {
+  const sorted = [...observations].sort((a, b) => a.pricePerAcre - b.pricePerAcre);
+  const total = sorted.reduce((sum, item) => sum + item.weight, 0);
+  const target = total * p;
+  let cumulative = 0;
+  for (const item of sorted) {
+    cumulative += item.weight;
+    if (cumulative >= target) return item.pricePerAcre;
+  }
+  return sorted[sorted.length - 1].pricePerAcre;
 }
 
 function roundTo(value: number, step: number): number {
@@ -129,14 +154,19 @@ function notPriceable(reason: string, nextAction: string, gaps: string[], basis:
 export function buildPropertyIntelligenceValuation(input: ValuationInput): SnapshotValuation {
   const accepted = input.policy.acceptedSold;
   const activeCount = input.policy.acceptedActive.length;
+  const unsupportedPhysical = (value: string) =>
+    /\bterrain|slope|buildab|usable acreage|septic|perc|soil\b/i.test(value)
+    && /\bunsupported|unverified|questionable|not established|insufficient evidence|single (?:point|map unit)|point sample|preliminary only|cannot be relied|missing\b/i.test(value);
+  const supportedHardRisks = input.hardRisks.filter((risk) => !unsupportedPhysical(risk));
+  const quarantinedHardRisks = input.hardRisks.filter(unsupportedPhysical);
   const conditionalIdentity = input.identityState === 'provisional'
     && input.discoveryIdentityUsable === true;
 
   if (input.identityState !== 'confirmed' && !conditionalIdentity) {
     return notPriceable(
       `Parcel identity is ${input.identityState}, so no value may be attached to this record. A price on an unidentified parcel is a guess.`,
-      'Confirm the subject parcel against the official county/state parcel layer, then re-run Property Intelligence.',
-      ['Official parcel identity has not been established.'],
+      'Resolve the missing or conflicting subject identifiers, then re-run Property Intelligence.',
+      ['The subject identity is missing or conflicted.'],
       'No value basis — parcel identity is not confirmed.',
     );
   }
@@ -182,40 +212,67 @@ export function buildPropertyIntelligenceValuation(input: ValuationInput): Snaps
   }
 
   // ── Price-per-acre band ────────────────────────────────────────────────────
-  const ppas = obs.map((o) => o.pricePerAcre);
-  const mid = median(ppas);
+  const weightedObs = obs.map((observation) => {
+    const ratio = Math.max(observation.acres / input.subjectAcres!, input.subjectAcres! / observation.acres);
+    const acreageMatch = 1 / ratio;
+    const traceability = (observation.dateIso ? 0.25 : 0.1)
+      + (observation.decision.candidate.sourceUrl ? 0.25 : 0.1);
+    return { ...observation, weight: Math.max(0.2, Math.min(1, acreageMatch * 0.5 + traceability)) };
+  });
+  const ppas = weightedObs.map((o) => o.pricePerAcre);
+  const mid = weightedPercentile(weightedObs, 0.5);
   const dispersion = mid > 0 ? (Math.max(...ppas) - Math.min(...ppas)) / mid : 1;
   const widening = bandWidening(obs.length, dispersion);
 
-  let low = obs.length >= 3 ? percentile(ppas, 0.25) : Math.min(...ppas);
-  let high = obs.length >= 3 ? percentile(ppas, 0.75) : Math.max(...ppas);
+  let low = obs.length >= 3 ? weightedPercentile(weightedObs, 0.25) : Math.min(...ppas);
+  let high = obs.length >= 3 ? weightedPercentile(weightedObs, 0.75) : Math.max(...ppas);
   if (low === high) { low = mid * 0.85; high = mid * 1.15; }
   low *= (1 - widening);
   high *= (1 + widening);
 
   const adjustments: string[] = [];
 
-  // Size adjustment: smaller parcels sell for more per acre, larger for less.
-  // Only applied when the accepted set's median size differs materially.
+  // Acreage is already visible in each observation's weight. Do not stack an
+  // unexplained fixed parcel-size deduction on top of acreage-selected sales.
   const medianCompAcres = median(obs.map((o) => o.acres));
   const sizeRatio = input.subjectAcres / medianCompAcres;
-  if (sizeRatio >= 2) {
-    const factor = 0.85;
-    low *= factor; high *= factor;
-    adjustments.push(`Subject is ${sizeRatio.toFixed(1)}x the median accepted comp size (${medianCompAcres.toFixed(2)} ac), so the per-acre band is reduced ${Math.round((1 - factor) * 100)}% for the usual larger-parcel discount.`);
-  } else if (sizeRatio <= 0.5) {
-    const factor = 1.1;
-    low *= factor; high *= factor;
-    adjustments.push(`Subject is ${(1 / sizeRatio).toFixed(1)}x smaller than the median accepted comp (${medianCompAcres.toFixed(2)} ac), so the per-acre band is raised ${Math.round((factor - 1) * 100)}% for the usual small-parcel premium.`);
-  } else {
-    adjustments.push(`Subject acreage (${input.subjectAcres.toFixed(2)} ac) sits within the accepted comp size range, so no size adjustment was applied.`);
-  }
+  adjustments.push(
+    `Acreage weighting applied rather than a fixed size deduction: subject ${input.subjectAcres.toFixed(2)} ac versus ${medianCompAcres.toFixed(2)} ac median accepted comp (${sizeRatio.toFixed(2)}x).`,
+  );
 
-  // Constraint adjustment: mapped physical constraints reduce the band.
+  let evidenceFactor = 1;
+  for (const adjustment of input.valueAdjustments ?? []) {
+    const usable = adjustment.reliability !== 'questionable'
+      && adjustment.alreadyReflectedInComps !== true
+      && Number.isFinite(adjustment.percent)
+      && Math.abs(adjustment.percent) <= 30
+      && adjustment.evidence.trim().length > 0;
+    if (!usable) {
+      adjustments.push(`${adjustment.label}: no numeric adjustment applied because ${
+        adjustment.alreadyReflectedInComps
+          ? 'the accepted comps already reflect the condition'
+          : adjustment.reliability === 'questionable'
+            ? 'the input is questionable'
+            : 'the percentage or evidence is not supportable'
+      }.`);
+      continue;
+    }
+    evidenceFactor *= 1 + adjustment.percent / 100;
+    adjustments.push(`${adjustment.label}: ${adjustment.percent > 0 ? '+' : ''}${adjustment.percent.toFixed(1)}% supported by ${adjustment.evidence}`);
+  }
+  evidenceFactor = Math.max(0.7, Math.min(1.3, evidenceFactor));
+  low *= evidenceFactor;
+  high *= evidenceFactor;
+
   if (input.constraints.length > 0) {
-    const factor = Math.max(0.7, 1 - 0.08 * input.constraints.length);
-    low *= factor; high *= factor;
-    adjustments.push(`${input.constraints.length} mapped physical constraint(s) reduce the band ${Math.round((1 - factor) * 100)}%: ${input.constraints.join('; ')}.`);
+    adjustments.push(
+      `No automatic deduction was applied for qualitative constraint text (${input.constraints.join('; ')}). A numeric change requires a reliable subject-versus-comp difference and an explicit percentage; questionable terrain, slope, buildability or septic inputs remain neutral.`,
+    );
+  }
+  if (quarantinedHardRisks.length > 0) {
+    adjustments.push(
+      `Unsupported physical risk text was quarantined from value and confidence (${quarantinedHardRisks.join('; ')}).`,
+    );
   }
 
   const ppaLow = Math.max(1, roundTo(low, moneyStep(low)));
@@ -236,27 +293,24 @@ export function buildPropertyIntelligenceValuation(input: ValuationInput): Snaps
   const uncertainty: string[] = [];
   if (conditionalIdentity) {
     uncertainty.push(
-      `Conditional discovery-stage identity: ${input.identityBasis?.trim()
-        || 'the supplied parcel identifiers and retained parcel-provider evidence consistently identify one subject, but an official parcel-source match is not available'}.`,
+      `Working subject match: ${input.identityBasis?.trim()
+        || 'the retained parcel evidence consistently identifies one discovery-stage subject'}.`,
     );
   }
   uncertainty.push(`Band derived from ${obs.length} accepted closed sale${obs.length === 1 ? '' : 's'}; per-acre spread across the set is ${Math.round(dispersion * 100)}% of the median.`);
   if (obs.length < 3) uncertainty.push(`Only ${obs.length} accepted closed sale${obs.length === 1 ? '' : 's'} — below the three needed for a defensible band, so this is a thin-market indication.`);
   if (activeCount === 0) uncertainty.push('No active competition was found, so current absorption is unknown.');
   uncertainty.push('The disposition range is a planning assumption applied to the retail band, not an observed investor sale price.');
-  if (input.hardRisks.length) uncertainty.push(`Unresolved risk(s) that could move value: ${input.hardRisks.join('; ')}.`);
+  if (supportedHardRisks.length) uncertainty.push(`Unresolved risk(s) that could move value: ${supportedHardRisks.join('; ')}.`);
 
   const materialGaps: string[] = [];
-  if (conditionalIdentity) {
-    materialGaps.push('Official parcel-source coverage remains unavailable; confirm the subject before a binding offer or closing decision.');
-  }
   const withoutSource = obs.filter((o) => !o.decision.candidate.sourceUrl);
   if (withoutSource.length) materialGaps.push(`${withoutSource.length} accepted comp(s) have no retrievable source link.`);
   const withoutDate = obs.filter((o) => !o.dateIso);
   if (withoutDate.length) materialGaps.push(`${withoutDate.length} accepted comp(s) have no verified sale date.`);
-  if (input.constraints.length === 0) materialGaps.push('No mapped physical constraint was found; a constraint discovered later would move the band down.');
+  if (input.constraints.length === 0) materialGaps.push('No quantified subject-versus-comp physical adjustment was supported.');
 
-  const evidenceConfidence: SnapshotValuation['confidence'] = obs.length >= 5 && dispersion <= 0.6 && input.hardRisks.length === 0
+  const evidenceConfidence: SnapshotValuation['confidence'] = obs.length >= 5 && dispersion <= 0.6 && supportedHardRisks.length === 0
     ? 'high'
     : obs.length >= 3 && dispersion <= 1.2
       ? 'medium'
@@ -274,7 +328,9 @@ export function buildPropertyIntelligenceValuation(input: ValuationInput): Snaps
     pricePerAcreRange: { low: ppaLow, high: ppaHigh },
     likelyRetail: { low: retailLow, high: retailHigh },
     dispositionRange: { low: dispositionLow, high: dispositionHigh },
-    basis: `${conditionalIdentity ? 'Conditional discovery-stage valuation. ' : ''}${obs.length} accepted vacant-land closed sale${obs.length === 1 ? '' : 's'} (${primaryCount} LandPortal primary, ${supplementCount} marketplace supplement) normalized to price per acre, applied to ${input.subjectAcres.toFixed(2)} governing acres. ${activeCount} active listing${activeCount === 1 ? '' : 's'} tracked separately as competition and excluded from the value basis.`,
+    basis: `${conditionalIdentity ? 'Working discovery estimate from the retained parcel match. ' : ''}${obs.length} accepted vacant-land closed sale${obs.length === 1 ? '' : 's'} (${primaryCount} LandPortal primary, ${supplementCount} marketplace supplement) normalized to price per acre, applied to ${input.subjectAcres.toFixed(2)} governing acres. ${activeCount} active listing${activeCount === 1 ? '' : 's'} tracked separately as competition and excluded from the value basis.`,
+    primaryBasis: `Raw comp indication $${Math.round(Math.min(...ppas)).toLocaleString()}–$${Math.round(Math.max(...ppas)).toLocaleString()}/acre. Weights: ${weightedObs.map((item) => `${item.decision.candidate.addressDesc ?? item.decision.candidate.provider} ${Math.round(item.weight * 100)}/100`).join('; ')}.`,
+    workingValue: roundTo(mid * evidenceFactor * input.subjectAcres, moneyStep(mid * evidenceFactor * input.subjectAcres)),
     adjustments,
     confidence,
     uncertainty,

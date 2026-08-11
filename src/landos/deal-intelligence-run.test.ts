@@ -222,6 +222,22 @@ describe('Deal Intelligence run lifecycle', () => {
     expect(snapshot!.browserCleanup!.note).toMatch(/may still be open/i);
   });
 
+  it('finalizes the run when browser cleanup never settles', async () => {
+    const store = new PropertyIntelligenceStore();
+    const snapshot = await runDealIntelligenceMission({
+      dealCardId: 32,
+      capabilities: caps(),
+      snapshotStore: store,
+      browserCleanupWaitMs: 5,
+      browserCleanup: () => new Promise(() => {}),
+      ...RUN_OPTS,
+    });
+    expect(snapshot).toBeTruthy();
+    expect(snapshot!.browserCleanup!.note).toMatch(/safety window/i);
+    expect(snapshot!.browserCleanup!.note).toMatch(/run was finalized/i);
+    expect(store.latestRun(32)!.status).not.toBe('running');
+  });
+
   it('survives a restart: a fresh store reads the same current snapshot', async () => {
     await runDealIntelligenceMission({ dealCardId: 32, capabilities: caps(), ...RUN_OPTS });
     // A brand-new store instance is what a restarted process gets.

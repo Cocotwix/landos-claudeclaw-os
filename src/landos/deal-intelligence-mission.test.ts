@@ -84,6 +84,7 @@ describe('Deal Intelligence mission definition', () => {
   it('lays out in dependency waves with every Item 19 specialist declared', () => {
     const waves = planMissionWaves(DEAL_INTELLIGENCE_CHILDREN);
     expect(waves[0]).toEqual(['parcel_identity']);
+    expect(dealIntelligenceChildSpec('parcel_identity').timeoutMs).toBe(420_000);
     const keys = DEAL_INTELLIGENCE_CHILDREN.map((spec) => spec.key);
     for (const required of [
       'parcel_identity', 'government_records', 'zoning_land_use', 'environmental_terrain',
@@ -344,6 +345,17 @@ describe('Deal Intelligence executors', () => {
     expect(handback.dealCardId).toBe(32);
   });
 
+  it('keeps government attempts supporting so they cannot block comps or market intelligence', () => {
+    const government = dealIntelligenceChildSpec('government_records');
+    const comparables = dealIntelligenceChildSpec('comparables');
+    const market = dealIntelligenceChildSpec('market_intelligence');
+    expect(government.role).toBe('supporting');
+    expect(comparables.dependsOn).toEqual(['parcel_identity']);
+    expect(market.dependsOn).toEqual(['parcel_identity']);
+    expect(comparables.dependsOn).not.toContain('government_records');
+    expect(market.dependsOn).not.toContain('government_records');
+  });
+
   it('never claims government verification on comparables', async () => {
     const executors = dealIntelligenceExecutors(caps());
     const result = await executors.comparables(ctx());
@@ -463,5 +475,24 @@ describe('Deal Intelligence executors', () => {
     const result = await executors.market_intelligence(ctx());
     expect(result.status).toBe('blocked');
     expect((result.result as { marketMatrixAvailable: boolean }).marketMatrixAvailable).toBe(false);
+  });
+
+  it('keeps the county Market Research acreage matrix supplied by the live market capability', async () => {
+    const retained = {
+      bands: [{ band: '2-5', soldVolume: 22, snapshotPeriod: '2026-Q2' }],
+      bestMovingBands: ['2-5'],
+    };
+    const executors = dealIntelligenceExecutors(caps({
+      marketPulse: async () => ({
+        marketMatrix: { title: 'County matrix' },
+        marketPulse: null,
+        marketScan: { acreageMatrix: retained },
+        facts: [],
+        summary: 'County matrix resolved.',
+      }),
+    }));
+    const result = await executors.market_intelligence(ctx());
+    const scan = (result.result as { marketScan: { acreageMatrix: unknown } }).marketScan;
+    expect(scan.acreageMatrix).toEqual(retained);
   });
 });

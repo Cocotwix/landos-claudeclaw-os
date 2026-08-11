@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { zillowLandUrl, zillowSearchRoutes, normalizeZillowListings, fetchZillowLandComps, type RawZillowListing } from './zillow-land-comps.js';
+import { distanceMiles, zillowLandUrl, zillowSearchRoutes, normalizeZillowListings, fetchZillowLandComps, type RawZillowListing } from './zillow-land-comps.js';
 
 describe('zillowLandUrl', () => {
   it('builds a public Lots/Land locality URL (geographic, not ZIP)', () => {
@@ -19,6 +19,16 @@ describe('zillowLandUrl', () => {
     expect(routes.some((route) => route.kind === 'parcel')).toBe(true);
     expect(routes[0]?.url).toContain('zillow.com');
   });
+
+  it('builds a coordinate-only sold manufactured-home route with a five-mile map boundary', () => {
+    const route = zillowSearchRoutes({
+      state: 'SC', lat: 34.8, lng: -82.5, mode: 'sold',
+      propertyType: 'manufactured', radiusMiles: 5,
+    })[0];
+    expect(route?.kind).toBe('coordinates');
+    expect(decodeURIComponent(route?.url ?? '')).toContain('"manufactured":{"value":true}');
+    expect(decodeURIComponent(route?.url ?? '')).toContain('"land":{"value":false}');
+  });
 });
 
 describe('normalizeZillowListings', () => {
@@ -35,6 +45,16 @@ describe('normalizeZillowListings', () => {
     expect(out[0].address).toContain('5413 Lee ST');
     expect(out[0].pricePerAcre).toBe(Math.round(31000 / 0.33));
     expect(out.every((c) => c.source === 'Zillow')).toBe(true);
+  });
+
+  it('keeps only sold manufactured-home rows above $200k without applying the vacant-land acreage band', () => {
+    const out = normalizeZillowListings([
+      { address: '1 Home Rd, Easley, SC 29640', price: 250_000, acres: 2, url: 'a', status: 'sold', lat: 34.8, lng: -82.5, soldDate: '2025-10-01', homeType: 'MANUFACTURED', yearBuilt: 2021, homeSizeSqft: 1568 },
+      { address: '2 Home Rd, Easley, SC 29640', price: 200_000, acres: 2, url: 'b', status: 'sold', lat: 34.81, lng: -82.51 },
+    ], null, 'sold', 'manufactured');
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ price: 250_000, lat: 34.8, lng: -82.5, soldDate: '2025-10-01', homeType: 'MANUFACTURED', yearBuilt: 2021, homeSizeSqft: 1568 });
+    expect(distanceMiles({ lat: 34.8, lng: -82.5 }, { lat: 34.81, lng: -82.51 })).toBeLessThan(5);
   });
 });
 
@@ -101,6 +121,42 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
     });
     expect(result.comps.map((comp) => comp.address)).toEqual(['1814 Wells AVE, LEHIGH ACRES, FL 33972']);
     expect(result.comps.every((comp) => comp.status === 'sold')).toBe(true);
+  });
+
+  it('retains manufactured-home search proof and exclusion reasons', async () => {
+    const candidates: RawZillowListing[] = [
+      { address: '1 Home Rd, Easley, SC 29640', price: 250_000, acres: 2, url: 'a', status: 'sold', lat: 34.8, lng: -82.5, soldDate: '2025-10-01', homeType: 'MANUFACTURED' },
+      { address: '2 Far Rd, Easley, SC 29640', price: 260_000, acres: 2, url: 'b', status: 'sold', lat: 35.0, lng: -82.5, soldDate: '2025-10-01', homeType: 'MANUFACTURED' },
+      { address: '3 Old Rd, Easley, SC 29640', price: 270_000, acres: 2, url: 'c', status: 'sold', lat: 34.81, lng: -82.51, soldDate: '2022-01-01', homeType: 'MANUFACTURED' },
+      { address: '4 Undated Rd, Easley, SC 29640', price: 280_000, acres: 2, url: 'd', status: 'sold', lat: 34.81, lng: -82.51, soldDate: null, homeType: 'MANUFACTURED' },
+    ];
+    const result = await fetchZillowLandComps({
+      city: 'Easley', county: 'Pickens', state: 'SC',
+      lat: 34.8, lng: -82.5, mode: 'sold', propertyType: 'manufactured',
+      radiusMiles: 5, dateWindowMonths: 24,
+    }, {
+      force: true,
+      connect: fakeConnect(candidates) as never,
+      timeoutMs: 10,
+      settleMs: 1,
+      scrollSettleMs: 1,
+      nowMs: Date.parse('2026-07-01'),
+    });
+    expect(result.status).toBe('retrieved');
+    expect(result.comps).toHaveLength(1);
+    expect(result.searchProof).toMatchObject({
+      radiusMiles: 5,
+      timePeriodMonths: 24,
+      sourcesSearched: ['Zillow'],
+      candidatesReviewed: 4,
+      qualifyingResults: 1,
+    });
+    expect(result.searchProof?.routesAttempted[0]).toMatch(/within 5 miles/);
+    expect(result.searchProof?.exclusionReasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'Outside 5-mile radius', count: 1 }),
+      expect.objectContaining({ reason: 'Outside 24-month time period', count: 1 }),
+      expect.objectContaining({ reason: 'Verified sale date unavailable', count: 1 }),
+    ]));
   });
 
   it('is disabled without a locality (no city/state)', async () => {

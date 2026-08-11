@@ -30,6 +30,10 @@ const PI_PANEL_SRC = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
   'utf-8',
 );
+const OVERVIEW_SRC = fs.readFileSync(
+  fileURLToPath(new URL('../../web/src/components/DealWorkspaceOverview.tsx', import.meta.url)),
+  'utf-8',
+);
 const ROUTES_SRC = fs.readFileSync(
   fileURLToPath(new URL('./routes.ts', import.meta.url)),
   'utf-8',
@@ -108,12 +112,12 @@ describe('F8 — downloadable report consumes the shared strategy/readiness reco
 describe('F9 — executive summary is visible without internal readiness surfaces', () => {
   it('the canonical Overview renders the promoted snapshot summary', () => {
     expect(DEAL_CARD_SRC).toMatch(
-      /activeTab === 'overview'[\s\S]{0,220}<PropertyIntelligenceOverview snapshot=\{piSnapshot\}/,
+      /activeTab === 'overview'[\s\S]{0,300}<DealWorkspaceOverview[\s\S]{0,180}snapshot=\{piSnapshot\}/,
     );
-    expect(PI_PANEL_SRC).toMatch(/export function PropertyIntelligenceOverview/);
-    expect(PI_PANEL_SRC).toMatch(/\{headline\.keyOpportunity\}/);
-    expect(PI_PANEL_SRC).toMatch(/<Field label="Value band"/);
-    expect(PI_PANEL_SRC).toMatch(/recommendation\.preferredStrategy/);
+    expect(OVERVIEW_SRC).toMatch(/analysis\?\.overall\.mainOpportunity \|\| snapshot\?\.headline\.keyOpportunity/);
+    expect(OVERVIEW_SRC).toMatch(/label="Working value"/);
+    expect(OVERVIEW_SRC).toMatch(/label="Target negotiation range"/);
+    expect(OVERVIEW_SRC).toMatch(/analysis\?\.overall\.bestCurrentStrategy \|\| snapshot\?\.recommendation\.preferredStrategy/);
   });
 
   it('OverviewSummary does not expose the shared readiness summary line', () => {

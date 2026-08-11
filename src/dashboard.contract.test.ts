@@ -1591,6 +1591,41 @@ describe('Security headers on /', () => {
 
 
 describe('local browser pairing', () => {
+  it('arms a credential-free fresh-tab recovery and issues one local browser session', async () => {
+    const armed = await app.request('http://localhost/api/dashboard/browser-pairings/visual-ready', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-landos-bootstrap-token': TOKEN,
+      },
+      body: JSON.stringify({ returnTo: '/dept/acquisitions?deal=64' }),
+    });
+    expect(armed.status).toBe(201);
+    const armedBody = await jsonOf(armed);
+    expect(armedBody.launchUrl).toBe(
+      'http://localhost/connect?visualReady=1&returnTo=%2Fdept%2Facquisitions%3Fdeal%3D64',
+    );
+    expect(armedBody.launchUrl).not.toContain('#');
+    expect(JSON.stringify(armedBody)).not.toContain(TOKEN);
+
+    const claimed = await app.request('/api/dashboard/browser-pairings/claim-visual-ready', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(claimed.status).toBe(201);
+    expect(claimed.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Strict; Path=\//);
+    const cookie = (claimed.headers.get('set-cookie') || '').split(';')[0];
+    expect((await app.request('/api/health', { headers: { cookie } })).status).toBe(200);
+
+    const replay = await app.request('/api/dashboard/browser-pairings/claim-visual-ready', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(replay.status).toBe(401);
+  });
+
   it('bootstraps the first loopback browser after token rotation without a prior browser session', async () => {
     const created = await app.request('http://localhost/api/dashboard/browser-pairings', {
       method: 'POST',

@@ -68,6 +68,15 @@ describe('Property Inspection capability', () => {
         { key: 'apn', label: 'APN / parcel ID', value: 'R123', sourceName: 'County Assessor', sourceType: 'assessor', sourceUrl: 'https://county.example/assessor', confidence: 'high', origin: 'netr_county', status: 'extracted' },
       ],
       sourcesUsed: [{ type: 'assessor', url: 'https://county.example/assessor', origin: 'netr_county', confidence: 0.9 }],
+      sourceAttempts: [{
+        sourceName: 'Example County Assessor',
+        sourceType: 'assessor',
+        sourceUrl: 'https://county.example/assessor',
+        attemptedAt: '2026-07-28T12:00:00.000Z',
+        result: 'retrieved',
+        factCount: 2,
+        note: 'Two subject-property facts retrieved.',
+      }],
       screenshots: [],
       blocked: [],
       sourceUrls: ['https://county.example/assessor'],
@@ -81,6 +90,17 @@ describe('Property Inspection capability', () => {
       googleVisualConfigured: false,
     });
     expect(result.inspection.parcelFacts['Official owner']).toBe('DOE');
+    expect(result.inspection.sources).toContainEqual(expect.objectContaining({
+      provider: 'Example County Assessor',
+      resultKind: 'retrieved',
+      attemptedAt: '2026-07-28T12:00:00.000Z',
+    }));
+    expect(result.inspection.sources?.some((source) => source.provider === 'County Records Browser')).toBe(false);
+    expect(result.inspection.evidence).toContainEqual(expect.objectContaining({
+      label: 'Official owner',
+      source: 'County Assessor',
+      url: 'https://county.example/assessor',
+    }));
     expect(result.routes.find((r) => r.provider === 'Official Assessor')?.status).toBe('used');
     expect(result.routes.find((r) => r.provider === 'NETR')?.status).toBe('used');
   });
@@ -116,5 +136,149 @@ describe('Property Inspection capability', () => {
       landPortalBrowser: fakeService(landportal), countyRecordsBrowser: county, googleVisualConfigured: false,
     });
     expect(receivedKey).toMatchObject({ county: 'Runnels', state: 'TX', address: '2510 State Highway 153' });
+  });
+
+  it('shares one deadline across sequential LandPortal and county providers', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: { parcelUrl: 'https://landportal.example/parcel', comparablesUrl: null, parcelFacts: { 'Owner Name': 'DOE', 'Parcel ID': 'R123', Acres: '10' }, assets: [], overlays: [], visualObservations: [], comparables: [] },
+    } satisfies BrowserEvidence;
+    const county = {
+      service: 'county_records', mode: 'workflow', status: 'partial', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'county attempted',
+    } satisfies BrowserEvidence;
+    const budgets: number[] = [];
+    let clock = 1_000;
+    const landPortalService: BrowserService = {
+      ...fakeService(landportal),
+      async runWorkflow(_input, options) {
+        budgets.push(options.timeoutMs);
+        clock += 400;
+        return landportal;
+      },
+    };
+    const countyService: BrowserService = {
+      ...fakeService(county),
+      async runWorkflow(_input, options) {
+        budgets.push(options.timeoutMs);
+        return county;
+      },
+    };
+
+    await runPropertyInspection({
+      searchKey: { address: '1 Main St', county: 'Example', state: 'TX' },
+      mode: 'deep_record',
+      timeoutMs: 1_000,
+    }, {
+      landPortalBrowser: landPortalService,
+      countyRecordsBrowser: countyService,
+      googleVisualConfigured: false,
+      nowMs: () => clock,
+    });
+
+    expect(budgets).toEqual([1_000, 600]);
+  });
+
+  it('does not let Google visual capture overrun an exhausted identity deadline', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: { parcelUrl: 'https://landportal.example/parcel', comparablesUrl: null, parcelFacts: { 'Owner Name': 'DOE', 'Parcel ID': 'R123', Acres: '10' }, assets: [], overlays: [], visualObservations: [], comparables: [] },
+    } satisfies BrowserEvidence;
+    let clock = 1_000;
+    let captureCalls = 0;
+    const landPortalService: BrowserService = {
+      ...fakeService(landportal),
+      async runWorkflow() {
+        clock += 1_100;
+        return landportal;
+      },
+    };
+
+    const result = await runPropertyInspection({
+      cardId: 7,
+      searchKey: { address: '1 Main St', county: 'Example', state: 'TX' },
+      timeoutMs: 1_000,
+    }, {
+      landPortalBrowser: landPortalService,
+      googleVisualConfigured: true,
+      captureVisuals: async () => {
+        captureCalls += 1;
+        return { ok: true, cardId: 7, reason: 'captured', captured: ['maps_static'] };
+      },
+      nowMs: () => clock,
+    });
+
+    expect(captureCalls).toBe(0);
+    expect(result.routes.find((route) => route.provider === 'Google Maps / Satellite / Street View')).toMatchObject({
+      status: 'partial',
+      note: expect.stringMatching(/deadline was exhausted/i),
+    });
+  });
+
+  it('quarantines implausible frontage and extreme terrain values when retained imagery conflicts or was never interpreted', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: {
+        parcelUrl: 'https://landportal.example/parcel',
+        comparablesUrl: null,
+        parcelFacts: {
+          'Owner Name': 'DOE',
+          'Parcel ID': 'R123',
+          Acres: '52.84',
+          'Road Frontage': '1,304 ft',
+          'Slope Avg': '53.57 %',
+          'Slope Max': '228.33 %',
+          'Buildability total (%)': '0.28 %',
+          'Buildability area (acres)': '0.15 ac.',
+        },
+        assets: [{ key: 'terrain', label: 'Terrain', kind: 'parcel_3d', purpose: 'terrain', sourcePath: 'terrain.png', timestamp: '2026-07-29T12:00:00.000Z' }],
+        overlays: [],
+        visualObservations: [
+          { label: 'Road frontage', detail: 'Imagery shows an approximately 50 ft narrow road neck.', confidence: 'medium', evidence: 'Parcel boundary and aerial' },
+          { label: 'Terrain', detail: 'The retained aerial appears rolling to moderately sloped rather than uniformly extreme.', confidence: 'medium', evidence: 'Aerial and terrain imagery' },
+        ],
+        comparables: [],
+      },
+    } satisfies BrowserEvidence;
+    const result = await runPropertyInspection({
+      searchKey: { address: '1 Highway 11', county: 'Example', state: 'SC' },
+      existingEvidence: [landportal],
+      timeoutMs: 1000,
+    }, { landPortalBrowser: fakeService(landportal), googleVisualConfigured: false });
+
+    expect(result.inspection.parcelFacts['Road Frontage']).not.toMatch(/\d/);
+    expect(result.inspection.parcelFacts['Slope Avg']).not.toMatch(/\d/);
+    expect(result.inspection.parcelFacts['Buildability total (%)']).not.toMatch(/\d/);
+    expect(result.inspection.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Road frontage conflict', status: 'needs_verification' }),
+      expect.objectContaining({ label: 'Terrain and buildability conflict', status: 'needs_verification' }),
+      expect.objectContaining({ label: 'Slope Avg', status: 'needs_verification', confidence: 'low' }),
+    ]));
+  });
+
+  it('preserves extreme terrain values only when a medium/high-confidence visual interpretation corroborates them', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: {
+        parcelUrl: 'https://landportal.example/parcel',
+        comparablesUrl: null,
+        parcelFacts: {
+          'Owner Name': 'DOE', 'Parcel ID': 'R123', Acres: '50',
+          'Slope Avg': '42 %', 'Slope Max': '75 %',
+          'Buildability total (%)': '4 %', 'Buildability area (acres)': '2 ac.',
+        },
+        assets: [],
+        overlays: [],
+        visualObservations: [{ label: 'Terrain and contours', detail: 'The parcel is visibly steep across most of the retained terrain frame.', confidence: 'medium', evidence: '3D terrain and contour imagery' }],
+        comparables: [],
+      },
+    } satisfies BrowserEvidence;
+    const result = await runPropertyInspection({
+      searchKey: { address: '1 Ridge Rd', county: 'Example', state: 'SC' },
+      existingEvidence: [landportal],
+      timeoutMs: 1000,
+    }, { landPortalBrowser: fakeService(landportal), googleVisualConfigured: false });
+    expect(result.inspection.parcelFacts['Slope Avg']).toBe('42 %');
+    expect(result.inspection.parcelFacts['Buildability total (%)']).toBe('4 %');
+    expect(result.inspection.evidence?.some((row) => row.label === 'Terrain and buildability conflict')).toBe(false);
   });
 });

@@ -9,6 +9,8 @@ import {
   getDealCard,
   addPerson,
   linkPerson,
+  updateDealPerson,
+  unlinkDealPerson,
   isOfficialContiguitySource,
   isSourceBackedAuthority,
   leadContactMismatchNote,
@@ -16,11 +18,31 @@ import {
   upsertDealCardFromDukeRun,
   upsertDealCardFromMultiParcelDukeRun,
   sanitizeUnverifiedSummary,
+  resolveSubjectPropertyCard,
 } from './deal-card.js';
 import { getPropertyCard } from './property-card.js';
 
 beforeEach(() => {
   _initTestLandosDb();
+});
+
+describe('canonical subject property resolution', () => {
+  it('prefers exactly one explicit subject regardless of linked-card order', () => {
+    const resolved = resolveSubjectPropertyCard({
+      propertyCards: [{ id: 2, role: 'neighbor' }, { id: 7, role: 'subject' }],
+    });
+    expect(resolved.cardId).toBe(7);
+    expect(resolved.reason).toBe('explicit_subject');
+  });
+
+  it('fails closed when multiple linked cards do not establish one subject', () => {
+    expect(resolveSubjectPropertyCard({ propertyCards: [{ id: 2 }, { id: 7 }] })).toMatchObject({
+      card: null, cardId: null, reason: 'ambiguous',
+    });
+    expect(resolveSubjectPropertyCard({ propertyCards: [{ id: 2, role: 'subject' }, { id: 7, role: 'subject' }] })).toMatchObject({
+      card: null, cardId: null, reason: 'ambiguous',
+    });
+  });
 });
 
 function card(addr: string, opts: Record<string, unknown> = {}) {
@@ -67,6 +89,33 @@ describe('Property Card standalone vs Deal Card', () => {
     const detail = getDealCard(deal.id)!;
     expect(detail.propertyCards.length).toBe(1);
     expect(detail.asking_price).toBe(30000);
+  });
+});
+
+describe('Deal Card contact editing and removal', () => {
+  it('updates a linked contact and removes only this Deal Card link', () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Contact workflow' });
+    const personId = addPerson({ entity: 'TY_LAND_BIZ', name: 'Original', phone: '555-0100' });
+    linkPerson({ dealCardId: deal.id, personId, role: 'seller' });
+    expect(updateDealPerson({
+      dealCardId: deal.id,
+      personId,
+      name: 'Updated Seller',
+      email: 'seller@example.test',
+      role: 'decision_maker',
+      authorityStatus: 'title_to_confirm',
+    })).toBe(true);
+    expect(getDealCard(deal.id)!.people).toEqual([
+      expect.objectContaining({
+        id: personId,
+        name: 'Updated Seller',
+        email: 'seller@example.test',
+        role: 'decision_maker',
+        authority_status: 'title_to_confirm',
+      }),
+    ]);
+    expect(unlinkDealPerson(deal.id, personId)).toBe(true);
+    expect(getDealCard(deal.id)!.people).toHaveLength(0);
   });
 });
 

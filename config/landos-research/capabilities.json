@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "canonicalSystem": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "capabilities": [
+    {
+      "id": "duckduckgo-search",
+      "category": "free-search",
+      "selection": "primary",
+      "status": "approved-enabled",
+      "costPolicy": "free-keyless-only",
+      "runtimePrerequisite": "ddgs CLI",
+      "runtimeState": "installed",
+      "runtimeVersion": "9.14.4",
+      "profiles": ["landos-research"],
+      "governance": "Return source URLs and snippets; fetch selected sources separately; official-domain validation and grounded citations remain mandatory."
+    },
+    {
+      "id": "searxng-search",
+      "category": "free-search",
+      "selection": "not-selected",
+      "status": "deferred",
+      "reason": "No approved local SearXNG deployment exists; avoid overlapping primary search alternatives."
+    },
+    {
+      "id": "grounded-citations",
+      "category": "evidence",
+      "selection": "required",
+      "status": "required-policy-no-skill",
+      "runtimeState": "blocked-no-supported-skill",
+      "profiles": ["landos-research", "landos-knowledge"],
+      "reason": "Grounded claim-to-source mapping remains a LandOS contract requirement, but the inspected Hermes catalog has no supported grounded-citations SKILL.md; no substitute skill was invented.",
+      "governance": "Every material external fact records source URL, title, publisher, source date when available, retrieval time, and claim-to-source mapping."
+    },
+    {
+      "id": "openstreetmap-routing",
+      "category": "maps-routing",
+      "selection": "primary-context",
+      "status": "approved",
+      "profiles": ["landos-research"],
+      "governance": "Context only; never infer legal access, frontage, easements, or maintained-road status from routing."
+    },
+    {
+      "id": "official-record-research",
+      "category": "public-records",
+      "selection": "required",
+      "status": "approved",
+      "profiles": ["landos-research"],
+      "governance": "Prefer official assessor, GIS, planning, municipal, state, and federal domains; record jurisdiction and source freshness."
+    },
+    {
+      "id": "scrapling",
+      "category": "difficult-site-extraction",
+      "selection": "restricted-fallback",
+      "status": "blocked",
+      "runtimePrerequisite": "scrapling CLI and audited browser assets",
+      "runtimeState": "missing",
+      "profiles": [],
+      "governance": "Use only after ordinary HTTP/browser extraction fails, on approved public domains, respecting law, robots guidance, and terms. Stealth or challenge-solving requires explicit per-target approval."
+    },
+    {
+      "id": "parallel-cli",
+      "category": "parallel-research",
+      "selection": "deferred-vendor-option",
+      "status": "blocked",
+      "runtimeState": "missing",
+      "reason": "The installed optional skill requires vendor authentication and can incur paid usage; the brief does not authorize credentials or charges. Local sibling research remains the approved parallel mechanism."
+    },
+    {
+      "id": "domain-intel",
+      "category": "source-validation",
+      "selection": "restricted",
+      "status": "approved-enabled",
+      "runtimePrerequisite": "Hermes 0.19.1 pinned Python 3.11 stdlib helper",
+      "runtimeState": "installed-enabled-approved-public-sources",
+      "runtimeVersion": "unversioned@3f497e2b4f92ef83f45a98c02f7cb47c12ee069e",
+      "profiles": ["landos-research"],
+      "governance": "Use the pinned helper for approved public-source research and source-domain validation within the landos-research profile."
+    },
+    {
+      "id": "osint-investigation",
+      "category": "public-source-investigation",
+      "selection": "restricted",
+      "status": "blocked",
+      "profiles": [],
+      "reason": "The inspected optional skill received a dangerous scan verdict with critical/high findings, and broad OSINT exceeds the bounded property-research need.",
+      "governance": "Do not install or invoke this skill. Property research remains limited to approved official/public-source workflows."
+    },
+    {
+      "id": "watchers",
+      "category": "monitoring",
+      "selection": "definition-only",
+      "status": "available-not-activated",
+      "profiles": ["landos-automation"],
+      "governance": "No watcher runs until target, schedule, delivery, owner, and approval are explicit."
+    }
+  ]
+}

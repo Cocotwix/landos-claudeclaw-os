@@ -210,6 +210,24 @@ describe('LandOS routes - Phase 1B owner identity controls', () => {
     const savedProperty = ((await (await get(`/api/landos/property-cards/${property.id}`)).json()) as any).card;
     expect(savedProperty.owner).toBe('JOINES TRAVIS');
   });
+
+  it('records a seller-workspace task as a meaningful Deal Card activity event', async () => {
+    const { property, deal } = await identityFixture();
+    const task = await post(`/api/landos/property-cards/${property.id}/next-action`, {
+      action: 'Confirm trustee authority and asking price',
+      createdBy: 'landos/deal-card',
+    });
+    expect(task.status).toBe(201);
+
+    const activity = (await (await get(`/api/landos/deal-cards/${deal.id}/activity`)).json()) as any;
+    expect(activity.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'task_created',
+        summary: 'Task created: Confirm trustee authority and asking price',
+        agentId: 'landos/deal-card',
+      }),
+    ]));
+  });
 });
 
 describe('LandOS routes - Phase 1E living Deal Card', () => {

@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  buildStaticMapUrl,
   buildVisualPropertyContext,
   renderVisualContextMarkdown,
   googleVisualStatus,
@@ -18,6 +19,12 @@ import { capturePropertyVisuals, type FetchBinary } from './google-visual-captur
 const FIXED = () => '2026-06-26T00:00:00.000Z';
 
 describe('google-visual: pure context builder (NO network, NO key)', () => {
+  it('frames static satellite imagery as parcel-area context rather than a canopy close-up', () => {
+    const url = new URL(buildStaticMapUrl({ address: null, coords: { lat: 34.9867, lng: -82.7858 }, key: 'test-key' }));
+    expect(url.searchParams.get('zoom')).toBe('16');
+    expect(url.searchParams.get('maptype')).toBe('satellite');
+  });
+
   it('builds keyless deep links + image placeholders, labeled Not Verified', () => {
     const ctx = buildVisualPropertyContext(
       { address: '472 West Rd', city: 'Poulan', state: 'GA' },
@@ -140,5 +147,17 @@ describe('google-visual capture (gated; injected fetch — no real Google call)'
     expect(called).toBe(false);
     expect(r.captured).toBe(false);
     expect(r.reason).toMatch(/verified parcel coordinates/i);
+  });
+
+  it('bounds a stalled provider request with one shared capture deadline', async () => {
+    const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gvis-timeout-'));
+    const fetchImpl: FetchBinary = async () => new Promise(() => {});
+    const started = Date.now();
+    const r = await capturePropertyVisuals(
+      { propertyLabel: 'bounded', address: null, coords: { lat: 31.5, lng: -83.7 }, cardId: 9, association: { basis: 'verified_parcel_coordinates' } },
+      { env: { GOOGLE_MAPS_API_KEY: 'k' }, fetchImpl, storeDir, usageFile: path.join(storeDir, 'usage.json'), timeoutMs: 20 },
+    );
+    expect(r.captured).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });

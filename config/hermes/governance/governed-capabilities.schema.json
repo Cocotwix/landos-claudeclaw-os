@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://landos.local/schemas/governed-hermes-capabilities-1.0.0.json",
+  "title": "LandOS governed Hermes capability manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "manifestId", "generatedAt", "runtimeAudit", "policy", "freeSearch", "structuredOutput", "profiles", "skills", "mcps", "optionalEvaluations", "deferredEvaluations"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "1.0.0" },
+    "manifestId": { "const": "landos-governed-hermes" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "runtimeAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hermesVersion", "sourceCommit", "configSchemaVersion", "platform", "knownBuiltinToolsets", "knownPluginToolsets", "knownImplicitToolsets", "inspectedAt", "networkUsed", "paidApisInvoked"],
+      "properties": {
+        "hermesVersion": { "type": "string" },
+        "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "configSchemaVersion": { "type": "integer" },
+        "platform": { "type": "string" },
+        "knownBuiltinToolsets": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "knownPluginToolsets": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "knownImplicitToolsets": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "inspectedAt": { "type": "string", "format": "date-time" },
+        "networkUsed": { "type": "boolean" },
+        "paidApisInvoked": { "type": "boolean" }
+      }
+    },
+    "policy": { "$ref": "#/$defs/policy" },
+    "freeSearch": { "$ref": "#/$defs/selection" },
+    "structuredOutput": { "$ref": "#/$defs/selection" },
+    "profiles": {
+      "type": "object",
+      "minProperties": 5,
+      "maxProperties": 5,
+      "additionalProperties": { "$ref": "#/$defs/profile" }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customSnapshots", "bundledGovernance", "bundled", "optionalApproved"],
+      "properties": {
+        "customSnapshots": { "type": "array", "minItems": 6, "maxItems": 6, "items": { "$ref": "#/$defs/nonBundledSkill" } },
+        "bundledGovernance": { "$ref": "#/$defs/bundledGovernance" },
+        "bundled": { "type": "array", "items": { "$ref": "#/$defs/bundledSkill" } },
+        "optionalApproved": { "type": "array", "items": { "$ref": "#/$defs/nonBundledSkill" } }
+      }
+    },
+    "mcps": { "type": "object", "additionalProperties": { "$ref": "#/$defs/mcp" } },
+    "optionalEvaluations": { "type": "array", "items": { "$ref": "#/$defs/evaluation" } },
+    "deferredEvaluations": { "type": "array", "items": { "$ref": "#/$defs/evaluation" } }
+  },
+  "$defs": {
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvedProtections", "noPaidApis", "capabilityScoping", "skillGovernance", "mcpMappings", "terminalDenyRules"],
+      "properties": {
+        "approvedProtections": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["noSecretOrEnvExposure", "noArbitrarySqlOrDestructiveDeletes", "noUnrestrictedDealCardMutation", "isolatedVisualAcceptance", "noSelfCertification", "dirtyStatePreservation", "crossPropertyRejection"],
+          "properties": {
+            "noSecretOrEnvExposure": { "const": true },
+            "noArbitrarySqlOrDestructiveDeletes": { "const": true },
+            "noUnrestrictedDealCardMutation": { "const": true },
+            "isolatedVisualAcceptance": { "const": true },
+            "noSelfCertification": { "const": true },
+            "dirtyStatePreservation": { "const": true },
+            "crossPropertyRejection": { "const": true }
+          }
+        },
+        "noPaidApis": { "const": true },
+        "capabilityScoping": { "const": "profile-positive-toolsets" },
+        "skillGovernance": { "const": "provenance-and-normal-dirty-worktree-review" },
+        "mcpMappings": { "const": "disabled-until-audited-live-adapters" },
+        "terminalDenyRules": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": ["selected", "status", "reason", "blockers"],
+      "properties": {
+        "selected": { "type": "string" },
+        "status": { "type": "string" },
+        "reason": { "type": "string" },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["templatePath", "skillAllowlist", "toolsetAllowlist", "toolAllowlist", "mcpAllowlist"],
+      "properties": {
+        "templatePath": { "type": "string" },
+        "skillAllowlist": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "toolsetAllowlist": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "toolAllowlist": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "mcpAllowlist": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "hermesVersion", "commit"],
+      "properties": {
+        "type": { "enum": ["repository-snapshot", "hermes-bundled", "hermes-optional"] },
+        "path": { "type": "string" },
+        "hermesVersion": { "type": ["string", "null"] },
+        "commit": { "type": "string" }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "scanner", "scannedAt", "findingCount", "notes"],
+      "properties": {
+        "result": { "type": "string" },
+        "scanner": { "type": "string" },
+        "scannedAt": { "type": "string", "format": "date-time" },
+        "findingCount": { "type": "integer", "minimum": 0 },
+        "notes": { "type": "string" }
+      }
+    },
+    "nonBundledSkill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "kind", "source", "installedAt", "externalInstallation", "audit", "owners", "permissions", "updatePolicy", "expectedSha256"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" },
+        "kind": { "enum": ["custom", "official-optional"] },
+        "source": { "$ref": "#/$defs/source" },
+        "installedAt": { "type": "string", "format": "date-time" },
+        "externalInstallation": { "enum": ["deferred-to-integration"] },
+        "audit": { "$ref": "#/$defs/audit" },
+        "owners": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "updatePolicy": { "type": "string" },
+        "expectedSha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "runtimeRequirements": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pythonPackages": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "pythonStdlibOnly": { "type": "boolean" },
+            "entrypoint": { "type": "string" },
+            "entrypointSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "skillSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "executionState": { "type": "string" },
+            "offlineSmoke": { "type": "string" },
+            "verifiedAt": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    },
+    "bundledSkill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sourcePath", "profiles", "trust", "updatePolicy"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" },
+        "sourcePath": { "type": "string" },
+        "profiles": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "trust": { "const": "hermes-bundled" },
+        "updatePolicy": { "type": "string" }
+      }
+    },
+    "bundledGovernance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "installedAt", "externalInstallation", "audit", "ownerField", "permissions", "updatePolicy"],
+      "properties": {
+        "source": { "$ref": "#/$defs/source" },
+        "installedAt": { "type": "string", "format": "date-time" },
+        "externalInstallation": { "const": "deferred-to-integration" },
+        "audit": { "$ref": "#/$defs/audit" },
+        "ownerField": { "const": "profiles" },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "updatePolicy": { "type": "string" }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "source", "version", "installedAt", "audit", "owners", "permissions", "denied", "updatePolicy"],
+      "properties": {
+        "status": { "const": "integration-pending" },
+        "source": { "type": "string" },
+        "version": { "type": "string" },
+        "installedAt": { "type": ["string", "null"] },
+        "audit": { "type": "string" },
+        "owners": { "type": "array", "items": { "type": "string" } },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "denied": { "type": "array", "items": { "type": "string" } },
+        "updatePolicy": { "type": "string" }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "catalogPath", "status", "audit", "blockers"],
+      "properties": {
+        "id": { "type": "string" },
+        "catalogPath": { "type": ["string", "null"] },
+        "status": { "type": "string" },
+        "audit": { "type": "string" },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

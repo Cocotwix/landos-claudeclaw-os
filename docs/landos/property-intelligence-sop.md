@@ -162,6 +162,16 @@ Keep these findings separate:
 
 Do not prove legal access solely from aerial imagery, GIS, or LandPortal. Official GIS evidence must remain separate from LandPortal mapping.
 
+When LandPortal says `Land Locked: Yes`, reports zero/absent frontage with that
+flag, or shows a parcel set back from the road, that is a trigger for a visual
+access investigation, not a final conclusion. Retain four independent evidence
+types with provenance: the LandPortal parcel flag; an apparent physical drive or
+route observed in satellite/Street View; legal/easement access reported by a
+listing; and legal access verified from a read recorded instrument. Only the
+last verifies legal access. The investigation inspects the map for driveways,
+private routes, gates, tracks, and mapped access lines, then runs Street View
+from a marker placed on the nearest public road.
+
 ## 10. LandPortal Specialist Workflow
 
 Create or strengthen a dedicated LandPortal workflow or adapter that knows the approved LandPortal research process.
@@ -178,6 +188,13 @@ It must retrieve:
 - Transmission lines
 - LandPortal comparables
 - Comp map evidence
+
+**Operator Overview capture:** retain `landportal_overview` as a deliberately
+framed `parcel_context` satellite view. Start from parcel Fit and use the shared
+acreage-dependent context zoom. The complete subject boundary, nearest named
+public road, apparent access route, and immediately surrounding parcels must all
+remain readable. A default 3D image, county-scale map, clipped frame, unloaded
+tiles, or obstructed map is never promoted as Overview.
 
 **Map-click precision and misclick recovery:**
 Every click on the LandPortal map can select a parcel; a click landing
@@ -510,6 +527,12 @@ Each provider must return one of:
 - Unavailable
 - Skipped with a documented reason
 
+LandPortal, Zillow, Redfin, and Realtor.com are separately accountable. An
+unrun lane is shown as `not run`, never as zero results. A lane that ran and
+found nothing, returned candidates that were filtered, failed, was blocked, or
+was disabled by policy keeps that distinct status. LandPortal success never
+stops the three supplement lanes from running or being explicitly accounted for.
+
 **Search expansion:**
 - Immediate nearby area
 - Relevant ZIP code
@@ -526,12 +549,17 @@ The LandPortal workflow must:
 4. Extract structured comp records rather than treating the sidebar screenshot as the data.
 5. Capture price, acreage, APN or parcel ID, and all displayed fields.
 6. Click the green Show on Map link.
-7. Extract addresses and additional details from the map page.
+7. Drill into every sidebar row through Show on Map or its comp-detail surface;
+   extract the stated address/locality, acreage, coordinates or honest unresolved
+   location, detail URL, and comparable image with its source.
 8. Add each property to the shared comp dataset.
 9. Take one clean screenshot showing the subject and LandPortal comp pins.
 10. Preserve the exact LandPortal URL.
 
 The comp-map screenshot is supporting geographic evidence. It is not a substitute for structured comp records.
+The captured thumbnail is retained on the normalized comp. Distance is computed
+only by the shared geographic router when both subject and comp coordinates
+resolve; otherwise the operator sees `location unresolved` and no guessed value.
 
 ## 16. Normalized Comp Records
 

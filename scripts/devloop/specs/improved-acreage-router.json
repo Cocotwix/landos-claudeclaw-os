@@ -1,0 +1,109 @@
+{
+  "task": "improved acreage router for comp selection and valuation",
+  "mode": "real",
+  "shareNodeModules": true,
+  "operatorOutcome": "A large-acreage LandOS subject routes into a broad, useful comp pool instead of a narrow unusable bucket: on 9490 Elk Lake Rd the 60-acre subject prices from its real 39.94, 40 and 85.32 acre LandPortal sold land records, every usable comp shows its straight-line distance where location can be resolved, geographic expansion past the old hard 20-mile cutoff is visible and explained, and house listings never appear as active vacant-land competition.",
+  "allowedPaths": [
+    "src/landos/acreage-router.ts",
+    "src/landos/acreage-router.test.ts",
+    "src/landos/comp-recency-window.ts",
+    "src/landos/comp-recency-window.test.ts",
+    "src/landos/deal-intelligence-comps.ts",
+    "src/landos/deal-intelligence-comps.test.ts",
+    "src/landos/comparable-intelligence.ts",
+    "src/landos/comparable-intelligence.test.ts",
+    "src/landos/comps-valuation.ts",
+    "src/landos/comps-valuation.test.ts",
+    "src/landos/comps-valuation-recency.test.ts",
+    "src/landos/comp-valuation-band.test.ts",
+    "src/landos/hermes-landportal-import.ts",
+    "src/landos/property-intelligence-snapshot.ts",
+    "src/landos/sold-count-context.test.ts",
+    "src/landos/property-market-context.test.ts",
+    "src/landos/deal-operator-analysis.contract.test.ts",
+    "src/landos/workspace-v2-comps-valuation-ui.test.ts",
+    "src/landos/dual-exit-valuation.test.ts"
+  ],
+  "builders": ["codex", "cc"],
+  "startingBuilderId": "codex",
+  "builderBrief": "Build the Improved Acreage Router and make it the shared acreage input for LandOS comp selection and valuation.\n\nTHE ACCEPTANCE PROPERTY is 9490 Elk Lake Rd, Williamsburg, MI 49690. It is a real 60-acre subject in this repository's store (property card 73, deal card 83, Grand Traverse County MI, APN 13-116-015-01, lat 44.822439610896, lng -85.404821349666). LandOS already holds five real LandPortal sold land records for it: 40 ac / $400,000 / 2025-03-21, 85.32 ac / $1,100,000 / 2026-02-12, 40 ac / $400,000 / 2025-03-21 (a duplicate of the first), 40 ac / $375,000 / 2025-02-04, and 39.94 ac / $390,000 / 2025-04-04. That is roughly $9,375 to $12,893 per acre. Every one of them carries a stated sale date and NONE of them carries coordinates or an address. Today LandOS prices the subject from zero of them.\n\nWHY, EXACTLY. There are three separate causes and you must fix all three.\n\n1. THREE MODULES EACH INVENT THEIR OWN ACREAGE ASSUMPTION.\n   `valuationAcreageBand` in `src/landos/comp-recency-window.ts` returns {min:40, max:160} for a 60-acre subject, so the 39.94-acre sale is thrown out by six hundredths of an acre.\n   `acreageBand` in `src/landos/deal-intelligence-comps.ts` independently returns {lo:30, hi:150} for the same subject.\n   `sameAcreageBand` in `src/landos/comparable-intelligence.ts` independently uses a label band plus a 0.5x-2x ratio.\n   Comp selection and valuation therefore disagree about what the same subject's comparable set even is.\n\n2. DISTANCE IS A HARD GATE INSTEAD OF A RANKING SIGNAL.\n   `qualifySoldComparable` in `src/landos/comparable-intelligence.ts` rejects any row whose `distanceMiles` is null and any row past 10 miles. `MAX_COMP_SEARCH_RADIUS_MILES = 20` in `src/landos/comps-valuation.ts` is a hard boundary. The five 9490 LandPortal records have no coordinates at all, so all five are discarded for a distance nobody ever tried to compute.\n\n3. A LANDPORTAL COMPARABLE WITH A STATED SALE DATE IS FILED AS UNKNOWN.\n   `src/landos/hermes-landportal-import.ts` reads `comp.sale_date`, writes it to `saleOrListDate`, and builds a canonical key containing `sale:2026-02-12` — and then writes `priceKind: 'unknown'`. Downstream that becomes \"Transaction status is not stated by the source\" and the row is context only.\n\nWHAT TO BUILD.\n\nA. NEW MODULE `src/landos/acreage-router.ts`. Pure, deterministic, no I/O, no clock. Export exactly this surface, with these names:\n\n   export type AcreageRegime = 'micro' | 'small' | 'mid' | 'large' | 'very_large';\n   export interface AcreagePool { min: number; max: number; label: string }\n   export interface AcreageRoute {\n     subjectAcres: number;\n     regime: AcreageRegime;\n     regimeLabel: string;      // operator-facing\n     pool: AcreagePool;        // broad window a row must sit in to participate at all\n     preferred: AcreagePool;   // narrower window inside the pool where similarity peaks\n     tightAcreageMatching: boolean;\n     rankingEmphasis: string[];// what does the ranking once acreage stops discriminating\n     rationale: string;        // >= 40 chars, operator-readable, says why the pool is this wide\n   }\n   export function routeAcreage(subjectAcres: number | null | undefined): AcreageRoute | null;\n   export function inAcreagePool(acres: number | null | undefined, route: AcreageRoute | null): boolean;\n   export function routedAcreageSimilarity(acres: number | null | undefined, route: AcreageRoute | null): number; // 0..1, 0 outside the pool\n\n   Regimes, following the operator rule: 'micro' under 2 ac, 'small' 2 to under 10, 'mid' 10 to under 30, 'large' 30 through 100, 'very_large' above 100. `tightAcreageMatching` is true for micro, small and mid — dollars per acre changes materially between small size bands, so keep those tight. It is false for large and very_large.\n\n   The 'large' pool must be genuinely broad: max/min at least 3, the floor at or below 0.35x the subject, the ceiling at or above 2.5x. For a 60-acre subject that admits 39.94, 40 and 85.32 acres. A 3-acre subject must still exclude a 40-acre sale, and its pool spread must be strictly tighter than the large-acreage spread. `routeAcreage` returns null for null, undefined, zero, negative or non-finite acreage — a route is never invented.\n\n   `routedAcreageSimilarity` returns 1 at an exact match, falls off continuously, stays strictly positive everywhere inside the pool (a 40-acre sale must carry non-zero weight against a 60-acre subject; zero weight is the defect being repaired), and returns 0 outside the pool. 55 acres must outrank 40 acres for a 60-acre subject.\n\nB. GEOGRAPHY, in the same module.\n\n   export type GeographicTierId = 'local_10' | 'near_20' | 'regional_35' | 'extended_50' | 'county_market' | 'distance_unresolved';\n   export interface GeographicTier {\n     id: GeographicTierId; label: string; maxMiles: number | null;\n     expanded: boolean; retained: boolean; weightMultiplier: number; rationale: string;\n   }\n   export const GEOGRAPHIC_TIERS: readonly GeographicTier[];\n   export function resolveGeographicTier(distanceMiles: number | null | undefined): GeographicTier;\n   export function compDistanceMiles(subject: { lat?: number | null; lng?: number | null } | null | undefined, comp: { lat?: number | null; lng?: number | null } | null | undefined): number | null;\n   export function describeGeographicExpansion(input: { route: AcreageRoute | null; tiersUsed: GeographicTierId[]; usableCount: number }): string;\n\n   Start local and expand outward on purpose. `expanded` is false only for 'local_10'. `retained` is true on EVERY tier including 'distance_unresolved': nothing is ever discarded on distance alone. `weightMultiplier` is in (0,1], equals 1 at 'local_10', and is non-increasing as distance grows. `resolveGeographicTier(null)` returns the 'distance_unresolved' tier, whose label and rationale say plainly that the location could not be resolved, and whose multiplier is below 1. `compDistanceMiles` is straight-line (haversine) miles and returns null whenever either side lacks finite coordinates — a distance is never invented. `describeGeographicExpansion` returns at least 40 characters, mentions miles, and names the label of every tier in `tiersUsed`.\n\nC. STRUCTURED OUTPUT FOR A LATER STRATEGY AGENT — build the context, do NOT build Strategy.\n\n   export interface AcreageMarketContext {\n     route: AcreageRoute;\n     subjectAcres: number;\n     usableCount: number;\n     pricePerAcre: { low: number | null; mid: number | null; high: number | null } | null;\n     tiersUsed: GeographicTierId[];\n     expansionExplanation: string;\n   }\n   export function buildAcreageMarketContext(input: { route: AcreageRoute | null; comps: Array<{ acres: number | null; pricePerAcre: number | null; distanceMiles: number | null }> }): AcreageMarketContext | null;\n\n   This is the shared acreage and market context a later whole-versus-subdivision comparison will read. Add nothing else for Strategy.\n\nD. MAKE THE ROUTER THE SINGLE AUTHORITY. Each of `src/landos/comp-recency-window.ts`, `src/landos/deal-intelligence-comps.ts`, `src/landos/comparable-intelligence.ts` and `src/landos/comps-valuation.ts` must import from `./acreage-router.js` and delegate to it. Do not copy the numbers.\n   - `valuationAcreageBand(subjectAcres)` returns the router pool (same min and max), still null when there is no subject acreage.\n   - `acreageBand(subjectAcres)` in deal-intelligence-comps returns { lo: pool.min, hi: pool.max }, still null when there is no subject acreage.\n   - `sameAcreageBand` in comparable-intelligence resolves through `inAcreagePool`.\n   Keep the existing exported names and shapes; only what they decide changes.\n\nE. DISTANCE BECOMES A COMPUTED, VISIBLE RANKING SIGNAL, NOT A GATE.\n   - Add optional `lat` and `lng` to `CompSelectionSubject` in deal-intelligence-comps.\n   - In `selectWorkingComps`, when a row has no `distanceMiles` but both the subject and the row carry coordinates, compute it with `compDistanceMiles` and carry it onto the snapshot comp so the operator sees it.\n   - A row is NEVER dropped for a null distance or for being past 20 miles. Resolve its tier instead, apply the tier's weight multiplier in `comparabilityScore`, and say the distance in the comp's operator text. A comp beyond the local radius must mention miles in its `whyUseful`, `similarities` or `differences`.\n   - `qualifySoldComparable` in comparable-intelligence must stop rejecting a row for `distanceMiles == null` or for exceeding 10 miles; rank it down through the tier instead.\n   - Remove the hard 20-mile discard in comps-valuation. Retain and rank past-20-mile evidence with its tier stated. `INITIAL_COMP_RADIUS_MILES` and `MAX_COMP_SEARCH_RADIUS_MILES` may stay as exported constants if other code reads them, but they must no longer delete evidence.\n   - Add to `CompWorkingSet` in deal-intelligence-comps: `acreageRouting: AcreageRoute | null`, `geographicExpansion: string`, `acreageMarketContext: AcreageMarketContext | null`, populated by `selectWorkingComps`.\n\nF. A HOUSE IS NOT VACANT-LAND COMPETITION.\n   - Export from `src/landos/comps-valuation.ts`:\n     export function detectImprovedProperty(input: { propertyClass?: string | null; classification?: string | null; notes?: string | null; addressDesc?: string | null; descriptionText?: string | null; buildingSqft?: number | null }): { improved: boolean; evidence: string | null };\n     It returns improved:true for a residential property class, for building square footage of about 1,000 or more, and for text stating bedrooms, bathrooms, a home, a house, a residence or a dwelling; it returns improved:false for vacant-land text, for a land property class, and for an empty input. When improved is true, `evidence` names the signal that produced it. Use it inside `classifyPersistedComp` so an improved listing lands in `improved_context`, never in `active_competition`.\n   - In `selectWorkingComps`, a row may enter the `active` lane and be described as vacant-land competition only when it is affirmatively vacant land. A row whose `landClass` is 'improved', or whose `landClass` is 'unknown' while it carries `homeSizeSqft`, `yearBuilt` or a residential `homeType`, must not appear there. Do not delete those rows: bucket them into `evidence` with a reason that names the structure signal, so the count and the reason stay visible.\n   - Leave the `WORKSPACE_CATEGORY_LABELS` strings alone. What changes is which rows may enter the lane.\n\nG. A LANDPORTAL COMPARABLE WITH A SOURCE-STATED SALE DATE IS A SOURCE-STATED SALE.\n   - Export from `src/landos/deal-intelligence-comps.ts` (it is the pure module that already owns `CompStatusBasis`):\n     export function landPortalSaleStatus(row: { source: string; dateIso: string | null; priceKind?: string | null }): { statusBasis: CompStatusBasis; provenance: string };\n     A LandPortal row with a parseable stated sale date returns statusBasis 'closed_sale' and a provenance string naming LandPortal and the stated date. A LandPortal row with no stated date returns 'unconfirmed'. A row from any other source returns 'unconfirmed' — this helper governs LandPortal only and never changes how Zillow or Redfin rows are read.\n   - `src/landos/hermes-landportal-import.ts` must use it to decide the persisted `priceKind` instead of hardcoding `'unknown'`, and must keep the provenance in the row's notes. Change nothing else about the import.\n   - This reads what the source published. Do not invent a sale, a date, or a status anywhere.\n\nRULES.\n   - LandPortal comps are retained and RANKED with everything else. They must never win rank by being LandPortal.\n   - Do not fabricate coordinates, distances, prices, dates or statuses.\n   - Do not build the Strategy agent, Pre/Post Discovery Revaluation, dashboards, new providers, or a comp-collection redesign.\n   - Change no file outside the allowed paths.\n   - The existing comp suites assert the old bands. Update those assertions to the new routing. Do not delete tests, do not skip tests, and do not weaken an assertion to something trivially true. Add `src/landos/acreage-router.test.ts` covering the router, including the 60-acre subject with its real 39.94 and 85.32 acre records.\n   - `node_modules` is shared into this worktree, so `npx vitest` and `npx tsc` both work here. If you are able to run shell commands, run `npx tsc --noEmit` and `npx vitest run src/landos/acreage-router.test.ts src/landos/comp-recency-window.test.ts src/landos/comparable-intelligence.test.ts src/landos/deal-intelligence-comps.test.ts src/landos/comps-valuation.test.ts` before you finish. If you cannot run shell commands, be correspondingly careful: every type must line up by inspection.",
+  "checks": [
+    {
+      "id": "router-regimes-and-pools",
+      "kind": "module-probe",
+      "timeoutMs": 300000,
+      "probeFile": "scripts/devloop/specs/probes/acreage-router-regimes.mjs",
+      "requirement": "src/landos/acreage-router.ts routes a 60-acre subject into a broad large-acreage pool that admits 39.94, 40 and 85.32 acres with non-zero weight, keeps tight matching for small acreage, refuses to invent a route without a subject acreage, and carries an operator-readable rationale and ranking emphasis",
+      "next": "Build src/landos/acreage-router.ts with routeAcreage/inAcreagePool/routedAcreageSimilarity. A 60-acre subject must land in the 'large' regime with tightAcreageMatching false and a pool whose max/min is at least 3, admitting 39.94 and 85.32 acres at non-zero similarity. A 3-acre subject keeps tight matching and still excludes 40 acres."
+    },
+    {
+      "id": "router-is-shared-authority",
+      "kind": "module-probe",
+      "timeoutMs": 300000,
+      "probeFile": "scripts/devloop/specs/probes/acreage-router-shared-authority.mjs",
+      "requirement": "comp-recency-window, deal-intelligence-comps, comparable-intelligence and comps-valuation all import the router, and valuationAcreageBand(60) and acreageBand(60) both equal the router pool so comp selection and valuation cannot hold different acreage assumptions",
+      "next": "Delete the independent acreage assumptions. Have comp-recency-window's valuationAcreageBand and deal-intelligence-comps' acreageBand both delegate to routeAcreage(...).pool, and have comparable-intelligence and comps-valuation import the router too. Do not copy the numbers."
+    },
+    {
+      "id": "distance-and-geographic-expansion",
+      "kind": "module-probe",
+      "timeoutMs": 300000,
+      "probeFile": "scripts/devloop/specs/probes/acreage-router-distance-expansion.mjs",
+      "requirement": "the router computes straight-line distance from coordinates, never invents one, resolves an intentional expansion ladder in which every tier is retained and weight is non-increasing with distance, treats an unresolvable distance as a stated tier rather than a deletion, and explains the expansion to the operator",
+      "next": "Add compDistanceMiles, GEOGRAPHIC_TIERS, resolveGeographicTier and describeGeographicExpansion to the router. Every tier including distance_unresolved must have retained true. Weight must be 1 locally and non-increasing outward. A 26-mile comp is retained and marked expanded; the hard 20-mile cutoff is gone."
+    },
+    {
+      "id": "house-is-not-vacant-land-competition",
+      "kind": "module-probe",
+      "timeoutMs": 300000,
+      "probeFile": "scripts/devloop/specs/probes/comp-lane-classification.mjs",
+      "requirement": "comps-valuation exports detectImprovedProperty and improved-property listings never enter the active vacant-land competition lane, while remaining visible as counted evidence with a stated reason",
+      "next": "Export detectImprovedProperty from comps-valuation and use it in classifyPersistedComp so an improved listing becomes improved_context. In selectWorkingComps, keep improved rows and unknown-class rows carrying home size, year built or a residential home type out of the active lane, bucketing them into evidence with a reason that names the structure signal."
+    },
+    {
+      "id": "elk-lake-9490-valuation-evidence",
+      "kind": "module-probe",
+      "timeoutMs": 360000,
+      "probeFile": "scripts/devloop/specs/probes/elk-lake-valuation-evidence.mjs",
+      "requirement": "the 60-acre 9490 Elk Lake Rd subject prices from its real 39.94, 40 and 85.32 acre LandPortal sold land records, none of which is dropped for an unresolvable distance; distance is calculated and visible for located comps; a 26-mile comp is retained and its expansion explained; the working set exposes its acreage routing and market context; and LandPortal is ranked rather than seated first by source",
+      "next": "Make selectWorkingComps price the 9490 subject from its LandPortal records: add landPortalSaleStatus so a stated sale date makes a LandPortal row a closed sale, stop dropping rows for a null distance, compute distance from coordinates when the subject and row both carry them, and expose acreageRouting, geographicExpansion and acreageMarketContext on CompWorkingSet."
+    },
+    {
+      "id": "comp-suites-updated-not-gutted",
+      "kind": "module-probe",
+      "timeoutMs": 120000,
+      "probeFile": "scripts/devloop/specs/probes/comp-suites-not-gutted.mjs",
+      "requirement": "the four existing comp suites keep at least their current test counts with nothing skipped, and src/landos/acreage-router.test.ts exists with at least ten tests covering the 60-acre subject and its 39.94 and 85.32 acre records",
+      "next": "Update the existing comp assertions to the new acreage routing rather than deleting or skipping them, and add src/landos/acreage-router.test.ts covering the router against the real 9490 numbers."
+    },
+    {
+      "id": "focused-comp-suites-green",
+      "kind": "command",
+      "command": "npx vitest run src/landos/acreage-router.test.ts src/landos/comp-recency-window.test.ts src/landos/comparable-intelligence.test.ts src/landos/deal-intelligence-comps.test.ts src/landos/comps-valuation.test.ts",
+      "timeoutMs": 600000,
+      "requirement": "the router suite and the four comp suites it changes all pass",
+      "next": "Make the router suite and the four changed comp suites pass under `npx vitest run`."
+    },
+    {
+      "id": "typecheck-clean",
+      "kind": "command",
+      "command": "npx tsc --noEmit",
+      "timeoutMs": 600000,
+      "requirement": "`npx tsc --noEmit` is clean on the whole working tree",
+      "next": "Fix the type errors. Every consumer of the changed shapes must still typecheck."
+    },
+    {
+      "id": "no-unrelated-regression",
+      "kind": "command",
+      "command": "npx vitest run --exclude \"**/node_modules/**\" --exclude \"**/src/dashboard.contract.test.ts\" --exclude \"**/src/schedule-cli.test.ts\" --exclude \"**/apn-punctuation.test.ts\" --exclude \"**/browser-session-landportal-capture.test.ts\" --exclude \"**/comp-browser-fallback.test.ts\" --exclude \"**/landportal-comps-market.test.ts\" --exclude \"**/landportal-jurisdiction-filter.test.ts\" --exclude \"**/phase5-browser-isolation.test.ts\" --exclude \"**/routes.test.ts\" --exclude \"**/workspace-v2-section-switching.test.ts\" --exclude \"**/governance/mcp-bridge.test.ts\"",
+      "timeoutMs": 900000,
+      "requirement": "the whole repository suite still passes, excluding only the eleven files that were already failing in this exact worktree before any attempt began, for unrelated reasons (missing browser/acceptance artifacts and absent local runtime state). The baseline was measured in this seeded worktree: 439 test files, 5928 tests, 17 failures confined to those eleven files, and all five comp suites this task touches passed",
+      "next": "Something outside the comp lanes regressed. Run the same command, read the failure, and repair the behaviour rather than the assertion unless the assertion was genuinely describing the old acreage rule."
+    },
+    {
+      "id": "scope-containment",
+      "kind": "scope-containment",
+      "requirement": "no file outside the allowed comp-routing paths was created, modified or deleted during the attempt"
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getLandosDb, landosAudit } from './db.js';
+import { getDealCard } from './deal-card.js';
 import { analyzeGovernmentRecords } from './government-records-analyst.js';
 import type {
   GovernmentRecordArtifactView,
@@ -665,13 +666,23 @@ export function persistGovernmentRecordCollector(input: GovernmentRecordCollecto
     requestKey: input.requestKey ?? collectorInputHash,
   });
   if (started.reusedFinal) return started.reusedFinal;
-  const effective = input.identity.status === 'confirmed'
+  const normalizeParcelReference = (value: unknown): string =>
+    String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const dealApn = normalizeParcelReference(
+    (getDealCard(input.identity.dealCardId)?.propertyCards?.[0] as { apn?: unknown } | undefined)?.apn,
+  );
+  const exactOfficialParcelMatch = !!dealApn && input.claims.some((claim) =>
+    claim.association === 'subject_property_direct'
+    && claim.locatorStatus === 'record_located'
+    && claim.sourceTier === 'official_county_state'
+    && normalizeParcelReference(claim.parcelReference) === dealApn);
+  const effective = input.identity.status === 'confirmed' || exactOfficialParcelMatch
     ? input
     : {
         ...input,
         status: 'blocked' as const,
         outcomeKind: 'blocked' as const,
-        error: 'Confirmed subject property identity and geometry are required before recorded-government research.',
+        error: 'Confirmed subject identity or an exact official parcel-reference match is required before recorded-government evidence can be retained.',
         claims: [],
         artifacts: [],
       };

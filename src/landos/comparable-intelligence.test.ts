@@ -68,7 +68,7 @@ describe('comparable intelligence', () => {
     expect(ci.comparables[0].pricePerAcre).toBe(10000);
     expect(ci.comparables[0].parsingErrors[0]).toMatch(/differs materially/i);
     expect(ci.estimatedMarketValue).toBeNull();
-    expect(ci.rejectedComparables[0].reason).toMatch(/lower-confidence/i);
+    expect(ci.rejectedComparables[0].reason).toMatch(/lower-ranked.*geographic weighting/i);
   });
 
   it('does not select a fifty-five-acre comp for a five-acre subject when band evidence exists', () => {
@@ -110,7 +110,7 @@ describe('comparable intelligence', () => {
       },
     });
     const ci = buildComparableIntelligence(r);
-    expect(ci.acreageBand).toBe('under-2');
+    expect(ci.acreageBand).toBe('0.48–1.4 acres');
     expect(ci.selectedComparables.map((comp) => comp.sourceUrl)).toEqual(['nearby']);
     expect(ci.rejectedComparables[0].reason).toMatch(/acreage band/i);
   });
@@ -144,7 +144,7 @@ describe('comparable intelligence', () => {
     expect(ci.evidenceUsed[0]).toMatch(/context only/i);
   });
 
-  it('rejects sold rows with missing distance, more than ten miles, or more than twenty-four months of age', () => {
+  it('retains missing and farther distances with tiered rank while still rejecting stale sales', () => {
     const r = report({
       landportalInspection: {
         parcelUrl: 'x', comparablesUrl: 'x', parcelFacts: { Acres: '10', 'Land Use': 'Vacant land' },
@@ -158,9 +158,11 @@ describe('comparable intelligence', () => {
       },
     });
     const ci = buildComparableIntelligence(r);
-    expect(ci.selectedComparables.map((comp) => comp.sourceUrl)).toEqual(['good']);
+    expect(ci.selectedComparables.map((comp) => comp.sourceUrl)).toEqual(['good', 'far', 'missing']);
     expect(ci.selectedComparables[0]).toMatchObject({ radiusTier: '3_miles', recencyTier: '12_months' });
-    expect(ci.rejectedComparables.map((row) => row.reason).join(' ')).toMatch(/distance is not established.*outside the 10-mile.*older than the 24-month/i);
+    expect(ci.selectedComparables[1]).toMatchObject({ radiusTier: 'county_wide' });
+    expect(ci.selectedComparables[2]).toMatchObject({ radiusTier: null });
+    expect(ci.rejectedComparables.map((row) => row.reason).join(' ')).toMatch(/older than the 24-month/i);
   });
 
   it('deduplicates the same sold property across providers and caps the valuation sample at five', () => {

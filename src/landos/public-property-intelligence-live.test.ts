@@ -1,5 +1,203 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { addressesMateriallyAgree, makeLivePublicIntelligenceAdapters, tennesseeApnLookupClauses, tennesseeOwnerNamesReconcile, type OfficialParcel } from './public-property-intelligence-live.js';
+import { addressesMateriallyAgree, governmentFactsFromPublicRecordOutcomes, makeLivePublicIntelligenceAdapters, makePracticalDiscoveryScreeningAdapters, makePracticalSubjectAttemptAdapters, tennesseeApnLookupClauses, tennesseeOwnerNamesReconcile, type OfficialParcel } from './public-property-intelligence-live.js';
+
+describe('practical subject government attempts', () => {
+  it('projects a newly persisted official recorder result into the current Deal Card read', () => {
+    const facts = governmentFactsFromPublicRecordOutcomes([{
+      id: 19,
+      retrieval_status: 'retrieved_yes',
+      authority: 'Pickens County Register of Deeds',
+      title: 'Recorded deed 202518326',
+      searched_at: '2026-07-29T14:54:40.939Z',
+      source_url: 'https://www.pickensscrod.us/AcclaimWeb/Details/',
+      document_url: 'https://www.pickensscrod.us/AcclaimWeb/Image/DocumentImage1/1433732',
+      facts: {
+        apn: '4165-00-51-3961',
+        instrumentNumber: '202518326',
+        recordBookPage: '2895/123',
+        consideration: '$490,000.00',
+      },
+    }, {
+      id: 20,
+      retrieval_status: 'retrieved_no',
+      authority: 'Attempt only',
+      facts: { apn: 'must not render' },
+    }]);
+    expect(facts.map((fact) => [fact.label, fact.value])).toEqual([
+      ['Parcel number (APN)', '4165-00-51-3961'],
+      ['Instrument number', '202518326'],
+      ['Recorded book / page', '2895/123'],
+      ['Recorded consideration', '$490,000.00'],
+    ]);
+    expect(facts.every((fact) =>
+      fact.grade === 'confirmed_fact'
+      && fact.sourceUrl?.includes('/Image/DocumentImage1/1433732'))).toBe(true);
+  });
+
+  it('carries a real failed browser attempt into the county lane instead of reporting not attempted', async () => {
+    const [adapter] = makePracticalSubjectAttemptAdapters([{
+      source: 'Example County Assessor property search',
+      url: 'https://county.example.test/search',
+      status: 'error',
+      note: 'Interactive public search returned an error after the attempt.',
+      attemptedAt: '2026-07-28T12:00:00.000Z',
+    }]);
+    expect(adapter?.task).toBe('county_records');
+    const result = await adapter!.run({
+      rawInput: '100 Main St, Kingston, TN 37763',
+      normalizedAddress: '100 Main St, Kingston, TN 37763',
+      county: 'Roane',
+      state: 'TN',
+      zip: '37763',
+      resolutionStatus: 'unresolved',
+      discoveryUsable: true,
+      resolutionExplanation: 'Exact marketplace parcel identity established for discovery.',
+    }, {
+      startedAt: '2026-07-28T12:00:00.000Z',
+      captureMode: 'live',
+      timeoutMs: 5_000,
+      signal: new AbortController().signal,
+    });
+    expect(result.status).toBe('unavailable');
+    expect(result.finding?.summary).toMatch(/error/i);
+    expect(result.evidence).toHaveLength(1);
+  });
+
+  it('carries separately sourced browser facts into the canonical county finding', async () => {
+    const [adapter] = makePracticalSubjectAttemptAdapters([{
+      source: 'Pickens County Assessor',
+      url: 'https://pickens.example.test/assessor',
+      status: 'retrieved',
+      note: 'Official parcel record retrieved.',
+      attemptedAt: '2026-07-28T12:00:00.000Z',
+    }, {
+      source: 'Pickens County Register of Deeds',
+      url: 'https://pickens.example.test/deeds',
+      status: 'useful_indication',
+      note: 'Recorder destination reached; deed reference retained.',
+      attemptedAt: '2026-07-28T12:01:00.000Z',
+    }], [{
+      field: 'Owner of record',
+      value: 'JEANETTE S WINCHESTER REVOCABLE TRUST',
+      source: 'Pickens County Assessor',
+      url: 'https://pickens.example.test/assessor',
+      classification: 'official_record',
+    }, {
+      field: 'Deed book/page',
+      value: 'Book 100, Page 200',
+      source: 'Pickens County Register of Deeds',
+      url: 'https://pickens.example.test/deeds',
+      classification: 'recorded_instrument',
+    }]);
+    const result = await adapter!.run({
+      rawInput: '3573 Moorefield Memorial Hwy',
+      county: 'Pickens',
+      state: 'SC',
+      resolvedApn: '4183-00-45-1068',
+      resolutionStatus: 'confirmed',
+      resolutionExplanation: 'Confirmed.',
+    }, {
+      startedAt: '2026-07-28T12:00:00.000Z',
+      captureMode: 'live',
+      timeoutMs: 5_000,
+      signal: new AbortController().signal,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.finding?.kind).toBe('county_records');
+    if (result.finding?.kind === 'county_records') {
+      expect(result.finding.facts).toHaveLength(2);
+      expect(result.finding.facts[1].classification).toBe('recorded_instrument');
+    }
+    expect(result.evidence.map((item) => item.sourceName)).toEqual([
+      'Pickens County Assessor',
+      'Pickens County Register of Deeds',
+    ]);
+  });
+});
+
+describe('discovery-grade public-core screening', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('checks the official Pickens utility page without claiming address-level service', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '<html><body>Water and Sewer service. Outside City rates.</body></html>',
+      { status: 200, headers: { 'content-type': 'text/html' } },
+    )));
+    const [adapter] = makePracticalDiscoveryScreeningAdapters({ county: 'Pickens', state: 'SC' });
+    expect(adapter.task).toBe('utilities');
+    const result = await adapter.run({
+      rawInput: '3573 Moorefield Memorial Hwy',
+      county: 'Pickens',
+      state: 'SC',
+      resolutionStatus: 'provisional',
+      discoveryUsable: true,
+      resolutionExplanation: 'Exact LandPortal subject.',
+    }, {
+      startedAt: '2026-07-28T12:00:00.000Z',
+      captureMode: 'live',
+      timeoutMs: 5_000,
+      signal: new AbortController().signal,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.evidence[0].sourceName).toBe('City of Pickens Utilities');
+    if (result.finding?.kind === 'utilities') {
+      expect(result.finding.publicWater).toBe('unknown');
+      expect(result.finding.publicSewer).toBe('unknown');
+      expect(result.finding.summary).toMatch(/address-level availability response/i);
+    }
+  });
+
+  it('runs a USDA subject-point soil screen and labels the septic outlook preliminary', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        Table: [['mukey', 'musym', 'muname'], ['123', 'CeD', 'Cecil sandy clay loam']],
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        Table: [
+          ['mukey', 'compname', 'comppct_r', 'drainagecl', 'hydgrp', 'slope_l', 'slope_h', 'interphrc', 'rulename'],
+          ['123', 'Cecil', '85', 'well drained', 'B', '6', '15', 'Very limited', 'Slope'],
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const [adapter] = makePracticalDiscoveryScreeningAdapters({
+      county: 'Pickens',
+      state: 'SC',
+      coordinates: { lat: 34.85, lng: -82.7 },
+      soilOverlay: {
+        status: 'not_found',
+        note: 'No soil toggle was available in the LandPortal workspace.',
+        sourceUrl: 'https://landportal.example.test/parcel',
+      },
+    });
+    expect(adapter.task).toBe('soils_septic');
+    const result = await adapter.run({
+      rawInput: '3573 Moorefield Memorial Hwy',
+      county: 'Pickens',
+      state: 'SC',
+      resolutionStatus: 'provisional',
+      discoveryUsable: true,
+      resolutionExplanation: 'Exact LandPortal subject.',
+    }, {
+      startedAt: '2026-07-28T12:00:00.000Z',
+      captureMode: 'live',
+      timeoutMs: 5_000,
+      signal: new AbortController().signal,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    if (result.finding?.kind === 'soils_septic') {
+      expect(result.finding.summary).toMatch(/more challenging/i);
+      expect(result.finding.limitation).toMatch(/one accepted subject coordinate/i);
+    }
+    expect(result.evidence.map((item) => item.sourceName)).toEqual(expect.arrayContaining([
+      'USDA NRCS Soil Data Access / SSURGO subject-point screen',
+      'LandPortal soil overlay',
+    ]));
+  });
+});
 
 describe('official public parcel address reconciliation (unit)', () => {
   it('accepts suffix, capitalization, and one-token official normalization variants', () => {
@@ -39,6 +237,30 @@ const SC_APN = 'R100 000 00A 0001 0000';
 const TIMEOUT_MS = 1000;
 
 describe('live public utility provenance', () => {
+  it('identifies practical Pickens provider candidates without claiming parcel service', async () => {
+    const parcel: OfficialParcel = {
+      provider: 'South Carolina statewide parcel layer',
+      sourceUrl: 'https://example.test/sc-parcel',
+      address: '200 SID EDENS RD', county: 'Pickens', state: 'SC', apn: '5105-00-44-0497',
+      owner: 'OWNER', acres: 1.15, coordinates: { lat: 34.9942, lng: -82.6561 },
+      geometry: { rings: RING as OfficialParcel['geometry']['rings'] }, datasetDate: '2026', facts: {},
+    };
+    const adapter = makeLivePublicIntelligenceAdapters(parcel).find((item) => item.task === 'utilities')!;
+    const result = await adapter.run({
+      rawInput: parcel.address, county: parcel.county, state: parcel.state, resolvedApn: parcel.apn,
+      resolutionStatus: 'confirmed', resolutionExplanation: 'Official match.',
+    }, { signal: new AbortController().signal, timeoutMs: 1000, startedAt: new Date().toISOString(), captureMode: 'fixture' });
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      finding: { kind: 'utilities', publicWater: 'unknown', publicSewer: 'unknown', electric: 'likely' },
+    });
+    expect(result.finding?.kind === 'utilities' ? result.finding.serviceProviders : []).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'City of Pickens Water & Wastewater' }),
+      expect.objectContaining({ provider: expect.stringMatching(/Blue Ridge.*Duke Energy/i) }),
+    ]));
+    expect(result.finding?.summary).toMatch(/remains unknown/i);
+  });
+
   it('does not substitute Beaufort GIS evidence for an unsupported Tennessee county', async () => {
     const parcel: OfficialParcel = {
       provider: 'Tennessee Comptroller public parcel layer',
@@ -52,8 +274,18 @@ describe('live public utility provenance', () => {
       rawInput: 'TALLEY RD', county: 'Cocke', state: 'TN', resolvedApn: parcel.apn,
       resolutionStatus: 'confirmed', resolutionExplanation: 'Official match.',
     }, { signal: new AbortController().signal, timeoutMs: 1000, startedAt: new Date().toISOString(), captureMode: 'fixture' });
-    expect(result).toMatchObject({ status: 'unavailable', evidence: [] });
-    expect(result.failureReason).toMatch(/no tested official county utility/i);
+    expect(result).toMatchObject({
+      status: 'partial',
+      finding: {
+        kind: 'utilities',
+        publicWater: 'unknown',
+        publicSewer: 'unknown',
+        wellLikelyRequired: null,
+        septicLikelyRequired: null,
+      },
+    });
+    expect(result.evidence).toHaveLength(1);
+    expect(result.finding?.summary).toMatch(/does not mean service is unavailable/i);
   });
 });
 

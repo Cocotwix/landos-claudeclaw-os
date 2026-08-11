@@ -6,11 +6,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  apparentEntranceAttribution,
   apparentEntranceFromObservations,
   establishedAccessFollowUps,
   filterResolvedAccessLanguage,
   normalizeDiscoveryAccessItems,
   presentBuyerAnalysisAccessLanguage,
+  presentDiscoveryAccessEvidence,
   readDiscoveryAccess,
   roadNameFromSitus,
 } from './discovery-access-presentation.js';
@@ -105,6 +107,38 @@ describe('apparent entrance (separate from legal access, never fabricated)', () 
     expect(read.confirmed).toBe(false);
     expect(read.display).toBe('Not confirmed from retained imagery');
   });
+
+  it('carries the observation record\'s own evidence label and confidence', () => {
+    const read = apparentEntranceFromObservations([{
+      label: 'Entrances and barriers',
+      detail: 'A fenced/gated gravel entrance is visible in the Street View scene; whether it is the subject\'s legal entrance is unconfirmed from this view alone.',
+      evidence: 'Street View — unconfirmed',
+      confidence: 'low',
+    }], 'Elk Lake Road');
+    expect(read.confirmed).toBe(true);
+    expect(read.evidenceLabel).toBe('Street View — unconfirmed');
+    expect(read.confidence).toBe('low');
+  });
+});
+
+describe('apparent entrance attribution (never credited to a provider that reported no coverage)', () => {
+  it('names the observation evidence instead of a provider, and hedges an unconfirmed read', () => {
+    const attribution = apparentEntranceAttribution({ evidenceLabel: 'Street View — unconfirmed', confidence: 'low' });
+    expect(attribution.sourceLabel).toBe('Retained visual observation — Street View — unconfirmed');
+    expect(attribution.sourceLabel).not.toMatch(/LandPortal/i);
+    expect(attribution.weight).toBe('likely');
+  });
+
+  it('keeps a directly observed, non-hedged read at well_supported', () => {
+    const attribution = apparentEntranceAttribution({ evidenceLabel: 'Street View — direct observation', confidence: 'medium' });
+    expect(attribution.weight).toBe('well_supported');
+  });
+
+  it('falls back to a neutral label when the record states no evidence wording', () => {
+    const attribution = apparentEntranceAttribution({ evidenceLabel: null, confidence: null });
+    expect(attribution.sourceLabel).toBe('Retained visual observation');
+    expect(attribution.weight).toBe('well_supported');
+  });
 });
 
 describe('buyer-analysis display language (persisted record untouched)', () => {
@@ -145,5 +179,18 @@ describe('stale access language filter', () => {
       'Ownership and rights of the corridor remain unconfirmed.',
     ]);
     expect(filterResolvedAccessLanguage(entries, false)).toEqual(entries);
+  });
+});
+
+describe('four-tier access evidence projection', () => {
+  it('delegates to the evidence ladder without collapsing listing or imagery evidence into verified legal access', () => {
+    const result = presentDiscoveryAccessEvidence([
+      { tier: 'parcel_flag', statement: 'Land Locked: Yes', sourceLabel: 'LandPortal', sourceKind: 'landportal_parcel_flag', basis: 'source_stated', weight: 'likely' },
+      { tier: 'apparent_physical', statement: 'Apparent gravel drive', sourceLabel: 'Satellite', sourceKind: 'satellite_imagery', basis: 'direct_observation', weight: 'well_supported' },
+      { tier: 'reported_legal', statement: 'Listing reports an easement', sourceLabel: 'Prior listing', sourceKind: 'listing', basis: 'source_stated', weight: 'likely' },
+    ]);
+    expect(result).toMatchObject({ parcelFlagged: true, apparentPhysicalAccess: true, reportedLegalAccess: true, verifiedLegalAccess: false });
+    expect(result.items).toHaveLength(3);
+    expect(result.outstanding.join(' ')).toMatch(/recorded instrument/i);
   });
 });

@@ -6,6 +6,7 @@ import {
   joinPropertyIntelligence,
   normalizeApn,
   presentPropertyIntelligenceSnapshot,
+  reconcilePropertyIntelligenceSnapshot,
   type SnapshotIdentity,
   type SnapshotJoinInput,
   type SnapshotSpecialistRecord,
@@ -302,5 +303,107 @@ describe('joinPropertyIntelligence', () => {
     }));
     const occurrences = snapshot.blockers.filter((b) => b.startsWith('Parcel identity is conflicted'));
     expect(occurrences).toHaveLength(1);
+  });
+});
+
+describe('monotonic snapshot promotion', () => {
+  it('keeps confirmed facts and priceable valuation when a same-property rerun is weaker', () => {
+    const retained = joinPropertyIntelligence(joinInput({
+      facts: [{
+        key: 'owner', label: 'Owner', value: 'Dileep Sachan', grade: 'confirmed_fact',
+        source: 'County assessor', sourceUrl: 'https://county.example/parcel',
+        retrievedAt: '2026-08-01T10:00:00.000Z', note: null,
+      }],
+    }));
+    const incoming = joinPropertyIntelligence(joinInput({
+      runId: 'pi_test_2', sequence: 2,
+      identity: { ...CONFIRMED_IDENTITY, state: 'provisional', discoveryUsable: true },
+      facts: [{
+        key: 'owner', label: 'Owner', value: '', grade: 'likely_indication',
+        source: 'Context provider', sourceUrl: null,
+        retrievedAt: '2026-08-01T11:00:00.000Z', note: null,
+      }],
+      valuation: {
+        ...joinInput().valuation, priceable: false, range: null, pricePerAcreRange: null,
+        likelyRetail: null, dispositionRange: null, confidence: 'none',
+        notPriceableReason: 'Provider timed out.', nextActionToPrice: 'Retry provider.',
+      },
+    }));
+
+    const reconciled = reconcilePropertyIntelligenceSnapshot(retained, incoming);
+    expect(reconciled.promotable).toBe(true);
+    expect(reconciled.snapshot.identity.state).toBe('confirmed');
+    expect(reconciled.snapshot.facts.find((fact) => fact.key === 'owner')?.value).toBe('Dileep Sachan');
+    expect(reconciled.snapshot.valuation.priceable).toBe(true);
+    expect(reconciled.snapshot.runId).toBe('pi_test_2');
+  });
+
+  it('refuses to promote a rerun for a conflicting parcel', () => {
+    const retained = joinPropertyIntelligence(joinInput());
+    const incoming = joinPropertyIntelligence(joinInput({
+      runId: 'pi_wrong', sequence: 2,
+      identity: { ...CONFIRMED_IDENTITY, apn: '073090 99999', apnVariants: ['073090 99999'] },
+    }));
+    const reconciled = reconcilePropertyIntelligenceSnapshot(retained, incoming);
+    expect(reconciled.promotable).toBe(false);
+    expect(reconciled.reason).toMatch(/conflicts with the retained canonical property/);
+  });
+});
+
+// The comp tiles are unioned across runs while the narrative sentence and the
+// priceability verdict used to be inherited verbatim from the incoming run.
+// That is how the operator read "4 asking" beside "0 asking-market reference(s)"
+// and a not_priceable verdict beside a non-empty asking lane.
+describe('merged comp counts, sentence and verdict cannot contradict each other', () => {
+  const compRow = (key: string) => ({
+    key, source: 'LandPortal', sourceUrl: null, address: null, apn: key,
+    price: 400_000, acres: 40, pricePerAcre: 10_000, dateIso: '2025-03-21',
+    distanceMiles: null, note: null,
+  }) as unknown as Parameters<typeof joinPropertyIntelligence>[0]['comps']['sold'][number];
+
+  it('re-derives the summary line and conclusion from the merged rows', () => {
+    const retained = joinPropertyIntelligence(joinInput({
+      comps: {
+        ...joinInput().comps,
+        askingReferences: [compRow('a1'), compRow('a2'), compRow('a3'), compRow('a4')],
+        totalCollected: 18,
+        duplicatesMerged: 6,
+        summaryLine: 'stale retained sentence',
+        conclusion: 'asking_indication',
+      },
+    }));
+    const incoming = joinPropertyIntelligence(joinInput({
+      runId: 'pi_test_2', sequence: 2,
+      comps: {
+        ...joinInput().comps,
+        askingReferences: [],
+        totalCollected: 18,
+        duplicatesMerged: 0,
+        summaryLine: '0 accepted sold comp(s), 0 active competitor(s) and 0 asking-market reference(s) shown from 18 collected row(s); 0 duplicate(s) merged. Remaining rows are retained as evidence with a stated reason.',
+        conclusion: 'not_priceable',
+      },
+    }));
+
+    const merged = reconcilePropertyIntelligenceSnapshot(retained, incoming).snapshot.comps;
+    expect(merged.askingReferences).toHaveLength(4);
+    // The sentence must state the merged count, not the incoming run's zero.
+    expect(merged.summaryLine).toContain('4 asking-market reference(s)');
+    expect(merged.summaryLine).not.toContain('0 asking-market reference(s)');
+    expect(merged.summaryLine).toContain('6 duplicate(s) merged');
+    // A non-empty asking lane can never sit under a not_priceable verdict.
+    expect(merged.conclusion).toBe('asking_indication');
+  });
+
+  it('keeps not_priceable when the merged rows really are empty', () => {
+    const retained = joinPropertyIntelligence(joinInput({
+      comps: { ...joinInput().comps, conclusion: 'not_priceable', summaryLine: 'stale' },
+    }));
+    const incoming = joinPropertyIntelligence(joinInput({
+      runId: 'pi_test_3', sequence: 2,
+      comps: { ...joinInput().comps, conclusion: 'asking_indication', summaryLine: 'stale' },
+    }));
+    const merged = reconcilePropertyIntelligenceSnapshot(retained, incoming).snapshot.comps;
+    expect(merged.conclusion).toBe('not_priceable');
+    expect(merged.summaryLine).toContain('0 asking-market reference(s)');
   });
 });

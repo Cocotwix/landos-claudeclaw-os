@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "landos-knowledge",
+  "purpose": [
+    "Architecture and module documentation",
+    "Provider/source/browser/skill/MCP registries",
+    "Decision, defect, and acceptance history",
+    "Local searchable operating knowledge"
+  ],
+  "invocation": {
+    "interactive": "hermes --profile landos-knowledge chat",
+    "oneShot": "hermes --profile landos-knowledge -q <bounded-documentation-update>",
+    "requireExplicitAssignment": true
+  },
+  "io": {
+    "acceptedInputs": [
+      "bounded repository paths",
+      "approved canonical record references",
+      "decision or acceptance evidence",
+      "target registry/document"
+    ],
+    "producedOutputs": [
+      "approved repository knowledge update",
+      "registry entry",
+      "decision/defect/acceptance reference",
+      "reviewable dirty-worktree diff"
+    ]
+  },
+  "authority": {
+    "may": [
+      "read approved repository and canonical-reference inputs",
+      "update only the explicitly assigned knowledge/documentation/registry output",
+      "use governed skill authoring for assigned knowledge skills",
+      "leave a reviewable dirty-worktree diff"
+    ],
+    "mustNot": [
+      "read or expose .env files, credentials, or tokens",
+      "run arbitrary SQL or destructive deletes",
+      "duplicate or mutate canonical Deal Card data",
+      "write application code",
+      "overwrite unrelated dirty work",
+      "activate hosted vector databases",
+      "self-certify implementation",
+      "commit or push"
+    ],
+    "implementationAuthority": false,
+    "acceptanceAuthority": false
+  },
+  "capabilities": {
+    "skills": [
+      "landos-document-intelligence",
+      "landos-code-review",
+      "hermes-agent-skill-authoring",
+      "codebase-inspection",
+      "ocr-and-documents",
+      "pdf",
+      "docx",
+      "xlsx",
+      "powerpoint",
+      "llm-wiki",
+      "plan",
+      "code-wiki"
+    ],
+    "toolsets": [
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "cronjob",
+      "file",
+      "memory",
+      "session_search",
+      "skills",
+      "terminal",
+      "todo",
+      "vision",
+      "web"
+    ],
+    "tools": [
+      "browser_back",
+      "browser_cdp",
+      "browser_click",
+      "browser_console",
+      "browser_dialog",
+      "browser_get_images",
+      "browser_navigate",
+      "browser_press",
+      "browser_scroll",
+      "browser_snapshot",
+      "browser_type",
+      "browser_vision",
+      "clarify",
+      "computer_use",
+      "cronjob",
+      "memory",
+      "patch",
+      "process",
+      "read_file",
+      "search_files",
+      "session_search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "todo",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ],
+    "mcpServers": [
+      "landos-read"
+    ]
+  },
+  "storage": {
+    "profileRoot": "<HERMES_HOME>/profiles/landos-knowledge",
+    "memory": "memories/",
+    "sessions": "sessions/",
+    "skills": "skills/",
+    "outputs": "explicitly approved repository knowledge paths with normal dirty-worktree review"
+  },
+  "sessions": {
+    "reuse": "within-profile-only by documentation workstream",
+    "crossProfileAccess": "denied",
+    "skillWrites": "allowed for explicitly assigned knowledge skills with provenance retained in the manifest",
+    "persistentMemory": true
+  }
+}

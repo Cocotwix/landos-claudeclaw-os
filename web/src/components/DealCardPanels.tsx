@@ -7,7 +7,7 @@
 // into a call, and DD status separates provider execution from business
 // completeness from evidence strength.
 
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import type { StrategyReadinessView, DocumentRegistryView, UnifiedReadinessView } from './CanonicalPanels';
 import type { OperatorRecordView } from './OperatorRecordView';
 
@@ -246,17 +246,49 @@ export function OfficialRecordsPanel({ record, documents }: { record: OperatorRe
 
 // ── Manual local document upload ──────────────────────────────────────────────
 
+interface OperatorUploadRow {
+  id: number;
+  category: string;
+  title: string;
+  docType: string;
+  fileName: string;
+  mimeType: string;
+  documentDate: string | null;
+  uploadedAt: string;
+  note: string | null;
+}
+
 export function DocumentUploadPanel({ dealId, token, onUploaded }: { dealId: number; token: string; onUploaded: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [category, setCategory] = useState('contract');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [uploads, setUploads] = useState<OperatorUploadRow[]>([]);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editCategory, setEditCategory] = useState('other');
+  const [editNote, setEditNote] = useState('');
   const categories = [
     ['contract', 'Contract / purchase agreement'], ['survey', 'Survey'], ['plat', 'Plat'],
     ['title', 'Title commitment'], ['disclosure', 'Seller disclosure'], ['permit', 'Permit / approval'],
     ['other', 'Other (perc test, delineation, elevation cert, utility/zoning letter, closing doc)'],
   ] as const;
+  const endpoint = (suffix = '') =>
+    `/api/landos/deal-cards/${dealId}/documents/uploads${suffix}?token=${encodeURIComponent(token)}`;
+  const loadUploads = async () => {
+    try {
+      const response = await fetch(endpoint());
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'uploads unavailable');
+      setUploads(Array.isArray(body.uploads) ? body.uploads : []);
+    } catch (error) {
+      setMsg(`Documents could not be refreshed: ${(error as Error).message}`);
+    }
+  };
+  useEffect(() => {
+    void loadUploads();
+  }, [dealId]);
   const upload = async () => {
     if (!file) { setMsg('Choose a file first.'); return; }
     setBusy(true); setMsg(null);
@@ -270,10 +302,56 @@ export function DocumentUploadPanel({ dealId, token, onUploaded }: { dealId: num
       if (!res.ok) throw new Error(body.error ?? 'upload failed');
       setMsg(`Uploaded "${body.upload?.title ?? file.name}".`);
       setFile(null); setTitle('');
+      setUploads(Array.isArray(body.uploads) ? body.uploads : []);
       onUploaded();
     } catch (err) {
       setMsg(`Upload failed: ${(err as Error).message}`);
     } finally { setBusy(false); }
+  };
+  const startEdit = (row: OperatorUploadRow) => {
+    setEditingId(row.id);
+    setEditTitle(row.title);
+    setEditCategory(row.category);
+    setEditNote(row.note ?? '');
+    setMsg(null);
+  };
+  const saveEdit = async () => {
+    if (editingId == null || !editTitle.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const response = await fetch(endpoint(`/${editingId}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: editTitle.trim(), category: editCategory, note: editNote.trim() || null }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'update failed');
+      setUploads(Array.isArray(body.uploads) ? body.uploads : []);
+      setEditingId(null);
+      setMsg('Document details updated.');
+      onUploaded();
+    } catch (error) {
+      setMsg(`Document update failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const removeUpload = async (row: OperatorUploadRow) => {
+    if (!window.confirm(`Remove "${row.title}" from this Deal Card? The retained file will not be erased.`)) return;
+    setBusy(true); setMsg(null);
+    try {
+      const response = await fetch(endpoint(`/${row.id}`), { method: 'DELETE' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'delete failed');
+      setUploads(Array.isArray(body.uploads) ? body.uploads : []);
+      if (editingId === row.id) setEditingId(null);
+      setMsg(`Removed "${row.title}" from this Deal Card.`);
+      onUploaded();
+    } catch (error) {
+      setMsg(`Document removal failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <div class="rounded-lg border border-dashed border-[var(--color-border-strong)] p-4 space-y-2">
@@ -290,6 +368,54 @@ export function DocumentUploadPanel({ dealId, token, onUploaded }: { dealId: num
       </div>
       <div class="text-[11px] text-[var(--color-text-faint)]">Stored locally under this Deal Card. Supported: contracts, surveys, plats, title commitments, disclosures, perc tests, septic permits, wetland delineations, elevation certificates, utility/zoning letters, closing documents.</div>
       {msg && <div class="text-[12px] text-[var(--color-text-muted)]">{msg}</div>}
+      <div class="border-t border-[var(--color-border)] pt-3">
+        <div class="mb-2 text-[11px] font-bold uppercase tracking-[0.07em] text-[var(--color-text-muted)]">Operator-uploaded documents</div>
+        {uploads.length ? (
+          <div class="space-y-2">
+            {uploads.map((row) => (
+              <div key={row.id} class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+                {editingId === row.id ? (
+                  <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px]">
+                    <label class="min-w-0 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">
+                      Title
+                      <input aria-label={`Document title for ${row.title}`} value={editTitle} onInput={(event) => setEditTitle((event.currentTarget as HTMLInputElement).value)} class="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 text-[12px] font-normal normal-case tracking-normal text-[var(--color-text)]" />
+                    </label>
+                    <label class="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">
+                      Category
+                      <select value={editCategory} onChange={(event) => setEditCategory((event.currentTarget as HTMLSelectElement).value)} class="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 text-[12px] font-normal normal-case tracking-normal text-[var(--color-text)]">
+                        {categories.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      </select>
+                    </label>
+                    <label class="min-w-0 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)] sm:col-span-2">
+                      Notes
+                      <textarea value={editNote} onInput={(event) => setEditNote((event.currentTarget as HTMLTextAreaElement).value)} class="mt-1 min-h-[72px] w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 text-[12px] font-normal normal-case tracking-normal text-[var(--color-text)]" />
+                    </label>
+                    <div class="flex flex-wrap justify-end gap-2 sm:col-span-2">
+                      <button type="button" disabled={busy} onClick={() => setEditingId(null)} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11px]">Cancel</button>
+                      <button type="button" disabled={busy || !editTitle.trim()} onClick={() => void saveEdit()} class="rounded-md border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-[11px] font-semibold text-white">Save details</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div class="flex flex-wrap items-start gap-3">
+                    <div class="min-w-[220px] flex-1">
+                      <div class="break-words text-[12.5px] font-semibold text-[var(--color-text)]">{row.title}</div>
+                      <div class="mt-1 break-words text-[10.5px] text-[var(--color-text-muted)]">{row.docType} · {row.category.replace(/_/g, ' ')} · uploaded {row.uploadedAt.slice(0, 10)}</div>
+                      {row.note && <div class="mt-1 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-[var(--color-text-faint)]">{row.note}</div>}
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <a href={`/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(row.fileName)}?token=${encodeURIComponent(token)}`} target="_blank" rel="noreferrer" class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-accent)]">Open</a>
+                      <button type="button" disabled={busy} onClick={() => startEdit(row)} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11px]">Edit details</button>
+                      <button type="button" disabled={busy} onClick={() => void removeUpload(row)} class="rounded-md border border-rose-500/50 px-3 py-1.5 text-[11px] text-rose-400">Delete</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div class="rounded-lg border border-dashed border-[var(--color-border)] p-3 text-[11px] text-[var(--color-text-faint)]">No operator-uploaded documents are attached to this Deal Card.</div>
+        )}
+      </div>
     </div>
   );
 }

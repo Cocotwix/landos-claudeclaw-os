@@ -27,6 +27,31 @@ describe('conversational lead intake', () => {
     expect(intake.smartIntake.hasParcelIdentity).toBe(true);
   });
 
+  it('keeps title-case state abbreviations from a normal lead paste', () => {
+    const intake = parseConversationalLeadIntake('Ronni Summers - 240 golden view lane, Hampshire Tn ');
+    expect(intake.address).toBe('240 Golden View Lane');
+    expect(intake.city).toBe('Hampshire');
+    expect(intake.state).toBe('TN');
+    expect(intake.smartIntake.hasParcelIdentity).toBe(true);
+  });
+
+  // Fresh-lead rescue regression: the operator-typed ZIP was dropped, leaving
+  // landos_property_card.zip empty and starving the ZIP-level market lookup.
+  it('extracts the ZIP the operator typed after a state abbreviation', () => {
+    const intake = parseConversationalLeadIntake(
+      'New seller lead: 1487 Onionville Rd, Sterling, NY 13156. Vacant land, approximately 11.46 acres, Cayuga County, New York. Listed asking price $49,900.',
+    );
+    expect(intake.zip).toBe('13156');
+    expect(intake.acreage).toBe(11.46);
+  });
+
+  it('never reads a price or bare number as the ZIP', () => {
+    const intake = parseConversationalLeadIntake(
+      'Seller wants 50000 for the parcel near Rowan County, NC. About 7 acres.',
+    );
+    expect(intake.zip).toBeNull();
+  });
+
   it('never keeps a parser fragment as the city', () => {
     const intake = parseConversationalLeadIntake(
       'Seller is Maria Hernandez, 704-555-0182. She inherited about 7 acres near 1180 Old Mill Road in Rowan County, NC. APN may be 123-45-678.',

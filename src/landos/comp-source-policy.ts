@@ -26,6 +26,11 @@
 
 import { classifyComp, isRawLandClass, type CompClass } from './comp-classification.js';
 import { addressStateCode, type CompRegistryCandidate, type SubjectMarket } from './comp-registry.js';
+import {
+  buildCompLaneAccountability,
+  type CompLaneAccountability,
+  type CompLaneInput,
+} from './comp-lane-accountability.js';
 
 /** Source families the policy reasons about. */
 export type CompSourceFamily = 'landportal' | 'zillow' | 'redfin' | 'realie' | 'homeharvest' | 'county' | 'other';
@@ -104,10 +109,12 @@ export interface CompSourcePolicyResult {
   /** Reasons FMV cannot be established from this set, if any. */
   valuationBlockers: string[];
   summaryLine: string;
+  /** Honest run/accounting status for every operator-visible source lane. */
+  laneAccountability: CompLaneAccountability;
 }
 
 /** Supplement caps when LandPortal produced usable vacant-land comps. */
-export const SUPPLEMENT_CAP_WITH_LANDPORTAL = 2;
+export const SUPPLEMENT_CAP_WITH_LANDPORTAL = 5;
 /** Supplement caps when LandPortal produced nothing usable. */
 export const SUPPLEMENT_CAP_WITHOUT_LANDPORTAL = 5;
 
@@ -229,6 +236,7 @@ function wrongMarketReason(candidate: CompRegistryCandidate, subject: SubjectMar
 export function applyCompSourcePolicy(
   subject: SubjectMarket,
   candidates: CompRegistryCandidate[],
+  laneAttempts?: CompLaneInput[],
 ): CompSourcePolicyResult {
   const enriched = candidates.map((candidate) => ({
     candidate,
@@ -427,5 +435,31 @@ export function applyCompSourcePolicy(
     + (legacyEvidence.length ? `, ${legacyEvidence.length} disabled aggregator row(s) kept as history only` : '')
     + '.';
 
-  return { plan, decisions, acceptedSold, acceptedActive, landHomeOnly, rejected, legacyEvidence, registryCandidates, valuationBlockers, summaryLine };
+  const inferredAttempts: CompLaneInput[] = [];
+  if (laneAttempts == null) {
+    for (const lane of ['landportal', 'zillow', 'redfin'] as const) {
+      const laneCandidates = decisions.filter((decision) => decision.family === lane);
+      if (!laneCandidates.length) continue;
+      const retainedCount = laneCandidates.filter((decision) => decision.role === 'primary'
+        || decision.role === 'supplement' || decision.role === 'context_only').length;
+      inferredAttempts.push({
+        lane,
+        attempted: true,
+        candidates: laneCandidates.length,
+        retained: retainedCount,
+        retainedAs: 'current comparable evidence',
+        filteredReasons: laneCandidates.filter((decision) => decision.role === 'rejected').map((decision) => decision.reason),
+      });
+    }
+    const realtorRows = decisions.filter((decision) => decision.family === 'homeharvest');
+    if (realtorRows.length) {
+      inferredAttempts.push({
+        lane: 'realtor', attempted: false,
+        disabledReason: 'Realtor.com HomeHarvest is excluded from the current vacant-land comparable workflow by FMV_EXCLUDED_FAMILIES.',
+      });
+    }
+  }
+  const laneAccountability = buildCompLaneAccountability(laneAttempts ?? inferredAttempts);
+
+  return { plan, decisions, acceptedSold, acceptedActive, landHomeOnly, rejected, legacyEvidence, registryCandidates, valuationBlockers, summaryLine, laneAccountability };
 }

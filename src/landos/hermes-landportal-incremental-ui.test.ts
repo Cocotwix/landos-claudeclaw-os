@@ -21,6 +21,11 @@ describe('Hermes incremental Deal Card projection', () => {
     expect(PANEL).toMatch(/data-testid="pi-hermes-incremental-status"/);
     expect(PANEL).toMatch(/Hermes · \{view\.hermesLandPortal\.address\}/);
     expect(PANEL).toMatch(/data-testid="pi-hermes-persisted-categories"/);
+    expect(PANEL).toMatch(/data-testid="pi-hermes-specialist-work-units"/);
+    expect(PANEL).toMatch(/pi-hermes-specialist-\$\{unit\.specialist\}/);
+    expect(PANEL).toMatch(/unit\.startedAt/);
+    expect(PANEL).toMatch(/unit\.completedAt/);
+    expect(PANEL).toMatch(/unit\.persistedCategory\.persistedAt/);
     expect(PANEL).toMatch(/result\.persistedAt/);
     expect(PANEL).toMatch(/data-testid="pi-provider-accepted-evidence"/);
   });
@@ -29,6 +34,13 @@ describe('Hermes incremental Deal Card projection', () => {
     expect(PANEL).toMatch(/data-testid=\{`pi-provider-evidence-\$\{item\.kind\}`\}/);
     expect(IMPORTER).toMatch(/subjectClassification: 'context_only'/);
     expect(IMPORTER).toMatch(/classification: 'landportal_context'/);
-    expect(IMPORTER).toMatch(/context-only unless transaction status\/date is independently retained/);
+    expect(IMPORTER).toMatch(/retained as context-only evidence/);
+    // The importer never decides a LandPortal row's transaction kind itself. It
+    // delegates to the drill-down persistence builder, which reads only what
+    // LandPortal published through landPortalSaleStatus, so a row is promoted
+    // out of context-only by the SOURCE stating a sale and by nothing else.
+    expect(IMPORTER).toMatch(/buildLandPortalCompPersistence/);
+    expect(IMPORTER).toMatch(/priceKind: persistence\.price_kind/);
+    expect(IMPORTER).not.toMatch(/priceKind: 'sale'/);
   });
 });

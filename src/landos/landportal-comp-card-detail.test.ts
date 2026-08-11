@@ -138,6 +138,20 @@ describe('applyComparableDetail — address, date and land facts from the comp o
     expect(merged.improvement).toBe('improved');
   });
 
+  it('treats a material building as improved even when the assessor improvement value is zero', () => {
+    const merged = applyComparableDetail(base({ acres: 67.27, price: 685000 }), {
+      sourceUrl: 'https://landportal.test/property/4099-05-18-8064',
+      facts: {
+        'Building SqFt': '2,052',
+        'Improvement Value': '$0',
+        'Land Market Value': '$329,600',
+        'Total Market Value': '$329,600',
+      },
+    });
+    expect(merged.buildingSqft).toBe(2052);
+    expect(merged.improvement).toBe('improved');
+  });
+
   it('flags an irreconcilable acreage rather than picking a figure', () => {
     // 175 LITTLE DOGWOOD RD: the row reads 17.75 ac; the parcel is 574 acres.
     const merged = applyComparableDetail(base({ acres: 17.75, price: 144500 }), {
@@ -235,6 +249,14 @@ describe('mergePropertyInspections — a corrected capture supersedes its stale 
     const a = base({ apn: '115 02100', capturedAtIso: null });
     const b = base({ apn: '071 03100', capturedAtIso: null });
     expect(currentComparables(mergePropertyInspections([inspection([a, b])])!)).toHaveLength(2);
+  });
+
+  it('represents a newer completed zero-result generation without reviving older comps', () => {
+    const older = inspection([base({ apn: '115 02100', capturedAtIso: '2026-07-26T10:00:00.000Z' })]);
+    const empty = { ...inspection([]), comparablesCapturedAt: '2026-07-27T15:20:00.000Z' };
+    const merged = mergePropertyInspections([older, empty])!;
+    expect(merged.comparables).toHaveLength(1);
+    expect(currentComparables(merged)).toEqual([]);
   });
 
   it('never collapses two genuinely different addresses that share an APN', () => {

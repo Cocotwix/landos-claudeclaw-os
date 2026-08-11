@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "landos-debug",
+  "purpose": [
+    "Systematic frontend and projection diagnosis",
+    "Console/network/API/canonical comparison",
+    "Node and Python runtime inspection",
+    "Root-cause reporting"
+  ],
+  "invocation": {
+    "interactive": "hermes --profile landos-debug chat --skills landos-systematic-debug",
+    "oneShot": "hermes --profile landos-debug --skills landos-systematic-debug -q <reproduction-and-scope>",
+    "requireExplicitAssignment": true
+  },
+  "io": {
+    "acceptedInputs": [
+      "exact visible reproduction",
+      "property identity",
+      "affected section/request",
+      "scoped code/runtime paths"
+    ],
+    "producedOutputs": [
+      "root-cause hypothesis and proof",
+      "persistence-to-render trace",
+      "narrow correction recommendation",
+      "regression-test recommendation"
+    ]
+  },
+  "authority": {
+    "may": [
+      "run bounded shell, log, Node, and Python diagnostics",
+      "use browser and CDP tools for DOM, accessibility, console, network, and runtime diagnosis",
+      "read repository/runtime state without changing it",
+      "write diagnostic output only inside the profile workspace",
+      "recommend one narrow correction",
+      "review a scoped diff"
+    ],
+    "mustNot": [
+      "read or expose .env files, credentials, cookies, tokens, or browser storage",
+      "write or patch repository/runtime files",
+      "run arbitrary SQL or destructive deletes",
+      "mutate canonical Deal Card data",
+      "discard or overwrite unrelated dirty state",
+      "issue independent acceptance for a repair it diagnosed or implemented",
+      "commit, push, or deploy"
+    ],
+    "implementationAuthority": false,
+    "acceptanceAuthority": false
+  },
+  "capabilities": {
+    "skills": [
+      "landos-systematic-debug",
+      "landos-code-review",
+      "systematic-debugging",
+      "test-driven-development",
+      "requesting-code-review",
+      "codebase-inspection",
+      "node-inspect-debugger",
+      "github-code-review",
+      "github-issues",
+      "github-pr-workflow",
+      "spike",
+      "plan"
+    ],
+    "toolsets": [
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "cronjob",
+      "file",
+      "memory",
+      "session_search",
+      "skills",
+      "terminal",
+      "todo",
+      "vision",
+      "web"
+    ],
+    "tools": [
+      "browser_back",
+      "browser_cdp",
+      "browser_click",
+      "browser_console",
+      "browser_dialog",
+      "browser_get_images",
+      "browser_navigate",
+      "browser_press",
+      "browser_scroll",
+      "browser_snapshot",
+      "browser_type",
+      "browser_vision",
+      "clarify",
+      "computer_use",
+      "cronjob",
+      "memory",
+      "patch",
+      "process",
+      "read_file",
+      "search_files",
+      "session_search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "todo",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ],
+    "mcpServers": [
+      "landos-read"
+    ]
+  },
+  "storage": {
+    "profileRoot": "<HERMES_HOME>/profiles/landos-debug",
+    "memory": "memories/",
+    "sessions": "sessions/",
+    "skills": "skills/",
+    "outputs": "profile workspace diagnostic artifacts and read-only root-cause handbacks"
+  },
+  "sessions": {
+    "reuse": "within-profile-only for the same defect/property",
+    "crossProfileAccess": "denied",
+    "acceptanceSeparation": "a fresh landos-visual-qa run is mandatory after correction",
+    "persistentMemory": true
+  }
+}

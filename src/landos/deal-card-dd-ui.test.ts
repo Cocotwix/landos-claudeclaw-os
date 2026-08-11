@@ -18,6 +18,10 @@ const PI_SRC = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
   'utf-8',
 );
+const OVERVIEW_SRC = fs.readFileSync(
+  fileURLToPath(new URL('../../web/src/components/DealWorkspaceOverview.tsx', import.meta.url)),
+  'utf-8',
+);
 
 describe('Deal Card DD — canonical records, not a worksheet', () => {
   it('removed the manual DD worksheet from the Property tab', () => {
@@ -41,12 +45,11 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
 
   it('keeps structured parcel intake history out of the seller snapshot', () => {
     expect(SRC).toMatch(
-      /const seller = deal\?\.people\?\.find\(\(p\) => p\.role === 'seller'\)[\s\S]{0,180}p\.role === 'lead' \|\| p\.role === 'lead_contact'/,
+      /const seller = people\.find\(\(person\) => person\.role === 'seller' \|\| person\.role === 'lead_contact'\) \?\? people\[0\]/,
     );
-    expect(SRC).toMatch(/const ownerName = piSnapshot\?\.identity\.owner \?\? prop\?\.owner \?\? ''/);
-    expect(SRC).toMatch(/Lead \/ contact and owner of record/);
-    expect(SRC).toMatch(/Lead \/ contact/);
-    expect(SRC).toMatch(/Original official-record formatting remains available in Public Records and Activity/);
+    expect(SRC).toMatch(/Seller contacts stay separate from the government owner-of-record identity/);
+    expect(SRC).toMatch(/Primary seller contact/);
+    expect(SRC).toMatch(/relationshipNote: form\.relationshipToOwner/);
     expect(SRC).not.toMatch(/seller\s*=\s*piSnapshot\?\.identity\.owner/);
   });
 
@@ -60,8 +63,9 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
     expect(PI_SRC).toMatch(/item\.missing/);
   });
 
-  it('the legacy detailed-DD dump is gone from the Property tab', () => {
-    expect(SRC).toMatch(/<PropertyIntelligenceDueDiligence snapshot=\{piSnapshot\}/);
+  it('the legacy detailed-DD dump is gone and canonical screening is an Overview drill-down', () => {
+    expect(OVERVIEW_SRC).toMatch(/<PropertyIntelligenceDueDiligence snapshot=\{snapshot\}/);
+    expect(OVERVIEW_SRC).toMatch(/Property screening/);
     expect(SRC).not.toMatch(/<Section title="Detailed Due Diligence & Research"/);
   });
 
@@ -88,10 +92,28 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
 
   it('keeps the Property Intelligence launch and refresh action on Overview', () => {
     const launchMounts = SRC.match(/<PropertyIntelligenceLaunch state=\{propertyIntelligence\} \/>/g) ?? [];
-    expect(launchMounts).toHaveLength(2);
-    expect(SRC).toMatch(/activeTab === 'overview'[\s\S]{0,180}<PropertyIntelligenceLaunch/);
+    expect(launchMounts).toHaveLength(1);
+    expect(SRC).toMatch(/activeTab === 'overview'[\s\S]{0,1200}<PropertyIntelligenceLaunch/);
+    expect(OVERVIEW_SRC).toMatch(/Refresh research/);
     expect(PI_SRC).toMatch(/data-testid="pi-run-button"/);
     expect(PI_SRC).toMatch(/view\?\.snapshot \? 'Re-run Property Intelligence' : 'Run Property Intelligence'/);
+  });
+
+  it('shows distinct acquisition thresholds and CRM operating status without inventing missing values', () => {
+    for (const label of ['Opening position', 'Target negotiation range', 'Maximum supported acquisition', 'Walk-away level']) {
+      expect(OVERVIEW_SRC).toContain(label);
+    }
+    for (const label of ['Lead stage', 'Next operational step', 'Follow-up date', 'Task owner', 'Offer status', 'Latest meaningful activity']) {
+      expect(OVERVIEW_SRC).toContain(label);
+    }
+    expect(OVERVIEW_SRC).toMatch(/openingPosition/);
+    expect(OVERVIEW_SRC).toMatch(/practicalMaximumAcquisitionPrice/);
+    expect(OVERVIEW_SRC).toMatch(/walkAwayLevel/);
+    expect(OVERVIEW_SRC).toMatch(/'Not scheduled'/);
+    expect(OVERVIEW_SRC).toMatch(/'Unassigned'/);
+    expect(OVERVIEW_SRC).toMatch(/'Not started'/);
+    expect(SRC).toMatch(/\/api\/landos\/deal-cards\/\$\{id\}\/acquisition/);
+    expect(SRC).toMatch(/crmStatus=\{crmStatus\}/);
   });
 
   it('does not label an official county URL as a LandPortal parcel page', () => {
@@ -102,14 +124,14 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
   });
 
   it('projects canonical identity into the owner header and keeps visuals and seller identity separate', () => {
-    expect(SRC).toMatch(/<HeaderField label="Owner of record" value=\{piSnapshot\?\.identity\.owner \?\? prop\?\.owner\}/);
-    expect(SRC).toMatch(/<HeaderField label="APN \/ Parcel ID" value=\{piSnapshot\?\.identity\.apn \?\? prop\?\.apn\}/);
-    expect(SRC).toMatch(/activeTab === 'property'[\s\S]*?<PropertyIntelligenceProperty snapshot=\{piSnapshot\}/);
+    expect(SRC).toMatch(/piSnapshot\?\.identity\.owner \?\? prop\?\.owner \?\? '—'/);
+    expect(SRC).toMatch(/piSnapshot\?\.identity\.apn \?\? prop\?\.apn \?\? '—'/);
+    expect(OVERVIEW_SRC).toMatch(/<PropertyIntelligenceProperty snapshot=\{snapshot\}/);
     expect(PI_SRC).toMatch(/<Field label="Acreage" value=\{identity\.acres == null \? '—' : `\$\{identity\.acres\.toFixed\(2\)\} ac`\}/);
-    expect(SRC).toMatch(/const ownerName = piSnapshot\?\.identity\.owner \?\? prop\?\.owner \?\? ''/);
-    expect(SRC).toMatch(/<div[^>]*>Lead \/ contact<\/div>/);
+    expect(SRC).toMatch(/Primary seller contact/);
+    expect(SRC).toMatch(/Seller contacts stay separate from the government owner-of-record identity/);
     expect(PI_SRC).toMatch(/data-testid="pi-visuals"/);
-    expect(SRC).toMatch(/activeTab === 'visuals'[\s\S]{0,180}<PropertyIntelligenceVisuals snapshot=\{piSnapshot\}/);
+    expect(SRC).toMatch(/activeTab === 'documents'[\s\S]{0,260}<PropertyIntelligenceVisuals snapshot=\{piSnapshot\}/);
     expect(SRC).not.toMatch(/data-testid="landportal-(?:fact-sheet|visual-gallery|comparables)"/);
   });
 
@@ -117,12 +139,13 @@ describe('Deal Card DD — canonical records, not a worksheet', () => {
     expect(SRC).toMatch(/Correct property identity/);
     expect(SRC).toMatch(/Save verified property identity/);
     expect(SRC).toMatch(/showResolution[\s\S]*?<PropertyIdentityControl/);
-    expect(SRC).toMatch(/activeTab === 'property'[\s\S]*?<PropertyIdentityControl/);
+    expect(SRC).toMatch(/activeTab === 'overview'[\s\S]*?<PropertyIdentityControl/);
     expect(SRC.match(/<PropertyIdentityControl/g)?.length).toBe(2);
-    expect(SRC).toMatch(/Add lead or contact/);
+    expect(SRC).toMatch(/Add contact/);
     expect(SRC).toMatch(/\/api\/landos\/deal-cards\/\$\{dealId\}\/people/);
+    expect(SRC).toMatch(/people\/\$\{editing\}/);
+    expect(SRC).toMatch(/people\/\$\{person\.id\}/);
     expect(SRC).toMatch(/\}, \[prop\.id, snapshot\?\.runId\]\)/);
-    expect(SRC).toMatch(/\}, \[dealId\]\)/);
-    expect(SRC).toMatch(/Contact identity is separate from the parcel.*owner-of-record field/);
+    expect(SRC).toMatch(/Seller contacts stay separate from the government owner-of-record identity/);
   });
 });

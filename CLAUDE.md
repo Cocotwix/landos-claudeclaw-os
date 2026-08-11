@@ -193,26 +193,8 @@ You have TWO memory systems. Use both before ever saying "I don't remember":
 ### `convolife`
 When [YOUR NAME] says "convolife", check the remaining context window and report back. Steps:
 1. Get the current session ID: `sqlite3 $(git rev-parse --show-toplevel)/store/claudeclaw.db "SELECT session_id FROM sessions LIMIT 1;"`
-2. Query the token_usage table for context size and session stats:
-```bash
-sqlite3 $(git rev-parse --show-toplevel)/store/claudeclaw.db "
-  SELECT
-    COUNT(*)                as turns,
-    MAX(context_tokens)     as last_context,
-    SUM(output_tokens)      as total_output,
-    SUM(cost_usd)           as total_cost,
-    SUM(did_compact)        as compactions
-  FROM token_usage WHERE session_id = '<SESSION_ID>';
-"
-```
-3. Also get the first turn's context_tokens as baseline (system prompt overhead):
-```bash
-sqlite3 $(git rev-parse --show-toplevel)/store/claudeclaw.db "
-  SELECT context_tokens as baseline FROM token_usage
-  WHERE session_id = '<SESSION_ID>'
-  ORDER BY created_at ASC LIMIT 1;
-"
-```
+2. From `token_usage WHERE session_id = '<SESSION_ID>'`, select `COUNT(*) as turns`, `MAX(context_tokens) as last_context`, `SUM(output_tokens)`, `SUM(cost_usd)`, `SUM(did_compact) as compactions`.
+3. Also take the first turn's `context_tokens` as baseline (system prompt overhead): same table, `ORDER BY created_at ASC LIMIT 1`.
 4. Calculate conversation usage: context_limit = 1000000 (or CONTEXT_LIMIT from .env), available = context_limit - baseline, conversation_used = last_context - baseline, percent_used = conversation_used / available * 100. If context_tokens is 0 (old data), fall back to MAX(cache_read) with the same logic.
 5. Report in this format:
 ```
@@ -226,21 +208,7 @@ When [YOUR NAME] says "checkpoint", save a TLDR of the current conversation to S
 1. Write a tight 3-5 bullet summary of the key things discussed/decided in this session
 2. Find the DB path: `$(git rev-parse --show-toplevel)/store/claudeclaw.db`
 3. Get the actual chat_id from: `sqlite3 $(git rev-parse --show-toplevel)/store/claudeclaw.db "SELECT chat_id FROM sessions LIMIT 1;"`
-4. Insert it into the memories DB as a high-salience semantic memory:
-```bash
-PROJECT_ROOT=$(git rev-parse --show-toplevel)
-python3 -c "
-import sqlite3, time, os, subprocess
-root = subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip()
-db = sqlite3.connect(os.path.join(root, 'store', 'claudeclaw.db'))
-now = int(time.time())
-summary = '''[SUMMARY OF CURRENT SESSION HERE]'''
-db.execute('INSERT INTO memories (chat_id, source, raw_text, summary, entities, topics, importance, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ('[CHAT_ID]', 'checkpoint', summary, summary, '[]', '[\"checkpoint\"]', 1.0, 5.0, now, now))
-db.commit()
-print('Checkpoint saved.')
-"
-```
+4. Insert one high-salience semantic memory into that DB's `memories` table: columns `chat_id, source, raw_text, summary, entities, topics, importance, salience, created_at, accessed_at` with the real chat_id, source `checkpoint`, the summary in both text columns, `'[]'`, `'["checkpoint"]'`, `1.0`, `5.0`, and the current unix time twice.
 5. Confirm: "Checkpoint saved. Safe to /newchat."
 
 ---

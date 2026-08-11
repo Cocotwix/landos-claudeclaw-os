@@ -3,6 +3,7 @@ import { _initTestLandosDb } from './db.js';
 import { createDealCard } from './deal-card.js';
 import {
   getAcquisition, upsertSellerProfile, addCommLogEntry, addDiscoveryNote, setAcquisitionStage,
+  updateCommLogEntry, deleteCommLogEntry,
   extractDiscoveryNotes, acquisitionNextAction, sellerStrategySummary, emptyAcquisition,
 } from './acquisitions.js';
 import { buildCallPrep, buildFollowUpDraft, acquisitionPlaybook, acquisitionTrainingReadiness, ACQ_TRAINING_PATHS } from './acquisition-prep.js';
@@ -28,6 +29,19 @@ describe('acquisitions — persistence + memory', () => {
     expect(r.commLog).toHaveLength(2);
     expect(r.commLog[0].summary).toBe('seller replied');
     expect(r.profile.lastContactDate).toBe('2026-06-02');
+    expect(r.commLog.every((entry) => Boolean(entry.id))).toBe(true);
+  });
+  it('communication entries can be edited and removed by stable id', () => {
+    const id = newDeal();
+    const created = addCommLogEntry(id, { at: '2026-06-01T10:00:00Z', channel: 'call', direction: 'outbound', summary: 'left voicemail' });
+    const commId = created.commLog[0].id!;
+    expect(updateCommLogEntry(id, commId, { summary: 'seller called back', outcome: 'Discovery scheduled' })?.commLog[0]).toMatchObject({
+      id: commId,
+      summary: 'seller called back',
+      outcome: 'Discovery scheduled',
+    });
+    expect(deleteCommLogEntry(id, commId)?.commLog).toHaveLength(0);
+    expect(deleteCommLogEntry(id, commId)).toBeNull();
   });
   it('acquisition memory (profile + comm + discovery) survives reload', () => {
     const id = newDeal();

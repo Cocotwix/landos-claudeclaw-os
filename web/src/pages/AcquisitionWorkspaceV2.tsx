@@ -26,11 +26,14 @@ import {
   type MarketContextView, type PiCompRow, type PiEvidenceItem, type PiFact,
   type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
   type MissingDiligenceView, type AccessPresentationView, type SoilsSepticView,
+  type ExactAddressListingsView,
   type VisualBuyerNarrativeView, type ResearchStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
 import {
   CompsValuationSection, type CompsValuationViewData,
 } from '../components/AcquisitionWorkspaceV2CompsValuation';
+import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
+import type { LandUseView } from '../components/AcquisitionWorkspaceV2LandUse';
 import '../styles/workspace-v2.css';
 // Loaded AFTER the base sheet: the comps identity + readability corrections
 // deliberately override base values on equal specificity.
@@ -102,6 +105,9 @@ interface IntelResp {
     soilsSeptic?: SoilsSepticView | null;
     researchStatus?: ResearchStatusView | null;
     compsValuation?: CompsValuationViewData | null;
+    officialParcelGis?: OfficialParcelGisView | null;
+    landUse?: LandUseView | null;
+    exactAddressListings?: ExactAddressListingsView | null;
   };
   marketContext?: MarketContextView;
 }
@@ -192,6 +198,9 @@ export function AcquisitionWorkspaceV2() {
   const [missingDiligence, setMissingDiligence] = useState<MissingDiligenceView | null>(null);
   const [accessView, setAccessView] = useState<AccessPresentationView | null>(null);
   const [soilsSeptic, setSoilsSeptic] = useState<SoilsSepticView | null>(null);
+  const [officialParcelGis, setOfficialParcelGis] = useState<OfficialParcelGisView | null>(null);
+  const [landUse, setLandUse] = useState<LandUseView | null>(null);
+  const [exactAddressListings, setExactAddressListings] = useState<ExactAddressListingsView | null>(null);
   const [researchStatus, setResearchStatus] = useState<ResearchStatusView | null>(null);
   const [compsValuation, setCompsValuation] = useState<CompsValuationViewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -218,6 +227,9 @@ export function AcquisitionWorkspaceV2() {
         setMissingDiligence(i?.propertyIntelligence?.missingDiligence ?? null);
         setAccessView(i?.propertyIntelligence?.access ?? null);
         setSoilsSeptic(i?.propertyIntelligence?.soilsSeptic ?? null);
+        setOfficialParcelGis(i?.propertyIntelligence?.officialParcelGis ?? null);
+        setLandUse(i?.propertyIntelligence?.landUse ?? null);
+        setExactAddressListings(i?.propertyIntelligence?.exactAddressListings ?? null);
         setResearchStatus(i?.propertyIntelligence?.researchStatus ?? null);
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
       } catch (e) {
@@ -278,7 +290,9 @@ export function AcquisitionWorkspaceV2() {
   const slopePct = matchNum(terrain?.headline, /([\d.]+)%\s*average slope/);
   const buildPct = matchNum(terrain?.headline, /([\d.]+)%\s*buildability/);
 
-  const heroUrl = (snap.evidence || []).find((e) => e.id === 'inspection-close_parcel_aerial')?.viewUrl;
+  const heroUrl = (snap.evidence || []).find((e) => e.id === 'inspection-landportal_overview')?.viewUrl
+    ?? (snap.evidence || []).find((e) => e.id === 'inspection-parcel_context')?.viewUrl
+    ?? (snap.evidence || []).find((e) => e.id === 'inspection-close_parcel_aerial')?.viewUrl;
   const visualCount = (snap.evidence || []).filter((e) => e.viewUrl).length;
 
   const scores = snap.operatorAnalysis?.scores || {};
@@ -326,6 +340,7 @@ export function AcquisitionWorkspaceV2() {
   // Comps & Valuation is the valuation authority: Overview mirrors its summary
   // so both surfaces always agree.
   const cvSummary = compsValuation?.summary ?? null;
+  const cvSubject = compsValuation?.subjectImprovement ?? null;
   const cvCleaned = compsValuation?.cleaned ?? null;
   const cvQuickFlip = compsValuation?.quickFlip ?? null;
   const cvNegotiation = compsValuation?.negotiation ?? null;
@@ -473,7 +488,7 @@ export function AcquisitionWorkspaceV2() {
               <ScoreCard title="Market score" view={scores.market} />
               <ScoreCard title="Seller score" view={scores.seller} />
             </div>
-            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} />
+            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} exactAddressListings={exactAddressListings} />
           </main>
         ) : section === 'Comps & Valuation' ? (
           <main class="awv2-main">
@@ -498,7 +513,7 @@ export function AcquisitionWorkspaceV2() {
           <section class="awv2-hero" aria-label="Property hero">
             <div class="awv2-hero-media">
               <span class="tick tl" /><span class="tick tr" /><span class="tick bl" /><span class="tick br" />
-              {heroUrl && <img src={tok(heroUrl)} alt={`Satellite view of ${address} with the full parcel boundary`} />}
+              {heroUrl && <img src={tok(heroUrl)} alt={`LandPortal satellite Overview of ${address}, its parcel boundary, nearest road, and apparent access relationship`} />}
             </div>
             <aside class="awv2-hero-side">
               <div class="awv2-hero-facts">
@@ -516,8 +531,17 @@ export function AcquisitionWorkspaceV2() {
                 {floodPct && <div class="f"><span class="u">Flood overlay</span><span class="v warn">{floodPct}%</span></div>}
                 {slopePct && <div class="f"><span class="u">Avg slope</span><span class="v">{slopePct}%</span></div>}
                 {buildPct && <div class="f"><span class="u">Buildable</span><span class="v good">{buildPct}%</span></div>}
-                {accessView?.established && (
-                  <div class="f"><span class="u">Legal access</span><span class="v good">YES</span></div>
+                {accessView?.evidence?.parcelFlagged && (
+                  <div class="f"><span class="u">Parcel flag</span><span class="v warn">LAND LOCKED</span></div>
+                )}
+                {accessView?.evidence?.apparentPhysicalAccess && (
+                  <div class="f"><span class="u">Physical route</span><span class="v">APPARENT</span></div>
+                )}
+                {accessView?.evidence?.reportedLegalAccess && (
+                  <div class="f"><span class="u">Listing access</span><span class="v">REPORTED</span></div>
+                )}
+                {accessView?.evidence?.verifiedLegalAccess && (
+                  <div class="f"><span class="u">Recorded access</span><span class="v good">VERIFIED</span></div>
                 )}
                 {soilsSeptic && (
                   <div class="f"><span class="u">Septic outlook</span>
@@ -528,14 +552,20 @@ export function AcquisitionWorkspaceV2() {
                 )}
               </div>
               <div class="awv2-hero-caption">
-                <b>{acres != null ? `${acres}-acre` : 'A'} vacant parcel</b> in {id.county || '—'} County
+                {/* The subject's own improvement evidence decides this noun.
+                    Calling an improved parcel vacant misstates the asset. */}
+                <b>{acres != null ? `${acres}-acre` : 'A'} {cvSubject?.captionNoun ?? 'vacant parcel'}</b> in {id.county || '—'} County
+                {cvSubject?.improved && cvSubject.buildingSqft != null
+                  ? `, carrying approx. ${Math.round(cvSubject.buildingSqft).toLocaleString('en-US')} sqft of improvements`
+                  : ''}
                 {frontageFt ? ` with ${Math.round(Number(frontageFt))} ft of mapped road frontage` : ''}
                 {landlocked?.toLowerCase() === 'no' ? ', not flagged landlocked' : ''}
                 {wetPct && floodPct ? `, light wetlands (${wetPct}%) and flood (${floodPct}%) coverage` : ''}
                 {buildPct ? `, and ${Math.round(Number(buildPct))}% of the site shown buildable` : ''}.
-                {' '}{accessView?.established
-                  ? `Legal access: ${accessView.legalAccess}. Apparent entrance: ${accessView.apparentEntrance.charAt(0).toLowerCase()}${accessView.apparentEntrance.slice(1)}. Zoning, septic and utilities still need confirmation.`
-                  : 'Legal access, zoning, septic and utilities still need confirmation.'}
+                {' '}{accessView?.evidence?.operatorConclusion
+                  ?? (accessView?.established
+                    ? `Mapped road abutment: ${accessView.legalAccess}. Apparent entrance: ${accessView.apparentEntrance.charAt(0).toLowerCase()}${accessView.apparentEntrance.slice(1)}. Recorded-instrument access remains separate diligence.`
+                    : 'Physical and legal access evidence remains unresolved; zoning, septic and utilities still need confirmation.')}
                 {' '}{visualCount > 0 && <span>{visualCount} verified visuals on file → Evidence & Documents.</span>}
               </div>
               {snap.subjectParcelUrl && (
@@ -631,12 +661,21 @@ export function AcquisitionWorkspaceV2() {
               <div class="awv2-val-figures">
                 {cvSummary?.fmv && (
                   <div class="awv2-val-fig">
-                    <div class="k">Preliminary fair market value</div>
+                    {/* Land comps price land. On an improved subject this figure
+                        is named a land-only indication, never a property FMV. */}
+                    <div class="k">{cvSubject?.valuationScopeLabel ?? 'Preliminary fair market value'}</div>
                     <div class="v">{usd(cvSummary.fmv.central)}</div>
                     <div class="s">
                       median {cvSummary.medianPricePerAcre != null ? `${usd(cvSummary.medianPricePerAcre)}/ac` : '—'} × {cvSummary.workingAcres} acres
                       {cvSummary.fmv.low != null && cvSummary.fmv.high != null ? ` · range ${usd(cvSummary.fmv.low)}–${usd(cvSummary.fmv.high)}` : ''}
                     </div>
+                  </div>
+                )}
+                {cvSubject?.wholePropertyPending && (
+                  <div class="awv2-val-fig" data-testid="overview-whole-property-pending">
+                    <div class="k">Whole-property value</div>
+                    <div class="v">Pending</div>
+                    <div class="s">{cvSubject.wholePropertyNote}</div>
                   </div>
                 )}
                 {perAcre && (
@@ -656,11 +695,11 @@ export function AcquisitionWorkspaceV2() {
                   </div>
                 )}
                 <div class="awv2-val-fig">
-                  <div class="k">Supporting closed sales</div>
+                  <div class="k">{cvSubject?.improved ? 'Supporting land sales' : 'Supporting closed sales'}</div>
                   <div class="v">{cvSummary ? cvSummary.acceptedCount : soldCount}</div>
                   <div class="s">
                     {cvSummary
-                      ? `${cvCandidateCount} closed-sale candidate${cvCandidateCount === 1 ? '' : 's'} · ${cvActiveCount} active competitor${cvActiveCount === 1 ? '' : 's'} retained`
+                      ? `${cvCandidateCount} ${cvSubject?.improved ? 'land-sale' : 'closed-sale'} candidate${cvCandidateCount === 1 ? '' : 's'} · ${cvActiveCount} active competitor${cvActiveCount === 1 ? '' : 's'} retained`
                       : `${activeCount} active competitor · ${askingCount} asking references`}
                   </div>
                 </div>
@@ -676,7 +715,7 @@ export function AcquisitionWorkspaceV2() {
                   {([40, 50, 60] as const).map((p) => (
                     <div class="awv2-rung">
                       <div class="pct">{p}%</div>
-                      <div class="lbl">of FMV</div>
+                      <div class="lbl">{cvSubject?.improved ? 'of land value' : 'of FMV'}</div>
                       <div class="val">
                         {cvSummary?.acquisitionLevels ? usd(cvSummary.acquisitionLevels[`pct${p}` as 'pct40' | 'pct50' | 'pct60']) : '—'}
                       </div>
@@ -686,7 +725,7 @@ export function AcquisitionWorkspaceV2() {
                 <div class="awv2-ladder-note">
                   {cvSummary?.acquisitionLevels
                     ? (cvCleaned?.adoptedFmv != null
-                      ? `Derived from the adopted cleaned fair market value of ${usd(cvCleaned.adoptedFmv)}, which reconciles the cleaned average, cleaned median, and weighted direct-comp indications.`
+                      ? `Derived from the adopted cleaned ${cvSubject?.improved ? 'LAND value' : 'fair market value'} of ${usd(cvCleaned.adoptedFmv)}, which reconciles the cleaned average, cleaned median, and weighted direct-comp indications.${cvSubject?.improved ? ' It excludes the structure; the whole-property value is pending.' : ''}`
                       : cvSummary.status === 'provisional'
                         ? `Provisional: automatically derived from ${cvSummary.acceptedCount} credible closed vacant-land sales; treat as a working figure, not a supported FMV.`
                         : 'Derived from the median closed vacant-land sale price per acre in the valuation set.')
@@ -723,7 +762,7 @@ export function AcquisitionWorkspaceV2() {
                   </div>
                   <div class="awv2-ladder-note">
                     {cvQuickFlip
-                      ? `Technical quick-flip maximum is ${usd(cvQuickFlip.technicalMaxOffer)} (${cvQuickFlip.technicalMaxPctOfFmv}% of cleaned FMV) after ${usd(cvQuickFlip.totalNonAcquisitionCosts)} of non-acquisition costs and ${usd(cvQuickFlip.requiredProfit)} required profit.`
+                      ? `Technical quick-flip maximum is ${usd(cvQuickFlip.technicalMaxOffer)} (${cvQuickFlip.technicalMaxPctOfFmv}% of the adopted cleaned ${cvSubject?.improved ? 'land value' : 'FMV'}) after ${usd(cvQuickFlip.totalNonAcquisitionCosts)} of non-acquisition costs and ${usd(cvQuickFlip.requiredProfit)} required profit.`
                       : cvNegotiation.lines[0]}
                   </div>
                 </div>

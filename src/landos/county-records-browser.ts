@@ -26,11 +26,11 @@ declare const HTMLInputElement: any;
 
 import {
   type BrowserService, type BrowserDriver, type BrowserEvidence, type BrowserWorkflowInput,
-  type BrowserSearchKey, type BrowserFact, type BrowserRunHooks,
+  type BrowserSearchKey, type BrowserFact, type BrowserRunHooks, type BrowserSourceAttempt,
   makeParkedDriver, emptyEvidence, routeBrowserQuestion, recordBlocked,
 } from './browser-intelligence.js';
 import type { PropertyPatch } from './normalized-property.js';
-import { planParcelSearch, pickParcelRecordLink, type FormInfo, type NavSearchKey } from './browser-navigator.js';
+import { isRejectedParcelRecordDestination, planParcelSearch, pickParcelRecordLink, type FormInfo, type NavSearchKey } from './browser-navigator.js';
 import { planNetrWorkflow, buildNetrStateUrl, type NetrStep } from './browser-retrieval.js';
 import { withOwnedPages } from './browser-owned-pages.js';
 import { COUNTY_WORKFLOW_FOR, type DdField } from './missing-field-analysis.js';
@@ -38,6 +38,7 @@ import {
   extractCountySources, officialSearchQuery, pickOfficialResult, netrIsStale,
   searchEngineUrl, unwrapSearchResults,
   governmentSourceScopePriority, orderCountySourcesLocalFirst,
+  officialDomainScore, sourceContradictsRequestedState,
   COUNTY_SOURCE_TYPES, type CountySourceLink, type CountySourceType,
 } from './netr-routing.js';
 import { extractRecordFacts, extractAgencyContact, parcelRecordSignal, type ExtractContext } from './semantic-extract.js';
@@ -45,6 +46,10 @@ import { getCountySources, saveCountySources, isCountyCacheFresh } from './count
 import { CountyResearchCapability } from './county-research-capability.js';
 import { apnSearchVariants } from './opportunity-research-mission.js';
 import { statewidePortalFor, type StatewidePortal } from './statewide-assessment-portals.js';
+import {
+  pickBestCandidate, planNavigationStrategy, rankSearchMethods,
+  type PageObservation, type SearchMethod,
+} from './website-intelligence.js';
 
 /** County workflow targets (the public resources the researcher navigates). */
 export const COUNTY_WORKFLOWS = [
@@ -80,6 +85,765 @@ function workflowsForNeeded(neededFields?: string[]): CountyWorkflow[] {
   return [...set].filter((w): w is CountyWorkflow => (COUNTY_WORKFLOWS as readonly string[]).includes(w));
 }
 
+interface AdditionalGovernmentFactSpec {
+  key: string;
+  label: string;
+  rx: RegExp;
+  /** Parcel facts require a reached parcel/record detail. Ordinance and utility
+   * facts may be extracted from an official jurisdiction page. */
+  scope: 'parcel' | 'jurisdiction';
+}
+
+const ADDITIONAL_GOVERNMENT_FACT_SPECS: AdditionalGovernmentFactSpec[] = [
+  { key: 'improvements', label: 'Improvements', rx: /^(improvements?|building\s*(description|type|value)|structures?)$/i, scope: 'parcel' },
+  { key: 'delinquencyStatus', label: 'Tax delinquency status', rx: /^(delinquen(cy|t)?(\s*status)?|tax\s*delinquen(cy|t)|past\s*due|amount\s*past\s*due)$/i, scope: 'parcel' },
+  { key: 'currentDeed', label: 'Current deed', rx: /^(current\s*deed|deed\s*(type|description)|document\s*type)$/i, scope: 'parcel' },
+  { key: 'grantor', label: 'Grantor', rx: /^(grantor|seller|from\s*party)$/i, scope: 'parcel' },
+  { key: 'grantee', label: 'Grantee', rx: /^(grantee|buyer|to\s*party)$/i, scope: 'parcel' },
+  { key: 'recordingDate', label: 'Recording date', rx: /^(record(ed|ing)?\s*date|filed\s*date)$/i, scope: 'parcel' },
+  { key: 'instrumentNumber', label: 'Instrument number', rx: /^(instrument|document|recording)\s*(number|no\.?|#|id)$/i, scope: 'parcel' },
+  { key: 'recordBookPage', label: 'Recorded book / page', rx: /^(deed\s*)?book\s*\/?\s*page$/i, scope: 'parcel' },
+  { key: 'recordedPageCount', label: 'Recorded document pages', rx: /^(number\s*of\s*pages|recorded\s*(document\s*)?pages?)$/i, scope: 'parcel' },
+  { key: 'consideration', label: 'Recorded consideration', rx: /^(consideration|transfer\s*(price|amount)|deed\s*consideration)$/i, scope: 'parcel' },
+  { key: 'legalDescription', label: 'Legal description', rx: /^(legal(\s*description)?|property\s*description|brief\s*legal)$/i, scope: 'parcel' },
+  { key: 'recordedPlat', label: 'Recorded plat', rx: /^(plat|plat\s*(book|reference|number|no\.?|#)|survey\s*reference)$/i, scope: 'parcel' },
+  { key: 'easements', label: 'Easements', rx: /^(easements?|easement\s*(description|reference|type))$/i, scope: 'parcel' },
+  { key: 'restrictionsCovenants', label: 'Restrictions / covenants', rx: /^(restrictions?|covenants?|deed\s*restrictions?|protective\s*covenants?)$/i, scope: 'parcel' },
+  { key: 'accessInstruments', label: 'Access instruments', rx: /^(access\s*(easement|instrument|agreement)|ingress\s*\/?\s*egress)$/i, scope: 'parcel' },
+  { key: 'roadMaintenanceAgreement', label: 'Road-maintenance agreement', rx: /^(road\s*maintenance(\s*agreement)?|private\s*road\s*agreement)$/i, scope: 'parcel' },
+  { key: 'zoningJurisdiction', label: 'Governing zoning jurisdiction', rx: /^(zoning|planning|governing)\s*jurisdiction$/i, scope: 'jurisdiction' },
+  { key: 'zoningDistrict', label: 'Zoning district', rx: /^(zoning(\s*(district|classification|code))?|zone)$/i, scope: 'parcel' },
+  { key: 'permittedUses', label: 'Permitted uses', rx: /^(permitted|allowed|principal)\s*uses?$/i, scope: 'jurisdiction' },
+  { key: 'minimumLotSize', label: 'Minimum lot size', rx: /^(minimum|min\.?)\s*(lot|parcel)\s*(size|area)$/i, scope: 'jurisdiction' },
+  { key: 'minimumFrontage', label: 'Minimum frontage', rx: /^(minimum|min\.?)\s*(road\s*)?frontage$/i, scope: 'jurisdiction' },
+  { key: 'minorSubdivisionRules', label: 'Minor-subdivision rules', rx: /^(minor\s*subdivision(\s*(rules?|standard|threshold))?|minor\s*plat)$/i, scope: 'jurisdiction' },
+  { key: 'flagLotRules', label: 'Flag-lot rules', rx: /^(flag\s*lots?(\s*(rules?|standard|requirements?))?)$/i, scope: 'jurisdiction' },
+  { key: 'sharedAccessRules', label: 'Shared-access rules', rx: /^(shared\s*(access|driveway)(\s*(rules?|standard|requirements?))?)$/i, scope: 'jurisdiction' },
+  { key: 'privateRoadRequirements', label: 'Private-road requirements', rx: /^(private\s*roads?(\s*(rules?|standard|requirements?))?)$/i, scope: 'jurisdiction' },
+  { key: 'publicWater', label: 'Public water information', rx: /^(public|municipal)\s*water(\s*(availability|service|provider))?$/i, scope: 'jurisdiction' },
+  { key: 'publicSewer', label: 'Public sewer information', rx: /^(public|municipal)\s*(sewer|wastewater)(\s*(availability|service|provider))?$/i, scope: 'jurisdiction' },
+  { key: 'utilityProvider', label: 'Utility-provider context', rx: /^(utility|water|sewer)\s*(provider|authority|district)$/i, scope: 'jurisdiction' },
+];
+
+function addVisibleFields(target: Record<string, string>, fields: Record<string, string> | undefined): void {
+  for (const [rawLabel, rawValue] of Object.entries(fields ?? {})) {
+    const label = rawLabel.replace(/\s+/g, ' ').trim().replace(/[:#]+$/, '');
+    const value = String(rawValue ?? '').replace(/\s+/g, ' ').trim();
+    // Later reads are closer to the reached record detail and therefore replace
+    // same-labeled landing/result values from earlier navigation states.
+    if (label && value) target[label] = value;
+  }
+}
+
+/** Preserve explicit label/value snippets returned by a driver. Free-form prose
+ * is ignored; only an unambiguous `label: value`, tab, or pipe pair is admitted. */
+function addVisibleSnippets(target: Record<string, string>, snippets: string[] | undefined): void {
+  for (const snippet of snippets ?? []) {
+    for (const line of String(snippet).split(/\r?\n/)) {
+      const match = line.trim().match(/^([^:|\t]{2,80})(?::|\t|\|)\s*(.{1,500})$/);
+      if (!match) continue;
+      addVisibleFields(target, { [match[1]]: match[2] });
+    }
+  }
+}
+
+function extractGovernmentFacts(
+  fields: Record<string, string>,
+  ctx: ExtractContext,
+  opts: { pageIsRecord: boolean; sourceType: CountySourceType; extractionMethod: string },
+): BrowserFact[] {
+  const facts = opts.pageIsRecord
+    ? extractRecordFacts(fields, ctx, { pageIsRecord: true }).map((fact) => ({
+      ...fact,
+      extractionMethod: opts.extractionMethod,
+    }))
+    : [];
+  const seen = new Set(facts.map((fact) => fact.key));
+  for (const [rawLabel, rawValue] of Object.entries(fields)) {
+    const label = rawLabel.replace(/\s+/g, ' ').trim();
+    const value = String(rawValue ?? '').replace(/\s+/g, ' ').trim();
+    if (!label || !value) continue;
+    for (const spec of ADDITIONAL_GOVERNMENT_FACT_SPECS) {
+      if (seen.has(spec.key) || !spec.rx.test(label)) continue;
+      if (spec.scope === 'parcel' && !opts.pageIsRecord) continue;
+      if (spec.scope === 'jurisdiction' && !['planning', 'building', 'gis'].includes(opts.sourceType) && !opts.pageIsRecord) continue;
+      seen.add(spec.key);
+      facts.push({
+        key: spec.key,
+        label: spec.label,
+        value: value.slice(0, 500),
+        sourceName: ctx.sourceName,
+        sourceType: ctx.sourceType,
+        sourceUrl: ctx.sourceUrl,
+        confidence: ctx.origin === 'search_fallback' ? 'medium' : 'high',
+        origin: ctx.origin,
+        status: 'extracted',
+        extractionMethod: opts.extractionMethod,
+      });
+      break;
+    }
+  }
+  return facts;
+}
+
+function compactIdentifier(value: string | undefined): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Reject an explicitly different parcel. Absence of a repeated identifier does
+ * not block a practical record read; discovery already established the subject. */
+function recordContradictsSubject(fields: Record<string, string>, key: BrowserSearchKey): boolean {
+  const expectedApn = compactIdentifier(key.apn);
+  if (!expectedApn) return false;
+  for (const [label, value] of Object.entries(fields)) {
+    if (!/^(apn|parcel(\s*(id|number|no\.?|#))?|pin|tax\s*map)/i.test(label.trim())) continue;
+    const observed = compactIdentifier(value);
+    if (observed.length >= 5 && observed !== expectedApn) return true;
+  }
+  return false;
+}
+
+function identifierValue(key: BrowserSearchKey, method: SearchMethod): string | undefined {
+  if (method === 'apn') return key.apn;
+  if (method === 'address') return key.address;
+  if (method === 'owner') return key.owner;
+  return undefined;
+}
+
+interface SubjectRecordRetrieval {
+  fields: Record<string, string>;
+  reachedUrl: string;
+  recordReached: boolean;
+  extractionMethod: string;
+  searchMethods: string[];
+  alternateRoutesAttempted: string[];
+  steps: NonNullable<BrowserSourceAttempt['steps']>;
+  failureCode?: BrowserSourceAttempt['failureCode'];
+}
+
+interface AcclaimGridRow {
+  transactionItemId: number;
+  instrumentNumber: string;
+  parcelNumber: string;
+  comments: string;
+  bookPage: string;
+  party: string;
+  name: string;
+  crossPartyName: string;
+  docType: string;
+  rowNumber: number;
+}
+
+function acclaimBaseUrl(sourceUrl: string): { origin: string; basePath: string; baseUrl: string } | null {
+  try {
+    const url = new URL(sourceUrl);
+    const match = url.pathname.match(/^(.*?\/AcclaimWeb)(?:\/|$)/i);
+    const basePath = match?.[1] ?? '/AcclaimWeb';
+    return { origin: url.origin, basePath, baseUrl: `${url.origin}${basePath}` };
+  } catch {
+    return null;
+  }
+}
+
+function readAcclaimSection(lines: string[], label: string, nextLabels: Set<string>): string {
+  let start = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].toLowerCase() === label.toLowerCase()) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) return '';
+  const values: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (nextLabels.has(line.toLowerCase())) break;
+    values.push(line);
+  }
+  return values.join('; ').trim();
+}
+
+/** Parse the visible instrument-detail text emitted by Harris Acclaim. Kept
+ * value-free and portal-family scoped so every county using Acclaim can reuse
+ * the same extraction without a county/APN-specific scraper. */
+export function acclaimDetailFieldsFromText(bodyText: string): Record<string, string> {
+  const lines = String(bodyText ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const labels = [
+    'Record Date:', 'Book Type:', 'Book / Page:', 'Instrument Number:',
+    'Number Of Pages:', 'Doc Type:', 'Grantor:', 'Grantee:', 'Consideration:',
+    'Description:', 'Referenced By:', 'Related DocLink:', 'TMS Number:', 'Mailback:',
+  ];
+  const nextLabels = new Set(labels.map((label) => label.toLowerCase()));
+  const read = (label: string) => readAcclaimSection(lines, label, nextLabels);
+  const related = read('Related DocLink:');
+  const plat = related.split(/;\s*/).find((value) => /^PL\s+/i.test(value)) ?? '';
+  const fields: Record<string, string> = {
+    'Recording Date': read('Record Date:'),
+    'Deed Book / Page': read('Book / Page:'),
+    'Instrument Number': read('Instrument Number:'),
+    'Number Of Pages': read('Number Of Pages:'),
+    'Current Deed': read('Doc Type:') || read('Book Type:'),
+    Grantor: read('Grantor:'),
+    Grantee: read('Grantee:'),
+    Consideration: read('Consideration:'),
+    'Legal Description': read('Description:'),
+    'Recorded Plat': plat,
+    'Parcel ID': read('TMS Number:'),
+  };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => !!value));
+}
+
+/** Pick only an exact subject-parcel row from an Acclaim name-result grid. An
+ * owner-name hit alone is deliberately insufficient because trusts and public
+ * entities can have many unrelated instruments. */
+export function findAcclaimSubjectRow(
+  rows: Array<Record<string, unknown>>,
+  expectedApn: string,
+): AcclaimGridRow | null {
+  const expected = compactIdentifier(expectedApn);
+  if (!expected) return null;
+  const index = rows.findIndex((row) => {
+    const parcel = compactIdentifier(String(row.ParcelNumber ?? ''));
+    return parcel === expected || parcel.startsWith(`${expected}po`);
+  });
+  if (index < 0) return null;
+  const row = rows[index];
+  const transactionItemId = Number(row.TransactionItemId);
+  if (!Number.isInteger(transactionItemId) || transactionItemId <= 0) return null;
+  return {
+    transactionItemId,
+    instrumentNumber: String(row.InstrumentNumber ?? '').trim(),
+    parcelNumber: String(row.ParcelNumber ?? '').trim(),
+    comments: String(row.Comments ?? '').trim(),
+    bookPage: String(row.BookPage ?? '').trim(),
+    party: String(row.Party ?? '').trim(),
+    name: String(row.Name ?? '').trim(),
+    crossPartyName: String(row.CrossPartyName ?? '').trim(),
+    docType: String(row.DocType ?? '').trim(),
+    rowNumber: index + 1,
+  };
+}
+
+async function retrieveAcclaimSubjectRecord(
+  driver: BrowserDriver,
+  source: CountySourceLink,
+  key: BrowserSearchKey,
+  remaining: () => number,
+  expired: () => boolean,
+  cancelled: () => boolean,
+): Promise<SubjectRecordRetrieval> {
+  const route = acclaimBaseUrl(source.url);
+  const steps: NonNullable<BrowserSourceAttempt['steps']> = [];
+  const alternateRoutesAttempted = ['acclaim_name_search'];
+  const searchMethods: string[] = [];
+  if (!route || !driver.evaluate || !key.owner || !key.apn) {
+    return {
+      fields: {},
+      reachedUrl: source.url,
+      recordReached: false,
+      extractionMethod: 'Harris Acclaim official-record search',
+      searchMethods,
+      alternateRoutesAttempted,
+      steps: [{ stage: 'retrieve', outcome: 'skipped', detail: 'Acclaim correlation requires both the subject owner and APN.' }],
+      failureCode: 'no_subject_identifier',
+    };
+  }
+  const evaluate = <T>(fn: unknown, ...args: unknown[]): Promise<T> =>
+    driver.evaluate!(fn as () => T, ...args);
+  const wait = async (milliseconds: number): Promise<void> => {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(milliseconds, Math.max(0, remaining()))));
+  };
+  const namePath = `${route.basePath}/search/SearchTypeName`;
+  const disclaimerUrl = `${route.baseUrl}/Search/Disclaimer?st=${namePath}`;
+  const opened = await driver.open(disclaimerUrl, { timeoutMs: remaining() });
+  steps.push({ stage: 'navigate', outcome: 'succeeded', detail: 'Opened the county recorder public-search disclaimer.', url: opened.url || disclaimerUrl });
+  const accepted = await evaluate<boolean>(() => {
+    const button = document.querySelector('#btnButton');
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  if (accepted) {
+    alternateRoutesAttempted.push('public_disclaimer_accepted');
+    await wait(900);
+  }
+  if (expired() || cancelled()) {
+    return {
+      fields: {}, reachedUrl: opened.url || disclaimerUrl, recordReached: false,
+      extractionMethod: 'Harris Acclaim official-record search',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'timeout_or_cancelled',
+    };
+  }
+
+  searchMethods.push(`owner:${key.owner}`);
+  const submitted = await evaluate<boolean>(((owner: string) => {
+    const input = document.querySelector('#SearchOnName');
+    const button = document.querySelector('#btnSearch');
+    if (!input || !button) return false;
+    input.value = owner;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    button.click();
+    return true;
+  }) as unknown as () => boolean, key.owner);
+  if (!submitted) {
+    steps.push({ stage: 'retrieve', outcome: 'unavailable', detail: 'The Acclaim owner-search control was not available.', url: `${route.baseUrl}/search/SearchTypeName` });
+    return {
+      fields: {}, reachedUrl: `${route.baseUrl}/search/SearchTypeName`, recordReached: false,
+      extractionMethod: 'Harris Acclaim official-record search',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'no_search_control',
+    };
+  }
+  await wait(1_300);
+
+  const selected = await evaluate<boolean>(((owner: string) => {
+    const normalize = (value: unknown) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = normalize(owner);
+    const valueInput = [...document.querySelectorAll('input[name="itemValue"]')]
+      .find((input: any) => normalize(input.value) === target);
+    const row = valueInput?.closest('li');
+    const checkbox = row?.querySelector('input[type="checkbox"][name$=".Checked"]');
+    const done = [...document.querySelectorAll('input')]
+      .find((input: any) => String(input.getAttribute('onclick') ?? '').includes('GetNameListString'));
+    if (!checkbox || !done) return false;
+    if (!checkbox.checked) checkbox.click();
+    done.click();
+    return true;
+  }) as unknown as () => boolean, key.owner);
+  if (!selected) {
+    steps.push({ stage: 'retrieve', outcome: 'no_match', detail: 'The exact owner was not offered by the recorder name index.', url: `${route.baseUrl}/search/SearchTypeName` });
+    return {
+      fields: {}, reachedUrl: `${route.baseUrl}/search/SearchTypeName`, recordReached: false,
+      extractionMethod: 'Harris Acclaim official-record search',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'no_subject_match',
+    };
+  }
+  alternateRoutesAttempted.push('exact_owner_selection');
+
+  let rows: Array<Record<string, unknown>> = [];
+  for (let attempt = 0; attempt < 16 && !expired() && !cancelled(); attempt += 1) {
+    rows = await evaluate<Array<Record<string, unknown>>>(() => {
+      const jq = window.jQuery || window.$;
+      const grid = jq?.('#RsltsGrid')?.data?.('tGrid');
+      return Array.isArray(grid?.data) ? grid.data : [];
+    });
+    if (rows.length) break;
+    await wait(400);
+  }
+  const match = findAcclaimSubjectRow(rows, key.apn);
+  searchMethods.push(`apn_correlation:${key.apn}`);
+  if (!match) {
+    steps.push({
+      stage: 'retrieve',
+      outcome: 'no_match',
+      detail: `The exact owner index returned ${rows.length} instrument row(s), but none carried the subject APN.`,
+      url: `${route.baseUrl}/search/SearchTypeName`,
+    });
+    return {
+      fields: {}, reachedUrl: `${route.baseUrl}/search/SearchTypeName`, recordReached: false,
+      extractionMethod: 'Harris Acclaim official-record search',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'no_subject_match',
+    };
+  }
+  alternateRoutesAttempted.push('exact_apn_grid_correlation');
+
+  const popupOpened = await evaluate<boolean>(((detail: {
+    transactionItemId: number; instrumentNumber: string; rowNumber: number; detailUrl: string;
+  }) => {
+    window.LastDocId = detail.transactionItemId;
+    window.LastInsNm = detail.instrumentNumber;
+    window.RowId = detail.rowNumber;
+    window.PageNumber = 1;
+    window.PageSize = 100;
+    try { window.__landosAcclaimDetail?.close?.(); } catch { /* already closed */ }
+    window.__landosAcclaimDetail = window.open(detail.detailUrl, '_blank');
+    return !!window.__landosAcclaimDetail;
+  }) as unknown as () => boolean, {
+    transactionItemId: match.transactionItemId,
+    instrumentNumber: match.instrumentNumber,
+    rowNumber: match.rowNumber,
+    detailUrl: `${route.basePath}/Details/`,
+  });
+  if (!popupOpened) {
+    steps.push({ stage: 'retrieve', outcome: 'unavailable', detail: 'The matched instrument detail could not be opened.', url: `${route.baseUrl}/search/SearchTypeName` });
+    return {
+      fields: {}, reachedUrl: `${route.baseUrl}/search/SearchTypeName`, recordReached: false,
+      extractionMethod: 'Harris Acclaim official-record search',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'record_not_reached',
+    };
+  }
+  alternateRoutesAttempted.push('instrument_detail');
+
+  let detail: { body: string; url: string; documentUrl: string } = { body: '', url: `${route.baseUrl}/Details/`, documentUrl: '' };
+  for (let attempt = 0; attempt < 16 && !expired() && !cancelled(); attempt += 1) {
+    detail = await evaluate<{ body: string; url: string; documentUrl: string }>(() => {
+      const popup = window.__landosAcclaimDetail;
+      try {
+        const body = String(popup?.document?.body?.innerText ?? '');
+        const frame = popup?.document?.querySelector?.('#imgFrame1');
+        return {
+          body,
+          url: String(popup?.location?.href ?? ''),
+          documentUrl: String(frame?.src ?? ''),
+        };
+      } catch {
+        return { body: '', url: '', documentUrl: '' };
+      }
+    });
+    if (
+      detail.body.includes(match.instrumentNumber)
+      && /TMS Number:/i.test(detail.body)
+      && /\/Image\/DocumentImage\d*\//i.test(detail.documentUrl)
+    ) break;
+    await wait(400);
+  }
+  if (!/\/Image\/DocumentImage\d*\//i.test(detail.documentUrl)) detail.documentUrl = '';
+  try { await evaluate<void>(() => window.__landosAcclaimDetail?.close?.()); } catch { /* optional cleanup */ }
+
+  const fields = acclaimDetailFieldsFromText(detail.body);
+  const observedApn = compactIdentifier(fields['Parcel ID']);
+  const expectedApn = compactIdentifier(key.apn);
+  if (!detail.body || !observedApn || observedApn !== expectedApn) {
+    steps.push({ stage: 'retrieve', outcome: 'no_match', detail: 'The instrument detail did not repeat the exact subject APN.', url: detail.url });
+    return {
+      fields, reachedUrl: detail.url || `${route.baseUrl}/Details/`, recordReached: false,
+      extractionMethod: 'Harris Acclaim owner search → APN-correlated instrument',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'no_subject_match',
+    };
+  }
+  if (detail.documentUrl && !expired() && !cancelled()) {
+    try {
+      await driver.open(detail.documentUrl, { timeoutMs: remaining() });
+      alternateRoutesAttempted.push('official_document_image');
+    } catch { /* detail metadata remains valid evidence if the scan viewer fails */ }
+  }
+  steps.push({
+    stage: 'retrieve',
+    outcome: 'succeeded',
+    detail: `Matched recorder instrument ${match.instrumentNumber} to exact subject APN ${fields['Parcel ID']}.`,
+    url: detail.documentUrl || detail.url,
+  });
+  return {
+    fields,
+    reachedUrl: detail.documentUrl || detail.url || `${route.baseUrl}/Details/`,
+    recordReached: true,
+    extractionMethod: 'Harris Acclaim owner search → exact APN → instrument detail',
+    searchMethods,
+    alternateRoutesAttempted,
+    steps,
+  };
+}
+
+function asPageObservation(value: unknown): PageObservation | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<PageObservation>;
+  if (!Array.isArray(candidate.searchControls) || typeof candidate.fields !== 'object') return null;
+  return {
+    url: String(candidate.url ?? ''),
+    title: String(candidate.title ?? ''),
+    headings: Array.isArray(candidate.headings) ? candidate.headings : [],
+    navItems: Array.isArray(candidate.navItems) ? candidate.navItems : [],
+    searchControls: candidate.searchControls,
+    buttons: Array.isArray(candidate.buttons) ? candidate.buttons : [],
+    links: Array.isArray(candidate.links) ? candidate.links : [],
+    hasMap: candidate.hasMap === true,
+    hasTable: candidate.hasTable === true,
+    fields: candidate.fields ?? {},
+    loginLike: candidate.loginLike === true,
+    methodToggle: candidate.methodToggle,
+    interactive: candidate.interactive,
+  };
+}
+
+async function collectCurrentPage(
+  driver: BrowserDriver,
+  remaining: () => number,
+  fields: Record<string, string>,
+): Promise<{ url: string; signal: number }> {
+  const read = await driver.readFields({ timeoutMs: remaining() });
+  addVisibleFields(fields, read.fields);
+  addVisibleSnippets(fields, read.snippets);
+  return { url: read.url, signal: parcelRecordSignal(fields) };
+}
+
+async function retrieveSubjectRecord(
+  driver: BrowserDriver,
+  source: CountySourceLink,
+  key: BrowserSearchKey,
+  remaining: () => number,
+  expired: () => boolean,
+  cancelled: () => boolean,
+): Promise<SubjectRecordRetrieval> {
+  if (source.type === 'recorder' && /\/AcclaimWeb(?:\/|$)|pickensscrod\./i.test(source.url) && driver.evaluate) {
+    return retrieveAcclaimSubjectRecord(driver, source, key, remaining, expired, cancelled);
+  }
+  const fields: Record<string, string> = {};
+  const searchMethods: string[] = [];
+  const alternateRoutesAttempted: string[] = [];
+  const steps: NonNullable<BrowserSourceAttempt['steps']> = [];
+  const first = await driver.open(source.url, { timeoutMs: remaining() });
+  addVisibleFields(fields, first.fields);
+  addVisibleSnippets(fields, first.snippets);
+  let reachedUrl = first.url || source.url;
+  let contradictedRecord = parcelRecordSignal(fields) >= 2 && recordContradictsSubject(fields, key);
+  steps.push({ stage: 'navigate', outcome: 'succeeded', detail: 'Opened the routed official destination.', url: reachedUrl });
+
+  if (parcelRecordSignal(fields) >= 2 && !recordContradictsSubject(fields, key)) {
+    steps.push({ stage: 'retrieve', outcome: 'succeeded', detail: 'The official destination was already a parcel/record detail.', url: reachedUrl });
+    return {
+      fields, reachedUrl, recordReached: true, extractionMethod: 'official record detail',
+      searchMethods, alternateRoutesAttempted, steps,
+    };
+  }
+
+  const identifierFallbacks: Array<NavSearchKey> = [];
+  if (key.apn) identifierFallbacks.push({ apn: key.apn, county: key.county, state: key.state });
+  if (key.owner) identifierFallbacks.push({ owner: key.owner, county: key.county, state: key.state });
+  if (key.address) identifierFallbacks.push({ address: key.address, county: key.county, state: key.state });
+  if (!identifierFallbacks.length) {
+    steps.push({ stage: 'retrieve', outcome: 'skipped', detail: 'No APN, owner, or address was available for a subject lookup.' });
+    return {
+      fields, reachedUrl, recordReached: false, extractionMethod: 'official landing page',
+      searchMethods, alternateRoutesAttempted, steps, failureCode: 'no_subject_identifier',
+    };
+  }
+
+  // County department pages often link onward to a vendor-hosted search app.
+  // Follow that public search link inside this same diagnosed attempt instead
+  // of recording the department landing page as the result.
+  let forms: FormInfo[] = (await driver.readForms?.({ timeoutMs: remaining() })) ?? [];
+  if (!forms.length) {
+    const searchLinks = await scanPageForSearchLinks(driver, reachedUrl, remaining());
+    const deepLink = searchLinks.find((candidate) => candidate.type === source.type) ?? searchLinks[0];
+    if (deepLink && deepLink.url !== reachedUrl) {
+      alternateRoutesAttempted.push('official_search_link');
+      if (source.type === 'recorder' && /\/AcclaimWeb(?:\/|$)|pickensscrod\./i.test(deepLink.url) && driver.evaluate) {
+        const acclaim = await retrieveAcclaimSubjectRecord(
+          driver,
+          { ...source, url: deepLink.url, label: deepLink.label || source.label },
+          key,
+          remaining,
+          expired,
+          cancelled,
+        );
+        acclaim.alternateRoutesAttempted.unshift(...alternateRoutesAttempted);
+        acclaim.steps.unshift(...steps);
+        return acclaim;
+      }
+      const searchPage = await driver.open(deepLink.url, { timeoutMs: remaining() });
+      addVisibleFields(fields, searchPage.fields);
+      addVisibleSnippets(fields, searchPage.snippets);
+      reachedUrl = searchPage.url || deepLink.url;
+      steps.push({
+        stage: 'navigate',
+        outcome: 'succeeded',
+        detail: 'Followed the department page to its public record-search application.',
+        url: reachedUrl,
+      });
+      forms = (await driver.readForms?.({ timeoutMs: remaining() })) ?? [];
+      contradictedRecord ||= parcelRecordSignal(fields) >= 2 && recordContradictsSubject(fields, key);
+      if (parcelRecordSignal(fields) >= 2 && !recordContradictsSubject(fields, key)) {
+        steps.push({ stage: 'retrieve', outcome: 'succeeded', detail: 'The linked search application opened directly on a parcel/record detail.', url: reachedUrl });
+        return {
+          fields, reachedUrl, recordReached: true, extractionMethod: 'official search link → record',
+          searchMethods, alternateRoutesAttempted, steps,
+        };
+      }
+    }
+  }
+
+  // Route 1: standard HTML forms.
+  if (forms.length) {
+    alternateRoutesAttempted.push('html_form');
+    let found = false;
+    for (const fallbackKey of identifierFallbacks) {
+      if (found || expired() || cancelled()) break;
+      const plan = planParcelSearch(forms, fallbackKey);
+      if (!plan || !driver.fillAndSubmit) continue;
+      const values = plan.idKind === 'apn'
+        ? [plan.value, ...apnSearchVariants(plan.value).slice(1)].slice(0, 6)
+        : [plan.value, ...plan.valueAlternates].slice(0, 4);
+      for (const value of values) {
+        if (expired() || cancelled()) break;
+        searchMethods.push(`${plan.idKind}:${value}`);
+        const after = await driver.fillAndSubmit(plan.fieldSelector, value, plan.submitSelector, { timeoutMs: remaining() });
+        if (isRejectedParcelRecordDestination(after.url)) {
+          alternateRoutesAttempted.push('commercial_result_rejected');
+          steps.push({
+            stage: 'retrieve',
+            outcome: 'no_match',
+            detail: 'The department site search redirected to a commercial property page; LandOS rejected it as non-government evidence.',
+            url: source.url,
+          });
+          await driver.open(source.url, { timeoutMs: remaining() });
+          reachedUrl = source.url;
+          continue;
+        }
+        addVisibleFields(fields, after.fields);
+        addVisibleSnippets(fields, after.snippets);
+        reachedUrl = after.url || reachedUrl;
+        contradictedRecord ||= parcelRecordSignal(after.fields) >= 2 && recordContradictsSubject(after.fields, key);
+        if (parcelRecordSignal(after.fields) >= 2 && !recordContradictsSubject(after.fields, key)) {
+          found = true;
+          break;
+        }
+
+        const links = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
+        const record = pickParcelRecordLink(links, fallbackKey);
+        if (record) {
+          alternateRoutesAttempted.push('anchor_result');
+          const recordPage = await driver.open(record.href, { timeoutMs: remaining() });
+          if (isRejectedParcelRecordDestination(recordPage.url || record.href)) {
+            alternateRoutesAttempted.push('commercial_result_rejected');
+            steps.push({
+              stage: 'retrieve',
+              outcome: 'no_match',
+              detail: 'A result link redirected to a commercial property page; LandOS rejected it as non-government evidence.',
+              url: source.url,
+            });
+            await driver.open(source.url, { timeoutMs: remaining() });
+            reachedUrl = source.url;
+            continue;
+          }
+          addVisibleFields(fields, recordPage.fields);
+          addVisibleSnippets(fields, recordPage.snippets);
+          reachedUrl = recordPage.url || record.href;
+          await collectCurrentPage(driver, remaining, fields);
+          contradictedRecord ||= parcelRecordSignal(fields) >= 2 && recordContradictsSubject(fields, key);
+          if (parcelRecordSignal(fields) >= 2 && !recordContradictsSubject(fields, key)) {
+            found = true;
+            break;
+          }
+        }
+
+        const candidates = (await driver.readCandidates?.({ timeoutMs: remaining() })) ?? [];
+        const best = pickBestCandidate(candidates, key);
+        if (best && driver.clickCandidate) {
+          alternateRoutesAttempted.push('interactive_result_row');
+          await driver.clickCandidate(best.index, { timeoutMs: remaining() });
+          const current = await collectCurrentPage(driver, remaining, fields);
+          if (isRejectedParcelRecordDestination(current.url)) {
+            alternateRoutesAttempted.push('commercial_result_rejected');
+            steps.push({
+              stage: 'retrieve',
+              outcome: 'no_match',
+              detail: 'An interactive result redirected to a commercial property page; LandOS rejected it as non-government evidence.',
+              url: source.url,
+            });
+            await driver.open(source.url, { timeoutMs: remaining() });
+            reachedUrl = source.url;
+            continue;
+          }
+          reachedUrl = current.url || reachedUrl;
+          contradictedRecord ||= current.signal >= 2 && recordContradictsSubject(fields, key);
+          if (current.signal >= 2 && !recordContradictsSubject(fields, key)) {
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+    if (found) {
+      steps.push({
+        stage: 'retrieve', outcome: 'succeeded',
+        detail: `Reached a subject record through the HTML-form route after ${searchMethods.length} submitted lookup(s).`,
+        url: reachedUrl,
+      });
+      return {
+        fields, reachedUrl, recordReached: true, extractionMethod: 'parcel search → record',
+        searchMethods, alternateRoutesAttempted, steps,
+      };
+    }
+    steps.push({
+      stage: 'retrieve', outcome: 'no_match',
+      detail: `The HTML-form route submitted ${searchMethods.length} lookup(s) but did not reach a matching record.`,
+      url: reachedUrl,
+    });
+  }
+
+  // Route 2: generic SPA/GIS controls and non-anchor result rows.
+  const observed = asPageObservation(await driver.observe?.({ timeoutMs: remaining() }));
+  if (observed && observed.searchControls.length && driver.typeSearch) {
+    alternateRoutesAttempted.push('interactive_spa');
+    for (const ranked of rankSearchMethods(key)) {
+      if (expired() || cancelled()) break;
+      const value = identifierValue(key, ranked.method);
+      if (!value) continue;
+      const strategy = planNavigationStrategy(observed, { kind: ranked.method, value });
+      if (!strategy) continue;
+      for (const step of strategy.steps) {
+        if (expired() || cancelled()) break;
+        if (step.action === 'select_method' && step.selector && step.text && driver.selectByText) {
+          await driver.selectByText(step.selector, step.text, { timeoutMs: remaining() });
+        } else if (step.action === 'click' && step.text && driver.clickByText) {
+          await driver.clickByText(step.text, { timeoutMs: remaining() });
+        } else if (step.action === 'fill' && step.selector && step.value) {
+          await driver.typeSearch(step.selector, step.value, { timeoutMs: remaining() });
+          searchMethods.push(`${ranked.method}:${step.value}`);
+        } else if (step.action === 'submit') {
+          const candidates = (await driver.readCandidates?.({ timeoutMs: remaining() })) ?? [];
+          const best = pickBestCandidate(candidates, key);
+          if (best && driver.clickCandidate) {
+            alternateRoutesAttempted.push('interactive_result_row');
+            await driver.clickCandidate(best.index, { timeoutMs: remaining() });
+            const candidatePage = await collectCurrentPage(driver, remaining, fields);
+            reachedUrl = candidatePage.url || reachedUrl;
+            contradictedRecord ||= candidatePage.signal >= 2 && recordContradictsSubject(fields, key);
+            // Some result rows open the record immediately; do not submit a
+            // second, unrelated search control on the newly reached page.
+            if (candidatePage.signal >= 2 && !recordContradictsSubject(fields, key)) break;
+          }
+          if (driver.submitSearch) await driver.submitSearch({ timeoutMs: remaining() });
+        }
+      }
+      const current = await collectCurrentPage(driver, remaining, fields);
+      reachedUrl = current.url || reachedUrl;
+      const afterObservation = asPageObservation(await driver.observe?.({ timeoutMs: remaining() }));
+      addVisibleFields(fields, afterObservation?.fields);
+      contradictedRecord ||= parcelRecordSignal(fields) >= 2 && recordContradictsSubject(fields, key);
+      if (parcelRecordSignal(fields) >= 2 && !recordContradictsSubject(fields, key)) {
+        steps.push({
+          stage: 'retrieve', outcome: 'succeeded',
+          detail: `Reached a subject record through interactive controls using ${ranked.method}.`,
+          url: reachedUrl,
+        });
+        return {
+          fields, reachedUrl, recordReached: true, extractionMethod: `interactive ${ranked.method} search → record`,
+          searchMethods, alternateRoutesAttempted, steps,
+        };
+      }
+    }
+    steps.push({
+      stage: 'retrieve', outcome: 'no_match',
+      detail: `Interactive controls were exercised with ${searchMethods.length} submitted lookup(s), but no matching record detail was reached.`,
+      url: reachedUrl,
+    });
+  } else if (!forms.length) {
+    steps.push({
+      stage: 'retrieve', outcome: 'unavailable',
+      detail: observed
+        ? 'The page exposed no usable public subject-search control.'
+        : 'The driver could not inspect an interactive search surface on this source.',
+      url: reachedUrl,
+    });
+  }
+
+  const failureCode: BrowserSourceAttempt['failureCode'] = expired() || cancelled()
+    ? 'timeout_or_cancelled'
+    : contradictedRecord
+      ? 'no_subject_match'
+    : forms.length || (observed?.searchControls.length ?? 0) > 0
+      ? 'record_not_reached'
+      : 'no_search_control';
+  return {
+    fields, reachedUrl, recordReached: false, extractionMethod: 'official landing page',
+    searchMethods, alternateRoutesAttempted, steps, failureCode,
+  };
+}
+
 /**
  * County Records workflow — REAL NETR-routed semantic retrieval (no county-
  * specific scrapers). Runs only after LandPortal. Steps:
@@ -89,8 +853,10 @@ function workflowsForNeeded(neededFields?: string[]): CountyWorkflow[] {
  *   3. If NETR is stale/missing core sources → intelligent web search for the
  *      official county site (prefer .gov / county-owned), labeled search_fallback.
  *   4. Persist the routing to the County Source Map.
- *   5. Visit the official sources → semantic-extract public-record facts with full
- *      provenance (never guessing). GIS/recorder/planning are kept as labeled links.
+ *   5. Visit the official sources → reach a subject record through HTML forms,
+ *      SPA controls, anchor results, or interactive rows → semantic-extract
+ *      public-record facts with full provenance (never guessing). Source links
+ *      remain evidence metadata and are never emitted as facts.
  * Parked driver returns honest `parked` evidence with the planned routing.
  */
 async function runCountyWorkflow(
@@ -152,7 +918,11 @@ async function runCountyWorkflow(
 
     if (netrIsStale(sources)) {
       usedSearchFallback = true;
-      for (const type of ['assessor', 'appraiser', 'tax', 'recorder', 'gis'] as CountySourceType[]) {
+      const fallbackTypes: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'recorder', 'gis'];
+      if (mode === 'deep_record' || targets.includes('planning_zoning')) {
+        fallbackTypes.push('planning');
+      }
+      for (const type of fallbackTypes) {
         if (expired()) break;
         if (sources.some((s) => s.type === type)) continue;
         try {
@@ -170,21 +940,51 @@ async function runCountyWorkflow(
       saveCountySources({ state, county, netrUrl, sources, usedSearchFallback, status, confidence, notes: usedSearchFallback ? 'NETR thin/stale — used official search fallback for missing sources.' : 'Routed via NETR Online.' });
     } catch { /* cache best-effort */ }
 
-    const deepLinks = new Map<string, CountySourceLink>();
-    for (const src of sources) {
-      if (expired()) break;
-      try {
-        await driver.open(src.url, { timeoutMs: remaining() });
-        const found = await scanPageForSearchLinks(driver, src.url, remaining());
-        for (const dl of found) {
-          const k = dl.url;
-          if (!deepLinks.has(k)) deepLinks.set(k, dl);
-        }
-      } catch { /* skip */ }
-    }
-    if (deepLinks.size > 0) {
-      sources = [...sources, ...deepLinks.values()];
-    }
+  }
+
+  // Revalidate cached routes before reuse. A same-name county from another
+  // state or a directory aggregator must not survive simply because an older
+  // routing record was marked fresh.
+  sources = sources.filter((source) =>
+    officialDomainScore(source.url, county, state) > 0
+    && !sourceContradictsRequestedState({ text: source.label, href: source.url }, county, state));
+
+  // A fresh routing cache is useful, but it is not proof that every required
+  // department was attempted. In deep-record mode always resolve planning
+  // independently when the cached county map does not contain it.
+  // This keeps zoning/subdivision research from disappearing merely because
+  // assessor/GIS/recorder/tax were already cached.
+  const requiredDepartmentTypes: CountySourceType[] = mode === 'deep_record'
+    ? ['recorder', 'planning']
+    : targets.includes('planning_zoning') ? ['planning'] : [];
+  let enrichedCachedSources = false;
+  for (const type of requiredDepartmentTypes) {
+    if (expired() || sources.some((source) => source.type === type)) continue;
+    try {
+      usedSearchFallback = true;
+      await driver.open(searchEngineUrl(officialSearchQuery(type, county, state)), { timeoutMs: remaining() });
+      const raw = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
+      const picked = pickOfficialResult(unwrapSearchResults(raw), type, county, state);
+      if (picked) {
+        sources.push(picked);
+        enrichedCachedSources = true;
+      }
+    } catch { /* retain the exact sources that did resolve */ }
+  }
+  if (enrichedCachedSources) {
+    const status: 'routed' | 'partial' = netrIsStale(sources) ? 'partial' : 'routed';
+    try {
+      saveCountySources({
+        state,
+        county,
+        netrUrl,
+        sources,
+        usedSearchFallback,
+        status,
+        confidence: status === 'routed' ? 'high' : 'medium',
+        notes: 'Reused the county source map and resolved the missing planning department with official search fallback.',
+      });
+    } catch { /* cache best-effort */ }
   }
 
   ev.sourcesUsed = sources.map((s) => ({ type: s.type, url: s.url, origin: s.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const, confidence: s.confidence }));
@@ -197,6 +997,7 @@ async function runCountyWorkflow(
   } catch { /* capability memory must never prevent public-record retrieval */ }
 
   const facts: BrowserFact[] = [];
+  const sourceAttempts: BrowserSourceAttempt[] = [];
   const emit = (f: BrowserFact) => { facts.push(f); try { hooks.onFact?.(f); } catch { /* non-fatal */ } };
   const factPriority: CountySourceType[] = ['assessor', 'appraiser', 'tax', 'gis', 'recorder', 'planning', 'building'];
   const deepPriority: CountySourceType[] = ['recorder', 'planning', 'building', 'assessor', 'appraiser', 'tax', 'gis'];
@@ -211,61 +1012,44 @@ async function runCountyWorkflow(
   let recipeRecorded = false;
   for (const src of ordered) {
     if (cancelled() || expired()) { stopped = true; break; }
-    const ctx = { sourceName: `${county} County ${labelFor(src.type)}`, sourceType: src.type, sourceUrl: src.url, origin: src.origin === 'netr' ? 'netr_county' as const : 'search_fallback' as const };
+    const sourceName = `${county} County ${labelFor(src.type)}`;
+    const attemptedAt = now();
     try {
-      let page = await driver.open(src.url, { timeoutMs: remaining() });
-      let merged: Record<string, string> = { ...page.fields };
-      let method = 'official source link';
-      const forms: FormInfo[] = (await driver.readForms?.({ timeoutMs: remaining() })) ?? [];
-      let plan = planParcelSearch(forms, key);
-      let foundRecord = false;
-      let searchKey = key;
-      const identifierFallbacks: Array<NavSearchKey> = [];
-      if (key.apn) identifierFallbacks.push({ apn: key.apn, county: key.county, state: key.state });
-      if (key.owner) identifierFallbacks.push({ owner: key.owner, county: key.county, state: key.state });
-      if (key.address) identifierFallbacks.push({ address: key.address, county: key.county, state: key.state });
-      for (const fallbackKey of identifierFallbacks) {
-        if (foundRecord) break;
-        plan = planParcelSearch(forms, fallbackKey);
-        if (!plan || !driver.fillAndSubmit) continue;
-        const values = plan.idKind === 'apn'
-          ? [plan.value, ...apnSearchVariants(plan.value).slice(1)].slice(0, 6)
-          : [plan.value, ...plan.valueAlternates].slice(0, 4);
-        for (const value of values) {
-          if (cancelled() || expired()) { stopped = true; break; }
-          const after = await driver.fillAndSubmit(plan.fieldSelector, value, plan.submitSelector, { timeoutMs: remaining() });
-          const links = (await driver.readLinks?.({ timeoutMs: remaining() })) ?? [];
-          const record = pickParcelRecordLink(links, fallbackKey);
-          if (record) {
-            const rp = await driver.open(record.href, { timeoutMs: remaining() });
-            merged = { ...merged, ...rp.fields, ...(await driver.readFields({ timeoutMs: remaining() })).fields };
-            method = `parcel search (${plan.idKind}) → record`;
-            foundRecord = true;
-            break;
-          }
-          if (Object.keys(after.fields).length > Object.keys(page.fields).length) {
-            merged = { ...merged, ...after.fields };
-            method = `parcel search (${plan.idKind})`;
-          }
-        }
-      }
-      if (!foundRecord) {
-        merged = { ...merged, ...(await driver.readFields({ timeoutMs: remaining() })).fields };
-      }
-      if (stopped) break;
-      const pageIsRecord = parcelRecordSignal(merged) >= 2;
-      const ext = pageIsRecord
-        ? extractRecordFacts(merged, ctx, { pageIsRecord: true }).map((f) => ({ ...f, extractionMethod: method }))
-        : [];
-      const linkFact: BrowserFact = { key: `${src.type}Link`, label: `${labelFor(src.type)} link`, value: src.url, sourceName: ctx.sourceName, sourceType: src.type, sourceUrl: src.url, confidence: src.confidence >= 0.7 ? 'high' : 'medium', origin: ctx.origin, status: 'extracted', extractionMethod: 'official source link' };
+      const retrieval = await retrieveSubjectRecord(driver, src, key, remaining, expired, cancelled);
+      ev.sourceUrls.push(src.url);
+      if (retrieval.reachedUrl && retrieval.reachedUrl !== src.url) ev.sourceUrls.push(retrieval.reachedUrl);
+      if (expired() || cancelled()) stopped = true;
+      const ctx: ExtractContext = {
+        sourceName,
+        sourceType: src.type,
+        sourceUrl: retrieval.reachedUrl || src.url,
+        origin: src.origin === 'netr' ? 'netr_county' : 'search_fallback',
+      };
+      const ext = extractGovernmentFacts(retrieval.fields, ctx, {
+        pageIsRecord: retrieval.recordReached,
+        sourceType: src.type,
+        extractionMethod: retrieval.extractionMethod,
+      });
+      retrieval.steps.push({
+        stage: 'extract',
+        outcome: ext.length ? 'succeeded' : 'no_match',
+        detail: ext.length
+          ? `Extracted ${ext.length} labeled subject/jurisdiction fact(s).`
+          : retrieval.recordReached
+            ? 'A record detail was reached, but it contained no supported labeled fields.'
+            : 'No subject record was reached, so parcel fields were not extracted.',
+        url: retrieval.reachedUrl,
+      });
       if (ext.length > 0) {
         for (const f of ext) emit(f);
-        if (!recipeRecorded) {
+        if (!recipeRecorded && retrieval.recordReached && retrieval.searchMethods.length > 0) {
           try {
-            const searchMethods = [key.apn ? 'apn' : null, key.address ? 'address' : null, key.owner ? 'owner' : null]
-              .filter((value): value is 'apn' | 'address' | 'owner' => value !== null);
+            const searchMethods = retrieval.searchMethods
+              .map((method) => method.split(':', 1)[0])
+              .filter((method): method is 'apn' | 'address' | 'owner' =>
+                method === 'apn' || method === 'address' || method === 'owner');
             countyCapability.recordSuccessfulLookup({
-              state, county, source: src, searchMethods: searchMethods.length ? searchMethods : ['address'],
+              state, county, source: src, searchMethods,
               validatedFacts: [...new Set(ext.map((fact) => fact.key))], observedAt: now(), runReference,
             });
             recipeRecorded = true;
@@ -273,31 +1057,141 @@ async function runCountyWorkflow(
         }
         if (!screenshotTaken && !expired()) { try { ev.screenshots.push(await driver.screenshot(`county_${src.type}_record`, { timeoutMs: remaining() })); } catch { /* optional */ } screenshotTaken = true; }
       } else {
-        emit(linkFact);
-        for (const a of extractAgencyContact(merged, ctx)) emit({ ...a, extractionMethod: 'agency contact page (not a parcel record)' });
+        for (const a of extractAgencyContact(retrieval.fields, ctx)) emit({ ...a, extractionMethod: 'agency contact page (not a parcel record)' });
       }
-    } catch { /* try the next source; never stop on one */ }
+      const substantiveFacts = ext.filter((fact) => fact.status === 'extracted');
+      const failureCode = substantiveFacts.length
+        ? undefined
+        : retrieval.failureCode ?? (retrieval.recordReached ? 'no_extractable_subject_fields' : 'record_not_reached');
+      retrieval.steps.push({
+        stage: 'interpret',
+        outcome: substantiveFacts.length ? 'succeeded' : 'no_match',
+        detail: substantiveFacts.length
+          ? 'Supported labeled values were classified as government facts with exact provenance.'
+          : `The source remains an attempted destination only; it is not a completed government finding (${failureCode}).`,
+        url: retrieval.reachedUrl,
+      });
+      sourceAttempts.push({
+        sourceName,
+        sourceType: src.type,
+        sourceUrl: src.url,
+        attemptedAt,
+        result: substantiveFacts.length > 0
+          ? 'retrieved'
+          : retrieval.recordReached
+            ? 'not_found'
+            : 'attempted_inconclusive',
+        factCount: substantiveFacts.length,
+        note: substantiveFacts.length > 0
+          ? `${substantiveFacts.length} subject/jurisdiction fact(s) extracted from ${retrieval.reachedUrl}. Lookup submissions: ${retrieval.searchMethods.join(', ') || 'direct official page'}. Routes exercised: ${retrieval.alternateRoutesAttempted.join(', ') || 'direct official page'}.`
+          : `The official destination was reached at ${retrieval.reachedUrl}, but no supported subject fact was extracted (${failureCode}). Lookup submissions: ${retrieval.searchMethods.join(', ') || 'none possible'}. Alternate routes attempted: ${retrieval.alternateRoutesAttempted.join(', ') || 'none available'}.`,
+        reachedUrl: retrieval.reachedUrl,
+        searchMethods: retrieval.searchMethods,
+        alternateRoutesAttempted: retrieval.alternateRoutesAttempted,
+        extractedFactKeys: [...new Set(substantiveFacts.map((fact) => fact.key))],
+        failureCode,
+        steps: retrieval.steps,
+      });
+      const completedWorkflow: CountyWorkflow = ({
+        assessor: 'assessor',
+        appraiser: 'assessor',
+        tax: 'tax_office',
+        gis: 'gis',
+        recorder: 'recorder',
+        planning: 'planning_zoning',
+        building: 'planning_zoning',
+      } as Record<CountySourceType, CountyWorkflow>)[src.type];
+      if (
+        substantiveFacts.length > 0
+        && input.neededFields?.length
+        && targets.length === 1
+        && targets[0] === completedWorkflow
+      ) break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const timeout = /timeout|timed out|deadline/i.test(message);
+      sourceAttempts.push({
+        sourceName,
+        sourceType: src.type,
+        sourceUrl: src.url,
+        attemptedAt,
+        result: timeout ? 'source_unavailable' : 'execution_failure',
+        factCount: 0,
+        note: `The official source could not be completed: ${message}`,
+        extractedFactKeys: [],
+        failureCode: timeout ? 'source_unavailable' : 'execution_failure',
+        steps: [
+          { stage: 'navigate', outcome: 'failed', detail: `Opening or interacting with the official source failed: ${message}`, url: src.url },
+          { stage: 'retrieve', outcome: 'skipped', detail: 'No subject record could be retrieved after the navigation failure.' },
+          { stage: 'extract', outcome: 'skipped', detail: 'Extraction was not run without a retrieved page.' },
+          { stage: 'interpret', outcome: 'skipped', detail: 'No finding was asserted.' },
+        ],
+      });
+      /* try the next source; never stop on one */
+    }
   }
 
-  const statewideFacts = !expired() && facts.filter((f) => f.status === 'extracted').length === 0
-    ? await (async (): Promise<BrowserFact[] | null> => {
-        const portal = statewidePortalFor(state);
-        if (!portal || !driver.evaluate) return null;
-        const portalCtx: ExtractContext = {
-          sourceName: `${state} Statewide Assessment Portal`,
-          sourceType: 'assessor',
-          sourceUrl: portal.url,
-          origin: 'search_fallback',
-        };
-        return tryStatewidePortalFallback(driver, portal, key, portalCtx, remaining(), now, countyCapability, runReference);
-      })()
-    : null;
+  let statewideFacts: BrowserFact[] | null = null;
+  if (!expired() && facts.filter((fact) => fact.status === 'extracted').length === 0) {
+    const portal = statewidePortalFor(state);
+    if (portal && driver.evaluate) {
+      const attemptedAt = now();
+      const portalCtx: ExtractContext = {
+        sourceName: `${state} Statewide Assessment Portal`,
+        sourceType: 'assessor',
+        sourceUrl: portal.url,
+        origin: 'search_fallback',
+      };
+      statewideFacts = await tryStatewidePortalFallback(
+        driver, portal, key, portalCtx, remaining(), now, countyCapability, runReference,
+      );
+      ev.sourceUrls.push(portal.url);
+      if (!ev.sourcesUsed.some((source) => source.url === portal.url)) {
+        ev.sourcesUsed.push({ type: 'assessor', url: portal.url, origin: 'search_fallback', confidence: 0.7 });
+      }
+      sourceAttempts.push({
+        sourceName: portalCtx.sourceName,
+        sourceType: portalCtx.sourceType,
+        sourceUrl: portal.url,
+        attemptedAt,
+        result: statewideFacts?.length ? 'retrieved' : 'attempted_inconclusive',
+        factCount: statewideFacts?.length ?? 0,
+        note: statewideFacts?.length
+          ? `${statewideFacts.length} subject-property fact(s) extracted through the statewide assessment fallback.`
+          : 'The statewide assessment fallback ran but did not return a supported subject-property fact.',
+        reachedUrl: portal.url,
+        searchMethods: [key.apn ? `apn:${key.apn}` : key.owner ? `owner:${key.owner}` : key.address ? `address:${key.address}` : 'no_subject_identifier'],
+        alternateRoutesAttempted: ['statewide_assessment_portal'],
+        extractedFactKeys: statewideFacts ? [...new Set(statewideFacts.map((fact) => fact.key))] : [],
+        failureCode: statewideFacts?.length ? undefined : 'record_not_reached',
+        steps: [
+          { stage: 'navigate', outcome: 'succeeded', detail: 'Opened the configured statewide public assessment portal.', url: portal.url },
+          {
+            stage: 'retrieve', outcome: statewideFacts?.length ? 'succeeded' : 'no_match',
+            detail: statewideFacts?.length ? 'Reached a parcel record through the statewide fallback.' : 'The statewide fallback did not reach a supported subject record.',
+            url: portal.url,
+          },
+          {
+            stage: 'extract', outcome: statewideFacts?.length ? 'succeeded' : 'no_match',
+            detail: statewideFacts?.length ? `Extracted ${statewideFacts.length} labeled fact(s).` : 'No supported labeled subject fields were extracted.',
+            url: portal.url,
+          },
+          {
+            stage: 'interpret', outcome: statewideFacts?.length ? 'succeeded' : 'no_match',
+            detail: statewideFacts?.length ? 'Classified the returned fields with official-source provenance.' : 'No completed finding was asserted from the fallback.',
+            url: portal.url,
+          },
+        ],
+      });
+    }
+  }
   if (statewideFacts) {
     for (const f of statewideFacts) emit(f);
     ev.sourceUrls.push(`statewide:${state}`);
   }
 
   ev.facts = facts;
+  ev.sourceAttempts = sourceAttempts;
   ev.patch = factsToPatch(facts);
   const extractedCount = facts.filter((f) => f.status === 'extracted').length;
   ev.status = extractedCount > 0 ? 'retrieved' : sources.length > 0 ? 'partial' : 'no_match';
@@ -449,7 +1343,11 @@ async function tryStatewidePortalFallback(
 
         const pageIsRecord = parcelRecordSignal(merged) >= 2;
         if (pageIsRecord) {
-          const ext = extractRecordFacts(merged, ctx, { pageIsRecord: true });
+          const ext = extractGovernmentFacts(merged, ctx, {
+            pageIsRecord: true,
+            sourceType: 'assessor',
+            extractionMethod: 'statewide assessment search → record',
+          });
           facts.push(...ext);
           try {
             countyCapability.recordSuccessfulLookup({

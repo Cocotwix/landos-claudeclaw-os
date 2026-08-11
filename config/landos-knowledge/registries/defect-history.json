@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "registryId": "defect-history",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "DEFECT-704-BELL-PROJECTION",
+      "title": "Canonical Hermes comp and visual evidence is not fully projected into the Deal Card",
+      "status": "known-open-do-not-repair-in-revamp",
+      "summary": "For 704 Bell Rd, accepted canonical comps and a verified visual can coexist with zero or empty operator-facing Comps & Market, Documents & Visuals, or imagery output. The governed acceptance run must report FAIL and block completion.",
+      "canonicalRecordRefs": [
+        "property-address:704 Bell Rd, Red Creek, NY 13143",
+        "landportal-property-id:89520173"
+      ],
+      "canonicalRefs": ["src/landos/hermes-landportal-import.ts", "web/src/components/PropertyIntelligencePanel.tsx"]
+    }
+  ]
+}

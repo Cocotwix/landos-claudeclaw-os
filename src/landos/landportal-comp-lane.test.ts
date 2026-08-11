@@ -13,7 +13,7 @@ import { _initTestLandosDb } from './db.js';
 import { createDealCard } from './deal-card.js';
 import { upsertPropertyCard, savePropertyInspection, loadPropertyInspection } from './property-card.js';
 import { linkPropertyToDeal } from './deal-card.js';
-import { collectComparables } from './property-intelligence-live.js';
+import { collectComparables, collectParcelIdentity } from './property-intelligence-live.js';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
 import { addComp, listComps } from './comps.js';
 import type { MissionContext } from './property-intelligence-collector-types.js';
@@ -99,6 +99,102 @@ const IMPROVED_ROW = {
 beforeEach(() => { _initTestLandosDb(); });
 
 describe('LandPortal primary comparable lane', () => {
+  it('starts LandPortal subject capture and the public-source refresh concurrently', async () => {
+    const { dealCardId } = seedCard();
+    let releaseCapture!: () => void;
+    let releasePublic!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    const publicGate = new Promise<void>((resolve) => { releasePublic = resolve; });
+    let captureStarted = false;
+    let publicStarted = false;
+
+    const pending = collectParcelIdentity(context(dealCardId), {
+      captureLandPortalInspection: async () => {
+        captureStarted = true;
+        await captureGate;
+        return { ok: true, note: 'captured', comparableCount: 0 };
+      },
+      runPublicIntelligence: async () => {
+        publicStarted = true;
+        await publicGate;
+        return { ok: true };
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(captureStarted).toBe(true);
+      expect(publicStarted).toBe(true);
+    });
+    releaseCapture();
+    releasePublic();
+    await expect(pending).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('starts LandPortal, Zillow, and Redfin comp retrieval together after identity', async () => {
+    const { dealCardId } = seedCard();
+    let releaseLandPortal!: () => void;
+    let releaseZillow!: () => void;
+    let releaseRedfin!: () => void;
+    const landPortalGate = new Promise<void>((resolve) => { releaseLandPortal = resolve; });
+    const zillowGate = new Promise<void>((resolve) => { releaseZillow = resolve; });
+    const redfinGate = new Promise<void>((resolve) => { releaseRedfin = resolve; });
+    let landPortalStarted = false;
+    let zillowStarted = false;
+    let redfinStarted = false;
+
+    const pending = collectComparables(context(dealCardId), {
+      runPublicIntelligence: async () => ({ ok: true }),
+      captureLandPortalInspection: async () => {
+        landPortalStarted = true;
+        await landPortalGate;
+        return { ok: true, note: 'captured', comparableCount: 0 };
+      },
+      captureZillowComps: async () => {
+        zillowStarted = true;
+        await zillowGate;
+        return { status: 'none', note: 'no Zillow rows', sold: [], active: [] };
+      },
+      captureRedfinComps: async () => {
+        redfinStarted = true;
+        await redfinGate;
+        return { status: 'none', note: 'no Redfin rows', sold: [], active: [] };
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(landPortalStarted).toBe(true);
+      expect(zillowStarted).toBe(true);
+      expect(redfinStarted).toBe(true);
+    });
+    releaseLandPortal();
+    releaseZillow();
+    releaseRedfin();
+    await expect(pending).resolves.toMatchObject({ status: 'partial' });
+  });
+
+  it('hands back an established identity when the independent public refresh exceeds its wait window', async () => {
+    const { dealCardId } = seedCard();
+    const outcome = await collectParcelIdentity(context(dealCardId), {
+      publicRefreshWaitMs: 5,
+      captureLandPortalInspection: async () => ({ ok: true, note: 'captured', comparableCount: 0 }),
+      runPublicIntelligence: () => new Promise(() => {}),
+    });
+    expect(outcome.status).toBe('completed');
+    expect(outcome.data?.identity.explanation).toContain('Confirmed');
+  });
+
+  it('hands back retained identity when an authenticated LandPortal capture exceeds its wait window', async () => {
+    const { dealCardId } = seedCard();
+    const outcome = await collectParcelIdentity(context(dealCardId), {
+      landPortalCaptureWaitMs: 5,
+      publicRefreshWaitMs: 5,
+      captureLandPortalInspection: () => new Promise(() => {}),
+      runPublicIntelligence: async () => ({ ok: true }),
+    });
+    expect(outcome.status).toBe('completed');
+    expect(outcome.data?.identity.explanation).toContain('LandPortal subject capture exceeded');
+  });
+
   it('preserves historical disabled-provider rows in SQLite but never emits them in the current handback', async () => {
     const { dealCardId, cardId } = seedCard();
     addComp({
@@ -191,13 +287,34 @@ describe('LandPortal primary comparable lane', () => {
     const policy = applyCompSourcePolicy({ state: 'TN', county: 'Roane', acres: 12.28 }, outcome.data!.candidates);
 
     expect(policy.plan.landPortalUsable).toBe(true);
-    expect(policy.plan.caps).toEqual({ zillow: 2, redfin: 2 });
+    expect(policy.plan.caps).toEqual({ zillow: 5, redfin: 5 });
     // The vacant closed sale prices the subject; the listing is competition; the
     // improved row is held for Land-Home only.
     expect(policy.acceptedSold.map((d) => d.candidate.addressDesc)).toEqual(['120 Ridge Rd, Kingston, TN 37763']);
     expect(policy.acceptedSold[0].role).toBe('primary');
     expect(policy.acceptedActive.map((d) => d.candidate.addressDesc)).toEqual(['300 Ridge Rd, Kingston, TN 37763']);
     expect(policy.landHomeOnly.map((d) => d.candidate.addressDesc)).toEqual(['500 Ridge Rd, Kingston, TN 37763']);
+  });
+
+  it('repairs a retained material-building row into the Land-Home lane', async () => {
+    const { dealCardId, cardId } = seedCard();
+    savePropertyInspection(cardId, {
+      parcelUrl: 'https://landportal.test/parcel/1', comparablesUrl: null, parcelFacts: {}, assets: [],
+      overlays: [], visualObservations: [], comparables: [{
+        ...SOLD_ROW,
+        apn: '4099-05-18-8064',
+        address: '526 Country Club Rd',
+        acres: 67.27,
+        price: 685_000,
+        buildingSqft: 2052,
+        improvement: 'vacant' as const,
+      }],
+      sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    const outcome = await collectComparables(context(dealCardId), { runPublicIntelligence: async () => ({ ok: true }) });
+    const policy = applyCompSourcePolicy({ state: 'TN', county: 'Roane', acres: 12.28 }, outcome.data!.candidates);
+    expect(policy.acceptedSold).toHaveLength(0);
+    expect(policy.landHomeOnly.map((d) => d.candidate.addressDesc)).toEqual(['526 Country Club Rd']);
   });
 
   it('carries the structured distance and sale date through to the candidate', async () => {

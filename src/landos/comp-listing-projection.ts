@@ -18,7 +18,7 @@ import {
 } from './comp-listing-history.js';
 import {
   resolveCompTransactionPrice, TRANSACTION_CONFIDENCE_LABEL,
-  type CompTransactionPrice,
+  type CompSaleVerification, type CompTransactionPrice,
 } from './comp-transaction-price.js';
 import {
   buildSourceDescription, buildLandosFactualSummary,
@@ -165,6 +165,10 @@ export interface BuildListingProjectionInput {
   /** The price already retained on the comp row. */
   retainedPrice: number | null;
   retainedPriceKind: 'sale' | 'list' | 'unknown';
+  /** How the closed price was established. Defaults to `independent`. */
+  saleVerification?: CompSaleVerification;
+  /** Provenance sentence repeated for a source-stated sale. */
+  saleVerificationProvenance?: string | null;
   retainedDateIso: string | null;
   providerDaysOnMarket: number | null;
   /** Listing date the comp row retained, used when no capture exists. */
@@ -245,6 +249,8 @@ export function buildCompListingProjection(input: BuildListingProjectionInput): 
     state: input.state,
     acres: input.acres,
     sourceProvidesClosedPrice: input.retainedPriceKind === 'sale' && input.retainedPrice != null,
+    saleVerification: input.saleVerification ?? 'independent',
+    sourceStatedProvenance: input.saleVerificationProvenance ?? null,
   });
 
   // A LISTED record has no transaction price at all — it has an asking price.
@@ -462,6 +468,9 @@ function verifiedFactsFor(
   const facts: string[] = [];
   if (price.basis === 'verified_sale' && price.amount != null) {
     facts.push(`verified closed sale of $${Math.round(price.amount).toLocaleString('en-US')}${input.retainedDateIso ? ` on ${input.retainedDateIso}` : ''}`);
+  }
+  if (price.basis === 'source_stated_sale' && price.amount != null) {
+    facts.push(`a source-stated, independently unverified sale price of $${Math.round(price.amount).toLocaleString('en-US')}${input.retainedDateIso ? ` against the stated date ${input.retainedDateIso}` : ''}`);
   }
   if (input.retainedPriceKind === 'list' && price.amount != null) {
     facts.push(`currently asking $${Math.round(price.amount).toLocaleString('en-US')}`);

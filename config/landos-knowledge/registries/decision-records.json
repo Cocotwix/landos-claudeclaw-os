@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "registryId": "decision-records",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "ADR-GOV-001",
+      "title": "Separate governed roles",
+      "status": "accepted",
+      "summary": "Research, debugging, knowledge, automation, implementation, and visual acceptance use bounded authorities; no implementer certifies its own change.",
+      "canonicalRefs": ["docs/landos/knowledge/decisions.md"]
+    },
+    {
+      "id": "ADR-GOV-002",
+      "title": "Local-first knowledge before vector infrastructure",
+      "status": "accepted",
+      "summary": "Repository Markdown and existing SQLite FTS5 are primary. QMD is blocked on this Windows host and hosted vector stores are deferred.",
+      "canonicalRefs": ["config/landos-knowledge/knowledge-system.json", "docs/landos/knowledge/decisions.md"]
+    },
+    {
+      "id": "ADR-GOV-003",
+      "title": "DuckDuckGo is the primary free search option",
+      "status": "accepted-unprovisioned",
+      "summary": "Select the keyless DuckDuckGo skill rather than operating an unapproved SearXNG deployment; the ddgs CLI remains an explicit provisioning prerequisite.",
+      "canonicalRefs": ["config/landos-research/capabilities.json", "docs/landos/knowledge/decisions.md"]
+    },
+    {
+      "id": "ADR-GOV-004",
+      "title": "No implicit watcher activation",
+      "status": "accepted",
+      "summary": "Watcher definitions remain disabled until an operator supplies an explicit target, schedule, delivery, and approval.",
+      "canonicalRefs": ["config/landos-research/watchers.json", "docs/landos/knowledge/decisions.md"]
+    },
+    {
+      "id": "ADR-GOV-005",
+      "title": "Do not repair the known projection defect in this revamp",
+      "status": "accepted",
+      "summary": "The first governed visual run must expose and block the existing comp/visual projection mismatch rather than fixing it.",
+      "canonicalRefs": ["config/landos-knowledge/registries/defect-history.json", "docs/landos/knowledge/decisions.md"]
+    }
+  ]
+}

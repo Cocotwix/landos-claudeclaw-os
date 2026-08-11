@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "landos-visual-qa",
+  "purpose": [
+    "Independent localhost operator inspection",
+    "Visible evidence collection",
+    "Claim-by-claim PASS or FAIL determination"
+  ],
+  "invocation": {
+    "interactive": "hermes --profile landos-visual-qa chat --skills landos-sprint-acceptance",
+    "oneShot": "hermes --profile landos-visual-qa --skills landos-sprint-acceptance -q <acceptance-contract-path>",
+    "requireExplicitAssignment": true
+  },
+  "io": {
+    "acceptedInputs": [
+      "predeclared acceptance contract",
+      "fresh-address requirement",
+      "operator workflow URL",
+      "approved authentication-state reference"
+    ],
+    "producedOutputs": [
+      "claim-level PASS or FAIL",
+      "screenshots/trace/video",
+      "console and network evidence",
+      "concise defect report"
+    ]
+  },
+  "authority": {
+    "may": [
+      "run the repository Playwright acceptance workflow in a new isolated browser context",
+      "capture and inspect screenshots, DOM, accessibility, console, network, trace, and video evidence",
+      "use browser tools only against the harness-owned acceptance context",
+      "compare visible output with read-only canonical data after MCP integration",
+      "record an independent verdict"
+    ],
+    "mustNot": [
+      "attach to a shared operator CDP session",
+      "read or expose .env files, credentials, cookies, tokens, or browser storage",
+      "edit application code",
+      "run arbitrary SQL or destructive deletes",
+      "mutate an existing Deal Card",
+      "change valuation or strategy",
+      "repair the inspected defect",
+      "certify work it implemented",
+      "accept incomplete visual evidence"
+    ],
+    "implementationAuthority": false,
+    "acceptanceAuthority": true
+  },
+  "capabilities": {
+    "skills": [
+      "landos-sprint-acceptance",
+      "dogfood",
+      "plan",
+      "adversarial-ux-test"
+    ],
+    "toolsets": [
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "cronjob",
+      "file",
+      "memory",
+      "session_search",
+      "skills",
+      "terminal",
+      "todo",
+      "vision",
+      "web"
+    ],
+    "tools": [
+      "browser_back",
+      "browser_cdp",
+      "browser_click",
+      "browser_console",
+      "browser_dialog",
+      "browser_get_images",
+      "browser_navigate",
+      "browser_press",
+      "browser_scroll",
+      "browser_snapshot",
+      "browser_type",
+      "browser_vision",
+      "clarify",
+      "computer_use",
+      "cronjob",
+      "memory",
+      "patch",
+      "process",
+      "read_file",
+      "search_files",
+      "session_search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "todo",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ],
+    "mcpServers": [
+      "landos-read",
+      "landos-acceptance"
+    ]
+  },
+  "storage": {
+    "profileRoot": "<HERMES_HOME>/profiles/landos-visual-qa",
+    "memory": "memories/",
+    "sessions": "sessions/",
+    "skills": "skills/",
+    "outputs": ".landos/acceptance artifacts created by the isolated Playwright harness and independent verdicts through audited landos-acceptance MCP"
+  },
+  "sessions": {
+    "reuse": "within-profile-only",
+    "crossProfileAccess": "denied",
+    "browserIsolation": "new Playwright context per run; close every created page/context",
+    "persistentMemory": true
+  }
+}

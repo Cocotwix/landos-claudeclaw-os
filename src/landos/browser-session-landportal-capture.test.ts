@@ -13,7 +13,7 @@ describe('LandPortal visual capture contract', () => {
     expect(capture).toContain('`Enable ${label}`');
     expect(capture).toContain('`Disable ${label}`');
     expect(capture).toContain('await closeOverlayDialog()');
-    expect(capture.indexOf('await closeOverlayDialog()')).toBeLessThan(capture.indexOf('await page.screenshot'));
+    expect(capture.indexOf('await closeOverlayDialog()')).toBeLessThan(capture.indexOf("await captureMapViewport(file, 'overlay')"));
     expect(capture).not.toContain('clickVisible');
   });
 
@@ -99,7 +99,7 @@ describe('LandPortal visual capture contract', () => {
 
   it('frames the 2D parcel screenshot at parcel-context scale, never a fixed county-scale zoom-out', () => {
     const zoomAt = source.indexOf('await zoomOutParcelMap(contextSteps)');
-    const parcelShotAt = source.indexOf('await page.screenshot({ path: parcelFile })');
+    const parcelShotAt = source.indexOf("await captureMapViewport(parcelFile, 'parcel_context')");
     expect(source).toContain("clickNamedButton('Fit')");
     expect(source).toContain("clickNamedButton('Zoom out')");
     expect(source).toContain("page.keyboard.press('-')");
@@ -118,6 +118,32 @@ describe('LandPortal visual capture contract', () => {
     expect(source).toContain('landportal_visual_orientation');
     expect(source).toContain("reason: 'satellite_tiles_unpainted'");
     expect(source).toContain('fs.statSync(parcelFile).size < 500_000');
+  });
+
+  it('waits for late ads, dismisses the current skip-tracing offer, inspects the saved crop, and recaptures on contamination', () => {
+    const start = source.indexOf('const captureMapViewport = async');
+    const end = source.indexOf('const overlayShots:', start);
+    const capture = source.slice(start, end);
+    expect(source).toMatch(/skip.\?trac\|buy tokens/);
+    expect(source).toContain('enhance your leads');
+    expect(capture).toContain('for (let attempt = 1; attempt <= 3; attempt += 1)');
+    expect(capture).toContain('inspectSavedParcelVisual');
+    expect(capture).toContain('after.dismissed === 0');
+    expect(capture).toContain('fs.unlinkSync(file)');
+    expect(capture).toContain('late obstruction appeared during saved-image capture');
+  });
+
+  it('reads explicit LandPortal tab-row title/value pairs only after parcel readiness', () => {
+    const fieldsStart = source.indexOf('const FIELDS =');
+    const fieldsEnd = source.indexOf('// Each row is returned', fieldsStart);
+    const fields = source.slice(fieldsStart, fieldsEnd);
+    expect(fields).toContain("document.querySelectorAll('p.tab-row,.tab-row')");
+    expect(fields).toContain("el.querySelector?.('.tab-row__title')");
+    expect(fields).toContain("el.querySelector?.('.tab-row__value')");
+    expect(fields).not.toContain("querySelectorAll(':scope > span')");
+    const readyAt = source.indexOf("reason: 'parcel_not_ready'");
+    const readAt = source.indexOf('const fieldsOut = await page.evaluate', readyAt);
+    expect(readAt).toBeGreaterThan(readyAt);
   });
 });
 

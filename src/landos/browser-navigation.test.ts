@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  apnFormats, addressFormats, chooseIdentifier, classifyInput, planParcelSearch, pickParcelRecordLink,
+  apnFormats, addressFormats, chooseIdentifier, classifyInput, containsRejectedParcelRecordDestination, isRejectedParcelRecordDestination, planParcelSearch, pickParcelRecordLink,
   type FormInfo,
 } from './browser-navigator.js';
 import { namesLikelyMatch, guessRelationship, assessSellerAuthority } from './seller-authority.js';
@@ -53,6 +53,25 @@ describe('semantic navigation — identifiers + form understanding (no county lo
       { text: 'Parcel 021 033 002 Detail', href: 'https://county.gov/parcel/detail?id=021033002' },
     ];
     expect(pickParcelRecordLink(results, { apn: '021 033 002' })!.href).toContain('detail');
+  });
+
+  it('never promotes a commercial listing from an official-source search result', () => {
+    const results = [
+      { text: '6940 Highway 11 property details', href: 'https://www.zillow.com/homedetails/6940-Highway-11/123_zpid/' },
+      { text: 'Parcel 4165-00-51-3961 Detail', href: 'https://maps.pickenscountysc.gov/parcel/detail?id=416500513961' },
+    ];
+    expect(pickParcelRecordLink(results, {
+      apn: '4165-00-51-3961',
+      address: '6940 Highway 11',
+    })?.href).toContain('pickenscountysc.gov');
+    expect(isRejectedParcelRecordDestination('https://www.zillow.com/homedetails/6940-Highway-11/123_zpid/')).toBe(true);
+    expect(isRejectedParcelRecordDestination('https://maps.pickenscountysc.gov/parcel/detail?id=416500513961')).toBe(false);
+    expect(containsRejectedParcelRecordDestination(
+      'The official destination was reached at https://www.zillow.com/homedetails/6940-Highway-11/123_zpid/, but no supported fact was extracted.',
+    )).toBe(true);
+    expect(containsRejectedParcelRecordDestination(
+      'The official parcel detail was reached at https://maps.pickenscountysc.gov/parcel/detail?id=416500513961.',
+    )).toBe(false);
   });
 });
 

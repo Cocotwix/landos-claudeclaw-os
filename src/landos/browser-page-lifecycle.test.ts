@@ -74,8 +74,12 @@ describe('session temp tabs are tracked and always closed', () => {
 
   it('registers temp tabs for workflow-scoped reaping (source contract)', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/landos/browser-session.ts'), 'utf8');
-    expect(src).toContain('trackTempSessionPage(detailPage)');
-    expect(src).toContain('trackTempSessionPage(page)');
+    // Each temp tab now names the creating driver's workflow as its fallback
+    // owner: reading only the async store left `workflow: null` on a
+    // continuation that had lost the context, and an unowned page is preserved
+    // by cleanup rather than closed.
+    expect(src).toContain('trackTempSessionPage(detailPage, workflowOwner)');
+    expect(src).toContain('trackTempSessionPage(page, workflowOwner)');
     expect(src).toMatch(/finally \{\s*await releaseTempSessionPage\(page\);/);
   });
 });
@@ -160,6 +164,15 @@ describe('Hermes lane endpoint-level tab hygiene', () => {
   it('never touches a real browser from a test run and preserves pre-existing pages', () => {
     expect(src).toMatch(/!deps\.skipTabHygiene && !process\.env\.VITEST/);
     expect(src).toMatch(/!before\.has\(tab\.id\)/);
-    expect(src).toMatch(/keep one authenticated landportal page alive/i);
+  });
+
+  it('leaves no LandPortal survivor: every lane-created page is closed', () => {
+    // The lane commonly runs AFTER the Deal Intelligence cleanup boundary, so a
+    // retained tab outlives the run that made it. Authentication lives in the
+    // persistent profile, not in an open tab, so there is nothing to preserve.
+    expect(src).toMatch(/EVERY PAGE THIS LANE CREATED IS CLOSED — no survivor/);
+    expect(src).toMatch(/for \(const tab of candidates\) \{/);
+    expect(src).not.toMatch(/candidates\.slice\(0, -1\)/);
+    expect(src).not.toMatch(/landportalSurvivors/);
   });
 });

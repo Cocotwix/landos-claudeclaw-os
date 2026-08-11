@@ -16,6 +16,7 @@ import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { PublicIntelligenceStore } from './public-intelligence-store.js';
 import { buildOperatorPropertyRecord, type OperatorPropertyRecord } from './operator-property-record.js';
 import { readGovernmentRecordsForDeal, synchronizeGovernmentRecordsForDeal } from './government-records-legacy-adapter.js';
+import { acceptedGoverningAuthorityForDeal } from './land-use-jurisdiction-bridge.js';
 import { readZoningLandUseForDeal, synchronizeZoningLandUseForDeal } from './zoning-legacy-adapter.js';
 import { parseLandPortalCompRows } from './comp-extraction.js';
 import { documentRegistryForCard } from './deal-card-canonical.js';
@@ -60,6 +61,12 @@ import {
 } from './property-intelligence-contract.js';
 import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
 import type { HermesLandPortalLaneOutcome } from './hermes-landportal-auto.js';
+import {
+  EXACT_ADDRESS_LANE_ID,
+  listingAccessEvidenceItems,
+  type ExtractedListingEvidence,
+} from './exact-address-web-discovery.js';
+import type { CompLaneInput } from './comp-lane-accountability.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
 
@@ -103,6 +110,15 @@ export interface LandMarketplaceResult {
   };
 }
 
+export interface ExactAddressWebResult {
+  status: 'retrieved' | 'none' | 'blocked' | 'error';
+  queries: string[];
+  pages: ExtractedListingEvidence[];
+  note: string;
+  /** Owned-page cleanup record, written by the shared browser-scope wrapper. */
+  browserCleanup?: { closed: number; failed: number; preserved: number };
+}
+
 export interface LiveCollectorDeps {
   /**
    * Runs the canonical public property intelligence lane (official parcel
@@ -119,6 +135,8 @@ export interface LiveCollectorDeps {
     address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
     apn: string | null; owner: string | null; lat: number | null; lng: number | null; subjectAcres: number | null;
   }) => Promise<LandMarketplaceResult>;
+  /** General exact-address discovery, independent of marketplace comp lanes. */
+  captureExactAddressWeb?: (input: CanonicalPropertyInput) => Promise<ExactAddressWebResult>;
   /** Dedicated sold manufactured-home lane. It runs only with subject coordinates;
    *  the provider must enforce >$200k and <=5 miles before returning rows. */
   captureManufacturedHomeComps?: (input: {
@@ -412,6 +430,10 @@ export async function collectParcelIdentity(
       apn: str(property.apn),
       owner: str(property.owner),
       acres: num(property.acres),
+      // The retained county FIPS lets the parcel URL's own canonical key be
+      // matched against this subject without depending on a county NAME that
+      // the LandPortal panel never publishes.
+      fips: str(property.fips),
     },
     landPortal: inspection ? {
       parcelUrl: inspection.parcelUrl,
@@ -787,31 +809,74 @@ export async function collectZoningLandUse(ctx: MissionContext): Promise<Special
   const officiallyConfirmed = analysis.baseZoning.status === 'officially_confirmed';
   const district = [analysis.baseZoning.districtCode, analysis.baseZoning.districtName].filter(Boolean).join(' — ') || null;
 
+  // WHO GOVERNS IS ONE ANSWER, NOT TWO. The zoning slice only collects a
+  // jurisdiction determination once the versioned parcel identity reaches
+  // `confirmed`, which identity reconciliation deliberately withholds until an
+  // official county parcel record exists. On a parcel whose county publishes no
+  // such record the slice never collects one — while the Land Use engine, which
+  // resolves the authority from the address point rather than the parcel
+  // polygon, has already accepted it. That left the operator reading
+  // "Whitewater township administers zoning" in one section and "no
+  // jurisdiction determination has been collected" in another.
+  //
+  // The accepted determination is restated here, with its original citation. It
+  // is read-only: nothing is re-researched, no second engine exists, and the
+  // zoning DISTRICT remains unresolved because that genuinely requires the
+  // authority's own map.
+  const acceptedAuthority = analysis.jurisdiction.controllingAuthorityName
+    ? null
+    : acceptedGoverningAuthorityForDeal({
+      dealCardId: ctx.dealCardId,
+      mailingCity: ctx.identity?.identity.city ?? null,
+    });
+  const authorityName = analysis.jurisdiction.controllingAuthorityName ?? acceptedAuthority?.authorityName ?? null;
+  const authorityLevel = analysis.jurisdiction.controllingAuthorityName
+    ? analysis.jurisdiction.controllingAuthorityLevel
+    : acceptedAuthority?.authorityLevel ?? 'unknown';
+  const jurisdictionBasis = analysis.jurisdiction.basis && analysis.jurisdiction.controllingAuthorityName
+    ? analysis.jurisdiction.basis
+    : acceptedAuthority?.basis ?? analysis.jurisdiction.basis ?? null;
+  const jurisdictionConfirmed = analysis.jurisdiction.controllingAuthorityName
+    ? analysis.jurisdiction.determination === 'confirmed'
+    : acceptedAuthority?.determination === 'confirmed';
+
   const items: SnapshotDueDiligenceItem[] = [{
     key: 'zoning',
     label: 'Zoning',
     verdict: officiallyConfirmed ? 'good' : analysis.baseZoning.conflicts.length ? 'risk' : district ? 'caution' : 'unknown',
     headline: district
       ? `${district} (${analysis.baseZoning.status.replace(/_/g, ' ')})`
-      : 'Zoning district has not been established.',
+      : authorityName
+        ? `District unresolved — ${authorityName} administers zoning`
+        : 'Zoning district has not been established.',
     grade: officiallyConfirmed ? 'confirmed_fact' : district ? 'likely_indication' : 'unresolved_question',
-    detail: analysis.jurisdiction.basis || null,
-    sourceUrl: null,
+    detail: jurisdictionBasis,
+    sourceUrl: acceptedAuthority?.sourceUrl ?? null,
     missing: [
       ...(officiallyConfirmed ? [] : ['The zoning district has not been confirmed on the official zoning map.']),
       ...analysis.baseZoning.conflicts,
-      ...(model.snapshot.completeness.missing ?? []).map((key) => `${key.replace(/_/g, ' ')} has not been retrieved from an official source.`),
+      ...(model.snapshot.completeness.missing ?? [])
+        // The governing authority IS retrieved from an official source; only
+        // the district is missing. Keeping this line would contradict the
+        // authority now shown beside it.
+        .filter((key) => !(acceptedAuthority && key === 'jurisdiction_authority'))
+        .map((key) => `${key.replace(/_/g, ' ')} has not been retrieved from an official source.`),
     ],
   }];
 
   const facts: SnapshotFact[] = [];
-  if (analysis.jurisdiction.controllingAuthorityName) {
+  if (authorityName) {
+    const mailingCityDiffers = analysis.jurisdiction.controllingAuthorityName
+      ? analysis.jurisdiction.mailingCityDiffersFromAuthority
+      : acceptedAuthority?.mailingCityDiffersFromAuthority === true;
     facts.push({
       key: 'jurisdiction', label: 'Controlling jurisdiction',
-      value: `${analysis.jurisdiction.controllingAuthorityName} (${analysis.jurisdiction.controllingAuthorityLevel})`,
-      grade: analysis.jurisdiction.determination === 'confirmed' ? 'confirmed_fact' : 'likely_indication',
-      source: 'Official jurisdiction boundary evidence', sourceUrl: null, retrievedAt: now,
-      note: analysis.jurisdiction.mailingCityDiffersFromAuthority ? 'The mailing city differs from the controlling authority.' : null,
+      value: `${authorityName} (${authorityLevel})`,
+      grade: jurisdictionConfirmed ? 'confirmed_fact' : 'likely_indication',
+      source: acceptedAuthority?.sourceName ?? 'Official jurisdiction boundary evidence',
+      sourceUrl: acceptedAuthority?.sourceUrl ?? null,
+      retrievedAt: acceptedAuthority?.retrievedAt ?? now,
+      note: mailingCityDiffers ? 'The mailing city differs from the controlling authority.' : null,
     });
   }
   if (district) {
@@ -1285,7 +1350,24 @@ function marketplaceProviderAdapter(input: {
     },
     normalize: (property, execution) => {
       const rows = [...(execution.sold ?? []), ...(execution.active ?? [])];
-      return rows.map((row, index): NormalizedPropertyEvidence => ({
+      const retrievedAt = rows.map((row) => row.collectedAt).filter((value): value is string => !!value).sort().at(-1)
+        ?? new Date().toISOString();
+      const statusEvidence: NormalizedPropertyEvidence = {
+        id: `${input.laneId}:attempt-status`,
+        propertyCardId: property.propertyCardId,
+        dealCardId: property.dealCardId,
+        providerId: input.providerId,
+        field: `comparables.${input.laneId}.attempt_status`,
+        value: { status: execution.status, note: execution.note ?? null, candidates: rows.length, searchProof: execution.searchProof ?? null },
+        subjectClassification: 'context_only',
+        strength: 'provider_observed',
+        sourceUrl: null,
+        retrievedAt,
+        confidence: 'medium',
+        kind: 'status',
+        validation: { valid: true, reasons: [] },
+      };
+      return [statusEvidence, ...rows.map((row, index): NormalizedPropertyEvidence => ({
         id: `${input.laneId}:${row.providerId ?? row.url ?? index}`,
         propertyCardId: property.propertyCardId,
         dealCardId: property.dealCardId,
@@ -1301,7 +1383,7 @@ function marketplaceProviderAdapter(input: {
         validation: { valid: true, reasons: [] },
         artifactHash: null,
         viewUrl: row.thumbnailUrl ?? null,
-      }));
+      }))];
     },
     status: (_property, execution) => {
       if (/not[_ ]applicable/i.test(execution.status)) return 'not_applicable';
@@ -1310,6 +1392,51 @@ function marketplaceProviderAdapter(input: {
       // Marketplace comps describe context properties, not subject parcel facts.
       return 'context_only';
     },
+  };
+}
+
+function exactAddressProviderAdapter(execute: () => Promise<ExactAddressWebResult>): PropertyProviderAdapter<ExactAddressWebResult> {
+  return {
+    laneId: EXACT_ADDRESS_LANE_ID,
+    providerId: 'exact_address_web',
+    execute,
+    validate: (_property, result) => ({
+      valid: !!result && Array.isArray(result.queries) && Array.isArray(result.pages),
+      subjectClassification: 'context_only',
+      checks: [{
+        check: 'exact_address_queries_attempted',
+        passed: result.queries.length >= 4,
+        reason: `${result.queries.length} distinct plain-English exact-address queries were recorded.`,
+      }],
+      rejectedEvidenceIds: [],
+    }),
+    normalize: (property, result) => result.pages.flatMap((page, pageIndex): NormalizedPropertyEvidence[] => {
+      const base: NormalizedPropertyEvidence = {
+        id: `exact-address:${pageIndex}:${page.sourceUrl}`,
+        propertyCardId: property.propertyCardId,
+        dealCardId: property.dealCardId,
+        providerId: 'exact_address_web',
+        field: `discovery.exact_address.listing.${pageIndex + 1}`,
+        value: page,
+        subjectClassification: 'context_only',
+        strength: 'provider_observed',
+        sourceUrl: page.sourceUrl,
+        retrievedAt: page.retrievedAt ?? new Date().toISOString(),
+        confidence: 'medium',
+        kind: 'fact',
+        validation: { valid: true, reasons: [] },
+      };
+      return [base, ...listingAccessEvidenceItems(page).map((access, index): NormalizedPropertyEvidence => ({
+        ...base,
+        id: `exact-address:${pageIndex}:access:${index + 1}`,
+        field: `access_evidence.reported_legal.exact_address.${pageIndex + 1}.${index + 1}`,
+        value: access,
+        sourceUrl: access.sourceUrl ?? page.sourceUrl,
+      }))];
+    }),
+    status: (_property, result) => result.status === 'retrieved' || result.status === 'none'
+      ? 'context_only'
+      : result.status === 'blocked' ? 'unavailable' : 'failed',
   };
 }
 
@@ -1498,6 +1625,16 @@ export async function collectComparables(
         (error: unknown) => ({ result: null, error }),
       )
     : null;
+  const exactAddressPromise = deps.captureExactAddressWeb && canonicalInput && canonicalInput.address.trim()
+    ? executePropertyProvider({
+        runId: ctx.runId,
+        property: canonicalInput,
+        adapter: exactAddressProviderAdapter(() => deps.captureExactAddressWeb!(canonicalInput)),
+      }).then((result) => persistProviderResult(deps, result)).then(
+        (providerResult) => ({ result: providerResult.execution.result, error: null as unknown }),
+        (error: unknown) => ({ result: null, error }),
+      )
+    : null;
   const manufacturedHomesPromise = deps.captureManufacturedHomeComps && canonicalInput
     ? executePropertyProvider({
         runId: ctx.runId,
@@ -1643,17 +1780,20 @@ export async function collectComparables(
   }
 
   // ── Supplements: Zillow and Redfin public land comps ─────────────────────
-  const [zillowOutcome, redfinOutcome, manufacturedHomesOutcome] = await Promise.all([
+  const [zillowOutcome, redfinOutcome, manufacturedHomesOutcome, exactAddressOutcome] = await Promise.all([
     zillowPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     redfinPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     manufacturedHomesPromise ?? Promise.resolve({ result: null, error: null as unknown }),
+    exactAddressPromise ?? Promise.resolve({ result: null, error: null as unknown }),
   ]);
   if (zillowOutcome.error) notes.push(`Zillow supplement unavailable: ${(zillowOutcome.error as Error)?.message ?? String(zillowOutcome.error)}.`);
   if (redfinOutcome.error) notes.push(`Redfin supplement unavailable: ${(redfinOutcome.error as Error)?.message ?? String(redfinOutcome.error)}.`);
   if (manufacturedHomesOutcome.error) notes.push(`Manufactured-home supplement unavailable: ${(manufacturedHomesOutcome.error as Error)?.message ?? String(manufacturedHomesOutcome.error)}.`);
+  if (exactAddressOutcome.error) notes.push(`Exact-address web discovery failed: ${(exactAddressOutcome.error as Error)?.message ?? String(exactAddressOutcome.error)}.`);
   const zillow = zillowOutcome.result;
   const redfin = redfinOutcome.result;
   const manufacturedHomes = manufacturedHomesOutcome.result;
+  const exactAddress = exactAddressOutcome.result;
   candidates.push(...marketplaceCandidates(zillow, 'Zillow', state));
   candidates.push(...marketplaceCandidates(redfin, 'Redfin', state));
   if (manufacturedHomes) {
@@ -1686,6 +1826,7 @@ export async function collectComparables(
   }
   if (zillow) notes.push(`Zillow: ${zillow.status} (${(zillow.sold?.length ?? 0)} sold, ${(zillow.active?.length ?? 0)} active).`);
   if (redfin) notes.push(`Redfin: ${redfin.status} (${(redfin.sold?.length ?? 0)} sold, ${(redfin.active?.length ?? 0)} active).`);
+  if (exactAddress) notes.push(`Exact-address web discovery: ${exactAddress.status}; ${exactAddress.pages.length} property-specific page(s) retained as prior listing evidence. ${exactAddress.note}`);
 
   // ── Persisted rows already accepted onto this card ───────────────────────
   // Historical rows remain intact in SQLite, but only the three currently
@@ -1719,7 +1860,37 @@ export async function collectComparables(
   }
   if (persisted.length) notes.push(`${persisted.length} previously persisted comp row(s) re-screened against the current policy.`);
 
-  const anySource = landPortalRecords.length > 0 || !!zillow || !!redfin || !!manufacturedHomes || persisted.length > 0;
+  const laneAttempts: CompLaneInput[] = [
+    {
+      lane: 'landportal', attempted: !!landPortalCapture || !!inspection?.parcelUrl,
+      attemptStatus: landPortalCapture?.ok === false ? 'failed' : landPortalRecords.length ? 'retrieved' : 'none',
+      failureReason: landPortalCapture?.ok === false ? landPortalCapture.note : null,
+      candidates: landPortalCapture || inspection?.parcelUrl ? landPortalRecords.length : null,
+      retained: landPortalCapture || inspection?.parcelUrl ? landPortalRecords.length : null,
+      retainedAs: 'LandPortal primary/context evidence',
+    },
+    {
+      lane: 'zillow', attempted: !!zillowPromise,
+      attemptStatus: zillow?.status ?? (zillowOutcome.error ? 'failed' : null),
+      failureReason: zillowOutcome.error ? (zillowOutcome.error as Error)?.message ?? String(zillowOutcome.error) : null,
+      blockedReason: /blocked|disabled|unavailable/i.test(zillow?.status ?? '') ? zillow?.note ?? 'Provider was blocked, disabled, or unavailable.' : null,
+      candidates: zillow ? (zillow.sold?.length ?? 0) + (zillow.active?.length ?? 0) : null,
+      retained: zillow ? (zillow.sold?.length ?? 0) + (zillow.active?.length ?? 0) : null,
+    },
+    {
+      lane: 'redfin', attempted: !!redfinPromise,
+      attemptStatus: redfin?.status ?? (redfinOutcome.error ? 'failed' : null),
+      failureReason: redfinOutcome.error ? (redfinOutcome.error as Error)?.message ?? String(redfinOutcome.error) : null,
+      blockedReason: /blocked|disabled|unavailable/i.test(redfin?.status ?? '') ? redfin?.note ?? 'Provider was blocked, disabled, or unavailable.' : null,
+      candidates: redfin ? (redfin.sold?.length ?? 0) + (redfin.active?.length ?? 0) : null,
+      retained: redfin ? (redfin.sold?.length ?? 0) + (redfin.active?.length ?? 0) : null,
+    },
+    {
+      lane: 'realtor', attempted: false,
+      disabledReason: 'Realtor.com HomeHarvest is in FMV_EXCLUDED_FAMILIES and is disabled for the current vacant-land comparable workflow.',
+    },
+  ];
+  const anySource = landPortalRecords.length > 0 || !!zillow || !!redfin || !!manufacturedHomes || !!exactAddress || persisted.length > 0;
   return {
     status: candidates.length === 0 ? 'partial' : anySource ? 'completed' : 'partial',
     summary: notes.join(' '),
@@ -1733,8 +1904,9 @@ export async function collectComparables(
             : manufacturedHomes.status === 'disabled' ? 'not_run' : 'unavailable',
         ...manufacturedHomes.searchProof,
       } : null,
+      laneAttempts,
     },
-  };
+  } as SpecialistOutcome<ComparablesContribution>;
 }
 
 // ── Market intelligence ─────────────────────────────────────────────────────

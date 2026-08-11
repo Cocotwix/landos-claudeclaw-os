@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getLandosDb, landosAudit, type LandosEntity } from './db.js';
+import { extractSafePhone } from './contact-phone.js';
 import type {
   SmartIntakeImageExtraction,
   SmartIntakeImageMimeType,
@@ -129,7 +130,7 @@ function deterministicTranscript(text: string): TranscriptExtraction {
   ]);
   const organization = capture(text, [/(?:organization|company|office)\s*[:\-]\s*([^\n;]+)/i, /([A-Z][\w &'-]+(?:County|City|Department|Office|Utilities|Company))/]);
   const department = capture(text, [/(?:department|dept)\s*[:\-]\s*([^\n;]+)/i, /((?:Planning|Zoning|Assessor|GIS|Register of Deeds|Health|Roads?|Utilities?)\s+(?:Department|Office))/i]);
-  const phone = capture(text, [/(\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4})/]);
+  const phone = extractSafePhone(text);
   const email = capture(text, [/([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})/]);
   const callDate = capture(text, [/(?:call date|date)\s*[:\-]\s*([A-Za-z0-9,\-/ ]{6,30})/i]);
   const propertyDiscussed = capture(text, [/(?:property|parcel|address)\s*(?:discussed)?\s*[:\-]\s*([^\n;]+)/i]);
@@ -163,7 +164,7 @@ function deterministicFacts(text: string, sections: IntakeSection[], transcript:
   };
   add('property', 'apn', capture(text, [/(?:APN|parcel id|parcel number)\s*[:#-]?\s*([\d A-Za-z.-]{4,40})/i]));
   add('property', 'acreage', capture(text, [/(\d+(?:\.\d+)?)\s*(?:acres?|ac\b)/i]));
-  add('seller_contact', 'phone', transcript?.phone ?? capture(text, [/(\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4})/]));
+  add('seller_contact', 'phone', transcript?.phone ?? extractSafePhone(text));
   add('seller_contact', 'email', transcript?.email ?? capture(text, [/([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})/]));
   add('motivation_timeline', 'motivation', transcript?.sellerMotivation ?? null);
   add('motivation_timeline', 'timeline', transcript?.timeline ?? null);

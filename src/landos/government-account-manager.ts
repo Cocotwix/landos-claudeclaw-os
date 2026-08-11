@@ -10,6 +10,16 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { getLandosDb } from './db.js';
+import {
+  accountScopeKey,
+  candidateScopeKeys,
+  credentialAppliesTo,
+  isAccountScope,
+  normalizeAccessTarget,
+  type AccessRequirement,
+  type AccessTarget,
+  type AccountScope,
+} from './public-record-access-types.js';
 
 export const MANAGED_EMAIL_UNAVAILABLE_REASON = 'Managed email identity unavailable.';
 export const CREDENTIAL_STORAGE_UNAVAILABLE_REASON = 'Approved credential storage unavailable.';
@@ -59,6 +69,29 @@ export interface ManagedGovernmentAccount {
   humanActionRequired: boolean;
   humanActionReason: string | null;
   updatedAt: string;
+
+  /* ── access-scope fields (PART 20) ───────────────────────────────────────
+   * Optional on the interface so existing callers keep compiling; always
+   * populated on the way into SQLite by `normalizeAccount`. */
+
+  /** Platform family the credential belongs to. Never a hostname. */
+  providerFamily?: string;
+  /** How far this one credential is allowed to travel. */
+  accountScope?: AccountScope;
+  /** Canonical filing key for that scope. The isolation gate compares this. */
+  scopeKey?: string;
+  /** Where the account signs in. Safe metadata, never carries a token. */
+  loginUrl?: string | null;
+  /** Where the account was (or would be) created. */
+  registrationUrl?: string | null;
+  /** What this portal demanded when it was last observed. */
+  authRequirement?: AccessRequirement;
+  /** Operator-facing limitation notes. Never a secret. */
+  notes?: string | null;
+  /** Last time the account was proven to still work. */
+  lastVerifiedAt?: string | null;
+  /** True when the operator supplied this account instead of LandOS creating it. */
+  operatorSupplied?: boolean;
 }
 
 export interface AccountLookup {
@@ -72,6 +105,8 @@ export interface GovernmentAccountRepository {
   get(accountId: string): ManagedGovernmentAccount | null;
   save(account: ManagedGovernmentAccount): ManagedGovernmentAccount;
   list(): ManagedGovernmentAccount[];
+  /** Scope-aware reuse. Narrowest entitled account wins; never widens a scope. */
+  findReusable?(target: AccessTarget): ManagedGovernmentAccount | null;
 }
 
 export class SqliteGovernmentAccountRepository implements GovernmentAccountRepository {
@@ -104,6 +139,25 @@ export class SqliteGovernmentAccountRepository implements GovernmentAccountRepos
       CREATE INDEX IF NOT EXISTS idx_landos_government_account_status
         ON landos_government_account(account_status, updated_at DESC);
     `);
+    // Additive migration. An existing registry keeps every row; the new access
+    // columns default to the conservative deployment scope, which is exactly
+    // what a pre-scope account was implicitly limited to anyway.
+    const columns = new Set((this.db.prepare('PRAGMA table_info(landos_government_account)')
+      .all() as Array<{ name: string }>).map((c) => c.name));
+    const add = (column: string, ddl: string) => {
+      if (!columns.has(column)) this.db.exec(`ALTER TABLE landos_government_account ADD COLUMN ${ddl}`);
+    };
+    add('provider_family', `provider_family TEXT NOT NULL DEFAULT ''`);
+    add('account_scope', `account_scope TEXT NOT NULL DEFAULT 'deployment'`);
+    add('scope_key', `scope_key TEXT NOT NULL DEFAULT ''`);
+    add('login_url', 'login_url TEXT');
+    add('registration_url', 'registration_url TEXT');
+    add('auth_requirement', `auth_requirement TEXT NOT NULL DEFAULT 'unknown'`);
+    add('notes', 'notes TEXT');
+    add('last_verified_at', 'last_verified_at TEXT');
+    add('operator_supplied', 'operator_supplied INTEGER NOT NULL DEFAULT 0');
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_landos_government_account_scope
+      ON landos_government_account(scope_key, account_status);`);
   }
 
   find(input: AccountLookup): ManagedGovernmentAccount | null {
@@ -119,6 +173,33 @@ export class SqliteGovernmentAccountRepository implements GovernmentAccountRepos
     return row ? accountFromRow(row as Record<string, unknown>) : null;
   }
 
+  /**
+   * The reuse path. Tries the narrowest entitled key first, so a deployment
+   * account is preferred over a jurisdiction one and a jurisdiction one over a
+   * provider one.
+   *
+   * `credentialAppliesTo` is re-checked on every candidate row rather than
+   * trusted from the query. The SQL narrows; the gate decides.
+   */
+  findReusable(target: AccessTarget): ManagedGovernmentAccount | null {
+    const statement = this.db.prepare(
+      `SELECT * FROM landos_government_account
+       WHERE scope_key = ? AND account_status NOT IN ('retired', 'blocked')
+       ORDER BY CASE account_status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC`,
+    );
+    for (const { scopeKey } of candidateScopeKeys(target)) {
+      const rows = statement.all(scopeKey) as unknown as Record<string, unknown>[];
+      for (const row of rows) {
+        const account = accountFromRow(row);
+        if (!isAccountScope(account.accountScope) || !account.scopeKey) continue;
+        if (credentialAppliesTo({ accountScope: account.accountScope, scopeKey: account.scopeKey }, target)) {
+          return account;
+        }
+      }
+    }
+    return null;
+  }
+
   save(account: ManagedGovernmentAccount): ManagedGovernmentAccount {
     assertSafeAccountMetadata(account);
     const normalized = normalizeAccount(account);
@@ -128,15 +209,28 @@ export class SqliteGovernmentAccountRepository implements GovernmentAccountRepos
         email_alias_reference, credential_handle, account_status, email_verification_status,
         created_at, last_successful_login, last_password_rotation, recovery_status,
         terms_version, registration_date, failure_reason, session_state,
-        human_action_required, human_action_reason, updated_at
+        human_action_required, human_action_reason, updated_at,
+        provider_family, account_scope, scope_key, login_url, registration_url,
+        auth_requirement, notes, last_verified_at, operator_supplied
       ) VALUES (
         @accountId, @siteDomain, @governmentJurisdiction, @platform, @purpose, @username,
         @emailAliasReference, @credentialHandle, @accountStatus, @emailVerificationStatus,
         @createdAt, @lastSuccessfulLogin, @lastPasswordRotation, @recoveryStatus,
         @termsVersion, @registrationDate, @failureReason, @sessionState,
-        @humanActionRequired, @humanActionReason, @updatedAt
+        @humanActionRequired, @humanActionReason, @updatedAt,
+        @providerFamily, @accountScope, @scopeKey, @loginUrl, @registrationUrl,
+        @authRequirement, @notes, @lastVerifiedAt, @operatorSupplied
       )
       ON CONFLICT(account_id) DO UPDATE SET
+        provider_family = excluded.provider_family,
+        account_scope = excluded.account_scope,
+        scope_key = excluded.scope_key,
+        login_url = excluded.login_url,
+        registration_url = excluded.registration_url,
+        auth_requirement = excluded.auth_requirement,
+        notes = excluded.notes,
+        last_verified_at = excluded.last_verified_at,
+        operator_supplied = excluded.operator_supplied,
         site_domain = excluded.site_domain,
         government_jurisdiction = excluded.government_jurisdiction,
         platform = excluded.platform,
@@ -156,7 +250,11 @@ export class SqliteGovernmentAccountRepository implements GovernmentAccountRepos
         human_action_required = excluded.human_action_required,
         human_action_reason = excluded.human_action_reason,
         updated_at = excluded.updated_at
-    `).run({ ...normalized, humanActionRequired: normalized.humanActionRequired ? 1 : 0 });
+    `).run({
+      ...normalized,
+      humanActionRequired: normalized.humanActionRequired ? 1 : 0,
+      operatorSupplied: normalized.operatorSupplied ? 1 : 0,
+    });
     return this.get(normalized.accountId)!;
   }
 
@@ -522,18 +620,58 @@ function containsSecretMaterial(value: string): boolean {
 }
 
 function normalizeAccount(account: ManagedGovernmentAccount): ManagedGovernmentAccount {
+  const siteDomain = normalizeDomain(account.siteDomain);
+  const governmentJurisdiction = clean(account.governmentJurisdiction);
+  const platform = clean(account.platform);
+  // A pre-scope row, or one saved without an explicit scope, is treated as
+  // deployment-scoped. Widening a legacy credential by default would be the one
+  // silent change that could send it to a portal it was never issued for.
+  const accountScope: AccountScope = isAccountScope(account.accountScope) ? account.accountScope : 'deployment';
+  const target = normalizeAccessTarget({
+    providerFamily: account.providerFamily || platform,
+    deploymentDomain: siteDomain,
+    jurisdiction: governmentJurisdiction,
+  });
   return {
     ...account,
-    siteDomain: normalizeDomain(account.siteDomain),
-    governmentJurisdiction: clean(account.governmentJurisdiction),
-    platform: clean(account.platform),
+    siteDomain,
+    governmentJurisdiction,
+    platform,
     purpose: clean(account.purpose),
     username: clean(account.username),
     emailAliasReference: clean(account.emailAliasReference),
     credentialHandle: clean(account.credentialHandle),
     failureReason: account.failureReason ? safeReason(account.failureReason) : null,
     humanActionReason: account.humanActionReason ? safeReason(account.humanActionReason) : null,
+    providerFamily: target.providerFamily,
+    accountScope,
+    scopeKey: account.scopeKey || accountScopeKey(accountScope, target),
+    loginUrl: safeUrl(account.loginUrl),
+    registrationUrl: safeUrl(account.registrationUrl),
+    authRequirement: (account.authRequirement ?? 'unknown') as AccessRequirement,
+    notes: account.notes ? safeReason(account.notes) : null,
+    lastVerifiedAt: account.lastVerifiedAt ?? null,
+    operatorSupplied: !!account.operatorSupplied,
   };
+}
+
+/**
+ * A stored URL is navigation metadata, never a bearer of access. Any query
+ * string is dropped so a one-time token in a registration link cannot be
+ * persisted as if it were a harmless address.
+ */
+function safeUrl(value: string | null | undefined): string | null {
+  const raw = clean(String(value ?? ''));
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function accountFromRow(row: Record<string, unknown>): ManagedGovernmentAccount {
@@ -548,6 +686,13 @@ function accountFromRow(row: Record<string, unknown>): ManagedGovernmentAccount 
     registrationDate: nullable(row.registration_date), failureReason: nullable(row.failure_reason),
     sessionState: row.session_state as SafeSessionState, humanActionRequired: Number(row.human_action_required) === 1,
     humanActionReason: nullable(row.human_action_reason), updatedAt: String(row.updated_at),
+    providerFamily: String(row.provider_family ?? '') || String(row.platform ?? ''),
+    accountScope: isAccountScope(row.account_scope) ? row.account_scope : 'deployment',
+    scopeKey: String(row.scope_key ?? ''),
+    loginUrl: nullable(row.login_url), registrationUrl: nullable(row.registration_url),
+    authRequirement: (nullable(row.auth_requirement) ?? 'unknown') as AccessRequirement,
+    notes: nullable(row.notes), lastVerifiedAt: nullable(row.last_verified_at),
+    operatorSupplied: Number(row.operator_supplied ?? 0) === 1,
   };
 }
 

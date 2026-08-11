@@ -74,7 +74,7 @@ describe('PropertyIntelligenceStore snapshot precedence', () => {
     open(store, 'pi_1');
     store.completeRun({ runId: 'pi_1', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:05:00.000Z', snapshot: snapshot({ runId: 'pi_1', sequence: 1 }) });
     open(store, 'pi_2');
-    store.completeRun({ runId: 'pi_2', dealCardId: 32, status: 'complete_with_gaps', completedAt: '2026-07-25T00:15:00.000Z', snapshot: snapshot({ runId: 'pi_2', sequence: 2 }) });
+    store.completeRun({ runId: 'pi_2', dealCardId: 32, status: 'complete_with_gaps', completedAt: '2026-07-25T00:15:00.000Z', snapshot: snapshot({ runId: 'pi_2', sequence: 2, status: 'complete_with_gaps' }) });
 
     expect(store.primaryRun(32)!.runId).toBe('pi_2');
     expect(store.getRun('pi_1')!.isPrimary).toBe(false);
@@ -104,6 +104,26 @@ describe('PropertyIntelligenceStore snapshot precedence', () => {
 });
 
 describe('PropertyIntelligenceStore run lifecycle', () => {
+  it('settles a run exactly once and rejects a mismatched snapshot payload', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_once', dealCardId: 32, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });
+    expect(store.completeRun({
+      runId: 'pi_once', dealCardId: 32, status: 'complete', completedAt: 'later',
+      snapshot: snapshot({ runId: 'wrong-run', sequence: 1 }),
+    })).toBe(false);
+    expect(store.getRun('pi_once')?.status).toBe('running');
+
+    expect(store.completeRun({
+      runId: 'pi_once', dealCardId: 32, status: 'complete', completedAt: 'later',
+      snapshot: snapshot({ runId: 'pi_once', sequence: 1 }),
+    })).toBe(true);
+    expect(store.completeRun({
+      runId: 'pi_once', dealCardId: 32, status: 'failed', completedAt: 'latest',
+      snapshot: null, error: 'late failure', failureCategory: 'crash',
+    })).toBe(false);
+    expect(store.getRun('pi_once')?.status).toBe('complete');
+  });
+
   it('creates a run with every specialist queued', () => {
     const store = new PropertyIntelligenceStore();
     const run = store.createRun({ runId: 'pi_a', dealCardId: 32, trigger: 'operator', startedAt: '2026-07-25T00:00:00.000Z', specialists: initialSpecialistRecords() });

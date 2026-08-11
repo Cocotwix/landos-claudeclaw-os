@@ -7,6 +7,7 @@
 // and a genuine APN/jurisdiction disagreement is always a hard stop.
 
 import { addressVariantsCompatible } from './instruction-consistency.js';
+import { decodeLandPortalCanonicalIdentity } from './landportal-canonical-identity.js';
 import type { PropertyPatch } from './normalized-property.js';
 
 export type DiscoveryIdentityState = 'confirmed' | 'provisional' | 'conflicted' | 'unresolved';
@@ -21,6 +22,8 @@ export interface DiscoverySubjectInput {
   apn?: string | null;
   owner?: string | null;
   acres?: number | null;
+  /** 5-digit county FIPS retained on the subject record, when one is known. */
+  fips?: string | null;
 }
 
 export interface DiscoveryLandPortalEvidence {
@@ -196,7 +199,16 @@ function evidenceFor(
 }
 
 function mergePatch(primary: PropertyPatch, fallback: PropertyPatch): PropertyPatch {
-  const result = { ...fallback, ...primary };
+  // The primary wins only where it HAS a value. A patch built from a source
+  // carries every key, most of them undefined, so spreading it wholesale let a
+  // sparse parcel panel blank out fields the subject already knew — an
+  // address-only lead lost its county to a panel that simply does not print one.
+  const present: PropertyPatch = {};
+  for (const key of Object.keys(primary) as Array<keyof PropertyPatch>) {
+    const value = primary[key];
+    if (value != null && value !== '') (present as Record<string, unknown>)[key] = value;
+  }
+  const result = { ...fallback, ...present };
   for (const key of Object.keys(result) as Array<keyof PropertyPatch>) {
     if (result[key] == null || result[key] === '') delete result[key];
   }
@@ -228,6 +240,16 @@ export function reconcileDiscoveryIdentity(input: {
   const lpFacts = input.landPortal?.parcelFacts ?? {};
   const lpPatch = landPortalPatch(lpFacts);
   const lpUrl = isLandPortalParcelUrl(input.landPortal?.parcelUrl) ? input.landPortal!.parcelUrl! : null;
+  // The parcel PANEL publishes APN, owner, acreage and situs address — never a
+  // county or a state. The parcel URL does: it addresses the page by county
+  // FIPS. Without this the gate below rejected its own verified match for want
+  // of a jurisdiction that the URL it was reading already carried, which is
+  // what stranded 9490 Elk Lake Rd (deal 83) across twelve reruns.
+  const lpCanonical = decodeLandPortalCanonicalIdentity(lpUrl);
+  // The state half of a FIPS code is a fixed federal assignment, so deriving it
+  // is a decode and not an inference. The county NAME is never invented here;
+  // the FIPS itself identifies the county for matching purposes.
+  if (lpCanonical?.state && !text(lpPatch.state)) lpPatch.state = lpCanonical.state;
   // A raw retained parcelUrl is not proof that the authenticated page belonged
   // to the supplied subject. The canonical parcel-url record is the only
   // durable association signal; legacy test/fixture callers that do not provide
@@ -275,12 +297,23 @@ export function reconcileDiscoveryIdentity(input: {
     && !!officialPatch.apn
     && (!requestedApn || compactApn(officialPatch.apn) === requestedApn)
     && !!(officialPatch.county || officialPatch.state);
-  const landPortalApnMatch = !!requestedApn
+  // The subject's own retained county FIPS matching the provider's canonical
+  // key is the strongest agreement available short of an official record: both
+  // sides are naming the same county by the same federal code, and the APNs
+  // agree. This is the path a RERUN takes once identity reconciliation has
+  // written the resolved jurisdiction onto the subject record.
+  const subjectFips = String(input.subject.fips ?? '').replace(/\D/g, '');
+  const landPortalFipsMatch = !!requestedApn
+    && !!lpCanonical
+    && subjectFips.length === 5
+    && lpCanonical.fips === subjectFips
+    && compactApn(lpCanonical.apn) === requestedApn;
+  const landPortalApnMatch = landPortalFipsMatch || (!!requestedApn
     && compactApn(lpPatch.apn) === requestedApn
     && !!countyKey(operatorPatch.county)
     && countyKey(lpPatch.county) === countyKey(operatorPatch.county)
     && !!stateKey(operatorPatch.state)
-    && stateKey(lpPatch.state) === stateKey(operatorPatch.state);
+    && stateKey(lpPatch.state) === stateKey(operatorPatch.state));
   // A normal fresh lead often starts with an address only. The authenticated
   // parcel page then supplies the APN and county during this same mission, so
   // requiring those fields to have existed in the intake creates a circular
@@ -294,7 +327,9 @@ export function reconcileDiscoveryIdentity(input: {
     && !!lpPatch.address
     && addressVariantsCompatible(operatorPatch.address, lpPatch.address)
     && !!compactApn(lpPatch.apn)
-    && !!countyKey(lpPatch.county)
+    // A county FIPS identifies the county exactly. Requiring a county NAME the
+    // parcel panel never prints is what made an address-only lead unresolvable.
+    && (!!countyKey(lpPatch.county) || !!lpCanonical?.fips)
     && !!stateKey(lpPatch.state)
     && (!stateKey(operatorPatch.state) || stateKey(lpPatch.state) === stateKey(operatorPatch.state));
   const landPortalExact = landPortalSubjectVerified && !!lpUrl && (landPortalApnMatch || landPortalAddressMatch);
@@ -352,7 +387,12 @@ export function reconcileDiscoveryIdentity(input: {
     return {
       state: 'provisional',
       discoveryUsable: true,
-      discoveryBasis: `Subject established for discovery: ${matchDescription} agrees with the authenticated LandPortal parcel panel for APN ${lpPatch.apn} in ${lpPatch.county}, ${lpPatch.state}. County sources were attempted; their current coverage limitation remains noted while the full analysis proceeds from this parcel match.`,
+      // Name the jurisdiction the way it was actually established. When the
+      // panel printed no county, the parcel URL's own county FIPS is cited —
+      // never a county name that no source supplied.
+      discoveryBasis: `Subject established for discovery: ${matchDescription} agrees with the authenticated LandPortal parcel panel for APN ${lpPatch.apn ?? lpCanonical?.apn} in ${
+        text(lpPatch.county) ? `${lpPatch.county}, ${lpPatch.state}` : `county FIPS ${lpCanonical?.fips}${lpPatch.state ? ` (${lpPatch.state})` : ''}`
+      }. County sources were attempted; their current coverage limitation remains noted while the full analysis proceeds from this parcel match.`,
       discoverySources: [...sources],
       confidence: 'medium',
       patch,

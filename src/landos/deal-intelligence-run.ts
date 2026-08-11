@@ -24,6 +24,7 @@
 import { logger } from '../logger.js';
 import { classifyExecution } from '../failure-classification.js';
 import {
+  awaitScopedBrowserWorkDrained,
   closeSurplusSessionPages,
   createBrowserWorkflowScope,
   runInBrowserWorkflowScope,
@@ -31,6 +32,7 @@ import {
 } from './browser-session.js';
 import { analyseDealIntelligence } from './deal-intelligence-analysis.js';
 import { assembleDealIntelligencePackage, mapChildStatus } from './deal-intelligence-assembly.js';
+import { buildDealOperatorAnalysis, emptyDealOperatorContext } from './deal-operator-analysis.js';
 import {
   DEAL_INTELLIGENCE_CHILDREN,
   DEAL_INTELLIGENCE_KIND,
@@ -48,7 +50,8 @@ import {
   type MissionJoin,
 } from './mission-graph.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
-import type { PropertyIntelligenceSnapshot, SnapshotSpecialistRecord } from './property-intelligence-snapshot.js';
+import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
+import { reconcilePropertyIntelligenceSnapshot, type PropertyIntelligenceSnapshot, type SnapshotSpecialistRecord } from './property-intelligence-snapshot.js';
 import type { SpecialistId } from './property-intelligence-specialists.js';
 import type { MissionProviderDeps } from './mission-provider-routing.js';
 
@@ -78,6 +81,17 @@ export interface LaunchDealIntelligenceOptions {
    * the outcome — a failed run leaves tabs behind just as readily as a good one.
    */
   browserCleanup?: () => Promise<BrowserCleanupResult>;
+  /** Bound browser cleanup so a detached or unresponsive CDP page cannot leave
+   * an otherwise finished Deal Intelligence run permanently in `running`. */
+  browserCleanupWaitMs?: number;
+  /**
+   * Safety bound on waiting for this run's browser work to settle before
+   * cleanup. Not a pacing timer: the wait ends the moment the owned-work count
+   * reaches zero.
+   */
+  browserWorkDrainMs?: number;
+  /** Bound post-join operator enrichment so it cannot strand a settled mission. */
+  operatorWaitMs?: number;
   onProgress?: (child: MissionChildState) => void;
 }
 
@@ -120,6 +134,20 @@ function classifyFailure(error: unknown): { category: string; message: string } 
     stderr: error instanceof Error ? error.message : String(error),
   });
   return { category: outcome.category, message: outcome.message };
+}
+
+async function settleWithin<T>(work: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs} ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -296,6 +324,34 @@ async function finishDealIntelligenceRun(input: {
 }): Promise<PropertyIntelligenceSnapshot | null> {
   const { options, missionStore, snapshotStore, now, runId, sequence, startedAt } = input;
   const dealCardId = options.dealCardId;
+  const cleanupWaitMs = Math.max(1, options.browserCleanupWaitMs ?? 10_000);
+  const boundedCleanup = async (
+    work: () => Promise<BrowserCleanupResult>,
+    label: string,
+  ): Promise<BrowserCleanupResult> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const completed = work().then(
+      (result) => ({ result, error: null as unknown, timedOut: false as const }),
+      (error: unknown) => ({ result: null, error, timedOut: false as const }),
+    );
+    const outcome = await Promise.race([
+      completed,
+      new Promise<{ result: null; error: null; timedOut: true }>((resolve) => {
+        timer = setTimeout(() => resolve({ result: null, error: null, timedOut: true }), cleanupWaitMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome.timedOut) {
+      return {
+        before: 0,
+        after: 0,
+        closed: 0,
+        note: `${label} exceeded its ${Math.round(cleanupWaitMs / 1000)}-second safety window. The run was finalized, but pages it opened may still be open.`,
+      };
+    }
+    if (outcome.error) throw outcome.error;
+    return outcome.result!;
+  };
 
   let join: MissionJoin | null = null;
   let missionError: string | null = null;
@@ -305,35 +361,83 @@ async function finishDealIntelligenceRun(input: {
     missionError = classifyFailure(error).message;
   }
 
-  // Browser cleanup runs whatever happened. A failed mission leaves tabs behind
-  // just as readily as a good one, and the operator's Chrome is theirs.
-  let cleanup: BrowserCleanupResult | null = null;
-  try {
-    cleanup = await closeSurplusSessionPages(input.browserScope);
-  } catch (error) {
-    cleanup = {
-      before: 0,
-      after: 0,
-      closed: 0,
-      note: `Browser page cleanup could not run (${(error as Error)?.message ?? String(error)}). Pages this run opened may still be open.`,
-    };
-  }
-  // Backward-compatible injected cleanup remains useful for tests and non-live
-  // callers. It is invoked only when no connected browser existed for the
-  // canonical scoped cleanup; production callbacks without a scope can never
-  // perform a global page reap.
-  if (options.browserCleanup && cleanup.before === 0) {
+  // ── THE BROWSER CLEANUP BOUNDARY ──────────────────────────────────────────
+  // The mission joins when its CHILDREN reach terminal states, but a child can
+  // settle while browser work it started is still running. Cleaning up on the
+  // join therefore looked at the browser too early: the trailing operation then
+  // opened its page against a scope that had already been released, so no
+  // scoped cleanup could ever match it and the tab survived until a manual
+  // reap. Measured on a 9490 rerun as a lane tab created at `activeScopes=0`.
+  //
+  // So the boundary is the WORK, not the child rows: every driver call is
+  // counted against its owning scope and released in a `finally`, and cleanup
+  // waits for that count to reach zero. Lanes stay fully concurrent — this
+  // waits for the set to drain, it does not serialize anything — and the
+  // deadline below is a safety bound for a driver that never returns, not a
+  // pacing timer.
+  let drain: Awaited<ReturnType<typeof awaitScopedBrowserWorkDrained>> | null = null;
+  const boundary: { cleanup: BrowserCleanupResult | null } = { cleanup: null };
+
+  /**
+   * Close the run's browser boundary. Deliberately NOT called here.
+   *
+   * The operator-context capability runs later in this same function and is
+   * itself browser-producing: it drives the Brockovich/Data Center map through
+   * a live driver. Closing the boundary at the mission join therefore released
+   * the scope before that legitimate trailing work had even started, so its
+   * driver was constructed unowned. The boundary is now taken after every
+   * browser-producing step of this run has been given its chance to run, and it
+   * is idempotent so the failure paths can call it without double-cleaning.
+   */
+  const closeBrowserBoundary = async (): Promise<void> => {
+    if (boundary.cleanup) return;
     try {
-      cleanup = await options.browserCleanup();
+      drain = await awaitScopedBrowserWorkDrained(input.browserScope, {
+        timeoutMs: Math.max(1, options.browserWorkDrainMs ?? 120_000),
+      });
+      if (!drain.drained) {
+        logger.warn({
+          runId,
+          outstanding: drain.outstanding,
+          waitedMs: drain.waitedMs,
+        }, 'deal_intelligence_browser_work_drain_timeout');
+      }
     } catch (error) {
-      cleanup = {
+      logger.warn({ err: error, runId }, 'deal_intelligence_browser_work_drain_failed');
+    }
+
+    // Browser cleanup runs whatever happened. A failed mission leaves tabs
+    // behind just as readily as a good one, and the operator's Chrome is theirs.
+    try {
+      boundary.cleanup = await boundedCleanup(
+        () => closeSurplusSessionPages(input.browserScope),
+        'Owned browser-page cleanup',
+      );
+    } catch (error) {
+      boundary.cleanup = {
         before: 0,
         after: 0,
         closed: 0,
         note: `Browser page cleanup could not run (${(error as Error)?.message ?? String(error)}). Pages this run opened may still be open.`,
       };
     }
-  }
+    // Backward-compatible injected cleanup remains useful for tests and non-live
+    // callers. It is invoked only when no connected browser existed for the
+    // canonical scoped cleanup; production callbacks without a scope can never
+    // perform a global page reap.
+    if (options.browserCleanup && boundary.cleanup.before === 0) {
+      try {
+        boundary.cleanup = await boundedCleanup(options.browserCleanup, 'Fallback browser-page cleanup');
+      } catch (error) {
+        boundary.cleanup = {
+          before: 0,
+          after: 0,
+          closed: 0,
+          note: `Browser page cleanup could not run (${(error as Error)?.message ?? String(error)}). Pages this run opened may still be open.`,
+        };
+      }
+    }
+  };
 
   const children = missionStore.listChildren(runId);
   // The join returned by the runner is authoritative when it exists. When the
@@ -346,6 +450,60 @@ async function finishDealIntelligenceRun(input: {
     });
 
   const completedAt = now();
+
+  // A deadline-expired join is not a completion. Never clear progressive data
+  // or promote a snapshot over children that are still running. Close both
+  // durable halves honestly so a new operator run is not blocked forever by a
+  // parent no process is waiting to finalize.
+  if (!effectiveJoin.allTerminal) {
+    const message = effectiveJoin.outcome || 'The parent deadline elapsed before every provider lane reached a terminal state.';
+    missionStore.abandonMission({
+      missionId: runId,
+      error: message,
+      failureCategory: 'timeout',
+      completedAt,
+      join: effectiveJoin,
+      outcome: message,
+    });
+    snapshotStore.completeRun({
+      runId,
+      dealCardId,
+      status: 'failed',
+      completedAt,
+      snapshot: null,
+      error: message,
+      failureCategory: 'timeout',
+    });
+    return null;
+  }
+
+  // ── Promote whatever this run proved about WHO the subject is ────────────
+  // The lanes have settled, so any parcel identity they retrieved is now on the
+  // record. Reconcile and persist it BEFORE the package is assembled, so this
+  // run's own snapshot is built from the corrected subject rather than from the
+  // identity the run started with — and so the NEXT run fans out with it.
+  //
+  // This is the step whose absence stranded 9490 Elk Lake Rd: LandPortal
+  // resolved the parcel on run 1 and every run after it, but nothing ever wrote
+  // the answer back, so twelve operator reruns each began from the same empty
+  // card. Identity promotion never blocks the run; a failure here leaves the
+  // retained identity exactly as it was.
+  try {
+    const reconciled = await reconcileSubjectIdentity(dealCardId, {
+      actor: `deal-intelligence:${options.trigger ?? 'operator'}`,
+    });
+    if (reconciled.changes.length || reconciled.conflicts.length) {
+      logger.info({
+        dealCardId,
+        runId,
+        status: reconciled.status,
+        changed: reconciled.changes.map((change) => change.field),
+        conflicts: reconciled.conflicts.length,
+      }, 'deal_intelligence_identity_promoted');
+    }
+  } catch (err) {
+    logger.warn({ err, dealCardId, runId }, 'deal_intelligence_identity_promotion_failed');
+  }
 
   try {
     // ── Operator: assemble the exact input package ────────────────────────
@@ -360,6 +518,55 @@ async function finishDealIntelligenceRun(input: {
     }
 
     // ── Analyst: evaluate the property ────────────────────────────────────
+    const previousSnapshot = snapshotStore.primaryRun(dealCardId)?.snapshot ?? null;
+    let operatorContext = emptyDealOperatorContext();
+    if (options.capabilities.operatorContext) {
+      try {
+        // BROWSER-PRODUCING TRAILING WORK, RUN INSIDE THE MISSION'S SCOPE.
+        // This capability drives the Brockovich/Data Center map through a live
+        // driver. Started outside the scope it built an unowned driver, so its
+        // page could never be matched by scoped cleanup. Entering the scope
+        // here makes the driver capture this run as its owner, and the boundary
+        // below is only taken once this has settled.
+        operatorContext = await settleWithin(
+          runInBrowserWorkflowScope(
+            input.browserScope,
+            () => options.capabilities.operatorContext!(dealCardId),
+          ),
+          Math.max(1, options.operatorWaitMs ?? 90_000),
+          'Deal operator context',
+        );
+      } catch (error) {
+        logger.warn({ err: error, dealCardId, runId }, 'deal_operator_context_failed');
+      }
+    }
+    let operatorAnalysis = buildDealOperatorAnalysis({
+      pkg,
+      context: operatorContext,
+      previousSnapshot,
+      generatedAt: completedAt,
+    });
+    if (options.capabilities.operatorAnalyst) {
+      try {
+        operatorAnalysis = await settleWithin(
+          runInBrowserWorkflowScope(input.browserScope, () => options.capabilities.operatorAnalyst!({
+            pkg,
+            context: operatorContext,
+            previousSnapshot,
+            generatedAt: completedAt,
+          })),
+          Math.max(1, options.operatorWaitMs ?? 90_000),
+          'Deal operator analyst',
+        );
+      } catch (error) {
+        logger.warn({ err: error, dealCardId, runId }, 'deal_operator_analyst_failed');
+      }
+    }
+
+    // EVERY browser-producing step of this run has now had its chance. Drain the
+    // work it owns, then close the pages it opened.
+    await closeBrowserBoundary();
+
     const analysed = analyseDealIntelligence({
       package: pkg,
       runId,
@@ -367,15 +574,18 @@ async function finishDealIntelligenceRun(input: {
       startedAt,
       completedAt,
     });
+    analysed.operatorAnalysis = operatorAnalysis;
 
-    const snapshot: PropertyIntelligenceSnapshot = {
+    const assembledSnapshot: PropertyIntelligenceSnapshot = {
       ...analysed,
       missionId: runId,
-      browserCleanup: cleanup,
-      missingInformation: cleanup
-        ? [...analysed.missingInformation, `Browser cleanup: ${cleanup.note}`]
+      browserCleanup: boundary.cleanup,
+      missingInformation: boundary.cleanup
+        ? [...analysed.missingInformation, `Browser cleanup: ${boundary.cleanup.note}`]
         : analysed.missingInformation,
     };
+    const reconciliation = reconcilePropertyIntelligenceSnapshot(previousSnapshot, assembledSnapshot);
+    const snapshot = reconciliation.snapshot;
 
     // ── Operator: persist ONE versioned current snapshot ──────────────────
     //
@@ -395,7 +605,7 @@ async function finishDealIntelligenceRun(input: {
     // "one incomplete record puts the whole deal on hold" behaviour Phase 5
     // explicitly forbids.
     const identityContributed = (effectiveJoin.contributed ?? []).includes('parcel_identity');
-    const unusable = !!missionError || !identityContributed;
+    const unusable = !!missionError || !identityContributed || !reconciliation.promotable;
     const missionFailed = effectiveJoin.status === 'failed';
     snapshotStore.completeRun({
       runId,
@@ -407,7 +617,7 @@ async function finishDealIntelligenceRun(input: {
       snapshot,
       // The mission's own failure is recorded even on a run that IS promoted, so
       // "a required lane did not deliver" is never hidden behind a usable snapshot.
-      error: missionError ?? (missionFailed ? effectiveJoin.outcome : null),
+      error: reconciliation.reason ?? missionError ?? (missionFailed ? effectiveJoin.outcome : null),
       failureCategory: unusable ? (missionError ? 'crash' : 'invalid_output') : null,
     });
     return snapshot;
@@ -424,6 +634,11 @@ async function finishDealIntelligenceRun(input: {
       failureCategory: failure.category as never,
     });
     return null;
+  } finally {
+    // A run that threw during assembly opened pages just as readily as one that
+    // succeeded, and its scope must never stay registered. `closeBrowserBoundary`
+    // is idempotent, so the success path's call is not repeated here.
+    await closeBrowserBoundary();
   }
 }
 

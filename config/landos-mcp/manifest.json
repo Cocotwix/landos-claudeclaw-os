@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "1.0.0",
+  "canonicalAdapter": {
+    "class": "CanonicalBridgeLandosAdapter",
+    "productionReady": true
+  },
+  "framework": {
+    "name": "mcp.server.fastmcp.FastMCP",
+    "distribution": "mcp",
+    "verifiedVersion": "1.28.1",
+    "runtimeResolution": "repo-relative run_server.py; LANDOS_MCP_PYTHON override or local Hermes runtime"
+  },
+  "inspection": {
+    "mcporterConfig": "config/landos-mcp/mcporter.json",
+    "fallbackInspector": "mcp/landos/inspect_servers.py",
+    "mcporterStatus": "verified",
+    "mcporterVersion": "0.9.0",
+    "verifiedCommands": [
+      "npx.cmd -y mcporter --config config/landos-mcp/mcporter.json --root . list landos-read --schema --json",
+      "npx.cmd -y mcporter --config config/landos-mcp/mcporter.json --root . list landos-acceptance --schema --json",
+      "npx.cmd -y mcporter --config config/landos-mcp/mcporter.json --root . list landos-research --schema --json"
+    ]
+  },
+  "servers": {
+    "landos-read": {
+      "status": "verified-live-canonical",
+      "entrypoint": "mcp/landos/landos_read.py",
+      "includeTools": [
+        "get_property_context",
+        "get_accepted_evidence",
+        "get_provider_and_specialist_status",
+        "get_acceptance_expectations",
+        "get_visible_and_canonical_counts",
+        "get_market_research_context",
+        "get_source_registry_entries"
+      ]
+    },
+    "landos-acceptance": {
+      "status": "verified-live-canonical",
+      "entrypoint": "mcp/landos/landos_acceptance.py",
+      "includeTools": [
+        "begin_acceptance_run",
+        "record_visual_claim",
+        "record_screenshot_artifact",
+        "record_refresh_result",
+        "record_restart_result",
+        "record_console_result",
+        "record_network_result",
+        "submit_pass_or_fail_report"
+      ],
+      "canonicalSchemas": [
+        "config/acceptance/acceptance-contract.schema.json",
+        "config/acceptance/results.schema.json"
+      ]
+    },
+    "landos-research": {
+      "status": "verified-live-canonical",
+      "entrypoint": "mcp/landos/landos_research.py",
+      "includeTools": [
+        "save_verified_property_fact",
+        "save_verified_comp",
+        "save_verified_visual_artifact",
+        "report_specialist_progress",
+        "complete_or_fail_research_category"
+      ]
+    }
+  },
+  "denyTools": [
+    "*sql*", "*query_database*", "*filesystem*", "*read_file*", "*write_file*",
+    "*shell*", "*command*", "*secret*", "*credential*", "*token*", "*cookie*",
+    "*environment*", "*env*", "*delete*", "*destroy*", "*valuation*", "*strategy*",
+    "*offer*", "*mutate_deal*", "*update_deal*", "*implementation*"
+  ],
+  "prohibitedCapabilities": [
+    "arbitrary-sql",
+    "arbitrary-filesystem",
+    "broad-shell",
+    "secret-or-environment-access",
+    "destructive-delete",
+    "unrestricted-deal-card-mutation",
+    "valuation-mutation",
+    "strategy-mutation",
+    "offer-mutation"
+  ]
+}

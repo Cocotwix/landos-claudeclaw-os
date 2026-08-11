@@ -57,17 +57,15 @@ describe('applyCompSourcePolicy — LandPortal primary branch', () => {
     expect(result.decisions.filter((d) => d.role === 'primary')).toHaveLength(2);
   });
 
-  it('caps each marketplace supplement at two', () => {
+  it('does not hide strong supplements behind the former two-per-source cap', () => {
     const result = applyCompSourcePolicy(SUBJECT, candidates);
     expect(result.plan.caps).toEqual({ zillow: SUPPLEMENT_CAP_WITH_LANDPORTAL, redfin: SUPPLEMENT_CAP_WITH_LANDPORTAL });
     const zillow = result.acceptedSold.filter((d) => d.family === 'zillow');
     const redfin = result.acceptedSold.filter((d) => d.family === 'redfin');
-    expect(zillow).toHaveLength(2);
-    expect(redfin).toHaveLength(2);
-    // The rows beyond the cap are retained as context, never silently dropped.
+    expect(zillow).toHaveLength(4);
+    expect(redfin).toHaveLength(4);
     const overflow = result.decisions.filter((d) => d.role === 'context_only' && (d.family === 'zillow' || d.family === 'redfin'));
-    expect(overflow).toHaveLength(4);
-    for (const row of overflow) expect(row.reason).toMatch(/supplement cap is 2/);
+    expect(overflow).toHaveLength(0);
   });
 });
 
@@ -264,5 +262,26 @@ describe('LandPortal current-state language', () => {
     const supplement = result.acceptedSold.find((d) => d.family === 'zillow')!;
     expect(supplement.reason).toMatch(/LandPortal returned 1 row\(s\) but none usable as a closed sale/);
     expect(supplement.reason).not.toMatch(/LandPortal produced no usable comps/);
+  });
+});
+
+describe('comparable lane accountability', () => {
+  it('does not claim a source returned zero merely because no lane attempt was supplied', () => {
+    const result = applyCompSourcePolicy(SUBJECT, []);
+    expect(result.laneAccountability.lanes.every((lane) => lane.status === 'not_run')).toBe(true);
+    expect(result.laneAccountability.lanes.every((lane) => lane.candidates == null)).toBe(true);
+  });
+
+  it('uses explicit lane attempts for honest no-result, blocked, and policy-disabled outcomes', () => {
+    const result = applyCompSourcePolicy(SUBJECT, [], [
+      { lane: 'landportal', attempted: true, candidates: 0 },
+      { lane: 'zillow', attempted: true, blockedReason: 'challenge page' },
+      { lane: 'redfin', attempted: true, candidates: 0 },
+      { lane: 'realtor', attempted: false, disabledReason: 'HomeHarvest policy exclusion' },
+    ]);
+    expect(result.laneAccountability.lanes.map((lane) => lane.status)).toEqual([
+      'ran_no_results', 'blocked', 'ran_no_results', 'disabled_by_policy',
+    ]);
+    expect(result.laneAccountability.everyLaneAccountedFor).toBe(true);
   });
 });

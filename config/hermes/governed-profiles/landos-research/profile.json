@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "landos-research",
+  "purpose": [
+    "Exact-subject property and LandPortal research",
+    "County, municipal, assessor, GIS, zoning, and subdivision research",
+    "Market Matrix, Market Pulse, infrastructure, development, and public-source evidence"
+  ],
+  "invocation": {
+    "interactive": "hermes --profile landos-research chat",
+    "oneShot": "hermes --profile landos-research --skills landos-property-research -q <bounded-assignment>",
+    "requireExplicitAssignment": true
+  },
+  "io": {
+    "acceptedInputs": [
+      "exact property address",
+      "optional APN/county/property id",
+      "bounded categories",
+      "approved output boundary"
+    ],
+    "producedOutputs": [
+      "property-scoped evidence",
+      "grounded citations and source dates",
+      "coverage/freshness matrix",
+      "blocked/no-match classifications"
+    ]
+  },
+  "authority": {
+    "may": [
+      "use keyless web search and public-source extraction",
+      "operate an explicitly connected authenticated LandPortal/public-research browser through browser and CDP tools",
+      "run bounded public-source research commands including the pinned domain-intel helper",
+      "read and write scoped research artifacts",
+      "submit verified evidence through landos-research MCP after integration"
+    ],
+    "mustNot": [
+      "read or expose .env files, credentials, cookies, tokens, or browser storage",
+      "run arbitrary SQL or destructive deletes",
+      "mutate Deal Cards except through narrow verified research admission",
+      "change valuation, strategy, offer, or seller CRM",
+      "reuse another property's evidence",
+      "use paid APIs",
+      "certify implementation work"
+    ],
+    "implementationAuthority": false,
+    "acceptanceAuthority": false
+  },
+  "capabilities": {
+    "skills": [
+      "landos-property-research",
+      "landos-market-research",
+      "landos-document-intelligence",
+      "maps",
+      "ocr-and-documents",
+      "pdf",
+      "docx",
+      "xlsx",
+      "powerpoint",
+      "plan",
+      "spike",
+      "domain-intel",
+      "duckduckgo-search"
+    ],
+    "toolsets": [
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "cronjob",
+      "file",
+      "memory",
+      "session_search",
+      "skills",
+      "terminal",
+      "todo",
+      "vision",
+      "web"
+    ],
+    "tools": [
+      "browser_back",
+      "browser_cdp",
+      "browser_click",
+      "browser_console",
+      "browser_dialog",
+      "browser_get_images",
+      "browser_navigate",
+      "browser_press",
+      "browser_scroll",
+      "browser_snapshot",
+      "browser_type",
+      "browser_vision",
+      "clarify",
+      "computer_use",
+      "cronjob",
+      "memory",
+      "patch",
+      "process",
+      "read_file",
+      "search_files",
+      "session_search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "todo",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ],
+    "mcpServers": [
+      "landos-read",
+      "landos-research"
+    ]
+  },
+  "storage": {
+    "profileRoot": "<HERMES_HOME>/profiles/landos-research",
+    "memory": "memories/",
+    "sessions": "sessions/",
+    "skills": "skills/",
+    "outputs": "profile workspace research artifacts; canonical admission only through audited landos-research MCP"
+  },
+  "sessions": {
+    "reuse": "within-profile-only",
+    "crossProfileAccess": "denied",
+    "propertyIsolation": "new bounded assignment or explicit clean continuation per property",
+    "persistentMemory": true
+  }
+}

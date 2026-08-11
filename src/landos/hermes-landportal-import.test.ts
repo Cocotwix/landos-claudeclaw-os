@@ -134,7 +134,9 @@ describe('Hermes LandPortal import', () => {
 
     expect(imported.importedCompCount).toBe(3);
     expect(imported.categoryResults[0]).toMatchObject({ category: 'comps', itemCount: 3 });
-    expect(listComps({ dealCardId: target.deal.id })).toHaveLength(3);
+    const rows = listComps({ dealCardId: target.deal.id });
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => !/comp detail supplied/i.test(row.notes ?? ''))).toBe(true);
     expect(loadPropertyInspection(target.card.id)?.comparables).toHaveLength(3);
   });
 
@@ -225,13 +227,34 @@ describe('Hermes LandPortal import', () => {
     expect(imported.rejectedVisualCount).toBe(0);
     expect(imported.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({ imported: true, itemCount: 1, rejectedItemCount: 0, error: null });
     expect(loadPropertyInspection(target.card.id)?.assets).toEqual([
-      expect.objectContaining({ key: 'parcel-context', label: 'Exact parcel context', validation: expect.objectContaining({ status: 'accepted', propertyCardId: target.card.id }) }),
+      expect.objectContaining({ key: 'landportal_overview', label: 'Exact parcel context', validation: expect.objectContaining({ status: 'accepted', propertyCardId: target.card.id }) }),
     ]);
     expect(new PropertyResearchStore().loadForProperty(target.card.id)?.evidence.filter((item) => item.kind === 'visual')).toHaveLength(1);
     const repeated = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
     expect(repeated.imported).toBe(false);
     expect(repeated.categoryResults.find((result) => result.category === 'visuals')).toMatchObject({ imported: false, error: null });
     expect(loadPropertyInspection(target.card.id)?.assets).toHaveLength(1);
+  });
+
+  it('does not retain a county-scale artifact under the Overview key', () => {
+    const target = subjectCard();
+    const file = fixture({
+      ...payload(),
+      specialist_category: 'visuals',
+      completed_categories: ['visuals'],
+      visual_artifacts: [{
+        key: 'landportal_overview', label: 'Too wide', kind: 'parcel_boundary',
+        purpose: 'Attempted parcel and road context.', source_path: 'too-wide.png',
+        timestamp: '2026-08-02T14:00:20.000Z', requested_view: 'parcel_context', active_view: 'parcel_context',
+        boundary_required: true, boundary_visible: true, tiles_loaded: true,
+        camera_scale: 'county', clipped: false, obstructions: [],
+      }],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'too-wide.png'), Buffer.alloc(9 * 1024, 1));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+    expect(imported).toMatchObject({ importedVisualCount: 0, rejectedVisualCount: 1 });
+    expect(loadPropertyInspection(target.card.id)?.assets ?? []).toEqual([]);
   });
 
   // Live 1487 Onionville Rd regression: Hermes wrote a descriptive
@@ -503,5 +526,50 @@ describe('Hermes LandPortal import', () => {
     expect(rows.find((row) => row.apn === '053289 47.00-1-6')).toMatchObject({
       address_desc: '0 Southard Rd, CATO, NY, 13033', sale_or_list_date: '2025-04-24', status: 'verified_sale',
     });
+  });
+
+  it('preserves four-tier access evidence and persists drilled-down comp locality, distance, and image fields', () => {
+    const target = subjectCard();
+    upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', cardId: target.card.id, activeInputAddress: 'ONEIL RD', city: 'PORT BYRON', state: 'NY', zip: '13140',
+      county: 'Cayuga', apn: '053889 75.00-1-24.11', fips: '36011', lpUrl: SUBJECT_URL,
+      lat: 43.12, lng: -76.69, verified: true, verificationSource: 'Retained exact parcel evidence',
+    });
+    const base = payload();
+    const file = fixture({
+      ...base,
+      access_evidence: [
+        { tier: 'parcel_flag', statement: 'Land Locked: Yes.', source_label: 'LandPortal parcel panel', source_kind: 'landportal_parcel_flag', basis: 'source_stated', weight: 'likely' },
+        { tier: 'apparent_physical', statement: 'A gravel drive is apparent.', source_label: 'LandPortal satellite', source_kind: 'satellite_imagery', basis: 'direct_observation', weight: 'well_supported' },
+        { tier: 'reported_legal', statement: 'Prior listing reports easement access.', source_label: 'Prior listing', source_kind: 'listing', basis: 'source_stated', weight: 'likely', source_url: 'https://listing.example/property' },
+        { tier: 'verified_legal', statement: 'An imagery interpretation was labeled verified.', source_label: 'Visual review', source_kind: 'street_view', basis: 'reasonable_interpretation', weight: 'likely' },
+      ],
+      comps: [{
+        ...base.comps[0], address: '10 Comp Rd', city: 'Cato', state: 'NY', zip: '13033', lat: 43.18, lng: -76.57,
+        sale_date: '2025-04-24', image_url: 'https://images.thelandportal.com/comp.jpg', image_source: 'LandPortal',
+        detail_url: 'https://landportal.com/comp/123', drilled_down: true,
+      }],
+    });
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+    expect(imported.imported).toBe(true);
+    const inspection = loadPropertyInspection(target.card.id)!;
+    expect(inspection.parcelFacts).toMatchObject({
+      'Access Evidence · Parcel Flag': expect.stringContaining('Land Locked: Yes'),
+      'Access Evidence · Apparent Physical': expect.stringContaining('gravel drive'),
+      'Access Evidence · Reported Legal': expect.stringContaining('Prior listing'),
+      'Access Evidence · Verified Legal': expect.stringContaining('reasonable interpretation'),
+    });
+    expect(inspection.parcelFacts['Access Evidence · Operator Conclusion']).toMatch(/does not verify legal access because no recorded instrument/i);
+    const row = listComps({ dealCardId: target.deal.id })[0];
+    expect(row).toMatchObject({
+      address_desc: '10 Comp Rd', city: 'Cato', state: 'NY', zip: '13033',
+      lat: 43.18, lng: -76.57, price_kind: 'sale', thumbnail_url: 'https://images.thelandportal.com/comp.jpg',
+      source_url: 'https://landportal.com/comp/123',
+    });
+    expect(row.distance_miles).toBeGreaterThan(0);
+    const accessEvidence = new PropertyResearchStore().loadForProperty(target.card.id)?.evidence
+      .filter((item) => item.field.startsWith('access_evidence.') && item.field !== 'access_evidence.reconciliation') ?? [];
+    expect(accessEvidence).toHaveLength(4);
+    expect((accessEvidence[3].value as { basis: string }).basis).toBe('reasonable_interpretation');
   });
 });

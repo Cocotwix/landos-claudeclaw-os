@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "registryId": "browser-workflow-registry",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "landportal-exact-subject",
+      "title": "LandPortal exact-subject specialist workflow",
+      "status": "active",
+      "summary": "Uses the approved authenticated CDP endpoint, one worker-owned tab, exact identity checks, and property-scoped JSON handback.",
+      "writeBoundary": "Assigned JSON and explicitly assigned visual artifacts only; never direct Deal Card mutation.",
+      "canonicalRefs": ["config/hermes/landos-profile/skills/landos-landportal/SKILL.md", "src/landos/hermes-landportal-auto.ts"]
+    },
+    {
+      "id": "county-records",
+      "title": "County records browser workflow",
+      "status": "active",
+      "summary": "Loads the known county adapter, applies jurisdiction configuration, captures source evidence, and reports explicit provider outcomes.",
+      "writeBoundary": "Candidate evidence only through existing LandOS admission paths.",
+      "canonicalRefs": ["src/landos/county-records-browser.ts", "src/landos/browser-learning.ts"]
+    },
+    {
+      "id": "visual-acceptance",
+      "title": "Isolated operator visual acceptance",
+      "status": "introduced",
+      "summary": "A new isolated Playwright context exercises localhost, records visible claims, refreshes, restarts through the managed command, and closes every created page/context.",
+      "writeBoundary": "Acceptance package only; no application or canonical data mutation except the explicitly defined New Lead operator action.",
+      "canonicalRefs": ["docs/landos/knowledge/architecture-map.md"]
+    }
+  ]
+}

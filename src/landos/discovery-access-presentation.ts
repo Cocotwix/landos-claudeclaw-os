@@ -17,6 +17,16 @@
 // operator workflow. The persisted snapshot record is not modified.
 
 import type { SnapshotDueDiligenceItem } from './property-intelligence-snapshot.js';
+import {
+  reconcileAccessEvidence,
+  type AccessEvidenceItem,
+  type AccessEvidenceReconciliation,
+} from './access-evidence-ladder.js';
+
+/** Canonical operator projection for source-separated access evidence. */
+export function presentDiscoveryAccessEvidence(items: AccessEvidenceItem[]): AccessEvidenceReconciliation {
+  return reconcileAccessEvidence(items);
+}
 
 const ROAD_SUFFIX: Record<string, string> = {
   rd: 'Road', st: 'Street', dr: 'Drive', ln: 'Lane', ave: 'Avenue', av: 'Avenue',
@@ -120,6 +130,16 @@ export interface ApparentEntranceRead {
   confirmed: boolean;
   /** The retained observation the display is grounded in, when one exists. */
   observation: string | null;
+  /**
+   * The observation record's own evidence label (for example
+   * "Street View — unconfirmed"). The apparent-physical tier is attributed from
+   * this rather than from whichever provider page the parcel link points at, so
+   * a Street View read is never credited to a surface that reported no Street
+   * View coverage.
+   */
+  evidenceLabel: string | null;
+  /** The observation record's own stated confidence, when it carries one. */
+  confidence: string | null;
 }
 
 const ENTRANCE_POSITIVE =
@@ -135,11 +155,13 @@ const ENTRANCE_NEGATED = /\bno\b|not visible|none visible|absent|without/i;
  * "Not confirmed from retained imagery".
  */
 export function apparentEntranceFromObservations(
-  observations: Array<{ label?: string; detail?: string }> | null | undefined,
+  observations: Array<{ label?: string; detail?: string; evidence?: string | null; confidence?: string | null }> | null | undefined,
   road?: string | null,
 ): ApparentEntranceRead {
   const entranceObs = (observations ?? []).find((item) => /entrance|driveway/i.test(item.label ?? ''));
   const detail = entranceObs?.detail ?? '';
+  const evidenceLabel = entranceObs?.evidence?.trim() || null;
+  const confidence = entranceObs?.confidence?.trim() || null;
   if (entranceObs && ENTRANCE_POSITIVE.test(detail) && !ENTRANCE_NEGATED.test(detail)) {
     const kind = detail.match(ENTRANCE_POSITIVE)?.[0]?.toLowerCase() ?? 'entry point';
     const cleaned = kind.replace(/\s+$/, '');
@@ -147,12 +169,34 @@ export function apparentEntranceFromObservations(
       display: `${cleaned.charAt(0).toUpperCase()}${cleaned.slice(1)} visible from ${road ?? 'the road'}`,
       confirmed: true,
       observation: detail,
+      evidenceLabel,
+      confidence,
     };
   }
   return {
     display: 'Not confirmed from retained imagery',
     confirmed: false,
     observation: entranceObs?.detail ?? null,
+    evidenceLabel,
+    confidence,
+  };
+}
+
+/**
+ * How the apparent-physical tier must credit a retained entrance observation.
+ * The label repeats the observation record's own evidence wording instead of
+ * naming a provider, and an observation the record itself calls unconfirmed or
+ * low-confidence is carried at `likely`, never at `well_supported`.
+ */
+export function apparentEntranceAttribution(read: Pick<ApparentEntranceRead, 'evidenceLabel' | 'confidence'>): {
+  sourceLabel: string;
+  weight: 'well_supported' | 'likely';
+} {
+  const label = read.evidenceLabel;
+  const hedged = /unconfirmed|uncertain|possible/i.test(label ?? '') || /^low$/i.test(read.confidence ?? '');
+  return {
+    sourceLabel: label ? `Retained visual observation — ${label}` : 'Retained visual observation',
+    weight: hedged ? 'likely' : 'well_supported',
   };
 }
 

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "canonicalSystem": "LandOS",
+  "purpose": "Searchable operating knowledge and registries that reference, but never replace, canonical LandOS records.",
+  "duplicatesCanonicalData": false,
+  "primaryIndex": {
+    "engine": "repository-markdown",
+    "queryCommand": "rg -n --glob *.md <query> docs/landos/knowledge",
+    "roots": [
+      "docs/landos/knowledge",
+      "docs/landos/property-intelligence-sop.md",
+      ".landos/CODING_SESSION_PROTOCOL.md",
+      ".landos/PERMANENT_MEMORY.md"
+    ],
+    "excludedRoots": [
+      ".env",
+      ".runtime",
+      "store",
+      "logs",
+      ".landos/acceptance"
+    ]
+  },
+  "existingLocalRetrieval": {
+    "engine": "SQLite FTS5",
+    "module": "src/landos/rag-knowledge.ts",
+    "authority": "long-form contextual retrieval only",
+    "canonicalWritesAllowed": false
+  },
+  "qmd": {
+    "status": "blocked",
+    "skillVersion": "1.0.0",
+    "runtimePlatform": "windows",
+    "supportedPlatforms": ["macos", "linux"],
+    "executablePresent": false,
+    "reason": "The installed Hermes qmd skill declares only macOS and Linux support, and qmd is not installed on this Windows host. No global package or approximately 2 GB model download was attempted.",
+    "activationPolicy": "Re-evaluate only after an audited Windows-compatible upstream release or an explicitly approved supported runtime is available. Repository Markdown and existing FTS5 remain primary until then."
+  },
+  "hostedVectorStores": {
+    "status": "deferred",
+    "evaluated": ["Chroma", "Qdrant", "FAISS"],
+    "reason": "No immediate release-critical need; local repository Markdown and SQLite FTS5 already satisfy the governed retrieval boundary."
+  },
+  "lastReviewedAt": "2026-08-02"
+}

@@ -1,0 +1,81 @@
+# Provisioning input. Run Hermes with the repository root as its MCP working
+# directory. The fixed launcher resolves LANDOS_MCP_PYTHON or the local Hermes
+# runtime without embedding a workstation-specific path.
+mcp_servers:
+  landos-read:
+    command: 'python'
+    args: ['-B', 'mcp/landos/run_server.py', 'landos-read']
+    timeout: 30
+    connect_timeout: 15
+    sampling:
+      enabled: false
+    tools:
+      include:
+        - get_property_context
+        - get_accepted_evidence
+        - get_provider_and_specialist_status
+        - get_acceptance_expectations
+        - get_visible_and_canonical_counts
+        - get_market_research_context
+        - get_source_registry_entries
+      exclude: &landos_denied_tools
+        - '*sql*'
+        - '*query_database*'
+        - '*filesystem*'
+        - '*read_file*'
+        - '*write_file*'
+        - '*shell*'
+        - '*command*'
+        - '*secret*'
+        - '*credential*'
+        - '*token*'
+        - '*cookie*'
+        - '*environment*'
+        - '*env*'
+        - '*delete*'
+        - '*destroy*'
+        - '*valuation*'
+        - '*strategy*'
+        - '*offer*'
+        - '*mutate_deal*'
+        - '*update_deal*'
+        - '*implementation*'
+      resources: false
+      prompts: false
+  landos-acceptance:
+    command: 'python'
+    args: ['-B', 'mcp/landos/run_server.py', 'landos-acceptance']
+    timeout: 30
+    connect_timeout: 15
+    sampling:
+      enabled: false
+    tools:
+      include:
+        - begin_acceptance_run
+        - record_visual_claim
+        - record_screenshot_artifact
+        - record_refresh_result
+        - record_restart_result
+        - record_console_result
+        - record_network_result
+        - submit_pass_or_fail_report
+      exclude: *landos_denied_tools
+      resources: false
+      prompts: false
+  landos-research:
+    command: 'python'
+    args: ['-B', 'mcp/landos/run_server.py', 'landos-research']
+    timeout: 30
+    connect_timeout: 15
+    sampling:
+      enabled: false
+    tools:
+      include:
+        - save_verified_property_fact
+        - save_verified_comp
+        - save_verified_visual_artifact
+        - report_specialist_progress
+        - complete_or_fail_research_category
+      exclude: *landos_denied_tools
+      resources: false
+      prompts: false

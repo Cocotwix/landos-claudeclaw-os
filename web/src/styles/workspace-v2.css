@@ -1032,6 +1032,32 @@ a.awv2-lp-link:hover { border-color: var(--awv2-brass); color: var(--awv2-brass-
 }
 .awv2-status-sub b { color: var(--awv2-bone-dim); font-weight: 600; }
 
+/* ── Reconcile & re-run control ────────────────────────────────────────────
+   The operator action behind the "re-run the Property Intelligence join"
+   status copy. It corrects the subject identity from retained evidence and
+   restarts research on the SAME Deal Card — no delete, no duplicate. */
+.awv2-rerun {
+  margin-top: 8px;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--awv2-brass-bright);
+  background: transparent;
+  border: 1px solid var(--awv2-brass-bright);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.awv2-rerun:hover:not(:disabled) {
+  background: var(--awv2-brass-bright);
+  color: #12100c;
+}
+.awv2-rerun:disabled { opacity: 0.55; cursor: default; }
+.awv2-rerun-note { color: var(--awv2-brass-bright); }
+.awv2-rerun-error { color: #e07a5f; }
+
 /* ── Document-level scrolling on V2 workspace routes ──────────────────────
    Full-page capture tools (FireShot et al.) stitch by scrolling the
    DOCUMENT. The app shell's h-screen + overflow-hidden trapped the V2 page
@@ -1729,3 +1755,167 @@ body:has(.awv2) .awv2 {
 /* Wide content scrolls inside its own container: the page never scrolls sideways. */
 .awv2-cv-ledger,
 .awv2-cv-mapcount-table { display: block; overflow-x: auto; max-width: 100%; }
+
+/* ── Official Parcel & GIS ──────────────────────────────────────────────
+   A compact evidence block. Status colour is load-bearing here: a
+   provisional or conflicting parcel identity must be visually distinct from
+   a verified one at a glance, because everything downstream depends on it. */
+
+.awv2-opg-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 9px;
+  margin-left: 10px;
+  white-space: nowrap;
+}
+.awv2-opg-badge.verified    { color: var(--awv2-moss);  background: var(--awv2-moss-soft);  border: 1px solid color-mix(in srgb, var(--awv2-moss) 35%, transparent); }
+.awv2-opg-badge.provisional { color: var(--awv2-amber); background: var(--awv2-amber-soft); border: 1px solid color-mix(in srgb, var(--awv2-amber) 35%, transparent); }
+.awv2-opg-badge.conflict,
+.awv2-opg-badge.not_found   { color: var(--awv2-rust);  background: var(--awv2-rust-soft);  border: 1px solid color-mix(in srgb, var(--awv2-rust) 35%, transparent); }
+
+.awv2-opg-run {
+  float: right;
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--awv2-brass-bright);
+  background: var(--awv2-brass-soft);
+  border: 1px solid color-mix(in srgb, var(--awv2-brass) 35%, transparent);
+  border-radius: 6px;
+  padding: 3px 11px;
+  cursor: pointer;
+}
+.awv2-opg-run:hover:not(:disabled) { background: color-mix(in srgb, var(--awv2-brass) 22%, transparent); }
+.awv2-opg-run:disabled { opacity: 0.55; cursor: default; }
+
+/* The caveat block. Used for an identity conflict and for a zoning value that
+   is an assessment classification — both are things an operator must not read
+   past, so they are given the same weight. */
+.awv2-opg-warn {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--awv2-rust) 32%, transparent);
+  background: var(--awv2-rust-soft);
+  color: var(--awv2-bone);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.awv2-opg-warn b { color: var(--awv2-rust); }
+.awv2-opg-warn > div { margin-top: 5px; color: var(--awv2-bone-dim); }
+
+.awv2-opg-sub {
+  margin-top: 16px;
+  margin-bottom: 6px;
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  border-top: 1px solid var(--awv2-line);
+  padding-top: 12px;
+}
+
+.awv2-opg-list { margin: 0; padding-left: 18px; font-size: 13.5px; line-height: 1.6; color: var(--awv2-bone-dim); }
+.awv2-opg-list b { color: var(--awv2-bone); font-weight: 600; text-transform: capitalize; }
+
+.awv2-opg-links { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.awv2-opg-links a { font-size: 13px; color: var(--awv2-brass-bright); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--awv2-brass) 40%, transparent); }
+.awv2-opg-links a:hover { color: var(--awv2-bone); }
+
+/* ── Land Use & Subdivision ─────────────────────────────────────────────
+   A legal panel, so the visual grammar is built around one distinction: a
+   rule LandOS established reads differently from one it did not. An
+   unresolved state is styled deliberately — muted but present — because a
+   blank row in a legal panel gets read as "no restriction", which is the
+   opposite of what it means. */
+
+.awv2-lu-unresolved {
+  color: var(--awv2-bone-faint);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Confidence, inline with the value it qualifies. Small on purpose: it
+   annotates the rule rather than competing with it. */
+.awv2-lu-q {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 1px 7px;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.awv2-lu-q.verified    { color: var(--awv2-moss);  background: var(--awv2-moss-soft); }
+.awv2-lu-q.provisional { color: var(--awv2-amber); background: var(--awv2-amber-soft); }
+.awv2-lu-q.conflict,
+.awv2-lu-q.not_found   { color: var(--awv2-rust);  background: var(--awv2-rust-soft); }
+
+.awv2-lu-cites { display: block; margin-top: 3px; }
+.awv2-lu-cites a,
+.awv2-lu-cite {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  color: var(--awv2-brass-bright);
+  text-decoration: none;
+  margin-right: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--awv2-brass) 35%, transparent);
+}
+.awv2-lu-cites a:hover,
+.awv2-lu-cite:hover { color: var(--awv2-bone); }
+.awv2-lu-cite { display: inline-block; margin-top: 4px; }
+
+.awv2-lu-cites-note { margin-left: 10px; font-size: 12px; color: var(--awv2-bone-faint); }
+.awv2-lu-term { color: var(--awv2-bone-faint); font-size: 12.5px; }
+
+/* One determination block: a use, a division path, or a scenario. They share
+   a card so the operator reads them as parallel findings. */
+.awv2-lu-use,
+.awv2-lu-path,
+.awv2-lu-scenario {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--awv2-bone) 3%, transparent);
+}
+.awv2-lu-use:first-of-type { margin-top: 8px; }
+
+.awv2-lu-use-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.awv2-lu-use-name {
+  font-size: 14.5px;
+  color: var(--awv2-bone);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.awv2-lu-use-head .awv2-opg-badge { margin-left: 0; }
+
+.awv2-lu-paths { margin-top: 4px; }
+
+/* Wide content scrolls inside its own container so the panel body never
+   scrolls horizontally on a narrow viewport. */
+.awv2-lu-scenario .awv2-kv { overflow-x: auto; }
+
+@media (max-width: 720px) {
+  .awv2-lu-use,
+  .awv2-lu-path,
+  .awv2-lu-scenario { padding: 10px 11px; }
+  .awv2-lu-use-head { align-items: flex-start; flex-direction: column; gap: 6px; }
+}

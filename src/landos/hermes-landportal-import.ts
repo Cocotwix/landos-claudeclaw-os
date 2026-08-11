@@ -37,6 +37,16 @@ import {
 } from './property-intelligence-contract.js';
 import { apnEquivalent } from './property-intelligence-snapshot.js';
 import { PropertyResearchStore } from './property-research-store.js';
+import {
+  reconcileAccessEvidence,
+  type AccessEvidenceBasis,
+  type AccessEvidenceItem,
+  type AccessEvidenceSourceKind,
+  type AccessEvidenceTier,
+  type AccessEvidenceWeight,
+} from './access-evidence-ladder.js';
+import { assessOverviewFraming, OVERVIEW_CAPTURE_KEY, selectOverviewVisual } from './landportal-overview-capture.js';
+import { buildLandPortalCompPersistence, mergeCompDetail } from './landportal-comp-drilldown.js';
 
 type Dict = Record<string, unknown>;
 
@@ -48,6 +58,26 @@ export interface HermesLandPortalComp {
   price_per_acre?: number | null;
   sale_date?: string | null;
   source_url?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  image_url?: string | null;
+  image_source?: string | null;
+  detail_url?: string | null;
+  drilled_down?: boolean | null;
+}
+
+export interface HermesLandPortalAccessEvidence {
+  tier: AccessEvidenceTier;
+  statement: string;
+  source_label: string;
+  source_kind: AccessEvidenceSourceKind;
+  basis: AccessEvidenceBasis;
+  weight: AccessEvidenceWeight;
+  source_url?: string | null;
+  observed_at?: string | null;
 }
 
 export type HermesLandPortalResultCategory = 'subject' | 'comps' | 'visuals';
@@ -134,6 +164,7 @@ export interface HermesLandPortalSubject {
   specialist_category?: HermesLandPortalResultCategory;
   completed_categories?: HermesLandPortalResultCategory[];
   visual_artifacts?: HermesLandPortalVisualArtifact[];
+  access_evidence?: HermesLandPortalAccessEvidence[];
   comps: HermesLandPortalComp[];
 }
 
@@ -212,6 +243,10 @@ const HERMES_VISUAL_VIEWS = new Set<LandPortalVisualView>(['parcel_context', 'ro
 const OVERLAY_RENDER_REQUIRED_VIEWS = new Set<LandPortalVisualView>(['soil', 'buildability']);
 const STREET_VIEW_BASES = new Set<HermesStreetViewObservation['basis']>(['direct_observation', 'reasonable_interpretation', 'unconfirmed']);
 const HERMES_CAMERA_SCALES = new Set<HermesLandPortalVisualArtifact['camera_scale']>(['parcel', 'context', 'county', 'national', 'unknown']);
+const ACCESS_TIERS = new Set<AccessEvidenceTier>(['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal']);
+const ACCESS_SOURCE_KINDS = new Set<AccessEvidenceSourceKind>(['landportal_parcel_flag', 'satellite_imagery', 'street_view', 'listing', 'official_record', 'other']);
+const ACCESS_BASES = new Set<AccessEvidenceBasis>(['source_stated', 'direct_observation', 'reasonable_interpretation', 'recorded_instrument']);
+const ACCESS_WEIGHTS = new Set<AccessEvidenceWeight>(['confirmed', 'well_supported', 'likely', 'unresolved']);
 
 function visualKindForView(view: LandPortalVisualView): HermesLandPortalVisualArtifact['kind'] {
   if (view === 'comparables_map') return 'comparables_map';
@@ -270,9 +305,12 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
   if (!Array.isArray(raw.comps)) throw new Error('Hermes JSON field "comps" must be an array.');
   const parsedComps = raw.comps.map((entry, index): HermesLandPortalComp => {
     const comp = asDict(entry, `Hermes comp ${index + 1}`);
+    // A LandPortal sidebar sold row legitimately states only a price, an
+    // acreage and a date: 9490 Elk Lake Rd's accepted comps are exactly that.
+    // Rejecting them here would delete real closed-sale evidence, so the row is
+    // retained with a null identity and deduped on price/acres/date instead.
     const apn = text(comp.apn) || null;
     const address = text(comp.address) || null;
-    if (!apn && !address) throw new Error(`Hermes comp ${index + 1} requires APN or address identity.`);
     return {
       price: requiredPositiveNumber(comp.price, `comps[${index}].price`),
       acres: requiredPositiveNumber(comp.acres, `comps[${index}].acres`),
@@ -281,6 +319,15 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
       price_per_acre: finite(comp.price_per_acre),
       sale_date: text(comp.sale_date) || null,
       source_url: text(comp.source_url) || null,
+      city: text(comp.city) || null,
+      state: text(comp.state) || null,
+      zip: text(comp.zip) || null,
+      lat: finite(comp.lat),
+      lng: finite(comp.lng),
+      image_url: text(comp.image_url) || null,
+      image_source: text(comp.image_source) || null,
+      detail_url: text(comp.detail_url) || null,
+      drilled_down: typeof comp.drilled_down === 'boolean' ? comp.drilled_down : null,
     };
   });
   const compKeys = new Set<string>();
@@ -383,6 +430,24 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
           };
         });
       })();
+  const accessEvidence = raw.access_evidence == null
+    ? undefined
+    : (() => {
+        if (!Array.isArray(raw.access_evidence)) throw new Error('Hermes JSON field "access_evidence" must be an array.');
+        return raw.access_evidence.map((entry, index): HermesLandPortalAccessEvidence => {
+          const item = asDict(entry, `Hermes access evidence ${index + 1}`);
+          return {
+            tier: enumText(item.tier, `access_evidence[${index}].tier`, ACCESS_TIERS),
+            statement: requiredText(item.statement, `access_evidence[${index}].statement`),
+            source_label: requiredText(item.source_label, `access_evidence[${index}].source_label`),
+            source_kind: enumText(item.source_kind, `access_evidence[${index}].source_kind`, ACCESS_SOURCE_KINDS),
+            basis: enumText(item.basis, `access_evidence[${index}].basis`, ACCESS_BASES),
+            weight: enumText(item.weight, `access_evidence[${index}].weight`, ACCESS_WEIGHTS),
+            source_url: text(item.source_url) || null,
+            observed_at: text(item.observed_at) || null,
+          };
+        });
+      })();
   return {
     ...(raw as unknown as HermesLandPortalSubject),
     subject_url: requiredText(raw.subject_url, 'subject_url'),
@@ -395,6 +460,7 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
     street_view_available: typeof raw.street_view_available === 'boolean' ? raw.street_view_available : undefined,
     street_view_note: text(raw.street_view_note) || undefined,
     street_view_observations: streetViewObservations,
+    access_evidence: accessEvidence,
     comps,
   };
 }
@@ -633,7 +699,70 @@ function subjectEvidence(input: CanonicalPropertyInput, subject: HermesLandPorta
       validation: { valid: true, reasons: [] },
     });
   }
+  const accessItems = accessEvidenceItems(subject);
+  const accessReconciliation = reconcileAccessEvidence(accessItems);
+  for (const [index, item] of accessItems.entries()) {
+    evidence.push({
+      id: `hermes-landportal:subject:access-evidence:${index + 1}`,
+      propertyCardId: input.propertyCardId,
+      dealCardId: input.dealCardId,
+      providerId: 'hermes_landportal_import',
+      field: `access_evidence.${item.tier}.${index + 1}`,
+      value: subject.access_evidence?.[index] ?? item,
+      subjectClassification: 'verified_subject',
+      strength: item.basis === 'recorded_instrument' ? 'provider_verified' : 'provider_observed',
+      sourceUrl: item.sourceUrl || subject.subject_url,
+      retrievedAt: item.observedAt || retrievedAt,
+      confidence: item.weight === 'confirmed' ? 'high' : item.weight === 'unresolved' ? 'low' : 'medium',
+      kind: 'fact',
+      validation: { valid: true, reasons: [] },
+    });
+  }
+  if (accessItems.length) {
+    evidence.push({
+      id: 'hermes-landportal:subject:access-reconciliation',
+      propertyCardId: input.propertyCardId,
+      dealCardId: input.dealCardId,
+      providerId: 'hermes_landportal_import',
+      field: 'access_evidence.reconciliation',
+      value: accessReconciliation,
+      subjectClassification: 'verified_subject',
+      strength: accessReconciliation.verifiedLegalAccess ? 'provider_verified' : 'provider_observed',
+      sourceUrl: subject.subject_url,
+      retrievedAt,
+      confidence: accessReconciliation.conclusionWeight === 'confirmed' ? 'high' : 'medium',
+      kind: 'fact',
+      validation: { valid: true, reasons: [] },
+    });
+  }
   return { evidence, importedFields: evidence.map((item) => item.field), rejectedFields };
+}
+
+function accessEvidenceItems(subject: HermesLandPortalSubject): AccessEvidenceItem[] {
+  const items = (subject.access_evidence ?? []).map((item) => ({
+    tier: item.tier,
+    statement: item.statement,
+    sourceLabel: item.source_label,
+    sourceKind: item.source_kind,
+    basis: item.basis,
+    weight: item.weight,
+    sourceUrl: item.source_url ?? subject.subject_url,
+    observedAt: item.observed_at ?? subject.captured_at ?? subject.retrieved_at ?? null,
+  }));
+  if (/^(?:yes|true|1|land\s*locked|land\s*locked\s*:\s*yes)$/i.test(text(subject.landlocked_status))
+    && !items.some((item) => item.tier === 'parcel_flag')) {
+    items.unshift({
+      tier: 'parcel_flag',
+      statement: 'LandPortal flags the parcel as landlocked because it does not directly front a recognized named road.',
+      sourceLabel: 'LandPortal parcel panel',
+      sourceKind: 'landportal_parcel_flag',
+      basis: 'source_stated',
+      weight: 'likely',
+      sourceUrl: subject.subject_url,
+      observedAt: subject.captured_at ?? subject.retrieved_at ?? null,
+    });
+  }
+  return items;
 }
 
 export function hermesLandPortalCompKey(comp: HermesLandPortalComp): string {
@@ -723,6 +852,13 @@ function prepareVisuals(
       rejected.push({ artifact, reason: `${artifact.requested_view} capture does not attest visibly rendered overlay polygons (overlay_rendered must be true); base imagery alone is not overlay evidence` });
       continue;
     }
+    if (artifact.key === OVERVIEW_CAPTURE_KEY || artifact.requested_view === 'parcel_context') {
+      const overviewVerdict = assessOverviewFraming(artifact);
+      if (!overviewVerdict.accepted) {
+        rejected.push({ artifact, reason: overviewVerdict.reason });
+        continue;
+      }
+    }
     if (!/\.(?:png|jpe?g|webp)$/i.test(sourcePath) || !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
       rejected.push({ artifact, reason: 'visual source_path is not a retained PNG, JPEG, or WebP file' });
       continue;
@@ -751,6 +887,21 @@ function prepareVisuals(
     }
     priorHashes.push(sha256);
     accepted.push({ artifact, sourcePath, sha256, bytes: file.byteLength, validation });
+  }
+  const overviewSelection = selectOverviewVisual(accepted.map((entry, index) => ({ ...entry.artifact, __index: index })));
+  if (overviewSelection.accepted && overviewSelection.artifact) {
+    const index = Number(overviewSelection.artifact.__index);
+    const selected = accepted[index];
+    if (selected) {
+      accepted[index] = {
+        ...selected,
+        artifact: {
+          ...selected.artifact,
+          key: OVERVIEW_CAPTURE_KEY,
+          purpose: selected.artifact.purpose || 'Deliberately framed parcel-to-road Overview',
+        },
+      };
+    }
   }
   return { accepted, rejected };
 }
@@ -817,6 +968,7 @@ const displayed = (value: number | string | null | undefined): string | null =>
   value == null ? null : typeof value === 'number' ? String(value) : text(value) || null;
 
 function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<string, string>): Record<string, string> {
+  const access = reconcileAccessEvidence(accessEvidenceItems(subject));
   const candidates: Record<string, string | null> = {
     'Owner Name': text(subject.owner) || null,
     'Parcel ID': subject.apn,
@@ -849,29 +1001,76 @@ function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<stri
     'Book Number': displayed(subject.book_number),
     'Page Number': displayed(subject.page_number),
     'Assessed Value': displayed(subject.assessed_value),
+    'Access Evidence · Parcel Flag': access.byTier.parcel_flag.length
+      ? access.byTier.parcel_flag.map((item) => `${item.statement} — ${item.sourceLabel}`).join(' | ') : null,
+    'Access Evidence · Apparent Physical': access.byTier.apparent_physical.length
+      ? access.byTier.apparent_physical.map((item) => `${item.statement} — ${item.sourceLabel}`).join(' | ') : null,
+    'Access Evidence · Reported Legal': access.byTier.reported_legal.length
+      ? access.byTier.reported_legal.map((item) => `${item.statement} — ${item.sourceLabel}`).join(' | ') : null,
+    'Access Evidence · Verified Legal': access.byTier.verified_legal.length
+      ? access.byTier.verified_legal.map((item) => `${item.statement} — ${item.sourceLabel} (${item.basis.replace(/_/g, ' ')})`).join(' | ') : null,
+    'Access Evidence · Operator Conclusion': accessEvidenceItems(subject).length ? access.operatorConclusion : null,
   };
   return Object.fromEntries(Object.entries(candidates).filter(([label, value]) => !present(retained[label]) && present(value))) as Record<string, string>;
 }
 
-function projectedComparable(comp: HermesLandPortalComp, duplicate: CompRow | null, subjectUrl: string, capturedAt: string): LandPortalComparableRecord {
+function enrichedHermesComp(comp: HermesLandPortalComp, subject: SubjectCard) {
+  const sidebar = {
+    apn: comp.apn,
+    price: comp.price,
+    acres: comp.acres,
+    saleDate: comp.sale_date,
+    pricePerAcre: comp.price_per_acre,
+    detailUrl: comp.source_url,
+  };
+  const hasDetailEvidence = comp.drilled_down === true || [
+    comp.address, comp.city, comp.state, comp.zip, comp.lat, comp.lng,
+    comp.image_url, comp.image_source, comp.detail_url,
+  ].some((value) => present(value));
+  return mergeCompDetail(sidebar, hasDetailEvidence ? {
+    address: comp.address,
+    city: comp.city,
+    state: comp.state,
+    zip: comp.zip,
+    apn: comp.apn,
+    acres: comp.acres,
+    price: comp.price,
+    saleDate: comp.sale_date,
+    pricePerAcre: comp.price_per_acre,
+    lat: comp.lat,
+    lng: comp.lng,
+    imageUrl: comp.image_url,
+    imageSourceLabel: comp.image_source,
+    detailUrl: comp.detail_url,
+  } : null, { lat: subject.lat, lng: subject.lng });
+}
+
+function projectedComparable(comp: HermesLandPortalComp, duplicate: CompRow | null, subjectUrl: string, capturedAt: string, subject: SubjectCard): LandPortalComparableRecord {
+  const enriched = enrichedHermesComp(comp, subject);
   const isSale = duplicate?.status === 'verified_sale' || duplicate?.price_kind === 'sale';
-  const address = text(comp.address) || text(duplicate?.address_desc) || null;
+  const address = enriched.address || text(duplicate?.address_desc) || null;
   const saleDate = text(comp.sale_date) || text(duplicate?.sale_or_list_date) || '';
   return {
     rawText: [address || comp.apn || 'LandPortal comp', money(comp.price), `${comp.acres} ac`].join(' | '),
-    sourceUrl: comp.source_url || subjectUrl,
-    surface: 'sidebar',
+    sourceUrl: enriched.detailUrl || comp.source_url || subjectUrl,
+    surface: enriched.drilledDown ? 'both' : 'sidebar',
     apn: text(comp.apn) || text(duplicate?.apn) || null,
     address,
     saleDate: saleDate || undefined,
     acres: comp.acres,
     price: comp.price,
-    pricePerAcre: finite(comp.price_per_acre) ?? duplicate?.price_per_acre ?? null,
+    pricePerAcre: enriched.pricePerAcre ?? duplicate?.price_per_acre ?? null,
+    distanceMiles: enriched.locationResolution.distanceMiles,
     status: isSale ? 'sold' : 'unknown',
     saleListIndicator: isSale ? 'sale' : 'unknown',
     improvement: /vacant/i.test(`${duplicate?.property_class ?? ''} ${duplicate?.classification ?? ''}`) ? 'vacant' : 'unknown',
     confidence: 'high',
     statusSource: isSale ? 'detail_surface' : null,
+    city: enriched.city,
+    state: enriched.state,
+    lat: enriched.lat,
+    lng: enriched.lng,
+    detailUrl: enriched.detailUrl,
     capturedAtIso: capturedAt,
   };
 }
@@ -1016,7 +1215,12 @@ export function importHermesLandPortalFile(
             comparablesUrl: retainedInspection?.comparablesUrl ?? null,
             comparablesCapturedAt: null,
             parcelFacts: inspectionFacts(subject, retainedInspection?.parcelFacts ?? {}),
-            assets: [], overlays: [], visualObservations: [], comparables: [],
+            assets: [], overlays: [], visualObservations: accessEvidenceItems(subject).map((item) => ({
+              label: `Access evidence · ${item.tier.replace(/_/g, ' ')}`,
+              detail: `${item.statement} Source: ${item.sourceLabel}. Basis: ${item.basis.replace(/_/g, ' ')}.`,
+              confidence: (item.weight === 'unresolved' ? 'low' : 'medium') as 'low' | 'medium',
+              evidence: item.sourceUrl || item.sourceLabel,
+            })), comparables: [],
             sources: [{ provider: 'LandPortal', stage: 'hermes_subject_import', status: 'used', resultKind: 'retrieved', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `Exact subject identity for ${subject.address} persisted independently from ${path.basename(sourceFile)}.` }],
             evidence: [{ label: 'Hermes LandPortal verified subject import', status: 'verified', detail: `Exact address, APN, subject URL, and LandPortal property identifier validated for ${subject.address}.`, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url }],
           });
@@ -1056,26 +1260,29 @@ export function importHermesLandPortalFile(
             comparablesUrl: retainedInspection?.comparablesUrl ?? subject.subject_url,
             comparablesCapturedAt: captured.value,
             parcelFacts: {}, assets: [], overlays: [], visualObservations: [],
-            comparables: subject.comps.map((comp, index) => projectedComparable(comp, duplicates[index], subject.subject_url, captured.value)),
+            comparables: subject.comps.map((comp, index) => projectedComparable(comp, duplicates[index], subject.subject_url, captured.value, card)),
             sources: [{ provider: 'LandPortal', stage: 'hermes_comps_import', status: 'used', resultKind: 'retrieved', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `${subject.comps.length} comparable row(s) for ${subject.address} persisted independently after exact-subject validation.` }],
             evidence: [{ label: 'Hermes LandPortal comparable import', status: 'observed', detail: `${subject.comps.length} LandPortal comparable row(s) retained as context-only evidence for ${subject.address}.`, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url }],
           });
           let created = 0;
           for (const [index, comp] of subject.comps.entries()) {
-            if (duplicates[index]) continue;
+            const enriched = enrichedHermesComp(comp, card);
+            const persistence = buildLandPortalCompPersistence(enriched);
             upsertNormalizedComp({
               entity: card.entity as LandosEntity, dealCardId: card.deal_card_id, cardId: card.id,
-              sourceLabel: 'LandPortal', canonicalSource: 'Hermes / LandPortal', sourceUrl: comp.source_url || subject.subject_url,
-              addressDesc: text(comp.address), apn: text(comp.apn), county: text(subject.county) || card.county, state: card.state,
-              price: comp.price, priceKind: 'unknown', saleOrListDate: text(comp.sale_date), acres: comp.acres,
-              pricePerAcre: finite(comp.price_per_acre) ?? undefined,
-              notes: 'Hermes-imported LandPortal comparable; context-only unless transaction status/date is independently retained.',
-              addedBy: 'hermes-landportal-import', status: 'manual_unverified', propertyClass: 'land', classification: 'landportal_context',
+              sourceLabel: 'LandPortal', canonicalSource: persistence.canonical_source, sourceUrl: persistence.source_url || comp.source_url || subject.subject_url,
+              addressDesc: persistence.address_desc ?? undefined, apn: persistence.apn ?? undefined, county: text(subject.county) || card.county,
+              city: persistence.city ?? undefined, state: persistence.state ?? undefined, zip: persistence.zip ?? undefined,
+              price: persistence.price ?? undefined, priceKind: persistence.price_kind as 'sale' | 'list' | 'unknown', saleOrListDate: persistence.sale_or_list_date ?? undefined, acres: persistence.acres ?? undefined,
+              pricePerAcre: persistence.price_per_acre ?? undefined,
+              lat: persistence.lat ?? undefined, lng: persistence.lng ?? undefined, distanceMiles: persistence.distance_miles ?? undefined, thumbnailUrl: persistence.thumbnail_url ?? undefined,
+              notes: `Hermes-imported LandPortal comparable. ${persistence.notes}`,
+              addedBy: 'hermes-landportal-import', status: duplicates[index] ? undefined : 'manual_unverified', propertyClass: 'land', classification: 'landportal_context',
               retrievedAt: captured.value, inclusionReason: `LandPortal comparable retained for exact subject ${subject.address}.`,
-              sourceAttributions: [{ provider: 'Hermes / LandPortal', url: comp.source_url || subject.subject_url }],
-              canonicalKey: hermesLandPortalCompKey(comp),
+              sourceAttributions: [{ provider: 'Hermes / LandPortal', url: persistence.source_url || comp.source_url || subject.subject_url }],
+              canonicalKey: duplicates[index]?.canonical_key || hermesLandPortalCompKey(comp),
             });
-            created += 1;
+            if (!duplicates[index]) created += 1;
           }
           attachCardActivity({ cardId: card.id, agentId: 'hermes-landportal-import', kind: 'hermes_landportal_comps_import', summary: `Persisted ${subject.comps.length} Hermes LandPortal comparable row(s) for ${subject.address}.`, ref: categoryId });
           return { created, retained: persisted.persistence.retainedEvidenceCount };

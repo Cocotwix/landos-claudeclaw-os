@@ -39,20 +39,20 @@ function salesAtMonths(months: number[], acres = 11): RecencyCandidate[] {
 }
 
 describe('valuation acreage band', () => {
-  it('prices an 11.46-acre subject off 5-to-20-acre sales', () => {
+  it('delegates the 11.46-acre subject to the shared mid-acreage route', () => {
     const band = valuationAcreageBand(SUBJECT_ACRES)!;
-    expect(band.min).toBe(5);
-    expect(band.max).toBe(20);
-    expect(band.label).toBe('5–20 acres');
+    expect(band.min).toBe(5.73);
+    expect(band.max).toBe(22.92);
+    expect(band.label).toBe('5.73–22.92 acres');
   });
 
   it('admits sales at the band edges and rejects sales outside it', () => {
     const band = valuationAcreageBand(SUBJECT_ACRES);
-    expect(inAcreageBand(5, band)).toBe(true);
-    expect(inAcreageBand(20, band)).toBe(true);
+    expect(inAcreageBand(5.73, band)).toBe(true);
+    expect(inAcreageBand(22.92, band)).toBe(true);
     expect(inAcreageBand(11.46, band)).toBe(true);
-    expect(inAcreageBand(4.99, band)).toBe(false);
-    expect(inAcreageBand(20.01, band)).toBe(false);
+    expect(inAcreageBand(5.72, band)).toBe(false);
+    expect(inAcreageBand(22.93, band)).toBe(false);
     expect(inAcreageBand(null, band)).toBe(false);
   });
 
@@ -60,7 +60,7 @@ describe('valuation acreage band', () => {
     const band = valuationAcreageBand(SUBJECT_ACRES);
     const atSubject = acreageSimilarity(11.46, SUBJECT_ACRES, band);
     const near = acreageSimilarity(11, SUBJECT_ACRES, band);
-    const low = acreageSimilarity(5, SUBJECT_ACRES, band);
+    const low = acreageSimilarity(6, SUBJECT_ACRES, band);
     const high = acreageSimilarity(20, SUBJECT_ACRES, band);
     expect(atSubject).toBe(1);
     // A sale near 11.46 acres outweighs a 5-acre or a 20-acre sale.
@@ -68,13 +68,13 @@ describe('valuation acreage band', () => {
     expect(near).toBeGreaterThan(high);
     expect(low).toBeGreaterThan(0);
     // Outside the band the similarity is zero, never a small positive nudge.
-    expect(acreageSimilarity(25, SUBJECT_ACRES, band)).toBe(0);
+    expect(acreageSimilarity(23, SUBJECT_ACRES, band)).toBe(0);
   });
 
-  it('scales the band to the subject class instead of a flat multiplier', () => {
-    expect(valuationAcreageBand(1)).toMatchObject({ min: 0.25, max: 5 });
-    expect(valuationAcreageBand(3)).toMatchObject({ min: 1, max: 10 });
-    expect(valuationAcreageBand(40)).toMatchObject({ min: 15, max: 60 });
+  it('uses the shared regime route instead of local class assumptions', () => {
+    expect(valuationAcreageBand(1)).toMatchObject({ min: 0.6, max: 1.75 });
+    expect(valuationAcreageBand(3)).toMatchObject({ min: 1.5, max: 6 });
+    expect(valuationAcreageBand(40)).toMatchObject({ min: 14, max: 100 });
     expect(valuationAcreageBand(null)).toBeNull();
     expect(valuationAcreageBand(0)).toBeNull();
   });

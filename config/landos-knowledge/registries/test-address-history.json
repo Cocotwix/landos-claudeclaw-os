@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "registryId": "test-address-history",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "TEST-ADDR-704-BELL",
+      "title": "704 Bell Rd governed visual acceptance target",
+      "status": "reserved-known-defect-proof",
+      "summary": "Existing accepted property reserved for the first governed visual mismatch proof; it is not a fresh-address claim and must not be reused as proof of the normal fresh-lead requirement.",
+      "address": "704 Bell Rd, Red Creek, NY 13143",
+      "freshnessRequired": false,
+      "expectedVerdict": "FAIL",
+      "canonicalRecordRefs": ["landportal-property-id:89520173"],
+      "canonicalRefs": ["config/landos-knowledge/registries/defect-history.json"]
+    }
+  ]
+}

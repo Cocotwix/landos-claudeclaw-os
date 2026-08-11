@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "registryId": "skill-registry",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "production-landportal-skill",
+      "title": "Existing LandPortal specialist skill",
+      "status": "protected",
+      "summary": "Current production Hermes specialist capability remains unchanged until governed profiles are independently proven.",
+      "canonicalRefs": ["config/hermes/landos-profile/skills/landos-landportal/SKILL.md"]
+    },
+    {
+      "id": "governed-skill-manifest",
+      "title": "Governed profile skill manifest",
+      "status": "integration-interface",
+      "summary": "Approved bundled, optional, and custom skills are profile-specific and require source/version/audit/snapshot metadata before provisioning.",
+      "canonicalRefs": ["docs/landos/knowledge/skill-registry.md"]
+    }
+  ]
+}

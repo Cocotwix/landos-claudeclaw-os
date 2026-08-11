@@ -6,7 +6,11 @@ import {
 } from './netr-routing.js';
 import { extractRecordFacts, unresolvedFact, extractAgencyContact, parcelRecordSignal } from './semantic-extract.js';
 import { saveCountySources, getCountySources, isCountyCacheFresh } from './county-source-map.js';
-import { makeCountyRecordsBrowser } from './county-records-browser.js';
+import {
+  acclaimDetailFieldsFromText,
+  findAcclaimSubjectRow,
+  makeCountyRecordsBrowser,
+} from './county-records-browser.js';
 import type { BrowserDriver, BrowserPageRead } from './browser-intelligence.js';
 import { _initTestLandosDb } from './db.js';
 
@@ -57,6 +61,16 @@ describe('NETR routing — semantic link classification (no county scrapers)', (
     const picked = pickOfficialResult(results, 'tax', 'White', 'GA');
     expect(picked!.url).toContain('whitecountytax.gov');
     expect(picked!.origin).toBe('search_fallback');
+  });
+
+  it('rejects same-name counties in another state and non-official directory aggregators', () => {
+    const picked = pickOfficialResult([
+      { text: 'Pickens County Planning & Development', href: 'https://www.pickenscountyga.gov/171/Planning-Development' },
+      { text: 'Pickens County Building Departments', href: 'https://www.countyoffice.org/sc-pickens-county-building-departments/' },
+      { text: 'Pickens County, SC Code of Ordinances — Planning', href: 'https://library.municode.com/sc/pickens_county/codes/code_of_ordinances?nodeId=COOR_CH30PLDE' },
+    ], 'planning', 'Pickens', 'SC');
+    expect(picked?.url).toContain('/sc/pickens_county/');
+    expect(officialDomainScore('https://www.countyoffice.org/sc-pickens-county-building-departments/', 'Pickens', 'SC')).toBe(0);
   });
 
   it('always prefers a local county/city/township source before a statewide index', () => {
@@ -187,6 +201,79 @@ function fakeNetrDriver(): BrowserDriver {
 }
 
 describe('County Records Browser — NETR-routed semantic retrieval (end to end)', () => {
+  it('correlates an Acclaim recorder row by exact APN and parses its instrument detail', () => {
+    const row = findAcclaimSubjectRow([{
+      TransactionItemId: 1433732,
+      InstrumentNumber: '202518326',
+      BookPage: '2895/123',
+      ParcelNumber: '4165-00-51-3961',
+      Comments: '(13.21)AC TRACT B ET AL',
+      Party: 'To',
+      Name: 'NATURALAND TRUST',
+      CrossPartyName: 'STROTHER BRADLEY L TST',
+      DocType: 'DEED',
+    }], '4165-00-51-3961');
+    expect(row).toMatchObject({
+      transactionItemId: 1433732,
+      instrumentNumber: '202518326',
+      parcelNumber: '4165-00-51-3961',
+    });
+    expect(findAcclaimSubjectRow([{
+      TransactionItemId: 1,
+      InstrumentNumber: 'OTHER',
+      ParcelNumber: '4154-00-64-0929',
+    }], '4165-00-51-3961')).toBeNull();
+
+    const fields = acclaimDetailFieldsFromText(`
+      Book / Page:
+      / Go
+      Instrument Number:
+      Go
+      Search Results
+      Record Date:
+      12/10/2025
+      Book Type:
+      DE - DEED
+      Book / Page:
+      2895/123
+      Instrument Number:
+      202518326
+      Number Of Pages:
+      3
+      Doc Type:
+      DEED - DEED
+      Grantor:
+      BRADLEY L STROTHER REVOCABLE TRUST THE
+      STROTHER BRADLEY L TST
+      Grantee:
+      NATURALAND TRUST
+      Consideration:
+      $490,000.00
+      Description:
+      (13.21)AC TRACT B ET AL
+      Related DocLink:
+      DE 2806/70
+      PL 595/205
+      TMS Number:
+      4165-00-51-3961
+      Mailback:
+      Horton Law Firm PA
+    `);
+    expect(fields).toMatchObject({
+      'Recording Date': '12/10/2025',
+      'Deed Book / Page': '2895/123',
+      'Instrument Number': '202518326',
+      'Number Of Pages': '3',
+      'Current Deed': 'DEED - DEED',
+      Grantor: 'BRADLEY L STROTHER REVOCABLE TRUST THE; STROTHER BRADLEY L TST',
+      Grantee: 'NATURALAND TRUST',
+      Consideration: '$490,000.00',
+      'Legal Description': '(13.21)AC TRACT B ET AL',
+      'Recorded Plat': 'PL 595/205',
+      'Parcel ID': '4165-00-51-3961',
+    });
+  });
+
   beforeEach(() => _initTestLandosDb());
   it('routes via NETR, finds official sources, extracts facts with provenance', async () => {
     const county = makeCountyRecordsBrowser({ driver: fakeNetrDriver() });
@@ -202,13 +289,308 @@ describe('County Records Browser — NETR-routed semantic retrieval (end to end)
     expect(owner!.origin).toBe('netr_county');
     expect(owner!.sourceName).toMatch(/White County Assessor/);
     expect(owner!.sourceUrl).toContain('qpublic');
-    // GIS/recorder kept as labeled links
-    expect(ev.facts.some((f) => f.key === 'gisLink')).toBe(true);
+    // Routed source URLs remain evidence, never masquerade as extracted facts.
+    expect(ev.facts.some((f) => /Link$/.test(f.key))).toBe(false);
+    expect(ev.sourceUrls.some((url) => url.includes('gis.white.ga.gov'))).toBe(true);
+    expect(ev.sourceAttempts?.map((attempt) => attempt.sourceType)).toEqual(
+      expect.arrayContaining(['assessor', 'tax', 'gis', 'recorder']),
+    );
+    expect(ev.sourceAttempts?.some((attempt) =>
+      attempt.result === 'retrieved' && attempt.factCount > 0)).toBe(true);
+    expect(ev.sourceAttempts?.every((attempt) => !!attempt.attemptedAt && !!attempt.note)).toBe(true);
     // a screenshot captured for the record page
     expect(ev.screenshots.length).toBeGreaterThanOrEqual(1);
     // routing persisted to the County Source Map
     expect(getCountySources('GA', 'White')!.sources.length).toBeGreaterThanOrEqual(3);
-    expect(ev.note).toMatch(/NETR Online/);
+    expect(ev.note).toMatch(/NETR/);
+  });
+
+  it('resolves and attempts planning even when the county routing cache is fresh', async () => {
+    saveCountySources({
+      state: 'GA',
+      county: 'White',
+      netrUrl: 'https://publicrecords.netronline.com/georgia/White',
+      sources: [
+        { type: 'assessor', url: 'https://www.whitecountyga.gov/assessor', label: 'Assessor', origin: 'search_fallback', confidence: 0.9 },
+        { type: 'tax', url: 'https://www.whitecountyga.gov/tax', label: 'Tax', origin: 'search_fallback', confidence: 0.9 },
+        { type: 'gis', url: 'https://www.whitecountyga.gov/gis', label: 'GIS', origin: 'search_fallback', confidence: 0.9 },
+        { type: 'recorder', url: 'https://www.whitecountyga.gov/deeds', label: 'Deeds', origin: 'search_fallback', confidence: 0.9 },
+      ],
+      usedSearchFallback: true,
+      status: 'routed',
+      confidence: 'high',
+      notes: 'Fresh core source map without planning.',
+    });
+    let current = '';
+    const driver: BrowserDriver = {
+      id: 'cached-departments',
+      configured: () => true,
+      async open(url) { current = url; return { url, fields: {}, snippets: [] }; },
+      async search(q) { current = `search:${q}`; return { url: current, fields: {}, snippets: [] }; },
+      async readFields() { return { url: current, fields: {}, snippets: [] }; },
+      async readLinks() {
+        const decoded = decodeURIComponent(current).toLowerCase();
+        if (decoded.includes('planning')) return [{ text: 'White County Planning and Development', href: 'https://www.whitecountyga.gov/planning' }];
+        return [];
+      },
+      async screenshot(purpose) { return { path: '/tmp/departments.png', capturedAtIso: 't', purpose }; },
+    };
+    const county = makeCountyRecordsBrowser({ driver });
+    const ev = await county.runWorkflow({
+      searchKey: { state: 'GA', county: 'White', apn: '021 033 002' },
+      mode: 'deep_record',
+    }, { timeoutMs: 5_000 });
+    expect(ev.sourcesUsed.map((source) => source.type)).toContain('planning');
+    expect(ev.sourceAttempts?.map((attempt) => attempt.sourceType)).toContain('planning');
+    expect(getCountySources('GA', 'White')?.sources.map((source) => source.type)).toContain('planning');
+  });
+
+  it('uses generic SPA controls and non-anchor result rows to reach and extract the subject record', async () => {
+    saveCountySources({
+      state: 'SC',
+      county: 'Pickens',
+      netrUrl: null,
+      sources: [
+        { type: 'assessor', url: 'https://maps.pickenscountysc.gov/property', label: 'Pickens County property search', origin: 'search_fallback', confidence: 0.9 },
+      ],
+      usedSearchFallback: true,
+      status: 'routed',
+      confidence: 'high',
+      notes: 'Test SPA route.',
+    });
+    const recordFields = {
+      'Owner Name': 'NATURALAND TRUSTEES',
+      'Parcel ID': '4165-00-51-3961',
+      'Deeded Acres': '52.84',
+      'Property Class': 'Vacant land',
+      Improvements: 'None listed',
+      'Current Deed': 'Warranty deed',
+      Grantor: 'MOUNTAIN HOLDINGS LLC',
+      Grantee: 'NATURALAND TRUSTEES',
+      'Recording Date': '2020-04-17',
+      'Instrument Number': '20200417001234',
+      'Legal Description': 'Tract 3, Highway 11',
+      'Plat Book': 'PB 44 / 18',
+    };
+    let recordReached = false;
+    const driver: BrowserDriver = {
+      id: 'spa-government-records',
+      configured: () => true,
+      async open(url) { return { url, fields: {}, snippets: [] }; },
+      async search(q) { return { url: `search:${q}`, fields: {}, snippets: [] }; },
+      async readFields() {
+        return {
+          url: recordReached ? 'https://maps.pickenscountysc.gov/property/416500513961' : 'https://maps.pickenscountysc.gov/property',
+          fields: recordReached ? recordFields : {},
+          snippets: [],
+        };
+      },
+      async readLinks() { return []; },
+      async readForms() { return []; },
+      async observe() {
+        return {
+          url: 'https://maps.pickenscountysc.gov/property',
+          title: 'Pickens County Property Search',
+          headings: ['Property Search'],
+          navItems: [],
+          buttons: ['Search'],
+          searchControls: [{ selector: '#parcel-search', label: 'Parcel ID', type: 'text' }],
+          links: [],
+          hasMap: true,
+          hasTable: recordReached,
+          fields: recordReached ? recordFields : {},
+          loginLike: false,
+        };
+      },
+      async typeSearch() {},
+      async readCandidates() {
+        return [{ index: 0, kind: 'row', text: 'Parcel 4165-00-51-3961 NATURALAND TRUSTEES Pickens SC' }];
+      },
+      async clickCandidate() { recordReached = true; },
+      async submitSearch() {},
+      async screenshot(purpose) { return { path: '/tmp/pickens-record.png', capturedAtIso: 't', purpose }; },
+    };
+    const county = makeCountyRecordsBrowser({ driver });
+    const ev = await county.runWorkflow({
+      searchKey: {
+        state: 'SC',
+        county: 'Pickens',
+        apn: '4165-00-51-3961',
+        owner: 'NATURALAND TRUSTEES',
+      },
+    }, { timeoutMs: 5_000 });
+
+    expect(ev.status).toBe('retrieved');
+    expect(Object.fromEntries(ev.facts.map((fact) => [fact.key, fact.value]))).toMatchObject({
+      owner: 'NATURALAND TRUSTEES',
+      apn: '4165-00-51-3961',
+      acreage: '52.84',
+      improvements: 'None listed',
+      currentDeed: 'Warranty deed',
+      grantor: 'MOUNTAIN HOLDINGS LLC',
+      grantee: 'NATURALAND TRUSTEES',
+      recordingDate: '2020-04-17',
+      instrumentNumber: '20200417001234',
+      legalDescription: 'Tract 3, Highway 11',
+      recordedPlat: 'PB 44 / 18',
+    });
+    const attempt = ev.sourceAttempts?.[0];
+    expect(attempt).toMatchObject({
+      result: 'retrieved',
+      failureCode: undefined,
+      reachedUrl: 'https://maps.pickenscountysc.gov/property/416500513961',
+    });
+    expect(attempt?.alternateRoutesAttempted).toEqual(expect.arrayContaining(['interactive_spa', 'interactive_result_row']));
+    expect(attempt?.searchMethods).toContain('apn:4165-00-51-3961');
+    expect(attempt?.steps?.map((step) => step.stage)).toEqual(['navigate', 'retrieve', 'extract', 'interpret']);
+  });
+
+  it('rejects a commercial redirect returned by an official department search form', async () => {
+    const officialUrl = 'https://www.co.pickens.sc.us/departments/register_of_deeds/index.php';
+    saveCountySources({
+      state: 'SC',
+      county: 'Pickens',
+      netrUrl: null,
+      sources: [{ type: 'recorder', url: officialUrl, label: 'Pickens County Register of Deeds', origin: 'search_fallback', confidence: 0.9 }],
+      usedSearchFallback: true,
+      status: 'routed',
+      confidence: 'high',
+      notes: 'Commercial redirect rejection regression.',
+    });
+    let currentUrl = officialUrl;
+    const driver: BrowserDriver = {
+      id: 'commercial-redirect',
+      configured: () => true,
+      async open(url) {
+        currentUrl = url;
+        return { url, fields: {}, snippets: [] };
+      },
+      async search(q) { return { url: `search:${q}`, fields: {}, snippets: [] }; },
+      async readFields() { return { url: currentUrl, fields: {}, snippets: [] }; },
+      async readLinks() { return []; },
+      async readForms() {
+        return currentUrl === officialUrl
+          ? [{ formIndex: 0, fields: [{ selector: '#search', label: 'Search' }], submitLabel: 'Search', submitSelector: '#go' }]
+          : [];
+      },
+      async fillAndSubmit() {
+        currentUrl = 'https://www.zillow.com/homedetails/6940-Highway-11-Sunset-SC/123_zpid/';
+        return { url: currentUrl, fields: {}, snippets: [] };
+      },
+      async screenshot(purpose) { return { path: '/tmp/commercial-rejected.png', capturedAtIso: 't', purpose }; },
+    };
+    const county = makeCountyRecordsBrowser({ driver });
+    const ev = await county.runWorkflow({
+      searchKey: { state: 'SC', county: 'Pickens', apn: '4165-00-51-3961', address: '6940 Highway 11' },
+      mode: 'deep_record',
+    }, { timeoutMs: 5_000 });
+
+    const attempt = ev.sourceAttempts?.find((row) => row.sourceUrl === officialUrl);
+    expect(attempt?.reachedUrl).toBe(officialUrl);
+    expect(attempt?.note).not.toMatch(/zillow/i);
+    expect(attempt?.alternateRoutesAttempted).toContain('commercial_result_rejected');
+    expect(ev.facts).toHaveLength(0);
+  });
+
+  it('extracts labeled planning rules as jurisdiction facts without pretending a parcel record was reached', async () => {
+    saveCountySources({
+      state: 'SC',
+      county: 'Pickens',
+      netrUrl: null,
+      sources: [
+        { type: 'planning', url: 'https://pickenscountysc.gov/planning/rules', label: 'Planning rules', origin: 'search_fallback', confidence: 0.9 },
+      ],
+      usedSearchFallback: true,
+      status: 'routed',
+      confidence: 'high',
+      notes: 'Test planning route.',
+    });
+    const fields = {
+      'Zoning Jurisdiction': 'Pickens County',
+      'Permitted Uses': 'Single-family dwellings and agriculture',
+      'Minimum Lot Size': '1 acre without public sewer',
+      'Minimum Frontage': '50 feet',
+      'Minor Subdivision Threshold': '5 lots',
+      'Flag Lot Requirements': 'Access stem must meet frontage standard',
+      'Shared Access Requirements': 'Recorded maintenance agreement required',
+      'Private Road Requirements': 'County fire access standard applies',
+      'Water Provider': 'City service areas vary by address',
+    };
+    const driver: BrowserDriver = {
+      id: 'planning-government-records',
+      configured: () => true,
+      async open(url) { return { url, fields, snippets: [] }; },
+      async search(q) { return { url: `search:${q}`, fields: {}, snippets: [] }; },
+      async readFields() { return { url: 'https://pickenscountysc.gov/planning/rules', fields, snippets: [] }; },
+      async readLinks() { return []; },
+      async readForms() { return []; },
+      async screenshot(purpose) { return { path: '/tmp/planning.png', capturedAtIso: 't', purpose }; },
+    };
+    const county = makeCountyRecordsBrowser({ driver });
+    const ev = await county.runWorkflow({
+      searchKey: { state: 'SC', county: 'Pickens', apn: '4165-00-51-3961' },
+      neededFields: ['zoning'],
+    }, { timeoutMs: 5_000 });
+
+    expect(ev.status).toBe('retrieved');
+    expect(ev.facts.map((fact) => fact.key)).toEqual(expect.arrayContaining([
+      'zoningJurisdiction',
+      'permittedUses',
+      'minimumLotSize',
+      'minimumFrontage',
+      'minorSubdivisionRules',
+      'flagLotRules',
+      'sharedAccessRules',
+      'privateRoadRequirements',
+      'utilityProvider',
+    ]));
+    expect(ev.sourceAttempts?.[0]).toMatchObject({
+      result: 'retrieved',
+      factCount: 9,
+      searchMethods: [],
+    });
+  });
+
+  it('rejects an explicitly different parcel record and diagnoses the subject mismatch', async () => {
+    saveCountySources({
+      state: 'GA',
+      county: 'White',
+      netrUrl: null,
+      sources: [
+        { type: 'assessor', url: 'https://whitecountyga.gov/property', label: 'Property record', origin: 'search_fallback', confidence: 0.9 },
+      ],
+      usedSearchFallback: true,
+      status: 'routed',
+      confidence: 'high',
+      notes: 'Test subject mismatch.',
+    });
+    const wrongRecord = {
+      'Owner Name': 'ANOTHER OWNER',
+      'Parcel ID': '999-999',
+      'Deeded Acres': '3.00',
+    };
+    const driver: BrowserDriver = {
+      id: 'wrong-parcel',
+      configured: () => true,
+      async open(url) { return { url, fields: wrongRecord, snippets: [] }; },
+      async search(q) { return { url: `search:${q}`, fields: {}, snippets: [] }; },
+      async readFields() { return { url: 'https://whitecountyga.gov/property', fields: wrongRecord, snippets: [] }; },
+      async readLinks() { return []; },
+      async readForms() { return []; },
+      async screenshot(purpose) { return { path: '/tmp/wrong.png', capturedAtIso: 't', purpose }; },
+    };
+    const county = makeCountyRecordsBrowser({ driver });
+    const ev = await county.runWorkflow({
+      searchKey: { state: 'GA', county: 'White', apn: '021 033 002' },
+    }, { timeoutMs: 5_000 });
+
+    expect(ev.status).toBe('partial');
+    expect(ev.facts.some((fact) => fact.key === 'owner')).toBe(false);
+    expect(ev.sourceAttempts?.[0]).toMatchObject({
+      result: 'attempted_inconclusive',
+      factCount: 0,
+      failureCode: 'no_subject_match',
+    });
   });
 
   it('parked driver returns honest plan, no fabrication', async () => {
@@ -238,11 +620,16 @@ describe('County Records Browser — NETR-routed semantic retrieval (end to end)
     };
     const county = makeCountyRecordsBrowser({ driver });
     const ev = await county.runWorkflow({ searchKey: { state: 'GA', county: 'White' } }, { timeoutMs: 2000 });
-    expect(ev.status).toBe('retrieved');
+    expect(ev.status).toBe('partial');
     // sources came from the search fallback, labeled correctly
     expect(ev.sourcesUsed.length).toBeGreaterThanOrEqual(1);
     expect(ev.sourcesUsed.every((s) => s.origin === 'search_fallback')).toBe(true);
-    expect(ev.facts.some((f) => /whitecountyga\.gov/.test(f.value))).toBe(true);
+    expect(ev.facts).toHaveLength(0);
+    expect(ev.sourceAttempts?.every((attempt) =>
+      attempt.result !== 'retrieved'
+      && attempt.factCount === 0
+      && !!attempt.failureCode
+      && attempt.steps?.map((step) => step.stage).join(',') === 'navigate,retrieve,extract,interpret')).toBe(true);
     expect(getCountySources('GA', 'White')!.usedSearchFallback).toBe(true);
   });
 });

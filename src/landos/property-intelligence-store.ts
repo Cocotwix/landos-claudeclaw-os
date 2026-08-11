@@ -354,10 +354,24 @@ export class PropertyIntelligenceStore {
     snapshot: PropertyIntelligenceSnapshot | null;
     error?: string | null;
     failureCategory?: FailureCategory | null;
-  }): void {
+  }): boolean {
     ensureTables();
     const db = getLandosDb();
     const now = new Date().toISOString();
+    const durable = db.prepare(`
+      SELECT deal_card_id AS dealCardId, sequence, status
+      FROM landos_property_intelligence_run WHERE run_id = ?
+    `).get(input.runId) as { dealCardId: number; sequence: number; status: SnapshotStatus } | undefined;
+    if (!durable || durable.status !== 'running' || durable.dealCardId !== input.dealCardId) return false;
+    if (input.status === 'running') return false;
+    if (input.status !== 'failed' && input.snapshot == null) return false;
+    if (input.snapshot && (
+      input.snapshot.runId !== input.runId
+      || input.snapshot.dealCardId !== input.dealCardId
+      || input.snapshot.sequence !== durable.sequence
+      || input.snapshot.status === 'running'
+      || (input.status !== 'failed' && input.snapshot.status !== input.status)
+    )) return false;
     // A run that produced a snapshot becomes the primary read, even when it
     // completed with gaps: gaps are reported, not hidden behind a stale success.
     const usable = input.snapshot != null && input.status !== 'failed';
@@ -378,18 +392,14 @@ export class PropertyIntelligenceStore {
       ? null
       : JSON.stringify(redactPropertyIntelligence({ ...input.snapshot, isPrimary: promote }));
 
-    const apply = db.transaction(() => {
-      if (promote) {
-        db.prepare('UPDATE landos_property_intelligence_run SET is_primary = 0, updated_at = ? WHERE deal_card_id = ?')
-          .run(now, input.dealCardId);
-      }
+    const apply = db.transaction((): boolean => {
       // A finished run has no in-flight content: the real snapshot (or the
       // recorded failure) supersedes it, and clearing it here means no reader
       // can ever serve stale mid-flight data for a completed run.
-      db.prepare(`
+      const updated = db.prepare(`
         UPDATE landos_property_intelligence_run SET
           status = ?, completed_at = ?, snapshot_json = ?, error = ?, failure_category = ?, is_primary = ?, progress_json = NULL, updated_at = ?
-        WHERE run_id = ? AND deal_card_id = ?
+        WHERE run_id = ? AND deal_card_id = ? AND status = 'running'
       `).run(
         input.status,
         input.completedAt,
@@ -401,8 +411,14 @@ export class PropertyIntelligenceStore {
         input.runId,
         input.dealCardId,
       );
+      if (Number(updated.changes ?? 0) !== 1) return false;
+      if (promote) {
+        db.prepare('UPDATE landos_property_intelligence_run SET is_primary = 0, updated_at = ? WHERE deal_card_id = ? AND run_id <> ?')
+          .run(now, input.dealCardId, input.runId);
+      }
+      return true;
     });
-    apply();
+    return apply();
   }
 
   getRun(runId: string): PropertyIntelligenceRunRow | null {

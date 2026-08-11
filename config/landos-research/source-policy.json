@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "canonicalSystem": "LandOS",
+  "rules": {
+    "officialFirst": true,
+    "httpsRequired": true,
+    "citationsRequired": true,
+    "sourceDateRequiredWhenAvailable": true,
+    "retrievalTimestampRequired": true,
+    "claimSourceMappingRequired": true,
+    "redirectDomainRevalidationRequired": true,
+    "crossPropertyEvidenceAllowed": false,
+    "canonicalAdmissionByResearchRoleAllowed": false
+  },
+  "domainClasses": [
+    {"id": "official-government", "trust": "primary", "examples": [".gov", ".ny.gov", "waynecountyny.gov"]},
+    {"id": "provider-first-party", "trust": "provider-claim", "requirements": ["exact source URL", "retrieval time", "independent identity validation"]},
+    {"id": "secondary-reporting", "trust": "context", "requirements": ["corroborate decision-critical claims with primary evidence"]},
+    {"id": "search-snippet", "trust": "discovery-only", "requirements": ["open and inspect the source before citing the claim"]}
+  ],
+  "rejectionReasons": [
+    "domain-not-allowlisted",
+    "redirected-to-unapproved-domain",
+    "missing-property-identity",
+    "cross-property-content",
+    "missing-source-url",
+    "unsupported-inference",
+    "stale-without-disclosure",
+    "login-or-payment-blocked",
+    "terms-or-robots-restriction"
+  ],
+  "reviewedAt": "2026-08-02"
+}

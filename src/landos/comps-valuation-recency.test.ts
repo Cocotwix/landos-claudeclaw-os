@@ -175,7 +175,7 @@ describe('the acreage band gates the cleaned FMV', () => {
     expect(big.valuationRole).toBe('boundary');
     expect(big.inValuationSet).toBe(false);
     expect(big.valuationWeight).toBeNull();
-    expect(big.zeroWeightReason).toContain('5–20 acres');
+    expect(big.zeroWeightReason).toContain('5.73–22.92 acres');
     expect(view.cleaned.cleanedCount).toBe(5);
     expect(view.valuationWindow.outOfAcreageBand).toBe(1);
   });
@@ -183,7 +183,7 @@ describe('the acreage band gates the cleaned FMV', () => {
   it('weights a sale near the subject acreage above one at the band edge', () => {
     const ids = seedSubject();
     seedSale(ids, { date: '2026-07-01', acres: 11.46, price: 57300, address: 'Exact Rd' });
-    seedSale(ids, { date: '2026-07-01', acres: 5, price: 25000, address: 'Edge Rd' });
+    seedSale(ids, { date: '2026-07-01', acres: 5.73, price: 28650, address: 'Edge Rd' });
     seedSale(ids, { date: '2026-07-01', acres: 11, price: 55000 });
     seedSale(ids, { date: '2026-06-01', acres: 11, price: 55000 });
     seedSale(ids, { date: '2026-05-01', acres: 11, price: 55000 });

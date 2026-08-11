@@ -1469,6 +1469,26 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_county_source_map ON landos_county_source_map(state, county);
 
+    -- A government's OWN verified official website, learned once and reused.
+    -- Written only after the site was actually reached and verified (registry
+    -- ownership and/or the page naming the jurisdiction in the right state), so
+    -- the next property in the same jurisdiction skips discovery entirely.
+    -- Public routing metadata only — no credentials, no property data.
+    CREATE TABLE IF NOT EXISTS landos_official_site (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      state             TEXT NOT NULL DEFAULT '',
+      jurisdiction_key  TEXT NOT NULL DEFAULT '',
+      unit_type         TEXT NOT NULL DEFAULT '',
+      jurisdiction      TEXT NOT NULL DEFAULT '',
+      url               TEXT NOT NULL DEFAULT '',
+      label             TEXT NOT NULL DEFAULT '',
+      verified_via      TEXT NOT NULL DEFAULT '',
+      basis             TEXT NOT NULL DEFAULT '',
+      last_verified_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(state, jurisdiction_key, unit_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_official_site ON landos_official_site(state, jurisdiction_key);
+
     -- Browser-derived public-record facts, written INCREMENTALLY to a Deal Card as
     -- each is confidently found (with full provenance + status). Never overwrites
     -- verified Realie data. No secrets.
@@ -2535,6 +2555,158 @@ function createLandosSchema(db: Database.Database): void {
       ON landos_zoning_correction(deal_card_id, requested_at DESC);
   `);
 
+  // ── Government GIS platform recognition slice ──────────────────────────
+  //
+  // Two kinds of knowledge live here and the split is deliberate, because
+  // getting it wrong is how one property's evidence leaks onto another:
+  //
+  //   SHARED  — how a PLATFORM FAMILY works, and how a DEPLOYMENT is shaped.
+  //             Reusable across every property. Contains no property values.
+  //   ISOLATED — what an official source said about ONE parcel. Scoped to a
+  //             deal card and cascade-deleted with it. Never reused.
+  //
+  // Share the method. Never share the property evidence.
+  db.exec(`
+    -- SHARED. One row per platform family, recording what a LIVE run actually
+    -- proved. The static registry says what an adapter is designed to do; this
+    -- table is the only thing entitled to say what has been demonstrated, so a
+    -- capability can never be claimed without a real deployment behind it.
+    CREATE TABLE IF NOT EXISTS landos_gis_platform_knowledge (
+      family                TEXT PRIMARY KEY,
+      detection_proven      INTEGER NOT NULL DEFAULT 0,
+      parcel_search_proven  INTEGER NOT NULL DEFAULT 0,
+      apn_search_proven     INTEGER NOT NULL DEFAULT 0,
+      address_search_proven INTEGER NOT NULL DEFAULT 0,
+      owner_search_proven   INTEGER NOT NULL DEFAULT 0,
+      geometry_proven       INTEGER NOT NULL DEFAULT 0,
+      zoning_layer_proven   INTEGER NOT NULL DEFAULT 0,
+      direct_service_proven INTEGER NOT NULL DEFAULT 0,
+      -- The deployment host a proof came from. A HOST, never a parcel.
+      proven_on_host        TEXT,
+      proven_at             TEXT,
+      runs                  INTEGER NOT NULL DEFAULT 0,
+      successes             INTEGER NOT NULL DEFAULT 0,
+      failure_modes_json    TEXT NOT NULL DEFAULT '[]',
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
+    -- SHARED. One row per deployment host: which family it belongs to, which
+    -- service holds parcels, which field holds the identifier, where zoning
+    -- lives. A new county on a known host benefits immediately, and a new
+    -- county on a new host costs one discovery instead of a rewrite.
+    --
+    -- Method only. No parcel id, address, owner, acreage or geometry may be
+    -- written here; assertNoPropertyEvidence in the store enforces it.
+    CREATE TABLE IF NOT EXISTS landos_gis_deployment (
+      host                  TEXT PRIMARY KEY,
+      family                TEXT NOT NULL,
+      variant               TEXT,
+      -- Jurisdiction the deployment SERVES. Labels the source, not a property.
+      serves_label          TEXT,
+      services_json         TEXT NOT NULL DEFAULT '[]',
+      parcel_layer_url      TEXT,
+      parcel_id_field       TEXT,
+      zoning_layer_url      TEXT,
+      zoning_code_field     TEXT,
+      search_methods_json   TEXT NOT NULL DEFAULT '[]',
+      requires_browser      INTEGER NOT NULL DEFAULT 0,
+      confidence            TEXT NOT NULL DEFAULT 'low'
+                            CHECK (confidence IN ('high','medium','low','none')),
+      failure_modes_json    TEXT NOT NULL DEFAULT '[]',
+      runs                  INTEGER NOT NULL DEFAULT 0,
+      successes             INTEGER NOT NULL DEFAULT 0,
+      last_verified_at      TEXT,
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_gis_deployment_family
+      ON landos_gis_deployment(family, updated_at DESC);
+
+    -- SHARED. What LandOS has LEARNED about where one state publishes its own
+    -- law and how that publication is shaped. One row per state.
+    --
+    -- Method only, exactly like landos_gis_deployment: an origin, a detected
+    -- platform shape, and the parsing configuration that shape needs. No parcel,
+    -- address, owner or legal conclusion may be written here — the row says how
+    -- to READ the state, never what the state says. That is what makes it safe
+    -- to reuse across every property in the state.
+    CREATE TABLE IF NOT EXISTS landos_state_law_source (
+      state                 TEXT PRIMARY KEY,
+      body                  TEXT,
+      origin                TEXT,
+      transport             TEXT NOT NULL DEFAULT 'server_fetch'
+                            CHECK (transport IN ('server_fetch','requires_browser')),
+      platform              TEXT NOT NULL DEFAULT 'unknown',
+      config_json           TEXT NOT NULL DEFAULT '{}',
+      citation_shapes_json  TEXT NOT NULL DEFAULT '[]',
+      learned_from          TEXT NOT NULL DEFAULT 'discovery'
+                            CHECK (learned_from IN ('seed','discovery')),
+      verified_note         TEXT,
+      runs                  INTEGER NOT NULL DEFAULT 0,
+      successes             INTEGER NOT NULL DEFAULT 0,
+      last_verified_at      TEXT,
+      updated_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_state_law_source_platform
+      ON landos_state_law_source(platform, updated_at DESC);
+
+    -- ISOLATED. One official-parcel retrieval for ONE deal card. Append-only
+    -- so a later run never silently rewrites what an operator already saw; the
+    -- newest row is the current view. Cascades with the deal card.
+    CREATE TABLE IF NOT EXISTS landos_official_parcel_gis (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id          INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      platform_family       TEXT NOT NULL,
+      platform_variant      TEXT,
+      parcel_match_status   TEXT NOT NULL
+                            CHECK (parcel_match_status IN ('verified','provisional','conflict','not_found')),
+      parcel_id             TEXT,
+      source_url            TEXT NOT NULL,
+      result_json           TEXT NOT NULL,
+      fingerprint_json      TEXT NOT NULL DEFAULT 'null',
+      escalation_json       TEXT NOT NULL DEFAULT 'null',
+      handoff_json          TEXT NOT NULL DEFAULT 'null',
+      retrieved_at          TEXT NOT NULL,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_official_parcel_gis_deal
+      ON landos_official_parcel_gis(deal_card_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_official_parcel_gis_immutable_update
+      BEFORE UPDATE ON landos_official_parcel_gis
+      BEGIN
+        SELECT RAISE(ABORT, 'official parcel GIS retrievals are append-only');
+      END;
+
+    -- ISOLATED. One land-use / zoning / subdivision determination for ONE deal
+    -- card. Append-only for the same reason the parcel retrieval is: a legal
+    -- conclusion an operator has already read must never change underneath
+    -- them without a new, separately visible row. Cascades with the deal card,
+    -- so one property's legal research can never outlive or reach another.
+    CREATE TABLE IF NOT EXISTS landos_land_use_determination (
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id            INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      state                   TEXT,
+      county                  TEXT,
+      local_unit              TEXT,
+      zoning_presence         TEXT NOT NULL
+                              CHECK (zoning_presence IN ('zoning_established','no_conventional_zoning','zoning_unverified')),
+      zoning_code             TEXT,
+      authority_pattern       TEXT NOT NULL,
+      legal_yield_status      TEXT NOT NULL
+                              CHECK (legal_yield_status IN ('established','provisional','unresolved')),
+      legal_yield_max_lots    INTEGER,
+      determination_json      TEXT NOT NULL,
+      determined_at           TEXT NOT NULL,
+      created_at              INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_land_use_determination_deal
+      ON landos_land_use_determination(deal_card_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_land_use_determination_immutable_update
+      BEFORE UPDATE ON landos_land_use_determination
+      BEGIN
+        SELECT RAISE(ABORT, 'land use determinations are append-only');
+      END;
+  `);
+
   db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
               VALUES (?, ?, ?)`).run(
     '20260717_001_phase1_storage_profiles',
@@ -2625,6 +2797,20 @@ function createLandosSchema(db: Database.Database): void {
   );
   if (addressKeyCanonicalization.changes > 0) recomputePropertyCardAddressKeys(db);
 
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260806_010_government_gis_platform_recognition',
+    'sha256:3f9c1a7e5b28d04f6a1c8e3b7d5092a4f6b8c0d2e4a6f8b1c3d5e7a9b1c3d5e7',
+    'Add shared platform-family and deployment recognition knowledge plus per-deal official parcel/GIS retrievals (additive; shared method separated from isolated property evidence).',
+  );
+
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260807_011_nationwide_land_use_subdivision',
+    'sha256:8b41d6c2f0a95e73b1d84c6f2a07e59d3c81b46f0e29a7d5c3b18f60a94e27d1',
+    'Add per-deal nationwide land use, zoning and by-right subdivision determinations (additive, append-only, cascades with the deal card).',
+  );
+
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead
   // opportunity, including soft-deleted/research cards. We deliberately retain
   // the legacy status rather than interpreting old deletion/status semantics as
@@ -2710,10 +2896,35 @@ export function getLandosDb(): Database.Database {
   return landosDb;
 }
 
+/**
+ * Whether a LandOS database is already open in this process.
+ *
+ * Shared-knowledge caches use this so that REMEMBERING something can never be
+ * the thing that opens the operating database. A lane running in a script or a
+ * unit test then degrades to an in-memory cache instead of reaching into the
+ * developer's real store, and runtime — which opens the database long before
+ * any lane runs — is unaffected.
+ */
+export function isLandosDbOpen(): boolean {
+  return landosDb !== null;
+}
+
 /** @internal — tests only. Fresh in-memory LandOS database. */
 export function _initTestLandosDb(): void {
   landosDb = new Database(':memory:');
   createLandosSchema(landosDb);
+}
+
+/**
+ * @internal — tests only. Drop the test database handle.
+ *
+ * Pairs with `_initTestLandosDb` so a test that needed storage leaves the
+ * process in the state it found it: no open handle, and `isLandosDbOpen()`
+ * false again for the tests that follow it in the same worker.
+ */
+export function _closeTestLandosDb(): void {
+  try { landosDb?.close(); } catch { /* already closed */ }
+  landosDb = null;
 }
 
 // ── Audit ────────────────────────────────────────────────────────────

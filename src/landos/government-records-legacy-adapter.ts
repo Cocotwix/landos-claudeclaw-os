@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { documentRegistryForCard } from './deal-card-canonical.js';
@@ -21,6 +22,24 @@ import { landosArtifactPath } from './storage-profile.js';
 
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const LEGACY_ADAPTER_VERSION = 'legacy-evidence-adapter-v2';
+
+function positiveInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function retainedArtifactPath(value: unknown): string | null {
+  const candidate = text(value);
+  if (!candidate) return null;
+  const absolute = path.resolve(candidate);
+  const artifactRoot = path.resolve(landosArtifactPath());
+  const relative = path.relative(artifactRoot, absolute);
+  const insideArtifactRoot = relative === ''
+    || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return insideArtifactRoot && fs.existsSync(absolute) && fs.statSync(absolute).isFile()
+    ? absolute
+    : null;
+}
 
 function locatorStatus(record: Record<string, unknown>): GovernmentRecordLocatorStatus {
   if (record.retrieval_status === 'no_matching_record') return 'no_matching_record_found';
@@ -74,13 +93,16 @@ function referencedBookPage(label: string, detail: string): string | null {
   return match ? `Book ${match[1].trim()}, Page ${match[2].trim()}` : null;
 }
 
-function claimsFromPublicOutcome(record: Record<string, unknown>): GovernmentRecordClaimInput[] {
+function claimsFromPublicOutcome(
+  record: Record<string, unknown>,
+  artifactKey: string | null = null,
+): GovernmentRecordClaimInput[] {
   const domains = domainsForCategory(text(record.category));
   if (!domains.length) return [];
   const status = locatorStatus(record);
   const facts = (record.facts && typeof record.facts === 'object' ? record.facts : {}) as Record<string, unknown>;
   const sourceName = text(record.authority) || 'Official public-record source';
-  const sourceUrl = text(record.source_url) || null;
+  const sourceUrl = text(record.document_url) || text(record.source_url) || null;
   const jurisdiction = text(record.jurisdiction);
   const retrievedAt = text(record.searched_at) || new Date(Number(record.updated_at ?? 0) * 1000).toISOString();
   const entries = Object.entries(facts);
@@ -99,6 +121,7 @@ function claimsFromPublicOutcome(record: Record<string, unknown>): GovernmentRec
       confidence: status === 'record_located' || status === 'no_matching_record_found' ? 'medium' : 'unknown',
       retrievedAt,
       documentType: text(record.title) || null,
+      artifactKey,
     }));
   }
   return entries.map(([key, value]) => {
@@ -119,8 +142,77 @@ function claimsFromPublicOutcome(record: Record<string, unknown>): GovernmentRec
       confidence: status === 'record_located' || status === 'no_matching_record_found' ? 'medium' : 'unknown',
       retrievedAt,
       documentType: text(record.title) || null,
+      instrumentNumber: text(facts.instrumentNumber) || null,
+      bookPage: text(facts.recordBookPage) || text(facts.deedRef) || null,
+      parcelReference: text(facts.apn) || null,
+      recordingFilingDate: text(facts.recordingDate) || null,
+      artifactKey,
+      artifactPage: artifactKey ? 1 : null,
     } satisfies GovernmentRecordClaimInput;
   });
+}
+
+function mimeTypeForArtifact(file: string): string {
+  switch (path.extname(file).toLowerCase()) {
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
+    case '.pdf': return 'application/pdf';
+    default: return 'application/octet-stream';
+  }
+}
+
+/**
+ * Convert the persisted official-browser outcome into normalized claims and,
+ * when a local capture was actually retained, an immutable government artifact.
+ *
+ * The official document's page count is metadata about the source instrument;
+ * `captureCount` remains the number of local files retained. For example, an
+ * Acclaim three-page deed with one retained viewer capture is honestly stored
+ * as pageCount=3 and captureCount=1.
+ */
+export function artifactsAndClaimsFromPublicOutcomes(
+  records: Array<Record<string, unknown>>,
+): { artifacts: GovernmentRecordArtifactInput[]; claims: GovernmentRecordClaimInput[] } {
+  const artifacts: GovernmentRecordArtifactInput[] = [];
+  const claims: GovernmentRecordClaimInput[] = [];
+  for (const record of records) {
+    const domains = domainsForCategory(text(record.category));
+    const artifactPath = record.retrieval_status === 'retrieved_yes'
+      ? retainedArtifactPath(record.screenshot_url)
+      : null;
+    const facts = (record.facts && typeof record.facts === 'object'
+      ? record.facts
+      : {}) as Record<string, unknown>;
+    const artifactKey = artifactPath && domains.length
+      ? `public-record-outcome:${String(record.id ?? `${text(record.category)}:${text(record.authority)}`)}`
+      : null;
+    if (artifactPath && artifactKey) {
+      const domain = domains[0];
+      const documentUrl = text(record.document_url) || null;
+      artifacts.push({
+        artifactKey,
+        domain,
+        sourceJurisdiction: text(record.jurisdiction),
+        sourceName: text(record.authority) || 'Official public-record source',
+        sourceUrl: documentUrl || text(record.source_url) || null,
+        portalReference: documentUrl || text(record.source_url) || null,
+        instrumentNumber: text(facts.instrumentNumber) || null,
+        bookPage: text(facts.recordBookPage) || text(facts.deedRef) || null,
+        parcelReference: text(facts.apn) || null,
+        recordingFilingDate: text(facts.recordingDate) || null,
+        documentType: text(facts.currentDeed) || text(record.title) || 'Recorded document',
+        mimeType: mimeTypeForArtifact(artifactPath),
+        displayName: text(record.title) || path.basename(artifactPath),
+        retrievedAt: text(record.searched_at) || new Date(Number(record.updated_at ?? 0) * 1000).toISOString(),
+        pageCount: positiveInteger(facts.recordedPageCount) ?? 1,
+        pageSourcePaths: [artifactPath],
+      });
+    }
+    claims.push(...claimsFromPublicOutcome(record, artifactKey));
+  }
+  return { artifacts, claims };
 }
 
 function domainForDocument(document: { category: string; title: string; docType: string }): GovernmentRecordDomain {
@@ -247,11 +339,11 @@ export function synchronizeGovernmentRecordsForDeal(input: {
   const property = (deal.propertyCards[0] ?? {}) as Record<string, unknown>;
   const cardId = Number(property.id);
   const jurisdiction = [identity.county ? `${identity.county} County` : null, identity.state].filter(Boolean).join(', ');
-  const publicClaims = listPublicRecordOutcomes(input.dealCardId).flatMap(claimsFromPublicOutcome);
+  const publicEvidence = artifactsAndClaimsFromPublicOutcomes(listPublicRecordOutcomes(input.dealCardId));
   const registry = Number.isInteger(cardId)
     ? artifactsAndClaimsFromRegistry({ dealCardId: input.dealCardId, cardId, jurisdiction })
     : { artifacts: [], claims: [] };
-  const allClaims = [...publicClaims, ...registry.claims];
+  const allClaims = [...publicEvidence.claims, ...registry.claims];
   const collectors = ([
     'deed_ownership',
     'surveys_plats',
@@ -260,8 +352,13 @@ export function synchronizeGovernmentRecordsForDeal(input: {
     'lien_judgment',
   ] as GovernmentRecordDomain[]).map((domain): GovernmentRecordCollectorInput => {
     const claims = allClaims.filter((claim) => claim.domain === domain);
-    const artifacts = registry.artifacts.filter((artifact) => artifact.domain === domain);
-    const status = identity!.status === 'confirmed' ? statusForClaims(claims) : 'blocked';
+    const artifacts = [...publicEvidence.artifacts, ...registry.artifacts]
+      .filter((artifact) => artifact.domain === domain);
+    // The persistence boundary independently enforces either a confirmed
+    // identity or an exact official parcel-reference match. Preserve the
+    // collector's real result here so a subject-correlated recorder document can
+    // be retained without auto-promoting the canonical identity.
+    const status = statusForClaims(claims);
     return {
       identity: identity!,
       domain,

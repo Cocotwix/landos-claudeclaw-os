@@ -83,12 +83,21 @@ function findState(text: string): { raw: string; normalized: string; index: numb
   let found: { raw: string; normalized: string; index: number } | undefined;
   for (const match of text.matchAll(re)) {
     const raw = match[1];
-    // Lower-case two-letter prose ("in", "or", "me") is not a state code.
-    if (/^[A-Za-z]{2}$/.test(raw) && raw !== raw.toUpperCase()) continue;
     const normalized = raw.length === 2
       ? raw.toUpperCase()
       : STATE_NAME_TO_ABBR[raw.toLowerCase()];
-    if (normalized && STATE_CODES.has(normalized)) found = { raw, normalized, index: match.index ?? 0 };
+    if (!normalized || !STATE_CODES.has(normalized)) continue;
+    if (/^[A-Za-z]{2}$/.test(raw)) {
+      // Lower-case two-letter prose ("in", "or", "me") is not a state code.
+      // Operator pastes also commonly use title-case abbreviations ("Tn").
+      // Accept those only as a postal suffix (optionally followed by a ZIP),
+      // which preserves the old protection against prose being read as a state.
+      const upperCode = raw === raw.toUpperCase();
+      const titleCaseCode = /^[A-Z][a-z]$/.test(raw)
+        && /^\s*(?:\d{5}(?:-\d{4})?)?\s*[.,;)]*\s*$/.test(text.slice((match.index ?? 0) + raw.length));
+      if (!upperCode && !titleCaseCode) continue;
+    }
+    found = { raw, normalized, index: match.index ?? 0 };
   }
   return found;
 }

@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 const readSource = (relative: string): string =>
   fs.readFileSync(path.resolve(process.cwd(), relative), 'utf8').replace(/\r\n/g, '\n');
 const DEAL_CARD = readSource('web/src/components/DealCard.tsx');
+const OVERVIEW = readSource('web/src/components/DealWorkspaceOverview.tsx');
+const PROPERTY_INTELLIGENCE = readSource('web/src/components/PropertyIntelligencePanel.tsx');
 const PANEL = readSource('web/src/components/GovernmentRecordsSnapshotPanel.tsx');
 const ROUTES = readSource('src/landos/routes.ts');
 const ANALYST = readSource('src/landos/government-records-analyst.ts');
@@ -17,7 +19,9 @@ describe('Government Records Deal Card UI and architecture contract', () => {
     expect(DEAL_CARD).not.toContain('loadGovernmentRecords(id)');
     expect(DEAL_CARD).not.toContain('<GovernmentRecordsSnapshotPanel');
     expect(DEAL_CARD).not.toContain('/government-records/rebuild');
-    expect(DEAL_CARD).toContain('<PropertyIntelligenceDueDiligence snapshot={piSnapshot}');
+    expect(DEAL_CARD).toContain('<DealWorkspaceOverview');
+    expect(OVERVIEW).toContain('<PropertyIntelligenceDueDiligence snapshot={snapshot}');
+    expect(OVERVIEW).toContain('Property screening');
   });
 
   it('renders every requested business section and retained document visuals', () => {
@@ -37,6 +41,21 @@ describe('Government Records Deal Card UI and architecture contract', () => {
     ]) expect(PANEL).toContain(phrase);
     expect(PANEL).toContain('government-records/artifacts');
     expect(PANEL).toContain('<img');
+  });
+
+  it('renders extracted deed facts on the normal document card instead of only a source link', () => {
+    expect(PROPERTY_INTELLIGENCE).toMatch(/section\(\s*'Deeds'[\s\S]{0,700}instrumentNumber[\s\S]{0,250}legalDescription/);
+    expect(PROPERTY_INTELLIGENCE).toMatch(/facts=\{facts\}/);
+    expect(PROPERTY_INTELLIGENCE).toMatch(/facts\.map\(\(fact\)/);
+    expect(PROPERTY_INTELLIGENCE).toContain('{fact.label}');
+    expect(PROPERTY_INTELLIGENCE).toContain('{fact.value}');
+  });
+
+  it('keeps collector diagnostics out of the owner-facing research-gap list', () => {
+    expect(DEAL_CARD).toMatch(/function visibleEvidenceGaps/);
+    expect(DEAL_CARD).toMatch(/detached frame\|arcgis 499\|provider error\|navigation timeout/);
+    expect(DEAL_CARD).toMatch(/visibleEvidenceGaps\(piSnapshot\)\.map/);
+    expect(DEAL_CARD).not.toMatch(/\(piSnapshot\?\.missingInformation \?\? \[\]\)\.map/);
   });
 
   it('keeps the GET route SELECT-only and the Analyst side-effect free', () => {

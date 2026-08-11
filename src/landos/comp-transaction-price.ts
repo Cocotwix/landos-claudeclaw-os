@@ -102,8 +102,20 @@ export function verifyStateDisclosure(stateRaw: string | null | undefined): Stat
   };
 }
 
-export type CompPriceBasis = 'verified_sale' | 'pending_proxy' | 'none';
-export type CompPriceConfidence = 'verified' | 'estimated_proxy' | 'unavailable';
+export type CompPriceBasis = 'verified_sale' | 'source_stated_sale' | 'pending_proxy' | 'none';
+export type CompPriceConfidence = 'verified' | 'source_stated' | 'estimated_proxy' | 'unavailable';
+
+/**
+ * How the closed price itself was established.
+ *
+ * `independent` means the source published the closed transaction as a sale.
+ * `source_stated` means a provider row carries a price and a date but never
+ * states anywhere that the transaction closed — LandPortal's free parcel
+ * surface is the case this exists for. Such a row stays usable as supporting
+ * land evidence, but it may never be presented as a verified sale, because that
+ * would invent the one fact deciding whether it can price the subject.
+ */
+export type CompSaleVerification = 'independent' | 'source_stated';
 
 export interface CompTransactionPriceInput {
   /** The closed price the source actually documented. Wins whenever present. */
@@ -117,6 +129,10 @@ export interface CompTransactionPriceInput {
   acres: number | null;
   /** Evidence that the source genuinely does not publish a closed price. */
   sourceProvidesClosedPrice?: boolean;
+  /** How the closed price was established. Defaults to `independent`. */
+  saleVerification?: CompSaleVerification;
+  /** Where the stated price and date came from, repeated to the operator. */
+  sourceStatedProvenance?: string | null;
 }
 
 export interface CompTransactionPrice {
@@ -152,6 +168,27 @@ export function resolveCompTransactionPrice(input: CompTransactionPriceInput): C
   const sold = typeof input.verifiedSoldPrice === 'number' && input.verifiedSoldPrice > 0
     ? input.verifiedSoldPrice
     : null;
+
+  if (sold != null && input.saleVerification === 'source_stated') {
+    // Retained and usable, never dressed up. The figure keeps its provenance and
+    // carries a lower confidence than an independently verified closed sale.
+    return {
+      basis: 'source_stated_sale',
+      price: sold,
+      pricePerAcre: ppa(sold),
+      priceLabel: 'Source-stated sale price — not independently verified',
+      ppaLabel: 'Source-stated price per acre — not independently verified',
+      confidence: 'source_stated',
+      usableForValuation: true,
+      disclosure,
+      lines: [
+        `Source-stated sale price of ${money(sold)}${input.soldDateIso ? ` against the stated date ${input.soldDateIso}` : ''}.`,
+        input.sourceStatedProvenance?.trim()
+          || 'The source published a price and a date for this parcel but never stated anywhere that the transaction closed.',
+        'No independent sale verification has been obtained, so this is not a verified sold price. It is retained as supporting land evidence at reduced confidence and must never be read as a confirmed closed sale.',
+      ],
+    };
+  }
 
   if (sold != null) {
     return {
@@ -221,6 +258,7 @@ export function resolveCompTransactionPrice(input: CompTransactionPriceInput): C
 /** Short chip text for the card / popup, e.g. "Verified sale" or "Estimated proxy". */
 export const TRANSACTION_CONFIDENCE_LABEL: Readonly<Record<CompPriceConfidence, string>> = {
   verified: 'Verified sale price',
+  source_stated: 'Source-stated sale — not independently verified',
   estimated_proxy: 'Estimated price proxy — reduced confidence',
   unavailable: 'No verified transaction price',
 };

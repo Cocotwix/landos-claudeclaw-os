@@ -95,6 +95,12 @@ export interface SnapshotIdentity {
    * when the retained lead input extends the confirmed situs street.
    * View-enriched at read time; never persisted onto the stored snapshot. */
   displayAddress?: string | null;
+  /** Canonical postal locality for the subject, from the reconciled property
+   * record rather than parsed off the intake string. The two disagree whenever
+   * a feed supplied a wrong ZIP, and the reconciled value is the one that must
+   * be shown. View-enriched at read time. */
+  zip?: string | null;
+  city?: string | null;
   /** Canonical LandPortal property identifier retained on the subject card.
    * View-enriched at read time. */
   lpPropertyId?: string | null;
@@ -882,7 +888,23 @@ function mergeDueDiligence(
     const held = merged.get(item.key);
     const incomingStrength = FACT_GRADE_STRENGTH[item.grade];
     const heldStrength = held ? FACT_GRADE_STRENGTH[held.grade] : -1;
-    if (!held || (item.verdict !== 'unknown' && incomingStrength >= heldStrength)) merged.set(item.key, item);
+    // An UNKNOWN may refresh an UNKNOWN.
+    //
+    // The rule below protects a resolved finding from being erased by a later
+    // lane that established nothing — that guard is intact. But it also froze a
+    // still-unresolved tile forever: the zoning item stays `unknown` while the
+    // DISTRICT is unread, so no rerun could ever replace it, even when the new
+    // one carried strictly more information. That is what kept the Zoning tile
+    // reading "No jurisdiction determination has been collected." after the
+    // governing authority had been accepted and the specialist was already
+    // emitting "Whitewater township administers zoning".
+    //
+    // When both sides are unknown nothing resolved is at risk, so the fresher
+    // item wins and an unresolved section can still improve between runs.
+    const bothUnresolved = item.verdict === 'unknown' && held?.verdict === 'unknown';
+    if (!held || bothUnresolved || (item.verdict !== 'unknown' && incomingStrength >= heldStrength)) {
+      merged.set(item.key, item);
+    }
   }
   return [...merged.values()];
 }
@@ -900,17 +922,49 @@ function mergeComps(retained: SnapshotComps, incoming: SnapshotComps): SnapshotC
     }
     return [...rows.values()];
   };
+  const sold = mergeRows(retained.sold, incoming.sold);
+  const active = mergeRows(retained.active, incoming.active);
+  const askingReferences = mergeRows(retained.askingReferences ?? [], incoming.askingReferences ?? []);
+  const duplicatesMerged = Math.max(retained.duplicatesMerged, incoming.duplicatesMerged);
+  const totalCollected = Math.max(retained.totalCollected ?? 0, incoming.totalCollected ?? 0);
+  // The counts are unioned across runs, so the sentence and the priceability
+  // verdict must be re-derived from the MERGED rows. Inheriting either from the
+  // incoming run alone is what let the operator read "4 asking" beside
+  // "0 asking-market reference(s)" and a `not_priceable` verdict beside a
+  // non-empty asking lane.
+  const conclusion: SnapshotCompConclusion = sold.length > 0
+    ? 'sold_supported'
+    : (askingReferences.length > 0 || active.length > 0) ? 'asking_indication' : 'not_priceable';
   return {
     ...incoming,
-    sold: mergeRows(retained.sold, incoming.sold),
-    active: mergeRows(retained.active, incoming.active),
+    sold,
+    active,
     landHomeOnly: mergeRows(retained.landHomeOnly, incoming.landHomeOnly),
-    askingReferences: mergeRows(retained.askingReferences ?? [], incoming.askingReferences ?? []),
+    askingReferences,
     rejected: mergeRejected(retained.rejected, incoming.rejected),
-    duplicatesMerged: Math.max(retained.duplicatesMerged, incoming.duplicatesMerged),
-    totalCollected: Math.max(retained.totalCollected ?? 0, incoming.totalCollected ?? 0),
+    duplicatesMerged,
+    totalCollected,
     landPortalRowsSeen: Math.max(retained.landPortalRowsSeen, incoming.landPortalRowsSeen),
+    conclusion,
+    summaryLine: compSummaryLine({
+      sold: sold.length,
+      active: active.length,
+      asking: askingReferences.length,
+      totalCollected,
+      duplicatesMerged,
+    }),
   };
+}
+
+/**
+ * The one sentence describing a comparable working set. Shared by the run-time
+ * builder and the snapshot merge so a merged snapshot can never narrate counts
+ * that its own arrays contradict.
+ */
+export function compSummaryLine(counts: {
+  sold: number; active: number; asking: number; totalCollected: number; duplicatesMerged: number;
+}): string {
+  return `${counts.sold} accepted sold comp(s), ${counts.active} active competitor(s) and ${counts.asking} asking-market reference(s) shown from ${counts.totalCollected} collected row(s); ${counts.duplicatesMerged} duplicate(s) merged. Remaining rows are retained as evidence with a stated reason.`;
 }
 
 function mergeSnapshotEvidence(

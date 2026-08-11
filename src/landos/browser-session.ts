@@ -24,7 +24,8 @@ import { logger } from '../logger.js';
 import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwnership } from './automation-browser.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
-import { contextZoomOutSteps, parseAcresFromFields, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN } from './parcel-visual-framing.js';
+import { assessMapViewportFrame, contextZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
+import { evaluateThreeDCaptureEligibility } from './landportal-operating-rules.js';
 
 // The functions passed to page.evaluate() below execute INSIDE the operator's
 // browser (not Node), so the DOM globals are declared as `any` purely to satisfy
@@ -42,10 +43,17 @@ export interface PageLike {
   goto(url: string, opts?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
   url(): string;
   evaluate<T>(fn: (() => T) | string, ...args: unknown[]): Promise<T>;
-  screenshot(opts: { path: string; fullPage?: boolean }): Promise<unknown>;
+  screenshot(opts: { path: string; fullPage?: boolean; clip?: MapViewportClip }): Promise<unknown>;
   type?(selector: string, text: string, opts?: { delay?: number }): Promise<void>;
-  keyboard?: { press(key: string): Promise<void> };
+  keyboard?: { press(key: string): Promise<void>; down?(key: string): Promise<void>; up?(key: string): Promise<void> };
+  mouse?: {
+    move(x: number, y: number, options?: { steps?: number }): Promise<void>;
+    down(options?: { button?: 'left' | 'right' | 'middle' }): Promise<void>;
+    up(options?: { button?: 'left' | 'right' | 'middle' }): Promise<void>;
+  };
   bringToFront?(): Promise<void>;
+  /** Runs BEFORE any of the page's own scripts, on every document it loads. */
+  evaluateOnNewDocument?(fn: string | ((...args: unknown[]) => unknown), ...args: unknown[]): Promise<unknown>;
   /** Real puppeteer pages report closure; fakes may omit it. */
   isClosed?(): boolean;
   /** Puppeteer event API (present on real pages; optional for test fakes).
@@ -131,10 +139,11 @@ export function readSessionConfig(env?: Record<string, string | undefined>): Bro
   const flag = get('BROWSER_INTEL_LIVE').toLowerCase();
   const fg = get('BROWSER_INTEL_FOREGROUND').toLowerCase();
   // The endpoint, profile and executable are OWNED by automation-browser.ts —
-  // this module never invents its own. That is why the old
-  // `|| 'http://127.0.0.1:9222'` default is gone: 9222 is the port every other
-  // tool grabs (msedgewebview2 holds it on this machine), and defaulting to it
-  // is how automation ends up pointed at a browser LandOS does not own.
+  // this module never invents its own. That is what keeps a single answer to
+  // "which browser is LandOS's?", and it is why the old `|| 'http://127.0.0.1:9222'`
+  // default is gone: 9222 is the port every other tool grabs (msedgewebview2
+  // holds it on this machine), and defaulting to it is how automation ends up
+  // pointed at a browser LandOS does not own.
   const owned = automationBrowserConfig(env);
   return {
     enabled: flag === '1' || flag === 'true' || flag === 'yes',
@@ -216,9 +225,83 @@ const lanePageRegistry = new Map<PageLike, LanePageOwner>();
 // synthetic lane symbol can never collide with a driver's per-instance lane.
 const sessionTempLane = Symbol('landos-session-temp-tab');
 
-/** Track a short-lived session tab for workflow-scoped cleanup. */
-function trackTempSessionPage(page: PageLike): void {
-  lanePageRegistry.set(page, { lane: sessionTempLane, workflow: browserWorkflowContext.getStore() ?? null });
+// ── THE PERMANENT CONTROL PAGE ────────────────────────────────────────────
+//
+// The automation Chrome exits with its last page, so exactly one inert
+// about:blank is kept alive to hold the process (and its authenticated
+// profile) open. That page is infrastructure, not a research surface.
+//
+// It was being reused AS a research surface: research navigated the retained
+// control target in place — same CDP target id, page count unchanged — so
+// nothing leaked, no reaper could see it, and the operator was left with a
+// LandPortal page as the browser's only tab.
+//
+// Identity is tracked by page reference rather than by URL, because a freshly
+// created research tab is also about:blank for its first moments. Every
+// research-page acquisition consults this and refuses to hand the control page
+// out; nothing else is needed to keep it inert.
+const controlPages = new WeakSet<PageLike>();
+
+function markControlPage(page: PageLike): void {
+  controlPages.add(page);
+}
+
+function isControlPage(page: PageLike | null | undefined): boolean {
+  return !!page && controlPages.has(page);
+}
+
+/**
+ * Adopt the browser's lone inert page as the control page.
+ *
+ * Adoption is NOT a connect-time-only event. The control page is also minted
+ * after this module is already attached — the launcher creates it, and
+ * `reapOrphanAutomationTabs` creates a replacement whenever closing the last
+ * orphan would otherwise take Chrome down with it. A control page adopted only
+ * on connect leaves every later replacement unprotected until the next
+ * reconnect, which is exactly the window research needs to claim it.
+ *
+ * Idempotent, and deliberately conservative: with more than one page open there
+ * is no way to tell the control page from a live research tab, so nothing is
+ * adopted rather than guessing.
+ */
+async function adoptExistingControlPage(browser: BrowserLike): Promise<boolean> {
+  try {
+    const pages = await browser.pages();
+    if (pages.length !== 1) return false;
+    const [only] = pages;
+    let url = '';
+    try { url = only.url(); } catch { return false; }
+    if (url !== 'about:blank') return false;
+    markControlPage(only);
+    return true;
+  } catch {
+    return false; // a browser that cannot be listed has no control page to adopt
+  }
+}
+
+/**
+ * Register the automation browser's CURRENT control page as protected.
+ *
+ * Call this immediately after anything that can create or replace it — the
+ * post-run reap most of all, which mints a fresh about:blank at the CDP level
+ * where no `PageLike` handle exists for this module to have marked.
+ */
+export async function adoptAutomationControlPage(): Promise<boolean> {
+  if (!state.browser || !safeConnected(state.browser)) return false;
+  return adoptExistingControlPage(state.browser);
+}
+
+/**
+ * Track a short-lived session tab for workflow-scoped cleanup.
+ *
+ * `fallbackOwner` is the creating driver's own workflow. Reading only the async
+ * store left a temp tab with `workflow: null` whenever it was opened from a
+ * continuation that had lost the context, and an unowned page is preserved by
+ * cleanup rather than closed — so it survived the run that made it.
+ */
+function trackTempSessionPage(page: PageLike, fallbackOwner: BrowserWorkflowScope | null = null): void {
+  const workflow = browserWorkflowContext.getStore() ?? fallbackOwner;
+  lanePageRegistry.set(page, { lane: sessionTempLane, workflow });
 }
 
 /** Untrack + close a short-lived session tab (used in finally paths). */
@@ -228,14 +311,13 @@ async function releaseTempSessionPage(page: PageLike | null): Promise<void> {
   try { await (page as unknown as { close?: () => Promise<void> }).close?.(); } catch { /* already gone */ }
 }
 
-/** Create one opaque ownership boundary for a Deal Intelligence run. */
 /**
  * Every workflow scope that has been created and not yet cleaned up.
  *
  * Scope-owned cleanup alone left tabs behind: work that runs AFTER a run's
- * cleanup (the post-run visual capture) opens fresh pages, and pages opened by
- * transports that never registered an owner were invisible to it. Two
- * sequential properties grew the tab set from 1 to 6.
+ * cleanup (the post-run visual capture, identity promotion) opens fresh pages,
+ * and pages opened by transports that never registered an owner were invisible
+ * to it. Two sequential properties therefore grew the tab set from 1 to 6.
  *
  * Counting live scopes lets the LAST run standing sweep everything the browser
  * is still holding, without a concurrent run's live page ever being closed
@@ -243,6 +325,7 @@ async function releaseTempSessionPage(page: PageLike | null): Promise<void> {
  */
 const activeWorkflowScopes = new Set<BrowserWorkflowScope>();
 
+/** Create one opaque ownership boundary for a Deal Intelligence run. */
 export function createBrowserWorkflowScope(label: string): BrowserWorkflowScope {
   const scope = Symbol(label);
   activeWorkflowScopes.add(scope);
@@ -251,6 +334,84 @@ export function createBrowserWorkflowScope(label: string): BrowserWorkflowScope 
 
 /** Test-only: how many runs currently hold a browser ownership scope. */
 export function _activeWorkflowScopeCount(): number { return activeWorkflowScopes.size; }
+
+/**
+ * IN-FLIGHT BROWSER WORK, COUNTED PER OWNING SCOPE.
+ *
+ * A mission joins when its children reach terminal states, but a child can
+ * settle while browser work it started is still running. That trailing work
+ * then opened a page AFTER the scope was released, so no scoped cleanup could
+ * ever match it and the tab survived until a manual reap.
+ *
+ * The cleanup boundary is therefore driven by the work itself, not by the
+ * child rows and not by a timer: a driver increments its owning scope before
+ * every browser operation and decrements in a `finally`, so success, failure,
+ * timeout and cancellation all release ownership identically.
+ */
+const scopedBrowserWork = new Map<BrowserWorkflowScope, number>();
+
+function beginScopedBrowserWork(scope: BrowserWorkflowScope | null): void {
+  if (!scope) return;
+  scopedBrowserWork.set(scope, (scopedBrowserWork.get(scope) ?? 0) + 1);
+}
+
+function endScopedBrowserWork(scope: BrowserWorkflowScope | null): void {
+  if (!scope) return;
+  const next = (scopedBrowserWork.get(scope) ?? 1) - 1;
+  if (next <= 0) scopedBrowserWork.delete(scope);
+  else scopedBrowserWork.set(scope, next);
+}
+
+/** Test-only: browser operations still running under this scope. */
+export function _scopedBrowserWorkCount(scope: BrowserWorkflowScope): number {
+  return scopedBrowserWork.get(scope) ?? 0;
+}
+
+/**
+ * Test-only: hold one unit of owned work open, and release it.
+ *
+ * Real drivers reject instantly without a live session, so the safety-bound
+ * branch cannot otherwise be exercised deterministically.
+ */
+export function _holdScopedBrowserWork(scope: BrowserWorkflowScope): () => void {
+  beginScopedBrowserWork(scope);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    endScopedBrowserWork(scope);
+  };
+}
+
+export interface ScopedBrowserWorkDrain {
+  drained: boolean;
+  outstanding: number;
+  waitedMs: number;
+}
+
+/**
+ * Wait until every browser operation owned by this scope has settled.
+ *
+ * Returns as soon as the count reaches zero — the deadline is a safety bound
+ * for a driver that never returns, not a pacing device. Callers clean up either
+ * way; a scope that could not drain is reported rather than silently ignored.
+ */
+export async function awaitScopedBrowserWorkDrained(
+  scope: BrowserWorkflowScope,
+  options: { timeoutMs?: number; pollMs?: number; clockMs?: () => number } = {},
+): Promise<ScopedBrowserWorkDrain> {
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const pollMs = options.pollMs ?? 100;
+  const clock = options.clockMs ?? (() => Date.now());
+  const start = clock();
+  for (;;) {
+    const outstanding = scopedBrowserWork.get(scope) ?? 0;
+    if (outstanding === 0) return { drained: true, outstanding: 0, waitedMs: clock() - start };
+    const waitedMs = clock() - start;
+    if (waitedMs >= timeoutMs) return { drained: false, outstanding, waitedMs };
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
 
 /** Run async work inside a browser ownership boundary. AsyncLocalStorage keeps
  * the token attached to every specialist continuation without route globals. */
@@ -324,6 +485,8 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
     state.browser = browser;
     state.workingPage = null; // a fresh working tab is acquired lazily
     lanePageRegistry.clear(); // page handles from a previous connection are dead
+    // The launcher's inert page is infrastructure — claim it before any lane can.
+    await adoptExistingControlPage(browser);
     state.connectedAtIso = now();
     state.status = 'live';
     return 'live';
@@ -399,8 +562,16 @@ export async function verifyChromeCdpEndpoint(
  * managed session and then reused across leads; operator tabs are never closed. */
 async function getWorkingPage(): Promise<PageLike> {
   if (!state.browser) throw new Error('No live browser session.');
+  // The control page is never a working surface. Drop it and allocate.
+  if (isControlPage(state.workingPage)) state.workingPage = null;
   if (state.workingPage) return state.workingPage;
-  state.workingPage = await state.browser.newPage();
+  // BACKGROUND BY DEFAULT. This tab is acquired during NORMAL RESEARCH — the
+  // LandPortal auth check (`ensureLandPortalAuthenticated`) is on the New Lead
+  // path — and `newPage()` activates the tab and raises its window. That was a
+  // real foregrounding on the research route, once per managed session.
+  // `openLandPortalInSession` re-activates it deliberately, because THAT one is
+  // the operator asking to see LandPortal so they can log in.
+  state.workingPage = await openResearchTab(state.browser);
   return state.workingPage;
 }
 
@@ -437,6 +608,22 @@ export async function browserSessionHealth(deps: SessionDeps = {}): Promise<Brow
 export function browserSessionStatus(): BrowserSessionStatus { return state.status; }
 
 /**
+ * The connected browser, for transports that must create their OWN target.
+ *
+ * The shared working page cannot serve every caller: opening a page through
+ * `newPage()` activates it, and a lane that reads dozens of government portals
+ * would yank the operator's Chrome away each time. Such a caller needs the
+ * browser handle so it can create a BACKGROUND target instead
+ * (`Target.createTarget` with `background: true`), which never activates.
+ *
+ * Returns null unless a session is live. Callers must still close what they
+ * open — this hands out no lifecycle management.
+ */
+export function sessionBrowser(): BrowserLike | null {
+  return state.status === 'live' ? state.browser : null;
+}
+
+/**
  * True only when THIS process spawned the offscreen background window. Callers
  * outside this module use it to gate tab activation the same way the capture
  * path does: an invisible window may be activated, a visible one never raised.
@@ -455,12 +642,21 @@ export async function withWorkingPage<T>(
   fn: (page: PageLike) => Promise<T>,
   deps: SessionDeps = {},
 ): Promise<{ ok: boolean; status: BrowserSessionStatus; value?: T }> {
+  // The shared working tab is browser work too. It is opened outside the lane
+  // drivers, so without this bracket a run could clean up while a working-page
+  // consumer was still going and the tab it then opened would outlive the run.
+  const owner = browserWorkflowContext.getStore() ?? null;
   const lend = async (): Promise<{ ok: boolean; status: BrowserSessionStatus; value?: T }> => {
-    const status = await ensureBrowserSession(deps);
-    if (status !== 'live' && status !== 'auth_needed') return { ok: false, status };
-    const page = await getWorkingPage();
-    const value = await fn(page);
-    return { ok: true, status, value };
+    beginScopedBrowserWork(owner);
+    try {
+      const status = await ensureBrowserSession(deps);
+      if (status !== 'live' && status !== 'auth_needed') return { ok: false, status };
+      const page = await getWorkingPage();
+      const value = await fn(page);
+      return { ok: true, status, value };
+    } finally {
+      endScopedBrowserWork(owner);
+    }
   };
   const run = workingPageGate.then(lend, lend);
   workingPageGate = run.then(() => undefined, () => undefined);
@@ -504,6 +700,16 @@ export interface SessionPageCleanup {
 export async function closeSurplusSessionPages(
   scope: BrowserWorkflowScope | undefined = browserWorkflowContext.getStore(),
 ): Promise<SessionPageCleanup> {
+  // RELEASE THE SCOPE ON EVERY PATH. The scope is registered at run start and
+  // used to be released only on the one path that reached the final sweep — so
+  // a run that finished with no connected browser (the common case when no lane
+  // needed one), or whose page listing threw, leaked its scope forever.
+  // `activeWorkflowScopes` could then never return to empty, which disables the
+  // final sweep for the REST OF THE PROCESS: pages opened after a run's own
+  // cleanup boundary survive, accumulating run over run until a restart. A
+  // leaked token must never be able to disarm the sweep, so release is
+  // unconditional and happens even when this function throws.
+  try {
   const browser = state.browser;
   if (!browser || !browser.isConnected()) {
     return { before: 0, after: 0, closed: 0, note: 'No live browser session was connected, so no workflow page needed closing.' };
@@ -535,39 +741,62 @@ export async function closeSurplusSessionPages(
   }
 
   // RELEASE THE CACHED LANDPORTAL WORKING TAB. It used to be held open across
-  // leads, leaving a landportal.com tab after every run. Nothing is lost:
-  // LandPortal authentication lives in the persistent profile on disk, not in
-  // an open tab, so the next run opens a fresh tab and is still signed in.
-  if (state.workingPage) {
+  // leads, which left a landportal.com tab sitting in the browser after every
+  // run. Nothing is lost by closing it: LandPortal authentication lives in the
+  // persistent profile on disk, not in an open tab, so the next run re-opens a
+  // fresh tab and is still signed in. The control page keeps Chrome alive.
+  if (state.workingPage && !isControlPage(state.workingPage)) {
     const working = state.workingPage as unknown as { close?: () => Promise<void> };
     if (typeof working.close === 'function') {
       try { await working.close(); closed += 1; } catch { /* already gone */ }
     }
     lanePageRegistry.delete(state.workingPage);
     state.workingPage = null;
+  } else if (state.workingPage) {
+    // The control page must never have become the working tab; release the
+    // reference without closing the process-keeper.
+    state.workingPage = null;
   }
 
   // FINAL SWEEP. When this was the last run holding a scope, nothing else can
-  // legitimately still own a page, so everything except one inert control page
-  // is closed. Without this, pages opened after a run's own cleanup survived
-  // indefinitely and accumulated run over run.
+  // legitimately still own a page, so everything except the inert control page
+  // is closed. Without this, pages opened after a run's own cleanup — the
+  // post-run visual capture, and transports that never registered an owner —
+  // survived indefinitely and accumulated run over run.
   activeWorkflowScopes.delete(scope);
   if (activeWorkflowScopes.size === 0) {
     let remaining: PageLike[] = [];
     try { remaining = await browser.pages(); } catch { remaining = []; }
     // Chrome exits with its last page, so exactly one is RETAINED rather than
     // closed-and-reopened: retaining avoids creating a page at all, and page
-    // creation is itself an activation this module must never perform.
+    // creation is itself an activation that this module must never perform.
+    // An inert about:blank keeps the browser (and its authenticated profile)
+    // alive and holds no site state.
+    // RETAIN THE INERT CONTROL PAGE, NOT WHICHEVER TAB HAPPENS TO BE FIRST.
+    //
+    // This used to keep `remaining[0]` and blank it. When a research tab sorted
+    // first, the real about:blank control page was closed as surplus and the
+    // research tab became the survivor — and if blanking it then failed (a
+    // heavy SPA can outlast the 5s navigation), the operator was left with a
+    // LandPortal property page as the browser's only tab. Preferring an
+    // existing about:blank keeps the control page inert and lets every
+    // property-specific tab close.
+    const urlOf = (page: PageLike): string => {
+      try { return page.url(); } catch { return ''; }
+    };
+    const controlPage = remaining.find((page) => urlOf(page) === 'about:blank') ?? remaining[0];
     let kept = false;
     for (const page of remaining) {
-      let url = '';
-      try { url = page.url(); } catch { /* treat as closable */ }
-      if (!kept) {
+      const url = urlOf(page);
+      if (!kept && page === controlPage) {
         kept = true;
         if (url && url !== 'about:blank') {
           try { await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5_000 }); } catch { /* inert either way */ }
         }
         lanePageRegistry.delete(page);
+        // From here on this page is infrastructure: acquisition refuses it, so
+        // no later research navigation can land on the control target.
+        markControlPage(page);
         continue;
       }
       const closable = page as unknown as { close?: () => Promise<void> };
@@ -586,6 +815,9 @@ export async function closeSurplusSessionPages(
       ? `No page owned by this browser workflow was open; all ${after} other page(s) were preserved.`
       : `Closed ${closed} page(s) owned by this browser workflow; ${after} operator or other-workflow page(s) were left untouched. The browser itself was never closed.`,
   };
+  } finally {
+    if (scope) activeWorkflowScopes.delete(scope);
+  }
 }
 
 /** Disconnect (NOT close) — the operator's browser stays open all day. */
@@ -675,12 +907,12 @@ export async function startBrowserSession(deps: StartSessionDeps = {}): Promise<
   // THE ONLY LAUNCH PATH. This module no longer spawns Chrome itself: the
   // automation-browser owner does, always offscreen, always on the owned
   // profile and port, and it refuses to attach to anything it cannot prove it
-  // owns. There is deliberately no foreground variant — a research run must
-  // never be able to put a window on the operator's screen.
+  // owns. There is deliberately no foreground variant of this launch — a
+  // research run must never be able to put a window on the operator's screen.
   let launchAttempted = false;
   const owned = await launchAutomationBrowser({
-    // Honour an injected session config (tests) by projecting it onto the
-    // owner's shape, so the launch still goes through the single owned path.
+    // Honour an injected session config (tests) by projecting it onto the owner's
+    // shape, so the launch still goes through the single owned code path.
     config: {
       endpoint: cfg.cdpUrl,
       port: Number(cfg.cdpUrl.match(/:(\d+)/)?.[1] ?? automationBrowserConfig().port),
@@ -741,6 +973,9 @@ export async function openLandPortalInSession(deps: SessionDeps = {}): Promise<O
   }
   const page = await getWorkingPage();
   await page.goto(LANDPORTAL_SESSION_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  // The ONE deliberate activation in this module: the operator pressed "Open
+  // LandPortal" specifically to see it and log in. Research never reaches here.
+  try { await (page as unknown as { bringToFront?: () => Promise<void> }).bringToFront?.(); } catch { /* best-effort */ }
   const read = await readPage(page);
   const authenticated = !read.loginLike;
   state.auth = { authenticated, atIso: now() };
@@ -820,6 +1055,290 @@ export async function ensureBrowserSessionReady(deps: EnsureReadyDeps = {}): Pro
   if (status === 'live' || status === 'auth_needed') return { status, started: false, error: null };
   const start = await startBrowserSession(deps);
   return { status: start.status, started: start.launched, error: start.error };
+}
+
+/**
+ * Open a lane tab WITHOUT activating it.
+ *
+ * `browser.newPage()` is `Target.createTarget` with `background` unset, which
+ * Chrome treats as "focus this" — it selects the tab and raises the window over
+ * whatever the operator has in front of them. Passing `background: true` gives
+ * the same tab, the same `Page` object and the same capabilities, minus the
+ * interruption.
+ *
+ * Returns null when the CDP route is unavailable (a test fake, an older
+ * protocol, a disconnected session) so the caller falls back to `newPage()`
+ * rather than failing the lane. Opening the tab is never worth losing the run.
+ */
+/**
+ * Keeps a research tab from ever becoming TWO tabs.
+ *
+ * WHY DOCUMENT-START. A tab the PAGE opens is not ours to create, so
+ * `Target.createTarget({background:true})` cannot apply to it, and Chrome always
+ * activates a page-opened target — that is what put LandPortal over the
+ * operator's work. A CDP trace proved it: the comps target carried
+ * `openerId` = our lane page and was the only one that ever became active.
+ *
+ * Neutralising `window.open` at CLICK time was not enough, because a bundle
+ * that captured `window.open` at load time keeps calling the original. This
+ * runs before any of the page's own scripts, on every document, so the
+ * reference the site captures IS this one.
+ *
+ * It changes only WHERE a navigation lands — never what is clicked, requested
+ * or read. Same-tab is also what the comps code already assumed: it screenshots
+ * and scrapes the very page it clicked from.
+ */
+export const SUPPRESS_POPUPS_JS = `(() => {
+  try {
+    // A stub for callers that do \`var w = window.open(...); w.focus()\`. It
+    // NEVER navigates: not the new tab (there isn't one) and not this tab.
+    // Navigating here is what sent the lane into LandPortal's heavy comps SPA
+    // and pushed the run past its budget.
+    var stub = function () {
+      var loc = { href: '', assign: function () {}, replace: function () {}, reload: function () {} };
+      return {
+        closed: true, opener: null, location: loc,
+        focus: function () {}, blur: function () {}, close: function () {}, postMessage: function () {},
+        document: { write: function () {}, writeln: function () {}, close: function () {} },
+      };
+    };
+    window.open = function () { return stub(); };
+    // A target=_blank anchor would spawn the same tab without window.open.
+    // Cancel only the DEFAULT action, in the CAPTURE phase so it lands before
+    // the site's handlers, and do NOT rewrite the anchor's target: retargeting
+    // to _self merely moves the navigation into this tab instead of stopping it.
+    // Propagation is left alone so the page's own click handlers still run.
+    document.addEventListener('click', function (event) {
+      var node = event.target;
+      while (node && node.nodeType === 1) {
+        if (String(node.tagName).toLowerCase() === 'a') {
+          var target = '';
+          try { target = String(node.target || ''); } catch (e) { target = ''; }
+          if (target && target !== '_self') { try { event.preventDefault(); } catch (e) { /* not cancelable */ } }
+          break;
+        }
+        node = node.parentNode;
+      }
+    }, true);
+  } catch (e) { /* a page that blocks this is no worse than before */ }
+})()`;
+
+/** Install the suppressor before the tab loads anything. Best-effort by design. */
+async function suppressPopups(page: PageLike): Promise<void> {
+  try { await page.evaluateOnNewDocument?.(SUPPRESS_POPUPS_JS); } catch { /* older page API */ }
+}
+
+/**
+ * The ONE way a research tab is opened: background target first, `newPage()`
+ * only when the CDP route is unavailable, popup suppression either way.
+ *
+ * The fallback still activates the tab — that is Chrome's behaviour for
+ * `newPage()` and there is no way around it — but it cannot then spawn a
+ * SECOND, page-opened tab on top.
+ */
+async function openResearchTab(browser: BrowserLike): Promise<PageLike> {
+  const background = await openBackgroundTab(browser);
+  // A newly created tab is never the control page; asserting it here keeps the
+  // guarantee at the one place every research page is born.
+  if (background && !isControlPage(background)) return background;
+  const page = await browser.newPage();
+  await suppressPopups(page);
+  return page;
+}
+
+async function openBackgroundTab(browser: BrowserLike): Promise<PageLike | null> {
+  const cdpCapable = browser as unknown as {
+    target?(): { createCDPSession(): Promise<{ send(m: string, p: unknown): Promise<{ targetId: string }>; detach(): Promise<void> }> };
+    waitForTarget?(
+      predicate: (t: { url(): string; _targetId?: string }) => boolean,
+      options?: { timeout?: number },
+    ): Promise<{ page(): Promise<PageLike | null> }>;
+  };
+  if (typeof cdpCapable.target !== 'function' || typeof cdpCapable.waitForTarget !== 'function') return null;
+  let cdp: { send(m: string, p: unknown): Promise<{ targetId: string }>; detach(): Promise<void> } | null = null;
+  try {
+    cdp = await cdpCapable.target().createCDPSession();
+    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', background: true });
+    const target = await cdpCapable.waitForTarget!(
+      (t) => t._targetId === targetId,
+      { timeout: 10_000 },
+    );
+    const page = (await target.page()) ?? null;
+    // Installed on the fresh about:blank, so it is in place before the tab
+    // navigates anywhere and before any site script can capture window.open.
+    if (page) await suppressPopups(page);
+    return page;
+  } catch {
+    return null;
+  } finally {
+    if (cdp) { try { await cdp.detach(); } catch { /* session already gone */ } }
+  }
+}
+
+/* ── RESULT / SUGGESTION CANDIDATE COLLECTOR ─────────────────────────────────
+ *
+ * ONE source of truth, shared by `readCandidates` and `clickCandidate`. They
+ * previously held two hand-copied selector nets that had to stay identical by
+ * discipline; they are now literally the same string, so the index a caller
+ * reads is always the element that gets clicked.
+ *
+ * ROOT CAUSE THIS REPLACES: the broad net below also matches a SITE'S OWN
+ * navigation. On LandPortal the tabs "Map Search" and "Market research" matched
+ * it and, being higher in the document, occupied indexes 0 and 1 — so "select
+ * the TOP suggestion" clicked a nav tab and opened Map Search while the real
+ * top suggestion sat unread at index 2. The address then failed to match and
+ * the run stopped with "no confident match".
+ *
+ * The fix is an order of authority, narrowest evidence first:
+ *
+ *   1. THE OPEN SUGGESTION LIST. A typeahead is defined structurally — a
+ *      visible list attached directly beneath the search input and overlapping
+ *      it horizontally. That is what a suggestion dropdown IS on any site, so
+ *      it holds without knowing a single vendor class name. When one is open,
+ *      its children ARE the candidates, in DOM order: index 0 is the top
+ *      suggestion, by construction.
+ *   2. EXPLICIT OPTION ROLES. `[role=option]` and named autocomplete markup.
+ *   3. THE GENERIC RESULT NET, unchanged — but now with navigation, header,
+ *      tablist and sidebar chrome excluded, because a menu item was never a
+ *      search result.
+ *
+ * Only step 3 guesses. Steps 1 and 2 are exact, so when the page tells us
+ * plainly what its options are, nothing is inferred.
+ */
+const CANDIDATE_COLLECTOR_JS = `(() => {
+  var OPTION_SEL = '[role=option],[role=listbox] li,[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="dropdown-menu" i] li,[class*="prediction" i] li';
+  var BROAD_SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li,li[class*="search" i],li[class*="variant" i]';
+  var CHROME_SEL = 'nav,header,footer,[role=navigation],[role=menubar],[role=tablist],[class*="navbar" i],[class*="nav-bar" i],[class*="sidebar" i],[class*="topbar" i],[class*="breadcrumb" i],[class*="site-header" i],[class*="app-header" i]';
+  var box = function (el) { return el && el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }; };
+  var vis = function (el) { var r = box(el); return !!(r.width && r.height); };
+  var txt = function (el) { return ((el && el.textContent) || '').replace(/\\s+/g, ' ').trim(); };
+  var usable = function (t) { return t.length >= 3 && t.length <= 220; };
+
+  // The input the address was typed into: the focused one, else the only one
+  // holding a value, else the first visible search box.
+  var inputs = Array.prototype.slice.call(document.querySelectorAll('input[type=text],input[type=search],input:not([type])')).filter(vis);
+  var input = null;
+  for (var a = 0; a < inputs.length; a++) { if (inputs[a] === document.activeElement) { input = inputs[a]; break; } }
+  if (!input) { for (var b = 0; b < inputs.length; b++) { if (((inputs[b].value || '') + '').trim()) { input = inputs[b]; break; } } }
+  if (!input) input = inputs[0] || null;
+
+  // Step 1 — the dropdown physically attached to that input.
+  var suggestionItems = [];
+  if (input) {
+    var ir = box(input);
+    var lists = document.querySelectorAll('ul,ol,[role=listbox],[class*="dropdown" i],[class*="autocomplete" i],[class*="suggestion" i],[class*="typeahead" i],[class*="prediction" i]');
+    var topMost = null;
+    for (var i = 0; i < lists.length; i++) {
+      var list = lists[i];
+      if (!vis(list)) continue;
+      var r = box(list);
+      // Attached: starts at the input's lower edge, within a small gap.
+      if (!(r.top >= ir.bottom - 12 && r.top <= ir.bottom + 24)) continue;
+      // Aligned: overlaps the input horizontally.
+      if (!(r.left < ir.right && r.right > ir.left)) continue;
+      var kids = Array.prototype.slice.call(list.children).filter(function (c) { return vis(c) && usable(txt(c)); });
+      if (!kids.length) continue;
+      if (!topMost || r.top < box(topMost.list).top) topMost = { list: list, kids: kids };
+    }
+    if (topMost) suggestionItems = topMost.kids;
+  }
+
+  var collect = function (els, skipChrome) {
+    var seen = []; var out = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (seen.indexOf(el) >= 0) continue; seen.push(el);
+      if (!vis(el)) continue;
+      if (skipChrome && el.closest && el.closest(CHROME_SEL)) continue;
+      var t = txt(el);
+      if (!usable(t)) continue;
+      out.push({ el: el, text: t });
+    }
+    return out;
+  };
+
+  var found = collect(suggestionItems, false);
+  if (!found.length) found = collect(Array.prototype.slice.call(document.querySelectorAll(OPTION_SEL)), false);
+  if (!found.length) found = collect(Array.prototype.slice.call(document.querySelectorAll(BROAD_SEL)), true);
+
+  var byText = []; var picked = [];
+  for (var k = 0; k < found.length; k++) {
+    if (byText.indexOf(found[k].text) >= 0) continue;
+    byText.push(found[k].text);
+    picked.push(found[k]);
+  }
+  return picked.slice(0, 40);
+})()`;
+
+/** The clickable target inside a candidate, and where it is on screen. */
+interface CandidateBox { x: number; y: number; inViewport: boolean; text: string }
+
+/**
+ * Prefer a checkbox/radio inside the option (LandPortal's APN autocomplete
+ * renders each matching parcel as a selectable checkbox row that must be ticked
+ * before submitting), then an anchor/button, else the element itself.
+ */
+const CLICK_TARGET_JS = `(function (el) {
+  if (!el) return null;
+  var t = (el.matches && el.matches('a,button,[role=button],[onclick],input[type=checkbox],input[type=radio]'))
+    ? el
+    : (el.querySelector && el.querySelector('input[type=checkbox],input[type=radio],a[href],button,[role=button],[onclick]')) || el;
+  return t;
+})`;
+
+const READ_CANDIDATES_JS = `(() => {
+  var found = ${CANDIDATE_COLLECTOR_JS};
+  var kindOf = function (el) {
+    var c = (el.className && el.className.toString ? el.className.toString() : '').toLowerCase();
+    var tag = (el.tagName || '').toLowerCase();
+    if (/popup/.test(c)) return 'popup';
+    if (/card/.test(c)) return 'card';
+    if (tag === 'tr' || /row/.test(c)) return 'row';
+    if (tag === 'li') return 'row';
+    if (tag === 'button') return 'button';
+    return 'element';
+  };
+  return found.map(function (o, i) { return { index: i, text: o.text, kind: kindOf(o.el) }; });
+})()`;
+
+/** Scroll the chosen candidate into view and report its centre for a real click. */
+function locateCandidateJs(index: number): string {
+  const target = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0;
+  return `(() => {
+    var found = ${CANDIDATE_COLLECTOR_JS};
+    var entry = found[${target}];
+    if (!entry) return null;
+    var el = ${CLICK_TARGET_JS}(entry.el);
+    if (!el) return null;
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    var r = el.getBoundingClientRect();
+    var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    var x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+    return {
+      x: x, y: y,
+      inViewport: r.width > 0 && r.height > 0 && x > 0 && y > 0 && x < vw && y < vh,
+      text: entry.text,
+    };
+  })()`;
+}
+
+/**
+ * The DOM-click fallback. Skipped entirely when a real mouse click already
+ * navigated the page — re-clicking a stale element then would be a second,
+ * unintended interaction.
+ */
+function clickCandidateJs(index: number): string {
+  const target = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0;
+  return `(() => {
+    var found = ${CANDIDATE_COLLECTOR_JS};
+    var entry = found[${target}];
+    if (!entry) return false;
+    var el = ${CLICK_TARGET_JS}(entry.el);
+    if (!el) return false;
+    if (el.scrollIntoView) el.scrollIntoView();
+    el.click();
+    return true;
+  })()`;
 }
 
 // Dismiss cookie/consent/close popups that commonly block a login form. Returns
@@ -908,6 +1427,19 @@ const LP_CHALLENGE = (): string | null => {
  * returns, or screenshots credentials.
  */
 export async function ensureLandPortalAuthenticated(deps: EnsureReadyDeps = {}): Promise<LandPortalReadiness> {
+  // Owned work: this opens/navigates the shared LandPortal tab outside the lane
+  // drivers, and a trailing auth check that ran past the cleanup boundary was
+  // the second producer of a surviving landportal.com tab.
+  const authOwner = browserWorkflowContext.getStore() ?? null;
+  beginScopedBrowserWork(authOwner);
+  try {
+    return await ensureLandPortalAuthenticatedInner(deps);
+  } finally {
+    endScopedBrowserWork(authOwner);
+  }
+}
+
+async function ensureLandPortalAuthenticatedInner(deps: EnsureReadyDeps = {}): Promise<LandPortalReadiness> {
   const now = deps.now ?? (() => new Date().toISOString());
   const url = deps.landportalUrl ?? LANDPORTAL_SESSION_URL;
   const base = (phase: LandPortalPhase, over: Partial<LandPortalReadiness>): LandPortalReadiness => ({
@@ -1294,17 +1826,52 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       lanePage
       && laneBrowser === state.browser
       && lanePage.isClosed?.() !== true
+      // A cached handle that has since become the retained control page is not
+      // reusable: navigating it would turn the inert control tab into a
+      // research surface.
+      && !isControlPage(lanePage)
       && lanePageRegistry.get(lanePage)?.lane === laneOwner
     ) {
       return lanePage;
     }
-    // A driver normally originates inside its mission context. The lazy fallback
-    // also covers a driver constructed just before the async workflow starts.
-    workflowOwner ??= browserWorkflowContext.getStore() ?? null;
+    // OWNERSHIP FOLLOWS THE LIVE RUN, NOT THE DRIVER'S BIRTH.
+    //
+    // Several drivers are built once at route setup and reused across runs
+    // (`makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') })`).
+    // Capturing the scope only on first use pinned such a driver to the FIRST
+    // run it ever served, so every later run's page was registered to a scope
+    // that had already been released — cleanup then read it as "operator or
+    // other-workflow" and preserved it. That is the surviving LandPortal
+    // property tab.
+    //
+    // Adopting the currently active scope at acquisition time keeps a page
+    // owned by the run that is actually using it; the captured owner remains
+    // the fallback for a continuation that has lost the async context.
+    const liveScope = browserWorkflowContext.getStore() ?? null;
+    if (liveScope) workflowOwner = liveScope;
+    else workflowOwner ??= null;
     if (lanePage) lanePageRegistry.delete(lanePage);
-    lanePage = await state.browser.newPage();
+    // BACKGROUND FIRST. `newPage()` activates the new tab and raises its window,
+    // so a research lane opening one yanks Chrome over whatever the operator is
+    // doing. `Target.createTarget` with `background: true` creates the identical
+    // tab without activating it. Same page object, same driver, same behaviour —
+    // the only difference is that the operator never sees it happen.
+    lanePage = await openResearchTab(state.browser);
     laneBrowser = state.browser;
     lanePageRegistry.set(lanePage, { lane: laneOwner, workflow: workflowOwner });
+    // OWNERSHIP IS THE CLEANUP CONTRACT, so it is observable.
+    //
+    // A page registered with no workflow can never be matched by scoped
+    // cleanup — that is exactly how a trailing lane's tab used to survive a
+    // run. The owning scope now stays alive until the work that opened this
+    // page settles, so `owned:false` should not occur for mission work; when
+    // it does, this line names it instead of leaving a silent orphan.
+    logger.info({
+      lane: id,
+      owned: workflowOwner != null,
+      scope: workflowOwner ? String(workflowOwner) : null,
+      activeScopes: activeWorkflowScopes.size,
+    }, 'browser_lane_page_registered');
     return lanePage;
   };
 
@@ -1328,7 +1895,50 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
   // never prove a page belongs to this lane when other lanes run concurrently.
   const ownedScopes = new Map<string, Set<PageLike>>();
 
-  return {
+  /**
+   * Count every driver call as OWNED work of this driver's workflow.
+   *
+   * Ownership is taken from the driver's captured `workflowOwner`, not from the
+   * ambient async context: a trailing operation may resume on a continuation
+   * that has lost the AsyncLocalStorage store, and it still belongs to the run
+   * that created this driver — that is precisely the case that produced an
+   * unowned tab. Release happens in `finally` (and on a synchronous throw), so
+   * success, failure, timeout and cancellation all settle identically and no
+   * call can hold the mission scope open forever.
+   *
+   * Applied to the whole surface rather than method-by-method so a browser
+   * entry point added later is owned by construction.
+   */
+  const asOwnedDriver = <T extends object>(driver: T): T => {
+    const passthrough = new Set(['id', 'configured']);
+    const wrapped: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(driver)) {
+      if (typeof value !== 'function' || passthrough.has(key)) {
+        wrapped[key] = value;
+        continue;
+      }
+      wrapped[key] = (...args: unknown[]): unknown => {
+        workflowOwner ??= browserWorkflowContext.getStore() ?? null;
+        const owner = workflowOwner;
+        beginScopedBrowserWork(owner);
+        let result: unknown;
+        try {
+          result = (value as (...a: unknown[]) => unknown).apply(driver, args);
+        } catch (error) {
+          endScopedBrowserWork(owner);
+          throw error;
+        }
+        if (result && typeof (result as Promise<unknown>).then === 'function') {
+          return (result as Promise<unknown>).finally(() => endScopedBrowserWork(owner));
+        }
+        endScopedBrowserWork(owner);
+        return result;
+      };
+    }
+    return wrapped as T;
+  };
+
+  return asOwnedDriver({
     id,
     configured() { return browserSessionStatus() === 'live'; },
     async beginOwnedPageScope() {
@@ -1354,6 +1964,8 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         //   * an unregistered page is treated as operator-owned because page
         //     provenance is unknown. Unknown ownership must fail closed.
         if (lanePageRegistry.get(page)?.lane !== laneOwner) continue;
+        // Never close the process-keeper, whatever the registry says.
+        if (isControlPage(page)) continue;
         try {
           await (page as unknown as { close?: () => Promise<void> }).close?.();
           lanePageRegistry.delete(page);
@@ -1385,7 +1997,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     // the real "Show on Map" anchor (js-lp-estimate-show-on-map) and screenshots
     // the comps map. Proves the map was reached (mapReached) and never touches a
     // paid Comp/Slope report control. Read-only; closes the tab it opened.
-    async captureLandPortalVisuals(url: string, opts: { timeoutMs: number }) {
+    async captureLandPortalVisuals(url: string, opts: { timeoutMs: number; captureLabels?: string[] }) {
       // Serialize on the NAMED landportalCaptureGate: camera framing, overlay
       // dialogs and paint-gated screenshots cannot interleave on one Chrome
       // window, even though each capture runs on its own lane page. Ordinary
@@ -1396,6 +2008,14 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         parcelShotPath: null as string | null,
         compsMapShotPath: null as string | null,
         overlayShots: [] as Array<{ overlay: string; path: string; purpose: string }>,
+        visualShots: [] as Array<{
+          label: string;
+          path: string;
+          kind: 'parcel_page' | 'overlay' | 'parcel_3d';
+          purpose: string;
+          overlay?: string;
+          soilDetails?: Array<{ symbol: string | null; name: string | null; fields: Record<string, string> }>;
+        }>,
         overlayMisses: [] as Array<{ overlay: string; reason: string }>,
         terrainShotPath: null as string | null,
         compRows: [] as string[],
@@ -1419,9 +2039,16 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const fields: Record<string, string> = {};
         const add = (k: string, v: string) => { const key = (k || '').replace(/\s+/g, ' ').trim().replace(/[:#]+$/, ''); const val = (v || '').replace(/\s+/g, ' ').trim(); if (key && val && key.length <= 48 && !fields[key]) fields[key] = val; };
         const hidden = (el: any): boolean => { const s = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null; return !!(s && (s.display === 'none' || s.visibility === 'hidden')); };
+        // LandPortal's parcel facts are explicit tab rows. Read those first and
+        // never let a broad two-span wrapper pair unrelated adjacent metrics.
+        document.querySelectorAll('p.tab-row,.tab-row').forEach((el: any) => {
+          if (hidden(el)) return;
+          const title = el.querySelector?.('.tab-row__title');
+          const value = el.querySelector?.('.tab-row__value');
+          if (title && value) add(title.textContent || '', value.textContent || '');
+        });
         document.querySelectorAll('dl').forEach((dl: any) => { const dt = dl.querySelectorAll('dt'); const dd = dl.querySelectorAll('dd'); for (let i = 0; i < Math.min(dt.length, dd.length); i++) add(dt[i].textContent || '', dd[i].textContent || ''); });
         document.querySelectorAll('tr').forEach((tr: any) => { const c = tr.querySelectorAll('th,td'); if (c.length === 2) add(c[0].textContent || '', c[1].textContent || ''); });
-        document.querySelectorAll('p,div,li').forEach((el: any) => { if (hidden(el)) return; const sp = el.querySelectorAll(':scope > span'); if (sp.length === 2) add(sp[0].textContent || '', sp[1].textContent || ''); });
         return { fields };
       };
       // Each row is returned as "<section label><row text>". The section
@@ -1602,11 +2229,12 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           logger.warn({ event: 'landportal_navigation_timeout_continuing', error: error instanceof Error ? error.message : String(error) }, 'landportal_navigation_timeout_continuing');
         }
         await sleep(6500);
-        // Do not use the generic popup closer here: LandPortal's parcel-detail
-        // sidebar also exposes an accessible "Close" control and must remain
-        // open as the parcel-identity proof for this screenshot.
-        // Read the full parcel fact sheet on the parcel view (before the map click).
-        const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+        // The generic popup closer was intentionally skipped here because the
+        // parcel-detail sidebar also has a Close button. That decision is the
+        // root cause of the repeated skip-tracing ad in retained screenshots:
+        // the late offer stayed over the map and full-page capture preserved it.
+        // Capture cleanup below targets only obstructions overlapping the map,
+        // leaving the parcel sidebar open for identity and fact extraction.
         // LandPortal's logged-out shell still accepts the property query string
         // and renders state/county/APN text over a national map. That is not a
         // parcel visual. Require the authenticated property panel and a rendered
@@ -1651,6 +2279,215 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           }
           return empty;
         }
+        // Read facts only after the authenticated parcel panel is ready. The
+        // former pre-readiness scrape could snapshot a partial SPA and its
+        // generic two-span fallback could pair unrelated terrain values.
+        const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+        // Capture only the painted map canvas, never the full LandPortal page.
+        // Before every frame, remove visible ads/offers/modals/chat/banner UI
+        // that overlaps the map. The parcel-detail sidebar is deliberately not
+        // touched; the clip excludes it while it remains available for identity
+        // and fact extraction.
+        const PREPARE_MAP_CAPTURE = (): { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number } => {
+          const visible = (el: any): boolean => {
+            if (!el?.getBoundingClientRect) return false;
+            const rect = el.getBoundingClientRect();
+            const style = (window as any).getComputedStyle?.(el);
+            return rect.width > 2 && rect.height > 2
+              && !(style && (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.1));
+          };
+          const canvases = Array.from(document.querySelectorAll(
+            'canvas.mapboxgl-canvas,.leaflet-container,[class*="map" i] canvas,[id*="map" i] canvas,canvas',
+          )).filter(visible) as any[];
+          const map = canvases
+            .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+            .filter(({ rect }) => rect.width >= 600 && rect.height >= 400)
+            .sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0];
+          const viewport = { width: window.innerWidth, height: window.innerHeight };
+          if (!map) return { clip: null, viewport, obstructions: ['rendered map viewport missing'], dismissed: 0, hiddenChrome: 0 };
+          const raw = map.rect;
+          // LandPortal paints its compact right-edge toolbar (including the
+          // vertical "LP Intelligence" rail and compass) over the final 32px
+          // of the canvas. CSS visibility changes are not reliable for that
+          // GPU-composited shell, so keep a small deterministic inset out of
+          // every persisted map artifact. The subject remains centered and
+          // the saved image contains map pixels only.
+          const rightEdgeChromeInset = 40;
+          const availableWidth = Math.min(
+            window.innerWidth - Math.max(0, Math.floor(raw.left)),
+            Math.floor(raw.width),
+          );
+          const clip = {
+            x: Math.max(0, Math.floor(raw.left)),
+            y: Math.max(0, Math.floor(raw.top)),
+            width: Math.max(1, availableWidth - rightEdgeChromeInset),
+            height: Math.min(window.innerHeight - Math.max(0, Math.floor(raw.top)), Math.floor(raw.height)),
+          };
+          const overlap = (rect: any): boolean =>
+            rect.left < clip.x + clip.width && rect.right > clip.x
+            && rect.top < clip.y + clip.height && rect.bottom > clip.y;
+          const obstructionRx = /skip.?trac|buy tokens|advert|special offer|upgrade|subscribe|chat|cookie|tooltip|promotion|report offer|enhance your leads/i;
+          const direct = Array.from(document.querySelectorAll(
+            '[role=dialog],[aria-modal=true],iframe,[class*="modal" i],[class*="advert" i],[class*="banner" i],[class*="chat" i],[class*="tooltip" i],[class*="intercom" i],[class*="popup" i]',
+          ));
+          // The current skip-tracing offer uses a generic container without a
+          // stable modal class. Locate it by live text and walk up to the
+          // overlapping positioned card that owns its close control.
+          const textMatches = Array.from(document.querySelectorAll('body *'))
+            .filter((el: any) => {
+              const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+              return text.length > 0 && text.length < 900 && obstructionRx.test(text);
+            })
+            .map((el: any) => {
+              let node = el;
+              for (let hop = 0; hop < 6 && node?.parentElement; hop += 1) {
+                const rect = node.getBoundingClientRect();
+                const style = (window as any).getComputedStyle?.(node);
+                const positioned = style && (style.position === 'fixed' || style.position === 'absolute');
+                if (positioned && rect.width >= 180 && rect.height >= 100) break;
+                node = node.parentElement;
+              }
+              return node;
+            });
+          const candidates = [...new Set([...direct, ...textMatches])].filter((el: any) => {
+            if (!visible(el) || el.contains(map.el)) return false;
+            const text = String(el.textContent || el.getAttribute?.('aria-label') || '').replace(/\s+/g, ' ').trim();
+            const rect = el.getBoundingClientRect();
+            const style = (window as any).getComputedStyle?.(el);
+            const positionedAboveMap = style
+              && (style.position === 'fixed' || style.position === 'absolute')
+              && Number.parseInt(style.zIndex || '0', 10) >= 10;
+            return overlap(rect) && (
+              obstructionRx.test(text)
+              || /dialog|modal|advert|banner|chat|tooltip|intercom/i.test(String(el.className || ''))
+              || el.tagName === 'IFRAME'
+              || (positionedAboveMap && rect.width >= 180 && rect.height >= 100)
+            );
+          }) as any[];
+          let dismissed = 0;
+          for (const el of candidates) {
+            const close = Array.from(el.querySelectorAll?.('button,a,[role=button]') ?? []).find((button: any) =>
+              /^(?:close|dismiss|no thanks|not now|×|x)$/i.test(
+                String(button.textContent || button.getAttribute?.('aria-label') || button.getAttribute?.('title') || '').replace(/\s+/g, ' ').trim(),
+              )) as any;
+            try {
+              if (close) close.click();
+              else {
+                el.setAttribute('data-landos-capture-hidden', 'true');
+                el.style.setProperty('display', 'none', 'important');
+              }
+              dismissed++;
+            } catch { /* final obstruction scan rejects the frame */ }
+          }
+          const remaining = candidates.filter(visible).map((el: any) =>
+            String(el.textContent || el.getAttribute?.('aria-label') || el.className || 'visual obstruction')
+              .replace(/\s+/g, ' ').trim().slice(0, 80));
+          // A map-only business artifact must also omit LandPortal's ordinary
+          // floating controls. Hide them only for the screenshot and restore
+          // immediately afterwards so later overlay/terrain actions still work.
+          const chromeSeeds = Array.from(document.querySelectorAll(
+            'button,[role=button],.mapboxgl-ctrl-group,.lp-map-controls,.mapboxgl-ctrl-compass,[aria-label*="compass" i],[title*="compass" i],[class*="intelligence" i]',
+          ))
+            .filter((el: any) => {
+              const rect = el.getBoundingClientRect();
+              return visible(el) && overlap(rect) && !el.contains(map.el)
+                && rect.width <= 220 && rect.height <= 700;
+            });
+          // Hiding only the button glyph/text can leave its styled toolbar shell
+          // behind as an empty dark block. Promote each control to the highest
+          // compact wrapper that is still wholly floating over the map. The
+          // width cap prevents this walk from ever reaching the map/page shell.
+          const captureChromeWrapper = (seed: any): any => {
+            let node = seed;
+            for (let hop = 0; hop < 5 && node.parentElement; hop += 1) {
+              const parent = node.parentElement;
+              if (parent.contains(map.el)) break;
+              const rect = parent.getBoundingClientRect();
+              const style = (window as any).getComputedStyle?.(parent);
+              const className = String(parent.className || '');
+              const compactFloatingWrapper = overlap(rect)
+                && rect.width > 2 && rect.height > 2
+                && rect.width <= 220 && rect.height <= 700
+                && (
+                  style?.position === 'fixed'
+                  || style?.position === 'absolute'
+                  || /ctrl|control|toolbar|button-group|map-tools|mapbox/i.test(className)
+                  || Math.abs(rect.width - node.getBoundingClientRect().width) <= 8
+                );
+              if (!compactFloatingWrapper) break;
+              node = parent;
+            }
+            return node;
+          };
+          const chromeNodes = chromeSeeds.map(captureChromeWrapper);
+          const intelligenceLabel = Array.from(document.querySelectorAll('body *')).find((el: any) =>
+            visible(el)
+            && overlap(el.getBoundingClientRect())
+            && /^LP Intelligence$/i.test(String(el.textContent || '').replace(/\s+/g, ' ').trim()));
+          if (intelligenceLabel) {
+            let node: any = intelligenceLabel;
+            for (let hop = 0; hop < 3 && node.parentElement; hop += 1) {
+              const parent = node.parentElement;
+              const text = String(parent.textContent || '').replace(/\s+/g, ' ').trim();
+              const rect = parent.getBoundingClientRect();
+              if (!/^LP Intelligence$/i.test(text) || rect.width > 180 || rect.height > 650) break;
+              node = parent;
+            }
+            chromeNodes.push(captureChromeWrapper(node));
+          }
+          let hiddenChrome = 0;
+          for (const el of [...new Set(chromeNodes)] as any[]) {
+            if (el.hasAttribute?.('data-landos-capture-chrome-hidden')) continue;
+            el.setAttribute?.('data-landos-capture-chrome-hidden', 'true');
+            el.style?.setProperty('visibility', 'hidden', 'important');
+            hiddenChrome += 1;
+          }
+          return { clip, viewport, obstructions: remaining, dismissed, hiddenChrome };
+        };
+        const RESTORE_MAP_CAPTURE_CHROME = (): void => {
+          document.querySelectorAll('[data-landos-capture-chrome-hidden]').forEach((el: any) => {
+            el.style?.removeProperty('visibility');
+            el.removeAttribute?.('data-landos-capture-chrome-hidden');
+          });
+        };
+        const captureMapViewport = async (file: string, kind: ParcelVisualCaptureKind): Promise<boolean> => {
+          for (let attempt = 1; attempt <= 2; attempt += 1) {
+            // Wait -> inspect live page -> dismiss -> re-inspect. Repeating this
+            // pass is essential because the skip-tracing offer arrives after
+            // the parcel map has already painted.
+            await sleep(attempt === 1 ? 1800 : 900);
+            await page.evaluate(PREPARE_MAP_CAPTURE as unknown as () => { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number });
+            await sleep(900);
+            const frame = await page.evaluate(PREPARE_MAP_CAPTURE as unknown as () => { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number });
+            const verdict = assessMapViewportFrame({ clip: frame.clip, viewport: frame.viewport, obstructions: frame.obstructions });
+            if (!verdict.accepted || !frame.clip) {
+              await page.evaluate(RESTORE_MAP_CAPTURE_CHROME as unknown as () => void);
+              logger.warn({ event: 'landportal_visual_rejected', attempt, reason: verdict.reason }, 'landportal_visual_rejected');
+              continue;
+            }
+            let saved: ReturnType<typeof inspectSavedParcelVisual>;
+            let after: { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number };
+            try {
+              await page.screenshot({ path: file, clip: frame.clip });
+              // Inspect the saved PNG itself (dimensions, bytes and hash), then
+              // inspect the live page once more. If a late offer appeared during
+              // the screenshot, dismissed > 0 proves that saved frame may contain
+              // it, so delete and recapture rather than persisting contamination.
+              saved = inspectSavedParcelVisual({ filePath: file, kind, expectedClip: frame.clip });
+              after = await page.evaluate(PREPARE_MAP_CAPTURE as unknown as () => { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number });
+            } finally {
+              await page.evaluate(RESTORE_MAP_CAPTURE_CHROME as unknown as () => void);
+            }
+            if (saved.accepted && after.dismissed === 0 && after.obstructions.length === 0) return true;
+            try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* rejected capture stays unpromoted */ }
+            logger.warn({
+              event: 'landportal_visual_rejected',
+              attempt,
+              reason: saved.reason ?? (after.dismissed > 0 ? 'late obstruction appeared during saved-image capture.' : after.obstructions.join(', ')),
+            }, 'landportal_visual_rejected');
+          }
+          return false;
+        };
         const overlayShots: Array<{ overlay: string; path: string; purpose: string }> = [];
         const buttonState = async (name: string): Promise<boolean> => page.evaluate<boolean>(((expected: string) => {
           const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -1747,6 +2584,21 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             }
           }
         };
+        const raiseTerrainCamera = async (): Promise<boolean> => {
+          if (!page.keyboard || !(await focusMapCanvas())) return false;
+          try {
+            if (page.keyboard.down && page.keyboard.up) {
+              await page.keyboard.down('Shift');
+              for (let step = 0; step < 7; step++) await page.keyboard.press('ArrowUp');
+              await page.keyboard.up('Shift');
+            } else {
+              for (let step = 0; step < 7; step++) await page.keyboard.press('Shift+ArrowUp');
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        };
         // The default parcel view fills the frame with the subject and hides the
         // surrounding road/neighbor context. Normalize the camera to the parcel
         // first ("Fit" centers the subject with its complete boundary), then
@@ -1759,23 +2611,30 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         // tight crop if the site's zoom controls cannot be driven.
         await clickNamedButton('Fit');
         await sleep(1400);
+        let closeParcelPath: string | null = null;
+        if (!opts.captureLabels || opts.captureLabels.includes('close_parcel_aerial')) {
+          const closeFile = path.join(dir, `landportal-close-${Date.now()}.png`);
+          if (await captureMapViewport(closeFile, 'parcel_context')) closeParcelPath = closeFile;
+        }
+        // Every category resumes from a fresh Fit, never from the previous
+        // capture's bearing, zoom, overlay, or terrain state.
+        await clickNamedButton('Fit');
+        await sleep(1400);
         const contextSteps = contextZoomOutSteps(parseAcresFromFields(fieldsOut.fields ?? {}));
         const zoomedOutSteps = await zoomOutParcelMap(contextSteps);
         logger.info({ event: 'landportal_visual_zoom', completed: zoomedOutSteps, requested: contextSteps }, 'landportal_visual_zoom');
         if (zoomedOutSteps !== contextSteps) return empty;
-        const bearingDegrees = await orientRoadBelowParcel();
-        logger.info({ event: 'landportal_visual_orientation', bearingDegrees }, 'landportal_visual_orientation');
         // Mapbox re-fetches/repaints satellite tiles after every camera change;
         // the former 900 ms pause routinely captured only the gray base canvas.
         await sleep(16000);
         const parcelFile = path.join(dir, `landportal-parcel-${Date.now()}.png`);
-        await page.screenshot({ path: parcelFile });
+        if (!(await captureMapViewport(parcelFile, 'parcel_context'))) return empty;
         // The parcel/sidebar chrome alone makes a gray map screenshot look like
         // a non-empty PNG. At this viewport real satellite tiles are materially
         // larger; retry once, then reject rather than promote an unpainted map.
         if (fs.statSync(parcelFile).size < 500_000) {
           await sleep(10000);
-          await page.screenshot({ path: parcelFile });
+          if (!(await captureMapViewport(parcelFile, 'parcel_context'))) return empty;
         }
         if (fs.statSync(parcelFile).size < 500_000) {
           logger.warn({ event: 'landportal_visual_rejected', reason: 'satellite_tiles_unpainted', bytes: fs.statSync(parcelFile).size }, 'landportal_visual_rejected');
@@ -1786,6 +2645,44 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         // proves its layer never painted — it must never be saved under a new
         // label. That relabeled-base-map reuse was the identical-image defect.
         const capturedShas: string[] = [];
+        const requestedCaptureLabels = new Set(opts.captureLabels ?? [
+          'road_frontage_aerial', 'close_parcel_aerial', 'clean_parcel_aerial', 'wider_context',
+          'wetlands_overlay', 'soil_overlay', 'contour_terrain_view', 'fema_flood_overlay',
+          'front_side_3d', 'rear_side_3d',
+        ]);
+        const fieldShowsImpact = (pattern: RegExp): boolean => Object.entries(fieldsOut.fields ?? {}).some(([key, raw]) => {
+          if (!pattern.test(key)) return false;
+          const value = String(raw ?? '').trim().toLowerCase();
+          if (!value || /^(?:none|no|n\/a|not present|0(?:\.0+)?%?)$/.test(value)) return false;
+          const numeric = Number(value.replace(/[^0-9.-]/g, ''));
+          if (Number.isFinite(numeric)) return numeric > 0;
+          return /\b(?:yes|present|mapped|within|intersects?|impact)\b/.test(value)
+            && !/\b(?:outside|not|no)\b/.test(value);
+        });
+        if (!fieldShowsImpact(/wetland/i)) requestedCaptureLabels.delete('wetlands_overlay');
+        if (!fieldShowsImpact(/fema|flood/i)) requestedCaptureLabels.delete('fema_flood_overlay');
+        const threeDEligibility = evaluateThreeDCaptureEligibility(fieldsOut.fields ?? {});
+        if (threeDEligibility.decision !== 'eligible') {
+          requestedCaptureLabels.delete('front_side_3d');
+          requestedCaptureLabels.delete('rear_side_3d');
+        }
+        const visualShots: Array<{
+          label: string;
+          path: string;
+          kind: 'parcel_page' | 'overlay' | 'parcel_3d';
+          purpose: string;
+          overlay?: string;
+          soilDetails?: Array<{ symbol: string | null; name: string | null; fields: Record<string, string> }>;
+        }> = [];
+        if (closeParcelPath && requestedCaptureLabels.has('close_parcel_aerial')) {
+          visualShots.push({ label: 'close_parcel_aerial', path: closeParcelPath, kind: 'parcel_page', purpose: 'Full-boundary close parcel aerial' });
+        }
+        if (requestedCaptureLabels.has('clean_parcel_aerial')) {
+          visualShots.push({ label: 'clean_parcel_aerial', path: parcelFile, kind: 'parcel_page', purpose: 'Full-boundary clean parcel aerial' });
+        }
+        if (requestedCaptureLabels.has('wider_context')) {
+          visualShots.push({ label: 'wider_context', path: parcelFile, kind: 'parcel_page', purpose: 'Full-boundary wider parcel context' });
+        }
         try { capturedShas.push(fileSha256(parcelFile)); } catch { /* gate degrades gracefully */ }
         const openOverlayDialog = async (): Promise<boolean> => {
           if (await buttonState('Close')) return true;
@@ -1802,8 +2699,88 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           return !(await buttonState('Close'));
         };
         const overlayMisses: Array<{ overlay: string; reason: string }> = [];
+        const collectVisibleSoilDetails = async (): Promise<Array<{ symbol: string | null; name: string | null; fields: Record<string, string> }>> => {
+          if (!page.mouse) return [];
+          const canvas = await page.evaluate<null | { left: number; top: number; width: number; height: number }>((() => {
+            const candidates = Array.from(document.querySelectorAll('canvas')).map((el: any) => ({ rect: el.getBoundingClientRect() }))
+              .filter((item: any) => item.rect.width > 600 && item.rect.height > 400)
+              .sort((a: any, b: any) => b.rect.width * b.rect.height - a.rect.width * a.rect.height);
+            const rect = candidates[0]?.rect;
+            return rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null;
+          }) as unknown as () => null | { left: number; top: number; width: number; height: number });
+          if (!canvas) return [];
+          const found = new Map<string, { symbol: string | null; name: string | null; fields: Record<string, string> }>();
+          const fractions = [0.28, 0.4, 0.5, 0.6, 0.72];
+          for (const y of fractions) for (const x of fractions) {
+            await page.mouse.move(canvas.left + canvas.width * x, canvas.top + canvas.height * y);
+            await page.mouse.down(); await page.mouse.up();
+            await sleep(500);
+            const detail = await page.evaluate<null | { symbol: string | null; name: string | null; fields: Record<string, string> }>((() => {
+              const visible = (el: any) => {
+                const rect = el?.getBoundingClientRect?.(); const style = el ? window.getComputedStyle(el) : null;
+                return !!rect && rect.width > 10 && rect.height > 10 && style?.display !== 'none' && style?.visibility !== 'hidden';
+              };
+              const popup = Array.from(document.querySelectorAll('.mapboxgl-popup,.leaflet-popup,[role=dialog]')).find(visible) as any;
+              if (!popup) return null;
+              const fields: Record<string, string> = {};
+              popup.querySelectorAll('tr').forEach((row: any) => {
+                const cells = row.querySelectorAll('th,td');
+                if (cells.length >= 2) {
+                  const key = String(cells[0].textContent || '').replace(/\s+/g, ' ').trim();
+                  const value = String(cells[1].textContent || '').replace(/\s+/g, ' ').trim();
+                  if (key && value) fields[key] = value;
+                }
+              });
+              const text = String(popup.innerText || '').replace(/\s+/g, ' ').trim();
+              for (const line of text.split(/\n|\s{2,}/)) {
+                const match = line.match(/^([^:]{2,60}):\s*(.{1,180})$/);
+                if (match && !fields[match[1].trim()]) fields[match[1].trim()] = match[2].trim();
+              }
+              if (!Object.keys(fields).length) return null;
+              const entries = Object.entries(fields);
+              const symbol = entries.find(([key]) => /map.?unit|symbol|abbr/i.test(key))?.[1] ?? null;
+              const name = entries.find(([key]) => /soil|map.?unit.*name|series/i.test(key))?.[1] ?? null;
+              return { symbol, name, fields };
+            }) as unknown as () => null | { symbol: string | null; name: string | null; fields: Record<string, string> });
+            if (detail) found.set(`${detail.symbol ?? ''}|${detail.name ?? ''}|${JSON.stringify(detail.fields)}`, detail);
+            try { await page.keyboard?.press('Escape'); } catch { /* popup close is best effort */ }
+          }
+          return [...found.values()];
+        };
+        if (requestedCaptureLabels.has('road_frontage_aerial')) {
+          await closeOverlayDialog();
+          await clickNamedButton('Fit');
+          await sleep(1400);
+          const frontageZoom = await zoomOutParcelMap(contextSteps);
+          if (frontageZoom === contextSteps) {
+            await orientRoadBelowParcel();
+            await sleep(7000);
+            const frontageFile = path.join(dir, `landportal-frontage-${Date.now()}.png`);
+            if (await captureMapViewport(frontageFile, 'parcel_context')) {
+              visualShots.push({ label: 'road_frontage_aerial', path: frontageFile, kind: 'parcel_page', purpose: 'Full-boundary road frontage aerial' });
+            }
+          }
+        }
         const captureOverlay = async (overlay: string, candidates: string[], purpose: string): Promise<void> => {
           try {
+            const semanticLabel = /wetland/i.test(overlay)
+              ? 'wetlands_overlay'
+              : /soil/i.test(overlay)
+                ? 'soil_overlay'
+                : /contour/i.test(overlay)
+                  ? 'contour_terrain_view'
+                  : /fema|flood/i.test(overlay)
+                    ? 'fema_flood_overlay'
+                    : purpose;
+            if (!requestedCaptureLabels.has(semanticLabel)) return;
+            await closeOverlayDialog();
+            await clickNamedButton('Reset map rotation to north');
+            await clickNamedButton('Fit');
+            await sleep(1400);
+            if (await zoomOutParcelMap(contextSteps) !== contextSteps) {
+              overlayMisses.push({ overlay, reason: 'the full-boundary camera baseline could not be established.' });
+              return;
+            }
             if (!(await openOverlayDialog())) {
               overlayMisses.push({ overlay, reason: 'the Basemaps and overlays dialog could not be opened.' });
               return;
@@ -1836,7 +2813,10 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
               return;
             }
             const file = path.join(dir, `${purpose}-${Date.now()}.png`);
-            await page.screenshot({ path: file });
+            if (!(await captureMapViewport(file, 'overlay'))) {
+              overlayMisses.push({ overlay, reason: 'a clean unobstructed map viewport could not be isolated.' });
+              return;
+            }
             // DISTINCTNESS GATE: byte-identical to the base parcel view (or any
             // earlier capture) means the layer never rendered. Wait once more
             // for slow tiles, then record the overlay as unavailable rather
@@ -1845,15 +2825,20 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             try { sha = fileSha256(file); } catch { sha = null; }
             if (sha && !isDistinctOverlayCapture(sha, capturedShas)) {
               await sleep(6500);
-              await page.screenshot({ path: file });
+              if (!(await captureMapViewport(file, 'overlay'))) {
+                overlayMisses.push({ overlay, reason: 'the overlay frame became obstructed before recapture.' });
+                return;
+              }
               try { sha = fileSha256(file); } catch { sha = null; }
             }
             if (sha && !isDistinctOverlayCapture(sha, capturedShas)) {
               try { fs.unlinkSync(file); } catch { /* best-effort cleanup */ }
               overlayMisses.push({ overlay, reason: 'the toggled layer produced no visible change over the base map at parcel scale — no distinct overlay image exists to save.' });
             } else {
+              const soilDetails = /soil/i.test(overlay) ? await collectVisibleSoilDetails() : [];
               if (sha) capturedShas.push(sha);
               overlayShots.push({ overlay, path: file, purpose });
+              visualShots.push({ label: semanticLabel, path: file, kind: 'overlay', purpose, overlay, soilDetails });
             }
             if (await openOverlayDialog()) {
               if (await buttonState(disableName)) await clickNamedButton(disableName);
@@ -1868,11 +2853,17 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         let terrainShotPath: string | null = null;
         try {
           await closeOverlayDialog();
+          await clickNamedButton('Reset map rotation to north');
+          await clickNamedButton('Fit');
+          await sleep(1400);
+          if (await zoomOutParcelMap(contextSteps) !== contextSteps) throw new Error('3d full-boundary camera baseline unavailable');
           const terrainOn = await clickNamedButton('Toggle 3D terrain');
           if (terrainOn) {
             await sleep(4500);
+            await raiseTerrainCamera();
+            await sleep(3500);
             const terrainFile = path.join(dir, `landportal-terrain-${Date.now()}.png`);
-            await page.screenshot({ path: terrainFile });
+            if (!(await captureMapViewport(terrainFile, 'terrain'))) throw new Error('clean terrain viewport unavailable');
             // Same distinctness gate: a "terrain" frame identical to the flat
             // base capture proves 3D never engaged — keep it absent instead.
             let terrainSha: string | null = null;
@@ -1882,6 +2873,23 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             } else {
               if (terrainSha) capturedShas.push(terrainSha);
               terrainShotPath = terrainFile;
+              if (requestedCaptureLabels.has('front_side_3d')) {
+                visualShots.push({ label: 'front_side_3d', path: terrainFile, kind: 'parcel_3d', purpose: 'Raised full-footprint front 3D view' });
+              }
+              if (requestedCaptureLabels.has('rear_side_3d')) {
+                await orientRoadBelowParcel();
+                await sleep(5000);
+                const rearFile = path.join(dir, `landportal-terrain-rear-${Date.now()}.png`);
+                if (await captureMapViewport(rearFile, 'terrain')) {
+                  const rearSha = fileSha256(rearFile);
+                  if (isDistinctOverlayCapture(rearSha, capturedShas)) {
+                    capturedShas.push(rearSha);
+                    visualShots.push({ label: 'rear_side_3d', path: rearFile, kind: 'parcel_3d', purpose: 'Raised full-footprint rear 3D view' });
+                  } else {
+                    try { fs.unlinkSync(rearFile); } catch { /* rejected duplicate */ }
+                  }
+                }
+              }
             }
           }
         } catch { terrainShotPath = null; }
@@ -1893,14 +2901,29 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         // triple. The text rows above stay as the fallback for an older layout.
         const compCards = await page.evaluate<string[]>(COMP_CARDS as unknown as () => string[]).catch(() => [] as string[]);
         // Click the real comps "Show on Map" anchor (free; never the paid Comp Report).
+        //
+        // THE ONE INTERACTION THAT FOREGROUNDED CHROME. LandPortal publishes this
+        // anchor with target="_blank", so the click made the PAGE open the comps
+        // map in a new tab. A page-opened target is not ours to create, so
+        // `Target.createTarget({background:true})` cannot apply to it, and Chrome
+        // always activates a tab a page opens — which is what put LandPortal over
+        // the operator's work. A CDP target trace proved it: the comps target
+        // carried `openerId` = our lane page and was the only one that ever
+        // became its window's active tab.
+        //
+        // The click itself is UNCHANGED. The popup is cancelled upstream, at
+        // document start, by `SUPPRESS_POPUPS_JS` — which suppresses the new
+        // target WITHOUT navigating this tab, so the lane stays on the parcel
+        // page exactly as it did in the verified runs. Retargeting the anchor to
+        // `_self` was tried and rejected: it sent the lane into LandPortal's
+        // heavy comps SPA and blew the lane's time budget.
         const mapReached = await page.evaluate<boolean>((() => { const a = (document.querySelector('a.js-lp-estimate-show-on-map') as any) || Array.from(document.querySelectorAll('a')).find((x: any) => /^show on map$/i.test((x.textContent || '').trim())); if (a) { a.scrollIntoView(); a.click(); return true; } return false; }) as unknown as () => boolean);
         await sleep(6000);
         let compsMapShotPath: string | null = null;
         let mapRows: string[] = [];
         if (mapReached) {
           const compsFile = path.join(dir, `landportal-compsmap-${Date.now()}.png`);
-          await page.screenshot({ path: compsFile });
-          compsMapShotPath = compsFile;
+          if (await captureMapViewport(compsFile, 'comps_map')) compsMapShotPath = compsFile;
           // The expanded results view lazy-loads its result list. Scroll every
           // scrollable container (and the window) a few times so rows below the
           // fold enter the DOM before reading. Read-only: scrolling only.
@@ -1928,8 +2951,10 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         if (compCards.length) {
           let detailPage: PageLike | null = null;
           try {
-            detailPage = await state.browser.newPage();
-            trackTempSessionPage(detailPage);
+            // Background: this comp-detail tab is pure reading, and activating
+            // it would put LandPortal over the operator's work mid-run.
+            detailPage = await openResearchTab(state.browser);
+            trackTempSessionPage(detailPage, workflowOwner);
             for (const raw of compCards.slice(0, 12)) {
               let card: { apn?: string | null; fips?: string | null; propertyId?: string | null } = {};
               try { card = JSON.parse(raw); } catch { continue; }
@@ -1957,7 +2982,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             await releaseTempSessionPage(detailPage);
           }
         }
-        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, overlayMisses, terrainShotPath, compRows: compRows ?? [], compCards: compCards ?? [], compDetails, mapRows: mapRows ?? [], mapReached, capturedAtIso: now() };
+        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, visualShots, overlayMisses, terrainShotPath, compRows: compRows ?? [], compCards: compCards ?? [], compDetails, mapRows: mapRows ?? [], mapReached, capturedAtIso: now() };
       } catch (error) {
         logger.warn({ event: 'landportal_visual_capture_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_visual_capture_failed');
         return empty;
@@ -1980,8 +3005,8 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     async readFullPanel(url: string, opts: { timeoutMs: number }) {
       await ensureBrowserSession(deps);
       if (!state.browser) return { url, fields: {}, snippets: [] };
-      const page = await state.browser.newPage();
-      trackTempSessionPage(page);
+      const page = await openResearchTab(state.browser);
+      trackTempSessionPage(page, workflowOwner);
       const FULL = (): { fields: Record<string, string>; snippets: string[] } => {
         const fields: Record<string, string> = {};
         const add = (k: string, v: string) => {
@@ -2002,8 +3027,9 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         return { fields, snippets: snippets.slice(0, 8) };
       };
       try {
-        // No bringToFront: a fresh tab is already its window's selected tab at
-        // creation, and raising the window would put it over the operator's work.
+        // No bringToFront, and the tab above was created in the BACKGROUND, so
+        // it is not even its window's selected tab. Reading a parcel panel must
+        // never put LandPortal over the operator's work.
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs });
         await new Promise((r) => setTimeout(r, 6500)); // let the SPA fully render the detail panel
         const out = await page.evaluate<{ fields: Record<string, string>; snippets: string[] }>(FULL as unknown as () => { fields: Record<string, string>; snippets: string[] });
@@ -2183,52 +3209,31 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     },
     async readCandidates() {
       const page = await getLanePage();
-      const READ = (): Array<{ index: number; text: string; kind: string }> => {
-        // Deterministic collector — MUST match clickCandidate's collector exactly.
-        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li,li[class*="search" i],li[class*="variant" i]';
-        const seen = new Set<any>(); const out: any[] = [];
-        Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
-          if (seen.has(el)) return; seen.add(el);
-          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 1, height: 1 };
-          if (!rect.width || !rect.height) return; // visible only
-          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-          if (text.length < 3 || text.length > 220) return;
-          out.push({ el, text });
-        });
-        const kindOf = (el: any): string => { const c = (el.className && el.className.toString ? el.className.toString() : '').toLowerCase(); const tag = (el.tagName || '').toLowerCase(); if (/popup/.test(c)) return 'popup'; if (/card/.test(c)) return 'card'; if (tag === 'tr' || /row/.test(c)) return 'row'; if (tag === 'li') return 'row'; if (tag === 'button') return 'button'; return 'element'; };
-        const byText = new Set<string>(); const res: any[] = [];
-        out.forEach((o) => { if (byText.has(o.text)) return; byText.add(o.text); res.push({ index: res.length, text: o.text, kind: kindOf(o.el) }); });
-        return res.slice(0, 40);
-      };
-      return page.evaluate<Array<{ index: number; text: string; kind: string }>>(READ);
+      return page.evaluate<Array<{ index: number; text: string; kind: string }>>(READ_CANDIDATES_JS);
     },
     async clickCandidate(index, opts) {
       const page = await getLanePage();
-      const CLICK = (target: number): boolean => {
-        const SEL = '.leaflet-popup-content,[class*="popup" i],[class*="result" i] li,[class*="result" i] tr,[class*="results" i] [class*="card" i],[class*="results" i] [class*="row" i],[class*="result-item" i],[class*="parcel" i],[class*="feature" i] li,[role=row],[class*="list" i] li,table tbody tr,[class*="card" i],[role=option],[class*="autocomplete" i] li,[class*="autocomplete" i] [class*="item" i],[class*="suggestion" i],[class*="typeahead" i] li,[class*="search-result" i],[class*="dropdown-menu" i] li,li[class*="search" i],li[class*="variant" i]';
-        const seen = new Set<any>(); const out: any[] = [];
-        Array.from(document.querySelectorAll(SEL)).forEach((el: any) => {
-          if (seen.has(el)) return; seen.add(el);
-          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 1, height: 1 };
-          if (!rect.width || !rect.height) return;
-          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-          if (text.length < 3 || text.length > 220) return;
-          out.push({ el, text });
-        });
-        const byText = new Set<string>(); const res: any[] = [];
-        out.forEach((o) => { if (byText.has(o.text)) return; byText.add(o.text); res.push(o.el); });
-        const el = res[target]; if (!el) return false;
-        // Prefer a checkbox/radio inside the option (LandPortal's APN autocomplete
-        // renders each matching parcel as a selectable checkbox row that must be
-        // ticked before submitting), then an anchor/button, else the element itself.
-        const clickable = (el.matches && el.matches('a,button,[role=button],[onclick],input[type=checkbox],input[type=radio]'))
-          ? el
-          : (el.querySelector && el.querySelector('input[type=checkbox],input[type=radio],a[href],button,[role=button],[onclick]')) || el;
-        if (clickable.scrollIntoView) clickable.scrollIntoView();
-        clickable.click();
-        return true;
-      };
-      await page.evaluate<boolean>(CLICK as unknown as () => boolean, index);
+      // Locate first, in the SAME collector order readCandidates returned, and
+      // get the on-screen box back so the click below can be a real one.
+      const box = await page.evaluate<CandidateBox | null>(locateCandidateJs(index));
+      if (box) {
+        // REAL browser interaction. A dispatched `el.click()` is untrusted, and
+        // several typeaheads (LandPortal's included) commit a suggestion only on
+        // a genuine pointer sequence.
+        let clicked = false;
+        if (page.mouse && box.inViewport) {
+          try {
+            await page.mouse.move(box.x, box.y, { steps: 6 });
+            await page.mouse.down();
+            await page.mouse.up();
+            clicked = true;
+          } catch { /* fall through to the DOM click */ }
+        }
+        // The DOM click runs ONLY when the real click could not. Firing both
+        // would be a second interaction on a page the first one may already
+        // have navigated — clicking whatever now occupies that index.
+        if (!clicked) await page.evaluate<boolean>(clickCandidateJs(index));
+      }
       await new Promise((r) => setTimeout(r, Math.min(opts.timeoutMs, 2500))); // panel/popup settle
     },
     async typeSearch(selector, value, opts) {
@@ -2441,5 +3446,5 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const page = await getLanePage();
       return page.evaluate(fn, ...args);
     },
-  };
+  });
 }

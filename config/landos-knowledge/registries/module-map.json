@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "registryId": "module-map",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "api-projection",
+      "title": "API and Deal Card projection",
+      "status": "active",
+      "summary": "Routes assemble canonical records into operator reads; projection failures must be diagnosed from persistence through rendering.",
+      "canonicalRefs": ["src/landos/routes.ts", "src/landos/deal-card-projection.ts", "src/landos/deal-card-canonical.ts"]
+    },
+    {
+      "id": "property-evidence",
+      "title": "Property evidence admission",
+      "status": "active",
+      "summary": "Identity guards and category transactions validate and persist accepted property-scoped research.",
+      "canonicalRefs": ["src/landos/property-research-store.ts", "src/landos/hermes-landportal-import.ts", "src/landos/parcel-identity.ts"]
+    },
+    {
+      "id": "market-intelligence",
+      "title": "Market intelligence",
+      "status": "active",
+      "summary": "Market Matrix, Market Pulse, comp collection, and market narration remain distinct canonical modules.",
+      "canonicalRefs": ["src/landos/market-matrix-store.ts", "src/landos/market-pulse.ts", "src/landos/market-research.ts"]
+    },
+    {
+      "id": "browser-workflows",
+      "title": "Browser workflows",
+      "status": "active",
+      "summary": "Existing authenticated browser work is bounded by source-specific controls and property identity.",
+      "canonicalRefs": ["src/landos/browser-session.ts", "src/landos/browser-intelligence.ts", "src/landos/landportal-browser.ts"]
+    },
+    {
+      "id": "knowledge-retrieval",
+      "title": "Knowledge retrieval",
+      "status": "active",
+      "summary": "Repository Markdown and local FTS5 retrieve operating and long-form context but cannot bypass evidence admission.",
+      "canonicalRefs": ["src/landos/rag-knowledge.ts", "src/landos/knowledge-store.ts", "config/landos-knowledge/knowledge-system.json"]
+    },
+    {
+      "id": "managed-runtime",
+      "title": "Managed runtime",
+      "status": "active",
+      "summary": "Only the documented LandOS runtime commands control localhost lifecycle and health.",
+      "canonicalRefs": ["scripts/runtime/landos-runtime.mjs", ".landos/PERMANENT_MEMORY.md"]
+    }
+  ]
+}

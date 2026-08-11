@@ -41,6 +41,19 @@ describe('normalizeRedfinListings', () => {
     expect(out[1].acres).toBeCloseTo(0.25, 2); // 10890 / 43560
     expect(out.every((c) => c.source === 'Redfin')).toBe(true);
   });
+
+  it('requires an explicit dated sale and retains the provider thumbnail', () => {
+    const out = normalizeRedfinListings([
+      { address: '1 Verified Land Rd, Central, SC 29630', price: 500000, acres: 48.25, sqftLot: null, residential: false, url: 'r1', status: 'Sold on May 2, 2025', thumbnailUrl: 'https://img.test/land.jpg' },
+      { address: '415 Silver Creek Rd, Central, SC 29630', price: 1500000, acres: 120, sqftLot: null, residential: false, url: 'r2', status: 'Sold' },
+    ], 52.84, 'sold');
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      address: '1 Verified Land Rd, Central, SC 29630',
+      soldDate: '2025-05-02',
+      thumbnailUrl: 'https://img.test/land.jpg',
+    });
+  });
 });
 
 describe('fetchRedfinLandComps (injected, no real browser)', () => {
@@ -93,6 +106,7 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
     });
     expect(r.comps).toHaveLength(1);
     expect(r.comps[0].status).toBe('sold');
+    expect(r.comps[0].soldDate).toBe('2025-05-02');
   });
 
   it('reports none when the search dropdown surfaces no city page', async () => {

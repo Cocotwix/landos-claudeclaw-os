@@ -12,10 +12,11 @@ const request = process.argv.slice(2).join(' ');
 if (request !== expected) throw new Error('Use the exact isolated acceptance request.');
 const root = process.cwd();
 const agents = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+const protocol = readFileSync(path.join(root, '.landos', 'CODING_SESSION_PROTOCOL.md'), 'utf8');
 const permanent = readFileSync(path.join(root, '.landos', 'PERMANENT_MEMORY.md'), 'utf8');
 const checkpoint = readFileSync(path.join(root, '.landos', 'CHECKPOINT.md'), 'utf8');
 const status = buildStatus(root);
-const section = (heading) => checkpoint.split('## ' + heading)[1]?.split('\n## ')[0]?.trim() ?? null;
+const section = (heading) => checkpoint.split('# ' + heading)[1]?.split('\n# ')[0]?.trim() ?? null;
 const result = {
   method: 'isolated offline local-process contract proof; not an independent model session',
   request,
@@ -30,10 +31,13 @@ const result = {
   },
   checkpoint: {
     path: '.landos/CHECKPOINT.md',
-    unfinishedWork: section('Current unfinished work'),
-    pendingTylerDecisions: section('Pending Tyler decisions'),
-    nextPriority: section('Next recommended system-wide priority'),
+    currentActiveTask: section('Current Active Task'),
+    remainingWork: section('Remaining Work'),
+    exactNextAction: section('Exact Next Action'),
+    relevantFiles: section('Relevant Files'),
   },
+  agentNeutralProtocol: /Codex, Claude Code,[\s\S]*future coding agents/.test(protocol),
+  narrowStartup: /Inspect only files explicitly named/.test(protocol) && /Do not automatically perform a broad repository audit/.test(protocol),
   managedRuntimeAvailable: /landos:status[\s\S]*landos:health/.test(permanent),
   safetyBoundariesAvailable: /Do not commit or push/.test(permanent) && /Preserve unrelated dirty work/.test(permanent),
   relevantReports: [...checkpoint.matchAll(/docs\/landos\/[A-Za-z0-9_.-]+\.md/g)].map((match) => match[0]),

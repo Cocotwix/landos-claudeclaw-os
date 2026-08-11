@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "canonicalSystem": "LandOS",
+  "activationPolicy": "Every watcher requires an explicit target, schedule, delivery destination, owner approval, source allowlist, and stop condition. Definitions are inert by default.",
+  "definitions": [
+    {"id": "county-ordinance-updates", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "official-government", "changeType": "ordinance"},
+    {"id": "planning-agendas", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "official-government", "changeType": "agenda"},
+    {"id": "zoning-amendments", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "official-government", "changeType": "zoning"},
+    {"id": "subdivision-rule-changes", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "official-government", "changeType": "subdivision"},
+    {"id": "road-infrastructure-announcements", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "official-government", "changeType": "infrastructure"},
+    {"id": "major-employer-announcements", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "provider-first-party", "changeType": "employer"},
+    {"id": "municipal-development-news", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "official-government", "changeType": "development"},
+    {"id": "github-tool-updates", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "provider-first-party", "changeType": "tooling"},
+    {"id": "provider-changes", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "provider-first-party", "changeType": "provider"},
+    {"id": "platform-readiness", "enabled": false, "target": null, "schedule": null, "delivery": null, "sourceClass": "provider-first-party", "changeType": "readiness"}
+  ],
+  "reviewedAt": "2026-08-02"
+}

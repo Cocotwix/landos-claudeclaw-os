@@ -11,6 +11,8 @@ import {
   attachCardSourceEvidence,
   attachCardActivity,
   addCardNextAction,
+  updateCardNextAction,
+  deleteCardNextAction,
   attachNearbySearchReference,
   hasStrongParcelIdentity,
   createLeadJobs,
@@ -359,6 +361,31 @@ describe('Property Card memory attachments', () => {
     const detail = getPropertyCard(card.id)!;
     expect(detail.activity.length).toBe(1);
     expect(detail.nextActions.length).toBe(1);
+  });
+
+  it('stores rich task fields and supports complete, edit, and delete', () => {
+    const { card } = upsertPropertyCard({ entity: 'TY_LAND_BIZ', activeInputAddress: '9 Task Rd, Z SC' });
+    const id = addCardNextAction({
+      cardId: card.id,
+      action: 'Call planning',
+      dueDate: '2026-08-01',
+      assignedOwner: 'Tyler',
+      priority: 'high',
+      reminderAt: '2026-07-31T09:00',
+    });
+    expect(updateCardNextAction(card.id, id, { action: 'Call county planning', status: 'completed' })).toBe(true);
+    expect(getPropertyCard(card.id)!.nextActions).toEqual([
+      expect.objectContaining({
+        id,
+        action: 'Call county planning',
+        status: 'completed',
+        due_date: '2026-08-01',
+        assigned_owner: 'Tyler',
+        priority: 'high',
+      }),
+    ]);
+    expect(deleteCardNextAction(card.id, id)).toBe(true);
+    expect(getPropertyCard(card.id)!.nextActions).toHaveLength(0);
   });
 
   it('lists property cards by kanban status', () => {

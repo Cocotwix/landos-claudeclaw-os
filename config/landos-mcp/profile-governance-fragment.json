@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1.0.0",
+  "mcpManifest": "config/landos-mcp/hermes-mcp-fragment.yaml",
+  "profileMcpAllowlists": {
+    "landos-research": ["landos-read", "landos-research"],
+    "landos-visual-qa": ["landos-read", "landos-acceptance"],
+    "landos-debug": ["landos-read"],
+    "landos-knowledge": ["landos-read"],
+    "landos-automation": ["landos-read"]
+  },
+  "profileMcpDenylists": {
+    "landos-research": ["landos-acceptance"],
+    "landos-visual-qa": ["landos-research"],
+    "landos-debug": ["landos-acceptance", "landos-research"],
+    "landos-knowledge": ["landos-acceptance", "landos-research"],
+    "landos-automation": ["landos-acceptance", "landos-research"]
+  },
+  "separationRules": [
+    {
+      "rule": "independent-acceptance-only",
+      "server": "landos-acceptance",
+      "allowedProfile": "landos-visual-qa",
+      "directImplementationConnection": false
+    },
+    {
+      "rule": "canonical-research-writes-only",
+      "server": "landos-research",
+      "allowedProfile": "landos-research",
+      "requiresCanonicalAdapter": true
+    }
+  ]
+}

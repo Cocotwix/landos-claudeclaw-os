@@ -1,130 +1,151 @@
 # Current Active Task
 
-The V2 property-intelligence functional baseline is committed on `main`
-(single clean commit replacing the oversized local commit `2a60346`, which
-had swept in the whole dirty worktree; nothing was pushed). The commit holds
-only the approved scope plus compiler/test-proven dependencies: V2 route +
-Overview + Property Intelligence tab, desktop rendering corrections, scores
-at top, uncropped hero, LandPortal subject links, Property Score
-recalculation, Hermes v0.20 import/auto lanes, SOP 10B, and the
-property-market-context join. No new task is active.
+Close-out of the 9490 Elk Lake Rd sprint: the four operator defects the live
+acceptance exposed were fixed in four lanes, the retained exact-address listing
+evidence is now surfaced in Property Intelligence, and everything was reverified
+live. Nothing committed or pushed. Awaiting Tyler's review.
 
 # Exact Operator Outcome
 
-`http://localhost:3141/dept/acquisitions/v2?deal=81` (and
-`&section=property-intelligence`) open with Property 74 Strong / Market 57
-Moderate / Seller Pending at the top of both pages, each with a transparent
-ledger explanation and +/− factors. The Overview hero renders the retained
-close-parcel aerial at natural aspect: complete boundary, Onionville Rd,
-Sterling Creek, no LandPortal sidebar; facts and caption fill the right pane.
-"View in LandPortal" (header, both pages) and "Open this subject in
-LandPortal" (hero) open the verified subject (fips 36011 / APN / 89525293)
-in a new tab. PI gallery thumbnails are 367×230 and click through to full
-size; market context stays labeled "LandOS Market Research — not
-LandPortal". Both pages survive refresh and managed restart.
+On deal 83 the operator sees an improved subject named as improved, a land-only
+value with whole-property pending, LandPortal rows labelled source-stated rather
+than verified while still pricing the subject, the retained Zillow/Realtor/Redfin
+listing evidence with provenance, and comp counts, statuses and lane summaries
+that agree with each other.
 
 # Current State
 
-<!-- DERIVED:START -->
-- **Generated:** 2026-08-04T05:45:00.000Z
-- **HEAD at generation:** `f25d7a5` (parent; this checkpoint ships inside the replacement baseline commit built on it)
-- **Worktree:** DIRTY by design; the excluded workstreams below remain uncommitted. Preserve them.
-- **Latest tests:** PASS at 2026-08-04T05:32:40Z; focused suites on the exact committed tree in an isolated worktree: deal-operator-analysis.contract, property-market-context, property-intelligence.routes, hermes-landportal-auto, hermes-landportal-import; 52 tests, 0 failures.
-- **Latest typecheck:** PASS at 2026-08-04T05:34:00Z on the exact committed tree (the parent alone had 19 errors; this commit repairs them).
-- **Latest production build:** PASS at 2026-08-04T05:35:00Z; server (tsc) and web (vite) on the exact committed tree; only pre-existing chunk-size warnings.
-- **Managed runtime:** RUNNING healthy at 2026-08-04T03:44:00Z; PID 128224; http://localhost:3141.
-<!-- DERIVED:END -->
+- **Generated:** 2026-08-10T23:35:00Z
+- **HEAD at generation:** `d539e10`. 0 staged, 0 unpushed.
+- **Worktree:** DIRTY, 411 uncommitted paths. Preserve unrelated changes.
+- **Build:** PASS (vite + tsc), only pre-existing chunk-size warnings.
+- **Runtime:** RUNNING healthy, PID 155904, http://localhost:3141, HTTP 200.
+- **Dedicated LandOS Chrome:** running, CDP 9224, owned.
 
 # Completed and Proven
 
-Committed baseline (54 files): V2 page/component/stylesheet + App route;
-deal-operator-analysis (metric-aware Property Score: frontage/buildability/
-coverage govern sign, retained parcel imagery counts as boundary evidence,
-% normalization, base-58 ledger explanation, quarantine preserved);
-property-market-context read-time join; routes.ts PI projection
-(marketContext, subjectParcelUrl, visualKey separation); Hermes v0.20
-import/auto lanes; SOP 10B doc + landos-landportal SKILL; and the 35
-compiler/test-proven server dependencies (snapshot/assembly/inspection/
-card/db schema with the zip column, market-scan, landportal evidence
-validation + operating rules, live collectors, etc.). The set was proven by
-building the tree at the parent, adding only files tsc/vitest demanded, then
-passing typecheck, both builds, and 52 focused tests on that exact tree.
+LANE 1 — improved-subject presentation. `readSubjectImprovement` wires the
+previously unused `inferSubjectPropertyType` to the subject and returns the
+caption noun, valuation scope and whole-property status. LIVE: "60-acre improved
+parcel ... carrying approx. 1,701 sqft of improvements"; "LAND-ONLY INDICATION —
+IMPROVEMENTS NOT VALUED $625,500"; "WHOLE-PROPERTY VALUE Pending" on Overview
+and Comps; ladder reads "of land value" / "adopted cleaned LAND value". The word
+"vacant parcel" no longer appears for this subject. House valuation NOT built.
+
+LANE 2 — LandPortal comp semantics. New `source_stated_sale` basis and
+`CompSaleVerification`. A row promoted to a sale only because the provider
+printed a date is carried as source-stated: full weight, provenance kept, never
+called verified. LIVE: badge "SOURCE-STATED SALE", price "SOURCE-STATED SALE
+PRICE — NOT INDEPENDENTLY VERIFIED", header "PROVISIONAL VALUATION BASED ON 5
+SOURCE-STATED VACANT-LAND SALES (NOT INDEPENDENTLY VERIFIED)", confidence forced
+LOW in the summary and the cleaned valuation. All five comps stay in the
+decision set. "VERIFIED SOLD PRICE" is gone from deal 83.
+
+LANE 3 — exact-address transport. No node fetch remains. Result anchors come
+from `driver.readLinks` on the static search endpoint (the proven county-records
+path), with the background-browser transport plus `extractLinks` as fallback;
+listing pages are read in that same browser; the lane runs inside
+`withOwnedPages`. PROVEN LIVE on run 43: `retrieved`, 3 pages — the 9490 Zillow,
+Realtor.com and Redfin detail pages, the last carrying `house`, 2,000 sqft, 60
+acres. No page contains easement language, so reported legal access stays empty.
+
+LANE 4 — count/status reconciliation. `mergeComps` unioned comp arrays across
+runs but inherited `summaryLine` and `conclusion` from the incoming run alone;
+both are now re-derived from the merged rows via `compSummaryLine`. The Market
+Score noun follows the comps registry via `soldAllSourceStated`. LIVE: tiles
+"4 asking" sit beside "4 asking-market reference(s)" and `asking_indication`;
+Market Score reads "5 selected source-stated sale(s)".
+
+LANE 5 — retained listing evidence surfaced. `projectExactAddressListingEvidence`
+projects the latest attempt that retained pages; the route serves it as
+`exactAddressListings`; a block inside the EXISTING Property Intelligence
+section renders it. No new page, no parallel UI, no new research. LIVE:
+"Subject read: Retained listing evidence describes an improved property of
+approx. 2,000 sqft on 60 acres (house). Listing-reported, not an assessor
+record."; zillow.com, realtor.com and redfin.com each with URL, facts and
+provenance date; per-source wording stating the page published no legal-access
+or easement language, so reported legal access stays unresolved from it;
+bounded excerpts for page-sized wording; and a confidence line.
+
+REGRESSION HELD: acreage router 21–150 ac with 5 comps pricing the subject, 0
+outside band; improved context 16, decision set 5, no improved row in the
+vacant-land set; Overview LandPortal image 1600x1000 after refresh; the
+four-tier access ladder unchanged with its reported-legal tier still empty.
 
 # Remaining Work
 
-Uncommitted workstreams intentionally left dirty in the worktree, each
-needing its own review-and-commit decision from Tyler: governed multi-agent
-architecture + governance schemas; governed Hermes profiles; MCP servers;
-knowledge registries + docs; acceptance/visual-QA architecture (playwright
-config, acceptance scripts/schemas); Browser Use pilots (scripts +
-LandPortalBrowserUsePanel); memory/protocol revamp (CLAUDE.md, AGENTS.md,
-.hermes.md, .landos protocol files, memory/runtime scripts); Deal Card V1
-UI + test updates; dashboard/db root changes; package.json/lock additions
-(zod, @playwright/test, infra scripts). Functional follow-ups: other V2
-tabs; valuation still not priceable; creek/water feature has no structured
-fact so the score omits it.
+Not built, deferred: the house valuation lane that would turn the land-only
+figure into a whole-property value; Strategy agent; Pre/Post Discovery
+Revaluation. The exact-address lane's `persistence.attempted` is still false, so
+its evidence lives on the run record and is projected at read time rather than
+entering the canonical evidence store. There is still no Run Property
+Intelligence control in the V2 workspace; only legacy `/legacy/deal/:id` has one.
 
 # Exact Next Action
 
-On Tyler's direction, pick one uncommitted workstream from Remaining Work to
-review and commit separately (suggested first: memory/protocol revamp or
-Deal Card V1 updates), or start the next functional V2 tab. No implicit
-action is pending.
+Report to Tyler and wait. Do not commit or push, and do not start the house
+valuation lane or any Remaining Work item without his instruction.
 
 # Relevant Files
 
-- `src/landos/deal-operator-analysis.ts` (+contract test)
-- `src/landos/property-market-context.ts` (+test)
-- `src/landos/routes.ts`, `src/landos/hermes-landportal-{auto,import}.ts`
-  (+tests), `src/landos/property-intelligence.routes.test.ts`
-- `web/src/pages/AcquisitionWorkspaceV2.tsx`,
-  `web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx`,
-  `web/src/styles/workspace-v2.css`, `web/src/App.tsx`
-- `docs/landos/property-intelligence-sop.md`,
-  `config/hermes/landos-profile/skills/landos-landportal/SKILL.md`
+- `src/landos/comps-valuation.ts`, `comp-transaction-price.ts`,
+  `comp-listing-projection.ts`
+- `src/landos/property-intelligence-snapshot.ts`, `deal-operator-analysis.ts`
+- `src/landos/routes.ts`, `discovery-access-presentation.ts`,
+  `exact-address-web-discovery.ts`
+- `web/src/pages/AcquisitionWorkspaceV2.tsx` and
+  `web/src/components/AcquisitionWorkspaceV2{PropertyIntelligence,CompsValuation}.tsx`,
+  `CompRecordIdentity.tsx`
 
 # Relevant Records
 
-- Deal Card 81; Property Card 71; LandPortal 89525293; APN
-  `055689 10.00-1-64.22`; 10 accepted visuals (hero natural 920×890).
-- Screenshots under `store/browser-shots/acceptance-deal81/`:
-  `v2-overview-desktop-correction.png`, `v2-overview-after-restart.png`,
-  `v2-property-intelligence-desktop-correction.png`,
-  `v2-property-intelligence-after-restart.png`.
+Live run `di_msntkf8z_2vsoyp` (deal 83, sequence 43). Its exact-address lane
+attempt in `landos_property_research_lane_attempt` holds the three retrieved
+listing URLs and their facts, and is what the new panel projects.
+`landos_landportal_capture` is still empty: the Overview image remains the
+retained `parcel_context` inspection asset, not a new capture.
 
 # Known Blockers
 
-None.
+`src/landos/memory-bootstrap.test.ts` has 3 pre-existing failures asserting
+wording the consolidated contract no longer contains; unrelated, deferred.
+`landos:memory:checkpoint` refuses to write (generator output exceeds the 8192
+ceiling), so this file was written directly under the ceiling.
+The `landos` Hermes profile still has `image_gen`, `bfl` and `tts` enabled from
+a prior session; they can incur cost and await Tyler's decision.
 
 # Do Not Inspect or Modify
 
-Do not expose `.env` or secrets, run destructive SQL, discard the dirty
-worktree (it holds the uncommitted workstreams), or delete
-`store/backups/landos-pre-rescue-2026-08-03.db` without Tyler's
-authorization. Do not push without authorization. Do not weaken the
-visual-evidence validation, comp source policy, SOP 10B, score-quarantine
-logic, or completion gates.
+Do not expose `.env` or secrets, print either dashboard token, run destructive
+SQL, discard the dirty worktree, or delete
+`store/backups/landos-pre-rescue-2026-08-03.db`. Deny rules `Bash(git push*)`,
+`Bash(rm *)`, `Bash(git clean*)` are intact. Never disable TLS verification.
+Do not create a second Chrome profile: LandOS uses the one dedicated automation
+Chrome on CDP 9224.
 
 # Runtime State
 
-Managed LandOS healthy at `http://localhost:3141` (PID 128224); root and
-/health 200. Authenticated LandPortal Chrome remains on CDP 9224 (operator
-session, untouched).
+Rebuilt and restarted through `npm run landos:restart`; healthy on
+http://localhost:3141, PID 155904, HTTP 200. Dedicated LandOS Chrome on CDP 9224.
 
 # Verification Required
 
-For follow-on changes to the score projection or V2 layout: rerun
-deal-operator-analysis.contract, property-market-context,
-property-intelligence.routes, and hermes-landportal suites; typecheck; both
-builds; managed restart + health; live walkthrough of BOTH V2 pages at
-desktop width incl. refresh + restart; memory audit; secret scan.
+Tier 3, met. Final focused sweep: 169 tests across 11 files PASS (the earlier
+four-lane sweep was 269 across 15). `tsc --noEmit` clean; production build
+clean; managed restart healthy; the primary agent personally exercised Overview,
+Property Intelligence and Comps & Valuation live after a hard refresh. Nothing
+was committed or pushed at any point.
 
 # Completed and Protected
 
-Retain: the metric-aware propertyScore recalculation with ledger
-explanation; imagery-as-boundary-evidence with survey upgrade path; the
-score strip on both sections; the contain-based hero; verified-URL-only
-LandPortal links; the enlarged clickable gallery; SOP 10B labeling; the four
-correction screenshots; the isolated-worktree proof method for minimal
-commits. Standing protections: no secret exposure, no destructive SQL, no
-cross-property evidence, dirty-state preservation.
+Retain everything previously protected, plus: a vacant-land comp set is never
+presented as a whole-property value on an improved subject — it is a land-only
+indication and the whole-property value is reported pending; a comp row whose
+closed status was inferred from a printed date is labelled source-stated, keeps
+full participation and provenance, and is never shown as a verified sale or
+rated above low confidence; merged comp counts, the summary sentence and the
+priceability verdict are always re-derived together; exact-address discovery
+reads engines and listing pages through the dedicated LandOS browser, never a
+bare fetch; retained listing evidence is shown per provider with URL, facts and
+provenance, states plainly when a page published no access wording, and stays at
+listing-reported confidence, never a verified government or recorded fact.

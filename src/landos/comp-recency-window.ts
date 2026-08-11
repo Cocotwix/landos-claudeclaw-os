@@ -28,6 +28,8 @@
 // anniversary, never on a rounded "24 months ago" label: a sale stays eligible
 // through its exact anniversary date and becomes older immediately afterwards.
 
+import { inAcreagePool, routeAcreage, routedAcreageSimilarity } from './acreage-router.js';
+
 /** Recency steps, in the order LandOS is permitted to try them. */
 export const RECENCY_WINDOW_STEPS = [12, 24, 30] as const;
 export type RecencyWindowMonths = (typeof RECENCY_WINDOW_STEPS)[number];
@@ -54,14 +56,8 @@ export interface AcreageBand {
  * and therefore prices off 5-to-20-acre sales.
  */
 export function valuationAcreageBand(subjectAcres: number | null): AcreageBand | null {
-  if (subjectAcres == null || !Number.isFinite(subjectAcres) || subjectAcres <= 0) return null;
-  const band = subjectAcres < 2 ? { min: 0.25, max: 5 }
-    : subjectAcres < 5 ? { min: 1, max: 10 }
-      : subjectAcres < 25 ? { min: 5, max: 20 }
-        : subjectAcres < 60 ? { min: 15, max: 60 }
-          : subjectAcres < 150 ? { min: 40, max: 160 }
-            : { min: Math.round(subjectAcres * 0.4), max: Math.round(subjectAcres * 2) };
-  return { ...band, label: `${band.min}–${band.max} acres` };
+  const route = routeAcreage(subjectAcres);
+  return route ? { ...route.pool } : null;
 }
 
 export function inAcreageBand(acres: number | null, band: AcreageBand | null): boolean {
@@ -76,12 +72,9 @@ export function inAcreageBand(acres: number | null, band: AcreageBand | null): b
  * other factors are comparable. Outside the band the score is 0.
  */
 export function acreageSimilarity(acres: number | null, subjectAcres: number | null, band: AcreageBand | null): number {
-  if (acres == null || subjectAcres == null || subjectAcres <= 0) return 0;
-  if (!inAcreageBand(acres, band)) return 0;
-  if (band == null) return 0;
-  const halfWidth = Math.max(subjectAcres - band.min, band.max - subjectAcres);
-  if (!(halfWidth > 0)) return 1;
-  return Math.max(0, Math.min(1, 1 - Math.abs(acres - subjectAcres) / halfWidth));
+  const route = routeAcreage(subjectAcres);
+  if (route == null || band == null || !inAcreagePool(acres, route)) return 0;
+  return routedAcreageSimilarity(acres, route);
 }
 
 /** Calendar-accurate month subtraction, clamped to the end of a short month. */

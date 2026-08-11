@@ -43,17 +43,17 @@ describe('Deal Card Market section renders comp-source search status', () => {
   it('renders the canonical comparable snapshot without a legacy research panel', () => {
     expect(DEALCARD).toMatch(/<PropertyIntelligenceMarket snapshot=\{piSnapshot\}/);
     expect(DEALCARD).not.toMatch(/function CompResearchPanel|<CompResearchPanel/);
-    expect(PI_PANEL).toMatch(/title="Comp source policy"/);
+    expect(PI_PANEL).toMatch(/Comp methodology & source coverage/);
     expect(PI_PANEL).toMatch(/title="Accepted sold comps"/);
     expect(PI_PANEL).toMatch(/title="Active competition"/);
   });
 
   it('shows source-linked accepted rows and explicit held-back reasons', () => {
-    expect(PI_PANEL).toMatch(/<CompTable rows=\{comps\.sold\}/);
-    expect(PI_PANEL).toMatch(/<CompTable rows=\{comps\.active\}/);
-    expect(PI_PANEL).toMatch(/row\.sourceUrl \? <a href=\{row\.sourceUrl\}/);
+    expect(PI_PANEL).toMatch(/<CompCards rows=\{comps\.sold\.slice\(0, 5\)\}/);
+    expect(PI_PANEL).toMatch(/<CompCards rows=\{comps\.active\.slice\(0, 4\)\}/);
+    expect(PI_PANEL).toMatch(/row\.sourceUrl && <a href=\{row\.sourceUrl\}/);
     expect(PI_PANEL).toMatch(/\{row\.source\}/);
-    expect(PI_PANEL).toMatch(/title="Rows held back as evidence"/);
+    expect(PI_PANEL).toMatch(/Comp exclusions/);
     expect(PI_PANEL).toMatch(/\{bucket\.reason\}/);
   });
 

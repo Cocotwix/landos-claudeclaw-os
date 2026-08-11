@@ -155,6 +155,30 @@ describe('Deal Intelligence assembly (the Operator stage)', () => {
     expect(rows.find((row) => row.id === 'strategy')!.status).toBe('failed');
   });
 
+  it('preserves the richer retained county acreage matrix instead of rebuilding it from selected comps', () => {
+    const retained = {
+      bands: [{ band: '5-10', soldVolume: 19, snapshotPeriod: '2026-Q2', source: 'LandOS Market Research' }],
+      bestMovingBands: ['5-10'],
+    };
+    const children = [
+      child('parcel_identity', { result: IDENTITY_RESULT }),
+      child('market_intelligence', {
+        result: {
+          dealCardId: 32,
+          marketMatrix: { title: 'County matrix' },
+          marketPulse: null,
+          marketScan: { acreageMatrix: retained },
+          marketMatrixAvailable: true,
+          marketPulseAvailable: false,
+          facts: [],
+          summary: 'County bands retained.',
+        },
+      }),
+    ];
+    const { pkg } = assemble(children);
+    expect((pkg.marketIntelligence?.marketScan as { acreageMatrix: unknown }).acreageMatrix).toEqual(retained);
+  });
+
   it('reports a rejected child as failed on the snapshot, never softened', () => {
     const rows = assemblySpecialistRecords([child('comparables', { status: 'rejected', acceptance: { state: 'rejected', reason: 'no', checks: [] } })]);
     expect(rows[0].status).toBe('failed');

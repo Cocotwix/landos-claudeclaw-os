@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "landos-read": {
+      "command": "python",
+      "args": ["-B", "../../mcp/landos/run_server.py", "landos-read"]
+    },
+    "landos-acceptance": {
+      "command": "python",
+      "args": ["-B", "../../mcp/landos/run_server.py", "landos-acceptance"]
+    },
+    "landos-research": {
+      "command": "python",
+      "args": ["-B", "../../mcp/landos/run_server.py", "landos-research"]
+    }
+  }
+}

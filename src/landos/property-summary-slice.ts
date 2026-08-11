@@ -321,6 +321,22 @@ export function createPropertyIdentityVersion(input: PropertyIdentityVersionInpu
   if (existing?.status === 'confirmed' && !input.allowAcceptedSupersession) {
     return existing;
   }
+
+  // A collector that FAILED to resolve the parcel has not unresolved it.
+  // Silence is not evidence. Several lanes end by recording a blocked Property
+  // Summary; when one of them ran alongside a lane that did resolve the subject,
+  // its "unresolved" row landed last and became the current identity, throwing
+  // away a stronger answer that was already proven — deal 83 lost its
+  // reconciled APN this way moments after reconciliation supplied it.
+  // Demotion now requires actually carrying the identity it claims to revise.
+  const demotesResolvedIdentity = existing
+    && input.status === 'unresolved'
+    && (existing.status === 'candidate' || existing.status === 'confirmed')
+    && !!cleanString(existing.apn)
+    && !cleanString(input.apn);
+  if (demotesResolvedIdentity && !input.allowAcceptedSupersession) {
+    return existing!;
+  }
   if (existing && hash(comparableIdentity(existing)) === hash(comparableIdentity(input))) return existing;
 
   const create = db.transaction(() => {

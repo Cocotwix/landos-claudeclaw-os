@@ -125,6 +125,16 @@ describe('SOP and live Hermes skill state the workflows consistently', () => {
     expect(doc).toMatch(/Show on Map link[\s\S]{0,200}?(?:separate comparable page|never a base-map)/i);
   });
 
+  it.each([['SOP', SOP], ['SKILL', SKILL]])('%s requires the framed Overview, land-locked investigation, and comp image drill-down', (_name, doc) => {
+    expect(doc).toMatch(/landportal_overview/i);
+    expect(doc).toMatch(/nearest (?:named )?public road/i);
+    expect(doc).toMatch(/apparent access route/i);
+    expect(doc).toMatch(/Land Locked: Yes|Land[- ]locked access trigger/i);
+    expect(doc).toMatch(/recorded instrument/i);
+    expect(doc).toMatch(/drill into every sidebar row/i);
+    expect(doc).toMatch(/image|thumbnail/i);
+  });
+
   it.each([['SOP', SOP], ['SKILL', SKILL]])('%s approves the default 3D framing and forbids substitutes', (_name, doc) => {
     expect(doc).toMatch(/default (?:LandPortal )?3D (?:view|framing)/i);
     expect(doc).toMatch(/do not rotate, tilt, zoom, or reposition/i);
@@ -161,9 +171,11 @@ describe('the visuals assignment requests the new captures', () => {
       address: 'ONEIL RD, PORT BYRON, NY 13140', apn: '053889 75.00-1-24.11',
       owner: null, county: 'Cayuga', state: 'NY', landPortalPropertyId: '89505385',
     }, 'C:/tmp/out.json', 'visuals');
-    for (const view of ['default_3d', 'soil', 'buildability', 'street_view']) expect(prompt).toContain(view);
+    for (const view of ['landportal_overview', 'default_3d', 'soil', 'buildability', 'street_view']) expect(prompt).toContain(view);
     expect(prompt).toContain('overlay_rendered');
     expect(prompt).toContain('street_view_observations');
+    expect(prompt).toContain('access_evidence');
+    expect(prompt).toMatch(/place the (?:Street View )?marker on the nearest public road/i);
   });
 });
 

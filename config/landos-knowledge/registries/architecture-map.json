@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "registryId": "architecture-map",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "operator-web",
+      "title": "Operator web application",
+      "status": "active",
+      "summary": "The localhost Deal Card and New Lead workflow are the owner-facing completion authority.",
+      "canonicalRefs": ["web/src/components/DealCard.tsx", "src/landos/routes.ts"]
+    },
+    {
+      "id": "canonical-records",
+      "title": "Canonical LandOS records",
+      "status": "active",
+      "summary": "Deal, property, seller, evidence, comp, visual, document, market, valuation, and workflow state remain in LandOS stores and APIs.",
+      "canonicalRefs": ["src/landos/db.ts", "src/landos/property-research-store.ts", "src/landos/property-intelligence-store.ts"]
+    },
+    {
+      "id": "bounded-research",
+      "title": "Bounded research workers",
+      "status": "active",
+      "summary": "Hermes workers return validated property-scoped handbacks; only LandOS may admit them to canonical state.",
+      "canonicalRefs": ["src/landos/hermes-landportal-auto.ts", "src/landos/hermes-landportal-import.ts", ".hermes.md"]
+    },
+    {
+      "id": "governed-roles",
+      "title": "Separated governed roles",
+      "status": "introduced",
+      "summary": "Research, visual QA, debugging, knowledge, and automation use isolated authority boundaries; implementers cannot certify their own work.",
+      "canonicalRefs": ["docs/landos/knowledge/architecture-map.md"]
+    },
+    {
+      "id": "visual-acceptance",
+      "title": "Independent visual acceptance",
+      "status": "introduced",
+      "summary": "Playwright evidence packages support an independent visual PASS or FAIL and a non-destructive completion gate.",
+      "canonicalRefs": ["docs/landos/knowledge/architecture-map.md"]
+    },
+    {
+      "id": "operating-knowledge",
+      "title": "Local operating knowledge",
+      "status": "active",
+      "summary": "Repository Markdown and validated registries store architecture and operating knowledge while referencing canonical records by identifier or path.",
+      "canonicalRefs": ["docs/landos/knowledge/README.md", "src/landos/rag-knowledge.ts"]
+    }
+  ]
+}

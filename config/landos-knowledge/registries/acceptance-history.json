@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "registryId": "acceptance-history",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-03",
+  "entries": [
+    {
+      "id": "ACCEPT-GOVERNED-OS-704-BELL",
+      "title": "First governed known-defect visual proof",
+      "status": "expected-fail-confirmed",
+      "summary": "Independent live acceptance produced the expected FAIL: Comps & Market rendered 0 of 4 canonical comps, Documents & Visuals rendered 0 of 1 canonical visual, and the imagery area remained empty. Refresh, managed restart, isolated cleanup, and cross-property checks passed.",
+      "expectedVerdict": "FAIL",
+      "evidencePackageRef": ".landos/acceptance/2026-08-03T05-16-41-956Z-governed-multi-agent-os-known-defect-proof",
+      "canonicalRecordRefs": [
+        "property-address:704 Bell Rd, Red Creek, NY 13143",
+        "property-card:69",
+        "deal-card:79",
+        "landportal-property:89520173"
+      ],
+      "canonicalRefs": ["config/landos-knowledge/registries/defect-history.json"]
+    }
+  ]
+}

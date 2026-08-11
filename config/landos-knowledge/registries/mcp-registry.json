@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "registryId": "mcp-registry",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "landos-read",
+      "title": "LandOS bounded read MCP",
+      "status": "integration-interface",
+      "summary": "Read-only property context, accepted evidence, status, expectations, counts, market context, and source registry access.",
+      "canonicalRefs": ["docs/landos/knowledge/mcp-registry.md"]
+    },
+    {
+      "id": "landos-acceptance",
+      "title": "LandOS bounded acceptance MCP",
+      "status": "integration-interface",
+      "summary": "Acceptance-run and visual-claim artifact recording only; no implementation-agent connection or application repair authority.",
+      "canonicalRefs": ["docs/landos/knowledge/mcp-registry.md"]
+    },
+    {
+      "id": "landos-research",
+      "title": "LandOS bounded research MCP",
+      "status": "integration-interface",
+      "summary": "Verified property fact, comp, visual, progress, and category completion/failure handbacks through deterministic identity validation.",
+      "canonicalRefs": ["docs/landos/knowledge/mcp-registry.md"]
+    }
+  ]
+}

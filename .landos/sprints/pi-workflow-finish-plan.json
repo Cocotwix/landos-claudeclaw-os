@@ -1,0 +1,282 @@
+{
+  "sprintId": "sprint-2026-08-04-pi-workflow-finish",
+  "title": "Finish the operator-facing V2 Property Intelligence workflow (Deal 81)",
+  "originalPromptPath": "pi-workflow-finish-prompt.md",
+  "workstreams": [
+    {
+      "id": "ws1-instant-section-switching",
+      "name": "Instant V2 Overview/Property Intelligence section switching",
+      "operatorOutcome": "Switching between V2 Overview and Property Intelligence for deal 81 feels immediate; the property record is loaded once and reused across sections; no research reruns, no stale data, no long loading animation; URL navigation and browser history keep working.",
+      "inScope": [
+        "Diagnose the multi-second V2 section-switch delay (root cause required in final report)",
+        "Load or cache the active property/PI data once and reuse it across V2 sections",
+        "Prefetch PI data on Overview load only if that is the narrowest correct fix",
+        "Preserve canonical-read behavior and freshness; no stale data",
+        "Keep ?section= URL navigation and history correct"
+      ],
+      "backendServices": [
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 > Overview (http://localhost:3141/dept/acquisitions/v2?deal=81)",
+        "Acquisition Workspace V2 > Property Intelligence (?deal=81&section=property-intelligence)"
+      ],
+      "requiredDataState": "Existing Deal Card 81 / Property Card 71 (1487 Onionville Rd, Sterling NY, LandPortal 89525293) with its accepted visuals and facts; no new lead.",
+      "browserJourney": {
+        "steps": [
+          "Open http://localhost:3141/dept/acquisitions/v2?deal=81",
+          "Switch to Property Intelligence and back to Overview at least 6 times",
+          "Confirm each switch renders perceptually immediately (content visible well under a second after first load)",
+          "Confirm via network requests that tab switches do not refetch the full property record or trigger research reruns",
+          "Use browser back/forward and confirm section navigation still works",
+          "Refresh on each section and confirm correct content persists"
+        ]
+      },
+      "testRequirements": [
+        "Focused test that V2 section switching reuses already-loaded property data instead of refetching the full record per switch",
+        "Test that switching sections triggers no research/run mutation endpoint",
+        "Test that direct URL entry to either section still loads fresh canonical data"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "A section switch still takes multiple seconds or refetches the full property record every time",
+        "Tab switching triggers research reruns",
+        "Stale data is shown after underlying data changes",
+        "URL or history navigation breaks",
+        "The delay is hidden behind a long loading animation instead of removed"
+      ],
+      "requiredProofs": ["test_result", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": [],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws1-r1", "text": "Overview <-> Property Intelligence switching is perceptually immediate in the live localhost workflow." },
+        { "id": "ws1-r2", "text": "The full property record is not unnecessarily refetched or rebuilt on every section change." },
+        { "id": "ws1-r3", "text": "Tab switching never reruns research." },
+        { "id": "ws1-r4", "text": "Canonical-read freshness is preserved; no stale data is introduced." },
+        { "id": "ws1-r5", "text": "URL navigation and browser history keep working for both sections." }
+      ]
+    },
+    {
+      "id": "ws2-sidebar-facts",
+      "name": "Missing LandPortal sidebar facts captured and projected",
+      "operatorOutcome": "Water Feature Type (River), Zoning Code (exactly '01 - NOT Z'), the full FEMA flood-zone description, Last Sale Price 16500, Last Sale Date 10-07-2005, Book 1234, Page 75, and Assessed Value $56,700.00 are captured from LandPortal whenever displayed, persisted through the canonical property-fact path with LandPortal as discovery-stage source, and visible in the correct V2 Property Intelligence sections for deal 81.",
+      "inScope": [
+        "Extend the existing Hermes subject-fact extraction and import path for the listed sidebar fields",
+        "Preserve exact LandPortal labels and displayed values; zoning stored verbatim as '01 - NOT Z'",
+        "Normalize money/date only into established normalized fields while preserving displayed source values",
+        "Never overwrite stronger official records; LandPortal recorded as discovery-stage source",
+        "Persist via the existing canonical property-fact path; no new store or sidebar-data table",
+        "Project the fields into V2 PI: water feature in property facts/environmental, zoning in zoning section marked discovery-stage, FEMA description in environmental/FEMA, sale info in sale-and-deed-history, assessed value in value-and-assessment"
+      ],
+      "backendServices": [
+        "src/landos/hermes-landportal-import.ts",
+        "src/landos/hermes-landportal-auto.ts",
+        "src/landos/routes.ts",
+        "src/landos/operator-property-record.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 > Property Intelligence (?deal=81&section=property-intelligence)"
+      ],
+      "requiredDataState": "Deal 81 with the listed sidebar values present as accepted subject facts after import (the LandPortal sidebar showed them for property 89525293).",
+      "browserJourney": {
+        "steps": [
+          "Open V2 Property Intelligence for deal 81",
+          "Confirm Water Feature Type: River appears in property facts or environmental summary",
+          "Confirm Zoning Code shows exactly '01 - NOT Z' and is marked as LandPortal discovery-stage data",
+          "Confirm the complete FEMA flood-zone description appears in the environmental/FEMA section",
+          "Confirm Last Sale Price, Last Sale Date, Book Number, Page Number appear in the sale and deed-history section",
+          "Confirm Assessed Value $56,700.00 appears in the value and assessment section",
+          "Refresh and confirm all values persist"
+        ]
+      },
+      "testRequirements": [
+        "Extraction/import tests proving each listed sidebar field is captured with exact label and displayed value",
+        "Test that zoning is stored verbatim '01 - NOT Z' with no reinterpretation",
+        "Test that normalization preserves the displayed source value alongside any established normalized field",
+        "Test that a stronger official record is not overwritten by the LandPortal discovery-stage value",
+        "Projection test that the fields appear in the PI payload for deal 81"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "Any listed field missing from capture, persistence, or the V2 PI display",
+        "Zoning code reinterpreted or altered from '01 - NOT Z'",
+        "FEMA description truncated",
+        "A new property store or sidebar-data table is created",
+        "A stronger official record is overwritten",
+        "LandPortal not recorded as the discovery-stage source"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "db_evidence", "browser_journey", "screenshot", "refresh_persistence", "restart_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-instant-section-switching"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws2-r1", "text": "All eight listed sidebar values are captured whenever LandPortal displays them, with exact labels and displayed values preserved." },
+        { "id": "ws2-r2", "text": "Zoning code is stored exactly as '01 - NOT Z' and displayed as LandPortal discovery-stage data." },
+        { "id": "ws2-r3", "text": "The complete FEMA description is preserved and shown in the environmental/FEMA section." },
+        { "id": "ws2-r4", "text": "Sale info appears in the sale-and-deed-history section and assessed value in the value-and-assessment section; money/date normalization also preserves displayed source values." },
+        { "id": "ws2-r5", "text": "Facts persist through the existing canonical property-fact path with LandPortal as discovery-stage source; no new store or table; stronger official records are never overwritten." }
+      ]
+    },
+    {
+      "id": "ws3-evidence-viewer",
+      "name": "Same-page evidence viewer with zoom and pan",
+      "operatorOutcome": "Clicking any Property Intelligence evidence image opens a large same-page lightbox filling most of the viewport with correct aspect ratio, the largest useful image, zoom in/out/reset, drag panning, wheel zoom, previous/next navigation, category/caption/source labels, an obvious close control, and Escape close, without leaving the workspace or opening a new tab.",
+      "inScope": [
+        "Replace the open-in-new-page/tab behavior with an in-page modal lightbox in V2 PI",
+        "Zoom in, zoom out, reset-to-fit, pointer drag panning while zoomed, wheel/trackpad zoom",
+        "Previous/next image navigation across the evidence gallery",
+        "Category, caption/description, and source display",
+        "Close button and Escape; usable keyboard and focus behavior",
+        "No new image library dependency unless the existing frontend cannot reasonably support it"
+      ],
+      "backendServices": [],
+      "frontendScreens": [
+        "Acquisition Workspace V2 > Property Intelligence evidence gallery (?deal=81&section=property-intelligence)"
+      ],
+      "requiredDataState": "Deal 81 accepted visual evidence gallery (10+ retained visuals).",
+      "browserJourney": {
+        "steps": [
+          "Open V2 Property Intelligence for deal 81",
+          "Click an evidence thumbnail and confirm a large same-page viewer opens (no navigation, no new tab)",
+          "Confirm the image keeps its aspect ratio and fills most of the viewport",
+          "Zoom in, zoom out, reset to fit; drag to pan while zoomed; wheel zoom",
+          "Navigate previous and next through several images and confirm category/caption/source update",
+          "Close with the close control, reopen, close with Escape",
+          "Confirm the workspace behind is unchanged and still on the PI section"
+        ]
+      },
+      "testRequirements": [
+        "Focused frontend tests for the viewer: open on click, zoom in/out/reset state, prev/next order, metadata display, Escape close, no navigation away",
+        "Test that thumbnails no longer target a separate page/tab"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Clicking evidence still opens another page or tab",
+        "Zoom, reset, pan, prev/next, close, or Escape does not work",
+        "Aspect ratio distorted or only a small image shown",
+        "Category/caption/source missing when available",
+        "A new image library is added without demonstrated necessity"
+      ],
+      "requiredProofs": ["test_result", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-instant-section-switching"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws3-r1", "text": "Evidence images open in a large same-page viewer occupying most of the viewport, preserving aspect ratio, showing the largest useful retained image." },
+        { "id": "ws3-r2", "text": "Zoom in, zoom out, reset-to-fit, drag panning while zoomed, and wheel zoom work." },
+        { "id": "ws3-r3", "text": "Previous/next navigation works and shows image category, caption, and source when available." },
+        { "id": "ws3-r4", "text": "The viewer closes via an obvious control and Escape, never navigates away or opens a new tab, and keeps keyboard/focus behavior usable." },
+        { "id": "ws3-r5", "text": "No new image library dependency is added unless the existing frontend cannot reasonably support the interaction." }
+      ]
+    },
+    {
+      "id": "ws4-landportal-capture-workflows",
+      "name": "LandPortal capture workflows: G Maps rule, default 3D, soil, buildability, Street View",
+      "operatorOutcome": "The SOP and live Hermes LandPortal skill require selecting and visually confirming G Maps before applicable map/overlay/Street View work; deal 81 gains a clean default LandPortal 3D capture, a soil capture showing rendered colored soil polygons with structured soil facts, a dedicated yellow buildability capture with structured percentage/acreage when displayed, and Street View captures plus structured observations including a grounded conclusion about the diagonal linear corridor.",
+      "inScope": [
+        "Update docs/landos/property-intelligence-sop.md and the live landos-landportal SKILL consistently: G Maps base-map rule, default 3D capture rule, soil-rendering wait rule, buildability workflow, Street View workflow",
+        "Preserve the rule that Show on Map is a separate comparable page",
+        "Live Hermes/LandPortal run on subject 89525293 only: default 3D capture, rendered soil overlay capture + structured soil units (Map Unit Name, Drainage Class, Farmland Classification, Capability Class non-irrigated, other material fields), Show Buildability yellow-overlay capture + structured buildability data, Street View frontage scan captures + observations",
+        "Record Street View unavailability rather than silently skipping",
+        "Persist captures as categorized evidence through the existing evidence path; surface in the V2 PI gallery",
+        "Investigate the diagonal linear feature; conclude only what the strongest evidence supports"
+      ],
+      "backendServices": [
+        "src/landos/hermes-landportal-auto.ts",
+        "src/landos/hermes-landportal-import.ts",
+        "src/landos/landportal-browser.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 > Property Intelligence evidence gallery (?deal=81&section=property-intelligence)"
+      ],
+      "requiredDataState": "Authenticated LandPortal Chrome session (CDP 9224) on subject property 89525293; deal 81 evidence store writable via the existing canonical path.",
+      "browserJourney": {
+        "steps": [
+          "Open V2 Property Intelligence for deal 81",
+          "Confirm a default 3D capture is present (not a 2D aerial substitute)",
+          "Confirm the soil capture visibly contains colored soil polygons across the subject parcel with the boundary visible",
+          "Confirm a dedicated Buildability capture with the yellow overlay is present",
+          "Confirm Street View captures and structured observations are present, or an explicit unavailability record",
+          "Confirm structured soil units and buildability data are visible where displayed",
+          "Confirm the corridor conclusion reflects the strongest available evidence and no other property's evidence appears",
+          "Refresh and confirm all captures persist"
+        ]
+      },
+      "testRequirements": [
+        "Focused workflow tests for the G Maps selection rule, 3D default-framing capture, soil rendered-polygon acceptance gate (reject base-imagery-only screenshots), buildability capture category, and Street View observation capture/unavailability recording",
+        "Import tests that structured soil units and buildability data persist through the canonical path"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "SOP and live skill updated inconsistently or the Show on Map comparable-page rule weakened",
+        "3D capture substituted with 2D aerial or contour",
+        "Soil screenshot lacks visible colored polygons inside the parcel",
+        "Buildability capture missing, or substituted with slope/contour/aerial/3D evidence",
+        "Street View silently skipped without an unavailability record",
+        "Corridor called a railroad, trail, or corridor type without supporting evidence",
+        "Evidence attributed to the wrong property"
+      ],
+      "requiredProofs": ["test_result", "db_evidence", "browser_journey", "screenshot", "refresh_persistence", "restart_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws2-sidebar-facts"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws4-r1", "text": "SOP and live Hermes LandPortal skill both require selecting and visually confirming G Maps before applicable map, overlay, and Street View workflows, without confusing the comparable Show on Map page." },
+        { "id": "ws4-r2", "text": "A clean default-framing LandPortal 3D capture is persisted as the primary 3D evidence for deal 81." },
+        { "id": "ws4-r3", "text": "The soil capture shows rendered colored soil polygons with the subject boundary, and distinct soil units with their structured fields are captured and deduplicated." },
+        { "id": "ws4-r4", "text": "A dedicated yellow buildability capture with category 'Buildability' and structured percentage/acreage (when displayed) is persisted and surfaced in the PI gallery." },
+        { "id": "ws4-r5", "text": "Street View is captured and analyzed with structured observations distinguishing observation, interpretation, and unconfirmed conclusion, or its unavailability is recorded; the diagonal corridor is described only per the strongest evidence." }
+      ]
+    },
+    {
+      "id": "ws5-visual-buyer-analysis",
+      "name": "Multi-view Visual Buyer Analysis, Overview summary, and PI placement",
+      "operatorOutcome": "Deal 81 shows one structured multi-view Visual Buyer Analysis (sections A-E) grounded in the combined accepted visual evidence in Property Intelligence, and a concise grounded Visual Buyer Summary on Overview with a control opening the full analysis; no fabricated facts, no legal conclusions, no superseded interpretation left visible.",
+      "inScope": [
+        "Hermes vision analysis over the combined accepted visuals (satellite, frontage, aerial, wider context, 3D, Street View, wetlands, FEMA, soil, contours, buildability, water context) plus accepted structured facts",
+        "Structured Visual Buyer Analysis with sections A-E per the prompt; evidence reconciliation; no single-image conclusions",
+        "Concise Overview Visual Buyer Summary: physical character, main buyer appeal, top visual concern, expand control into PI",
+        "Persist the analysis through the existing canonical path and project into both V2 sections",
+        "Keep existing page structure and visual system; no comparable-card duplication in PI"
+      ],
+      "backendServices": [
+        "src/landos/routes.ts",
+        "src/landos/deal-operator-analysis.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 > Overview (?deal=81)",
+        "Acquisition Workspace V2 > Property Intelligence (?deal=81&section=property-intelligence)"
+      ],
+      "requiredDataState": "Deal 81 with ws4 captures accepted (3D, soil, buildability, Street View when available) and the sidebar facts from ws2.",
+      "browserJourney": {
+        "steps": [
+          "Open V2 Overview for deal 81 and confirm the concise Visual Buyer Summary appears with physical character, main appeal, and top concern",
+          "Use its control to open/expand the full Visual Buyer Analysis in Property Intelligence",
+          "Confirm sections A-E are all present and grounded in the multi-view evidence",
+          "Confirm the corridor description matches the reconciled conclusion and no superseded interpretation remains",
+          "Confirm no fabricated facts, legal conclusions, or guaranteed buildability/access/septic/boundary/wetlands claims",
+          "Refresh both sections and confirm the analysis and summary persist"
+        ]
+      },
+      "testRequirements": [
+        "Focused tests for the Visual Buyer Analysis structure (sections A-E), grounding constraints (no prohibited guarantee language), and supersession behavior",
+        "Projection tests that Overview shows the concise summary and PI shows the full analysis"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "Analysis based on one aerial image alone or containing fabricated/legal/guaranteed claims",
+        "Overview summary missing, unscannable, or lacking the expand control",
+        "A superseded interpretation remains visible after stronger evidence",
+        "Any section A-E missing from the full analysis",
+        "Full comparable cards duplicated inside PI or the page redesigned"
+      ],
+      "requiredProofs": ["test_result", "api_evidence", "browser_journey", "screenshot", "refresh_persistence", "restart_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws4-landportal-capture-workflows"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws5-r1", "text": "One structured Visual Buyer Analysis with sections A-E, grounded in the combined multi-view evidence, is visible in V2 Property Intelligence." },
+        { "id": "ws5-r2", "text": "A concise grounded Visual Buyer Summary appears on V2 Overview with a control opening the full analysis." },
+        { "id": "ws5-r3", "text": "Conflicting visual evidence is reconciled; stronger evidence supersedes and no superseded interpretation remains visible." },
+        { "id": "ws5-r4", "text": "No fabricated facts, legal conclusions, or guaranteed buildability/legal-access/septic/boundary/wetlands claims appear." },
+        { "id": "ws5-r5", "text": "Existing page structure and visual system are preserved; compact comparable summary retained; no full comparable cards duplicated in PI." }
+      ]
+    }
+  ]
+}

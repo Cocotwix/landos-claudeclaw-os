@@ -25,7 +25,7 @@ import { useMemo, useState } from 'preact/hooks';
 import { apiPost, dashboardToken, ApiError } from '@/lib/api';
 import { CombinedCompMap } from './AcquisitionWorkspaceV2CompMap';
 import { CompVisualThumb, type CvVisual } from './CompVisualThumb';
-import { identityFor, CompKindBadge, MarkerGlyph, COMP_IDENTITIES, type CompRecordIdentity } from './CompRecordIdentity';
+import { compDistanceLabel, identityFor, CompKindBadge, MarkerGlyph, COMP_IDENTITIES, type CompRecordIdentity } from './CompRecordIdentity';
 import { CompFullDetails } from './AcquisitionWorkspaceV2CompDetails';
 
 // ── View types (mirror src/landos/comps-valuation.ts) ──────────────────
@@ -177,6 +177,7 @@ export interface CvComp {
   locationMethod: 'provider_map_point' | 'address_geocode' | 'none';
   locationResolvedAtIso: string | null;
   statusLabel: string;
+  saleVerification?: 'independent' | 'source_stated';
   priceKind: 'sale' | 'list' | 'unknown';
   price: number | null;
   acres: number | null;
@@ -355,10 +356,24 @@ export interface CvSummary {
   distanceRange: { minMiles: number; maxMiles: number } | null;
 }
 
+/** Subject-level improvement finding and the valuation scope it forces. */
+export interface CvSubjectImprovement {
+  improved: boolean;
+  type: string;
+  buildingSqft: number | null;
+  evidence: string | null;
+  captionNoun: string;
+  valuationScope: 'land_only' | 'whole_property';
+  valuationScopeLabel: string;
+  wholePropertyPending: boolean;
+  wholePropertyNote: string | null;
+}
+
 export interface CompsValuationViewData {
   dealCardId: number;
   propertyCardId: number | null;
   subject: CvSubject;
+  subjectImprovement?: CvSubjectImprovement | null;
   summary: CvSummary;
   comps: CvComp[];
   counts: Record<string, number>;
@@ -375,6 +390,16 @@ export interface CompsValuationViewData {
   marketContext: CvMarketContext;
   valuationWindow: CvValuationWindow;
   visualCounts: CvVisualCounts;
+  laneAccountability?: {
+    lanes: Array<{
+      lane: 'landportal' | 'zillow' | 'redfin' | 'realtor'; label: string;
+      status: 'not_run' | 'ran_no_results' | 'ran_results_filtered' | 'retained' | 'failed' | 'blocked' | 'disabled_by_policy';
+      candidates: number | null; retained: number | null; operatorLine: string; detail: string | null;
+    }>;
+    everyLaneAccountedFor: boolean;
+    unrunLanes: string[];
+    summaryLine: string;
+  };
   explanation: {
     used: Array<{ key: string; line: string }>;
     excluded: Array<{ key: string; line: string }>;
@@ -479,7 +504,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
         `/api/landos/deal-cards/${dealId}/comps-valuation/selection`,
         { compId: comp.compId, action, reason },
       );
-      setView(r.compsValuation);
+      setView((current) => ({ ...r.compsValuation, laneAccountability: r.compsValuation.laneAccountability ?? current?.laneAccountability }));
       setExcludingKey(null);
       setExcludeReason('');
     } catch (e) {
@@ -500,7 +525,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
       const r = await apiPost<{ resolution: { subjectResolved: boolean; compsEnriched: number; evidenceResolved: number; unresolved: number }; compsValuation: CompsValuationViewData }>(
         `/api/landos/deal-cards/${dealId}/comps-valuation/resolve-locations`,
       );
-      setView(r.compsValuation);
+      setView((current) => ({ ...r.compsValuation, laneAccountability: r.compsValuation.laneAccountability ?? current?.laneAccountability }));
       const res = r.resolution;
       setResolutionNote(`Location check finished: subject ${res.subjectResolved ? 'resolved' : 'unresolved'}, ${res.compsEnriched + res.evidenceResolved} listing location${res.compsEnriched + res.evidenceResolved === 1 ? '' : 's'} resolved, ${res.unresolved} still unresolved (left honestly unplaced).`);
     } catch (e) {
@@ -532,6 +557,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
   }
 
   const cleaned = view.cleaned;
+  const subjectImprovement = view.subjectImprovement ?? null;
   const quickFlip = view.quickFlip;
   const negotiation = view.negotiation;
   const marketContext = view.marketContext;
@@ -571,7 +597,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
     <li>
       <b>{lead}</b> {nameOf(c)} — {c.acres ?? '—'} ac at {usdOrDash(c.price)} ({usdOrDash(c.pricePerAcre)}/ac),
       sold {c.dateIso || 'undated'}{c.monthsOld != null ? ` (${c.monthsOld} mo ago)` : ''}
-      {c.distanceMiles != null ? `, ${c.distanceMiles} mi from the subject` : ', distance unavailable'}.
+      {c.distanceMiles != null ? `, ${c.distanceMiles} mi from the subject` : ', location unresolved'}.
       {' '}<button type="button" class="awv2-cv-link" onClick={() => selectFromMap(c.key)}>Show on map</button>
     </li>
   );
@@ -583,11 +609,25 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
         <div class="awv2-panel-title">
           Comps &amp; Valuation <span class="awv2-src-tag">{summary.basisLabel}</span>
         </div>
+        {/* An improved subject priced off vacant-land sales has a LAND value,
+            not a property value. Say so before any figure is read. */}
+        {subjectImprovement?.improved && (
+          <div class="awv2-cv-note" data-testid="cv-land-only-scope">
+            <b>Land-only indication.</b> {subjectImprovement.wholePropertyNote}
+            {subjectImprovement.evidence ? ` ${subjectImprovement.evidence}` : ''}
+          </div>
+        )}
         <div class="awv2-cv-decision">
           <div class="awv2-cv-dec primary">
-            <div class="k">Adopted cleaned FMV</div>
+            <div class="k">{subjectImprovement?.improved ? 'Adopted cleaned land value' : 'Adopted cleaned FMV'}</div>
             <div class="v">{usdOrDash(cleaned.adoptedFmv)}</div>
           </div>
+          {subjectImprovement?.wholePropertyPending && (
+            <div class="awv2-cv-dec" data-testid="cv-whole-property-pending">
+              <div class="k">Whole-property value</div>
+              <div class="v">Pending</div>
+            </div>
+          )}
           <div class="awv2-cv-dec">
             <div class="k">Supported retail range</div>
             <div class="v">{usdOrDash(cleaned.retailRangeLow)} – {usdOrDash(cleaned.retailRangeHigh)}</div>
@@ -614,6 +654,21 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
         )}
         {summary.acquisitionLockedReason && (
           <div class="awv2-cv-error" role="alert">{summary.acquisitionLockedReason}</div>
+        )}
+
+        {view.laneAccountability && (
+          <div class="awv2-cv-window" aria-label="Comparable source accountability">
+            <div class="awv2-panel-title">Source lane accountability</div>
+            <p class="awv2-pi-note">{view.laneAccountability.summaryLine}</p>
+            <div class="awv2-kv">
+              {view.laneAccountability.lanes.map((lane) => (
+                <>
+                  <span class="k">{lane.label}</span>
+                  <span class="v"><b>{lane.status.replace(/_/g, ' ')}</b> · {lane.operatorLine}{lane.detail ? ` ${lane.detail}` : ''}</span>
+                </>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* ── 2. Which comp window was selected, and why ── */}
@@ -900,7 +955,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                       </span>
                       <span class="f"><span class="u">{active ? 'Listed' : 'Sold'}</span><b>{(active ? mt?.originalListingDateIso : c.listing?.soldDateIso) ?? c.dateIso ?? '—'}</b>{c.monthsOld != null && <span class="d"> ({c.monthsOld} mo ago)</span>}</span>
                       <span class="f"><span class="u">Acres</span><b>{c.acres ?? '—'}</b>{c.acresDeltaFromSubject != null && <span class="d"> ({c.acresDeltaFromSubject > 0 ? '+' : ''}{c.acresDeltaFromSubject} vs subject)</span>}</span>
-                      <span class="f"><span class="u">Distance</span><b>{c.distanceMiles != null ? `${c.distanceMiles} mi` : 'unavailable'}</b></span>
+                      <span class="f"><span class="u">Distance</span><b>{compDistanceLabel(c.distanceMiles)}</b></span>
                       <span class="f"><span class="u">Radius stage</span><b>{RADIUS_TEXT[c.radiusStage ?? 'none']}</b></span>
                       {active && (mt?.priceReductions.length ?? 0) > 0 && (
                         <span class="f"><span class="u">Price reductions</span><b>{mt!.priceReductions.length}</b></span>
@@ -1059,7 +1114,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                   <td>{usdOrDash(c.price)}</td>
                   <td>{usdOrDash(c.pricePerAcre)}</td>
                   <td>{c.dateIso || '—'}</td>
-                  <td>{c.distanceMiles != null ? `${c.distanceMiles} mi` : '—'}</td>
+                  <td>{compDistanceLabel(c.distanceMiles)}</td>
                   <td>{c.valuationWeight ?? 'zero'}</td>
                 </tr>
               ))}

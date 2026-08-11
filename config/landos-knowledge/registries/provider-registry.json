@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "registryId": "provider-registry",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "landportal-hermes",
+      "title": "LandPortal via bounded Hermes specialists",
+      "status": "active",
+      "summary": "Exact-subject facts, visible comps, and verified parcel visuals are returned as isolated handbacks and admitted only by LandOS.",
+      "freshnessPolicy": "Verify exact property identity and capture time on every assignment.",
+      "canonicalRefs": ["src/landos/hermes-landportal-auto.ts", "src/landos/hermes-landportal-import.ts"]
+    },
+    {
+      "id": "official-county-records",
+      "title": "Official county assessor and GIS",
+      "status": "active",
+      "summary": "County-specific official records are preferred for parcel identity, assessment, deeds, and local GIS layers.",
+      "freshnessPolicy": "Validate the official domain and source date per retrieval.",
+      "canonicalRefs": ["src/landos/county-records-browser.ts", "src/landos/county-capability-registry.ts"]
+    },
+    {
+      "id": "homeharvest",
+      "title": "HomeHarvest comparable provider",
+      "status": "configured-when-authorized",
+      "summary": "Structured land-comparable candidate provider behind the existing provider registry and identity checks.",
+      "freshnessPolicy": "Record provider retrieval time and listing or sale date.",
+      "canonicalRefs": ["src/landos/providers/homeharvest-comp-provider.ts", "src/landos/comp-source-policy.ts"]
+    },
+    {
+      "id": "apify-comps",
+      "title": "Apify comparable adapters",
+      "status": "configured-when-authorized",
+      "summary": "Provider adapter for supported listing sources; results remain candidates until deterministic reconciliation.",
+      "freshnessPolicy": "Record source URL, retrieval time, and provider outcome.",
+      "canonicalRefs": ["src/landos/providers/apify-comp-provider.ts", "src/landos/providers/data-registry.ts"]
+    },
+    {
+      "id": "google-visual",
+      "title": "Google visual evidence",
+      "status": "active-when-configured",
+      "summary": "Parcel visual capture is admitted only with verified property association and required artifact metadata.",
+      "freshnessPolicy": "Preserve capture time, source, framing, and eligibility decision.",
+      "canonicalRefs": ["src/landos/providers/google-visual.ts", "src/landos/google-visual-guard.ts"]
+    },
+    {
+      "id": "browser-comp-fallbacks",
+      "title": "Browser comparable fallbacks",
+      "status": "bounded-fallback",
+      "summary": "Redfin, Zillow, Realtor, and other browser flows report results, no-result, blocked, timed-out, unavailable, or skipped independently.",
+      "freshnessPolicy": "Capture exact URL, retrieval timestamp, and geographic search level.",
+      "canonicalRefs": ["src/landos/comp-providers.ts", "src/landos/browser-comp-research.ts"]
+    }
+  ]
+}

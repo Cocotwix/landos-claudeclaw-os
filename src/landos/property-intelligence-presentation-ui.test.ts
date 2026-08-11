@@ -68,10 +68,25 @@ describe('Soils & Preliminary Septic Outlook', () => {
 });
 
 describe('access terminology', () => {
-  it('shows Legal access and Apparent entrance rows from the server projection', () => {
-    expect(PI_SRC).toMatch(/k="Legal access"/);
+  it('shows the four-part access evidence ladder instead of one collapsed legal-access row', () => {
+    // Mapped road frontage is not legal access. The old collapsed "Legal access"
+    // row overstated what LandPortal's parcel panel supports, so it is gone and
+    // the row now says exactly what the mapped evidence proves: road abutment.
+    expect(PI_SRC).toMatch(/k="Mapped road abutment"/);
+    expect(PI_SRC).not.toMatch(/k="Legal access"/);
     expect(PI_SRC).toMatch(/k="Apparent entrance"/);
     expect(PI_SRC).toMatch(/Not confirmed from retained imagery/);
+    // All four evidence types stay separate on screen, each with its own source,
+    // evidentiary basis and weight, rather than collapsing to a yes/no field.
+    expect(PI_SRC).toMatch(/Four-part access evidence ladder/);
+    for (const tier of ['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal']) {
+      expect(PI_SRC).toContain(`'${tier}'`);
+    }
+    expect(PI_SRC).toMatch(/accessView\?\.evidence\?\.byTier/);
+    expect(PI_SRC).toMatch(/item\.sourceLabel/);
+    expect(PI_SRC).toMatch(/item\.basis/);
+    expect(PI_SRC).toMatch(/item\.weight/);
+    expect(PI_SRC).toMatch(/Reconciled operator read:/);
   });
 
   it('never shows driveway-approval or permit language in the V2 surfaces', () => {
@@ -83,8 +98,20 @@ describe('access terminology', () => {
     }
   });
 
-  it('the hero caption states access from evidence instead of a blanket unresolved claim', () => {
+  it('the hero caption states the reconciled access evidence instead of a collapsed legal-access claim', () => {
+    // The caption leads with the reconciled four-tier operator conclusion.
+    expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.operatorConclusion/);
+    // Its fallback still says something from evidence rather than a blanket
+    // unresolved claim, but never calls mapped frontage "Legal access".
     expect(PAGE_SRC).toMatch(/accessView\?\.established/);
-    expect(PAGE_SRC).toMatch(/Legal access: \$\{accessView\.legalAccess\}/);
+    expect(PAGE_SRC).toMatch(/Mapped road abutment: \$\{accessView\.legalAccess\}/);
+    expect(PAGE_SRC).not.toMatch(/Legal access: \$\{accessView\.legalAccess\}/);
+    // Each evidence type is surfaced on its own, never collapsed into one flag.
+    expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.parcelFlagged/);
+    expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.apparentPhysicalAccess/);
+    expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.reportedLegalAccess/);
+    expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.verifiedLegalAccess/);
+    // A recorded instrument stays outstanding diligence until one is read.
+    expect(PAGE_SRC).toMatch(/Recorded-instrument access remains separate diligence/);
   });
 });

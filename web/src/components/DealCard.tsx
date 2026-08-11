@@ -12,17 +12,21 @@ import { TrashCardButton } from '@/components/TrashCardButton';
 import {
   usePropertyIntelligence,
   PropertyIntelligenceLaunch,
-  PropertyIntelligenceHistory,
   PropertyIntelligenceOverview,
-  PropertyIntelligenceProperty,
-  PropertyIntelligenceDueDiligence,
   PropertyIntelligenceMarket,
   PropertyIntelligenceStrategy,
   PropertyIntelligenceVisuals,
   PropertyIntelligenceEvidence,
   type PiSnapshot,
 } from '@/components/PropertyIntelligencePanel';
+import { LandPortalBrowserUsePanel } from '@/components/LandPortalBrowserUsePanel';
 import { SmartIntakePanel } from '@/components/LeadCardIntake';
+import {
+  DealWorkspaceOverview,
+  type DealWorkspaceAcquisition,
+  type DealWorkspaceCrmStatus,
+  type DealWorkspaceTab,
+} from '@/components/DealWorkspaceOverview';
 
 // The Resolution view payload — shown instead of a half-populated Deal Card until
 // the parcel is confirmed.
@@ -58,6 +62,24 @@ interface DealResearchProgress {
 }
 
 const ACTIVE_RESEARCH_STATUSES = new Set(['queued', 'running']);
+
+function visibleEvidenceGaps(snapshot: PiSnapshot | null): string[] {
+  if (!snapshot) return [];
+  const decisionGaps = snapshot.dueDiligence.flatMap((item) => item.missing);
+  const fallback = snapshot.missingInformation.filter((item) =>
+    !/\b(?:collector|mission|detached frame|arcgis 499|provider error|navigation timeout|cleanup|capture exceeded|no source collector ran|execution failure)\b/i.test(item));
+  const seen = new Set<string>();
+  return [...decisionGaps, ...fallback]
+    .map((item) => item.replace(/^[^:]{1,80}:\s*(?:partial result\s*[—-]\s*)?/i, '').trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 12);
+}
 
 function DealResearchProgressPanel({ progress, retrying, actionError, canonicalConfirmed, onRetry }: { progress: DealResearchProgress; retrying: boolean; actionError: string; canonicalConfirmed?: boolean; onRetry: () => void }) {
   const mission = progress.mission;
@@ -439,45 +461,149 @@ function VisualIntelligencePanel({ cardId, token, compact }: { cardId: number; t
   );
 }
 
-// ── Activity timeline — real recorded Deal Card events ──────────────────────
-// Renders the actual landos_card_activity events (report runs, visual
-// intelligence/capture, comp research, inspections, notes, stage moves), newest
-// first, with human labels + relative time. Never a fabricated timeline.
+// ── Activity timeline — meaningful CRM events ───────────────────────────────
+// The underlying audit log intentionally retains every provider/run/capture
+// record. This projection is the owner timeline: it groups related research
+// writes and keeps only events that changed the deal or the operator's next move.
 interface ActivityEventView { id: number; kind: string; summary: string; agentId: string; createdAt: number }
-const ACTIVITY_KIND_LABEL: Record<string, string> = {
-  property_inspection: 'Property Intelligence', landportal_inspection: 'LandPortal inspection',
-  visual_intelligence: 'Visual Intelligence', visual_capture: 'Visual capture', vision_analysis: 'Vision analysis',
-  market_pulse: 'Market Pulse', comparables_map: 'Comp research', market: 'Market update',
-  duke_deal_writeback: 'Report writeback', note: 'Note', operator_override: 'Operator edit',
-  operator_speech: 'Operator note', guard_block: 'Guard block', next_action: 'Next action',
-  redfin_comp_status: 'Redfin comps', zillow_comp_status: 'Zillow comps',
-  duke_verified_run: 'Property Intelligence (verified)', duke_unverified_run: 'Property Intelligence (unresolved)',
-};
-function activityKindLabel(kind: string): string {
-  return ACTIVITY_KIND_LABEL[kind] ?? 'Activity';
+
+type CrmActivityCategory =
+  | 'lead'
+  | 'research_started'
+  | 'research_updated'
+  | 'government'
+  | 'property'
+  | 'document'
+  | 'comps'
+  | 'market'
+  | 'valuation'
+  | 'strategy'
+  | 'score'
+  | 'communication'
+  | 'task'
+  | 'offer'
+  | 'note';
+
+interface CrmActivityEvent extends ActivityEventView {
+  category: CrmActivityCategory;
+  label: string;
+  displaySummary: string;
 }
-function ActivityTimeline({ dealId }: { dealId: number }) {
-  const [events, setEvents] = useState<ActivityEventView[] | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    apiGet<{ events: ActivityEventView[] }>(`/api/landos/deal-cards/${dealId}/activity`)
-      .then((r) => { if (live) setEvents(r.events); })
-      .catch((e: any) => { if (live) setMsg(e?.message || String(e)); });
-    return () => { live = false; };
-  }, [dealId]);
-  if (msg) return <div class="text-[11px] text-[var(--color-status-failed)]">{msg}</div>;
+
+const CRM_ACTIVITY_LABEL: Record<CrmActivityCategory, string> = {
+  lead: 'Lead created',
+  research_started: 'Research launched',
+  research_updated: 'Research updated',
+  government: 'Government source',
+  property: 'Property changed',
+  document: 'Document added',
+  comps: 'Comp set changed',
+  market: 'Market changed',
+  valuation: 'Valuation changed',
+  strategy: 'Strategy changed',
+  score: 'Score changed',
+  communication: 'Seller communication',
+  task: 'Task created',
+  offer: 'Offer started',
+  note: 'Note',
+};
+
+function crmActivityEvent(event: ActivityEventView): CrmActivityEvent | null {
+  const kind = event.kind.toLowerCase();
+  const text = `${event.kind} ${event.summary}`.toLowerCase();
+  let category: CrmActivityCategory | null = null;
+
+  if (/lead_created|deal_created|new_lead/.test(kind)) category = 'lead';
+  else if (/research_started|research_queued|screening_queued/.test(kind)) category = 'research_started';
+  else if (/county_verification|government|assessor|county_gis|planning|zoning_source|tax_record/.test(kind)) category = 'government';
+  else if (/document_uploaded|document_retrieved|recorded_deed_page|deed_retrieved|plat_retrieved|survey_retrieved/.test(kind)) category = 'document';
+  else if (/task_created|next_action/.test(kind)) category = 'task';
+  else if (/offer_started|offer_created|begin_offer/.test(kind)) category = 'offer';
+  else if (/seller_stated_fact|communication|comm_added|transcript_intake|smart_intake|discovery_note/.test(kind)) category = 'communication';
+  else if (/valuation|working_value|price_changed/.test(kind) || /\bvaluation (changed|updated)\b/.test(text)) category = 'valuation';
+  else if (/strategy|recommendation_changed/.test(kind)) category = 'strategy';
+  else if (/score_changed|property_score|market_score|seller_score/.test(kind)) category = 'score';
+  else if (/comparables|comp_|_comp|redfin|zillow/.test(kind)) category = 'comps';
+  else if (/market_pulse|market_update/.test(kind)) category = 'market';
+  else if (/identity|parcel_resolution|parcel_reconciled|locality_corrected|property_fact|operator_override|lead_contact_differs/.test(kind)) category = 'property';
+  else if (/property_inspection|landportal_inspection|visual_intelligence|visual_capture|vision_analysis|duke_.*run|public_screening|property_intelligence/.test(kind)) category = 'research_updated';
+  else if (kind === 'note' && !/(provider|orchestrat|mission|specialist|cleanup|readiness|classified|guard|browser)/.test(`${event.agentId} ${text}`)) category = 'note';
+
+  if (!category) return null;
+
+  let displaySummary = event.summary.trim() || CRM_ACTIVITY_LABEL[category];
+  if (category === 'research_updated') {
+    if (kind === 'vision_analysis' && displaySummary.length > 12) {
+      displaySummary = `Property imagery reviewed: ${displaySummary}`;
+    } else if (/visual|capture|landportal/.test(kind)) {
+      displaySummary = 'Property imagery and visual findings were refreshed for the current parcel.';
+    } else if (/public_screening/.test(kind)) {
+      displaySummary = 'Property screening was updated with the latest available public-source findings.';
+    } else {
+      displaySummary = 'Property research was refreshed; the current facts and analysis were updated together.';
+    }
+  } else if (category === 'government' && !/attempt|retriev|found|unavailable|inconclusive|failed|saved/i.test(displaySummary)) {
+    displaySummary = `${displaySummary}. The result remains preliminary until a useful record is retained.`;
+  }
+
+  return { ...event, category, label: CRM_ACTIVITY_LABEL[category], displaySummary };
+}
+
+function normalizedActivitySummary(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\brun\s*#?\s*\d+\b/g, 'run')
+    .replace(/\s+/g, ' ')
+    .replace(/[.!]+$/g, '')
+    .trim();
+}
+
+function ownerActivityEvents(events: ActivityEventView[]): CrmActivityEvent[] {
+  const projected = events.map(crmActivityEvent).filter((event): event is CrmActivityEvent => Boolean(event));
+  const accepted: CrmActivityEvent[] = [];
+  const exactSeen = new Map<string, number>();
+  for (const event of projected) {
+    const exactKey = `${event.category}:${normalizedActivitySummary(event.displaySummary)}`;
+    const priorExactAt = exactSeen.get(exactKey);
+    if (priorExactAt != null && Math.abs(priorExactAt - event.createdAt) <= 86_400) continue;
+
+    // A single research action writes inspection, visual, analysis, and report
+    // rows within minutes. One concise research update is the CRM event.
+    if (event.category === 'research_updated') {
+      const priorResearch = accepted.find((candidate) => candidate.category === 'research_updated' && Math.abs(candidate.createdAt - event.createdAt) <= 1_800);
+      if (priorResearch) continue;
+    }
+
+    exactSeen.set(exactKey, event.createdAt);
+    accepted.push(event);
+  }
+  return accepted;
+}
+
+function offerStatusLabel(acquisitionStage: string | null | undefined, dealStage: string): string {
+  const stage = acquisitionStage || dealStage;
+  const labels: Record<string, string> = {
+    ready_for_offer_prep: 'Ready to prepare',
+    offer_ready: 'Ready to prepare',
+    offer_sent: 'Offer sent',
+    under_contract: 'Under contract',
+    closed: 'Closed',
+  };
+  return labels[stage] ?? 'Not started';
+}
+
+function ActivityTimeline({ events }: { events: ActivityEventView[] | null }) {
   if (!events) return <Placeholder text="Loading activity…" />;
-  const visibleEvents = events.filter((event) => !/(orchestrat|provider|contract|evidence|readiness|classified|attempt)/i.test(`${event.kind} ${event.summary}`));
+  const visibleEvents = ownerActivityEvents(events);
   if (visibleEvents.length === 0) return <Placeholder text="No owner-facing activity recorded yet." />;
   return (
-    <ol class="space-y-1.5 m-0 p-0 list-none">
+    <ol class="m-0 list-none space-y-2 p-0">
       {visibleEvents.map((e) => (
-        <li key={e.id} class="flex items-start gap-2 border-b border-[var(--color-border)]/60 pb-1.5">
-          <span class="shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-faint)]">{activityKindLabel(e.kind)}</span>
+        <li key={e.id} class="flex items-start gap-3 border-b border-[var(--color-border)]/60 pb-2 last:border-0">
+          <span class="mt-0.5 shrink-0 rounded-full border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[9.5px] font-semibold text-[var(--color-text-muted)]">{e.label}</span>
           <div class="min-w-0 flex-1">
-            <div class="text-[12px] text-[var(--color-text)] break-words">{e.summary || activityKindLabel(e.kind)}</div>
-            <div class="text-[10px] text-[var(--color-text-faint)]">{formatRelativeTime(e.createdAt)}</div>
+            <div class="break-words text-[11.5px] leading-relaxed text-[var(--color-text)]">{e.displaySummary}</div>
+            <div class="mt-0.5 text-[9.5px] text-[var(--color-text-faint)]">{formatRelativeTime(e.createdAt)}</div>
           </div>
         </li>
       ))}
@@ -547,12 +673,35 @@ interface PropertyCardLite {
 }
 
 interface PersonLite {
+  id?: number;
   name?: string | null;
   role?: string | null;
+  roles?: string[];
   authority_status?: string | null;
+  authority_source?: string | null;
   phone?: string | null;
   email?: string | null;
   mailing_address?: string | null;
+  preferred_contact_method?: string | null;
+  notes?: string | null;
+  link_note?: string | null;
+  primary_contact?: number | boolean | null;
+}
+
+interface DealTaskLite {
+  id: number;
+  card_id?: number;
+  action: string;
+  status?: string;
+  due_date?: string | null;
+  dueDate?: string | null;
+  assigned_owner?: string | null;
+  assignedOwner?: string | null;
+  priority?: string | null;
+  reminder_at?: string | null;
+  reminderAt?: string | null;
+  created_at?: number;
+  updated_at?: number;
 }
 
 interface DealCardDetail {
@@ -567,6 +716,13 @@ interface DealCardDetail {
   combined_acreage: number | null;
   propertyCards?: PropertyCardLite[];
   people?: PersonLite[];
+  nextActions?: DealTaskLite[];
+}
+
+interface AcquisitionOverviewResponse {
+  acquisition: DealWorkspaceAcquisition;
+  stageLabel?: string;
+  nextAction?: { label?: string; reason?: string };
 }
 
 // A row in the saved-cards list (the list route returns the flat deal row).
@@ -632,16 +788,6 @@ function Section({ title, children }: { title: string; children: any }) {
 // Used to demote legacy worksheets, contacts, comms, documents, and call prep out
 // of the default DD operator brief without removing them.
 
-
-function Field({ label, value }: { label: string; value?: string | number | null }) {
-  const has = value !== undefined && value !== null && value !== '';
-  return (
-    <div class="flex justify-between gap-3 py-0.5">
-      <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
-      {has ? <span class="text-[12px] text-[var(--color-text)] text-right">{value}</span> : <Placeholder />}
-    </div>
-  );
-}
 
 // Human-readable parcel identity status + the verification color cue.
 
@@ -747,20 +893,15 @@ interface BusinessSpineView {
 // deeper, editable detail (property DD + visuals + browser intelligence live
 // under Property; report generation + files under Documents; the report/audit
 // timeline under Activity).
-type DealTab = 'overview' | 'property' | 'diligence' | 'market' | 'strategy' | 'visuals' | 'seller' | 'documents' | 'activity' | 'intake';
+type DealTab = DealWorkspaceTab;
 const DEAL_TABS: Array<{ id: DealTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
-  { id: 'property', label: 'Property' },
-  { id: 'diligence', label: 'Due Diligence' },
-  { id: 'market', label: 'Market' },
+  { id: 'market', label: 'Comps & Market' },
   { id: 'strategy', label: 'Strategy' },
-  { id: 'visuals', label: 'Visuals' },
-  { id: 'seller', label: 'Seller' },
-  { id: 'documents', label: 'Documents' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'intake', label: 'Smart Intake' },
+  { id: 'seller', label: 'Seller & Comms' },
+  { id: 'documents', label: 'Documents & Visuals' },
 ];
-const DEAL_TAB_IDS = new Set<string>(DEAL_TABS.map((t) => t.id));
+const DEAL_TAB_IDS = new Set<string>([...DEAL_TABS.map((t) => t.id), 'intake']);
 function isDealTab(v: unknown): v is DealTab {
   return typeof v === 'string' && DEAL_TAB_IDS.has(v);
 }
@@ -786,7 +927,7 @@ function restoreDealTab(dealCardId: number): DealTab {
  *  swallow the selection. */
 function DealTabBar({ active, onSelect }: { active: DealTab; onSelect: (t: DealTab) => void }) {
   return (
-    <div role="tablist" aria-label="Deal Card sections" data-testid="deal-tabbar" class="flex flex-wrap gap-0.5 -mb-px overflow-x-auto">
+    <div role="tablist" aria-label="Deal Card workspaces" data-testid="deal-tabbar" class="inline-flex min-w-full gap-1 overflow-x-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-1 sm:min-w-0">
       {DEAL_TABS.map((t) => {
         const selected = active === t.id;
         return (
@@ -800,10 +941,10 @@ function DealTabBar({ active, onSelect }: { active: DealTab; onSelect: (t: DealT
             aria-selected={selected}
             aria-controls={`deal-panel-${t.id}`}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onSelect(t.id); }}
-            class={`relative z-10 px-3 py-1.5 text-[12px] font-medium whitespace-nowrap rounded-t-md border-b-2 ${
+            class={`relative z-10 rounded-lg px-3 py-2 text-[11.5px] font-semibold whitespace-nowrap transition ${
               selected
-                ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[var(--color-elevated)]'
-                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
+                ? 'bg-[var(--color-accent)] text-white shadow-sm'
+                : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]'
             }`}
           >
             {t.label}
@@ -1115,37 +1256,836 @@ function PropertyIdentityControl({ prop, snapshot, onSaved }: {
   );
 }
 
-function AddDealContactControl({ dealId, onSaved }: { dealId: number; onSaved: () => Promise<void> | void }) {
-  const [name, setName] = useState('');
-  const [role, setRole] = useState<'lead' | 'seller' | 'contact'>('lead');
+type ContactFormState = {
+  name: string;
+  phone: string;
+  email: string;
+  mailingAddress: string;
+  role: string;
+  relationshipToOwner: string;
+  authorityStatus: string;
+  primaryContact: boolean;
+  preferredContactMethod: string;
+  notes: string;
+};
+
+const EMPTY_CONTACT_FORM: ContactFormState = {
+  name: '',
+  phone: '',
+  email: '',
+  mailingAddress: '',
+  role: 'contact',
+  relationshipToOwner: '',
+  authorityStatus: 'unknown',
+  primaryContact: false,
+  preferredContactMethod: '',
+  notes: '',
+};
+
+type DealTaskFormState = {
+  title: string;
+  dueDate: string;
+  assignedOwner: string;
+  priority: string;
+  reminderAt: string;
+};
+
+const EMPTY_TASK_FORM: DealTaskFormState = {
+  title: '',
+  dueDate: '',
+  assignedOwner: '',
+  priority: 'normal',
+  reminderAt: '',
+};
+
+type CrmCommunication = DealWorkspaceAcquisition['commLog'][number] & {
+  id?: number | string;
+  type?: string;
+};
+
+type CommunicationKind = 'call' | 'text' | 'email' | 'note' | 'transcript';
+
+type CommunicationDraft = {
+  kind: CommunicationKind;
+  direction: 'inbound' | 'outbound';
+  occurredAt: string;
+  details: string;
+  outcome: string;
+  followUpDate: string;
+  taskTitle: string;
+};
+
+function contactRoleForForm(role: string | null | undefined): string {
+  const mapped: Record<string, string> = {
+    lead_contact: 'lead',
+    unknown_relation: 'contact',
+    record_owner: 'owner',
+  };
+  return mapped[String(role ?? '')] ?? String(role ?? 'contact');
+}
+
+function contactFormFor(person?: PersonLite): ContactFormState {
+  if (!person) return { ...EMPTY_CONTACT_FORM };
+  return {
+    name: person.name ?? '',
+    phone: person.phone ?? '',
+    email: person.email ?? '',
+    mailingAddress: person.mailing_address ?? '',
+    role: contactRoleForForm(person.role),
+    relationshipToOwner: person.link_note ?? '',
+    authorityStatus: person.authority_status ?? 'unknown',
+    primaryContact: person.primary_contact === true || person.primary_contact === 1,
+    preferredContactMethod: person.preferred_contact_method ?? '',
+    notes: person.notes ?? '',
+  };
+}
+
+function crmInputClass(): string {
+  return 'mt-1.5 w-full min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 text-[12px] font-normal normal-case tracking-normal text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]';
+}
+
+function CrmField({
+  label,
+  value,
+  onInput,
+  type = 'text',
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onInput: (value: string) => void;
+  type?: 'text' | 'email' | 'tel' | 'date' | 'datetime-local';
+  placeholder?: string;
+}) {
+  return (
+    <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">
+      {label}
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onInput={(event) => onInput((event.currentTarget as HTMLInputElement).value)}
+        class={crmInputClass()}
+      />
+    </label>
+  );
+}
+
+function ContactManager({
+  dealId,
+  people,
+  acquisition,
+  onSaved,
+}: {
+  dealId: number;
+  people: PersonLite[];
+  acquisition: DealWorkspaceAcquisition | null;
+  onSaved: () => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState<number | 'new' | null>(null);
+  const [form, setForm] = useState<ContactFormState>({ ...EMPTY_CONTACT_FORM });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  useEffect(() => {
-    setName('');
-    setRole('lead');
+  const setField = <K extends keyof ContactFormState>(key: K, value: ContactFormState[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+  const beginNew = () => {
+    setForm({ ...EMPTY_CONTACT_FORM });
+    setEditing('new');
     setMessage(null);
-  }, [dealId]);
-  async function addContact() {
-    if (!name.trim()) return;
-    setBusy(true); setMessage(null);
+  };
+  const beginEdit = (person: PersonLite) => {
+    if (person.id == null) {
+      setMessage('This legacy contact has no editable record ID. Refresh the Deal Card before editing it.');
+      return;
+    }
+    setForm(contactFormFor(person));
+    setEditing(person.id);
+    setMessage(null);
+  };
+  const save = async (event: Event) => {
+    event.preventDefault();
+    if (!form.name.trim() || editing == null || busy) return;
+    setBusy(true);
+    setMessage(null);
+    const payload = {
+      name: form.name.trim(),
+      phone: form.phone.trim() || null,
+      email: form.email.trim() || null,
+      mailingAddress: form.mailingAddress.trim() || null,
+      role: form.role,
+      relationshipNote: form.relationshipToOwner.trim() || null,
+      authorityStatus: form.authorityStatus,
+      primaryContact: form.primaryContact,
+      preferredContactMethod: form.preferredContactMethod || null,
+      notes: form.notes.trim() || null,
+    };
     try {
-      const response = await apiPost<{ created: boolean }>(`/api/landos/deal-cards/${dealId}/people`, { name: name.trim(), role });
+      if (editing === 'new') {
+        await apiPost(`/api/landos/deal-cards/${dealId}/people`, payload);
+      } else {
+        await apiPatch(`/api/landos/deal-cards/${dealId}/people/${editing}`, payload);
+      }
       await onSaved();
-      setMessage(response.created ? 'Contact saved separately from the owner of record.' : 'That contact is already linked to this Deal Card.');
-      setName('');
-    } catch (error: any) { setMessage(error?.message || String(error)); }
-    finally { setBusy(false); }
-  }
+      setEditing(null);
+      setMessage(editing === 'new' ? 'Contact added.' : 'Contact updated.');
+    } catch (error: any) {
+      setMessage(error?.message || 'The contact could not be saved. Your entries are still here.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (person: PersonLite) => {
+    if (person.id == null || busy) return;
+    if (!window.confirm(`Remove ${person.name || 'this contact'} from this Deal Card? The person record is not erased from other deals.`)) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await apiDelete(`/api/landos/deal-cards/${dealId}/people/${person.id}`);
+      await onSaved();
+      if (editing === person.id) setEditing(null);
+      setMessage('Contact removed from this Deal Card.');
+    } catch (error: any) {
+      setMessage(error?.message || 'The contact could not be removed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const profilePrimaryName = acquisition?.profile.primaryContact ? acquisition.profile.name : null;
   return (
-    <div class="rounded-md border border-[var(--color-border)] p-2.5 mb-3">
-      <div class="text-[11px] font-medium text-[var(--color-text)] mb-1.5">Add lead or contact</div>
-      <div class="flex flex-col sm:flex-row gap-2">
-        <input class="flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px]" placeholder="Full name" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
-        <select class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px]" value={role} onChange={(e) => setRole((e.target as HTMLSelectElement).value as typeof role)}><option value="lead">Lead</option><option value="seller">Seller</option><option value="contact">Contact</option></select>
-        <button type="button" disabled={busy || !name.trim()} onClick={() => void addContact()} class="px-3 py-1.5 rounded-md border border-[var(--color-accent)] text-[var(--color-accent)] text-[11.5px] font-medium disabled:opacity-40">{busy ? 'Saving…' : 'Add contact'}</button>
+    <section class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h3 class="text-[13px] font-bold text-[var(--color-text)]">Contacts & decision-makers</h3>
+          <p class="mt-1 break-words text-[10.5px] leading-relaxed text-[var(--color-text-muted)]">Seller contacts stay separate from the government owner-of-record identity.</p>
+        </div>
+        <button type="button" onClick={beginNew} class="shrink-0 rounded-lg border border-[var(--color-accent)] px-3 py-2 text-[11px] font-semibold text-[var(--color-accent)]">Add contact</button>
       </div>
-      <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">Contact identity is separate from the parcel’s owner-of-record field. Phone, email, and authority remain blank unless known.</div>
-      {message && <div class="text-[11px] text-[var(--color-text-muted)] mt-1">{message}</div>}
+      {people.length === 0 ? (
+        <div class="mt-3 rounded-lg border border-dashed border-[var(--color-border)] p-3 text-[11px] text-[var(--color-text-faint)]">No contact has been captured yet.</div>
+      ) : (
+        <div class="mt-3 grid min-w-0 gap-2 lg:grid-cols-2">
+          {people.map((person, index) => {
+            const isPrimary = person.primary_contact === true || person.primary_contact === 1 || (!!profilePrimaryName && profilePrimaryName === person.name);
+            return (
+              <article key={person.id ?? `${person.name}-${index}`} class="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="flex min-w-0 flex-wrap items-center gap-2">
+                      <span class="break-words text-[12px] font-bold text-[var(--color-text)]">{person.name || 'Unnamed contact'}</span>
+                      {isPrimary && <span class="rounded-full border border-[var(--color-accent)] px-2 py-0.5 text-[9px] font-semibold text-[var(--color-accent)]">Primary</span>}
+                    </div>
+                    <div class="mt-0.5 break-words text-[10px] text-[var(--color-text-faint)]">{contactRoleForForm(person.role).replace(/_/g, ' ')}{person.link_note ? ` · ${person.link_note}` : ''}</div>
+                  </div>
+                  <div class="flex shrink-0 flex-wrap gap-1.5">
+                    <button type="button" onClick={() => beginEdit(person)} class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[10px] font-semibold">Edit</button>
+                    <button type="button" onClick={() => void remove(person)} class="rounded-md border border-rose-500/40 px-2 py-1 text-[10px] font-semibold text-rose-400">Delete</button>
+                  </div>
+                </div>
+                <dl class="mt-3 grid min-w-0 gap-2 sm:grid-cols-2">
+                  <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Phone</dt><dd class="break-all text-[11px] text-[var(--color-text)]">{person.phone || 'Not captured'}</dd></div>
+                  <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Email</dt><dd class="break-all text-[11px] text-[var(--color-text)]">{person.email || 'Not captured'}</dd></div>
+                  <div class="min-w-0 sm:col-span-2"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Mailing address</dt><dd class="break-words text-[11px] text-[var(--color-text)]">{person.mailing_address || 'Not captured'}</dd></div>
+                  <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Decision authority</dt><dd class="break-words text-[11px] text-[var(--color-text)]">{person.authority_status && person.authority_status !== 'unknown' ? person.authority_status.replace(/_/g, ' ') : 'Needs confirmation'}</dd></div>
+                  <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Preferred method</dt><dd class="break-words text-[11px] text-[var(--color-text)]">{person.preferred_contact_method || 'Not captured'}</dd></div>
+                  {person.notes && <div class="min-w-0 sm:col-span-2"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Notes</dt><dd class="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--color-text)]">{person.notes}</dd></div>}
+                </dl>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      {editing != null && (
+        <form onSubmit={save} class="mt-3 min-w-0 rounded-lg border border-[var(--color-accent)]/50 bg-[var(--color-elevated)] p-3">
+          <div class="flex items-center justify-between gap-3">
+            <h4 class="text-[11.5px] font-bold text-[var(--color-text)]">{editing === 'new' ? 'New contact' : 'Edit contact'}</h4>
+            <button type="button" aria-label="Close contact editor" onClick={() => setEditing(null)} class="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--color-border)]">×</button>
+          </div>
+          <div class="mt-3 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <CrmField label="Full name" value={form.name} onInput={(value) => setField('name', value)} />
+            <CrmField label="Phone" type="tel" value={form.phone} onInput={(value) => setField('phone', value)} />
+            <CrmField label="Email" type="email" value={form.email} onInput={(value) => setField('email', value)} />
+            <CrmField label="Mailing address" value={form.mailingAddress} onInput={(value) => setField('mailingAddress', value)} />
+            <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Role<select value={form.role} onChange={(event) => setField('role', (event.currentTarget as HTMLSelectElement).value)} class={crmInputClass()}><option value="seller">Seller</option><option value="lead">Lead</option><option value="contact">Contact</option><option value="owner">Record owner</option><option value="heir">Heir</option><option value="agent">Agent</option></select></label>
+            <CrmField label="Relationship to owner" value={form.relationshipToOwner} onInput={(value) => setField('relationshipToOwner', value)} placeholder="Trustee, spouse, broker…" />
+            <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Decision authority<select value={form.authorityStatus} onChange={(event) => setField('authorityStatus', (event.currentTarget as HTMLSelectElement).value)} class={crmInputClass()}><option value="unknown">Needs confirmation</option><option value="title_to_confirm">Title to confirm</option><option value="can_sign">Can sign — verified</option><option value="cannot_sign">Cannot sign</option></select></label>
+            <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Preferred contact method<select value={form.preferredContactMethod} onChange={(event) => setField('preferredContactMethod', (event.currentTarget as HTMLSelectElement).value)} class={crmInputClass()}><option value="">Not captured</option><option value="call">Call</option><option value="text">Text</option><option value="email">Email</option><option value="voicemail">Voicemail</option><option value="in_person">In person</option></select></label>
+            <label class="flex min-w-0 items-center gap-2 self-end rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 text-[11px] text-[var(--color-text)]"><input type="checkbox" checked={form.primaryContact} onChange={(event) => setField('primaryContact', (event.currentTarget as HTMLInputElement).checked)} />Primary contact</label>
+            <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)] sm:col-span-2 lg:col-span-3">Notes<textarea rows={3} value={form.notes} onInput={(event) => setField('notes', (event.currentTarget as HTMLTextAreaElement).value)} class={`${crmInputClass()} resize-y`} /></label>
+          </div>
+          <div class="mt-3 flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => setEditing(null)} class="rounded-lg border border-[var(--color-border)] px-3 py-2 text-[11px] font-semibold">Cancel</button>
+            <button type="submit" disabled={busy || !form.name.trim()} class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-2 text-[11px] font-semibold text-white disabled:opacity-40">{busy ? 'Saving…' : 'Save contact'}</button>
+          </div>
+        </form>
+      )}
+      {message && <div role="status" class="mt-2 break-words text-[10.5px] text-[var(--color-text-muted)]">{message}</div>}
+    </section>
+  );
+}
+
+function TaskManager({
+  propertyCardId,
+  tasks,
+  onSaved,
+}: {
+  propertyCardId: number | null;
+  tasks: DealTaskLite[];
+  onSaved: () => Promise<void> | void;
+}) {
+  const [form, setForm] = useState<DealTaskFormState>({ ...EMPTY_TASK_FORM });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [busyId, setBusyId] = useState<number | 'new' | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const setField = <K extends keyof DealTaskFormState>(key: K, value: DealTaskFormState[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+  const edit = (task: DealTaskLite) => {
+    setEditingId(task.id);
+    setForm({
+      title: task.action,
+      dueDate: task.due_date ?? task.dueDate ?? '',
+      assignedOwner: task.assigned_owner ?? task.assignedOwner ?? '',
+      priority: task.priority ?? 'normal',
+      reminderAt: task.reminder_at ?? task.reminderAt ?? '',
+    });
+    setMessage(null);
+  };
+  const reset = () => {
+    setEditingId(null);
+    setForm({ ...EMPTY_TASK_FORM });
+  };
+  const save = async (event: Event) => {
+    event.preventDefault();
+    if (!propertyCardId || !form.title.trim() || busyId != null) return;
+    setBusyId(editingId ?? 'new');
+    setMessage(null);
+    const payload = {
+      action: form.title.trim(),
+      dueDate: form.dueDate || null,
+      assignedOwner: form.assignedOwner.trim() || null,
+      priority: form.priority,
+      reminderAt: form.reminderAt || null,
+      createdBy: 'landos/deal-card',
+    };
+    try {
+      if (editingId == null) await apiPost(`/api/landos/property-cards/${propertyCardId}/next-action`, payload);
+      else await apiPatch(`/api/landos/property-cards/${propertyCardId}/next-actions/${editingId}`, payload);
+      await onSaved();
+      setMessage(editingId == null ? 'Task added.' : 'Task updated.');
+      reset();
+    } catch (error: any) {
+      setMessage(error?.message || 'The task could not be saved. Your entries are still here.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const setTaskStatus = async (task: DealTaskLite, status: 'completed' | 'open') => {
+    if (!propertyCardId || busyId != null) return;
+    setBusyId(task.id);
+    setMessage(null);
+    try {
+      await apiPatch(`/api/landos/property-cards/${propertyCardId}/next-actions/${task.id}`, { status });
+      await onSaved();
+      setMessage(status === 'completed' ? 'Task completed.' : 'Task reopened.');
+    } catch (error: any) {
+      setMessage(error?.message || 'The task status could not be changed.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const remove = async (task: DealTaskLite) => {
+    if (!propertyCardId || busyId != null || !window.confirm(`Delete task “${task.action}”?`)) return;
+    setBusyId(task.id);
+    setMessage(null);
+    try {
+      await apiDelete(`/api/landos/property-cards/${propertyCardId}/next-actions/${task.id}`);
+      await onSaved();
+      if (editingId === task.id) reset();
+      setMessage('Task deleted.');
+    } catch (error: any) {
+      setMessage(error?.message || 'The task could not be deleted.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+  return (
+    <section id="seller-tasks" class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <div>
+        <h3 class="text-[13px] font-bold text-[var(--color-text)]">Tasks & follow-up</h3>
+        <p class="mt-1 text-[10.5px] text-[var(--color-text-muted)]">Keep the next move, owner, due date, priority, and reminder together.</p>
+      </div>
+      {tasks.length > 0 && (
+        <div class="mt-3 space-y-2">
+          {tasks.map((task) => {
+            const due = task.due_date ?? task.dueDate;
+            const owner = task.assigned_owner ?? task.assignedOwner;
+            const reminder = task.reminder_at ?? task.reminderAt;
+            const complete = task.status === 'complete' || task.status === 'completed' || task.status === 'done';
+            return (
+              <article key={task.id} class={`min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3 ${complete ? 'opacity-65' : ''}`}>
+                <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <div class="min-w-0 flex-1">
+                    <div class={`break-words text-[11.5px] font-semibold text-[var(--color-text)] ${complete ? 'line-through' : ''}`}>{task.action}</div>
+                    <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9.5px] text-[var(--color-text-faint)]">
+                      <span>Due {due || 'not set'}</span><span>Owner {owner || 'unassigned'}</span><span class="capitalize">Priority {task.priority || 'normal'}</span>{reminder && <span>Reminder {String(reminder).replace('T', ' ')}</span>}
+                    </div>
+                  </div>
+                  <div class="flex shrink-0 flex-wrap gap-1.5">
+                    <button type="button" disabled={busyId != null} onClick={() => void setTaskStatus(task, complete ? 'open' : 'completed')} class="rounded-md border border-[var(--color-accent)] px-2 py-1 text-[10px] font-semibold text-[var(--color-accent)]">{complete ? 'Reopen' : 'Complete'}</button>
+                    <button type="button" disabled={busyId != null} onClick={() => edit(task)} class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[10px] font-semibold">Edit</button>
+                    <button type="button" disabled={busyId != null} onClick={() => void remove(task)} class="rounded-md border border-rose-500/40 px-2 py-1 text-[10px] font-semibold text-rose-400">Delete</button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      <form onSubmit={save} class="mt-3 min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-3">
+        <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">{editingId == null ? 'Add task' : 'Edit task'}</div>
+        <div class="mt-2 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div class="min-w-0 sm:col-span-2"><CrmField label="Title" value={form.title} onInput={(value) => setField('title', value)} placeholder="Next action for this deal…" /></div>
+          <CrmField label="Due date" type="date" value={form.dueDate} onInput={(value) => setField('dueDate', value)} />
+          <CrmField label="Assigned owner" value={form.assignedOwner} onInput={(value) => setField('assignedOwner', value)} />
+          <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Priority<select value={form.priority} onChange={(event) => setField('priority', (event.currentTarget as HTMLSelectElement).value)} class={crmInputClass()}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+          <div class="min-w-0 sm:col-span-2"><CrmField label="Reminder" type="datetime-local" value={form.reminderAt} onInput={(value) => setField('reminderAt', value)} /></div>
+        </div>
+        <div class="mt-3 flex flex-wrap justify-end gap-2">
+          {editingId != null && <button type="button" onClick={reset} class="rounded-lg border border-[var(--color-border)] px-3 py-2 text-[11px] font-semibold">Cancel edit</button>}
+          <button type="submit" disabled={!propertyCardId || !form.title.trim() || busyId != null} class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-2 text-[11px] font-semibold text-white disabled:opacity-40">{busyId != null ? 'Saving…' : editingId == null ? 'Add task' : 'Save task'}</button>
+        </div>
+      </form>
+      {message && <div role="status" class="mt-2 break-words text-[10.5px] text-[var(--color-text-muted)]">{message}</div>}
+    </section>
+  );
+}
+
+function communicationIdentifier(entry: CrmCommunication): string {
+  return String(entry.id ?? entry.createdAt);
+}
+
+function localDateTimeValue(value: string | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function communicationKind(entry: CrmCommunication): CommunicationKind {
+  if (entry.type === 'transcript' || /transcript/i.test(entry.type ?? '')) return 'transcript';
+  if (entry.channel === 'call' || entry.channel === 'text' || entry.channel === 'email') return entry.channel;
+  return 'note';
+}
+
+function communicationDraftFor(entry?: CrmCommunication): CommunicationDraft {
+  return {
+    kind: entry ? communicationKind(entry) : 'call',
+    direction: entry?.direction ?? 'inbound',
+    occurredAt: localDateTimeValue(entry?.at) || localDateTimeValue(new Date().toISOString()),
+    details: entry?.notes || entry?.summary || '',
+    outcome: entry?.outcome ?? '',
+    followUpDate: entry?.followUpDate ?? '',
+    taskTitle: '',
+  };
+}
+
+function CommunicationDialog({
+  dealCardId,
+  propertyCardId,
+  entry,
+  onClose,
+  onSaved,
+}: {
+  dealCardId: number;
+  propertyCardId: number | null;
+  entry?: CrmCommunication;
+  onClose: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const initial = useRef<CommunicationDraft>(communicationDraftFor(entry)).current;
+  const [draft, setDraft] = useState<CommunicationDraft>(() => ({ ...initial }));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const firstField = useRef<HTMLTextAreaElement | null>(null);
+  const setField = <K extends keyof CommunicationDraft>(key: K, value: CommunicationDraft[K]) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+  const requestClose = () => {
+    if (busy) return;
+    if (dirty && !window.confirm('Discard this unsaved communication?')) return;
+    onClose();
+  };
+  useEffect(() => {
+    firstField.current?.focus();
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = priorOverflow; };
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      requestClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [dirty, busy]);
+  const save = async (event: Event) => {
+    event.preventDefault();
+    if (!draft.details.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    const payload = {
+      at: draft.occurredAt ? new Date(draft.occurredAt).toISOString() : new Date().toISOString(),
+      type: draft.kind,
+      channel: draft.kind === 'transcript' || draft.kind === 'note' ? 'other' : draft.kind,
+      direction: draft.direction,
+      summary: draft.details.trim().slice(0, 500),
+      notes: draft.details.trim(),
+      outcome: draft.outcome.trim() || null,
+      followUpDate: draft.followUpDate || null,
+      sentiment: 'unknown',
+      followUpNeeded: Boolean(draft.followUpDate),
+    };
+    try {
+      if (entry) {
+        await apiPatch(`/api/landos/deal-cards/${dealCardId}/acquisition/comm/${encodeURIComponent(communicationIdentifier(entry))}`, payload);
+      } else {
+        await apiPost(`/api/landos/deal-cards/${dealCardId}/acquisition/comm`, payload);
+      }
+      if (draft.followUpDate) {
+        await apiPost(`/api/landos/deal-cards/${dealCardId}/acquisition/profile`, { profile: { nextFollowUpDate: draft.followUpDate } });
+      }
+      if (draft.taskTitle.trim() && propertyCardId) {
+        await apiPost(`/api/landos/property-cards/${propertyCardId}/next-action`, {
+          action: draft.taskTitle.trim(),
+          dueDate: draft.followUpDate || null,
+          createdBy: 'landos/deal-card',
+        });
+      }
+      await onSaved();
+      onClose();
+    } catch (saveError: any) {
+      setError(saveError?.message || 'Communication could not be saved. Your entries are still here.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div
+      class="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm sm:p-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
+    >
+      <section role="dialog" aria-modal="true" aria-labelledby="crm-communication-title" class="flex max-h-[92vh] w-full max-w-2xl min-w-0 flex-col overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-2xl">
+        <header class="flex items-start justify-between gap-4 border-b border-[var(--color-border)] px-4 py-3 sm:px-5">
+          <div class="min-w-0">
+            <h2 id="crm-communication-title" class="text-[15px] font-bold text-[var(--color-text)]">{entry ? 'Edit communication' : 'Add communication'}</h2>
+            <p class="mt-1 break-words text-[10.5px] leading-relaxed text-[var(--color-text-muted)]">Record the interaction and its operational next step. Nothing is sent to the seller.</p>
+          </div>
+          <button type="button" aria-label="Close communication dialog" onClick={requestClose} class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--color-border)] text-[17px] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">×</button>
+        </header>
+        <form onSubmit={save} class="min-h-0 min-w-0 overflow-y-auto p-4 sm:p-5">
+          <div class="grid min-w-0 gap-3 sm:grid-cols-2">
+            <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Type<select value={draft.kind} onChange={(event) => setField('kind', (event.currentTarget as HTMLSelectElement).value as CommunicationKind)} class={crmInputClass()}><option value="call">Call</option><option value="text">Text</option><option value="email">Email</option><option value="note">Note</option><option value="transcript">Transcript</option></select></label>
+            <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Direction<select value={draft.direction} onChange={(event) => setField('direction', (event.currentTarget as HTMLSelectElement).value as 'inbound' | 'outbound')} class={crmInputClass()}><option value="inbound">Inbound</option><option value="outbound">Outbound</option></select></label>
+            <CrmField label="Date & time" type="datetime-local" value={draft.occurredAt} onInput={(value) => setField('occurredAt', value)} />
+            <CrmField label="Follow-up date" type="date" value={draft.followUpDate} onInput={(value) => setField('followUpDate', value)} />
+          </div>
+          <label class="mt-3 block min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">
+            Details
+            <textarea
+              ref={firstField}
+              rows={8}
+              value={draft.details}
+              onInput={(event) => setField('details', (event.currentTarget as HTMLTextAreaElement).value)}
+              placeholder={draft.kind === 'transcript' ? 'Paste the call transcript…' : 'What happened?'}
+              class={`${crmInputClass()} resize-y whitespace-pre-wrap leading-relaxed`}
+            />
+          </label>
+          <div class="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
+            <CrmField label="Outcome" value={draft.outcome} onInput={(value) => setField('outcome', value)} placeholder="Reached seller, agreed next step…" />
+            <CrmField label="Create follow-up task (optional)" value={draft.taskTitle} onInput={(value) => setField('taskTitle', value)} placeholder="Call after survey arrives" />
+          </div>
+          {error && <div role="alert" class="mt-3 break-words rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-300">{error}</div>}
+          <footer class="mt-5 flex flex-col-reverse gap-2 border-t border-[var(--color-border)] pt-4 sm:flex-row sm:justify-end">
+            <button type="button" onClick={requestClose} disabled={busy} class="rounded-lg border border-[var(--color-border)] px-4 py-2.5 text-[11px] font-semibold text-[var(--color-text)] disabled:opacity-40">Cancel</button>
+            <button type="submit" disabled={!draft.details.trim() || busy} class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-4 py-2.5 text-[11px] font-semibold text-white disabled:opacity-40">{busy ? 'Saving…' : entry ? 'Save changes' : 'Save communication'}</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function CommunicationTimeline({
+  dealCardId,
+  propertyCardId,
+  entries,
+  openNewSignal,
+  onSaved,
+}: {
+  dealCardId: number;
+  propertyCardId: number | null;
+  entries: CrmCommunication[];
+  openNewSignal: number;
+  onSaved: () => Promise<void> | void;
+}) {
+  const [dialogEntry, setDialogEntry] = useState<CrmCommunication | 'new' | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const addButton = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (openNewSignal > 0) setDialogEntry('new');
+  }, [openNewSignal]);
+  const close = () => {
+    setDialogEntry(null);
+    window.setTimeout(() => addButton.current?.focus(), 0);
+  };
+  const remove = async (entry: CrmCommunication) => {
+    const id = communicationIdentifier(entry);
+    if (busyId || !window.confirm('Delete this communication from the Deal Card timeline?')) return;
+    setBusyId(id);
+    setMessage(null);
+    try {
+      await apiDelete(`/api/landos/deal-cards/${dealCardId}/acquisition/comm/${encodeURIComponent(id)}`);
+      await onSaved();
+      setMessage('Communication deleted.');
+    } catch (error: any) {
+      setMessage(error?.message || 'The communication could not be deleted.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+  return (
+    <section id="communication-timeline" class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h3 class="text-[13px] font-bold text-[var(--color-text)]">Communication timeline</h3>
+          <p class="mt-1 break-words text-[10.5px] text-[var(--color-text-muted)]">Calls, texts, emails, notes, transcripts, outcomes, and follow-up stay in one history.</p>
+        </div>
+        <button ref={addButton} type="button" onClick={() => setDialogEntry('new')} class="shrink-0 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-2 text-[11px] font-semibold text-white">Add communication</button>
+      </div>
+      {entries.length === 0 ? (
+        <div class="mt-3 rounded-lg border border-dashed border-[var(--color-border)] p-3 text-[11px] text-[var(--color-text-faint)]">No calls, texts, emails, notes, or transcripts recorded yet.</div>
+      ) : (
+        <ol class="mt-3 m-0 list-none space-y-2 p-0">
+          {entries.map((entry, index) => {
+            const id = communicationIdentifier(entry);
+            return (
+              <li key={`${id}-${index}`} class="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2 text-[9.5px] uppercase tracking-wide text-[var(--color-text-faint)]">
+                      <span class="font-bold text-[var(--color-text)]">{entry.direction} {communicationKind(entry)}</span>
+                      <span>{new Date(entry.at).toLocaleString()}</span>
+                      {entry.followUpDate && <span class="rounded-full border border-[var(--color-border)] px-2 py-0.5">Follow up {entry.followUpDate}</span>}
+                    </div>
+                  </div>
+                  <div class="flex shrink-0 flex-wrap gap-1.5">
+                    <button type="button" disabled={busyId != null} onClick={() => setDialogEntry(entry)} class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[10px] font-semibold">Edit</button>
+                    <button type="button" disabled={busyId != null} onClick={() => void remove(entry)} class="rounded-md border border-rose-500/40 px-2 py-1 text-[10px] font-semibold text-rose-400">Delete</button>
+                  </div>
+                </div>
+                <div class="mt-2 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--color-text)]">{entry.notes || entry.summary}</div>
+                {entry.outcome && <div class="mt-2 break-words rounded-md border-l-2 border-[var(--color-accent)] bg-[var(--color-elevated)] px-2.5 py-2 text-[10.5px] text-[var(--color-text-muted)]"><strong class="text-[var(--color-text)]">Outcome:</strong> {entry.outcome}</div>}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {message && <div role="status" class="mt-2 break-words text-[10.5px] text-[var(--color-text-muted)]">{message}</div>}
+      {dialogEntry && (
+        <CommunicationDialog
+          key={dialogEntry === 'new' ? 'new' : communicationIdentifier(dialogEntry)}
+          dealCardId={dealCardId}
+          propertyCardId={propertyCardId}
+          entry={dialogEntry === 'new' ? undefined : dialogEntry}
+          onClose={close}
+          onSaved={onSaved}
+        />
+      )}
+    </section>
+  );
+}
+
+function normalizedCrmText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function usefulSellerNote(note: string, propertyAddress: string | null | undefined): string {
+  const normalized = normalizedCrmText(note);
+  const address = normalizedCrmText(propertyAddress ?? '');
+  if (!normalized) return '';
+  if (address && (normalized === address || normalized.startsWith(`${address} `) || address.startsWith(`${normalized} `))) return '';
+  if (/^(seller|contact|details|notes) (pending|unknown|not captured|to be captured)$/.test(normalized)) return '';
+  return note;
+}
+
+function SellerCrmWorkspace({
+  snapshot,
+  deal,
+  propertyCardId,
+  propertyAddress,
+  acquisition,
+  onSaved,
+}: {
+  snapshot: PiSnapshot | null;
+  deal: DealCardDetail;
+  propertyCardId: number | null;
+  propertyAddress?: string | null;
+  acquisition: DealWorkspaceAcquisition | null;
+  onSaved: () => Promise<void> | void;
+}) {
+  const people = deal.people ?? [];
+  const profile = acquisition?.profile ?? {};
+  const seller = people.find((person) => person.role === 'seller' || person.role === 'lead_contact') ?? people[0];
+  const phone = profile.phone || seller?.phone || '';
+  const email = profile.email || seller?.email || '';
+  const ownerOfRecord = snapshot?.identity.owner?.trim() || '';
+  const sellerName = String(profile.name || seller?.name || '').trim();
+  const ownerMatchesSeller = Boolean(
+    ownerOfRecord
+    && sellerName
+    && normalizedCrmText(ownerOfRecord) === normalizedCrmText(sellerName),
+  );
+  const actualSellerSignals = [
+    deal.asking_price != null || Boolean(profile.askingPrice),
+    Boolean(profile.motivation),
+    Boolean(profile.timeline),
+    Boolean(profile.decisionMakers) || Boolean(seller?.authority_status && seller.authority_status !== 'unknown'),
+    Boolean(profile.priceFlexibility),
+    Boolean(acquisition?.commLog.length),
+  ];
+  const hasSellerEvidence = actualSellerSignals.some(Boolean);
+  const sellerScore = snapshot?.operatorAnalysis?.scores.seller;
+  const missingInputs = [
+    { label: 'Contact', captured: Boolean((profile.name || seller?.name) && (phone || email)) },
+    { label: 'Asking price', captured: deal.asking_price != null || Boolean(profile.askingPrice) },
+    { label: 'Motivation', captured: Boolean(profile.motivation) },
+    { label: 'Timeline', captured: Boolean(profile.timeline) },
+    { label: 'Responsiveness', captured: Boolean(acquisition?.commLog.length) },
+    { label: 'Authority', captured: Boolean(profile.decisionMakers) || Boolean(seller?.authority_status && seller.authority_status !== 'unknown') },
+    { label: 'Flexibility', captured: Boolean(profile.priceFlexibility) },
+    { label: 'Cooperation', captured: Boolean(profile.communicationStyle || profile.personalityNotes || acquisition?.commLog.some((entry) => Boolean(entry.outcome))) },
+  ];
+  const [stage, setStage] = useState(acquisition?.stage ?? 'new_lead');
+  const [assignedOwner, setAssignedOwner] = useState(profile.assignedOwner ?? '');
+  const [followUpDate, setFollowUpDate] = useState(profile.nextFollowUpDate ?? '');
+  const [crmBusy, setCrmBusy] = useState(false);
+  const [crmMessage, setCrmMessage] = useState<string | null>(null);
+  const [openCommunicationSignal, setOpenCommunicationSignal] = useState(0);
+  useEffect(() => {
+    setStage(acquisition?.stage ?? 'new_lead');
+    setAssignedOwner(acquisition?.profile.assignedOwner ?? '');
+    setFollowUpDate(acquisition?.profile.nextFollowUpDate ?? '');
+  }, [acquisition]);
+  const saveOperationalStatus = async () => {
+    if (crmBusy) return;
+    setCrmBusy(true);
+    setCrmMessage(null);
+    try {
+      if (stage !== acquisition?.stage) {
+        await apiPost(`/api/landos/deal-cards/${deal.id}/acquisition/stage`, { stage });
+      }
+      if (assignedOwner !== (acquisition?.profile.assignedOwner ?? '') || followUpDate !== (acquisition?.profile.nextFollowUpDate ?? '')) {
+        await apiPost(`/api/landos/deal-cards/${deal.id}/acquisition/profile`, {
+          profile: { assignedOwner: assignedOwner.trim() || null, nextFollowUpDate: followUpDate || null },
+        });
+      }
+      await onSaved();
+      setCrmMessage('CRM status updated.');
+    } catch (error: any) {
+      setCrmMessage(error?.message || 'CRM status could not be updated.');
+    } finally {
+      setCrmBusy(false);
+    }
+  };
+  const sellerNotes = usefulSellerNote(deal.seller_notes, propertyAddress);
+  const questions = snapshot?.operatorAnalysis?.seller.discoveryCallQuestions ?? snapshot?.missingInformation ?? [];
+  const nextContact = snapshot?.operatorAnalysis?.seller.nextContactAction ?? snapshot?.nextActions?.[0] ?? 'Capture the missing seller inputs before setting offer posture.';
+  return (
+    <div data-testid="seller-crm-workspace" class="min-w-0 space-y-3">
+      <section class="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.25fr)_minmax(300px,0.75fr)]">
+        <div class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+          <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Primary seller contact</div>
+              <h2 class="mt-1 break-words text-[20px] font-bold text-[var(--color-text)]">{profile.name || seller?.name || 'Seller not captured'}</h2>
+              <div class="mt-1 break-words text-[10.5px] text-[var(--color-text-muted)]">{profile.relationshipToProperty || contactRoleForForm(seller?.role) || 'Relationship not captured'}{profile.decisionMakers ? ` · ${profile.decisionMakers}` : ''}</div>
+            </div>
+            <div class="flex shrink-0 flex-wrap gap-2">
+              <button type="button" disabled={!phone} onClick={() => phone && window.open(`tel:${phone}`, '_self')} class="rounded-lg border border-[var(--color-border)] px-3 py-2 text-[11px] font-semibold disabled:opacity-35">Call</button>
+              <button type="button" disabled={!phone} onClick={() => phone && window.open(`sms:${phone}`, '_self')} class="rounded-lg border border-[var(--color-border)] px-3 py-2 text-[11px] font-semibold disabled:opacity-35">Text</button>
+              <button type="button" disabled={!email} onClick={() => email && window.open(`mailto:${email}`, '_self')} class="rounded-lg border border-[var(--color-border)] px-3 py-2 text-[11px] font-semibold disabled:opacity-35">Email</button>
+              <button type="button" onClick={() => setOpenCommunicationSignal((value) => value + 1)} class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-2 text-[11px] font-semibold text-white">Record outcome</button>
+            </div>
+          </div>
+          <dl class="mt-4 grid min-w-0 gap-3 border-t border-[var(--color-border)] pt-4 sm:grid-cols-2">
+            <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Phone</dt><dd class="break-all text-[11.5px] font-semibold text-[var(--color-text)]">{phone || 'Not captured'}</dd></div>
+            <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Email</dt><dd class="break-all text-[11.5px] font-semibold text-[var(--color-text)]">{email || 'Not captured'}</dd></div>
+            <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Asking price</dt><dd class="break-words text-[11.5px] font-semibold text-[var(--color-text)]">{profile.askingPrice || (deal.asking_price == null ? 'Not captured' : `$${deal.asking_price.toLocaleString()}`)}</dd></div>
+            <div class="min-w-0"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Preferred method</dt><dd class="break-words text-[11.5px] font-semibold text-[var(--color-text)]">{profile.preferredChannel || seller?.preferred_contact_method || 'Not captured'}</dd></div>
+            <div class="min-w-0 sm:col-span-2"><dt class="text-[9px] uppercase text-[var(--color-text-faint)]">Government owner of record</dt><dd class="break-words text-[11.5px] font-semibold text-[var(--color-text)]">{ownerOfRecord || 'Not retrieved'}</dd><div class={`mt-1 break-words text-[9.5px] ${ownerMatchesSeller ? 'text-emerald-400' : 'text-[var(--color-text-faint)]'}`}>{ownerMatchesSeller ? 'Contact name matches the owner-of-record name.' : 'Confirm this contact’s relationship and signing authority before contracting.'}</div></div>
+          </dl>
+        </div>
+        <div class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Seller score</div>
+              <div class="mt-1 text-[26px] font-bold text-[var(--color-text)]">{hasSellerEvidence && sellerScore ? sellerScore.value : 'Pending'}</div>
+            </div>
+            {hasSellerEvidence && sellerScore && <span class="rounded-full border border-amber-500/40 px-2 py-1 text-[10px] font-semibold text-amber-400">{sellerScore.label}</span>}
+          </div>
+          <p class="mt-2 break-words text-[10.5px] leading-relaxed text-[var(--color-text-muted)]">{hasSellerEvidence && sellerScore ? sellerScore.explanation : 'Seller evidence is still too thin to score. Property intake or generic notes do not count as seller motivation.'}</p>
+          <div class="mt-3 grid grid-cols-2 gap-1.5">
+            {missingInputs.map((item) => <div key={item.label} class={`flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-[9.5px] ${item.captured ? 'border-emerald-500/30 text-emerald-400' : 'border-[var(--color-border)] text-[var(--color-text-faint)]'}`}><span aria-hidden="true">{item.captured ? '✓' : '○'}</span><span class="min-w-0 break-words">{item.label}</span></div>)}
+          </div>
+        </div>
+      </section>
+      <section class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+        <div>
+          <h3 class="text-[13px] font-bold text-[var(--color-text)]">Operational CRM</h3>
+          <p class="mt-1 text-[10.5px] text-[var(--color-text-muted)]">Assign the lead, schedule the next touch, and advance stage from one place.</p>
+        </div>
+        <div class="mt-3 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
+          <label class="min-w-0 text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Stage<select value={stage} onChange={(event) => setStage((event.currentTarget as HTMLSelectElement).value)} class={crmInputClass()}><option value="new_lead">New lead</option><option value="needs_discovery">Needs discovery</option><option value="discovery_complete">Discovery complete</option><option value="needs_follow_up">Needs follow-up</option><option value="ready_for_offer_prep">Ready for offer prep</option><option value="offer_sent">Offer sent</option><option value="stalled">Stalled</option><option value="paused">Paused</option><option value="pass">Pass</option></select></label>
+          <CrmField label="Assigned owner" value={assignedOwner} onInput={setAssignedOwner} placeholder="Who owns this lead?" />
+          <CrmField label="Follow-up date" type="date" value={followUpDate} onInput={setFollowUpDate} />
+          <button type="button" disabled={crmBusy} onClick={() => void saveOperationalStatus()} class="h-[39px] rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-4 text-[11px] font-semibold text-white disabled:opacity-40">{crmBusy ? 'Saving…' : 'Save CRM status'}</button>
+        </div>
+        {crmMessage && <div role="status" class="mt-2 break-words text-[10.5px] text-[var(--color-text-muted)]">{crmMessage}</div>}
+      </section>
+      <ContactManager dealId={deal.id} people={people} acquisition={acquisition} onSaved={onSaved} />
+      <TaskManager propertyCardId={propertyCardId} tasks={deal.nextActions ?? []} onSaved={onSaved} />
+      <section class="grid min-w-0 gap-3 lg:grid-cols-2">
+        <div class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+          <h3 class="text-[12px] font-bold text-[var(--color-text)]">Discovery-call questions</h3>
+          {questions.length ? <ul class="mt-3 m-0 space-y-2 p-0 pl-4">{questions.map((question, index) => <li key={index} class="break-words text-[11px] leading-relaxed text-[var(--color-text-muted)]">{question}</li>)}</ul> : <p class="mt-3 text-[11px] text-[var(--color-text-faint)]">No property-specific questions generated yet.</p>}
+        </div>
+        <div class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+          <h3 class="text-[12px] font-bold text-[var(--color-text)]">Next contact action</h3>
+          <p class="mt-3 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--color-text-muted)]">{nextContact}</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" onClick={() => setOpenCommunicationSignal((value) => value + 1)} class="rounded-lg border border-[var(--color-accent)] px-3 py-2 text-[10.5px] font-semibold text-[var(--color-accent)]">Record contact</button>
+            <a href="#seller-tasks" class="rounded-lg border border-[var(--color-border)] px-3 py-2 text-[10.5px] font-semibold text-[var(--color-text)]">Add follow-up task</a>
+          </div>
+        </div>
+      </section>
+      {sellerNotes && (
+        <section class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+          <h3 class="text-[12px] font-bold text-[var(--color-text)]">Seller notes & negotiation context</h3>
+          <p class="mt-3 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--color-text-muted)]">{sellerNotes}</p>
+        </section>
+      )}
+      <CommunicationTimeline
+        dealCardId={deal.id}
+        propertyCardId={propertyCardId}
+        entries={(acquisition?.commLog ?? []) as CrmCommunication[]}
+        openNewSignal={openCommunicationSignal}
+        onSaved={onSaved}
+      />
     </div>
   );
 }
@@ -1266,17 +2206,25 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   // or worksheet projections.
   const [parcelRoster, setParcelRoster] = useState<ParcelRosterEntryView[] | null>(null);
   const [documentRegistry, setDocumentRegistry] = useState<DocumentRegistryView | null>(null);
+  const [activityEvents, setActivityEvents] = useState<ActivityEventView[] | null>(null);
+  const [acquisitionOverview, setAcquisitionOverview] = useState<AcquisitionOverviewResponse | null>(null);
   const [researchProgress, setResearchProgress] = useState<DealResearchProgress | null>(null);
   const [researchRetrying, setResearchRetrying] = useState(false);
   const [researchActionError, setResearchActionError] = useState('');
 
   async function loadCanonicalExtras(id: number) {
-    const response = await apiGet<{
-      documentRegistry?: DocumentRegistryView | null;
-      parcelRoster?: ParcelRosterEntryView[] | null;
-    }>('/api/landos/deal-cards/' + id + '/property-intelligence');
+    const [response, activityResponse, acquisitionResponse] = await Promise.all([
+      apiGet<{
+        documentRegistry?: DocumentRegistryView | null;
+        parcelRoster?: ParcelRosterEntryView[] | null;
+      }>('/api/landos/deal-cards/' + id + '/property-intelligence'),
+      apiGet<{ events: ActivityEventView[] }>(`/api/landos/deal-cards/${id}/activity`),
+      apiGet<AcquisitionOverviewResponse>(`/api/landos/deal-cards/${id}/acquisition`).catch(() => null),
+    ]);
     setDocumentRegistry(response.documentRegistry ?? null);
     setParcelRoster(response.parcelRoster ?? null);
+    setActivityEvents(activityResponse.events ?? []);
+    setAcquisitionOverview(acquisitionResponse);
   }
 
   // Refresh canonical records once when a parent mission settles. No legacy
@@ -1315,6 +2263,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setResolution(null);
       setDocumentRegistry(null);
       setParcelRoster(null);
+      setActivityEvents(null);
+      setAcquisitionOverview(null);
       setResearchProgress(null);
     } finally {
       setLoading(false);
@@ -1332,6 +2282,18 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       setResearchActionError((error as Error).message || 'Research could not be started.');
     } finally {
       setResearchRetrying(false);
+    }
+  }
+
+  async function startOfferPreparation() {
+    if (!deal) return;
+    setResearchActionError('');
+    try {
+      await apiPost(`/api/landos/deal-cards/${deal.id}/acquisition/stage`, { stage: 'ready_for_offer_prep' });
+      selectTab('seller');
+      await load(deal.id, false);
+    } catch (error) {
+      setResearchActionError((error as Error).message || 'Offer preparation could not be started.');
     }
   }
 
@@ -1520,6 +2482,21 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
   const terminalParcel = rejectedMismatch || archivedParcel;
   const showResolution = terminalParcel
     || (!!resolution && !resolution.confirmed && !!resolution.snapshot);
+  const latestOwnerActivity = ownerActivityEvents(activityEvents ?? [])[0] ?? null;
+  const crmStatus: DealWorkspaceCrmStatus | null = deal ? {
+    stageLabel: acquisitionOverview?.stageLabel
+      || acquisitionOverview?.acquisition.stage.replace(/_/g, ' ')
+      || deal.status.replace(/_/g, ' '),
+    nextOperationalStep: acquisitionOverview?.nextAction?.label || 'Pending',
+    followUpDate: acquisitionOverview?.acquisition.profile?.nextFollowUpDate ?? null,
+    taskOwner: acquisitionOverview?.acquisition.profile?.assignedOwner ?? null,
+    offerStatus: offerStatusLabel(acquisitionOverview?.acquisition.stage, deal.status),
+    latestActivity: latestOwnerActivity ? {
+      label: latestOwnerActivity.label,
+      summary: latestOwnerActivity.displaySummary,
+      createdAt: latestOwnerActivity.createdAt,
+    } : null,
+  } : null;
 
   return (
     <div data-testid="deal-card-root" class="flex-1 overflow-y-auto px-6 pt-4 pb-40 space-y-4 dealcard-readable">
@@ -1788,7 +2765,6 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                   the snapshot withholds every parcel-specific conclusion and
                   shows only identity state, blockers and next actions — which is
                   exactly what the operator needs to move the card forward. */}
-               <PropertyIntelligenceLaunch state={propertyIntelligence} />
                <PropertyIntelligenceOverview snapshot={piSnapshot} />
               <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
                 Smart Intake evidence and editable candidates remain available while parcel-specific intelligence stays withheld.
@@ -1804,36 +2780,34 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {/* PINNED HEADER — always visible: identity, the critical-facts chips,
               the single critical next action, and the tab bar. The deal is legible
               in seconds and the next action never scrolls away. */}
-          <div class="sticky top-0 z-10 -mx-6 px-6 pt-1 bg-[var(--color-bg)] border-b border-[var(--color-border)] space-y-2">
-            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] p-3 space-y-2">
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="text-[15px] font-semibold">{piSnapshot?.identity.situs || prop?.active_input_address || deal.title || 'Untitled Deal'}</span>
-                <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
-                <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{entityBadge(deal.entity)}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">Stage: {deal.status}</span>
+          <div
+            class="sticky top-0 z-20 -mx-6 space-y-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-6 pb-3 pt-2"
+            data-acceptance-subject="true"
+            data-subject-address={piSnapshot?.identity.displayAddress || piSnapshot?.identity.situs || prop?.active_input_address || deal.title || undefined}
+            data-subject-apn={piSnapshot?.identity.apn ?? prop?.apn ?? undefined}
+            data-subject-property-id={piSnapshot?.identity.lpPropertyId ?? undefined}
+          >
+            <div class="flex flex-wrap items-start gap-x-6 gap-y-3">
+              <div class="min-w-[260px] flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span id="deal-address" class="text-[18px] font-bold tracking-tight text-[var(--color-text)]">{piSnapshot?.identity.displayAddress || piSnapshot?.identity.situs || prop?.active_input_address || deal.title || 'Untitled Deal'}</span>
+                  <LeadTypeBadge leadType={(deal as { lead_type?: string }).lead_type} />
+                  <span class="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--color-text-muted)]">{deal.status.replace(/_/g, ' ')}</span>
+                </div>
+                <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-[var(--color-text-muted)]">
+                  <span><strong class="font-semibold text-[var(--color-text)]">{piSnapshot?.identity.acres ?? prop?.acres ?? '—'}</strong> acres</span>
+                  <span>APN <strong class="font-semibold text-[var(--color-text)]">{piSnapshot?.identity.apn ?? prop?.apn ?? '—'}</strong></span>
+                  {piSnapshot?.identity.lpPropertyId && <span>Property ID <strong class="font-semibold text-[var(--color-text)]">{piSnapshot.identity.lpPropertyId}</strong></span>}
+                  <span>Owner <strong class="font-semibold text-[var(--color-text)]">{piSnapshot?.identity.owner ?? prop?.owner ?? '—'}</strong></span>
+                  <span>{[piSnapshot?.identity.county ?? prop?.county, piSnapshot?.identity.state_ ?? prop?.state].filter(Boolean).join(', ') || 'Location pending'}</span>
+                </div>
               </div>
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-                <HeaderField label="Owner of record" value={piSnapshot?.identity.owner ?? prop?.owner} />
-                <HeaderField label="APN / Parcel ID" value={piSnapshot?.identity.apn ?? prop?.apn} />
-                <HeaderField
-                  label="Acreage"
-                  value={(piSnapshot?.identity.acres ?? prop?.acres) == null
-                    ? null
-                    : `${piSnapshot?.identity.acres ?? prop?.acres} ac`}
-                />
-                <HeaderField label="County / State" value={[piSnapshot?.identity.county ?? prop?.county, piSnapshot?.identity.state_ ?? prop?.state].filter(Boolean).join(', ')} />
+              <div class="flex flex-wrap gap-2">
+                <button type="button" onClick={startEdit} class="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 text-[11px] font-semibold text-[var(--color-text)] hover:border-[var(--color-accent)]">Edit deal</button>
+                <button type="button" data-testid="open-smart-intake" class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-card)] px-3 py-2 text-[11px] font-semibold text-[var(--color-accent)] shadow-sm" onClick={() => selectTab('intake')}>Update intake</button>
               </div>
-              <CriticalFactChips facts={currentCriticalFacts(piSnapshot, spine?.header?.criticalFacts)} />
-              {(piSnapshot?.identity.discoveryUsable
-                ? piSnapshot.nextActions[0]
-                : spine?.header?.nextBestAction) && (
-                <div class="text-[12px]"><span class="text-[var(--color-accent)] font-semibold">Next action:</span>{' '}<span class="text-[var(--color-text)]">{piSnapshot?.identity.discoveryUsable ? piSnapshot.nextActions[0] : spine?.header?.nextBestAction}</span></div>
-              )}
             </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <div class="min-w-0 flex-1"><DealTabBar active={activeTab} onSelect={selectTab} /></div>
-              <button type="button" data-testid="open-smart-intake" class="shrink-0 rounded-md border border-[var(--color-accent)] bg-[var(--color-card)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-accent)] shadow-sm" onClick={() => selectTab('intake')}>+ Smart Intake</button>
-            </div>
+            <div class="min-w-0 overflow-x-auto"><DealTabBar active={activeTab} onSelect={selectTab} /></div>
           </div>
 
           {researchProgress && (
@@ -1851,12 +2825,21 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               dock immediately after this container): retained originals are Deal
               Card evidence, not one tab's content. */}
           <div class="flex flex-col gap-3">
+          {/* Comps & Market and Documents & Visuals live in their own
+              PERSISTENT tabpanels (below) so their canonical counts and
+              evidence rows remain in the document — hidden, never unmounted —
+              across tab changes. Independent visual acceptance verifies those
+              counts after refresh and managed restart while a different tab is
+              active, which is impossible when the panels unmount. Every other
+              workspace keeps the original replace-on-select wrapper. */}
+          {activeTab !== 'market' && activeTab !== 'documents' && (
           <div
             role="tabpanel"
             id={`deal-panel-${activeTab}`}
             data-testid={`deal-panel-${activeTab}`}
             data-active-tab={activeTab}
-            aria-labelledby={`deal-tab-${activeTab}`}
+            aria-labelledby={activeTab === 'intake' ? undefined : `deal-tab-${activeTab}`}
+            aria-label={activeTab === 'intake' ? 'Update intake' : undefined}
             class="space-y-3"
           >
 
@@ -1865,38 +2848,34 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
               actually decides from. The legacy summary panels follow it. */}
           {activeTab === 'overview' && (
             <div class="space-y-3">
-              <PropertyIntelligenceLaunch state={propertyIntelligence} />
-              <PropertyIntelligenceOverview snapshot={piSnapshot} />
+              <DealWorkspaceOverview
+                snapshot={piSnapshot}
+                title={deal.title}
+                stage={deal.status}
+                askingPrice={deal.asking_price}
+                sellerNotes={deal.seller_notes}
+                people={deal.people ?? []}
+                crmStatus={crmStatus}
+                onNavigate={selectTab}
+                onEdit={startEdit}
+                onRunResearch={() => void propertyIntelligence.launch()}
+                onStartOffer={() => void startOfferPreparation()}
+                researchRunning={propertyIntelligence.running || propertyIntelligence.launching}
+              />
+              <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+                <summary class="cursor-pointer text-[10.5px] font-semibold text-[var(--color-text-muted)]">Research status & update controls</summary>
+                <div class="mt-3"><PropertyIntelligenceLaunch state={propertyIntelligence} /></div>
+              </details>
             </div>
           )}
           {/* ══ DUE DILIGENCE TAB ══ The full screening detail: every public
               provider finding with evidence links, plus what remains unknown. */}
-          {activeTab === 'diligence' && (
-            <div class="space-y-3">
-              <PropertyIntelligenceDueDiligence snapshot={piSnapshot} />
-            </div>
-          )}
 
           {/* ══ VISUALS TAB ══ Every parcel-tied evidence image: official overlay
               maps (exact boundary) + captured live visuals (Street View, 3D,
               LandPortal). */}
-          {activeTab === 'visuals' && (
-            <div class="space-y-3">
-              <PropertyIntelligenceVisuals snapshot={piSnapshot} />
-            </div>
-          )}
 
-          {/* ══ MARKET TAB ══ One question: should I want land here? Market Pulse
-              and the growth/Data-Center scan run automatically — no buttons. */}
-          {activeTab === 'market' && (
-            <div class="space-y-3">
-              <div class="text-[14px] font-bold text-[var(--color-text)] px-1">Should I want land here?</div>
-              {/* THE comp result. The Deal Intelligence snapshot is the single
-                  authoritative operator-facing answer: one comp set, one set of
-                  counts, one valuation. */}
-              <PropertyIntelligenceMarket snapshot={piSnapshot} />
-            </div>
-          )}
+          {/* ══ MARKET TAB ══ Rendered in its persistent tabpanel below. */}
 
           {/* ══ PROPERTY TAB ══ The canonical parcel facts page. Multi-parcel
               leads render Parcel A / Parcel B separately from the backend
@@ -1906,20 +2885,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {/* PROPERTY TAB — the versioned Property Summary is the canonical
               identity read; Overview and Property both open on it so identity is
               never asserted differently in two places. */}
-          {activeTab === 'property' && (
-            <div class="space-y-3">
-              <PropertyIntelligenceProperty snapshot={piSnapshot} />
-              {prop && (
-                <PropertyIdentityControl
-                  prop={prop}
-                  snapshot={piSnapshot}
-                  onSaved={() => load(deal.id)}
-                />
-              )}
-            </div>
-          )}
 
-          {activeTab === 'property' && (parcelRoster?.length ?? 0) > 1 && (
+          {activeTab === 'overview' && (parcelRoster?.length ?? 0) > 1 && (
             <div class="space-y-3">
               <div class="text-[12.5px] font-semibold text-[var(--color-text)] px-1">
                 This lead covers {parcelRoster!.length} parcels — each shown separately; imagery is never reused across parcels.
@@ -1968,62 +2935,75 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
 
           {/* 5. Contacts — every person/role on the deal (inherited leads -> heirs) → Seller */}
           {activeTab === 'seller' && (
-          <Section title="Contacts">
-            {(() => {
-              const ownerName = piSnapshot?.identity.owner ?? prop?.owner ?? '';
-              const samePerson = !!seller?.name && !!ownerName && seller.name.trim().toLowerCase() === String(ownerName).trim().toLowerCase();
-              return samePerson ? (
-                <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 mb-3">
-                  <div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">Lead / contact and owner of record</div>
-                  <div class="text-[12.5px] font-semibold text-[var(--color-text)] mt-0.5">{seller?.name}</div>
-                  <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">One person record. Original official-record formatting remains available in Public Records and Activity.</div>
-                </div>
-              ) : (
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-                  <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5"><div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">Owner of record</div><div class="text-[12.5px] font-semibold text-[var(--color-text)] mt-0.5">{ownerName || 'Not recorded'}</div></div>
-                  <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5"><div class="text-[10px] uppercase tracking-wide text-[var(--color-text-faint)]">Lead / contact</div><div class="text-[12.5px] font-semibold text-[var(--color-text)] mt-0.5">{seller?.name ?? 'Not recorded'}</div></div>
-                </div>
-              );
-            })()}
-            <AddDealContactControl dealId={deal.id} onSaved={() => load(deal.id)} />
-            {(!deal.people || deal.people.length === 0) ? (
-              <Placeholder text="No contacts captured yet" />
-            ) : (
-              <div class="space-y-2">
-                {deal.people.map((p, i) => (
-                  <div key={i} class="rounded-md border border-[var(--color-border)] p-2">
-                    <div class="flex items-center gap-2 flex-wrap">
-                      <span class="text-[12px] font-medium text-[var(--color-text)]">{p.name || 'Unnamed'}</span>
-                      {p.role && <span class="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)]">{p.role}</span>}
-                      {p.authority_status && <span class="text-[10px] text-[var(--color-text-faint)]">{p.authority_status}</span>}
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-x-4 mt-1">
-                      <Field label="Phone" value={p.phone ?? undefined} />
-                      <Field label="Email" value={p.email ?? undefined} />
-                      <Field label="Mailing" value={p.mailing_address ?? undefined} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {seller?.name && (piSnapshot?.identity.owner ?? prop?.owner) && seller.name.trim().toLowerCase() !== String(piSnapshot?.identity.owner ?? prop?.owner).trim().toLowerCase() && (
-              <div class="text-[11px] text-[var(--color-text-muted)] mt-2 border-t border-[var(--color-border)] pt-2">
-                Lead/contact and owner-of-record names do not currently reconcile; confirm the relationship before contracting.
-              </div>
-            )}
-          </Section>
+            <SellerCrmWorkspace
+              snapshot={piSnapshot}
+              deal={deal}
+              propertyCardId={prop?.id ? Number(prop.id) : null}
+              propertyAddress={piSnapshot?.identity.situs ?? prop?.active_input_address}
+              acquisition={acquisitionOverview?.acquisition ?? null}
+              onSaved={() => load(deal.id)}
+            />
           )}
-
           {/* Manual strategy worksheet removed — strategy truth lives in the
               shared strategy-readiness record above. */}
 
           {/* Manual market worksheet removed — market truth lives in the unique
               comp registry + cluster analysis above. */}
 
-          {/* 8. Documents & quick actions → Documents (report controls above) */}
-          {activeTab === 'documents' && <PropertyIntelligenceEvidence snapshot={piSnapshot} />}
+          {/* 8. Documents & quick actions → the persistent Documents tabpanel below. */}
 
-          {activeTab === 'documents' && (
+          {activeTab === 'overview' && prop && (
+            <details class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+              <summary class="cursor-pointer text-[10.5px] font-semibold text-[var(--color-text-muted)]">Correct property identity</summary>
+              <div class="mt-3">
+                <div class="mb-3"><CriticalFactChips facts={currentCriticalFacts(piSnapshot, spine?.header?.criticalFacts)} /></div>
+                <PropertyIdentityControl prop={prop} snapshot={piSnapshot} onSaved={() => load(deal.id)} />
+              </div>
+            </details>
+          )}
+
+          </div>
+          )}
+
+          {/* ══ MARKET TAB — PERSISTENT PANEL ══ One question: should I want
+              land here? Stays mounted (hidden when inactive) so the canonical
+              comp counts and rows remain verifiable in the document. */}
+          <div
+            role="tabpanel"
+            id="deal-panel-market"
+            data-testid="deal-panel-market"
+            aria-labelledby="deal-tab-market"
+            hidden={activeTab === 'market' ? undefined : true}
+            class="space-y-3"
+          >
+            <div class="text-[14px] font-bold text-[var(--color-text)] px-1">Should I want land here?</div>
+            {/* THE comp result. The Deal Intelligence snapshot is the single
+                authoritative operator-facing answer: one comp set, one set of
+                counts, one valuation. */}
+            <PropertyIntelligenceMarket snapshot={piSnapshot} />
+            {/* Browser Use pilot: visible LandPortal comp candidates + the
+                recorded attempt. Renders only once a persisted result exists. */}
+            <LandPortalBrowserUsePanel dealId={deal?.id ?? dealCardId ?? null} variant="comps" />
+          </div>
+
+          {/* ══ DOCUMENTS TAB — PERSISTENT PANEL ══ Every parcel-tied evidence
+              image plus reports, document registry, research tasks, and the
+              activity log. Stays mounted (hidden when inactive) so the retained
+              visual evidence remains verifiable in the document. */}
+          <div
+            role="tabpanel"
+            id="deal-panel-documents"
+            data-testid="deal-panel-documents"
+            aria-labelledby="deal-tab-documents"
+            hidden={activeTab === 'documents' ? undefined : true}
+            class="space-y-3"
+          >
+            <PropertyIntelligenceVisuals snapshot={piSnapshot} />
+            <PropertyIntelligenceEvidence snapshot={piSnapshot} />
+            {/* Browser Use LandPortal pilot — launch control + the full
+                persisted result (facts, visuals, conflicts, honest gaps). */}
+            <LandPortalBrowserUsePanel dealId={deal?.id ?? dealCardId ?? null} variant="evidence" />
+
           <Section title="Reports & Files">
             <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Generated reports</div>
             {piSnapshot ? (
@@ -2050,16 +3030,30 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
             <div class="text-[11px] text-[var(--color-text-muted)] mt-3 mb-1">Deal documents</div>
             <DocumentUploadPanel dealId={deal.id} token={dashboardToken} onUploaded={() => void loadCanonicalExtras(deal.id)} />
           </Section>
-          )}
 
-          {activeTab === 'activity' && (
-          <Section title="Activity">
-            <PropertyIntelligenceHistory view={propertyIntelligence.view} />
-            <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Activity log</div>
-            <ActivityTimeline dealId={deal.id} />
+          <Section title="Outstanding research tasks">
+            {(piSnapshot?.nextActions.length ?? 0) > 0 || visibleEvidenceGaps(piSnapshot).length > 0 ? (
+              <div class="grid gap-3 lg:grid-cols-2">
+                <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+                  <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Next research actions</div>
+                  <ul class="mt-2 space-y-1.5">
+                    {(piSnapshot?.nextActions ?? []).map((item, index) => <li key={index} class="break-words text-[11px] leading-relaxed text-[var(--color-text-muted)]">• {item}</li>)}
+                  </ul>
+                </div>
+                <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+                  <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--color-text-faint)]">Evidence still needed</div>
+                  <ul class="mt-2 space-y-1.5">
+                    {visibleEvidenceGaps(piSnapshot).map((item, index) => <li key={index} class="break-words text-[11px] leading-relaxed text-[var(--color-text-muted)]">• {item}</li>)}
+                  </ul>
+                </div>
+              </div>
+            ) : <Placeholder text="No outstanding research task is recorded on the current snapshot." />}
           </Section>
-          )}
 
+          <Section title="Activity">
+            <div class="text-[11px] text-[var(--color-text-muted)] mb-1">Activity log</div>
+            <ActivityTimeline events={activityEvents} />
+          </Section>
           </div>
 
           {/* ══ SMART INTAKE DOCK ══════════════════════════════════════════

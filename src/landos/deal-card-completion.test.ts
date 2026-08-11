@@ -41,8 +41,8 @@ describe('Deal Card completion standard (DealCard.tsx source)', () => {
   const PI_SRC = fs.readFileSync(path.resolve(__dirname, '../../web/src/components/PropertyIntelligencePanel.tsx'), 'utf8');
 
   it('Activity tab renders the real ActivityTimeline, not a dead placeholder', () => {
-    expect(SRC).toMatch(/<ActivityTimeline dealId=\{deal\.id\}/);
-    expect(SRC).toMatch(/\/api\/landos\/deal-cards\/\$\{dealId\}\/activity/);
+    expect(SRC).toMatch(/<ActivityTimeline events=\{activityEvents\}/);
+    expect(SRC).toMatch(/\/api\/landos\/deal-cards\/\$\{id\}\/activity/);
     // The old always-empty activity placeholder must be gone.
     expect(SRC).not.toMatch(/text="No activity recorded yet"\s*\/>/);
   });

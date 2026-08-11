@@ -10,6 +10,7 @@ const readSource = (relative: string): string =>
   fs.readFileSync(path.resolve(process.cwd(), relative), 'utf8').replace(/\r\n/g, '\n');
 
 const DEAL_CARD = readSource('web/src/components/DealCard.tsx');
+const OVERVIEW = readSource('web/src/components/DealWorkspaceOverview.tsx');
 const PANEL = readSource('web/src/components/ZoningLandUsePanel.tsx');
 const ROUTES = readSource('src/landos/routes.ts');
 
@@ -18,15 +19,24 @@ describe('Zoning & Land Use Deal Card UI contract', () => {
     expect(DEAL_CARD).not.toMatch(/loadZoningLandUse|rebuildZoningLandUse/);
     expect(DEAL_CARD).not.toMatch(/\/zoning-land-use(?:\/rebuild)?/);
     expect(DEAL_CARD).not.toMatch(/<ZoningLandUsePanel|from '@\/components\/ZoningLandUsePanel'/);
-    expect(DEAL_CARD).toMatch(
-      /activeTab === 'diligence'[\s\S]{0,220}<PropertyIntelligenceDueDiligence snapshot=\{piSnapshot\}/,
-    );
+    expect(OVERVIEW).toMatch(/<PropertyIntelligenceDueDiligence snapshot=\{snapshot\}/);
+    expect(OVERVIEW).toMatch(/Property screening/);
+    expect(DEAL_CARD).not.toMatch(/activeTab === 'diligence'/);
+  });
+
+  it('normalizes duplicated jurisdiction suffixes at both Overview display sites', () => {
+    expect(OVERVIEW).toMatch(/function cleanJurisdiction/);
+    expect(OVERVIEW).toMatch(/replace\(\/\\b\(County\|Parish\|Borough\)\(\\s\+\\1\)\+\\b\/gi, '\$1'\)/);
+    expect(OVERVIEW).toMatch(/Zoning & land use'[\s\S]{0,180}cleanJurisdiction/);
+    expect(OVERVIEW).toMatch(/label="Governing jurisdiction" value=\{cleanJurisdiction/);
+    const propertyIntelligence = readSource('web/src/components/PropertyIntelligencePanel.tsx');
+    expect(propertyIntelligence).toMatch(/label="Jurisdiction" value=\{cleanJurisdiction\(operator\.subdivision\.governingJurisdiction\)/);
   });
 
   it('zoning runs as a named specialist behind the one canonical mission action', () => {
     expect(DEAL_CARD).toMatch(/<PropertyIntelligenceLaunch state=\{propertyIntelligence\}/);
     const piPanel = readSource('web/src/components/PropertyIntelligencePanel.tsx');
-    expect(piPanel).toMatch(/parcel and LandPortal subject research, government records, zoning, environmental screening/);
+    expect(piPanel).toMatch(/Refresh parcel, government, zoning, environmental, utility, access, comparable-sale/);
     expect(piPanel).toMatch(/export function PropertyIntelligenceDueDiligence/);
     expect(piPanel).toMatch(/snapshot\.dueDiligence\.map/);
     expect(PANEL).toContain('data-testid="zoning-rebuild"');

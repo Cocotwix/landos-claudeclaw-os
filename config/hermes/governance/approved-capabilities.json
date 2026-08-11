@@ -1,0 +1,1318 @@
+{
+  "$schema": "./governed-capabilities.schema.json",
+  "schemaVersion": "1.0.0",
+  "manifestId": "landos-governed-hermes",
+  "generatedAt": "2026-08-03T01:18:04.594Z",
+  "runtimeAudit": {
+    "hermesVersion": "0.20.0",
+    "sourceCommit": "a991dfc25daf68994c21d6adcdfbafb1b3dc23cf",
+    "configSchemaVersion": 33,
+    "platform": "windows",
+    "knownBuiltinToolsets": [
+      "bfl",
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "context_engine",
+      "cronjob",
+      "delegation",
+      "discord",
+      "discord_admin",
+      "file",
+      "homeassistant",
+      "image_gen",
+      "memory",
+      "session_search",
+      "skills",
+      "spotify",
+      "stt",
+      "terminal",
+      "todo",
+      "tts",
+      "video",
+      "video_gen",
+      "vision",
+      "web",
+      "x_search",
+      "yuanbao"
+    ],
+    "knownPluginToolsets": [
+      "spotify"
+    ],
+    "knownImplicitToolsets": [
+      "kanban"
+    ],
+    "inspectedAt": "2026-08-03T01:18:04.594Z",
+    "networkUsed": false,
+    "paidApisInvoked": false
+  },
+  "policy": {
+    "approvedProtections": {
+      "noSecretOrEnvExposure": true,
+      "noArbitrarySqlOrDestructiveDeletes": true,
+      "noUnrestrictedDealCardMutation": true,
+      "isolatedVisualAcceptance": true,
+      "noSelfCertification": true,
+      "dirtyStatePreservation": true,
+      "crossPropertyRejection": true
+    },
+    "noPaidApis": true,
+    "capabilityScoping": "shared-full-capability",
+    "skillGovernance": "provenance-and-normal-dirty-worktree-review",
+    "mcpMappings": "disabled-until-audited-live-adapters",
+    "terminalDenyRules": [
+      "*get-content*.env*",
+      "*cat *.env*",
+      "*type *.env*",
+      "*sqlite3*",
+      "*psql *",
+      "*mysql *",
+      "*sqlcmd *",
+      "*invoke-sqlcmd*",
+      "*remove-item*",
+      "*rm *",
+      "*rmdir *",
+      "*del *",
+      "*git reset*",
+      "*git clean*",
+      "*git checkout*",
+      "*git restore*",
+      "*set-content *",
+      "*add-content *",
+      "*out-file *",
+      "*sed -i*",
+      "*perl -pi*",
+      "*curl*-x*delete*",
+      "*curl*-x*patch*deal*",
+      "*curl*-x*put*deal*",
+      "*curl*-x*post*deal*"
+    ],
+    "capabilityNote": "Every LandOS Hermes profile receives the same full capability. Skills are procedural guidance and never reduce tool access. Standing boundaries: .env read-only; secrets never exposed or committed; nothing that could damage the local machine; anything that spends money or consumes paid credits requires explicit approval first."
+  },
+  "freeSearch": {
+    "selected": "duckduckgo-search",
+    "status": "selected-enabled",
+    "reason": "Preferred free, keyless search over SearXNG; the isolated Hermes runtime now contains pinned ddgs 9.14.4.",
+    "blockers": []
+  },
+  "structuredOutput": {
+    "selected": "deterministic-json-schema-boundary-validation",
+    "status": "selected",
+    "reason": "Repository JSON Schemas plus deterministic boundary rejection remain authoritative; model-side constrained generation is only an additional future control.",
+    "blockers": [
+      "Outlines is catalogued but its Python dependency and a governed local model runtime are absent.",
+      "Instructor is catalogued but its dependency is absent and its documented providers would require an unauthorized paid API path."
+    ]
+  },
+  "profiles": {
+    "landos-research": {
+      "templatePath": "config/hermes/governed-profiles/landos-research",
+      "skillAllowlist": [
+        "landos-property-research",
+        "landos-market-research",
+        "landos-document-intelligence",
+        "maps",
+        "ocr-and-documents",
+        "pdf",
+        "docx",
+        "xlsx",
+        "powerpoint",
+        "plan",
+        "spike",
+        "domain-intel",
+        "duckduckgo-search"
+      ],
+      "toolsetAllowlist": [
+        "browser",
+        "clarify",
+        "code_execution",
+        "computer_use",
+        "cronjob",
+        "file",
+        "memory",
+        "session_search",
+        "skills",
+        "terminal",
+        "todo",
+        "vision",
+        "web"
+      ],
+      "toolAllowlist": [
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ],
+      "mcpAllowlist": [
+        "landos-read",
+        "landos-research"
+      ]
+    },
+    "landos-visual-qa": {
+      "templatePath": "config/hermes/governed-profiles/landos-visual-qa",
+      "skillAllowlist": [
+        "landos-sprint-acceptance",
+        "dogfood",
+        "plan",
+        "adversarial-ux-test"
+      ],
+      "toolsetAllowlist": [
+        "browser",
+        "clarify",
+        "code_execution",
+        "computer_use",
+        "cronjob",
+        "file",
+        "memory",
+        "session_search",
+        "skills",
+        "terminal",
+        "todo",
+        "vision",
+        "web"
+      ],
+      "toolAllowlist": [
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ],
+      "mcpAllowlist": [
+        "landos-read",
+        "landos-acceptance"
+      ]
+    },
+    "landos-debug": {
+      "templatePath": "config/hermes/governed-profiles/landos-debug",
+      "skillAllowlist": [
+        "landos-systematic-debug",
+        "landos-code-review",
+        "systematic-debugging",
+        "test-driven-development",
+        "requesting-code-review",
+        "codebase-inspection",
+        "node-inspect-debugger",
+        "github-code-review",
+        "github-issues",
+        "github-pr-workflow",
+        "spike",
+        "plan"
+      ],
+      "toolsetAllowlist": [
+        "browser",
+        "clarify",
+        "code_execution",
+        "computer_use",
+        "cronjob",
+        "file",
+        "memory",
+        "session_search",
+        "skills",
+        "terminal",
+        "todo",
+        "vision",
+        "web"
+      ],
+      "toolAllowlist": [
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ],
+      "mcpAllowlist": [
+        "landos-read"
+      ]
+    },
+    "landos-knowledge": {
+      "templatePath": "config/hermes/governed-profiles/landos-knowledge",
+      "skillAllowlist": [
+        "landos-document-intelligence",
+        "landos-code-review",
+        "hermes-agent-skill-authoring",
+        "codebase-inspection",
+        "ocr-and-documents",
+        "pdf",
+        "docx",
+        "xlsx",
+        "powerpoint",
+        "llm-wiki",
+        "plan",
+        "code-wiki"
+      ],
+      "toolsetAllowlist": [
+        "browser",
+        "clarify",
+        "code_execution",
+        "computer_use",
+        "cronjob",
+        "file",
+        "memory",
+        "session_search",
+        "skills",
+        "terminal",
+        "todo",
+        "vision",
+        "web"
+      ],
+      "toolAllowlist": [
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ],
+      "mcpAllowlist": [
+        "landos-read"
+      ]
+    },
+    "landos-automation": {
+      "templatePath": "config/hermes/governed-profiles/landos-automation",
+      "skillAllowlist": [
+        "landos-market-research",
+        "plan"
+      ],
+      "toolsetAllowlist": [
+        "browser",
+        "clarify",
+        "code_execution",
+        "computer_use",
+        "cronjob",
+        "file",
+        "memory",
+        "session_search",
+        "skills",
+        "terminal",
+        "todo",
+        "vision",
+        "web"
+      ],
+      "toolAllowlist": [
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ],
+      "mcpAllowlist": [
+        "landos-read"
+      ]
+    }
+  },
+  "skills": {
+    "customSnapshots": [
+      {
+        "id": "landos-sprint-acceptance",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-sprint-acceptance/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-03"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-03T02:25:02.535Z",
+          "findingCount": 0,
+          "notes": "Repository-authored provenance snapshot; isolated Playwright is mandatory and browser/CDP is limited to the harness-owned context."
+        },
+        "owners": [
+          "landos-visual-qa"
+        ],
+        "permissions": [
+          "localhost visual inspection",
+          "acceptance artifact recording",
+          "read-only canonical comparison"
+        ],
+        "updatePolicy": "retain source/version/hash provenance and review through the normal dirty-worktree workflow",
+        "expectedSha256": "938233316ed6aa40a95f2c5e775966c9c955e7f85d8ac07f5dc833c212d0ffda"
+      },
+      {
+        "id": "landos-systematic-debug",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-systematic-debug/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-03"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-03T02:25:02.535Z",
+          "findingCount": 0,
+          "notes": "Repository-authored provenance snapshot; bounded terminal/browser diagnostics with read-only repository/runtime scope and no acceptance authority."
+        },
+        "owners": [
+          "landos-debug"
+        ],
+        "permissions": [
+          "scoped diagnosis",
+          "read-only canonical comparison",
+          "correction recommendation"
+        ],
+        "updatePolicy": "retain source/version/hash provenance and review through the normal dirty-worktree workflow",
+        "expectedSha256": "342aca896c72a26e7207b9ae70ce3424165fe641280684f27d647d3210960c87"
+      },
+      {
+        "id": "landos-property-research",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-property-research/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-03"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-03T01:18:04.594Z",
+          "findingCount": 0,
+          "notes": "Repository-authored immutable snapshot; strict property isolation."
+        },
+        "owners": [
+          "landos-research"
+        ],
+        "permissions": [
+          "public-source research",
+          "verified evidence handback",
+          "grounded citations"
+        ],
+        "updatePolicy": "manual version bump, dangerous-pattern scan, pending full diff, explicit owner approval, new SHA-256 snapshot",
+        "expectedSha256": "6f9917de254283396de35ad216b238414f57a33de6232befa13ecd048bd1138a"
+      },
+      {
+        "id": "landos-market-research",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-market-research/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-03"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-03T01:18:04.594Z",
+          "findingCount": 0,
+          "notes": "Repository-authored immutable snapshot; no valuation authority."
+        },
+        "owners": [
+          "landos-research",
+          "landos-automation"
+        ],
+        "permissions": [
+          "public market research",
+          "freshness/citation reporting",
+          "explicitly approved monitoring inputs"
+        ],
+        "updatePolicy": "manual version bump, dangerous-pattern scan, pending full diff, explicit owner approval, new SHA-256 snapshot",
+        "expectedSha256": "07be797e9941bca15093e0eee581ba51e57c4d1a2e94f07444e58f0fc9a16eb1"
+      },
+      {
+        "id": "landos-document-intelligence",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-document-intelligence/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-03"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-03T01:18:04.594Z",
+          "findingCount": 0,
+          "notes": "Repository-authored immutable snapshot; page-level citations required."
+        },
+        "owners": [
+          "landos-research",
+          "landos-knowledge"
+        ],
+        "permissions": [
+          "document read/extraction",
+          "OCR",
+          "structured cited output"
+        ],
+        "updatePolicy": "manual version bump, dangerous-pattern scan, pending full diff, explicit owner approval, new SHA-256 snapshot",
+        "expectedSha256": "d9cf4616d8a214d1923c7a6952a56a16bed0ab600615213173bf6616d2eeabf2"
+      },
+      {
+        "id": "landos-code-review",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-code-review/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-03"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-03T01:18:04.594Z",
+          "findingCount": 0,
+          "notes": "Repository-authored immutable snapshot; no standing implementation authority."
+        },
+        "owners": [
+          "landos-debug",
+          "landos-knowledge"
+        ],
+        "permissions": [
+          "scoped read-only diff review",
+          "security and regression review",
+          "precommit recommendation"
+        ],
+        "updatePolicy": "manual version bump, dangerous-pattern scan, pending full diff, explicit owner approval, new SHA-256 snapshot",
+        "expectedSha256": "77829ca9beba7e9f704377bbfa795d597d746214b8fe725a1f7346347345ac54"
+      }
+    ],
+    "bundledGovernance": {
+      "source": {
+        "type": "hermes-bundled",
+        "path": "skills",
+        "hermesVersion": "0.19.1",
+        "commit": "3f497e2b4f92ef83f45a98c02f7cb47c12ee069e"
+      },
+      "installedAt": "2026-08-03T01:18:04.594Z",
+      "externalInstallation": "deferred-to-integration",
+      "audit": {
+        "result": "trusted-bundled",
+        "scanner": "Hermes bundled provenance plus LandOS source/version verification",
+        "scannedAt": "2026-08-03T01:18:04.594Z",
+        "findingCount": 0,
+        "notes": "Each entry is copied only from the pinned local Hermes commit; per-profile source digests are locked at provision time."
+      },
+      "ownerField": "profiles",
+      "permissions": [
+        "only inside an owning profile's declared tool and authority contract"
+      ],
+      "updatePolicy": "Hermes version/commit change blocks audit until every selected skill is re-reviewed and the manifest is repinned"
+    },
+    "bundled": [
+      {
+        "id": "dogfood",
+        "version": "1.0.0",
+        "sourcePath": "skills/software-development/dogfood",
+        "profiles": [
+          "landos-visual-qa"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "systematic-debugging",
+        "version": "1.1.0",
+        "sourcePath": "skills/software-development/systematic-debugging",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "test-driven-development",
+        "version": "1.1.0",
+        "sourcePath": "skills/software-development/test-driven-development",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "requesting-code-review",
+        "version": "2.0.0",
+        "sourcePath": "skills/software-development/requesting-code-review",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "hermes-agent-skill-authoring",
+        "version": "1.1.0",
+        "sourcePath": "skills/software-development/hermes-agent-skill-authoring",
+        "profiles": [
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "maps",
+        "version": "1.2.0",
+        "sourcePath": "skills/productivity/maps",
+        "profiles": [
+          "landos-research"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "ocr-and-documents",
+        "version": "2.3.0",
+        "sourcePath": "skills/productivity/ocr-and-documents",
+        "profiles": [
+          "landos-research",
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "pdf",
+        "version": "1.0.0",
+        "sourcePath": "skills/productivity/pdf",
+        "profiles": [
+          "landos-research",
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "docx",
+        "version": "1.0.0",
+        "sourcePath": "skills/productivity/docx",
+        "profiles": [
+          "landos-research",
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "xlsx",
+        "version": "1.0.0",
+        "sourcePath": "skills/productivity/xlsx",
+        "profiles": [
+          "landos-research",
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "powerpoint",
+        "version": "2.0.0",
+        "sourcePath": "skills/productivity/powerpoint",
+        "profiles": [
+          "landos-research",
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "codebase-inspection",
+        "version": "1.0.0",
+        "sourcePath": "skills/github/codebase-inspection",
+        "profiles": [
+          "landos-debug",
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "node-inspect-debugger",
+        "version": "1.0.0",
+        "sourcePath": "skills/software-development/node-inspect-debugger",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "github-code-review",
+        "version": "1.1.0",
+        "sourcePath": "skills/github/github-code-review",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "github-issues",
+        "version": "1.1.0",
+        "sourcePath": "skills/github/github-issues",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "inspection only; GitHub mutation requires separate authority"
+      },
+      {
+        "id": "github-pr-workflow",
+        "version": "1.1.0",
+        "sourcePath": "skills/github/github-pr-workflow",
+        "profiles": [
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "inspection only; PR mutation requires separate authority"
+      },
+      {
+        "id": "spike",
+        "version": "1.0.0",
+        "sourcePath": "skills/software-development/spike",
+        "profiles": [
+          "landos-research",
+          "landos-debug"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "plan",
+        "version": "2.0.0",
+        "sourcePath": "skills/software-development/plan",
+        "profiles": [
+          "landos-research",
+          "landos-visual-qa",
+          "landos-debug",
+          "landos-knowledge",
+          "landos-automation"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "manual Hermes runtime audit before snapshot refresh"
+      },
+      {
+        "id": "llm-wiki",
+        "version": "2.1.0",
+        "sourcePath": "skills/research/llm-wiki",
+        "profiles": [
+          "landos-knowledge"
+        ],
+        "trust": "hermes-bundled",
+        "updatePolicy": "repository Markdown only; manual Hermes runtime audit before snapshot refresh"
+      }
+    ],
+    "optionalApproved": [
+      {
+        "id": "adversarial-ux-test",
+        "version": "1.0.0",
+        "kind": "official-optional",
+        "source": {
+          "type": "hermes-optional",
+          "path": "optional-skills/dogfood/adversarial-ux-test",
+          "hermesVersion": "0.19.1",
+          "commit": "3f497e2b4f92ef83f45a98c02f7cb47c12ee069e"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "Hermes skills-guard-v1",
+          "scannedAt": "2026-08-03T01:18:04.594Z",
+          "findingCount": 0,
+          "notes": "Official local catalog source; no network used."
+        },
+        "owners": [
+          "landos-visual-qa"
+        ],
+        "permissions": [
+          "isolated UX inspection only",
+          "no repair or canonical mutation"
+        ],
+        "updatePolicy": "pin to audited Hermes commit; manual rescan and explicit approval before update",
+        "expectedSha256": null
+      },
+      {
+        "id": "code-wiki",
+        "version": "0.1.0",
+        "kind": "official-optional",
+        "source": {
+          "type": "hermes-optional",
+          "path": "optional-skills/software-development/code-wiki",
+          "hermesVersion": "0.19.1",
+          "commit": "3f497e2b4f92ef83f45a98c02f7cb47c12ee069e"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "Hermes skills-guard-v1",
+          "scannedAt": "2026-08-03T01:18:04.594Z",
+          "findingCount": 2,
+          "notes": "Two medium documentation findings; safe verdict. Repository Markdown scope only."
+        },
+        "owners": [
+          "landos-knowledge"
+        ],
+        "permissions": [
+          "approved knowledge paths",
+          "read-only code inspection"
+        ],
+        "updatePolicy": "pin to audited Hermes commit; manual rescan and explicit approval before update",
+        "expectedSha256": null
+      },
+      {
+        "id": "domain-intel",
+        "version": "unversioned@3f497e2b4f92ef83f45a98c02f7cb47c12ee069e",
+        "kind": "official-optional",
+        "source": {
+          "type": "hermes-optional",
+          "path": "optional-skills/research/domain-intel",
+          "hermesVersion": "0.19.1",
+          "commit": "3f497e2b4f92ef83f45a98c02f7cb47c12ee069e"
+        },
+        "installedAt": "2026-08-03T01:18:04.594Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "Hermes skills-guard-v1 plus zero-network runpy smoke",
+          "scannedAt": "2026-08-03T02:25:02.535Z",
+          "findingCount": 0,
+          "notes": "Pinned source and stdlib entrypoint load offline; landos-research is authorized to run its passive commands against approved public domains."
+        },
+        "owners": [
+          "landos-research"
+        ],
+        "permissions": [
+          "passive public-domain metadata",
+          "no credential or private-network probing"
+        ],
+        "updatePolicy": "pin to audited Hermes commit; manual rescan and explicit approval before update",
+        "expectedSha256": null,
+        "runtimeRequirements": {
+          "pythonStdlibOnly": true,
+          "entrypoint": "scripts/domain_intel.py",
+          "entrypointSha256": "980612886da31cdf5c6ad2d5a5936b69c077e025f7cd45ef5e1986ba50916d91",
+          "skillSha256": "ed67786900eb383f4de498486d732382f6fd0e97b5dfee6d7c7c186c9002708a",
+          "executionState": "enabled-approved-public-sources",
+          "offlineSmoke": "runpy exposed available,dns,ssl,subdomains,whois and bulk with socket/urllib network denied",
+          "verifiedAt": "2026-08-03T02:25:02.535Z"
+        }
+      },
+      {
+        "id": "duckduckgo-search",
+        "version": "1.3.0",
+        "kind": "official-optional",
+        "source": {
+          "type": "hermes-optional",
+          "path": "optional-skills/research/duckduckgo-search",
+          "hermesVersion": "0.19.1",
+          "commit": "3f497e2b4f92ef83f45a98c02f7cb47c12ee069e"
+        },
+        "installedAt": "2026-08-03T01:41:53.187Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "Hermes skills-guard-v1",
+          "scannedAt": "2026-08-03T01:41:53.187Z",
+          "findingCount": 4,
+          "notes": "Four medium documentation/install findings; safe verdict. Pinned keyless ddgs runtime verified locally."
+        },
+        "owners": [
+          "landos-research"
+        ],
+        "permissions": [
+          "free keyless public web/news/image search",
+          "grounded source discovery",
+          "no credential or paid-provider use"
+        ],
+        "updatePolicy": "pin skill to audited Hermes commit and ddgs to an exact version; manual rescan and explicit approval before update",
+        "expectedSha256": null,
+        "runtimeRequirements": {
+          "pythonPackages": {
+            "ddgs": "9.14.4"
+          },
+          "verifiedAt": "2026-08-03T01:41:53.187Z"
+        }
+      }
+    ]
+  },
+  "mcps": {
+    "landos-read": {
+      "status": "integration-pending",
+      "source": "repository Lane E contract",
+      "version": "1.0.0",
+      "installedAt": null,
+      "audit": "must pass focused FastMCP and mcporter-compatible inspection before activation",
+      "owners": [
+        "landos-research",
+        "landos-visual-qa",
+        "landos-debug",
+        "landos-knowledge",
+        "landos-automation"
+      ],
+      "permissions": [
+        "get property context",
+        "get accepted evidence",
+        "get provider/specialist status",
+        "get acceptance expectations",
+        "get visible/canonical counts",
+        "get market context",
+        "get source registry"
+      ],
+      "denied": [
+        "arbitrary SQL",
+        "filesystem writes",
+        "deletes",
+        "Deal Card mutation",
+        "valuation/strategy/offer mutation",
+        "shell",
+        "secrets",
+        "environment variables"
+      ],
+      "updatePolicy": "manual contract/schema review and profile allowlist check"
+    },
+    "landos-acceptance": {
+      "status": "integration-pending",
+      "source": "repository Lane E contract",
+      "version": "1.0.0",
+      "installedAt": null,
+      "audit": "must pass focused FastMCP and mcporter-compatible inspection before activation",
+      "owners": [
+        "landos-visual-qa"
+      ],
+      "permissions": [
+        "begin acceptance",
+        "record claim/artifact/refresh/restart/console/network result",
+        "submit PASS or FAIL"
+      ],
+      "denied": [
+        "application-code edits",
+        "canonical evidence mutation",
+        "valuation/strategy/offer mutation",
+        "arbitrary files",
+        "shell",
+        "secrets"
+      ],
+      "updatePolicy": "manual contract/schema review and independent acceptance-boundary review"
+    },
+    "landos-research": {
+      "status": "integration-pending",
+      "source": "repository Lane E contract",
+      "version": "1.0.0",
+      "installedAt": null,
+      "audit": "must pass focused FastMCP and mcporter-compatible inspection before activation",
+      "owners": [
+        "landos-research"
+      ],
+      "permissions": [
+        "save verified property fact/comp/visual",
+        "report specialist progress",
+        "complete or fail category"
+      ],
+      "denied": [
+        "arbitrary SQL",
+        "unrestricted Deal Card mutation",
+        "valuation/strategy/offer mutation",
+        "cross-property evidence",
+        "filesystem writes",
+        "shell",
+        "secrets"
+      ],
+      "updatePolicy": "manual contract/schema review and deterministic identity-validation review"
+    }
+  },
+  "optionalEvaluations": [
+    {
+      "id": "grounded-citations",
+      "catalogPath": null,
+      "status": "blocked",
+      "audit": "not found in installed bundled or optional catalog",
+      "blockers": [
+        "No supported local SKILL.md exists; no substitute was invented."
+      ]
+    },
+    {
+      "id": "duckduckgo-search",
+      "catalogPath": "optional-skills/research/duckduckgo-search",
+      "status": "approved",
+      "audit": "safe; 4 medium findings; pinned ddgs 9.14.4 verified in the isolated Hermes runtime",
+      "blockers": []
+    },
+    {
+      "id": "searxng-search",
+      "catalogPath": "optional-skills/research/searxng-search",
+      "status": "not-selected",
+      "audit": "safe; 1 medium finding",
+      "blockers": [
+        "Catalog platforms exclude Windows.",
+        "No supported repository-backed SearXNG deployment was discovered."
+      ]
+    },
+    {
+      "id": "qmd",
+      "catalogPath": "optional-skills/research/qmd",
+      "status": "blocked",
+      "audit": "dangerous; 7 findings including critical/high",
+      "blockers": [
+        "Catalog platforms exclude Windows.",
+        "qmd executable is absent.",
+        "Hermes scanner verdict is dangerous."
+      ]
+    },
+    {
+      "id": "adversarial-ux-test",
+      "catalogPath": "optional-skills/dogfood/adversarial-ux-test",
+      "status": "approved",
+      "audit": "safe; 0 findings",
+      "blockers": []
+    },
+    {
+      "id": "fastmcp",
+      "catalogPath": "optional-skills/mcp/fastmcp",
+      "status": "blocked",
+      "audit": "dangerous; 11 findings including critical",
+      "blockers": [
+        "fastmcp Python package is absent.",
+        "Hermes scanner verdict is dangerous."
+      ]
+    },
+    {
+      "id": "mcporter",
+      "catalogPath": "optional-skills/mcp/mcporter",
+      "status": "blocked",
+      "audit": "safe; 1 medium finding",
+      "blockers": [
+        "mcporter executable is absent.",
+        "Using npx would require an unaudited lazy/network install."
+      ]
+    },
+    {
+      "id": "rest-graphql-debug",
+      "catalogPath": "optional-skills/software-development/rest-graphql-debug",
+      "status": "blocked",
+      "audit": "dangerous; 8 findings including critical/high",
+      "blockers": [
+        "Hermes scanner verdict is dangerous; no force install is allowed."
+      ]
+    },
+    {
+      "id": "python-debugpy",
+      "catalogPath": "skills/software-development/python-debugpy",
+      "status": "blocked",
+      "audit": "bundled source inspected; declared platforms are Linux and macOS",
+      "blockers": [
+        "The installed skill excludes Windows and therefore does not load in the governed Windows profile."
+      ]
+    },
+    {
+      "id": "llm-wiki",
+      "catalogPath": "skills/research/llm-wiki",
+      "status": "bundled-approved",
+      "audit": "bundled trust; standalone scan reported caution with 3 findings",
+      "blockers": []
+    },
+    {
+      "id": "watchers",
+      "catalogPath": "optional-skills/devops/watchers",
+      "status": "blocked",
+      "audit": "dangerous; 2 critical/high findings",
+      "blockers": [
+        "Catalog platforms exclude Windows.",
+        "Hermes scanner verdict is dangerous.",
+        "No monitoring assignment or schedule was authorized."
+      ]
+    },
+    {
+      "id": "outlines",
+      "catalogPath": "optional-skills/mlops/inference/outlines",
+      "status": "not-selected",
+      "audit": "safe; 5 medium findings",
+      "blockers": [
+        "outlines dependency is absent.",
+        "No governed local model runtime is configured."
+      ]
+    },
+    {
+      "id": "instructor",
+      "catalogPath": "optional-skills/mlops/instructor",
+      "status": "not-selected",
+      "audit": "safe; 4 medium findings",
+      "blockers": [
+        "instructor dependency is absent.",
+        "Documented provider paths require paid API authorization."
+      ]
+    },
+    {
+      "id": "parallel-cli",
+      "catalogPath": "optional-skills/research/parallel-cli",
+      "status": "blocked",
+      "audit": "dangerous; 4 findings including critical",
+      "blockers": [
+        "Hermes scanner verdict is dangerous.",
+        "Vendor-specific service capability is not authorized."
+      ]
+    },
+    {
+      "id": "scrapling",
+      "catalogPath": "optional-skills/research/scrapling",
+      "status": "blocked",
+      "audit": "safe; 11 medium findings",
+      "blockers": [
+        "scrapling package and command are absent.",
+        "Restricted difficult-site fallback remains uninstalled until dependency audit and explicit need."
+      ]
+    },
+    {
+      "id": "domain-intel",
+      "catalogPath": "optional-skills/research/domain-intel",
+      "status": "approved",
+      "audit": "safe; 0 findings; pinned source and stdlib entrypoint load in a zero-network smoke; passive execution is authorized for approved public domains",
+      "blockers": []
+    },
+    {
+      "id": "osint-investigation",
+      "catalogPath": "optional-skills/research/osint-investigation",
+      "status": "blocked",
+      "audit": "dangerous; 6 critical/high findings",
+      "blockers": [
+        "Hermes scanner verdict is dangerous; broad OSINT exceeds the bounded property-research need."
+      ]
+    },
+    {
+      "id": "code-wiki",
+      "catalogPath": "optional-skills/software-development/code-wiki",
+      "status": "approved",
+      "audit": "safe; 2 medium findings",
+      "blockers": []
+    },
+    {
+      "id": "gitnexus-explorer",
+      "catalogPath": "optional-skills/research/gitnexus-explorer",
+      "status": "blocked",
+      "audit": "dangerous; 15 critical/high/medium findings",
+      "blockers": [
+        "Hermes scanner verdict is dangerous; no force install is allowed."
+      ]
+    }
+  ],
+  "deferredEvaluations": [
+    {
+      "id": "LLaVA",
+      "catalogPath": "optional-skills/mlops/llava",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "Not immediately release-critical; requires heavyweight local model/runtime audit."
+      ]
+    },
+    {
+      "id": "CLIP",
+      "catalogPath": "optional-skills/mlops/clip",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "Not immediately release-critical; requires model/runtime and data-governance audit."
+      ]
+    },
+    {
+      "id": "Segment Anything",
+      "catalogPath": "optional-skills/mlops/models/segment-anything-model",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "Not immediately release-critical; requires heavyweight model/runtime audit."
+      ]
+    },
+    {
+      "id": "Chroma",
+      "catalogPath": "optional-skills/mlops/chroma",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "Repository Markdown is preferred; a competing vector store is not justified."
+      ]
+    },
+    {
+      "id": "Qdrant",
+      "catalogPath": "optional-skills/mlops/qdrant",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "Repository Markdown is preferred; hosted/service vector storage is not justified."
+      ]
+    },
+    {
+      "id": "FAISS",
+      "catalogPath": "optional-skills/mlops/faiss",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "Repository Markdown is preferred; local vector index complexity is not justified."
+      ]
+    },
+    {
+      "id": "local GUI models",
+      "catalogPath": null,
+      "status": "deferred",
+      "audit": "no dedicated supported catalog skill discovered",
+      "blockers": [
+        "No immediate release-critical use or governed runtime contract."
+      ]
+    },
+    {
+      "id": "telephony",
+      "catalogPath": "optional-skills/productivity/telephony",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "External credentials, human-contact authority, and possible charges require explicit approval."
+      ]
+    },
+    {
+      "id": "AgentMail",
+      "catalogPath": "optional-skills/email/agentmail",
+      "status": "deferred",
+      "audit": "catalog presence only",
+      "blockers": [
+        "External account, message authority, and credential handling require explicit approval."
+      ]
+    }
+  ]
+}

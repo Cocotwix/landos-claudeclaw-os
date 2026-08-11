@@ -160,6 +160,28 @@ describe('extractPropertyArgs', () => {
     expect(extractPropertyArgs('0 Stewart Rd, Dunlap, TN 37327')?.apn).toBeUndefined();
   });
 
+  // REGRESSION (Cayuga NY trial lead): a "Parcel ID:" label is the same label as
+  // "APN:", and a seven-group county parcel ID must be captured WHOLE. The old
+  // dash pattern's single optional fourth group truncated it to
+  // "053889-075-000-0001" — a DIFFERENT parcel identity.
+  it('captures a long multi-group Parcel ID whole, with the sentence-safe county', () => {
+    const r = extractPropertyArgs(
+      'New seller lead. Owner: Daniel Wilkinson. State: New York. County: Cayuga County. Parcel ID: 053889-075-000-0001-024-011-0000.',
+    );
+    expect(r?.apn).toBe('053889-075-000-0001-024-011-0000');
+    expect(r?.county).toBe('Cayuga');
+    expect(r?.state).toBe('NY');
+  });
+  it('does not read a sentence boundary before "County" as the county name', () => {
+    // "…New York. County: Cayuga County." — "New York." touches "County" only
+    // through sentence punctuation; the county is Cayuga.
+    const r = extractPropertyArgs('Owner: A Person. State: New York. County: Cayuga County. APN: 12-345-678');
+    expect(r?.county).toBe('Cayuga');
+  });
+  it('still reads an abbreviated county name (St. Clair County)', () => {
+    expect(extractPropertyArgs('APN: 12-345-678, St. Clair County, IL')?.county).toBe('St. Clair');
+  });
+
   it('extracts LP URL', () => {
     const r = extractPropertyArgs(
       'Check https://landportal.com/property?propertyid=12345&fips=37005 for me',

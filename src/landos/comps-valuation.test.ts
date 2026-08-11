@@ -20,6 +20,8 @@ import { addComp, getComp } from './comps.js';
 import {
   buildCompsValuationView,
   computeCompsValuation,
+  detectImprovedProperty,
+  readSubjectImprovement,
   setCompValuationSelection,
   haversineMiles,
   type WorkspaceComp,
@@ -31,6 +33,43 @@ const NOW = Date.parse('2026-08-04T12:00:00Z');
 const SUBJECT_POINT = { lat: 43.33, lng: -76.65 };
 const CLINTON_POINT = { lat: 43.0423195, lng: -76.5755962 };
 const EAST_ST_POINT = { lat: 43.047844, lng: -76.5558735 };
+
+describe('improved-property detection', () => {
+  it('finds residential, structure-size, and house-text signals with named evidence', () => {
+    expect(detectImprovedProperty({ propertyClass: 'residential' })).toMatchObject({ improved: true, evidence: expect.stringMatching(/property class/i) });
+    expect(detectImprovedProperty({ buildingSqft: 1000 })).toMatchObject({ improved: true, evidence: expect.stringMatching(/1,000 sqft/i) });
+    expect(detectImprovedProperty({ descriptionText: 'Three bedroom, two bathroom home' })).toMatchObject({ improved: true, evidence: expect.stringMatching(/bedroom/i) });
+  });
+
+  it('does not invent improvement for land or vacant-land inputs', () => {
+    expect(detectImprovedProperty({})).toEqual({ improved: false, evidence: null });
+    expect(detectImprovedProperty({ propertyClass: 'land' })).toEqual({ improved: false, evidence: null });
+    expect(detectImprovedProperty({ classification: 'active vacant land', notes: 'undeveloped acreage' }))
+      .toEqual({ improved: false, evidence: null });
+  });
+
+  // Zillow rows arrive with their card fragments concatenated, so the structure
+  // keyword is glued to the fragment before it and a word boundary cannot see
+  // it. These are the real strings that put eleven house listings under active
+  // vacant-land competition on 9490 Elk Lake Rd.
+  it('sees the structure keyword in concatenated marketplace text', () => {
+    for (const addressDesc of [
+      '208 sqftHouse for sale10892 Lakeshore Rd, Elk Rapids, MI 49629',
+      '757 sqftHouse for sale8739 Skegemog Point Rd, Williamsburg, MI 49690',
+      '1,240 sqftTownhouse for sale12 Example Ct, Traverse City, MI 49686',
+    ]) {
+      expect(detectImprovedProperty({ addressDesc })).toMatchObject({ improved: true });
+    }
+    expect(detectImprovedProperty({ notes: '3 bdHouse for sale on 5 acres' })).toMatchObject({ improved: true });
+  });
+
+  it('still reads concatenated vacant-land text as vacant land', () => {
+    expect(detectImprovedProperty({ addressDesc: '40 acresLot / Land for sale0 Vacant Ridge Rd, Williamsburg, MI 49690' }))
+      .toEqual({ improved: false, evidence: null });
+    expect(detectImprovedProperty({ addressDesc: '5.2 acresLand for saleTBD Elk Lake Rd, Williamsburg, MI 49690' }))
+      .toEqual({ improved: false, evidence: null });
+  });
+});
 
 function seedSubject(opts: { withCoords?: boolean } = {}): { dealCardId: number; cardId: number } {
   const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Comps & Valuation subject' });
@@ -94,6 +133,19 @@ beforeEach(() => {
 });
 
 describe('workspace classification', () => {
+  it('reads an existing dated LandPortal unknown-kind row as its source-stated sale', () => {
+    const ids = seedSubject();
+    seedClosedSale(ids, {
+      priceKind: 'unknown',
+      saleOrListDate: '2026-02-12',
+      notes: 'Hermes-imported LandPortal comparable from the retained source row.',
+    });
+    const comp = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!.comps[0];
+    expect(comp.category).toBe('accepted_closed_sale');
+    expect(comp.priceKind).toBe('sale');
+    expect(comp.classificationReason).toMatch(/LandPortal stated the sale date 2026-02-12/i);
+  });
+
   it('auto-selects a credible closed vacant-land sale but stays insufficient below two sales', () => {
     const ids = seedSubject();
     seedClosedSale(ids);
@@ -248,11 +300,11 @@ describe('automatic provisional valuation and operator refinement', () => {
     expect(view.cleaned.avgIndication).toBe(94500);
     // The central value and the 40/50/60 levels derive from the ADOPTED cleaned
     // FMV (weighted direct comps lead, reconciled with median and average).
-    expect(view.cleaned.adoptedFmv).toBe(94000);
+    expect(view.cleaned.adoptedFmv).toBe(93500);
     expect(view.summary.fmv?.central).toBe(view.cleaned.adoptedFmv);
     expect(view.summary.fmv?.low).toBe(87500);
     expect(view.summary.fmv?.high).toBe(101500);
-    expect(view.summary.acquisitionLevels).toEqual({ pct40: 37500, pct50: 47000, pct60: 56500 });
+    expect(view.summary.acquisitionLevels).toEqual({ pct40: 37500, pct50: 47000, pct60: 56000 });
     // Both sales entered automatically; no operator include was recorded.
     for (const comp of view.comps) {
       expect(comp.selectedForValuation).toBe(true);
@@ -489,15 +541,15 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
     const comp = (addr: string) => view.comps.find((c) => c.address?.startsWith(addr))!;
     expect(comp('Direct Rd').valuationRole).toBe('direct');
     expect(comp('Support Rd').valuationRole).toBe('supporting');
-    expect(comp('Boundary Rd').valuationRole).toBe('boundary');
+    expect(comp('Boundary Rd').valuationRole).toBe('supporting');
     expect(comp('Old Rd').valuationRole).toBe('historical_context');
     expect(view.cleaned.directCount).toBe(1);
-    expect(view.cleaned.supportingCount).toBe(1);
-    expect(view.cleaned.boundaryCount).toBe(1);
+    expect(view.cleaned.supportingCount).toBe(2);
+    expect(view.cleaned.boundaryCount).toBe(0);
     expect(view.cleaned.historicalContextCount).toBe(1);
 
     // The three in-window sales price the subject; the 30-plus-month sale does
-    // not, and the boundary sale carries the lowest weight of the three.
+    // not, and the beyond-20 supporting sale carries reduced tier weight.
     expect(view.cleaned.cleanedCount).toBe(3);
     expect(comp('Old Rd').inValuationSet).toBe(false);
     expect(comp('Old Rd').valuationWeight).toBeNull();
@@ -641,3 +693,49 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
 function round500(n: number): number {
   return Math.round(n / 500) * 500;
 }
+
+describe('subject improvement scope (land comps price land, never a whole property)', () => {
+  const inspection = (facts: Record<string, string>, observations: Array<{ label: string; detail: string }> = []) => ({
+    parcelUrl: 'https://landportal.example/parcel/1',
+    comparablesUrl: null,
+    parcelFacts: facts,
+    assets: [],
+    overlays: [],
+    visualObservations: observations.map((o) => ({ ...o, confidence: 'medium', evidence: 'Parcel panel' })),
+    comparables: [],
+    sources: [],
+  }) as unknown as Parameters<typeof readSubjectImprovement>[0];
+
+  it('names an improved subject and forces a land-only scope with whole-property pending', () => {
+    const read = readSubjectImprovement(inspection(
+      { 'Building SqFt': '1701', Acres: '60' },
+      [{ label: 'Existing improvement', detail: 'Parcel page shows approx. 1,701 sqft of improvements.' }],
+    ));
+    expect(read.improved).toBe(true);
+    expect(read.buildingSqft).toBe(1701);
+    expect(read.captionNoun).toBe('improved parcel');
+    expect(read.captionNoun).not.toMatch(/vacant/i);
+    expect(read.valuationScope).toBe('land_only');
+    expect(read.valuationScopeLabel).toMatch(/land-only/i);
+    expect(read.valuationScopeLabel).not.toMatch(/fair market value/i);
+    expect(read.wholePropertyPending).toBe(true);
+    expect(read.wholePropertyNote).toMatch(/PENDING/);
+    expect(read.wholePropertyNote).toMatch(/1,701 sqft/);
+  });
+
+  it('leaves a genuinely vacant subject on the whole-property scope', () => {
+    const read = readSubjectImprovement(inspection({ 'Building SqFt': '0', 'Improvement Value': '0', Acres: '40' }));
+    expect(read.improved).toBe(false);
+    expect(read.captionNoun).toBe('vacant parcel');
+    expect(read.valuationScope).toBe('whole_property');
+    expect(read.valuationScopeLabel).toBe('Preliminary fair market value');
+    expect(read.wholePropertyPending).toBe(false);
+    expect(read.wholePropertyNote).toBeNull();
+  });
+
+  it('does not invent improvements when nothing is retained', () => {
+    const read = readSubjectImprovement(null);
+    expect(read.improved).toBe(false);
+    expect(read.wholePropertyPending).toBe(false);
+  });
+});

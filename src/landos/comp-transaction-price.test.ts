@@ -159,3 +159,32 @@ describe('no reliable transaction price at all', () => {
     expect(r.lines.join(' ')).toContain('blocked from the cleaned sold-price valuation');
   });
 });
+
+describe('source-stated sale (usable evidence, never a verified sale)', () => {
+  it('keeps the row usable but refuses the verified-sale label and confidence', () => {
+    const r = resolveCompTransactionPrice({
+      verifiedSoldPrice: 400000, soldDateIso: '2025-03-21',
+      state: 'MI', acres: 40,
+      saleVerification: 'source_stated',
+      sourceStatedProvenance: 'LandPortal stated the sale date 2025-03-21.',
+    });
+    expect(r.basis).toBe('source_stated_sale');
+    expect(r.confidence).toBe('source_stated');
+    expect(r.usableForValuation).toBe(true);
+    expect(r.price).toBe(400000);
+    expect(r.pricePerAcre).toBe(10000);
+    expect(r.priceLabel).not.toMatch(/^Verified sold price$/);
+    expect(r.priceLabel).toMatch(/not independently verified/i);
+    expect(r.lines.join(' ')).toContain('LandPortal stated the sale date 2025-03-21.');
+    expect(r.lines.join(' ')).toMatch(/No independent sale verification/i);
+  });
+
+  it('still returns a verified sale when the source independently documented one', () => {
+    const r = resolveCompTransactionPrice({
+      verifiedSoldPrice: 400000, soldDateIso: '2025-03-21', state: 'MI', acres: 40,
+    });
+    expect(r.basis).toBe('verified_sale');
+    expect(r.confidence).toBe('verified');
+    expect(r.priceLabel).toBe('Verified sold price');
+  });
+});

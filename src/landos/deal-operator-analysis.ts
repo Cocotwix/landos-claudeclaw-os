@@ -970,6 +970,8 @@ function marketAnalysis(pkg: DealIntelligenceInputPackage, context: DealOperator
 export interface CanonicalCompCounts {
   sold: number;
   active: number;
+  /** True when no selected sale carries an independently verified closed price. */
+  soldAllSourceStated?: boolean;
 }
 
 function marketScore(
@@ -991,8 +993,11 @@ function marketScore(
   score += Math.min(25, sold * 5);
   score += Math.min(12, active * 3);
   score += Math.min(12, countyBands.length * 2 + Math.min(4, countySold / 10));
+  // The noun must match what Comps & Valuation calls the same records, or the
+  // two surfaces contradict each other about the same evidence.
+  const soldNoun = canonicalCounts?.soldAllSourceStated ? 'source-stated sale(s)' : 'closed sale(s)';
   if (sold || countySold) {
-    positives.push(`${sold} selected closed sale(s) and ${countySold} internal county-band sale(s) support the market read.`);
+    positives.push(`${sold} selected ${soldNoun} and ${countySold} internal county-band sale(s) support the market read.`);
   }
   else {
     deductions.push('No selected closed sale supports local resale behavior.');
@@ -1967,7 +1972,7 @@ function normalizedModelScore(
 }
 
 /** Marker for the canonical comp-count sentence the market score must always carry. */
-const CANONICAL_COMP_COUNT_MARKER = /selected closed sale\(s\) and .* internal county-band sale\(s\)/i;
+const CANONICAL_COMP_COUNT_MARKER = /selected (?:closed|source-stated) sale\(s\) and .* internal county-band sale\(s\)/i;
 
 /**
  * Re-assert the deterministic canonical comp-count line on a model-reworded

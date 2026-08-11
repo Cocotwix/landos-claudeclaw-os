@@ -1,41 +1,39 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-04T05:40:00.0000000Z",
-  "headUnderReview": "f25d7a5",
-  "commitState": "COMMITTED as the minimal V2 property-intelligence baseline (replacement for oversized local commit 2a60346; excluded workstreams remain uncommitted in the worktree)",
+  "recordedAt": "2026-08-10T00:05:00.0000000Z",
+  "headUnderReview": "9bfd4bd",
+  "commitState": "UNCOMMITTED. Zoning source-selection + county source-discovery closeout sits in the dirty worktree with ~190 pre-existing dirty paths. No commit, no push.",
   "tests": {
     "status": "PASS",
-    "timestamp": "2026-08-04T05:32:40.0000000Z",
-    "summary": "Focused suites passed against the exact replacement-commit tree in an isolated parent-based worktree: deal-operator-analysis.contract, property-market-context, property-intelligence.routes, hermes-landportal-auto, hermes-landportal-import; 52 tests, 0 failures."
+    "timestamp": "2026-08-09T23:55:00.0000000Z",
+    "summary": "Focused suites: zoning-source-selection (new), county-source-discovery (new), property-intelligence-parcel-independence, land-use, land-use-county-fallback, state-law-retrieval, zoning-slice, zoning.routes, dashboard.contract, dashboard-cors; 350 tests, 0 failures."
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-04T05:34:00.0000000Z",
-    "summary": "tsc --noEmit clean on the exact replacement-commit tree (parent tree alone had 19 pre-existing errors; the committed set repairs them)."
+    "timestamp": "2026-08-09T23:54:00.0000000Z",
+    "summary": "tsc --noEmit clean on the working tree."
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-08-04T05:35:00.0000000Z",
-    "summary": "Server (tsc) and web (vite) production builds completed on the exact replacement-commit tree; only pre-existing chunk-size warnings."
+    "timestamp": "2026-08-09T23:52:00.0000000Z",
+    "summary": "vite production build + tsc server build completed; only the pre-existing chunk-size warnings."
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-08-04T03:44:00.0000000Z",
-    "pid": 128224,
+    "timestamp": "2026-08-10T00:03:00.0000000Z",
+    "pid": 82100,
     "url": "http://localhost:3141"
   },
   "operatorAcceptance": {
-    "status": "PASS",
-    "workflow": "V2 desktop correction sprint: full-width readable Overview + Property Intelligence, scores-at-top strip, uncropped full-parcel hero, LandPortal subject link, Property Score recalculated 42 Weak -> 74 Strong from accepted evidence (deal 81, 1487 Onionville Rd)",
-    "url": "http://localhost:3141/dept/acquisitions/v2?deal=81",
+    "status": "PASS with a named external blocker",
+    "workflow": "Zoning source-selection + county source-discovery closeout on deal 83 (9490 Elk Lake Rd, Grand Traverse County MI). One operator-triggered Property Intelligence rerun, run di_msmgpris_68vxmn.",
+    "url": "http://localhost:3141/dept/acquisitions/v2?deal=83&section=property-intelligence",
     "evidence": {
-      "overviewScreenshot": "store/browser-shots/acceptance-deal81/v2-overview-desktop-correction.png",
-      "overviewAfterRestart": "store/browser-shots/acceptance-deal81/v2-overview-after-restart.png",
-      "propertyIntelligenceScreenshot": "store/browser-shots/acceptance-deal81/v2-property-intelligence-desktop-correction.png",
-      "propertyIntelligenceAfterRestart": "store/browser-shots/acceptance-deal81/v2-property-intelligence-after-restart.png",
-      "refreshProof": "Live reload of both pages re-rendered scores 74/57/Pending, uncropped hero at natural aspect, LandPortal link, 367x230 clickable gallery",
-      "restartProof": "Managed restart (PID 128224) + live browser reinspection of both pages; root and /health 200",
-      "note": "Prior sprint's untracked v2-property-intelligence-after-restart.png was overwritten by this sprint's after-restart capture; prior state remains documented by v2-property-intelligence-fullpage.png"
+      "zoningSourceSelection": "zoning_landuse served by adapter land_use_engine_zoning_projection_v1 on the parcel-miss path; jurisdiction Whitewater township; county fallback label and blocker retained; citations include the township site and gtcountymi.gov.",
+      "countySourceDiscovery": "Grand Traverse County resolved to https://www.gtcountymi.gov/ through the official .gov registry (registrant organization match), read, and cached in landos_official_site with verified_via=dotgov_registry.",
+      "tokenRotation": "DASHBOARD_TOKEN rotated in place; 52 of 52 other .env lines byte-identical; no backup file written; managed restart; root and /health 200; authenticated dashboard API 200 with the current token and 401 without it. Neither value printed, logged, or committed.",
+      "externalBlocker": "Michigan statewide framework unavailable this run: www.legislature.mi.gov serves an incomplete TLS chain (UNABLE_TO_VERIFY_LEAF_SIGNATURE) so the server-fetch transport cannot read it. LandPortal Hermes specialists failed because the authenticated LandPortal CDP endpoint 127.0.0.1:9224 was not listening; they refused to fall back to 9222.",
+      "note": "No screenshots taken: the capture path activates the operator's Chrome. Evidence is loopback API and database reads."
     }
   }
 }

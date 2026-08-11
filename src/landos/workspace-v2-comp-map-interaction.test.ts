@@ -189,6 +189,11 @@ describe('closed evidence and active competition never share an identity', () =>
   it('reads live competition BEFORE valuation membership so it can never be mistaken for evidence', () => {
     expect(ID_SRC).toMatch(/if \(c\.operatorExcluded\) return COMP_IDENTITIES\.excluded;[\s\S]{0,200}transactionKind === 'active'/);
     expect(ID_SRC).toMatch(/if \(c\.inValuationSet\) return COMP_IDENTITIES\.closed;/);
+    // ...and improved property is read before BOTH. A house listing is still an
+    // active listing, so testing transactionKind first badged eleven Zillow
+    // houses "ACTIVE COMPETITOR" on 9490 Elk Lake Rd even once they had been
+    // correctly routed out of the vacant-land lane.
+    expect(ID_SRC).toMatch(/improved_context'\) return COMP_IDENTITIES\.improved;[\s\S]{0,200}transactionKind === 'active'/);
   });
 
   it('uses the same identity in markers, previews, popups, clusters, cards, filters and legend', () => {

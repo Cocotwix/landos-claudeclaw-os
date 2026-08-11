@@ -1,0 +1,118 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "landos-automation",
+  "purpose": [
+    "Explicitly approved recurring monitoring",
+    "Ordinance/planning/zoning/subdivision change detection",
+    "Infrastructure/employer/development/provider/tooling update detection"
+  ],
+  "invocation": {
+    "interactive": "hermes --profile landos-automation chat",
+    "oneShot": "hermes --profile landos-automation -q <explicit-target-schedule-owner-stop-condition>",
+    "requireExplicitAssignment": true
+  },
+  "io": {
+    "acceptedInputs": [
+      "explicit target/source",
+      "approved schedule",
+      "owner",
+      "watermark/dedup rule",
+      "stop condition",
+      "approved notification destination"
+    ],
+    "producedOutputs": [
+      "new-item evidence with source date",
+      "watermark/dedup state",
+      "bounded notification",
+      "blocked-source report"
+    ]
+  },
+  "authority": {
+    "may": [
+      "browse the explicitly configured public target",
+      "create, update, pause, resume, remove, or trigger only a named watcher definition whose enabled flag, target, schedule, owner, watermark, destination, and stop condition are explicit",
+      "report new evidence without mutating canonical decisions"
+    ],
+    "mustNot": [
+      "read or expose .env files, credentials, cookies, tokens, or browser storage",
+      "invent monitoring assignments",
+      "activate a definition whose enabled flag is not true",
+      "run arbitrary SQL or destructive filesystem/database deletes",
+      "mutate Deal Cards, valuation, strategy, offers, or GitHub",
+      "use paid APIs",
+      "self-expand targets or cadence",
+      "self-certify implementation"
+    ],
+    "implementationAuthority": false,
+    "acceptanceAuthority": false
+  },
+  "capabilities": {
+    "skills": [
+      "landos-market-research",
+      "plan"
+    ],
+    "toolsets": [
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "cronjob",
+      "file",
+      "memory",
+      "session_search",
+      "skills",
+      "terminal",
+      "todo",
+      "vision",
+      "web"
+    ],
+    "tools": [
+      "browser_back",
+      "browser_cdp",
+      "browser_click",
+      "browser_console",
+      "browser_dialog",
+      "browser_get_images",
+      "browser_navigate",
+      "browser_press",
+      "browser_scroll",
+      "browser_snapshot",
+      "browser_type",
+      "browser_vision",
+      "clarify",
+      "computer_use",
+      "cronjob",
+      "memory",
+      "patch",
+      "process",
+      "read_file",
+      "search_files",
+      "session_search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "todo",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ],
+    "mcpServers": [
+      "landos-read"
+    ]
+  },
+  "storage": {
+    "profileRoot": "<HERMES_HOME>/profiles/landos-automation",
+    "memory": "memories/",
+    "sessions": "sessions/",
+    "skills": "skills/",
+    "outputs": "profile cron definitions and bounded notifications for explicitly configured and enabled watchers"
+  },
+  "sessions": {
+    "reuse": "within-profile-only per approved watcher",
+    "crossProfileAccess": "denied",
+    "activation": "allowed only when the named definition explicitly sets enabled=true and includes target, schedule, owner, watermark, destination, and stop condition",
+    "persistentMemory": true
+  }
+}

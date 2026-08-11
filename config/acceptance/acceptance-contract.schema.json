@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://landos.local/schemas/acceptance-contract-1.0.0.json",
+  "title": "LandOS visual acceptance contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractId",
+    "sprintName",
+    "createdAt",
+    "independentAuthority",
+    "property",
+    "expectations",
+    "runPolicy",
+    "claims",
+    "requiredArtifacts"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "contractId": { "type": "string", "minLength": 3, "maxLength": 160 },
+    "sprintName": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "independentAuthority": { "const": "landos-visual-qa" },
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "normalizedAddress", "apn", "canonicalPropertyId", "canonicalCounts"],
+      "properties": {
+        "address": { "type": "string", "minLength": 5 },
+        "normalizedAddress": { "type": "string", "minLength": 5 },
+        "apn": { "type": "string", "minLength": 1 },
+        "canonicalPropertyId": { "type": "string", "minLength": 1 },
+        "canonicalCounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["comps", "visuals"],
+          "properties": {
+            "comps": { "type": "integer", "minimum": 0 },
+            "visuals": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["imageryAvailable", "specialistResultsRendered", "noCrossPropertyContamination"],
+      "properties": {
+        "imageryAvailable": { "type": "boolean" },
+        "specialistResultsRendered": { "type": "boolean" },
+        "noCrossPropertyContamination": { "const": true }
+      }
+    },
+    "runPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "entryFlow",
+        "freshnessRequired",
+        "requireRefresh",
+        "requireRestart",
+        "requireIsolatedContext",
+        "requireContextCleanup",
+        "authState",
+        "requiredNetworkPatterns",
+        "allowedConsoleErrorPatterns"
+      ],
+      "properties": {
+        "mode": { "enum": ["fixture", "live"] },
+        "entryFlow": { "enum": ["new-lead", "existing-deal"] },
+        "freshnessRequired": { "type": "boolean" },
+        "requireRefresh": { "const": true },
+        "requireRestart": { "const": true },
+        "requireIsolatedContext": { "const": true },
+        "requireContextCleanup": { "const": true },
+        "authState": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["importAllowed", "explicitApprovalRequired", "repositoryPersistenceProhibited"],
+          "properties": {
+            "importAllowed": { "type": "boolean" },
+            "explicitApprovalRequired": { "const": true },
+            "repositoryPersistenceProhibited": { "const": true }
+          }
+        },
+        "requiredNetworkPatterns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "allowedConsoleErrorPatterns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "operatorSection",
+          "claim",
+          "expectedBinding",
+          "expectedValue",
+          "comparison",
+          "canonicalSource",
+          "evidenceArtifacts"
+        ],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,80}$" },
+          "operatorSection": { "type": "string", "minLength": 2 },
+          "claim": { "type": "string", "minLength": 5 },
+          "expectedBinding": {
+            "enum": [
+              "property.normalizedAddress",
+              "property.apn",
+              "property.canonicalPropertyId",
+              "property.canonicalCounts.comps",
+              "property.canonicalCounts.visuals",
+              "expectations.imageryAvailable",
+              "expectations.specialistResultsRendered",
+              "expectations.noCrossPropertyContamination"
+            ]
+          },
+          "expectedValue": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" },
+              { "type": "null" }
+            ]
+          },
+          "comparison": {
+            "enum": ["equals", "count_equals", "contains", "present", "absent", "no_contamination"]
+          },
+          "canonicalSource": { "type": "string", "minLength": 3 },
+          "evidenceArtifacts": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "new-lead.png",
+                "deal-card-loaded.png",
+                "changed-section.png",
+                "relevant-tab-or-panel.png",
+                "after-refresh.png",
+                "after-restart.png"
+              ]
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "requiredArtifacts": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "acceptance-contract.json",
+          "acceptance-report.md",
+          "results.json",
+          "new-lead.png",
+          "deal-card-loaded.png",
+          "changed-section.png",
+          "relevant-tab-or-panel.png",
+          "after-refresh.png",
+          "after-restart.png",
+          "trace.zip",
+          "video.webm",
+          "console.json",
+          "network-failures.json"
+        ]
+      }
+    }
+  }
+}

@@ -1,7 +1,13 @@
 # LandOS Operating Memory
 
-LandOS-owned, vendor-neutral memory shared by Claude Code, Codex, and future
-build agents. Three layers:
+LandOS-owned, vendor-neutral session continuity shared by Claude Code, Codex,
+and future build agents.
+
+`CODING_SESSION_PROTOCOL.md` is the single shared process for startup, scoped
+inspection, execution, parallel read-only investigations, verification, and
+handoff. Agent bootstrap files point to it instead of duplicating it.
+
+The memory itself has two automatic layers and on-demand history:
 
 ## Layer A — Permanent (auto-loaded)
 
@@ -15,8 +21,8 @@ build agents. Three layers:
 |---|---|---|
 | `CHECKPOINT.md` | The one current-state file: recent work, unfinished work, blockers, pending decisions, git/test/runtime status, next priority. **Replaced in place, never appended.** | ≤ 8 KB |
 
-Both are imported by `CLAUDE.md`, so every fresh session gets them without
-`/continue-landos` or a continuation preamble.
+The shared protocol and both memory layers are imported by `CLAUDE.md` and
+referenced by `AGENTS.md`, so every coding agent follows the same process.
 
 ## Layer C — On-demand history (never auto-loaded)
 

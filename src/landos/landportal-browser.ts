@@ -41,6 +41,11 @@ import { withOwnedPages } from './browser-owned-pages.js';
 import { retrieveWithLearning } from './browser-learning.js';
 import { diagnoseFailure, attemptRecovery } from './browser-failure-diagnosis.js';
 import { recordNavigationRequirement } from './browser-navigation-model.js';
+import { fileSha256 } from './parcel-visual-framing.js';
+import {
+  validateLandPortalVisualEvidence,
+  type LandPortalVisualView,
+} from './landportal-evidence-validation.js';
 // The SHARED LandPortal capability. Every consequential action in this workflow —
 // submitting a search, selecting a result, extracting facts, capturing a
 // screenshot — passes through its visual checkpoints. No LandPortal result is
@@ -350,11 +355,13 @@ export function applyComparableDetail(
   // Improvement: material value or real living area means the price bought more
   // than dirt. A token assessor figure on a derelict structure does not.
   const MATERIAL_IMPROVEMENT_VALUE = 10_000;
+  const MATERIAL_BUILDING_SQFT = 1_500;
   const landShare = totalMarketValue && totalMarketValue > 0 && landMarketValue != null
     ? landMarketValue / totalMarketValue
     : null;
   const improvement: LandPortalComparableRecord['improvement'] =
-    improvementValue != null && improvementValue >= MATERIAL_IMPROVEMENT_VALUE ? 'improved'
+    buildingSqft != null && buildingSqft >= MATERIAL_BUILDING_SQFT ? 'improved'
+      : improvementValue != null && improvementValue >= MATERIAL_IMPROVEMENT_VALUE ? 'improved'
       : landShare != null && landShare < 0.8 ? 'improved'
         : (buildingSqft != null && improvementValue != null) || landShare != null ? 'vacant'
           : row.improvement;
@@ -671,6 +678,35 @@ function observedInputValue(obs: PageObservation, selector: string): string | un
 function byteSize(p: string | null): number | null {
   if (!p) return null;
   try { return fs.statSync(p).size; } catch { return null; }
+}
+
+function acceptedVisualValidation(input: {
+  propertyCardId: number | undefined;
+  path: string;
+  view: LandPortalVisualView;
+  priorSha256s: string[];
+  boundaryRequired?: boolean;
+  cameraScale?: 'parcel' | 'context';
+}) {
+  let sha256: string | null = null;
+  let bytes = 0;
+  try { sha256 = fileSha256(input.path); bytes = fs.statSync(input.path).size; } catch { /* validator rejects unreadable output */ }
+  return validateLandPortalVisualEvidence({
+    propertyCardId: input.propertyCardId ?? 0,
+    expectedPropertyCardId: input.propertyCardId ?? -1,
+    subjectClassification: 'verified_subject',
+    requestedView: input.view,
+    activeView: input.view,
+    boundaryRequired: input.boundaryRequired ?? true,
+    boundaryVisible: true,
+    tilesLoaded: true,
+    bytes,
+    sha256,
+    priorSha256s: input.priorSha256s,
+    cameraScale: input.cameraScale ?? 'parcel',
+    clipped: false,
+    obstructions: [],
+  });
 }
 
 function fieldLike(fields: Record<string, string>, rx: RegExp): string | null {
@@ -1110,6 +1146,7 @@ async function runLandPortalAgentic(
     let lpVisuals: {
       fields: Record<string, string>; parcelShotPath: string | null; compsMapShotPath: string | null;
       overlayShots?: Array<{ overlay: string; path: string; purpose: string }>;
+      visualShots?: Array<{ label: string; path: string; kind: 'parcel_page' | 'overlay' | 'parcel_3d'; purpose: string; overlay?: string }>;
       overlayMisses?: Array<{ overlay: string; reason: string }>; terrainShotPath?: string | null;
       compRows: string[]; compCards?: string[]; compDetails?: string[];
       mapRows?: string[]; mapReached: boolean; capturedAtIso: string;
@@ -1198,9 +1235,22 @@ async function runLandPortalAgentic(
     const compactId = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const providedApnIds = [key.apn, ...(key.apnAlternates ?? [])].filter(Boolean).map((a) => compactId(a as string));
     const resolvedApn = facts.find((f) => f.key === 'apn')?.value;
-    if (key.apn && resolvedApn && providedApnIds.length > 0 && !providedApnIds.includes(compactId(resolvedApn))) {
+    const apnConflict = !!(key.apn && resolvedApn && providedApnIds.length > 0 && !providedApnIds.includes(compactId(resolvedApn)));
+    if (apnConflict) {
       facts.push({ key: 'apnConflict', label: 'APN identifier mismatch — wrong parcel', value: `Requested APN "${key.apn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". These are DIFFERENT parcels. The resolved parcel is NOT accepted as the subject — the parcel stays unconfirmed and no downstream intelligence runs until the correct parcel is identified.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN)' });
       trace.push(`APN-CONFLICT: provided ${key.apn} ≠ resolved ${resolvedApn}`);
+    }
+    if (apnConflict) {
+      const mismatch = facts.find((fact) => fact.key === 'apnConflict');
+      if (mismatch) { try { hooks.onFact?.(mismatch as BrowserFact); } catch { /* non-fatal */ } }
+      ev.facts = mismatch ? [mismatch] : [];
+      ev.fields = {};
+      ev.patch = {};
+      ev.status = 'no_match';
+      ev.visualCheckpoints = checkpoints;
+      ev.captureVerdicts = captureVerdicts;
+      ev.note = `LandPortal opened a different parcel APN than requested. Subject classification is no_match; no parcel facts, visuals, comps, or estimate were accepted. Trace: ${trace.join(' | ')}`;
+      return ev;
     }
     for (const f of facts) { try { hooks.onFact?.(f as BrowserFact); } catch { /* non-fatal */ } }
     ev.facts = facts;
@@ -1210,18 +1260,58 @@ async function runLandPortalAgentic(
     // The ONLY LandPortal images on the card are the Parcel View + the Comps Map.
     // No overlay/3D/boundary screenshots (overlay data comes from the fact sheet).
     const inspectionAssets: PendingLandPortalInspectionRecord['assets'] = [];
+    const acceptedAssetHashes: string[] = [];
+    const addValidatedAsset = (
+      asset: Omit<PendingLandPortalInspectionRecord['assets'][number], 'validation'>,
+      view: LandPortalVisualView,
+      boundaryRequired = true,
+    ): void => {
+      const validation = acceptedVisualValidation({
+        propertyCardId: input.propertyCardId,
+        path: asset.sourcePath,
+        view,
+        priorSha256s: acceptedAssetHashes,
+        boundaryRequired,
+        cameraScale: view === 'parcel_context' || view === 'road_frontage' ? 'context' : 'parcel',
+      });
+      if (validation.status !== 'accepted') {
+        captureVerdicts.push({ purpose: asset.purpose, path: asset.sourcePath, result: 'recapture_required', reason: validation.reasons.join(' ') });
+        return;
+      }
+      if (validation.sha256) acceptedAssetHashes.push(validation.sha256);
+      inspectionAssets.push({ ...asset, validation });
+    };
     let comparablesUrl: string | null = null;
     let comparables: LandPortalComparableRecord[] = [];
     if (lpVisuals) {
       if (lpVisuals.parcelShotPath) {
-        inspectionAssets.push({ key: 'parcel_page', label: 'LandPortal Parcel + Neighbor Context', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 2D parcel view at parcel-context scale: fitted to the subject then stepped out just enough to keep the complete subject boundary centered with the immediately surrounding parcels and fronting road readable.' });
+        addValidatedAsset({ key: 'parcel_page', label: 'LandPortal Parcel + Neighbor Context', kind: 'parcel_page', purpose: LANDPORTAL_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.parcelShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 2D parcel view at parcel-context scale: fitted to the subject then stepped out just enough to keep the complete subject boundary centered with the immediately surrounding parcels and fronting road readable.' }, 'parcel_context');
       }
-      if (lpVisuals.terrainShotPath) {
-        inspectionAssets.push({ key: 'parcel_3d', label: 'LandPortal 3D / terrain view', kind: 'parcel_3d', purpose: LANDPORTAL_3D_SCREENSHOT_PURPOSE, sourcePath: lpVisuals.terrainShotPath, timestamp: lpVisuals.capturedAtIso, note: 'LandPortal 3D or terrain view screenshot when available.' });
-      }
-      for (const ov of lpVisuals.overlayShots ?? []) {
-        const key = `overlay_${normalizeOverlayName(ov.overlay)}`;
-        inspectionAssets.push({ key, label: ov.overlay, kind: 'overlay', purpose: ov.purpose, sourcePath: ov.path, timestamp: lpVisuals.capturedAtIso, overlay: ov.overlay, note: `${ov.overlay} overlay screenshot from LandPortal.` });
+      const viewForVisual = (label: string, overlay?: string): LandPortalVisualView | null => {
+        const value = `${label} ${overlay ?? ''}`;
+        if (/road.frontage/i.test(value)) return 'road_frontage';
+        if (/wetland/i.test(value)) return 'wetlands';
+        if (/fema|flood/i.test(value)) return 'fema_flood';
+        if (/soil/i.test(value)) return 'soil';
+        if (/contour/i.test(value)) return 'contours';
+        if (/front.*3d/i.test(value)) return 'front_3d';
+        if (/rear.*3d/i.test(value)) return 'rear_3d';
+        if (/parcel|aerial|context/i.test(value)) return 'parcel_context';
+        return null;
+      };
+      for (const visual of lpVisuals.visualShots ?? []) {
+        const view = viewForVisual(visual.label, visual.overlay);
+        if (!view || visual.path === lpVisuals.parcelShotPath) continue;
+        addValidatedAsset({
+          key: visual.label,
+          label: visual.label.replace(/_/g, ' '),
+          kind: visual.kind,
+          purpose: visual.purpose,
+          sourcePath: visual.path,
+          timestamp: lpVisuals.capturedAtIso,
+          overlay: visual.overlay,
+          note: `Validated LandPortal ${visual.purpose}.`,
+        }, view);
       }
       comparablesUrl = obs.url || null;
       // TWO LandPortal surfaces feed one comparable set: the parcel sidebar
@@ -1303,9 +1393,45 @@ async function runLandPortalAgentic(
     }
     const terrainAsset = inspectionAssets.some((a) => a.kind === 'parcel_3d') ? null : await captureParcel3dView(driver, obsv, timeoutMs).catch(() => null);
     if (terrainAsset) inspectionAssets.push(terrainAsset);
+    // Final admission sweep. Legacy/generic fallback captures do not carry
+    // enough live-state proof to enter the Deal Card. The verified parcel and
+    // the explicitly reached comps map can be bound here; every other missing-
+    // verdict asset is retained only in the browser trace, never persisted.
+    for (let index = inspectionAssets.length - 1; index >= 0; index -= 1) {
+      const asset = inspectionAssets[index];
+      if (asset.validation?.status === 'accepted') continue;
+      const view: LandPortalVisualView | null = asset.key === 'parcel_page'
+        ? 'parcel_context'
+        : asset.key === 'comparables_map' && lpVisuals?.mapReached
+          ? 'comparables_map'
+          : null;
+      if (!view) {
+        captureVerdicts.push({ purpose: asset.purpose, path: asset.sourcePath, result: 'recapture_required', reason: 'No validated live map-state proof accompanies this capture.' });
+        inspectionAssets.splice(index, 1);
+        continue;
+      }
+      const validation = acceptedVisualValidation({
+        propertyCardId: input.propertyCardId,
+        path: asset.sourcePath,
+        view,
+        priorSha256s: acceptedAssetHashes,
+        boundaryRequired: view !== 'comparables_map',
+        cameraScale: view === 'parcel_context' ? 'context' : 'parcel',
+      });
+      if (validation.status !== 'accepted') {
+        captureVerdicts.push({ purpose: asset.purpose, path: asset.sourcePath, result: 'recapture_required', reason: validation.reasons.join(' ') });
+        inspectionAssets.splice(index, 1);
+        continue;
+      }
+      asset.validation = validation;
+      if (validation.sha256) acceptedAssetHashes.push(validation.sha256);
+    }
     ev.inspection = {
       parcelUrl: obs.url || null,
       comparablesUrl,
+      comparablesCapturedAt: lpVisuals?.capturedAtIso
+        ?? comparables.map((row) => row.capturedAtIso ?? null).filter((value): value is string => !!value).sort().at(-1)
+        ?? new Date().toISOString(),
       parcelFacts: cleanedFields,
       assets: inspectionAssets,
       overlays: overlayObservations,

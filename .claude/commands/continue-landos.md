@@ -5,17 +5,18 @@ description: "Optional LandOS orientation: load compact memory + live status onl
 # /continue-landos (v2 — compact)
 
 Normal LandOS work does NOT need this command: `CLAUDE.md` already auto-imports
-`.landos/PERMANENT_MEMORY.md` and `.landos/CHECKPOINT.md` into every fresh
+the shared protocol, `.landos/PERMANENT_MEMORY.md`, and `.landos/CHECKPOINT.md` into every fresh
 session. Use this command only when Tyler explicitly wants an orientation
 summary before assigning work.
 
 ## Load (this exact set, nothing more)
 
-1. `.landos/PERMANENT_MEMORY.md` (skip if already imported this session)
-2. `.landos/CHECKPOINT.md` (skip if already imported this session)
-3. `git status --short` and `git log --oneline -5`
-4. `npm run landos:status` (bounded; do not start/restart anything)
-5. `npm run landos:memory:status` (reports loaded files + estimated tokens)
+1. `.landos/CODING_SESSION_PROTOCOL.md` (skip if already imported this session)
+2. `.landos/PERMANENT_MEMORY.md` (skip if already imported this session)
+3. `.landos/CHECKPOINT.md` (skip if already imported this session)
+4. `git status --short`
+5. The minimum runtime status required by the checkpoint, if any
+6. `npm run landos:memory:status` (reports loaded files + estimated tokens)
 
 ## Never load
 
@@ -33,8 +34,8 @@ retrieval command and read only returned excerpts or paths:
 ## Report
 
 - Files loaded and their estimated token sizes (from `landos:memory:status`).
-- HEAD, dirty-worktree summary, runtime state (PID + URL if running).
-- Checkpoint's next recommended priority, flagged STALE if checkpoint HEAD or
+- Dirty-worktree summary and only materially relevant runtime state.
+- Checkpoint's Exact Next Action, flagged STALE if checkpoint HEAD or
   date disagrees with live git state (live state wins).
 - Then wait for Tyler.
 

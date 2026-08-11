@@ -43,7 +43,7 @@ function landPortalFake(opts: { panelAddress: string; panelApn: string; candidat
 describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)', () => {
   beforeEach(() => _initTestLandosDb());
 
-  it('resolves the parcel by ADDRESS, extracts real facts, and FLAGS the wrong APN', async () => {
+  it('returns no_match and accepts no parcel evidence when address search opens the wrong APN', async () => {
     const streamed: BrowserFact[] = [];
     const lp = makeLandPortalBrowser({ driver: landPortalFake({
       panelAddress: 'GILSTRAP RD', panelApn: '021 033C',
@@ -54,22 +54,16 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
       { searchKey: { apn: '021 033 002', address: '388 GILSTRAP RD, CLEVELAND, GA 30528', county: 'White', state: 'GA' } },
       { timeoutMs: 2000, onFact: (f) => streamed.push(f) },
     );
-    expect(ev.status).toBe('retrieved');
-    const owner = ev.facts.find((f) => f.key === 'owner');
-    expect(owner!.value).toBe('MAD HOUSE RENTALS LLC');
-    expect(ev.facts.find((f) => f.key === 'apn')!.value).toBe('021 033C');
-    expect(ev.facts.find((f) => f.key === 'acreage')!.value).toBe('4.000');
-    // wrong APN is flagged as an identifier mismatch (needs_verification), not silently accepted
+    expect(ev.status).toBe('no_match');
+    expect(ev.facts.some((f) => f.key === 'owner' || f.key === 'acreage' || f.key === 'apn')).toBe(false);
     const conflict = ev.facts.find((f) => f.key === 'apnConflict');
     expect(conflict).toBeTruthy();
     expect(conflict!.status).toBe('needs_verification');
     expect(conflict!.value).toMatch(/021 033 002.*does not match.*021 033C/);
-    expect(ev.inspection?.parcelUrl).toBe('https://landportal.com/?property=abc');
-    expect(ev.inspection?.parcelFacts['Parcel ID']).toBe('021 033C');
-    expect((ev.inspection?.assets ?? []).some((a) => a.kind === 'parcel_page')).toBe(true);
-    // facts streamed incrementally to the Deal Card
-    expect(streamed.length).toBe(ev.facts.length);
-    expect(streamed.some((f) => f.key === 'owner')).toBe(true);
+    expect(ev.inspection).toBeUndefined();
+    expect(ev.patch).toEqual({});
+    expect(streamed.length).toBeGreaterThan(0);
+    expect(streamed.every((fact) => fact.key === 'apnConflict')).toBe(true);
   });
 
   it('ACCEPTANCE (Scott County TN): APN/Parcel-ID search is PRIMARY, scoped State→County, tries all variants', async () => {

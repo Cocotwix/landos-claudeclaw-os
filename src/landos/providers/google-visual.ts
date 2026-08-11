@@ -159,7 +159,10 @@ export interface StaticImageOpts { address: string | null; coords: Coords | null
 
 export function buildStaticMapUrl(o: StaticImageOpts): string {
   const center = o.coords ? coordStr(o.coords) : (o.address ?? '');
-  const p = new URLSearchParams({ center, zoom: '18', size: o.size ?? '640x400', maptype: 'satellite', key: o.key });
+  // Zoom 18 on a land parcel often produces an attractive but useless close-up
+  // of tree canopy. Zoom 16 retains the subject-area aerial plus its road and
+  // neighboring context, which is the decision-support purpose here.
+  const p = new URLSearchParams({ center, zoom: '16', size: o.size ?? '640x400', maptype: 'satellite', key: o.key });
   return `https://maps.googleapis.com/maps/api/staticmap?${p.toString()}`;
 }
 

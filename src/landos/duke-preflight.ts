@@ -105,11 +105,17 @@ function extractCounty(text: string): string | undefined {
   // Form 1: "<Name> County" (e.g. "Scott County" -> "Scott"). Internal connectors
   // are HORIZONTAL whitespace only ([^\S\n]) so the name never grows across a line
   // break — "Lithonia GA\nDeKalb County" resolves to "DeKalb", not the whole run.
-  const m = text.match(
-    /\b([A-Z][a-zA-Z.'\-]+(?:[^\S\n]+[A-Z][a-zA-Z.'\-]+){0,2})[^\S\n]+County\b(?!\s+(?:road|rd|line|route|rte|highway|hwy)\b)/,
-  );
-  const named = m?.[1]?.replace(/\s+/g, ' ').trim();
-  if (named && named.length >= 2) return named;
+  // A candidate whose final token ends with a sentence period is a SENTENCE
+  // BOUNDARY bleed, not a county name ("State: New York. County: Cayuga County."
+  // must never read "New York." as the county). Interior abbreviation periods
+  // ("St. Clair") are fine — only the token touching "County" is checked, and
+  // the scan continues to the next match instead of giving up.
+  for (const m of text.matchAll(
+    /\b([A-Z][a-zA-Z.'\-]+(?:[^\S\n]+[A-Z][a-zA-Z.'\-]+){0,2})[^\S\n]+County\b(?!\s+(?:road|rd|line|route|rte|highway|hwy)\b)/g,
+  )) {
+    const named = m[1]?.replace(/\s+/g, ' ').trim();
+    if (named && named.length >= 2 && !named.endsWith('.')) return named;
+  }
   // Form 2: labeled "County: <Name>" (CRM/record exports). Exclude a road word
   // ("County Road ...") and a state name ("... County Georgia").
   const labeled = text.match(/\bcounty[:\s]+([A-Z][a-zA-Z.'\-]+)\b/i)?.[1];
@@ -308,7 +314,10 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // token from an English word. Requiring a leading [0-9] truncated a
   // letter-led APN to nothing and dropped a trailing letter group — either one
   // hands back a DIFFERENT parcel number than the operator supplied.
-  const apnKw = text.match(/\bapn[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*(?:[^\S\n]+(?:[A-Za-z]{1,2}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*)*)/i)?.[1]
+  // "Parcel ID:" / "Parcel No:" / "Parcel #" are the SAME label as "APN:" — a
+  // pasted lead using the county's own wording must not fall through to the
+  // capped dash pattern below, which truncates long multi-group parcel IDs.
+  const apnKw = text.match(/\b(?:apn|parcel(?:[^\S\n]*(?:id|no\.?|number|#))?)[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*(?:[^\S\n]+(?:[A-Za-z]{1,2}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*)*)/i)?.[1]
     ?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '');
   if (apnKw) {
     const state = extractState(text);
@@ -320,7 +329,10 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // APN-like numeric pattern: two or more dash-separated numeric segments
   // e.g. 12-345-678, 05-1234-0067. Requires >= 7 digits total to avoid
   // matching phone fragments or "page 2-3".
-  const apnPat = text.match(/\b(\d{2,6}-\d{2,6}-\d{2,6}(?:-\d+)?)\b/);
+  // Repeating groups ({2,9}) so a long county parcel ID (e.g. New York's
+  // seven-group "053889-075-000-0001-024-011-0000") is captured WHOLE — the old
+  // single optional fourth group truncated it to a different parcel number.
+  const apnPat = text.match(/\b(\d{2,6}(?:-\d{1,6}){2,9})\b/);
   if (apnPat) {
     const apn = apnPat[1];
     // Reject patterns that look like dates (MM-DD-YYYY) or US phone numbers

@@ -6,7 +6,7 @@ import {
   ingestMarketSnapshots, runMarketQuery, runMarketQueryWithExplanation, getMatrixCoverage,
   saveMarketQuery, listMarketQueries, getMarketQueryById, deleteMarketQuery,
   getHeatmapData, getCountyDrilldown, listReviewQueue,
-  resolveCountyRefByZip,
+  resolveCountyRefByZip, resolveCountyRefByName,
 } from './market-matrix-store.js';
 import { defaultMarketQuery } from './market-matrix.js';
 
@@ -28,6 +28,16 @@ describe('Market Matrix store', () => {
       .run('county:12053', 'county', 'FL', '12053', '', 'Hernando County', 'state:FL');
     db.prepare('INSERT INTO landos_mr_zip_county (zip, fips, source) VALUES (?, ?, ?)').run('34448', '12053', 'test');
     expect(resolveCountyRefByZip('34448', 'FL')).toBeNull();
+  });
+
+  it('resolves an exact county/state label when the deal has no ZIP', () => {
+    expect(resolveCountyRefByName('Pickens County', 'SC')).toMatchObject({
+      fips: '45077',
+      state: 'SC',
+      countyName: 'Pickens',
+    });
+    expect(resolveCountyRefByName('Pickens', 'SC')?.fips).toBe('45077');
+    expect(resolveCountyRefByName('Pickens', 'TN')).toBeNull();
   });
 
   it('ingests the fixture through the pipeline (all accepted) and reports coverage', async () => {

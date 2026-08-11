@@ -1,8 +1,8 @@
 // Static contracts for the canonical Deal Card operator workspace.
 //
 // The browser acceptance covers the live experience. These source-level checks
-// prevent the accepted ten-tab workspace from drifting back toward the removed
-// report/worksheet projections or dead UI declarations.
+// prevent the compact CRM-style workspace from drifting back toward the removed
+// ten-report-tab layout, worksheet projections, or dead UI declarations.
 
 import { describe, expect, it } from 'vitest';
 import fs from 'fs';
@@ -14,6 +14,10 @@ const SRC = fs.readFileSync(
 );
 const PANEL_SRC = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
+  'utf-8',
+);
+const OVERVIEW_SRC = fs.readFileSync(
+  fileURLToPath(new URL('../../web/src/components/DealWorkspaceOverview.tsx', import.meta.url)),
   'utf-8',
 );
 const ROUTES_SRC = fs.readFileSync(
@@ -69,26 +73,22 @@ const DEAD_LEGACY_DECLARATIONS = [
 ] as const;
 
 describe('Deal Card — canonical operator workspace', () => {
-  it('defines exactly the accepted ten tabs and restores each deal workspace independently', () => {
-    expect(SRC).toMatch(
-      /type DealTab =\s*'overview' \| 'property' \| 'diligence' \| 'market' \| 'strategy' \| 'visuals' \| 'seller' \| 'documents' \| 'activity' \| 'intake'/,
-    );
+  it('defines the compact workspace switcher and restores each deal workspace independently', () => {
+    expect(SRC).toMatch(/type DealTab = DealWorkspaceTab/);
     for (const label of [
       'Overview',
-      'Property',
-      'Due Diligence',
-      'Market',
+      'Comps & Market',
       'Strategy',
-      'Visuals',
-      'Seller',
-      'Documents',
-      'Activity',
-      'Smart Intake',
+      'Seller & Comms',
+      'Documents & Visuals',
     ]) {
       expect(SRC, `missing tab ${label}`).toContain(`label: '${label}'`);
     }
+    for (const retiredLabel of ['Property', 'Due Diligence', 'Visuals', 'Activity', 'Smart Intake']) {
+      expect(SRC).not.toContain(`label: '${retiredLabel}'`);
+    }
     expect(SRC).not.toMatch(/label: 'Resources'|label: 'Browser Intelligence'/);
-    expect(SRC).toMatch(/useState<DealTab>\('overview'\)/);
+    expect(SRC).toMatch(/useState<DealTab>/);
     expect(SRC).toMatch(/setActiveTabState\(restoreDealTab\(id\)\)/);
     expect(SRC).toMatch(/landos\.dealCard\.\$\{dealCardId\}\.tab/);
   });
@@ -99,9 +99,6 @@ describe('Deal Card — canonical operator workspace', () => {
       /const piSnapshot = propertyIntelligence\.view\?\.snapshot\s*\n?\s*\?\? \(propertyIntelligence\.running \? propertyIntelligence\.view\?\.progressive\?\.snapshot \?\? null : null\);/,
     );
     for (const component of [
-      'PropertyIntelligenceOverview',
-      'PropertyIntelligenceProperty',
-      'PropertyIntelligenceDueDiligence',
       'PropertyIntelligenceMarket',
       'PropertyIntelligenceStrategy',
       'PropertyIntelligenceVisuals',
@@ -111,17 +108,23 @@ describe('Deal Card — canonical operator workspace', () => {
         new RegExp(`<${component} snapshot=\\{piSnapshot\\}`),
       );
     }
+    for (const component of ['PropertyIntelligenceProperty', 'PropertyIntelligenceDueDiligence']) {
+      expect(OVERVIEW_SRC, `${component} must consume the canonical Overview snapshot`).toMatch(
+        new RegExp(`<${component} snapshot=\\{snapshot\\}`),
+      );
+    }
+    expect(SRC).toMatch(/<DealWorkspaceOverview[\s\S]{0,180}snapshot=\{piSnapshot\}/);
   });
 
-  it('keeps verified identity correction beside the Property snapshot', () => {
-    const propertyStart = SRC.indexOf("{activeTab === 'property'");
-    const propertyEnd = SRC.indexOf("{activeTab === 'strategy'", propertyStart);
-    const propertyBlock = SRC.slice(propertyStart, propertyEnd);
+  it('keeps verified identity correction in the Overview workspace', () => {
+    const overviewStart = SRC.indexOf("{activeTab === 'overview'");
+    const overviewEnd = SRC.indexOf("{activeTab === 'intake'", overviewStart);
+    const overviewBlock = SRC.slice(overviewStart, overviewEnd);
 
-    expect(propertyStart).toBeGreaterThan(-1);
-    expect(propertyBlock).toMatch(/<PropertyIntelligenceProperty snapshot=\{piSnapshot\} \/>/);
-    expect(propertyBlock).toMatch(/<PropertyIdentityControl/);
-    expect(propertyBlock).toMatch(/onSaved=\{\(\) => load\(deal\.id\)\}/);
+    expect(overviewStart).toBeGreaterThan(-1);
+    expect(OVERVIEW_SRC).toMatch(/<PropertyIntelligenceProperty snapshot=\{snapshot\} \/>/);
+    expect(overviewBlock).toMatch(/<PropertyIdentityControl/);
+    expect(overviewBlock).toMatch(/onSaved=\{\(\) => load\(deal\.id\)\}/);
     expect(SRC).toMatch(/Save verified property identity/);
     expect(SRC).toMatch(/Official acreage \(if shown\)/);
     expect(SRC).toMatch(/acres: form\.acres\.trim\(\) \? Number\(form\.acres\) : null/);
@@ -140,20 +143,23 @@ describe('Deal Card — canonical operator workspace', () => {
     expect(SRC).toMatch(/activeTab === 'intake' && \([\s\S]{0,300}<SmartIntakePanel/);
   });
 
-  it('keeps automatic research progress and historical mission reads visible', () => {
+  it('keeps automatic research progress and owner-facing activity visible', () => {
     expect(SRC).toMatch(/data-testid="deal-card-research-progress"/);
     expect(SRC).toMatch(/Automatic property research is running/);
     expect(SRC).toMatch(/setInterval[\s\S]{0,180}3_000/);
     expect(SRC).toMatch(/load\(deal\.id, false\)/);
     expect(SRC).toMatch(/mission\.safeNextAction && !canonicalConfirmed && !missionSuperseded/);
-    expect(SRC).toMatch(/activeTab === 'activity'[\s\S]{0,800}<PropertyIntelligenceHistory/);
+    // The Documents workspace is a persistent tabpanel; the activity log
+    // renders at its end, after visuals, evidence, reports, and research tasks.
+    expect(SRC).toMatch(/activeTab === 'documents'[\s\S]{0,7000}<ActivityTimeline events=\{activityEvents\}/);
+    expect(SRC).not.toMatch(/<PropertyIntelligenceHistory/);
   });
 
   it('keeps owner of record separate from the seller or lead contact', () => {
     expect(PANEL_SRC).toMatch(/<Field label="Owner" value=\{identity\.owner/);
-    expect(SRC).toMatch(/Owner of record/);
-    expect(SRC).toMatch(/Lead \/ contact/);
-    expect(SRC).toMatch(/seller\.name\.trim\(\)\.toLowerCase\(\) === String\(ownerName\)/);
+    expect(SRC).toMatch(/Seller contacts stay separate from the government owner-of-record identity/);
+    expect(SRC).toMatch(/Primary seller contact/);
+    expect(SRC).toMatch(/relationshipNote: form\.relationshipToOwner/);
   });
 
   it('keeps current value, acquisition, strategy, visual and evidence outputs on canonical slices', () => {

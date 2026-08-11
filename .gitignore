@@ -198,7 +198,10 @@ docs/external/
 landos-agents/ClaudeClaw_Mark_Install_and_Update_Workflow_Fork_Upstream_Git_Pull.txt
 
 # LandOS — deal data, training material, and media files
-data/
+# Root-anchored: a bare `data/` also matched `scripts/data/`, silently excluding
+# the four backup/restore/drill/QA-init scripts that landos:data:* and
+# landos:qa:init invoke, so a fresh checkout could not run them.
+/data/
 transcripts/
 training/
 deals/
@@ -209,3 +212,26 @@ notes/
 *.mp3
 *.wav
 *.ogg
+
+# ── LandOS acceptance run artifacts ──────────────────────────────────
+# Written by createAcceptanceRunDirectory() in scripts/acceptance/runtime-
+# helpers.mjs and filled by the Playwright visual spec. Fully reproducible
+# with `npm run landos:acceptance:run`, and a single run is ~20 MB of
+# trace.zip + video.webm, so these must never enter the pack. The directory
+# itself is kept via its .gitkeep.
+/.landos/acceptance/*
+!/.landos/acceptance/.gitkeep
+
+# Devloop candidate-lesson review queue — accumulated local state written by
+# recordCandidateLesson() in scripts/devloop/lessons.mjs. Local queue awaiting
+# hand-promotion into canonical governance, not source.
+/.landos/devloop/
+
+# Ad-hoc Chrome DevTools Protocol target dumps taken against the dedicated
+# LandOS browser on CDP 9224. They carry live tab URLs for real deals.
+/cdp_*.json
+
+# Stray shell-redirect captures written to the repo root: scraped ordinance
+# text, and a geocoder response whose filename became the property address.
+/ww_zoning.txt
+/1454 Onionville Rd, Sterling, NY 13156

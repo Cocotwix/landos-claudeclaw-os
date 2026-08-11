@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "registryId": "county-gis-source-registry",
+  "canonicalAuthority": "LandOS",
+  "reviewedAt": "2026-08-02",
+  "entries": [
+    {
+      "id": "wayne-ny-real-property",
+      "title": "Wayne County NY Real Property Tax Service",
+      "status": "official",
+      "summary": "Official Wayne County entry point for assessment rolls, tax maps, historical property data, assessor contacts, and the parcel viewer.",
+      "jurisdiction": "Wayne County, New York",
+      "sourceType": "assessor-and-tax-map-index",
+      "url": "https://www.waynecountyny.gov/333/Real-Property-Tax-Service",
+      "allowedDomains": ["waynecountyny.gov", "www.waynecountyny.gov"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 90},
+      "limitations": "Tax maps and parcel attribution are evidence inputs, not legal surveys or title opinions.",
+      "canonicalRefs": ["src/landos/county-source-map.ts", "src/landos/county-records-browser.ts"]
+    },
+    {
+      "id": "wayne-ny-gis",
+      "title": "Wayne County NY GIS Department",
+      "status": "official",
+      "summary": "Official county GIS program and public geospatial-service entry point for Wayne County parcels and mapped layers.",
+      "jurisdiction": "Wayne County, New York",
+      "sourceType": "county-gis",
+      "url": "https://www.waynecountyny.gov/813/Geographic-Information-Systems",
+      "allowedDomains": ["waynecountyny.gov", "www.waynecountyny.gov", "gis.co.wayne.ny.us"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 90},
+      "limitations": "Public layers may change and parcel lines are not a substitute for a survey.",
+      "canonicalRefs": ["src/landos/county-gis-capabilities.ts", "src/landos/county-capability-registry.ts"]
+    },
+    {
+      "id": "nys-statewide-parcels",
+      "title": "New York Statewide Parcel Map Program",
+      "status": "official",
+      "summary": "Official statewide discovery and standardized annual GIS parcel-data program, with county-specific resource links.",
+      "jurisdiction": "New York",
+      "sourceType": "state-parcel-index",
+      "url": "https://gis.ny.gov/parcels",
+      "allowedDomains": ["gis.ny.gov", "gisservices.its.ny.gov"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 180},
+      "limitations": "The statewide standardized parcel dataset is generally annual; use county sources for the freshest local attribution.",
+      "canonicalRefs": ["src/landos/official-sources.ts", "src/landos/county-source-map.ts"]
+    },
+    {
+      "id": "nys-dec-environmental-mapper",
+      "title": "NYSDEC Environmental Resource Mapper",
+      "status": "official-informational",
+      "summary": "Official New York environmental screening map for wetlands, waters, biodiversity, and related conservation layers.",
+      "jurisdiction": "New York",
+      "sourceType": "wetlands-and-environmental",
+      "url": "https://dec.ny.gov/nature/animals-fish-plants/biodiversity-species-conservation/biodiversity-mapping/environmental-resource-mapper",
+      "allowedDomains": ["dec.ny.gov", "gisservices.dec.ny.gov"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 90},
+      "limitations": "Informational mapping cannot establish the presence or absence of jurisdictional wetlands; an official jurisdictional determination may be required.",
+      "canonicalRefs": ["src/landos/official-sources.ts", "src/landos/parcel-research-depth.ts"]
+    },
+    {
+      "id": "fema-nfhl",
+      "title": "FEMA National Flood Hazard Layer",
+      "status": "official",
+      "summary": "Official federal flood-hazard mapping source for effective panels, zones, and supporting layer metadata.",
+      "jurisdiction": "United States",
+      "sourceType": "flood-hazard",
+      "url": "https://www.fema.gov/flood-maps/national-flood-hazard-layer",
+      "allowedDomains": ["fema.gov", "www.fema.gov", "msc.fema.gov", "hazards.fema.gov"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 90},
+      "limitations": "Record effective map date and panel; map review does not replace a surveyor, insurer, or floodplain administrator determination.",
+      "canonicalRefs": ["src/landos/official-sources.ts", "src/landos/parcel-research-depth.ts"]
+    },
+    {
+      "id": "usda-nrcs-wss",
+      "title": "USDA NRCS Web Soil Survey",
+      "status": "official",
+      "summary": "Official national soil survey interface for mapped soil units, interpretations, and survey reports.",
+      "jurisdiction": "United States",
+      "sourceType": "soils",
+      "url": "https://www.nrcs.usda.gov/resources/data-and-reports/web-soil-survey",
+      "allowedDomains": ["nrcs.usda.gov", "www.nrcs.usda.gov", "websoilsurvey.sc.egov.usda.gov"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 365},
+      "limitations": "Soil mapping supports planning; onsite investigation may be needed for engineering, septic, or legal conclusions.",
+      "canonicalRefs": ["src/landos/official-sources.ts", "src/landos/parcel-research-depth.ts"]
+    },
+    {
+      "id": "openstreetmap-routing",
+      "title": "OpenStreetMap and governed routing",
+      "status": "approved-context",
+      "summary": "Community map and routing context used only for geographic orientation and route hypotheses, not legal-access conclusions.",
+      "jurisdiction": "Global",
+      "sourceType": "map-and-routing-context",
+      "url": "https://www.openstreetmap.org",
+      "allowedDomains": ["openstreetmap.org", "www.openstreetmap.org", "nominatim.openstreetmap.org", "router.project-osrm.org"],
+      "sourceFreshness": {"verifiedAt": "2026-08-02", "refreshDays": 180},
+      "limitations": "Routing and road proximity are contextual and do not prove legal access, frontage, easements, or road maintenance status.",
+      "canonicalRefs": ["src/landos/netr-routing.ts", "src/landos/parcel-spatial.ts"]
+    }
+  ]
+}

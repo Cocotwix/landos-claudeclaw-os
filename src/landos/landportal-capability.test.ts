@@ -243,6 +243,27 @@ describe('visual verification is required after a LandPortal parcel is selected'
     expect(confirmed).toMatch(/Map location matches/i);
   });
 
+  it('treats a numeric highway name as identity-bearing situs evidence', () => {
+    const cp = verifyParcelSelected(detailFrame({
+      owner: null,
+      address: '6940 HIGHWAY 11',
+      apn: '4165-00-51-3961',
+      county: 'Pickens',
+      state: 'SC',
+      acreage: 53,
+      lat: null,
+      lng: null,
+    }), {
+      address: '6940 Highway 11',
+      apn: '4165-00-51-3961',
+      county: 'Pickens',
+      state: 'SC',
+      acreage: 53,
+    });
+    expect(cp.passed).toBe(true);
+    expect(cp.confirmed.join(' ')).toMatch(/Road\/situs matches/i);
+  });
+
   it('reconciles the state-prefixed APN 073090 04200 with the county-local 090 04200 in Roane', () => {
     const cp = verifyParcelSelected(detailFrame({ apn: '090 04200' }), DEAL_32);
     expect(cp.passed).toBe(true);

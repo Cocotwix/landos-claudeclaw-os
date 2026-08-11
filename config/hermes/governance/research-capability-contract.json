@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0.0",
+  "registryPath": "config/landos-research/capabilities.json",
+  "capabilities": {
+    "duckduckgo-search": {
+      "selection": "primary",
+      "status": "approved-enabled",
+      "runtimeState": "installed",
+      "runtimeVersion": "9.14.4",
+      "profiles": ["landos-research"]
+    },
+    "grounded-citations": {
+      "selection": "required",
+      "status": "required-policy-no-skill",
+      "runtimeState": "blocked-no-supported-skill",
+      "profiles": ["landos-research", "landos-knowledge"]
+    },
+    "scrapling": {
+      "selection": "restricted-fallback",
+      "status": "blocked",
+      "runtimeState": "missing",
+      "profiles": []
+    },
+    "domain-intel": {
+      "selection": "restricted",
+      "status": "approved-enabled",
+      "runtimePrerequisite": "Hermes 0.19.1 pinned Python 3.11 stdlib helper",
+      "runtimeState": "installed-enabled-approved-public-sources",
+      "runtimeVersion": "unversioned@3f497e2b4f92ef83f45a98c02f7cb47c12ee069e",
+      "profiles": ["landos-research"]
+    },
+    "osint-investigation": {
+      "selection": "restricted",
+      "status": "blocked",
+      "profiles": []
+    }
+  }
+}

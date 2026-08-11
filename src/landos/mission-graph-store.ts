@@ -236,6 +236,7 @@ function childFromRow(row: unknown): MissionChildState | null {
     purpose: String(record.purpose),
     role: String(record.role) === 'supporting' ? 'supporting' : 'required',
     dependsOn: parseJson<string[]>(record.depends_on) ?? [],
+    awaits: [],
     identity: identityFromRow(record),
     acceptance: parseJson<MissionAcceptanceVerdict>(record.acceptance_json),
     provider: parseJson<MissionProviderAssignment>(record.provider_json),
@@ -430,6 +431,9 @@ export class MissionGraphStore {
     completedAt: string;
     durationMs?: number | null;
   }): void {
+    if (!isTerminalMissionChildStatus(input.status)) {
+      throw new Error(`settleChild requires a terminal status; received ${input.status}.`);
+    }
     const resultJson =
       input.result === undefined || input.result === null
         ? null
@@ -446,7 +450,7 @@ export class MissionGraphStore {
              provider_json = COALESCE(?, provider_json),
              failure_category = ?, failure_message = ?,
              retryable = ?, completed_at = ?, duration_ms = ?, updated_at = ?
-         WHERE mission_id = ? AND child_key = ?`,
+         WHERE mission_id = ? AND child_key = ? AND status IN ('queued', 'running')`,
       )
       .run(
         input.status,
@@ -481,6 +485,9 @@ export class MissionGraphStore {
     error?: string | null;
     failureCategory?: string | null;
   }): { completed: boolean; reason?: string } {
+    if (input.status === 'running') return { completed: false, reason: 'A mission cannot complete into running.' };
+    if (!input.join.allTerminal) return { completed: false, reason: 'The supplied join is not terminal.' };
+    if (input.join.status !== input.status) return { completed: false, reason: 'Mission status does not match the supplied join.' };
     const outstanding = this.listChildren(input.missionId).filter(
       (child) => !isTerminalMissionChildStatus(child.status),
     );
@@ -490,11 +497,11 @@ export class MissionGraphStore {
         reason: `Cannot complete: ${outstanding.map((child) => `${child.label} (${child.status})`).join(', ')} still outstanding.`,
       };
     }
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE landos_mission
          SET status = ?, outcome = ?, join_json = ?, error = ?, failure_category = ?, completed_at = ?, updated_at = ?
-         WHERE mission_id = ?`,
+         WHERE mission_id = ? AND status = 'running'`,
       )
       .run(
         input.status,
@@ -506,7 +513,9 @@ export class MissionGraphStore {
         input.completedAt,
         input.missionId,
       );
-    return { completed: true };
+    return Number(result.changes ?? 0) === 1
+      ? { completed: true }
+      : { completed: false, reason: 'Mission is already terminal and cannot be completed again.' };
   }
 
   /**
@@ -523,6 +532,8 @@ export class MissionGraphStore {
     outcome: string;
   }): void {
     const db = this.db;
+    const parent = db.prepare('SELECT status FROM landos_mission WHERE mission_id = ?').get(input.missionId) as { status?: string } | undefined;
+    if (parent?.status !== 'running') return;
     db.prepare(
       `UPDATE landos_mission_child
        SET status = 'failed', failure_category = COALESCE(failure_category, ?), failure_message = COALESCE(failure_message, ?),
@@ -539,7 +550,7 @@ export class MissionGraphStore {
     db.prepare(
       `UPDATE landos_mission
        SET status = 'failed', outcome = ?, join_json = ?, error = ?, failure_category = ?, completed_at = ?, updated_at = ?
-       WHERE mission_id = ?`,
+       WHERE mission_id = ? AND status = 'running'`,
     ).run(
       input.outcome,
       input.join ? JSON.stringify(redactPropertyIntelligence(input.join)) : null,

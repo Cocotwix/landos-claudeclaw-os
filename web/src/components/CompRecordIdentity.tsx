@@ -77,6 +77,8 @@ export interface CompIdentityInput {
   transactionKind?: 'closed' | 'active' | 'context';
   category: string;
   valuationRole: string | null;
+  /** Whether the closed price was independently verified or only source-stated. */
+  saleVerification?: 'independent' | 'source_stated';
 }
 
 /**
@@ -88,15 +90,29 @@ export interface CompIdentityInput {
  */
 export function identityFor(c: CompIdentityInput): CompRecordIdentity {
   if (c.operatorExcluded) return COMP_IDENTITIES.excluded;
+  // A house listing is still an active listing, so improved wins first.
+  if (c.category === 'improved_context') return COMP_IDENTITIES.improved;
   if (c.transactionKind === 'active' || c.category === 'active_competition' || c.category === 'asking_reference') {
     return COMP_IDENTITIES.active;
   }
-  if (c.category === 'improved_context') return COMP_IDENTITIES.improved;
-  if (c.inValuationSet) return COMP_IDENTITIES.closed;
+  // A source-stated row is still closed valuation evidence — same shape, same
+  // map role, same weight — but its badge may never assert a confirmed sale.
+  if (c.inValuationSet) {
+    return c.saleVerification === 'source_stated'
+      ? { ...COMP_IDENTITIES.closed, badge: 'SOURCE-STATED SALE' }
+      : COMP_IDENTITIES.closed;
+  }
   if (c.transactionKind === 'closed' || c.valuationRole === 'historical_context' || c.valuationRole === 'boundary') {
     return COMP_IDENTITIES.zeroWeight;
   }
   return COMP_IDENTITIES.context;
+}
+
+/** One honest operator label for comp proximity; null never becomes a zero. */
+export function compDistanceLabel(distanceMiles: number | null | undefined): string {
+  return typeof distanceMiles === 'number' && Number.isFinite(distanceMiles)
+    ? `${distanceMiles} mi`
+    : 'location unresolved';
 }
 
 /** The marker glyph. Shape is drawn with CSS classes, never with colour alone. */

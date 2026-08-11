@@ -1,8 +1,8 @@
 // Property Intelligence operator surface — static contract.
 //
 // Proves the ONE-action workflow is actually wired into the Deal Card and that
-// every required tab reads the SAME joined snapshot. A panel that exists but is
-// never mounted is not an operator surface.
+// every required workspace reads the SAME joined snapshot. A panel that exists
+// but is never mounted is not an operator surface.
 
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
@@ -16,9 +16,13 @@ const PANEL = fs.readFileSync(
   fileURLToPath(new URL('../../web/src/components/PropertyIntelligencePanel.tsx', import.meta.url)),
   'utf-8',
 );
+const OVERVIEW = fs.readFileSync(
+  fileURLToPath(new URL('../../web/src/components/DealWorkspaceOverview.tsx', import.meta.url)),
+  'utf-8',
+);
 const CANONICAL_WORKSPACE = DEAL_CARD.slice(
   DEAL_CARD.indexOf('role="tabpanel"'),
-  DEAL_CARD.indexOf("{activeTab === 'intake'", DEAL_CARD.indexOf('role="tabpanel"')),
+  DEAL_CARD.indexOf('data-testid="smart-intake-dock"', DEAL_CARD.indexOf('role="tabpanel"')),
 );
 
 describe('Property Intelligence launch surface', () => {
@@ -35,19 +39,22 @@ describe('Property Intelligence launch surface', () => {
     expect(DEAL_CARD).toMatch(/const piSnapshot = propertyIntelligence\.view\?\.snapshot\s*\n?\s*\?\? \(propertyIntelligence\.running \? propertyIntelligence\.view\?\.progressive\?\.snapshot \?\? null : null\);/);
   });
 
-  it('uses discovery-usable snapshot identity in the pinned header without reviving stale spine gaps', () => {
+  it('uses discovery-usable snapshot identity in the pinned header', () => {
     expect(PANEL).toMatch(/discoveryUsable\?: boolean/);
-    expect(DEAL_CARD).toMatch(/function currentCriticalFacts/);
-    expect(DEAL_CARD).toMatch(/snapshot\?\.identity\.state === 'provisional' && snapshot\.identity\.discoveryUsable/);
+    expect(DEAL_CARD).toMatch(/piSnapshot\?\.identity\.situs \|\| prop\?\.active_input_address/);
+    expect(DEAL_CARD).toMatch(/piSnapshot\?\.identity\.apn \?\? prop\?\.apn/);
+    expect(DEAL_CARD).toMatch(/piSnapshot\?\.identity\.owner \?\? prop\?\.owner/);
     expect(DEAL_CARD).toMatch(/currentCriticalFacts\(piSnapshot, spine\?\.header\?\.criticalFacts\)/);
-    expect(DEAL_CARD).toMatch(/piSnapshot\?\.identity\.discoveryUsable \? piSnapshot\.nextActions\[0\]/);
+    expect(DEAL_CARD).toMatch(
+      /snapshot\?\.identity\.state === 'provisional' && snapshot\.identity\.discoveryUsable/,
+    );
   });
 
   it('renders progressive content clearly marked preliminary, never as the promoted read', () => {
-    // Every tab-level section mounts the preliminary notice.
+    // Every canonical snapshot slice mounts the preliminary notice.
     expect(PANEL).toMatch(/data-testid="pi-preliminary"/);
     expect(PANEL).toMatch(/nothing shown here is promoted until then/i);
-    const sections = ['pi-overview', 'pi-property', 'pi-market', 'pi-strategy', 'pi-visuals', 'pi-evidence'];
+    const sections = ['pi-property', 'pi-market', 'pi-strategy', 'pi-visuals', 'pi-evidence'];
     for (const id of sections) {
       const start = PANEL.indexOf(`data-testid="${id}"`);
       expect(start, `section ${id} must exist`).toBeGreaterThan(-1);
@@ -69,53 +76,76 @@ describe('Property Intelligence launch surface', () => {
     expect(PANEL).toMatch(/if \(!dealId \|\| !running\)/);
     expect(PANEL).toMatch(/setInterval\(\(\) => \{ void refresh\(\); \}, 3000\)/);
   });
+
+  it('renders card-scoped retained comp images as well as provider URLs', () => {
+    expect(PANEL).toMatch(/(?:comp-image|browseruse\\\/image)/);
+    expect(PANEL).toMatch(/row\.thumbnailUrl/);
+    expect(PANEL).toMatch(/row\.photoUrls/);
+  });
 });
 
-describe('Property Intelligence tab coverage', () => {
-  const mounts: Array<[string, RegExp]> = [
-    ['Overview', /<PropertyIntelligenceOverview snapshot=\{piSnapshot\} \/>/],
+describe('Property Intelligence workspace coverage', () => {
+  const dealCardMounts: Array<[string, RegExp]> = [
     [
-      'Property',
-      /activeTab === 'property'[\s\S]{0,500}<PropertyIntelligenceProperty snapshot=\{piSnapshot\} \/>[\s\S]{0,500}<PropertyIdentityControl/,
+      'Overview',
+      /activeTab === 'overview'[\s\S]{0,300}<DealWorkspaceOverview[\s\S]{0,180}snapshot=\{piSnapshot\}/,
     ],
-    ['Due Diligence', /<PropertyIntelligenceDueDiligence snapshot=\{piSnapshot\} \/>/],
-    ['Market', /<PropertyIntelligenceMarket snapshot=\{piSnapshot\} \/>/],
+    ['Comps & Market', /<PropertyIntelligenceMarket snapshot=\{piSnapshot\} \/>/],
     ['Strategy', /activeTab === 'strategy' && <PropertyIntelligenceStrategy snapshot=\{piSnapshot\} \/>/],
-    ['Visuals', /<PropertyIntelligenceVisuals snapshot=\{piSnapshot\} \/>/],
-    ['Documents', /activeTab === 'documents' && <PropertyIntelligenceEvidence snapshot=\{piSnapshot\} \/>/],
+    [
+      'Documents & Visuals',
+      /activeTab === 'documents'[\s\S]{0,300}<PropertyIntelligenceVisuals snapshot=\{piSnapshot\} \/>[\s\S]{0,180}<PropertyIntelligenceEvidence snapshot=\{piSnapshot\} \/>/,
+    ],
   ];
 
-  for (const [tab, pattern] of mounts) {
-    it(`mounts the joined snapshot on the ${tab} tab`, () => {
-      expect(pattern.test(DEAL_CARD), `${tab} tab must render the Property Intelligence snapshot`).toBe(true);
+  for (const [workspace, pattern] of dealCardMounts) {
+    it(`mounts the joined snapshot in ${workspace}`, () => {
+      expect(pattern.test(DEAL_CARD), `${workspace} must render the Property Intelligence snapshot`).toBe(true);
     });
   }
 
-  it('mounts exactly one snapshot slice in each intelligence-bearing tab', () => {
-    const components = [
-      'PropertyIntelligenceOverview',
-      'PropertyIntelligenceProperty',
-      'PropertyIntelligenceDueDiligence',
+  it('keeps property and diligence as Overview drill-downs', () => {
+    expect(OVERVIEW).toMatch(/<PropertyIntelligenceProperty snapshot=\{snapshot\} \/>/);
+    expect(OVERVIEW).toMatch(/<PropertyIntelligenceDueDiligence snapshot=\{snapshot\} \/>/);
+    expect(OVERVIEW).toMatch(/Property & public records/);
+    expect(OVERVIEW).toMatch(/Property screening/);
+    expect(DEAL_CARD).not.toMatch(/activeTab === '(?:property|diligence)'/);
+  });
+
+  it('uses practical discovery language and keeps the market label aligned with the score rating', () => {
+    expect(PANEL).toMatch(/identityLabel[\s\S]{0,180}'Discovery match'/);
+    expect(PANEL).toMatch(/const marketStrength = operatorMarket\?\.strength \?\? 'Uncertain'/);
+    expect(PANEL).toMatch(/const marketScore = snapshot\.operatorAnalysis\?\.scores\.market/);
+    expect(PANEL).toMatch(/\{marketStrength\} market/);
+  });
+
+  it('loads the owner-facing activity feed with the Deal Card canonical extras', () => {
+    expect(DEAL_CARD).toMatch(/apiGet<\{ events: ActivityEventView\[\] \}>\(`\/api\/landos\/deal-cards\/\$\{id\}\/activity`\)/);
+    expect(DEAL_CARD).toMatch(/setActivityEvents\(activityResponse\.events \?\? \[\]\)/);
+    expect(DEAL_CARD).toMatch(/<ActivityTimeline events=\{activityEvents\} \/>/);
+  });
+
+  it('mounts each canonical snapshot slice exactly once in the confirmed workspace', () => {
+    const componentsInDealCard = [
       'PropertyIntelligenceMarket',
       'PropertyIntelligenceStrategy',
       'PropertyIntelligenceVisuals',
       'PropertyIntelligenceEvidence',
     ];
-    for (const component of components) {
+    for (const component of componentsInDealCard) {
       const mounts = CANONICAL_WORKSPACE.match(new RegExp(`<${component}\\b`, 'g')) ?? [];
       expect(mounts, `${component} must mount exactly once in the canonical workspace`).toHaveLength(1);
     }
+    for (const component of ['PropertyIntelligenceProperty', 'PropertyIntelligenceDueDiligence']) {
+      const mounts = OVERVIEW.match(new RegExp(`<${component}\\b`, 'g')) ?? [];
+      expect(mounts, `${component} must mount exactly once in Overview`).toHaveLength(1);
+    }
   });
 
-  it('keeps verified identity correction beside the canonical Property snapshot', () => {
-    const propertyStart = CANONICAL_WORKSPACE.indexOf("{activeTab === 'property'");
-    const propertyEnd = CANONICAL_WORKSPACE.indexOf("{activeTab === 'strategy'", propertyStart);
-    const propertyWorkspace = CANONICAL_WORKSPACE.slice(propertyStart, propertyEnd);
-
-    expect(propertyStart).toBeGreaterThan(-1);
-    expect(propertyWorkspace).toMatch(/<PropertyIntelligenceProperty snapshot=\{piSnapshot\} \/>/);
-    expect(propertyWorkspace).toMatch(/<PropertyIdentityControl/);
-    expect(propertyWorkspace).toMatch(/onSaved=\{\(\) => load\(deal\.id\)\}/);
+  it('keeps verified identity correction in the canonical Overview workspace', () => {
+    expect(OVERVIEW).toMatch(/<PropertyIntelligenceProperty snapshot=\{snapshot\} \/>/);
+    expect(CANONICAL_WORKSPACE).toMatch(/activeTab === 'overview'[\s\S]*?<PropertyIdentityControl/);
+    expect(CANONICAL_WORKSPACE).toMatch(/onSaved=\{\(\) => load\(deal\.id\)\}/);
   });
 
   it('never mounts proof or legacy comp, map, valuation and report panels in the canonical workspace', () => {
@@ -171,7 +201,7 @@ describe('Property Intelligence honesty rules in the UI', () => {
   });
 
   it('surfaces every exclusion reason instead of dropping candidates silently', () => {
-    expect(PANEL).toMatch(/Excluded candidates/);
+    expect(PANEL).toMatch(/Additional LandPortal candidates not used in valuation/);
     expect(PANEL).toMatch(/\{row\.reason\}/);
   });
 
@@ -186,7 +216,7 @@ describe('Property Intelligence honesty rules in the UI', () => {
     expect(PANEL).toMatch(/title="Risks and limitations"/);
     expect(PANEL).toMatch(/title="Next action"/);
     expect(PANEL).not.toMatch(/title="Missing information"/);
-    expect(PANEL).toMatch(/Specialist evidence and source limitations/);
+    expect(PANEL).toMatch(/Research coverage and source limitations/);
   });
 
   it('keeps wide tables inside their own horizontal scroll container', () => {

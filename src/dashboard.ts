@@ -56,6 +56,7 @@ import {
   getDashboardSetting,
   setDashboardSetting,
   insertDashboardBrowserSession,
+  getDashboardBrowserSessionExpiry,
   hasDashboardBrowserSession,
   pruneDashboardBrowserSessions,
   insertAuditLog,
@@ -272,11 +273,13 @@ function tokensMatch(provided: string, expected: string): boolean {
 // one-time pairing code stays in the URL fragment, so it is never sent to the
 // server as a request URL or Referer.
 const BROWSER_PAIRING_TTL_MS = 5 * 60 * 1000;
+const BROWSER_VISUAL_READY_TTL_MS = 60 * 1000;
 const BROWSER_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const BROWSER_SESSION_COOKIE = 'claudeclaw_local_session';
 const BROWSER_BOOTSTRAP_HEADER = 'x-landos-bootstrap-token';
 type BrowserPairing = { expiresAt: number; returnTo: string };
 const browserPairings = new Map<string, BrowserPairing>();
+let browserVisualReadyArm: BrowserPairing | null = null;
 
 function secretHash(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -314,6 +317,21 @@ function hasLocalBrowserSession(c: any): boolean {
   return hasDashboardBrowserSession(secretHash(token));
 }
 
+/** Extend an in-use session and return a refreshed cookie header, or null when
+ *  no renewal is due. The opaque token is unchanged; only its lifetime moves. */
+const BROWSER_SESSION_RENEW_BELOW_MS = 20 * 60 * 60 * 1000;
+function maybeRenewLocalBrowserSession(c: any): string | null {
+  const token = requestCookie(c, BROWSER_SESSION_COOKIE);
+  if (!token || token.length > 256) return null;
+  const hash = secretHash(token);
+  const expiresAt = getDashboardBrowserSessionExpiry(hash);
+  if (expiresAt === null || expiresAt <= Date.now()) return null;
+  if (expiresAt - Date.now() >= BROWSER_SESSION_RENEW_BELOW_MS) return null;
+  const renewedAt = Date.now() + BROWSER_SESSION_TTL_MS;
+  insertDashboardBrowserSession(hash, renewedAt);
+  return `${BROWSER_SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(BROWSER_SESSION_TTL_MS / 1000)}`;
+}
+
 function safeBrowserPairingReturnTo(value: unknown): string {
   const fallback = '/dept/acquisitions?deal=14';
   if (typeof value !== 'string' || value.length === 0 || value.length > 2048) return fallback;
@@ -341,6 +359,18 @@ function claimBrowserPairing(code: string): BrowserPairing | null {
   const key = secretHash(code);
   const pairing = browserPairings.get(key);
   browserPairings.delete(key);
+  return pairing && pairing.expiresAt > Date.now() ? pairing : null;
+}
+
+function armBrowserVisualReady(returnTo: string): BrowserPairing {
+  const pairing = { expiresAt: Date.now() + BROWSER_VISUAL_READY_TTL_MS, returnTo };
+  browserVisualReadyArm = pairing;
+  return pairing;
+}
+
+function claimBrowserVisualReady(): BrowserPairing | null {
+  const pairing = browserVisualReadyArm;
+  browserVisualReadyArm = null;
   return pairing && pairing.expiresAt > Date.now() ? pairing : null;
 }
 
@@ -513,9 +543,21 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       await next();
       return;
     }
-    const isBrowserPairingClaim = path === '/api/dashboard/browser-pairings/claim' && c.req.method === 'POST';
+    const isBrowserPairingClaim = (
+      path === '/api/dashboard/browser-pairings/claim'
+      || path === '/api/dashboard/browser-pairings/claim-visual-ready'
+    ) && c.req.method === 'POST';
     if (isBrowserPairingClaim || hasLocalBrowserSession(c)) {
+      // Sliding renewal: a paired browser in active use never hits the 24h
+      // cliff (the root cause of the 2026-07-30 full operator lockout — the
+      // cookie AND the stored session both hard-expired 24h after claim, with
+      // no renewal path, so every tab fell back to the pairing screen). When
+      // less than ~20h remains, the stored session is extended and a fresh
+      // Max-Age cookie is re-issued for the SAME opaque token. Idle browsers
+      // still expire after a full 24h without use; other profiles still pair.
+      const renewedCookie = maybeRenewLocalBrowserSession(c);
       await next();
+      if (renewedCookie) c.res.headers.append('Set-Cookie', renewedCookie);
       return;
     }
     // The canonical local runtime may bootstrap the first browser after a
@@ -523,7 +565,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // header that browser CORS does not allow, never in a URL, and only this
     // loopback-only pairing route accepts it. Normal browser auth remains
     // query-token/session-cookie based.
-    const isBrowserPairingCreate = path === '/api/dashboard/browser-pairings' && c.req.method === 'POST';
+    const isBrowserPairingCreate = (
+      path === '/api/dashboard/browser-pairings'
+      || path === '/api/dashboard/browser-pairings/visual-ready'
+    ) && c.req.method === 'POST';
     const token = c.req.query('token') || (isBrowserPairingCreate ? c.req.header(BROWSER_BOOTSTRAP_HEADER) : '');
     if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -551,6 +596,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const mutationReadonlyExempt = new Set<string>([
     '/api/dashboard/browser-pairings',
     '/api/dashboard/browser-pairings/claim',
+    '/api/dashboard/browser-pairings/visual-ready',
+    '/api/dashboard/browser-pairings/claim-visual-ready',
   ]);
   app.use('*', async (c, next) => {
     const method = c.req.method;
@@ -645,15 +692,32 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }, 201);
   });
 
-  // This is intentionally the sole unauthenticated API route. It accepts a
-  // single-use, five-minute code only on loopback and exchanges it for an
-  // independent local session cookie; it cannot disclose the master token.
-  app.post('/api/dashboard/browser-pairings/claim', async (c) => {
+  // The managed visual-acceptance command arms one short-lived, single-use
+  // loopback claim after it has independently verified runtime health and the
+  // board API. The launch URL contains no credential, token, or random code;
+  // a fresh in-app browser tab consumes the in-memory arm and receives the same
+  // HttpOnly local session as the ordinary one-time-link flow.
+  app.post('/api/dashboard/browser-pairings/visual-ready', async (c) => {
     if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
-    const body = await c.req.json().catch(() => ({})) as { code?: unknown };
-    const pairing = typeof body.code === 'string' ? claimBrowserPairing(body.code) : null;
-    if (!pairing) return c.json({ error: 'Pairing code is invalid or expired.' }, 401);
+    const token = c.req.query('token') || c.req.header(BROWSER_BOOTSTRAP_HEADER) || '';
+    if (!DASHBOARD_TOKEN || !tokensMatch(token, DASHBOARD_TOKEN)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const body = await c.req.json().catch(() => ({})) as { returnTo?: unknown };
+    const returnTo = safeBrowserPairingReturnTo(body.returnTo);
+    const pairing = armBrowserVisualReady(returnTo);
+    const launchUrl = new URL('/connect', new URL(c.req.url).origin);
+    launchUrl.searchParams.set('visualReady', '1');
+    launchUrl.searchParams.set('returnTo', returnTo);
+    return c.json({
+      ready: true,
+      launchUrl: launchUrl.toString(),
+      expiresAt: new Date(pairing.expiresAt).toISOString(),
+      returnTo,
+    }, 201);
+  });
 
+  function issueLocalBrowserSession(c: any, pairing: BrowserPairing): Response {
     const sessionToken = crypto.randomBytes(32).toString('base64url');
     const expiresAt = Date.now() + BROWSER_SESSION_TTL_MS;
     insertDashboardBrowserSession(secretHash(sessionToken), expiresAt);
@@ -665,7 +729,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       paired: true,
       expiresAt: new Date(expiresAt).toISOString(),
       returnTo: pairing.returnTo,
-    }, 201);
+    }, 201) as Response;
+  }
+
+  // This is intentionally the sole unauthenticated API route. It accepts a
+  // single-use, five-minute code only on loopback and exchanges it for an
+  // independent local session cookie; it cannot disclose the master token.
+  app.post('/api/dashboard/browser-pairings/claim', async (c) => {
+    if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
+    const body = await c.req.json().catch(() => ({})) as { code?: unknown };
+    const pairing = typeof body.code === 'string' ? claimBrowserPairing(body.code) : null;
+    if (!pairing) return c.json({ error: 'Pairing code is invalid or expired.' }, 401);
+    return issueLocalBrowserSession(c, pairing);
+  });
+
+  app.post('/api/dashboard/browser-pairings/claim-visual-ready', (c) => {
+    if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
+    const pairing = claimBrowserVisualReady();
+    if (!pairing) return c.json({ error: 'Visual acceptance pairing is not armed or has expired.' }, 401);
+    return issueLocalBrowserSession(c, pairing);
   });
 
   // Serve dashboard HTML.

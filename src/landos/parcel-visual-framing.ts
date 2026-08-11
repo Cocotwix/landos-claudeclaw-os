@@ -74,7 +74,7 @@ export const OVERLAY_CAPTURE_PLAN: readonly PlannedOverlayCapture[] = [
   { overlay: 'Contour Lines', candidates: ['Contour Lines', 'Contours'], purpose: 'landportal_overlay_contour_lines' },
   { overlay: 'Wetlands', candidates: ['Wetlands'], purpose: 'landportal_overlay_wetlands' },
   { overlay: 'FEMA Floodplain', candidates: ['FEMA Floodplain', 'FEMA Flood Zones'], purpose: 'landportal_overlay_fema_floodplain' },
-  { overlay: 'Soil', candidates: ['Soil', 'Soils', 'Soil Survey'], purpose: 'landportal_overlay_soil' },
+  { overlay: 'Soil', candidates: ['Soil Type', 'Soil', 'Soils', 'Soil Survey'], purpose: 'landportal_overlay_soil' },
 ];
 
 /**
@@ -107,6 +107,98 @@ export const MIN_PARCEL_VISUAL_BYTES: Readonly<Record<ParcelVisualCaptureKind, n
 export interface ParcelVisualQualityVerdict {
   accepted: boolean;
   reason: string | null;
+}
+
+export interface SavedParcelVisualInspection extends ParcelVisualQualityVerdict {
+  bytes: number;
+  width: number | null;
+  height: number | null;
+  sha256: string | null;
+}
+
+export interface MapViewportClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Final browser-side framing gate before any screenshot is written. */
+export function assessMapViewportFrame(input: {
+  clip: MapViewportClip | null;
+  viewport: { width: number; height: number };
+  obstructions: string[];
+}): ParcelVisualQualityVerdict {
+  if (!input.clip) return { accepted: false, reason: 'capture rejected: no rendered map viewport could be isolated.' };
+  const { x, y, width, height } = input.clip;
+  const withinViewport = x >= 0 && y >= 0 && width > 0 && height > 0
+    && x + width <= input.viewport.width + 1
+    && y + height <= input.viewport.height + 1;
+  if (!withinViewport || width < 600 || height < 400) {
+    return { accepted: false, reason: 'capture rejected: the isolated map viewport is missing, clipped, or too small to show parcel context.' };
+  }
+  if (input.obstructions.length) {
+    return {
+      accepted: false,
+      reason: `capture rejected: ${input.obstructions.join(', ')} still obstructs the useful map viewport.`,
+    };
+  }
+  return { accepted: true, reason: null };
+}
+
+/**
+ * Inspect the PNG that was actually written, rather than trusting that a
+ * successful browser screenshot call produced the requested crop. Chromium
+ * writes PNG dimensions in the IHDR header, so this gate needs no image
+ * decoder and can reject a full-page frame, truncated file, blank shell, or
+ * relabelled overlay before the path is persisted.
+ */
+export function inspectSavedParcelVisual(input: {
+  filePath: string;
+  kind: ParcelVisualCaptureKind;
+  expectedClip: MapViewportClip;
+  priorSha256s?: Iterable<string>;
+}): SavedParcelVisualInspection {
+  let bytes = 0;
+  let width: number | null = null;
+  let height: number | null = null;
+  let sha256: string | null = null;
+  try {
+    const file = fs.readFileSync(input.filePath);
+    bytes = file.length;
+    const pngSignature = file.length >= 24
+      && file.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    if (!pngSignature || file.toString('ascii', 12, 16) !== 'IHDR') {
+      return { accepted: false, reason: 'capture rejected: saved image is not a readable PNG.', bytes, width, height, sha256 };
+    }
+    width = file.readUInt32BE(16);
+    height = file.readUInt32BE(20);
+    sha256 = crypto.createHash('sha256').update(file).digest('hex');
+  } catch {
+    return { accepted: false, reason: 'capture rejected: saved image could not be read back for inspection.', bytes, width, height, sha256 };
+  }
+
+  // A connected Chrome profile can render at deviceScaleFactor > 1. Accept a
+  // uniformly scaled crop, but reject a full-page/aspect-mismatched image.
+  const widthScale = width / input.expectedClip.width;
+  const heightScale = height / input.expectedClip.height;
+  const uniformScale = widthScale >= 0.5 && widthScale <= 4
+    && heightScale >= 0.5 && heightScale <= 4
+    && Math.abs(widthScale - heightScale) <= 0.02;
+  if (!uniformScale) {
+    return {
+      accepted: false,
+      reason: `capture rejected: saved PNG is ${width}×${height}, not a uniformly scaled rendering of the isolated ${Math.round(input.expectedClip.width)}×${Math.round(input.expectedClip.height)} map viewport.`,
+      bytes, width, height, sha256,
+    };
+  }
+  const quality = assessParcelVisualCapture({
+    kind: input.kind,
+    bytes,
+    sha256,
+    priorSha256s: input.priorSha256s,
+  });
+  return { ...quality, bytes, width, height, sha256 };
 }
 
 /** File-level quality gate shared by live and persistence-derived visual reads.

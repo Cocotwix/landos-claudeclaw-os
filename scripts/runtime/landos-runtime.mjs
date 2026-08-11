@@ -23,12 +23,15 @@ const ENV_MODULE = path.join(ROOT, 'dist', 'env.js');
 const PORT = 3141;
 const URL = `http://localhost:${PORT}`;
 const HEALTH_PATH = '/api/health';
+const BOARD_PATH = '/api/landos/board?entity=all';
 const BROWSER_PAIRING_PATH = '/api/dashboard/browser-pairings';
+const BROWSER_VISUAL_READY_PATH = '/api/dashboard/browser-pairings/visual-ready';
 const BROWSER_BOOTSTRAP_HEADER = 'x-landos-bootstrap-token';
 const BROWSER_PAIRING_RETURN_TO = '/dept/acquisitions';
 const START_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 8_000;
 const HTTP_TIMEOUT_MS = 3_000;
+const VISUAL_READY_TIMEOUT_MS = 60_000;
 // Windows process inspection can exceed five seconds when the machine is under
 // browser/research load. Treating that transient slowness as an unknown PID
 // strands canonical restart/start operations even after the server has exited.
@@ -718,6 +721,91 @@ async function createLocalBrowserPairing(dashboardToken, fetchImpl = fetch) {
   return validateBrowserPairingResponse(body, dashboardToken);
 }
 
+function authenticatedUrl(pathname, dashboardToken) {
+  const url = new globalThis.URL(pathname, `${URL}/`);
+  if (dashboardToken) url.searchParams.set('token', dashboardToken);
+  return url.toString();
+}
+
+function validateVisualReadyResponse(value, dashboardToken) {
+  if (!value || value.ready !== true || typeof value.launchUrl !== 'string') {
+    throw new Error('LandOS returned an invalid visual-acceptance response.');
+  }
+  const launchUrl = new globalThis.URL(value.launchUrl);
+  if (launchUrl.origin !== URL || launchUrl.pathname !== '/connect') {
+    throw new Error('LandOS returned a visual-acceptance URL outside the managed loopback origin.');
+  }
+  if (launchUrl.searchParams.get('visualReady') !== '1' || launchUrl.hash) {
+    throw new Error('LandOS returned an invalid visual-acceptance launch URL.');
+  }
+  if (dashboardToken && value.launchUrl.includes(dashboardToken)) {
+    throw new Error('LandOS refused a visual-acceptance response containing the dashboard credential.');
+  }
+  return launchUrl.toString();
+}
+
+async function waitForVisualEndpoints(dashboardToken, options = {}) {
+  const {
+    fetchImpl = fetch,
+    timeoutMs = VISUAL_READY_TIMEOUT_MS,
+    pollMs = 250,
+    sleepImpl = sleep,
+  } = options;
+  const deadline = Date.now() + timeoutMs;
+  let health = null;
+  let board = null;
+  do {
+    [health, board] = await Promise.all([
+      httpProbe(authenticatedUrl(HEALTH_PATH, dashboardToken), true, { fetchImpl }),
+      httpProbe(authenticatedUrl(BOARD_PATH, dashboardToken), true, { fetchImpl }),
+    ]);
+    if (health.ok && board.ok) return { health, board };
+    if (Date.now() >= deadline) break;
+    await sleepImpl(pollMs);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `LandOS did not become visually ready within ${timeoutMs}ms `
+    + `(health ${health?.status ?? 'unreachable'}, board ${board?.status ?? 'unreachable'}).`,
+  );
+}
+
+async function prepareVisualReady(dashboardToken, options = {}) {
+  if (!dashboardToken) throw new Error('DASHBOARD_TOKEN is not configured.');
+  const { fetchImpl = fetch, returnTo = BROWSER_PAIRING_RETURN_TO } = options;
+  await waitForVisualEndpoints(dashboardToken, options);
+  const response = await fetchImpl(new globalThis.URL(BROWSER_VISUAL_READY_PATH, `${URL}/`), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      [BROWSER_BOOTSTRAP_HEADER]: dashboardToken,
+    },
+    body: JSON.stringify({ returnTo }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+  });
+  if (response.status !== 201) {
+    throw new Error(`LandOS rejected the visual-acceptance bootstrap (HTTP ${response.status}).`);
+  }
+  const body = await response.json().catch(() => null);
+  const launchUrl = validateVisualReadyResponse(body, dashboardToken);
+  const verified = await waitForVisualEndpoints(dashboardToken, options);
+  return {
+    launchUrl,
+    healthStatus: verified.health.status,
+    boardStatus: verified.board.status,
+  };
+}
+
+async function commandVisualReady() {
+  const dashboardToken = await readDashboardToken();
+  const ready = await prepareVisualReady(dashboardToken);
+  console.log(`Health HTTP status: ${ready.healthStatus}`);
+  console.log(`Board HTTP status: ${ready.boardStatus}`);
+  console.log('Visual acceptance: READY');
+  console.log(`Fresh in-app Browser URL: ${ready.launchUrl}`);
+  return 0;
+}
+
 /**
  * Hand the operator their pairing URL. LandOS does NOT open it.
  *
@@ -727,7 +815,8 @@ async function createLocalBrowserPairing(dashboardToken, fetchImpl = fetch) {
  * session it must never touch. Launching it in the automation browser instead
  * would be no use either: that window lives offscreen by design.
  *
- * So the operator opens it, in whichever browser they choose. Nothing is spawned.
+ * So the operator opens it, in whichever browser they choose. The pairing URL
+ * is printed by the caller; nothing here is spawned.
  */
 async function openPairingInChrome(pairingUrl) {
   return {
@@ -770,12 +859,13 @@ async function main() {
     case 'status': return commandStatus();
     case 'health': return commandHealth();
     case 'pair': return commandPair();
+    case 'visual-ready': return commandVisualReady();
     case 'logs': return commandLogs();
     case 'start': return withOperationLock('start', startInternal).then(() => 0);
     case 'stop': return withOperationLock('stop', stopInternal).then(() => 0);
     case 'restart': return withOperationLock('restart', async () => { await stopInternal(); await sleep(500); await startInternal(); return 0; });
     default:
-      console.error('Usage: node scripts/runtime/landos-runtime.mjs <status|start|stop|restart|logs|health|pair>');
+      console.error('Usage: node scripts/runtime/landos-runtime.mjs <status|start|stop|restart|logs|health|pair|visual-ready>');
       return 2;
   }
 }
@@ -785,6 +875,7 @@ export {
   ROOT,
   chromeCandidates,
   createLocalBrowserPairing,
+  prepareVisualReady,
   findChrome,
   historyAssociation,
   httpProbe,
@@ -796,6 +887,8 @@ export {
   processStartMatches,
   quote,
   samePath,
+  validateVisualReadyResponse,
+  waitForVisualEndpoints,
   sanitizeEnvironment,
   startDecision,
   validateBrowserPairingResponse,

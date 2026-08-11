@@ -4,8 +4,10 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   contextZoomOutSteps,
+  assessMapViewportFrame,
   assessParcelVisualCapture,
   fileSha256,
+  inspectSavedParcelVisual,
   isDistinctOverlayCapture,
   OVERLAY_CAPTURE_PLAN,
   parseAcresFromFields,
@@ -130,6 +132,39 @@ describe('assessParcelVisualCapture', () => {
   });
 });
 
+describe('assessMapViewportFrame', () => {
+  it('accepts a clean, large map-only viewport', () => {
+    expect(assessMapViewportFrame({
+      clip: { x: 420, y: 80, width: 1160, height: 880 },
+      viewport: { width: 1600, height: 1000 },
+      obstructions: [],
+    }).accepted).toBe(true);
+  });
+
+  it('rejects ads, modals, chat widgets, and other retained obstructions', () => {
+    const verdict = assessMapViewportFrame({
+      clip: { x: 420, y: 80, width: 1160, height: 880 },
+      viewport: { width: 1600, height: 1000 },
+      obstructions: ['skip-tracing offer'],
+    });
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reason).toMatch(/skip-tracing/i);
+  });
+
+  it('rejects a full-page or unusably small crop when no real map viewport was isolated', () => {
+    expect(assessMapViewportFrame({
+      clip: null,
+      viewport: { width: 1600, height: 1000 },
+      obstructions: [],
+    }).accepted).toBe(false);
+    expect(assessMapViewportFrame({
+      clip: { x: 0, y: 0, width: 500, height: 300 },
+      viewport: { width: 1600, height: 1000 },
+      obstructions: [],
+    }).accepted).toBe(false);
+  });
+});
+
 describe('fileSha256', () => {
   it('produces identical hashes only for identical bytes', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-framing-'));
@@ -147,5 +182,40 @@ describe('fileSha256', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('inspectSavedParcelVisual', () => {
+  it('reads back the saved PNG and accepts only the requested map-crop dimensions', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-saved-visual-'));
+    const file = path.join(dir, 'map.png');
+    const png = Buffer.alloc(600_000, 17);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png, 0);
+    png.write('IHDR', 12, 'ascii');
+    png.writeUInt32BE(960, 16);
+    png.writeUInt32BE(720, 20);
+    fs.writeFileSync(file, png);
+
+    expect(inspectSavedParcelVisual({
+      filePath: file,
+      kind: 'parcel_context',
+      expectedClip: { x: 400, y: 0, width: 960, height: 720 },
+    })).toMatchObject({ accepted: true, width: 960, height: 720, bytes: 600_000 });
+    expect(inspectSavedParcelVisual({
+      filePath: file,
+      kind: 'parcel_context',
+      expectedClip: { x: 0, y: 0, width: 1600, height: 1000 },
+    }).reason).toMatch(/not a uniformly scaled rendering/i);
+  });
+
+  it('rejects a corrupt or unreadable saved image', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-saved-visual-bad-'));
+    const file = path.join(dir, 'bad.png');
+    fs.writeFileSync(file, Buffer.from('not an image'));
+    expect(inspectSavedParcelVisual({
+      filePath: file,
+      kind: 'parcel_context',
+      expectedClip: { x: 0, y: 0, width: 900, height: 700 },
+    }).accepted).toBe(false);
   });
 });

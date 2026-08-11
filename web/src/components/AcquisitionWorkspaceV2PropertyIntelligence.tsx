@@ -10,6 +10,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide-preact';
 import { dashboardToken } from '@/lib/api';
+import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
+import { LandUsePanel, type LandUseView } from './AcquisitionWorkspaceV2LandUse';
 
 // ── View types (structural; every field optional and defensive) ────────
 
@@ -32,6 +34,7 @@ export interface PiSnapshot {
     displayAddress?: string; normalizedAddress?: string; owner?: string | null;
     ownerMailing?: string | null; county?: string; state_?: string; apn?: string;
     acres?: number | null; acreageBasis?: string; lpPropertyId?: string | null;
+    zip?: string | null; city?: string | null;
     conflicts?: string[]; sourceConfidence?: string; hasParcelGeometry?: boolean;
   };
   facts?: PiFact[];
@@ -89,6 +92,22 @@ export interface AccessPresentationView {
   apparentEntrance: string;
   apparentEntranceConfirmed: boolean;
   apparentEntranceObservation: string | null;
+  evidence?: {
+    items: AccessEvidenceView[];
+    byTier: Record<'parcel_flag' | 'apparent_physical' | 'reported_legal' | 'verified_legal', AccessEvidenceView[]>;
+    parcelFlagged: boolean;
+    apparentPhysicalAccess: boolean;
+    reportedLegalAccess: boolean;
+    verifiedLegalAccess: boolean;
+    operatorConclusion: string;
+    outstanding: string[];
+    conclusionWeight: string;
+  };
+}
+export interface AccessEvidenceView {
+  tier: 'parcel_flag' | 'apparent_physical' | 'reported_legal' | 'verified_legal';
+  statement: string; sourceLabel: string; sourceKind: string; basis: string; weight: string;
+  sourceUrl?: string | null; observedAt?: string | null;
 }
 
 export interface SoilsSepticUnitView {
@@ -116,6 +135,36 @@ export interface ResearchStatusView {
   delivered: number; total: number; headline: string;
   areas: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
   incomplete: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
+}
+
+/** Mirrors ExactAddressListingEvidenceView in src/landos/exact-address-web-discovery.ts. */
+export interface ExactAddressListingSourceView {
+  sourceLabel: string;
+  family: string;
+  sourceUrl: string;
+  retrievedAt: string | null;
+  propertyType: string | null;
+  buildingSqft: number | null;
+  acres: number | null;
+  listingStatus: string | null;
+  listingStatusDate: string | null;
+  price: number | null;
+  utilities: string[];
+  well: boolean | null;
+  septic: boolean | null;
+  accessStatements: string[];
+  drivewayStatements: string[];
+  accessLanguageNote: string;
+  provenanceNote: string;
+}
+export interface ExactAddressListingsView {
+  status: string;
+  note: string;
+  queries: string[];
+  retrievedAtIso: string | null;
+  sources: ExactAddressListingSourceView[];
+  subjectRead: { improved: boolean; buildingSqft: number | null; acres: number | null; statement: string } | null;
+  disclaimer: string;
 }
 
 export interface VbaObservationView {
@@ -222,7 +271,7 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, exactAddressListings }: {
   snap: PiSnapshot;
   market: MarketContextView | null;
   soils: SoilDetail[] | null;
@@ -232,13 +281,20 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   accessView?: AccessPresentationView | null;
   soilsSeptic?: SoilsSepticView | null;
   narrative?: VisualBuyerNarrativeView | null;
+  dealId?: number;
+  officialParcelGis?: OfficialParcelGisView | null;
+  landUse?: LandUseView | null;
+  exactAddressListings?: ExactAddressListingsView | null;
 }) {
   // Same-page evidence viewer: index into the ordered gallery, or null.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const id = snap.identity || {};
   const address = id.displayAddress || '';
-  const zip = num(address, /\b(\d{5})\s*$/);
+  // The reconciled record first; the address string is only a fallback for
+  // records that predate identity reconciliation. Parsing the intake string is
+  // exactly how a superseded ZIP kept being shown as the subject's ZIP.
+  const zip = id.zip || num(address, /\b(\d{5})\s*$/);
   const street = address.split(',')[0]?.trim() || '';
   const roadName = street.replace(/^\d+\s+/, '');
 
@@ -295,6 +351,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     ...GALLERY_ORDER.map((gid) => byId.get(gid)).filter((e): e is PiEvidenceItem => !!e),
     ...evidence.filter((e) => !GALLERY_ORDER.includes(e.id)),
   ];
+  const overview = byId.get('inspection-landportal_overview') ?? byId.get('inspection-parcel_context') ?? null;
   const hasDefault3d = byId.has('inspection-default_3d');
   const has3d = hasDefault3d || byId.has('inspection-front_side_3d') || byId.has('inspection-rear_side_3d');
   const hasBuildabilityCapture = byId.has('inspection-buildability');
@@ -357,9 +414,9 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           <div class="awv2-panel-title">Access &amp; road frontage</div>
           <div class="awv2-kv">
             <Kv
-              k="Legal access"
+              k="Mapped road abutment"
               v={accessView?.established ? accessView.legalAccess : null}
-              empty="Not established at discovery stage"
+              empty="Not established from mapped frontage"
             />
             <Kv k="Apparent entrance" v={accessView ? accessView.apparentEntrance : null} empty="Not confirmed from retained imagery" />
             <Kv k="Road frontage" v={frontageFt ? `${Math.round(Number(frontageFt))} ft (LandPortal parcel panel)` : null} />
@@ -371,6 +428,26 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           {accessView?.apparentEntranceObservation && (
             <div class="awv2-pi-note"><b>Retained imagery basis:</b> {accessView.apparentEntranceObservation}</div>
           )}
+          <div class="awv2-pi-note"><b>Four-part access evidence ladder</b></div>
+          {([
+            ['parcel_flag', 'LandPortal parcel flag'],
+            ['apparent_physical', 'Apparent physical access'],
+            ['reported_legal', 'Reported legal/easement access'],
+            ['verified_legal', 'Verified recorded legal access'],
+          ] as const).map(([tier, label]) => {
+            const tierItems = accessView?.evidence?.byTier?.[tier] ?? [];
+            return (
+              <div class="awv2-pi-note">
+                <b>{label}:</b>{' '}
+                {tierItems.length
+                  ? tierItems.map((item) => (
+                      <span>{item.statement} — {item.sourceLabel} ({item.basis.replace(/_/g, ' ')}, {item.weight}){item.sourceUrl ? <> · <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer">source</a></> : null}</span>
+                    ))
+                  : 'No evidence retained in this tier.'}
+              </div>
+            );
+          })}
+          {accessView?.evidence?.operatorConclusion && <div class="awv2-pi-note"><b>Reconciled operator read:</b> {accessView.evidence.operatorConclusion}</div>}
           {(access?.missing || []).length > 0 && (
             missingDiligence
               ? <div class="awv2-pi-note">Survey-grade frontage and easement review are tracked under Missing diligence below.</div>
@@ -420,6 +497,23 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           {wetlands?.detail && <div class="awv2-pi-note">{wetlands.detail}</div>}
         </section>
       </div>
+
+      {/* ── Official Parcel & GIS ──
+          Placed directly after the subject/access panels: which government
+          source of record answered, and whether the parcel is confirmed, is
+          the foundation every later research lane depends on. */}
+      {dealId != null && (
+        <OfficialParcelGisPanel dealId={dealId} initial={officialParcelGis ?? null} />
+      )}
+
+      {/* ── Land Use & Subdivision ──
+          Directly after the parcel evidence it is built on: who governs the
+          parcel, whether it is zoned, what may be built by right, and what may
+          be divided by right. Every downstream valuation scenario depends on
+          this being right, so it sits where the operator reads it in order. */}
+      {dealId != null && (
+        <LandUsePanel dealId={dealId} initial={landUse ?? null} />
+      )}
 
       {/* ── Soils & Preliminary Septic Outlook ── */}
       <section class="awv2-panel" id="soils-septic">
@@ -526,6 +620,14 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       {/* ── Visual evidence ── */}
       <section class="awv2-panel">
         <div class="awv2-panel-title">Visual evidence <span class="awv2-src-tag">LandPortal · verified subject</span></div>
+        {overview && (
+          <figure class="awv2-gallery-item" style="margin:0 0 14px">
+            <button type="button" class="awv2-gallery-open" onClick={() => setViewerIndex(gallery.indexOf(overview))} title="Open the deliberately framed LandPortal Overview">
+              <img src={tok(overview.viewUrl)} alt="LandPortal satellite Overview showing the parcel, nearest road, and apparent access relationship" loading="lazy" />
+            </button>
+            <figcaption class="cap"><span>LandPortal satellite Overview · parcel and road context</span><span class="tag">Overview</span></figcaption>
+          </figure>
+        )}
         {gallery.length > 0 ? (
           <div class="awv2-gallery">
             {gallery.map((e, index) => (
@@ -546,6 +648,59 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           <div class="awv2-pi-note">No accepted visual evidence is on file for this parcel.</div>
         )}
       </section>
+
+      {/* ── Exact-address listing evidence ──
+             What the exact-address web lane actually retrieved, per provider.
+             Everything here is listing-reported: it never becomes an assessor,
+             government, or recorded-instrument fact. ── */}
+      {exactAddressListings && (
+        <section class="awv2-panel" id="exact-address-listing-evidence">
+          <div class="awv2-panel-title">
+            Exact-address listing evidence{' '}
+            <span class="awv2-src-tag">Web discovery · {exactAddressListings.status}</span>
+          </div>
+          {exactAddressListings.subjectRead && (
+            <div class="awv2-pi-note" data-testid="ea-subject-read">
+              <b>Subject read:</b> {exactAddressListings.subjectRead.statement}
+            </div>
+          )}
+          {exactAddressListings.sources.length > 0 ? (
+            <>
+              <div class="awv2-pi-note">
+                {exactAddressListings.sources.length} property-specific source(s) retrieved:{' '}
+                {[...new Set(exactAddressListings.sources.map((s) => s.sourceLabel))].join(', ')}.
+              </div>
+              {exactAddressListings.sources.map((s) => (
+                <div class="awv2-pi-note" data-testid="ea-listing-source">
+                  <b>{s.sourceLabel}</b>
+                  {s.listingStatus ? ` · ${s.listingStatus}${s.listingStatusDate ? ` (${s.listingStatusDate})` : ''}` : ''}
+                  {s.price != null ? ` · $${Math.round(s.price).toLocaleString('en-US')}` : ''}
+                  {s.propertyType ? ` · ${s.propertyType}` : ''}
+                  {s.buildingSqft != null ? ` · ${s.buildingSqft.toLocaleString('en-US')} sqft` : ''}
+                  {s.acres != null ? ` · ${s.acres} ac` : ''}
+                  {s.well === true ? ' · well' : ''}
+                  {s.septic === true ? ' · septic' : ''}
+                  {s.utilities.length ? ` · utilities: ${s.utilities.join(', ')}` : ''}
+                  <div class="awv2-sv-basis">{s.accessLanguageNote}</div>
+                  {s.accessStatements.map((text) => (
+                    <div class="awv2-sv-basis">“{text}”</div>
+                  ))}
+                  {s.drivewayStatements.map((text) => (
+                    <div class="awv2-sv-basis">Driveway wording: “{text}”</div>
+                  ))}
+                  <div class="awv2-sv-basis">
+                    {s.provenanceNote}{' '}
+                    <a href={s.sourceUrl} target="_blank" rel="noreferrer">source</a>
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <div class="awv2-pi-note">{exactAddressListings.note || 'No property-specific listing page was retained.'}</div>
+          )}
+          <div class="awv2-pi-note"><b>Confidence:</b> {exactAddressListings.disclaimer}</div>
+        </section>
+      )}
 
       {/* ── Street View observations ── */}
       <section class="awv2-panel">

@@ -202,24 +202,26 @@ export function hermesLandPortalPrompt(
     output_file: outputFile,
     visual_artifact_directory: path.dirname(outputFile),
     requested_visuals: specialist === 'visuals'
-      ? ['parcel_context', 'default_3d', 'soil', 'buildability', 'street_view']
-      : [],
+      ? 'landportal_overview, parcel_context, default_3d, soil, buildability, street_view'
+      : '',
+    overview_requirement: specialist === 'visuals'
+      ? 'landportal_overview is an active parcel_context satellite frame showing the boundary, the nearest public road and the road relationship, and any apparent access route; never default 3D or county scale.'
+      : undefined,
+    access_investigation: specialist === 'visuals'
+      ? 'Land Locked: Yes or absent frontage triggers a map and Street View pass: place the marker on the nearest public road, then keep access_evidence for parcel_flag, apparent_physical, reported_legal and verified_legal separate with source_kind, basis and weight. Only a recorded instrument verifies legal access.'
+      : undefined,
+    comp_drilldown_requirement: specialist === 'comps'
+      ? 'Open each sidebar comparable through its comp detail or Show on Map surface. Retain address, city/state/zip, acres, lat/lng or an honest unresolved location, detail_url, and the comparable image as image_url plus image_source. Set drilled_down only when that surface contributed a field; never invent a value.'
+      : undefined,
     handback_mode: 'independent_specialist',
     completed_categories: [specialist],
-    visual_artifact_fields: specialist === 'visuals'
-      ? ['key', 'label', 'kind', 'purpose', 'source_path', 'timestamp', 'requested_view', 'active_view', 'boundary_required', 'boundary_visible', 'tiles_loaded', 'camera_scale', 'clipped', 'obstructions', 'overlay_rendered']
-      : [],
     // The importer accepts only these literal values; free-text camera notes
     // previously caused a verified visuals handback to be rejected wholesale.
+    // The per-artifact field list and the full capture procedure stay in the
+    // preloaded landos-landportal skill: this work unit is held under the
+    // 2,500-character assignment ceiling the lane suite enforces.
     visual_artifact_field_rules: specialist === 'visuals'
-      ? {
-        camera_scale: 'exactly one of: parcel | context | county | national | unknown',
-        obstructions: 'array of obstruction descriptions; [] when the captured map area is clean',
-        clean_capture: 'collapse the sidebar and close every panel, popup, and menu before the screenshot so only the map area is captured',
-        overlay_rendered: 'soil/buildability: true only once colored polygons visibly rendered, else rejected',
-        keys: 'exact keys: parcel_context, default_3d, soil_overlay, buildability, street_view(_2/_3)',
-        street_view: 'set street_view_available, street_view_note, street_view_observations [{label, detail, basis: direct_observation|reasonable_interpretation|unconfirmed}]',
-      }
+      ? 'camera_scale exactly parcel|context|county|national|unknown; obstructions [] when clean; overlay_rendered true only once polygons render; keys landportal_overview, default_3d, soil_overlay, buildability, street_view(_2/_3); set street_view_available, street_view_note and street_view_observations [{label,detail,basis}].'
       : undefined,
   }, null, 2);
   return `Complete one bounded LandOS LandPortal specialist work unit using the persistent profile context and the preloaded ${HERMES_LANDPORTAL_CONTEXT_SKILL} and ${HERMES_LANDPORTAL_CDP_SKILL} skills.
@@ -487,12 +489,17 @@ async function closeLaneCreatedPages(cdpUrl: string, before: Set<string> | null)
       // lane's to close; everything that predates the run is preserved.
       ? pages.filter((tab) => !before.has(tab.id) && LANE_RESEARCH_URL.test(tab.url ?? ''))
       : [];
-    // Keep one authenticated LandPortal page alive even if the lane created it.
-    const landportalSurvivors = pages.filter((tab) => /landportal\.com/i.test(tab.url ?? '') && !candidates.some((candidate) => candidate.id === tab.id));
-    const closable = landportalSurvivors.length === 0 && candidates.length > 0
-      ? candidates.slice(0, -1)
-      : candidates;
-    for (const tab of closable) {
+    // EVERY PAGE THIS LANE CREATED IS CLOSED — no survivor.
+    //
+    // This used to retain one LandPortal tab "to keep the session
+    // authenticated". That belief is wrong and it was the post-run tab escape:
+    // LandPortal authentication lives in the persistent Chrome profile on disk,
+    // not in an open tab, which is why `closeSurplusSessionPages` already closes
+    // its cached working tab outright and the next run is still signed in.
+    // Because this lane commonly runs AFTER the Deal Intelligence cleanup
+    // boundary, its survivor outlived the run that created it and sat in the
+    // automation browser until a manual reap.
+    for (const tab of candidates) {
       try {
         const res = await fetch(`${cdpUrl}/json/close/${tab.id}`, { signal: AbortSignal.timeout(5_000) });
         if (res.ok) closed += 1;

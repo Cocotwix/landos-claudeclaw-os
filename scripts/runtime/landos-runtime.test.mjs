@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   ENTRY,
   ROOT,
+  createLocalBrowserPairing,
   historyAssociation,
   httpProbe,
   logTail,
@@ -21,6 +24,10 @@ import {
   startDecision,
   validateBrowserPairingResponse,
 } from './landos-runtime.mjs';
+
+// The repository root of whatever checkout this suite is running in, derived
+// from this file's own location rather than the checkout directory's name.
+const CHECKOUT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 test('samePath handles Windows case and separators', () => {
   assert.equal(samePath('C:\\Repo\\dist\\index.js', 'c:/repo/dist/index.js'), true);
@@ -43,7 +50,10 @@ test('environment sanitizer deduplicates PATH casing and keeps useful entries', 
   assert.match(result.Path, /C:\\Tools/iu);
   assert.match(result.Path, /C:\\MoreTools/iu);
   assert.equal(result.LANDOS_RUNTIME_ID, 'runtime-123');
-  assert.equal(result.LANDOS_RUNTIME_ROOT.toLowerCase().endsWith('claudeclaw-os'), true);
+  assert.equal(path.isAbsolute(result.LANDOS_RUNTIME_ROOT), true);
+  assert.equal(samePath(result.LANDOS_RUNTIME_ROOT, CHECKOUT_ROOT), true);
+  assert.equal(samePath(result.LANDOS_RUNTIME_ROOT, ROOT), true);
+  assert.equal(fs.existsSync(path.join(result.LANDOS_RUNTIME_ROOT, 'scripts', 'runtime', 'landos-runtime.mjs')), true);
 });
 
 test('metadata association requires repository-specific executable, entry, root, PID, and start time', () => {
@@ -148,4 +158,27 @@ test('browser bootstrap accepts only a credential-free loopback pairing URL', ()
     ),
     /outside the managed loopback origin/iu,
   );
+});
+
+test('browser bootstrap recovers when pairing state is lost and no browser is authenticated', async () => {
+  const runtimeCredential = 'test-runtime-credential';
+  const pairingUrl = 'http://localhost:3141/connect?returnTo=%2Fdept%2Facquisitions#abcdefghijklmnopqrstuvwxyz123456';
+  let calls = 0;
+
+  const fetchImpl = async (url, init) => {
+    calls += 1;
+    assert.equal(url.toString(), 'http://localhost:3141/api/dashboard/browser-pairings');
+    assert.equal(url.search, '');
+    assert.equal(init.headers.cookie, undefined);
+    assert.equal(init.headers['x-landos-bootstrap-token'], runtimeCredential);
+    return {
+      status: 201,
+      async json() {
+        return { pairingUrl };
+      },
+    };
+  };
+
+  assert.equal(await createLocalBrowserPairing(runtimeCredential, fetchImpl), pairingUrl);
+  assert.equal(calls, 1);
 });

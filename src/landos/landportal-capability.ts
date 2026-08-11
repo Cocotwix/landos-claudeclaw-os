@@ -591,7 +591,7 @@ export function assessScreenshotQuality(frame: CaptureFrame, intent: CaptureInte
 
 /** Default recapture budget: enough to survive a slow tile load or a transient
  *  dialog, bounded so a broken page reaches an honest failure instead of looping. */
-export const DEFAULT_CAPTURE_ATTEMPTS = 3;
+export const DEFAULT_CAPTURE_ATTEMPTS = 2;
 
 export interface CaptureAttemptRecord {
   attempt: number;

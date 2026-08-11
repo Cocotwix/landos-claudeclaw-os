@@ -129,6 +129,35 @@ describe('DealOperatorAnalysis contract', () => {
     );
   });
 
+  it('reports the canonical Comps & Valuation closed-sale count in the market score', () => {
+    // The snapshot comp lane applies a provider allowlist and a never-downgrade
+    // guard, so its counts can lag the canonical registry. When the canonical
+    // counts are supplied they govern, so Market score and Comps & Valuation
+    // can never show different numbers of selected closed sales.
+    const withoutCanonical = buildDealOperatorAnalysis({
+      pkg: packageFor(),
+      context: sellerContext(),
+      generatedAt: GENERATED_AT,
+    });
+    expect(withoutCanonical.scores.market.mainDeductions.join(' '))
+      .toContain('No selected closed sale');
+
+    const withCanonical = buildDealOperatorAnalysis({
+      pkg: packageFor(),
+      context: sellerContext(),
+      generatedAt: GENERATED_AT,
+      canonicalCompCounts: { sold: 18, active: 4 },
+    });
+    const factors = withCanonical.scores.market.strongestPositiveFactors.join(' ');
+    expect(factors).toContain('18 selected closed sale(s)');
+    expect(withCanonical.scores.market.mainDeductions.join(' '))
+      .not.toContain('No selected closed sale');
+    expect(withCanonical.scores.market.materiallyChangeWith.join(' '))
+      .toContain('canonical Comps & Valuation registry counts');
+    // A richer canonical set must not score below the empty snapshot read.
+    expect(withCanonical.scores.market.score!).toBeGreaterThan(withoutCanonical.scores.market.score!);
+  });
+
   it('ranks all and only the five approved strategies with one unique rank each', () => {
     const analysis = buildDealOperatorAnalysis({
       pkg: packageFor(),

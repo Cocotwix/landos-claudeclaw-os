@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://landos.local/schemas/acceptance-results-1.0.0.json",
+  "title": "LandOS visual acceptance results",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "contractId",
+    "sprintName",
+    "mode",
+    "startedAt",
+    "completedAt",
+    "propertyAddress",
+    "authStateImported",
+    "freshness",
+    "claims",
+    "counts",
+    "lifecycle",
+    "refresh",
+    "restart",
+    "contamination",
+    "console",
+    "network",
+    "artifacts",
+    "verdict"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "runId": { "type": "string", "minLength": 3, "maxLength": 180 },
+    "contractId": { "type": "string", "minLength": 3, "maxLength": 160 },
+    "sprintName": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "mode": { "enum": ["fixture", "live"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "propertyAddress": { "type": "string", "minLength": 5 },
+    "authStateImported": { "type": "boolean" },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "isFresh", "evidence"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "isFresh": { "type": "boolean" },
+        "evidence": { "type": "string", "minLength": 3 }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claimId",
+          "operatorSection",
+          "propertyAddress",
+          "claim",
+          "expectedValue",
+          "visibleValue",
+          "status",
+          "evidencePath",
+          "timestamp",
+          "refreshResult",
+          "restartResult",
+          "contaminationResult"
+        ],
+        "properties": {
+          "claimId": { "type": "string", "minLength": 3 },
+          "operatorSection": { "type": "string", "minLength": 2 },
+          "propertyAddress": { "type": "string", "minLength": 5 },
+          "claim": { "type": "string", "minLength": 5 },
+          "expectedValue": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" },
+              { "type": "null" }
+            ]
+          },
+          "visibleValue": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" },
+              { "type": "null" }
+            ]
+          },
+          "status": { "enum": ["PASS", "FAIL"] },
+          "evidencePath": {
+            "enum": [
+              "new-lead.png",
+              "deal-card-loaded.png",
+              "changed-section.png",
+              "relevant-tab-or-panel.png",
+              "after-refresh.png",
+              "after-restart.png"
+            ]
+          },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "refreshResult": { "enum": ["PASS", "FAIL"] },
+          "restartResult": { "enum": ["PASS", "FAIL"] },
+          "contaminationResult": { "enum": ["PASS", "FAIL"] }
+        }
+      }
+    },
+    "counts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operatorSection",
+          "label",
+          "canonicalAccepted",
+          "displayed",
+          "renderedRows",
+          "emptyStateVisible",
+          "timestamp"
+        ],
+        "properties": {
+          "operatorSection": { "type": "string", "minLength": 2 },
+          "label": { "type": "string", "minLength": 2 },
+          "canonicalAccepted": { "type": "integer", "minimum": 0 },
+          "displayed": { "type": "integer", "minimum": 0 },
+          "renderedRows": { "type": "integer", "minimum": 0 },
+          "emptyStateVisible": { "type": "boolean" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "isolatedContext",
+        "contextsCreated",
+        "contextsClosed",
+        "pagesCreated",
+        "pagesClosed",
+        "normalOperatorBrowserUntouched",
+        "cleanupCompleted",
+        "verifiedAt"
+      ],
+      "properties": {
+        "isolatedContext": { "type": "boolean" },
+        "contextsCreated": { "type": "integer", "minimum": 1 },
+        "contextsClosed": { "type": "integer", "minimum": 0 },
+        "pagesCreated": { "type": "integer", "minimum": 1 },
+        "pagesClosed": { "type": "integer", "minimum": 0 },
+        "normalOperatorBrowserUntouched": { "type": "boolean" },
+        "cleanupCompleted": { "type": "boolean" },
+        "verifiedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "refresh": { "$ref": "#/$defs/check" },
+    "restart": { "$ref": "#/$defs/check" },
+    "contamination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "detectedValues", "timestamp"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL"] },
+        "detectedValues": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "console": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "relevantErrorCount", "timestamp"],
+      "properties": {
+        "path": { "const": "console.json" },
+        "relevantErrorCount": { "type": "integer", "minimum": 0 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "requiredFailureCount", "timestamp"],
+      "properties": {
+        "path": { "const": "network-failures.json" },
+        "requiredFailureCount": { "type": "integer", "minimum": 0 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "mediaType", "byteLength", "sha256", "capturedAt", "contentValidation"],
+        "properties": {
+          "path": { "type": "string", "minLength": 3 },
+          "mediaType": { "type": "string", "minLength": 3 },
+          "byteLength": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "capturedAt": { "type": "string", "format": "date-time" },
+          "contentValidation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["validated", "kind"],
+            "properties": {
+              "validated": { "const": true },
+              "kind": { "enum": ["screenshot", "trace", "video", "console", "network"] },
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 },
+              "uniqueColorSamples": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "verdict": { "enum": ["PASS", "FAIL"] }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "visibleValuesRetained", "timestamp"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL"] },
+        "visibleValuesRetained": { "type": "boolean" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

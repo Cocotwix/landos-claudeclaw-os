@@ -38,10 +38,10 @@ describe('LandPortal comps Market wiring (source lock)', () => {
   it('Market renders LandPortal status and rows through the canonical snapshot', () => {
     expect(DEAL_CARD).toMatch(/<PropertyIntelligenceMarket snapshot=\{piSnapshot\}/);
     expect(DEAL_CARD).not.toMatch(/function LandPortalCompsPanel|<LandPortalCompsPanel/);
-    expect(UI).toMatch(/title="Comp source policy"/);
-    expect(UI).toMatch(/LandPortal primary/);
-    expect(UI).toMatch(/LandPortal read .*none priceable/);
-    expect(UI).toMatch(/<CompTable rows=\{comps\.sold\}/);
+    expect(UI).toMatch(/Comp methodology & source coverage/);
+    expect(UI).toMatch(/\{comps\.policyExplanation\}/);
+    expect(UI).toMatch(/\{comps\.summaryLine\}/);
+    expect(UI).toMatch(/<CompCards rows=\{comps\.sold\.slice\(0, 5\)\}/);
     expect(UI).toMatch(/row\.sourceUrl \? <a href=\{row\.sourceUrl\}/);
   });
 });

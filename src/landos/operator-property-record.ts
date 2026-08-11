@@ -241,10 +241,30 @@ export function computeSepticOutlook(soils: SoilsSepticFinding | null, utilities
   const notLimited = rated.filter((rating) => rating === 'not_limited').length;
   const share = veryLimited / rated.length;
   const drainage = [...new Set(soils.mapUnits.flatMap((unit) => unit.components.map((component) => component.drainageClass)).filter(Boolean))].slice(0, 3).join(', ');
+  const unitEvidence = soils.mapUnits.map((unit) => {
+    const coverage = unit.parcelPercentage != null
+      ? `~${unit.parcelPercentage}% of mapped parcel`
+      : unit.approximateAcres != null
+        ? `~${unit.approximateAcres} mapped acres`
+        : 'parcel coverage unavailable from this screen';
+    const components = unit.components.map((component) => {
+      const traits = [
+        component.percentage != null ? `${component.percentage}% component` : null,
+        component.drainageClass ? `drainage ${component.drainageClass}` : null,
+        component.hydrologicSoilGroup ? `hydrologic group ${component.hydrologicSoilGroup}` : null,
+        component.slopeRangePct ? `published slope ${component.slopeRangePct[0]}–${component.slopeRangePct[1]}%` : null,
+        component.septicLimitation !== 'unknown' ? `septic rating ${component.septicLimitation.replace(/_/g, ' ')}` : null,
+        component.limitingFactors.length ? `limitation: ${component.limitingFactors.join(', ')}` : null,
+      ].filter(Boolean).join(', ');
+      return `${component.name}${traits ? ` (${traits})` : ''}`;
+    }).join('; ');
+    return `${unit.symbol} — ${unit.name} (${coverage})${components ? `: ${components}` : ''}`;
+  }).join(' | ');
+  const evidenceDetail = unitEvidence ? ` SSURGO evidence: ${unitEvidence}.` : '';
   if (share >= 0.9) {
     return {
       outlook: 'poor',
-      why: `Every mapped soil unit is rated "very limited" for septic absorption fields${drainage ? ` (drainage: ${drainage})` : ''}. A conventional system is unlikely without engineering; an engineered/alternative system and county health approval would be required.${sewerAvailable ? ' Mapped public sewer could remove this constraint if service is confirmed.' : ''}`,
+      why: `The published SSURGO components returned by this parcel or subject-point screen are rated "very limited" for septic absorption fields${drainage ? ` (drainage: ${drainage})` : ''}. This makes the preliminary outlook more challenging and may require an engineered or alternative system, but does not establish that the entire parcel will fail a perc test; site selection, design, and county health review control.${sewerAvailable ? ' Mapped public sewer could remove this constraint if service is confirmed.' : ''}${evidenceDetail}`,
       investigateFirst: soils.apparentInvestigationAreas ?? null,
     };
   }
@@ -256,7 +276,7 @@ export function computeSepticOutlook(soils: SoilsSepticFinding | null, utilities
     const only = rated[0].replace(/_/g, ' ');
     return {
       outlook: notLimited === 1 ? 'favorable' : 'mixed',
-      why: `The single mapped soil component is rated "${only}" for septic absorption fields${drainage ? ` (drainage: ${drainage})` : ''}. This is a SSURGO map-unit limitation, not a site-specific septic determination; feasibility depends on siting and design and a site perc/soil evaluation governs.`,
+      why: `The single mapped soil component is rated "${only}" for septic absorption fields${drainage ? ` (drainage: ${drainage})` : ''}. This is a SSURGO map-unit limitation, not a site-specific septic determination; feasibility depends on siting and design and a site perc/soil evaluation governs.${evidenceDetail}`,
       investigateFirst: soils.apparentInvestigationAreas ?? null,
     };
   }
@@ -265,14 +285,14 @@ export function computeSepticOutlook(soils: SoilsSepticFinding | null, utilities
     return {
       outlook: 'mixed',
       why: genuinelySplit
-        ? `Mapped soils are split: ${veryLimited} of ${rated.length} components are "very limited" and ${notLimited} are "not limited"${drainage ? ` (drainage: ${drainage})` : ''}. Ratings differ across the mapped components; siting matters and a site perc/soil evaluation governs.`
-        : `${veryLimited} of ${rated.length} mapped components are "very limited" for septic absorption fields${drainage ? ` (drainage: ${drainage})` : ''}. These are SSURGO map-unit limitations, not a site-specific determination; a site perc/soil evaluation governs feasibility.`,
+        ? `Mapped soils are split: ${veryLimited} of ${rated.length} components are "very limited" and ${notLimited} are "not limited"${drainage ? ` (drainage: ${drainage})` : ''}. Ratings differ across the mapped components; siting matters and a site perc/soil evaluation governs.${evidenceDetail}`
+        : `${veryLimited} of ${rated.length} mapped components are "very limited" for septic absorption fields${drainage ? ` (drainage: ${drainage})` : ''}. These are SSURGO map-unit limitations, not a site-specific determination; a site perc/soil evaluation governs feasibility.${evidenceDetail}`,
       investigateFirst: soils.apparentInvestigationAreas ?? null,
     };
   }
   return {
     outlook: 'favorable',
-    why: `Most mapped soil components carry low septic limitation (${notLimited} of ${rated.length} rated not limited).`,
+    why: `Most mapped soil components carry low septic limitation (${notLimited} of ${rated.length} rated not limited). This is a more favorable preliminary outlook, not a substitute for parcel-specific soil work.${evidenceDetail}`,
     investigateFirst: soils.apparentInvestigationAreas ?? null,
   };
 }
@@ -475,7 +495,7 @@ function buildReconciledLandScore(input: {
   const gaps = factors.filter((f) => f.dataGap).length;
   const flags: string[] = [];
   if (input.acreageConflict) flags.push(`Acreage conflict (assessed ${input.assessedAcres} ac vs mapped ${input.mappedAcres} ac) caps confidence until resolved.`);
-  if (input.septicOutlook === 'poor') flags.push('Septic outlook poor — every mapped soil rating is very limited for absorption fields.');
+  if (input.septicOutlook === 'poor') flags.push('Septic outlook more challenging — the published SSURGO components returned by this screen are very limited for absorption fields; a site test still controls.');
   if ((input.sfhaPct ?? 0) >= 50) flags.push(`Flood: ~${Math.round(input.sfhaPct!)}% of the parcel is in the Special Flood Hazard Area.`);
   if ((input.wetlandPct ?? 0) >= 20) flags.push(`Wetlands: ~${Math.round(input.wetlandPct!)}% of the mapped geometry is mapped wetland.`);
   if (input.accessStatus !== 'unknown') flags.push('Access: parcel–road contact, right-of-way contact, physical access, and legal access are unresolved (proximity screening only).');
@@ -627,7 +647,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   const redFlags: string[] = [];
   if (sfhaPct != null && sfhaPct >= 50) redFlags.push(`${Math.round(sfhaPct)}% Special Flood Hazard Area`);
   if (wetlandPct != null && wetlandPct >= 20) redFlags.push(`${Math.round(wetlandPct)}% mapped wetlands`);
-  if (septicOutlook.outlook === 'poor') redFlags.push('all mapped soils rated very limited for septic');
+  if (septicOutlook.outlook === 'poor') redFlags.push('published SSURGO components returned by the screen are very limited for septic');
   if (acreageConflict) redFlags.push(`acreage conflict (assessed ${assessedAcres} ac vs mapped ${mappedAcres} ac)`);
   if (accessStatus.status === 'no_mapped_contact') redFlags.push('no mapped road proximity');
   if (accessStatus.status === 'public_road_proximity') redFlags.push('parcel–road contact unresolved (apparent intervening land possible between parcel and roadway)');
@@ -674,7 +694,13 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   decisionCards.push({
     key: 'septic', label: 'Septic Outlook',
     verdict: septicOutlook.outlook === 'poor' ? 'risk' : septicOutlook.outlook === 'mixed' ? 'caution' : septicOutlook.outlook === 'favorable' ? 'good' : 'unknown',
-    headline: septicOutlook.outlook === 'unknown' ? 'Not screened' : septicOutlook.outlook[0].toUpperCase() + septicOutlook.outlook.slice(1),
+    headline: septicOutlook.outlook === 'unknown'
+      ? 'Insufficient evidence'
+      : septicOutlook.outlook === 'poor'
+        ? 'More challenging'
+        : septicOutlook.outlook === 'favorable'
+          ? 'More favorable'
+          : 'Mixed',
     detail: septicOutlook.why,
     basis: 'USDA SSURGO absorption-field interpretation (screening; not a perc test).',
   });
@@ -707,7 +733,9 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   decisionCards.push({
     key: 'utilities', label: 'Utilities',
     verdict: utilities ? (utilities.publicSewer === 'mapped_available' && utilities.publicWater === 'mapped_available' ? 'good' : 'caution') : 'unknown',
-    headline: utilities ? `Well ${utilities.wellLikelyRequired ? 'likely required' : 'may not be needed'}; septic ${utilities.septicLikelyRequired ? 'likely required' : 'may not be needed'}` : 'Not screened',
+    headline: utilities
+      ? `Well ${utilities.wellLikelyRequired === true ? 'likely required' : utilities.wellLikelyRequired === false ? 'likely not required' : 'requirement unknown'}; septic ${utilities.septicLikelyRequired === true ? 'likely required' : utilities.septicLikelyRequired === false ? 'likely not required' : 'requirement unknown'}`
+      : 'Not screened',
     detail: utilities?.summary ?? 'Utility screening has not run.',
     basis: utilities ? 'County GIS + utility-authority identification (screening).' : '',
   });
@@ -804,7 +832,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   const risks: string[] = [];
   if (sfhaPct != null && sfhaPct >= 50) risks.push(`Flood: ~${Math.round(sfhaPct)}% of the parcel is Zone ${flood!.zones.filter((z) => z.specialFloodHazardArea).map((z) => z.zone).join('/')}${flood?.baseFloodElevation ? ` with BFE ${flood.baseFloodElevation}` : ''}; sampled ground tops out at ${slope?.maximumElevationFt ?? '?'} ft.`);
   if (wetlandPct != null && wetlandPct >= 10) risks.push(`Wetlands: ~${wetlandAcres} ac (${wetlandPct}%) mapped marsh/wetland reduces usable area${wetlands?.accessOrDevelopmentEffect ? ` — ${wetlands.accessOrDevelopmentEffect.toLowerCase()}` : ''}`);
-  if (septicOutlook.outlook === 'poor') risks.push('Septic: every mapped soil unit is rated very limited for absorption fields; buildability depends on an engineered system or confirmed sewer.');
+  if (septicOutlook.outlook === 'poor') risks.push('Septic: published SSURGO components are very limited for absorption fields; site-specific testing must locate any workable area and may require an engineered system or confirmed sewer.');
   if (acreageConflict) risks.push(`Size: the assessor lists ${assessedAcres} ac but the mapped boundary measures ${mappedAcres} ac; value math must not assume ${assessedAcres} ac until a survey or plat resolves it.`);
   if (/trustee|trust\b/i.test(ownerText ?? '')) risks.push('Title: ownership is held in trust/by trustees; authority to sell (all trustees/heirs) must be confirmed before contract.');
   if (accessStatus.status !== 'unknown') risks.push(accessStatus.status === 'public_road_proximity'
@@ -879,7 +907,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
     decision('Pursue or pass at this risk profile', `Screening surfaced: ${redFlags.join('; ')}. Decide whether the price potential justifies survey/perc/title spend.`);
   }
   if (acreageConflict) decision('Order survey (if pursuing)', `Only a survey resolves the ${mappedAcres} vs ${assessedAcres} ac conflict that drives the whole value basis.`);
-  if (septicOutlook.outlook === 'poor') decision('Commission septic/perc evaluation (if pursuing)', 'Every mapped soil rating is very limited — only a field evaluation and health-authority ruling resolves buildability.');
+  if (septicOutlook.outlook === 'poor') decision('Commission septic/perc evaluation (if pursuing)', 'Published SSURGO components are very limited; only a parcel-specific field evaluation and health-authority ruling resolves feasibility.');
 
   // -------------------------------------------------------------- seller questions
   // Property-specific: every question is derived from what LandOS actually knows

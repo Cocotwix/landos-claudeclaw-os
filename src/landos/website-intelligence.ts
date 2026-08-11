@@ -346,9 +346,12 @@ export function roadNameTokens(address: string): string[] {
     .split(',')[0]
     .toLowerCase()
     .replace(/^\s*\d+\s*/, '')
-    .replace(/[^a-z\s]/g, ' ')
+    // Keep numeric route names after removing the leading house number.
+    // "6940 Highway 11" otherwise collapses to no identity-bearing tokens
+    // because "highway" is generic and the route number is discarded.
+    .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length > 2 && !STREET_SUFFIXES.has(w));
+    .filter((w) => (/^\d+$/.test(w) ? w.length > 0 : w.length > 2) && !STREET_SUFFIXES.has(w));
 }
 
 /** Score one candidate against the target. A strong identifier is an APN, a full

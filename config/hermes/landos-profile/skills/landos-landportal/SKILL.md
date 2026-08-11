@@ -88,6 +88,32 @@ subject facts and no comps.
 
 Only the `visuals` specialist performs these. Every rule below is mandatory.
 
+**LandPortal Overview.** Capture a dedicated artifact with key
+`landportal_overview` and active/requested view `parcel_context`. Begin at parcel
+Fit and apply the assignment's shared acreage-dependent zoom-out count. Frame the
+complete subject boundary against the nearest named public road so the
+parcel-road relationship, any apparent access route, and surrounding parcels
+are immediately readable. Confirm tiles loaded, boundary visible, no clipping,
+and no obstruction. Default 3D and county-scale frames never substitute.
+
+**Per-artifact fields.** Every entry in `visual_artifacts` carries `key`,
+`label`, `kind`, `purpose`, `source_path`, `timestamp`, `requested_view`,
+`active_view`, `boundary_required`, `boundary_visible`, `tiles_loaded`,
+`camera_scale`, `clipped`, `obstructions`, and `overlay_rendered`. The work-unit
+assignment repeats only the literal-value rules; this list is the contract. The
+capture area is clean before the screenshot: collapse the sidebar and close
+every panel, popup, and menu so only the map is captured.
+
+**Land-locked access trigger.** `Land Locked: Yes`, zero/absent frontage with
+that flag, or a parcel set back from the road triggers a map and Street View
+investigation. Inspect for driveways, private routes, gates, tracks, and mapped
+access lines, then place Street View on the nearest public road. Write separate
+`access_evidence` items for `parcel_flag`, `apparent_physical`,
+`reported_legal`, and `verified_legal`, each with statement, source label/kind,
+basis, weight, and available URL/time. A visible route is apparent only; a
+listing easement sentence is reported only; only a read recorded instrument
+with `recorded_instrument` basis verifies legal access.
+
 **Map-click precision and misclick recovery.** Every click on the map can
 select a parcel, and a click that lands outside the subject boundary selects
 a NEIGHBORING parcel. Before clicking inside the parcel (soil popups,
@@ -193,8 +219,11 @@ When `handback_mode` is `independent_specialist`, perform only the assigned
   comparable list; it opens a separate comparable page and is never a
   base-map or overlay control. Capture every displayed comparable from both
   surfaces, then merge duplicates so each property appears once with its
-  richest field set (`price`, `acres`, `apn`, `address`, `price_per_acre`,
-  `sale_date`, `source_url` when shown). Never invent a missing value.
+  richest field set. Drill into every sidebar row through Show on Map or its
+  comp-detail surface and retain `price`, `acres`, `apn`, `address`, `city`,
+  `state`, `zip`, `price_per_acre`, `sale_date`, `lat`, `lng`, `detail_url`,
+  `image_url`, `image_source`, and `drilled_down` when actually shown. Never
+  invent a missing address, coordinate, distance, image, sale, date, or status.
 - `visuals`: requested visual and overlay evidence.
 
 Every specialist independently verifies the exact subject first and repeats the
@@ -226,6 +255,7 @@ unavailable optional value rather than inferring it:
 - `address`, `county`, `municipality`, `apn`, `owner`, `mailing_address`
 - `deeded_acres`, `mls_acres`, `calculated_acres`
 - `road_frontage_ft`, `landlocked_status`
+- `access_evidence` when the visual/access investigation produces evidence
 - `wetlands_pct`, `fema_pct`, `average_slope_pct`
 - `pct_under_10pct_slope`, `pct_under_10pct_slope_note`, `buildability_pct`
 - `lp_estimate_total`, `lp_estimate_per_acre`
@@ -255,9 +285,11 @@ Sidebar fact rules for the subject specialist:
 
 Read only the exact subject URL plus the surface required by the assigned
 specialist. LP Estimate total and per-acre values are subject estimates, never
-comps. Each visible comp may include `price`, `acres`, `apn`, `address`,
-`price_per_acre`, `sale_date`, and `source_url` when shown; never invent a
-missing value. The visual specialist must supply every requested validation
+comps. Each visible comp is drilled into and may include `price`, `acres`, `apn`,
+`address`, `city`, `state`, `zip`, `price_per_acre`, `sale_date`, `lat`, `lng`,
+`detail_url`, `image_url`, `image_source`, `drilled_down`, and `source_url` when
+shown; never invent a missing value. The comp image/thumbnail retains its actual
+source. The visual specialist must supply every requested validation
 field and retain artifacts only beneath `visual_artifact_directory`.
 
 ## Verification before stopping

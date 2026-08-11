@@ -18,10 +18,14 @@ function returnToFromSearch(): string {
 
 export function BrowserConnect() {
   const returnTo = useMemo(returnToFromSearch, []);
+  const visualReady = useMemo(
+    () => new URLSearchParams(window.location.search).get('visualReady') === '1',
+    [],
+  );
   const [code, setCode] = useState(() => window.location.hash.slice(1));
   const [pairing, setPairing] = useState<BrowserPairing | null>(null);
   const [status, setStatus] = useState<'idle' | 'creating' | 'claiming' | 'paired' | 'error'>(
-    code ? 'claiming' : 'idle',
+    code || visualReady ? 'claiming' : 'idle',
   );
   const [error, setError] = useState('');
 
@@ -64,6 +68,34 @@ export function BrowserConnect() {
 
     return () => { cancelled = true; };
   }, [code, returnTo]);
+
+  useEffect(() => {
+    if (!visualReady || code) return;
+    setStatus('claiming');
+    let cancelled = false;
+    fetch('/api/dashboard/browser-pairings/claim-visual-ready', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    }).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || 'Visual acceptance pairing is no longer available.');
+      }
+      return response.json() as Promise<{ returnTo: string }>;
+    }).then((result) => {
+      if (cancelled) return;
+      setStatus('paired');
+      window.history.replaceState(null, '', result.returnTo || returnTo);
+      window.location.replace(result.returnTo || returnTo);
+    }).catch((reason: unknown) => {
+      if (cancelled) return;
+      setError(reason instanceof Error ? reason.message : 'Could not restore this local browser session.');
+      setStatus('error');
+    });
+    return () => { cancelled = true; };
+  }, [code, returnTo, visualReady]);
 
   async function createPairing(): Promise<void> {
     setStatus('creating');
@@ -112,7 +144,7 @@ export function BrowserConnect() {
           </div>
         )}
 
-        {!code && (
+        {!code && !visualReady && (
           <>
             <div class="mt-7 space-y-3 text-sm leading-6 text-[var(--color-text-muted)]">
               <p>
@@ -178,4 +210,3 @@ export function BrowserConnect() {
     </section>
   );
 }
-

@@ -10,11 +10,17 @@ const PI_SOURCE = fs.readFileSync(
   path.resolve(process.cwd(), 'web/src/components/PropertyIntelligencePanel.tsx'),
   'utf8',
 );
+const OVERVIEW_SOURCE = fs.readFileSync(
+  path.resolve(process.cwd(), 'web/src/components/DealWorkspaceOverview.tsx'),
+  'utf8',
+);
 
 describe('Deal Card canonical Property snapshot UI contract', () => {
   it('loads the canonical snapshot and never loads or rebuilds the retired Property Summary projection', () => {
     expect(DEAL_CARD_SOURCE).toContain("'/api/landos/deal-cards/' + id + '/property-intelligence'");
-    expect(DEAL_CARD_SOURCE).toContain('<PropertyIntelligenceProperty snapshot={piSnapshot} />');
+    expect(DEAL_CARD_SOURCE).toContain('<DealWorkspaceOverview');
+    expect(OVERVIEW_SOURCE).toContain('<PropertyIntelligenceProperty snapshot={snapshot} />');
+    expect(OVERVIEW_SOURCE).toContain('Property & public records');
     expect(DEAL_CARD_SOURCE).not.toMatch(/property-summary(?:\/rebuild)?/);
     expect(DEAL_CARD_SOURCE).not.toMatch(/PropertySummarySnapshotPanel|loadPropertySummary|rebuildPropertySummary/);
   });

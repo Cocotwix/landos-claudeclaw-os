@@ -139,13 +139,20 @@ import { listSitePlaybooks } from './browser-learning.js';
 import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
 import { containsRejectedParcelRecordDestination, isRejectedParcelRecordDestination } from './browser-navigator.js';
-import { makeLiveBrowserDriver, ensureBrowserSession, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds, closeSurplusSessionPages } from './browser-session.js';
+import { makeLiveBrowserDriver, ensureBrowserSession, ensureBrowserSessionReady, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds, closeSurplusSessionPages, adoptAutomationControlPage } from './browser-session.js';
+import { reapOrphanAutomationTabs } from './automation-browser.js';
 import { getCountySources } from './county-source-map.js';
-import { officialDomainScore, sourceContradictsRequestedState } from './netr-routing.js';
+import { officialDomainScore, searchEngineUrl, sourceContradictsRequestedState, unwrapSearchResults } from './netr-routing.js';
+// Exact-address discovery reads engines and listing pages through the dedicated
+// LandOS browser; the engines and the listing hosts both refuse a bare fetch.
+import { extractLinks, htmlToText as htmlBodyToText } from './gis-transport.js';
+import { createBackgroundBrowserFetchText } from './gov-browser-transport.js';
+import { withOwnedPages } from './browser-owned-pages.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
-import { normalizeParcelIdentifier, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
+import { PUBLIC_INTELLIGENCE_TASKS, normalizeParcelIdentifier, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
 import { runPropertyIntelligenceOrchestrator } from './property-intelligence-orchestrator.js';
-import { governmentFactsFromPublicRecordOutcomes, lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, makePracticalSubjectAttemptAdapters, makePracticalDiscoveryScreeningAdapters, practicalOfficialParcelSources, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { governmentFactsFromPublicRecordOutcomes, lookupOfficialParcel, officialParcelPatch, publicSubjectFromOfficialParcel, makeLivePublicIntelligenceAdapters, makeParcelIndependentIntelligenceAdapters, makeOfficialParcelBlockedAdapters, makePracticalSubjectAttemptAdapters, makePracticalDiscoveryScreeningAdapters, makeCountyGisZoningSupplement, practicalOfficialParcelSources, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { makeZoningLandUseAdapter } from './land-use-intelligence-adapter.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { PropertyResearchStore } from './property-research-store.js';
@@ -154,13 +161,17 @@ import { loadVisualBuyerAnalysis } from './visual-buyer-analysis.js';
 import { buildVisualBuyerNarrative } from './visual-buyer-narrative.js';
 import { reconcileMissingDiligence } from './missing-diligence-reconciliation.js';
 import {
+  apparentEntranceAttribution,
   apparentEntranceFromObservations,
   normalizeDiscoveryAccessItems,
   presentBuyerAnalysisAccessLanguage,
+  presentDiscoveryAccessEvidence,
   readDiscoveryAccess,
 } from './discovery-access-presentation.js';
+import type { AccessEvidenceItem } from './access-evidence-ladder.js';
 import { buildSoilsSepticOutlook, loadSoilsSepticScreening } from './soils-septic-outlook.js';
 import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
+import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
 import type { SnapshotComps, SnapshotEvidenceItem, SnapshotFact } from './property-intelligence-snapshot.js';
 import {
@@ -174,7 +185,7 @@ import { buildPropertyIntelligenceStrategies } from './property-intelligence-str
 import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
-import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors } from './property-intelligence-live.js';
+import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors, type ExactAddressWebResult } from './property-intelligence-live.js';
 import { executePropertyProvider, type NormalizedPropertyEvidence, type PropertyProviderAdapter } from './property-intelligence-contract.js';
 import { gatherCardImages, loadCardVisionAnalysis } from './browser-vision.js';
 import { buildDealOperatorAnalysis, emptyDealOperatorContext, runWholeCardOperatorAnalyst, type DealOperatorContext, type OperatorResearchAttempt, type ResearchAttemptStatus } from './deal-operator-analysis.js';
@@ -379,7 +390,22 @@ import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/
 import { isLeadType } from './db.js';
 import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuationLocations, type CompSelectionAction } from './comps-valuation.js';
+import { buildOfficialParcelGisView } from './official-parcel-gis-view.js';
+import { runOfficialParcelGis } from './official-parcel-gis-run.js';
+import { buildLandUseView } from './land-use-view.js';
+import { runLandUseResearch } from './land-use-run.js';
+import { buildPlatformCapabilityReport } from './gis-platform-registry.js';
+import { listPlatformProofs } from './gis-platform-knowledge.js';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
+import { buildCompLaneAccountability, type CompLaneInput } from './comp-lane-accountability.js';
+import {
+  buildExactAddressQueries,
+  classifyDiscoveryResult,
+  extractListingEvidence,
+  projectExactAddressListingEvidence,
+  EXACT_ADDRESS_LANE_ID,
+  type ExtractedListingEvidence,
+} from './exact-address-web-discovery.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -6509,6 +6535,40 @@ export function registerLandosRoutes(app: Hono): void {
       const retainedBrowser = retainedBrowserGovernment(inspection, { county: subject.county, state: subject.state });
       practicalAttempts.push(...retainedBrowser.attempts);
       const soilOverlay = inspection?.overlays.find((overlay) => /soil/i.test(overlay.overlay)) ?? null;
+      // ONE LANE'S MISSING PREREQUISITE MUST NOT DISABLE THE OTHERS.
+      //
+      // The whole live adapter set used to be constructed only in the branch
+      // below, where an OfficialParcel exists. A parcel miss therefore silenced
+      // every lane that had never needed a parcel — zoning/land use, the
+      // marketplace lane and the Land Portal lane all fell through to the
+      // orchestrator's no-adapter path and reported "not connected", which
+      // reads as "LandOS was never wired up for this".
+      //
+      // Each lane is now assembled from the minimum canonical input it really
+      // consumes: the location for zoning/planning/subdivision, nothing at all
+      // for the parcel-independent lanes, and the parcel polygon only for the
+      // lanes that read one.
+      const parcelIndependentAdapters = [
+        ...makePracticalSubjectAttemptAdapters(practicalAttempts, retainedBrowser.facts),
+        ...makePracticalDiscoveryScreeningAdapters({
+          county: subject.county,
+          state: subject.state,
+          coordinates: subject.coordinates,
+          parcelSourceUrl: inspection?.parcelUrl,
+          soilOverlay: soilOverlay ? {
+            status: soilOverlay.status,
+            note: soilOverlay.note,
+            sourceUrl: inspection?.parcelUrl,
+          } : null,
+        }),
+        // Zoning, planning and subdivision run from the resolved location and
+        // the governing-authority workflow, never from parcel GIS. This is the
+        // existing nationwide Land Use engine's accepted determination, not a
+        // second engine.
+        makeZoningLandUseAdapter({ dealCardId: id, mailingCity: str(property.city) }),
+        ...makeParcelIndependentIntelligenceAdapters(),
+      ];
+      const covered = new Set(parcelIndependentAdapters.map((adapter) => adapter.task));
       const orchestratorRun = await runPropertyIntelligenceOrchestrator({
         subject,
         // The structured official lookup and the authenticated county-browser
@@ -6516,18 +6576,19 @@ export function registerLandosRoutes(app: Hono): void {
         // into the canonical task graph instead of erasing them with an empty
         // adapter list merely because neither returned official geometry.
         adapters: [
-          ...makePracticalSubjectAttemptAdapters(practicalAttempts, retainedBrowser.facts),
-          ...makePracticalDiscoveryScreeningAdapters({
-            county: subject.county,
-            state: subject.state,
-            coordinates: subject.coordinates,
-            parcelSourceUrl: inspection?.parcelUrl,
-            soilOverlay: soilOverlay ? {
-              status: soilOverlay.status,
-              note: soilOverlay.note,
-              sourceUrl: inspection?.parcelUrl,
-            } : null,
-          }),
+          ...parcelIndependentAdapters,
+          // The lanes that genuinely read the parcel polygon report their OWN
+          // blocker here, naming the input they are missing, so no other lane
+          // is described by it.
+          ...makeOfficialParcelBlockedAdapters(
+            PUBLIC_INTELLIGENCE_TASKS.filter((task) => !covered.has(task)),
+            {
+              requestedApn,
+              county: subject.county,
+              state: subject.state,
+              attempted: lookup.attempted,
+            },
+          ),
         ],
         compJobs: [],
         retainedCompRuns: retainedCompRunsFromReport(reportLanes),
@@ -6588,6 +6649,15 @@ export function registerLandosRoutes(app: Hono): void {
     );
     const adapters = [
       ...makeLivePublicIntelligenceAdapters(parcel),
+      // SAME source selection as the parcel-miss branch above. The accepted
+      // Land Use determination is the primary legal and jurisdictional source
+      // on both paths; the county GIS zoning polygon rides behind it as
+      // supplemental spatial evidence because a parcel exists here to query it.
+      makeZoningLandUseAdapter({
+        dealCardId: id,
+        mailingCity: str(property.city),
+        gisSupplement: makeCountyGisZoningSupplement(parcel),
+      }),
       ...makePracticalSubjectAttemptAdapters(retainedBrowser.attempts, retainedBrowser.facts),
     ];
     const seedRegistry = compRegistryForDeal(id, {
@@ -6744,6 +6814,111 @@ export function registerLandosRoutes(app: Hono): void {
     runPublicIntelligence: async (id) => {
       const result = await runPublicIntelligenceForDealCard(id);
       return result.ok ? { ok: true } : { ok: false, error: result.error };
+    },
+    captureExactAddressWeb: async (input) => {
+      const queries = buildExactAddressQueries(input);
+      // Exact-address discovery is a browser research lane end to end.
+      //
+      // The previous transport extracted result links from a plain server-side
+      // fetch of Google and Bing, and read candidate listing pages the same
+      // way. Both refuse a bare fetch, so the lane reported "no property-specific
+      // page could be retained" for an address whose Zillow and MLS pages are
+      // indexed and public. Nothing here uses node fetch any more: the driver
+      // reads real result anchors from the static search endpoint inside the
+      // dedicated LandOS browser, and the background-browser transport reads the
+      // listing pages themselves in that same browser.
+      const browserReady = await ensureBrowserSessionReady();
+      const discoveryBrowser = makeLiveBrowserDriver(`exact-address-web-${dealCardId}`);
+      const browserFetchText = createBackgroundBrowserFetchText();
+      const CHALLENGE = /captcha|unusual traffic|verify you are human/i;
+      const SEARCH_TIMEOUT_MS = 20_000;
+      const PAGE_TIMEOUT_MS = 25_000;
+      /** Property-specific result URLs, each remembered with the query that found it. */
+      const discovered = new Map<string, string>();
+      let successfulSearches = 0;
+      let blockedSearches = 0;
+
+      const keepPropertySpecific = (links: Array<{ text: string; href: string }>, query: string): void => {
+        for (const link of unwrapSearchResults(links)) {
+          if (!classifyDiscoveryResult(link.href).propertySpecific) continue;
+          if (!discovered.has(link.href)) discovered.set(link.href, query);
+        }
+      };
+
+      const run = async (): Promise<ExactAddressWebResult> => {
+        for (const query of queries) {
+          let answered = false;
+          // 1. Read the result anchors through the driver, the same path the
+          //    county-records discovery lane already uses successfully.
+          if (browserReady.status === 'live' && discoveryBrowser.configured() && discoveryBrowser.readLinks) {
+            try {
+              const read = await discoveryBrowser.open(searchEngineUrl(query), { timeoutMs: SEARCH_TIMEOUT_MS });
+              if (CHALLENGE.test(read.snippets.join(' '))) {
+                blockedSearches += 1;
+              } else {
+                const links = await discoveryBrowser.readLinks({ timeoutMs: SEARCH_TIMEOUT_MS });
+                if (links.length) {
+                  successfulSearches += 1;
+                  answered = true;
+                  keepPropertySpecific(links, query);
+                }
+              }
+            } catch { /* the engine fallback below continues this same query */ }
+          }
+          // 2. Engine fallback, still inside the browser. A challenge page is
+          //    counted as blocked rather than silently dropped.
+          for (const engine of [
+            searchEngineUrl(query),
+            `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+          ]) {
+            if (answered) break;
+            try {
+              const page = await browserFetchText(engine, { timeoutMs: SEARCH_TIMEOUT_MS });
+              if (page.blocked || !page.body || CHALLENGE.test(page.body)) { blockedSearches += 1; continue; }
+              const links = extractLinks(page.body, page.url).map((link) => ({ text: link.label, href: link.url }));
+              if (!links.length) continue;
+              successfulSearches += 1;
+              answered = true;
+              keepPropertySpecific(links, query);
+            } catch { /* the next engine is the required fallback */ }
+          }
+        }
+
+        const pages: ExtractedListingEvidence[] = [];
+        const addressKey = input.address.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const streetKey = addressKey.split(',')[0]?.trim() ?? addressKey;
+        for (const url of [...discovered.keys()].slice(0, 12)) {
+          try {
+            const page = await browserFetchText(url, { timeoutMs: PAGE_TIMEOUT_MS });
+            if (page.blocked || !page.body || page.status >= 400) continue;
+            const textContent = htmlBodyToText(page.body);
+            // The page must name this exact street and ZIP before it is retained
+            // as this subject's evidence. Identity gating is unchanged.
+            const pageIdentity = `${url} ${textContent}`.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+            if (!streetKey || !pageIdentity.includes(streetKey)) continue;
+            if (input.zip && !pageIdentity.includes(input.zip.replace(/[^0-9]/g, ''))) continue;
+            pages.push(extractListingEvidence({ url, text: textContent, retrievedAt: new Date().toISOString() }));
+          } catch { /* retain the successful search proof and continue */ }
+        }
+
+        const status = pages.length ? 'retrieved' as const
+          : successfulSearches ? 'none' as const
+            : blockedSearches ? 'blocked' as const : 'error' as const;
+        return {
+          status,
+          queries,
+          pages,
+          note: pages.length
+            ? `${pages.length} property-specific result page(s) were read from exact-address search discovery through the dedicated LandOS browser.`
+            : successfulSearches
+              ? `The exact-address searches ran and returned results, but none of the ${discovered.size} property-specific candidate page(s) could be read and matched to this exact address and ZIP.`
+              : blockedSearches
+                ? 'Search engines blocked the exact-address discovery attempts after the alternate-engine fallback.'
+                : 'Exact-address search attempts failed before a result page could be read.',
+        };
+      };
+
+      return withOwnedPages(discoveryBrowser, run);
     },
     captureZillowComps: async (input) => {
       const market = publicLocalityFallback(dealCardId, {
@@ -7516,7 +7691,21 @@ export function registerLandosRoutes(app: Hono): void {
           value.normalize('NFKC').replace(/[^a-zA-Z0-9]/g, '').toLocaleLowerCase('en-US');
         const situsStreet = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
         let displayAddress: string | null = null;
-        if (situsStreet) {
+        // The RECONCILED record wins over the raw lead text. Intake is evidence,
+        // not truth: when a feed supplied a wrong ZIP, echoing the lead string
+        // back would keep showing the operator a locality that identity
+        // reconciliation already proved wrong (deal 83 displayed the Indiana ZIP
+        // 46960 on a Michigan parcel long after the card carried 49690).
+        const canonicalCity = str(subject.city);
+        const canonicalState = str(subject.state);
+        const canonicalZip = str(subject.zip);
+        if (situsStreet && canonicalZip && (canonicalCity || canonicalState)) {
+          displayAddress = [
+            situsStreet,
+            [canonicalCity, [canonicalState, canonicalZip].filter(Boolean).join(' ')].filter(Boolean).join(', '),
+          ].filter(Boolean).join(', ');
+        }
+        if (situsStreet && !displayAddress) {
           const rawLeadInput = getOpportunityByDealCardId(dealCardId).rawInput ?? '';
           // Tolerate an operator lead-in label ("New seller lead: 1487 …")
           // before the address; only the address-through-ZIP span is compared.
@@ -7532,6 +7721,8 @@ export function registerLandosRoutes(app: Hono): void {
         snapshot.identity = {
           ...snapshot.identity,
           displayAddress: displayAddress ?? situsStreet ?? null,
+          zip: canonicalZip || null,
+          city: canonicalCity || null,
           lpPropertyId: str(subject.lp_property_id) || null,
         };
       }
@@ -7545,7 +7736,7 @@ export function registerLandosRoutes(app: Hono): void {
         if (/roadfrontage/.test(compact)) return 'road_frontage_aerial';
         // Wider-context captures are their own category: a newer context shot
         // must never displace the close-parcel hero, and vice versa.
-        if (/parcelcontext|widercontext|neighborcontext/.test(compact)) return 'parcel_context';
+        if (/landportaloverview|parcelcontext|widercontext|neighborcontext/.test(compact)) return 'parcel_context';
         if (/closeparcelaerial|parcelpage/.test(compact)) return 'close_parcel_aerial';
         // Contour must resolve before the 3D bucket: "Contour terrain view"
         // also matches the 3D bucket's terrain-view alias.
@@ -8021,6 +8212,10 @@ export function registerLandosRoutes(app: Hono): void {
           ? {
               sold: canonicalCompsView.summary.acceptedCount,
               active: canonicalCompsView.counts.active_competition ?? 0,
+              soldAllSourceStated: (() => {
+                const selected = canonicalCompsView.comps.filter((comp) => comp.inValuationSet);
+                return selected.length > 0 && selected.every((comp) => comp.saleVerification === 'source_stated');
+              })(),
             }
           : null,
       });
@@ -8140,6 +8335,61 @@ export function registerLandosRoutes(app: Hono): void {
       const situs = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
       const read = readDiscoveryAccess(snapshot.dueDiligence, situs);
       const entrance = apparentEntranceFromObservations(linkInspection?.visualObservations ?? [], read.road);
+      const canonicalAccessEvidence: AccessEvidenceItem[] = linkCardId == null
+        ? []
+        : (propertyResearchStore.loadForProperty(linkCardId)?.evidence ?? [])
+          .filter((entry) => /^access_evidence\.(?:parcel_flag|apparent_physical|reported_legal|verified_legal)\./.test(entry.field))
+          .flatMap((entry): AccessEvidenceItem[] => {
+            const value = entry.value as Record<string, unknown>;
+            const tier = String(value.tier ?? '');
+            const sourceKind = String(value.source_kind ?? value.sourceKind ?? '');
+            const basis = String(value.basis ?? '');
+            const weight = String(value.weight ?? '');
+            if (!['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal'].includes(tier)
+              || !['landportal_parcel_flag', 'satellite_imagery', 'street_view', 'listing', 'official_record', 'other'].includes(sourceKind)
+              || !['source_stated', 'direct_observation', 'reasonable_interpretation', 'recorded_instrument'].includes(basis)
+              || !['confirmed', 'well_supported', 'likely', 'unresolved'].includes(weight)) return [];
+            return [{
+              tier: tier as AccessEvidenceItem['tier'],
+              statement: String(value.statement ?? ''),
+              sourceLabel: String(value.source_label ?? value.sourceLabel ?? 'Retained source'),
+              sourceKind: sourceKind as AccessEvidenceItem['sourceKind'],
+              basis: basis as AccessEvidenceItem['basis'],
+              weight: weight as AccessEvidenceItem['weight'],
+              sourceUrl: typeof value.source_url === 'string' ? value.source_url : entry.sourceUrl,
+              observedAt: typeof value.observed_at === 'string' ? value.observed_at : entry.retrievedAt,
+            }];
+          });
+      if (read.landlocked === 'yes' && !canonicalAccessEvidence.some((item) => item.tier === 'parcel_flag')) {
+        canonicalAccessEvidence.push({
+          tier: 'parcel_flag',
+          statement: 'LandPortal flags the parcel as landlocked because it does not directly front a recognized named road.',
+          sourceLabel: 'LandPortal parcel panel',
+          sourceKind: 'landportal_parcel_flag',
+          basis: 'source_stated',
+          weight: 'likely',
+          sourceUrl: linkInspection?.parcelUrl ?? null,
+          observedAt: linkInspection?.sources.find((source) => source.provider === 'LandPortal')?.attemptedAt ?? null,
+        });
+      }
+      if (entrance.confirmed && !canonicalAccessEvidence.some((item) => item.tier === 'apparent_physical')) {
+        // Credit the observation record's own evidence wording and confidence.
+        // Attributing it to LandPortal contradicted the Street View panel on the
+        // same page, which reports that no LandPortal Street View coverage was
+        // confirmed for this frontage.
+        const attribution = apparentEntranceAttribution(entrance);
+        canonicalAccessEvidence.push({
+          tier: 'apparent_physical',
+          statement: entrance.observation || entrance.display,
+          sourceLabel: attribution.sourceLabel,
+          sourceKind: 'street_view',
+          basis: 'direct_observation',
+          weight: attribution.weight,
+          sourceUrl: linkInspection?.parcelUrl ?? null,
+          observedAt: linkInspection?.sources.find((source) => source.provider === 'LandPortal')?.attemptedAt ?? null,
+        });
+      }
+      const reconciliation = presentDiscoveryAccessEvidence(canonicalAccessEvidence);
       return {
         established: read.established,
         road: read.road,
@@ -8148,6 +8398,7 @@ export function registerLandosRoutes(app: Hono): void {
         apparentEntrance: entrance.display,
         apparentEntranceConfirmed: entrance.confirmed,
         apparentEntranceObservation: entrance.observation,
+        evidence: reconciliation,
       };
     })();
     // Soils & preliminary septic outlook: accepted overlay units joined with
@@ -8241,6 +8492,23 @@ export function registerLandosRoutes(app: Hono): void {
       // Named research areas with the exact incomplete one, so the operator
       // never has to guess what "N of M delivered" is missing.
       researchStatus: snapshot ? researchStatusFrom(snapshot.specialists) : null,
+      // The exact-address lane already retrieves and extracts listing pages.
+      // This projects the LATEST attempt that actually retained pages, so the
+      // operator can see which providers answered and what they published,
+      // rather than the facts living only inside the run record.
+      exactAddressListings: (() => {
+        const cardId = resolveSubjectPropertyCard(getDealCard(dealCardId)).cardId;
+        if (cardId == null) return null;
+        const attempts = propertyResearchStore.listLaneAttempts(cardId)
+          .filter((attempt) => attempt.laneId === EXACT_ADDRESS_LANE_ID);
+        if (!attempts.length) return null;
+        const withPages = [...attempts].reverse()
+          .find((attempt) => ((attempt.execution?.result as { pages?: unknown[] } | undefined)?.pages ?? []).length > 0);
+        const chosen = withPages ?? attempts[attempts.length - 1];
+        return projectExactAddressListingEvidence(
+          chosen.execution?.result as Parameters<typeof projectExactAddressListingEvidence>[0],
+        );
+      })(),
       hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
       providerResearch: (() => {
         const deal = getDealCard(dealCardId);
@@ -8304,7 +8572,69 @@ export function registerLandosRoutes(app: Hono): void {
       })),
       // Comps & Valuation workspace: read-time projection over the canonical
       // comp registry + retained research evidence. SELECT-only.
-      compsValuation: buildCompsValuationView(dealCardId),
+      compsValuation: (() => {
+        const view = buildCompsValuationView(dealCardId);
+        if (!view) return null;
+        const research = linkCardId == null ? null : propertyResearchStore.loadForProperty(linkCardId);
+        const researchRecord = research as unknown as {
+          lanes?: Record<string, {
+            latestAttemptStatus?: string; latestFailureReason?: string | null; latestAttemptAt?: string;
+          }>;
+          evidence?: Array<{ providerId?: string; field?: string; kind?: string; value?: unknown }>;
+        } | null;
+        const retainedFor = (pattern: RegExp): number => view.comps.filter((comp) => pattern.test(comp.source)).length;
+        const inputFor = (lane: 'zillow' | 'redfin'): CompLaneInput => {
+          const raw = researchRecord?.lanes?.[lane];
+          const statusEvidence = researchRecord?.evidence?.find((entry) => entry.providerId === lane && entry.field === `comparables.${lane}.attempt_status`);
+          const stated = statusEvidence?.value as { status?: string; note?: string | null; candidates?: number } | undefined;
+          const candidateEvidence = researchRecord?.evidence?.filter((entry) => entry.providerId === lane && entry.kind === 'comp') ?? [];
+          const candidates = raw
+            ? typeof stated?.candidates === 'number' && Number.isFinite(stated.candidates) ? stated.candidates : candidateEvidence.length
+            : null;
+          const status = stated?.status ?? raw?.latestAttemptStatus ?? null;
+          const failure = raw?.latestFailureReason ?? null;
+          return {
+            lane,
+            attempted: !!raw,
+            attemptStatus: status,
+            failureReason: /error|fail/i.test(`${status} ${failure ?? ''}`) ? failure || stated?.note || `${lane} reported a failed result.` : null,
+            blockedReason: /blocked|disabled|unavailable/i.test(`${status} ${stated?.note ?? ''}`) ? stated?.note || failure || `${lane} reported a blocked, disabled, or unavailable result.` : null,
+            candidates,
+            retained: raw && candidates != null ? Math.min(candidates, retainedFor(new RegExp(lane, 'i'))) : null,
+            filteredReasons: candidates != null && candidates > 0 && retainedFor(new RegExp(lane, 'i')) === 0
+              ? ['Returned candidates did not survive the vacant-land comparable policy.'] : [],
+          };
+        };
+        const landPortalAttempted = (linkInspection?.sources ?? []).some((source) => source.provider === 'LandPortal' && !!source.attemptedAt)
+          || !!linkInspection?.parcelUrl;
+        const landPortalCandidates = landPortalAttempted ? (linkInspection?.comparables?.length ?? 0) : null;
+        const laneAccountability = buildCompLaneAccountability([
+          {
+            lane: 'landportal', attempted: landPortalAttempted,
+            attemptStatus: landPortalAttempted ? 'retrieved' : null,
+            candidates: landPortalCandidates,
+            retained: landPortalAttempted ? retainedFor(/landportal/i) : null,
+            retainedAs: 'primary or retained LandPortal evidence',
+            filteredReasons: landPortalCandidates != null && landPortalCandidates > 0 && retainedFor(/landportal/i) === 0
+              ? ['LandPortal rows did not survive transaction/property-type policy.'] : [],
+          },
+          inputFor('zillow'),
+          inputFor('redfin'),
+          {
+            lane: 'realtor', attempted: false,
+            disabledReason: 'Realtor.com HomeHarvest is in FMV_EXCLUDED_FAMILIES and is disabled for the current vacant-land comparable workflow.',
+          },
+        ]);
+        return { ...view, laneAccountability };
+      })(),
+      // Official parcel & GIS evidence: which government platform answered,
+      // what it said about this parcel, and what stayed unresolved. Read-time
+      // projection over the retained retrieval; SELECT-only.
+      officialParcelGis: buildOfficialParcelGisView(dealCardId),
+      // Land use, zoning and by-right subdivision: the legal determination
+      // built on top of the parcel evidence. Read-time projection over the
+      // retained determination; SELECT-only.
+      landUse: buildLandUseView(dealCardId),
     };
   };
 
@@ -8325,6 +8655,139 @@ export function registerLandosRoutes(app: Hono): void {
       // SOP 10B read-time join; never sourced from LandPortal market panels.
       marketContext: marketContextFor(deal),
     });
+  });
+
+  // Official parcel & GIS projection alone, for refresh without re-reading the
+  // whole property-intelligence record. SELECT-only.
+  app.get('/api/landos/deal-cards/:id/official-parcel-gis', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ officialParcelGis: buildOfficialParcelGisView(id) });
+  });
+
+  // Run the official parcel & GIS lane for one deal. This is the only endpoint
+  // here that touches the network, and it is explicitly operator-initiated:
+  // opening a Deal Card must never start government research on its own.
+  app.post('/api/landos/deal-cards/:id/official-parcel-gis/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+
+    // Subject identity comes from the deal's own subject card. Nothing is
+    // inferred and nothing is carried over from another property.
+    const cardId = subjectCardId(deal);
+    const card = cardId ? getPropertyCard(cardId) : null;
+    if (!card) return c.json({ error: 'deal card has no subject property card' }, 409);
+
+    // An operator may point the lane at the county's own official GIS when
+    // LandOS could not discover it. The URL is recorded as platform knowledge
+    // for the whole county, so it is supplied once and never again.
+    const body = await c.req.json().catch(() => ({})) as { officialSourceUrl?: unknown };
+    const supplied = typeof body.officialSourceUrl === 'string' ? body.officialSourceUrl.trim() : '';
+    const operatorSeeds = /^https?:\/\//i.test(supplied)
+      ? [{ url: supplied, label: 'Operator-supplied official source' }]
+      : undefined;
+
+    try {
+      const run = await runOfficialParcelGis({
+        dealCardId: id,
+        address: card.active_input_address || undefined,
+        city: card.city || undefined,
+        state: card.state || undefined,
+        zip: card.zip || undefined,
+        county: card.county || undefined,
+        apn: card.apn || undefined,
+        owner: card.owner || undefined,
+        knownAcres: typeof card.acres === 'number' ? card.acres : undefined,
+        latitude: typeof card.lat === 'number' ? card.lat : undefined,
+        longitude: typeof card.lng === 'number' ? card.lng : undefined,
+      }, { operatorSeeds });
+      return c.json({
+        officialParcelGis: buildOfficialParcelGisView(id),
+        // Attempt trail is operator-visible at a summary level only; service
+        // metadata and request counts stay in the retained evidence record.
+        attempts: run.attempts.map((a) => ({ family: a.family, outcome: a.outcome })),
+      });
+    } catch (err) {
+      logger.error({ event: 'official_parcel_gis_run_failed', dealCardId: id, msg: (err as Error)?.message }, 'official_parcel_gis_run_failed');
+      return c.json({ error: 'official parcel research failed', detail: (err as Error)?.message ?? 'unknown' }, 502);
+    }
+  });
+
+  // Land use, zoning and by-right subdivision projection alone, for refresh
+  // without re-reading the whole property-intelligence record. SELECT-only.
+  app.get('/api/landos/deal-cards/:id/land-use', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ landUse: buildLandUseView(id) });
+  });
+
+  // Run the nationwide land-use lane for one deal. Operator-initiated, like the
+  // parcel lane: opening a Deal Card must never start legal research on its own.
+  app.post('/api/landos/deal-cards/:id/land-use/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+
+    const cardId = subjectCardId(deal);
+    const card = cardId ? getPropertyCard(cardId) : null;
+    if (!card) return c.json({ error: 'deal card has no subject property card' }, 409);
+
+    // Subject facts an operator can supply. They are SELLER-REPORTED and are
+    // used to screen physical plausibility and to generate discovery questions.
+    // Nothing here ever becomes a legal conclusion.
+    const body = await c.req.json().catch(() => ({})) as {
+      hasImprovements?: unknown; hasExistingWell?: unknown; hasExistingSeptic?: unknown;
+      sellerDiscussedCarveoutAcres?: unknown;
+    };
+    const notes = String(deal.seller_notes ?? '');
+    const bool = (supplied: unknown, fallbackPattern: RegExp): boolean =>
+      typeof supplied === 'boolean' ? supplied : fallbackPattern.test(notes);
+    const carveout = typeof body.sellerDiscussedCarveoutAcres === 'number' && body.sellerDiscussedCarveoutAcres > 0
+      ? body.sellerDiscussedCarveoutAcres
+      : null;
+
+    try {
+      const run = await runLandUseResearch({
+        dealCardId: id,
+        address: card.active_input_address || null,
+        city: card.city || null,
+        county: card.county || null,
+        state: card.state || null,
+        acres: typeof card.acres === 'number' ? card.acres : null,
+        apn: card.apn || null,
+        latitude: typeof card.lat === 'number' ? card.lat : null,
+        longitude: typeof card.lng === 'number' ? card.lng : null,
+        hasImprovements: bool(body.hasImprovements, /\b(house|home|residence|dwelling|improved|barn|structure|mobile home)\b/i),
+        hasExistingWell: bool(body.hasExistingWell, /\bwell\b/i),
+        hasExistingSeptic: bool(body.hasExistingSeptic, /\bseptic\b/i),
+        sellerReported: notes.trim() ? [notes.trim().slice(0, 600)] : [],
+        sellerDiscussedCarveoutAcres: carveout,
+        // The first line of the operator's own lead text, used only to let the
+        // federal geography lookup resolve a record whose structured city and
+        // state were never filled in.
+        addressHint: notes.split(/[\r\n]+/).map((line) => line.trim())
+          .find((line) => line.includes(',') && /[a-z]{3}/i.test(line)) ?? null,
+      });
+      return c.json({
+        landUse: buildLandUseView(id),
+        lanes: run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs })),
+      });
+    } catch (err) {
+      logger.error({ event: 'land_use_run_failed', dealCardId: id, msg: (err as Error)?.message }, 'land_use_run_failed');
+      return c.json({ error: 'land use research failed', detail: (err as Error)?.message ?? 'unknown' }, 502);
+    }
+  });
+
+  // Platform capability registry (PART 14). Designed capability and what a live
+  // run actually proved are reported SEPARATELY so support is never claimed
+  // without a real deployment behind it. Not property-scoped.
+  app.get('/api/landos/gis-platforms', (c) => {
+    return c.json({ platforms: buildPlatformCapabilityReport(listPlatformProofs()) });
   });
 
   // Comps & Valuation workspace projection alone (post-selection refresh
@@ -8396,6 +8859,30 @@ export function registerLandosRoutes(app: Hono): void {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const wait = body.wait === true;
 
+    // ── Reconcile WHO the subject is before asking anyone to research it ────
+    // Intake is evidence, not truth. A lead feed routinely carries a mixture of
+    // correct and incorrect fields, and one wrong field (deal 83's Indiana ZIP
+    // on a Michigan parcel) is enough to leave the property record with no
+    // jurisdiction at all. Every research lane reads its input from that record,
+    // so a rerun that starts before reconciliation just repeats the first run's
+    // failure — which is exactly what twelve consecutive reruns did.
+    //
+    // Reconciliation is bounded and never blocks the run: if it cannot resolve
+    // anything, the run proceeds on the identity already retained.
+    let identityReconciliation: Awaited<ReturnType<typeof reconcileSubjectIdentity>> | null = null;
+    try {
+      identityReconciliation = await reconcileSubjectIdentity(id, {
+        actor: `operator-rerun:${str(body.actor) ?? 'operator'}`,
+      });
+    } catch (err) {
+      logger.warn({ err, dealCardId: id }, 'property_intelligence_preflight_identity_failed');
+    }
+
+    // Know the control page BEFORE any lane can allocate a tab. A session that
+    // is already connected does not re-adopt on its own, and the previous run's
+    // reap may have minted a replacement since.
+    await adoptAutomationControlPage();
+
     // ONE operator action → ONE parent mission on the native mission graph.
     const { launch, completion } = launchDealIntelligenceMission({
       dealCardId: id,
@@ -8409,7 +8896,7 @@ export function registerLandosRoutes(app: Hono): void {
     });
     if (launch.alreadyRunning) {
       logger.info({ dealCardId: id, runId: launch.runId, missionId: launch.missionId }, 'deal_intelligence_already_running');
-      return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
+      return c.json({ launch, identityReconciliation, propertyIntelligence: propertyIntelligenceView(id) });
     }
     completion
       .then(async (snapshot) => {
@@ -8431,9 +8918,45 @@ export function registerLandosRoutes(app: Hono): void {
           reason: capture.reason,
         }, 'deal_intelligence_google_visual_capture');
       })
-      .catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_mission_failed'));
+      .catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_mission_failed'))
+      // ── THE REAL LAST CLEANUP BOUNDARY ────────────────────────────────────
+      // The mission's own scoped cleanup runs when the mission joins, but work
+      // legitimately continues past that point: trailing provider lanes settle,
+      // the accepted-identity visual capture runs, and background transports
+      // finish. Anything those open is created AFTER the scoped sweep has
+      // already looked, so it used to sit in the automation browser until an
+      // operator ran `landos:browser reap` by hand.
+      //
+      // This is that reap, on the run's own tail. It is the automation
+      // browser's own lifecycle call: it proves LandOS owns the endpoint before
+      // touching anything, guarantees a control page survives so Chrome (and
+      // its authenticated profile) stays up, and can never reach the operator's
+      // browser. Best-effort by design — a cleanup failure must not fail a run
+      // that already produced its result.
+      .finally(async () => {
+        try {
+          const reaped = await reapOrphanAutomationTabs({
+            dashboardOrigin: `http://localhost:${process.env.PORT ?? 3141}`,
+          });
+          // The reap can MINT a control page: closing the last orphan would take
+          // Chrome down, so it creates a fresh about:blank first. That page is
+          // born at the CDP level with no PageLike handle for the session module
+          // to have marked, so it must be adopted here — before the next run's
+          // research can acquire it as an ordinary working tab.
+          const adopted = await adoptAutomationControlPage();
+          logger.info({
+            dealCardId: id,
+            runId: launch.runId,
+            closed: reaped.closed,
+            remaining: reaped.remaining,
+            controlPageAdopted: adopted,
+          }, 'deal_intelligence_post_run_tab_reap');
+        } catch (err) {
+          logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_post_run_tab_reap_skipped');
+        }
+      });
     if (wait) await completion;
-    return c.json({ launch, propertyIntelligence: propertyIntelligenceView(id) });
+    return c.json({ launch, identityReconciliation, propertyIntelligence: propertyIntelligenceView(id) });
   });
 
   // ── Native mission graph: parent mission → child missions → join ───────────

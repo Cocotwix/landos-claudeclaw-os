@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
 import { buildPropertyIntelligenceValuation, type ValuationInput } from './property-intelligence-valuation.js';
-import { buildPropertyIntelligenceStrategies, type StrategySynthesisInput } from './property-intelligence-strategy.js';
+import {
+  buildPropertyIntelligenceStrategies,
+  buildSubdivisionEconomics,
+  type StrategySynthesisInput,
+  type SubdivisionEvidenceInput,
+} from './property-intelligence-strategy.js';
 import { APPROVED_STRATEGIES } from './strategy-readiness.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import type { SnapshotDueDiligenceItem } from './property-intelligence-snapshot.js';
@@ -47,7 +52,7 @@ describe('buildPropertyIntelligenceValuation — refusals', () => {
     expect(result.range).toBeNull();
     expect(result.confidence).toBe('none');
     expect(result.notPriceableReason).toMatch(/Parcel identity is unresolved/);
-    expect(result.nextActionToPrice).toMatch(/Confirm the subject parcel/);
+    expect(result.nextActionToPrice).toMatch(/Resolve the missing or conflicting subject identifiers/);
   });
 
   it('allows a low-confidence conditional valuation for a consistent discovery-stage identity', () => {
@@ -59,9 +64,9 @@ describe('buildPropertyIntelligenceValuation — refusals', () => {
     expect(result.priceable).toBe(true);
     expect(result.range).not.toBeNull();
     expect(result.confidence).toBe('low');
-    expect(result.basis).toMatch(/Conditional discovery-stage valuation/);
+    expect(result.basis).toMatch(/Working discovery estimate from the retained parcel match/);
     expect(result.uncertainty.join(' ')).toMatch(/operator-supplied APN.*LandPortal subject page/);
-    expect(result.materialGaps.join(' ')).toMatch(/Official parcel-source coverage remains unavailable/);
+    expect(result.materialGaps.join(' ')).not.toMatch(/county|second match/i);
   });
 
   it('does not let a discovery handoff override unresolved or conflicted identity', () => {
@@ -118,23 +123,60 @@ describe('buildPropertyIntelligenceValuation — priced conclusions', () => {
     expect(result.basis).toMatch(/12\.00 governing acres/);
   });
 
-  it('applies a larger-parcel discount when the subject dwarfs the comps', () => {
+  it('uses visible acreage weights instead of a fixed larger-parcel deduction', () => {
     const small = policyFor([1, 2, 3, 4, 5].map((i) => comp(i, { acres: 2, price: 20_000 })));
     const result = buildPropertyIntelligenceValuation(valuationInput({ policy: small, subjectAcres: 20 }));
-    expect(result.adjustments.join(' ')).toMatch(/larger-parcel discount/);
+    expect(result.adjustments.join(' ')).toMatch(/Acreage weighting applied rather than a fixed size deduction/);
+    expect(result.primaryBasis).toMatch(/Weights:/);
   });
 
-  it('applies a small-parcel premium when the subject is much smaller', () => {
+  it('uses visible acreage weights instead of a fixed small-parcel premium', () => {
     const large = policyFor([1, 2, 3, 4, 5].map((i) => comp(i, { acres: 40, price: 200_000 })));
     const result = buildPropertyIntelligenceValuation(valuationInput({ policy: large, subjectAcres: 5 }));
-    expect(result.adjustments.join(' ')).toMatch(/small-parcel premium/);
+    expect(result.adjustments.join(' ')).toMatch(/Acreage weighting applied rather than a fixed size deduction/);
   });
 
-  it('discounts the band for mapped physical constraints', () => {
+  it('keeps qualitative or questionable terrain constraints neutral', () => {
     const clean = buildPropertyIntelligenceValuation(valuationInput());
     const constrained = buildPropertyIntelligenceValuation(valuationInput({ constraints: ['62% of the parcel is mapped wetland'] }));
-    expect(constrained.range!.high).toBeLessThan(clean.range!.high);
-    expect(constrained.adjustments.join(' ')).toMatch(/mapped physical constraint/);
+    const questionable = buildPropertyIntelligenceValuation(valuationInput({
+      valueAdjustments: [{
+        label: 'Terrain/buildability',
+        percent: -16,
+        evidence: 'unverified slope and buildability calculation',
+        reliability: 'questionable',
+      }],
+    }));
+    expect(constrained.range).toEqual(clean.range);
+    expect(constrained.adjustments.join(' ')).toMatch(/No automatic deduction/);
+    expect(questionable.range).toEqual(clean.range);
+    expect(questionable.adjustments.join(' ')).toMatch(/no numeric adjustment applied because the input is questionable/);
+  });
+
+  it('applies an explicit supported adjustment and explains the evidence', () => {
+    const clean = buildPropertyIntelligenceValuation(valuationInput());
+    const adjusted = buildPropertyIntelligenceValuation(valuationInput({
+      valueAdjustments: [{
+        label: 'Documented access burden',
+        percent: -7.5,
+        evidence: 'subject has a recorded shared-access burden absent from the accepted sales',
+        reliability: 'verified',
+      }],
+    }));
+    expect(adjusted.range!.high).toBeLessThan(clean.range!.high);
+    expect(adjusted.adjustments.join(' ')).toMatch(/-7\.5% supported by subject has a recorded shared-access burden/);
+  });
+
+  it('quarantines unsupported slope/buildability hard-risk text from value and confidence', () => {
+    const clean = buildPropertyIntelligenceValuation(valuationInput());
+    const quarantined = buildPropertyIntelligenceValuation(valuationInput({
+      hardRisks: ['Unsupported steep-slope and buildability percentage from an unverified parcel calculation.'],
+    }));
+    expect(quarantined.range).toEqual(clean.range);
+    expect(quarantined.workingValue).toBe(clean.workingValue);
+    expect(quarantined.confidence).toBe(clean.confidence);
+    expect(quarantined.uncertainty.join(' ')).not.toMatch(/Unsupported steep-slope/i);
+    expect(quarantined.adjustments.join(' ')).toMatch(/quarantined from value and confidence/i);
   });
 
   it('drops confidence and flags thinness on a one-comp set', () => {
@@ -189,7 +231,89 @@ function strategyInput(overrides: Partial<StrategySynthesisInput> = {}): Strateg
   };
 }
 
+function subdivisionEvidence(overrides: Partial<SubdivisionEvidenceInput> = {}): SubdivisionEvidenceInput {
+  return {
+    governingJurisdiction: 'Pickens County, SC',
+    minimumLotSize: '1 acre',
+    minimumFrontage: '50 feet',
+    minorSubdivisionThreshold: '5 lots',
+    flagLotRules: 'Flag lots allowed subject to access stem standards.',
+    sharedAccessRules: 'Shared access requires a recorded maintenance agreement.',
+    privateRoadStandards: 'County private-road section applies above five lots.',
+    legalMultiLotAccess: true,
+    physicalMultiLotAccess: true,
+    observedRoadNeckFeet: 52,
+    concepts: [{
+      name: 'Four-lot minor split',
+      lotSizesAcres: [12, 12, 12, 16],
+      accessConfiguration: 'Recorded shared drive through the existing road neck.',
+      geometryBasis: 'Four conceptual envelopes fit the reviewed parcel shape outside mapped drainage.',
+      ordinancePath: 'Minor subdivision review.',
+      marketBand: '10-20 acres',
+      grossValue: { low: 720_000, high: 840_000 },
+      costs: [
+        { category: 'acquisition', label: 'Acquisition', low: 250_000, high: 275_000, basis: 'Negotiation range.' },
+        { category: 'survey_engineering', label: 'Survey and engineering', low: 18_000, high: 28_000, basis: 'Four-lot concept allowance.' },
+        { category: 'plat_approval', label: 'Plat and approval', low: 4_000, high: 8_000, basis: 'Minor-plat allowance.' },
+        { category: 'soil_testing', label: 'Soil testing', low: 8_000, high: 14_000, basis: 'Per-lot testing allowance.' },
+        { category: 'access_road', label: 'Access and road', low: 45_000, high: 90_000, basis: 'Shared-drive concept allowance.' },
+        { category: 'utilities', label: 'Utilities', low: 20_000, high: 50_000, basis: 'Service-extension allowance.' },
+        { category: 'holding', label: 'Holding', low: 24_000, high: 42_000, basis: '12-18 month carry.' },
+        { category: 'sales_marketing', label: 'Sales and marketing', low: 43_000, high: 50_000, basis: 'Brokerage and closing allowance.' },
+        { category: 'contingency', label: 'Contingency', low: 35_000, high: 55_000, basis: 'Project uncertainty allowance.' },
+      ],
+      timeline: '12–18 months',
+      mainRisk: 'The road neck may not satisfy shared-access standards after engineering review.',
+    }],
+    ...overrides,
+  };
+}
+
 describe('buildPropertyIntelligenceStrategies', () => {
+  it('treats subdivision as an access/rule-gated hypothesis and Quick Flip fallback', () => {
+    const result = buildSubdivisionEconomics(subdivisionEvidence({
+      legalMultiLotAccess: null,
+      physicalMultiLotAccess: null,
+    }));
+    expect(result.status).toBe('hypothesis');
+    expect(result.highestUpsideHypothesis).toBe('Subdivision');
+    expect(result.immediateGatingIssue).toMatch(/legally and physically serve multiple lots/);
+    expect(result.fallbackStrategy).toBe('Quick Flip');
+    expect(result.ruleAndAccessGaps.join(' ')).toMatch(/Legal multi-lot access.*Physical multi-lot access/);
+  });
+
+  it('states net profit only when acquisition and every project-cost category are modeled', () => {
+    const complete = buildSubdivisionEconomics(subdivisionEvidence());
+    expect(complete.status).toBe('viable');
+    expect(complete.concepts[0].fullyModeled).toBe(true);
+    expect(complete.concepts[0].estimatedNetProfit).not.toBeNull();
+
+    const incompleteInput = subdivisionEvidence();
+    incompleteInput.concepts = [{
+      ...incompleteInput.concepts[0],
+      costs: incompleteInput.concepts[0].costs.filter((cost) => cost.category !== 'contingency'),
+    }];
+    const incomplete = buildSubdivisionEconomics(incompleteInput);
+    expect(incomplete.concepts[0].estimatedNetProfit).toBeNull();
+    expect(incomplete.concepts[0].missingCostCategories).toContain('contingency');
+  });
+
+  it('makes the split applicable only when rules, multi-lot access and full costs clear', () => {
+    const { strategies, recommendation } = buildPropertyIntelligenceStrategies(strategyInput({
+      subjectAcres: 52,
+      subdivisionEvidence: subdivisionEvidence(),
+    }));
+    const split = strategies.find((strategy) => strategy.strategy === 'Subdivide or Minor Split') as typeof strategies[number] & {
+      subdivisionEconomics: ReturnType<typeof buildSubdivisionEconomics>;
+    };
+    expect(split.applicability).toBe('applicable');
+    expect(split.supportingFacts.join(' ')).toMatch(/Highest-upside hypothesis: subdivision/);
+    expect(split.supportingFacts.join(' ')).toMatch(/modeled net profit/);
+    expect(split.subdivisionEconomics.concepts[0].estimatedNetProfit).not.toBeNull();
+    expect(recommendation.preferredStrategy).toBe('Subdivide or Minor Split');
+    expect(recommendation.whatWouldChangeIt.join(' ')).toMatch(/Quick Flip would become preferred/);
+  });
+
   it('emits exactly the five approved strategies in order and never wholesaling', () => {
     const { strategies } = buildPropertyIntelligenceStrategies(strategyInput());
     expect(strategies.map((s) => s.strategy)).toEqual([
@@ -260,8 +384,8 @@ describe('buildPropertyIntelligenceStrategies', () => {
     expect(recommendation.preferredStrategy).toBeTruthy();
     expect(APPROVED_STRATEGIES).toContain(recommendation.preferredStrategy as never);
     expect(recommendation.posture).toBe('renegotiate');
-    expect(recommendation.postureWhy).toMatch(/conditional discovery-stage value basis/);
-    expect(recommendation.whatWouldChangeIt.join(' ')).toMatch(/Official parcel confirmation/);
+    expect(recommendation.postureWhy).toMatch(/retained discovery-stage parcel match/);
+    expect(recommendation.whatWouldChangeIt.join(' ')).toMatch(/Title, acreage and access diligence/);
     expect(recommendation.worth?.workingValue).toBeGreaterThan(0);
     expect(recommendation.targetBuyRange?.low).toBeGreaterThan(0);
   });

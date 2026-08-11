@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "1.0.0",
+  "contractId": "landos-704-bell-known-defect-v1",
+  "sprintName": "governed-multi-agent-os-known-defect-proof",
+  "createdAt": "2026-08-02T23:20:41.129Z",
+  "independentAuthority": "landos-visual-qa",
+  "property": {
+    "address": "704 Bell Rd, Red Creek, NY 13143",
+    "normalizedAddress": "704 Bell Rd, Red Creek, NY 13143",
+    "apn": "056400 37.00-1-33",
+    "canonicalPropertyId": "89520173",
+    "canonicalCounts": {
+      "comps": 4,
+      "visuals": 1
+    }
+  },
+  "expectations": {
+    "imageryAvailable": true,
+    "specialistResultsRendered": true,
+    "noCrossPropertyContamination": true
+  },
+  "runPolicy": {
+    "mode": "fixture",
+    "entryFlow": "new-lead",
+    "freshnessRequired": false,
+    "requireRefresh": true,
+    "requireRestart": true,
+    "requireIsolatedContext": true,
+    "requireContextCleanup": true,
+    "authState": {
+      "importAllowed": true,
+      "explicitApprovalRequired": true,
+      "repositoryPersistenceProhibited": true
+    },
+    "requiredNetworkPatterns": [],
+    "allowedConsoleErrorPatterns": []
+  },
+  "claims": [
+    {
+      "id": "property-identity-visible",
+      "operatorSection": "Deal Card header",
+      "claim": "The opened Deal Card visibly belongs to the acceptance property.",
+      "expectedBinding": "property.normalizedAddress",
+      "expectedValue": "704 Bell Rd, Red Creek, NY 13143",
+      "comparison": "contains",
+      "canonicalSource": "LandOS accepted property identity",
+      "evidenceArtifacts": ["deal-card-loaded.png", "after-refresh.png", "after-restart.png"]
+    },
+    {
+      "id": "property-apn-visible",
+      "operatorSection": "Deal Card header",
+      "claim": "The opened Deal Card visibly shows the acceptance property APN.",
+      "expectedBinding": "property.apn",
+      "expectedValue": "056400 37.00-1-33",
+      "comparison": "contains",
+      "canonicalSource": "LandOS accepted property identity",
+      "evidenceArtifacts": ["deal-card-loaded.png", "after-refresh.png", "after-restart.png"]
+    },
+    {
+      "id": "property-id-visible",
+      "operatorSection": "Deal Card header",
+      "claim": "The opened Deal Card visibly shows the canonical property identifier.",
+      "expectedBinding": "property.canonicalPropertyId",
+      "expectedValue": "89520173",
+      "comparison": "contains",
+      "canonicalSource": "LandOS accepted property identity",
+      "evidenceArtifacts": ["deal-card-loaded.png", "after-refresh.png", "after-restart.png"]
+    },
+    {
+      "id": "canonical-comps-visible",
+      "operatorSection": "Comps & Market",
+      "claim": "All canonical Hermes comps are visibly rendered in Comps & Market.",
+      "expectedBinding": "property.canonicalCounts.comps",
+      "expectedValue": 4,
+      "comparison": "count_equals",
+      "canonicalSource": "LandOS canonical accepted Hermes comp count",
+      "evidenceArtifacts": ["changed-section.png", "after-refresh.png", "after-restart.png"]
+    },
+    {
+      "id": "comp-count-matches-rows",
+      "operatorSection": "Comps & Market",
+      "claim": "The number of rendered accepted-comp rows equals the canonical Hermes comp count.",
+      "expectedBinding": "property.canonicalCounts.comps",
+      "expectedValue": 4,
+      "comparison": "count_equals",
+      "canonicalSource": "Visible count and rendered operator rows compared with canonical accepted count",
+      "evidenceArtifacts": ["changed-section.png"]
+    },
+    {
+      "id": "canonical-visual-visible",
+      "operatorSection": "Documents & Visuals",
+      "claim": "The canonical retained visual is visibly rendered in Documents & Visuals.",
+      "expectedBinding": "property.canonicalCounts.visuals",
+      "expectedValue": 1,
+      "comparison": "count_equals",
+      "canonicalSource": "LandOS canonical accepted Hermes visual count",
+      "evidenceArtifacts": ["relevant-tab-or-panel.png", "after-refresh.png", "after-restart.png"]
+    },
+    {
+      "id": "imagery-not-empty",
+      "operatorSection": "Documents & Visuals / Hero property imagery",
+      "claim": "The imagery area contains retained subject imagery and does not show an empty state.",
+      "expectedBinding": "expectations.imageryAvailable",
+      "expectedValue": true,
+      "comparison": "equals",
+      "canonicalSource": "LandOS canonical accepted Hermes visual",
+      "evidenceArtifacts": ["relevant-tab-or-panel.png"]
+    },
+    {
+      "id": "specialist-results-rendered",
+      "operatorSection": "Comps & Market and Documents & Visuals",
+      "claim": "Claimed specialist comp and visual results are visibly rendered in their operator sections.",
+      "expectedBinding": "expectations.specialistResultsRendered",
+      "expectedValue": true,
+      "comparison": "equals",
+      "canonicalSource": "LandOS admitted Hermes subject/comps/visuals handback",
+      "evidenceArtifacts": ["changed-section.png", "relevant-tab-or-panel.png"]
+    },
+    {
+      "id": "no-cross-property-contamination",
+      "operatorSection": "Whole Deal Card",
+      "claim": "No visible evidence belongs to another property.",
+      "expectedBinding": "expectations.noCrossPropertyContamination",
+      "expectedValue": true,
+      "comparison": "no_contamination",
+      "canonicalSource": "Acceptance property identity and contamination scan",
+      "evidenceArtifacts": ["deal-card-loaded.png", "changed-section.png", "relevant-tab-or-panel.png"]
+    }
+  ],
+  "requiredArtifacts": [
+    "acceptance-contract.json",
+    "acceptance-report.md",
+    "results.json",
+    "new-lead.png",
+    "deal-card-loaded.png",
+    "changed-section.png",
+    "relevant-tab-or-panel.png",
+    "after-refresh.png",
+    "after-restart.png",
+    "trace.zip",
+    "video.webm",
+    "console.json",
+    "network-failures.json"
+  ]
+}

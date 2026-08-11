@@ -1,5 +1,11 @@
 import type { DealCardReportView, MarketCompView } from './deal-card-report.js';
 import type { PropertyInspectionRecord } from './property-card.js';
+import {
+  inAcreagePool,
+  resolveGeographicTier,
+  routeAcreage,
+  routedAcreageSimilarity,
+} from './acreage-router.js';
 
 export type ComparableStatus = 'sold' | 'pending' | 'active' | 'listed' | 'unknown';
 export type ComparablePropertyType = 'vacant_land' | 'manufactured_home' | 'existing_residence' | 'agricultural_improvements' | 'commercial_improvements' | 'other_structures' | 'unknown';
@@ -49,16 +55,6 @@ export interface ComparableIntelligence {
   factorsAffectingValue: string[];
 }
 
-const ACREAGE_BANDS = [
-  { label: 'under-2', min: 0, max: 2 },
-  { label: '2-5', min: 2, max: 5 },
-  { label: '5-10', min: 5, max: 10 },
-  { label: '10-20', min: 10, max: 20 },
-  { label: '20-50', min: 20, max: 50 },
-  { label: '50-100', min: 50, max: 100 },
-  { label: '100+', min: 100, max: Number.POSITIVE_INFINITY },
-] as const;
-
 const median = (ns: number[]): number | null => {
   if (!ns.length) return null;
   const s = [...ns].sort((a, b) => a - b);
@@ -73,15 +69,12 @@ const quantile = (ns: number[], q: number): number | null => {
 };
 
 function acreageBand(acres: number | null): string | null {
-  if (acres == null || acres <= 0) return null;
-  return ACREAGE_BANDS.find((b) => acres >= b.min && acres < b.max)?.label ?? null;
+  return routeAcreage(acres)?.pool.label ?? null;
 }
 
 function sameAcreageBand(subjectAcres: number | null, compAcres: number | null): boolean {
-  if (subjectAcres == null || compAcres == null || subjectAcres <= 0 || compAcres <= 0) return false;
-  if (acreageBand(subjectAcres) === acreageBand(compAcres)) return true;
-  const ratio = compAcres / subjectAcres;
-  return ratio >= 0.5 && ratio <= 2;
+  const route = routeAcreage(subjectAcres);
+  return route != null && inAcreagePool(compAcres, route);
 }
 
 function cleanMoney(v: number | null | undefined): number | null {
@@ -311,7 +304,7 @@ function qualifySoldComparable(
   if (row.status !== 'sold' || row.salePrice == null || row.pricePerAcre == null || row.acreage == null) return null;
   const age = monthsSince(row.saleDate);
   const distance = row.distanceMiles;
-  if (age == null || age > 24 || distance == null || distance < 0 || distance > 10) return null;
+  if (age == null || age > 24) return null;
   if (subjectAcres != null && !sameAcreageBand(subjectAcres, row.acreage)) return null;
   // "No contradiction found" is not a property-type check. Both the subject
   // and the candidate must have an observed classification before the row can
@@ -320,7 +313,10 @@ function qualifySoldComparable(
   if (row.parsingErrors.length) return null;
   return {
     ...row,
-    radiusTier: distance <= 3 ? '3_miles' : distance <= 5 ? '5_miles' : '10_miles',
+    radiusTier: distance == null ? null
+      : distance <= 3 ? '3_miles'
+        : distance <= 5 ? '5_miles'
+          : distance <= 10 ? '10_miles' : 'county_wide',
     recencyTier: age <= 12 ? '12_months' : age <= 18 ? '18_months' : '24_months',
   };
 }
@@ -344,8 +340,11 @@ export function buildComparableIntelligence(report: DealCardReportView): Compara
     .map((row) => qualifySoldComparable(row, subjectAcres, subjectClassification.type))
     .filter((row): row is NormalizedComparable => !!row)
     .sort((a, b) => {
-      const distance = (a.distanceMiles ?? Number.POSITIVE_INFINITY) - (b.distanceMiles ?? Number.POSITIVE_INFINITY);
-      if (distance !== 0) return distance;
+      const route = routeAcreage(subjectAcres);
+      const score = (row: NormalizedComparable) => routedAcreageSimilarity(row.acreage, route)
+        * resolveGeographicTier(row.distanceMiles).weightMultiplier;
+      const rank = score(b) - score(a);
+      if (rank !== 0) return rank;
       return (monthsSince(a.saleDate) ?? Number.POSITIVE_INFINITY) - (monthsSince(b.saleDate) ?? Number.POSITIVE_INFINITY);
     });
   // Phase 1 valuation is closed-sale only. Asking/pending/active rows stay
@@ -372,24 +371,20 @@ export function buildComparableIntelligence(report: DealCardReportView): Compara
           ? 'Sale date is missing or invalid; excluded from the 12/18/24-month valuation sequence.'
           : (monthsSince(c.saleDate) ?? 25) > 24
             ? 'Sale is older than the 24-month maximum; retained as context only.'
-            : c.distanceMiles == null
-              ? 'Distance is not established; excluded until its 3/5/10-mile or county-wide tier is known.'
-              : c.distanceMiles > 10
-                ? 'Outside the 10-mile search tier; county-wide use requires an explicit thin-rural-market disclosure.'
             : !sameAcreageBand(subjectAcres, c.acreage)
           ? 'Outside the subject acreage band; retained as evidence but weighted lower.'
           : subjectClassification.type === 'unknown' || c.propertyType === 'unknown'
             ? 'Property type is not established on both the subject and comparable; retained as context only.'
           : !typeMatches(subjectClassification.type, c.propertyType)
             ? 'Different property type than the subject; retained for interpretation only.'
-            : 'Lower-confidence comparable.',
+            : `Lower-ranked comparable after acreage, recency, and ${resolveGeographicTier(c.distanceMiles).label} geographic weighting.`,
     }));
   const evidenceMissing: string[] = [];
   if (subjectAcres == null) evidenceMissing.push('Subject acreage');
   if (subjectClassification.type === 'unknown') evidenceMissing.push('Confirmed subject property type');
   if (finalSelected.length < 3) evidenceMissing.push('At least three sold comparables in the same acreage band');
   if (!sold.some((c) => monthsSince(c.saleDate) != null && (monthsSince(c.saleDate) ?? 25) <= 24)) evidenceMissing.push('Sold comparable dates within the 24-month maximum');
-  if (!sold.some((c) => c.distanceMiles != null && c.distanceMiles <= 10)) evidenceMissing.push('Comparable distances in the 3/5/10-mile search sequence');
+  if (!sold.some((c) => c.distanceMiles != null)) evidenceMissing.push('Resolvable comparable locations for straight-line miles; unresolved rows remain usable at reduced geographic weight');
   // Comp-source coverage reads the SINGLE reconciled comp state first (the same
   // object Market/Activity show), then the comparables themselves — so Strategy
   // never claims a source's comps are "missing" while Activity says it retrieved N.
@@ -417,7 +412,7 @@ export function buildComparableIntelligence(report: DealCardReportView): Compara
     confidence,
     evidenceUsed: [
       finalSelected.length
-        ? `${finalSelected.length} sold comparable(s) selected by status, 12/18/24-month recency, 3/5/10-mile distance, acreage band, property type, and provider hierarchy.`
+        ? `${finalSelected.length} sold comparable(s) selected by status, 12/18/24-month recency, routed acreage pool, property type, and retained geographic-tier ranking; distance never acts as a discard gate.`
         : `No sold comparable qualified for valuation; ${asking.length} asking/pending/active row(s) remain context only.`,
       report.landportalInspection?.comparables?.length ? 'LandPortal comparable rows' : '',
       report.marketComps?.sold?.length ? 'Sold market comparable rows' : '',

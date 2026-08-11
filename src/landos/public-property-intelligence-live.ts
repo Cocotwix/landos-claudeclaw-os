@@ -14,10 +14,11 @@ import type {
   PublicIntelligenceAdapter,
   PublicIntelligenceAdapterResult,
   PublicIntelligenceSubject,
+  PublicIntelligenceTaskKind,
   SoilComponent,
   UtilityAvailability,
 } from './public-property-intelligence.js';
-import { SCREENING_DISCLAIMERS, slopeBandFor, SLOPE_BANDS } from './public-property-intelligence.js';
+import { PUBLIC_INTELLIGENCE_TASK_LABELS, SCREENING_DISCLAIMERS, slopeBandFor, SLOPE_BANDS } from './public-property-intelligence.js';
 import { findCountyGis, computeExactOverlaps, queryLayerByPolygon, queryLayerByEnvelope, type CountyGisCapability } from './county-gis-capabilities.js';
 import { interiorGrid, measureFrontage, overlapLocationDescription, ringsAreaAcres, type Rings, type LonLat } from './parcel-spatial.js';
 import { addressVariantsCompatible, roadNamesCompatible } from './instruction-consistency.js';
@@ -1049,7 +1050,14 @@ export function publicSubjectFromOfficialParcel(p: OfficialParcel, rawInput: str
   };
 }
 
-export function makeLivePublicIntelligenceAdapters(p: OfficialParcel): PublicIntelligenceAdapter[] {
+/**
+ * The lanes that read the OFFICIAL PARCEL POLYGON.
+ *
+ * Each one queries an official layer by the parcel's own rings, so an
+ * `OfficialParcel` is a genuine input here, not a convenience. Nothing else in
+ * the task graph belongs in this list.
+ */
+export function makeParcelGeometryIntelligenceAdapters(p: OfficialParcel): PublicIntelligenceAdapter[] {
   const capability = findCountyGis(p.county, p.state);
   return [
     wetlandsAdapter(p, capability),
@@ -1057,13 +1065,116 @@ export function makeLivePublicIntelligenceAdapters(p: OfficialParcel): PublicInt
     soils(p),
     slopeAdapter(p),
     frontageAdapter(p, capability),
-    zoningAdapter(p, capability),
+    // zoning_landuse is NOT here. Who zones, what the district permits by right
+    // and which land-division rules apply are properties of the LOCATION, and
+    // the county GIS zoning polygon is supplemental spatial evidence on top of
+    // that determination — never the lane itself. See
+    // `makeCountyGisZoningSupplement` below.
     utilitiesAdapter(p, capability),
     imagery(p, capability),
     countyRecords(p, capability),
+  ];
+}
+
+/**
+ * The lanes that read NOTHING from the parcel record.
+ *
+ * They were only ever constructed inside the official-parcel branch because
+ * they sat in the same factory. A parcel polygon has no bearing on whether
+ * LandOS can report the marketplace or Land Portal lane, so a parcel miss must
+ * never silence them.
+ */
+export function makeParcelIndependentIntelligenceAdapters(): PublicIntelligenceAdapter[] {
+  return [
     marketplace(),
     landPortal(),
   ];
+}
+
+export function makeLivePublicIntelligenceAdapters(p: OfficialParcel): PublicIntelligenceAdapter[] {
+  return [
+    ...makeParcelGeometryIntelligenceAdapters(p),
+    ...makeParcelIndependentIntelligenceAdapters(),
+  ];
+}
+
+/** Which task graph lanes actually read the official parcel polygon. */
+export const PARCEL_GEOMETRY_DEPENDENT_TASKS: readonly PublicIntelligenceTaskKind[] = [
+  'wetlands',
+  'fema_flood',
+  'slope_topography',
+  'road_frontage',
+  'imagery',
+];
+
+export interface OfficialParcelBlockedContext {
+  requestedApn?: string | null;
+  county?: string | null;
+  state?: string | null;
+  /** What the official parcel lookup actually tried, for the operator. */
+  attempted?: ReadonlyArray<{ source: string; status: string; note: string }>;
+}
+
+/**
+ * Honest per-lane conditions for every lane no adapter covered on this run.
+ *
+ * Without these the orchestrator falls through to its no-adapter path and
+ * reports "<lane> is not connected", which tells an operator LandOS was never
+ * wired up for that lane. The real condition is narrower and belongs to THIS
+ * lane only, and it is one of exactly two things:
+ *
+ *   • the lane reads the official parcel polygon and no parcel record was
+ *     obtained — its own input is missing, nothing more; or
+ *   • LandOS knows no official source for this lane in this jurisdiction —
+ *     a coverage limitation of that lane, not of the run.
+ *
+ * Neither statement may be used to describe any other lane.
+ */
+export function makeOfficialParcelBlockedAdapters(
+  tasks: readonly PublicIntelligenceTaskKind[],
+  context: OfficialParcelBlockedContext = {},
+): PublicIntelligenceAdapter[] {
+  const attemptTrail = (context.attempted ?? [])
+    .map((attempt) => `${attempt.source}: ${attempt.status.replace(/_/g, ' ')} — ${attempt.note}`)
+    .join(' ');
+  const countyLabel = context.county
+    ? (/\bcounty$|\bparish$/i.test(context.county) ? context.county : `${context.county} County`)
+    : null;
+  const jurisdiction = [countyLabel, context.state].filter(Boolean).join(', ');
+  const subject = context.requestedApn ? `APN ${context.requestedApn}` : 'this subject';
+
+  const geometryReason = (task: PublicIntelligenceTaskKind): string => [
+    `${PUBLIC_INTELLIGENCE_TASK_LABELS[task]} reads the official parcel polygon,`,
+    ` and no official parcel record was obtained for ${subject}`,
+    jurisdiction ? ` in ${jurisdiction}` : '',
+    '. The lane is connected; the one input it requires is missing.',
+    attemptTrail ? ` Sources attempted — ${attemptTrail}` : '',
+  ].join('');
+
+  const coverageReason = (task: PublicIntelligenceTaskKind): string => [
+    `LandOS knows no official source for ${PUBLIC_INTELLIGENCE_TASK_LABELS[task].toLowerCase()}`,
+    jurisdiction ? ` in ${jurisdiction}` : ' in this jurisdiction',
+    ', so nothing was attempted for this lane. That is this lane\'s own coverage limitation and says nothing about the others.',
+    attemptTrail ? ` Sources attempted — ${attemptTrail}` : '',
+  ].join('');
+
+  return tasks.map((task) => {
+    const geometry = PARCEL_GEOMETRY_DEPENDENT_TASKS.includes(task);
+    return {
+      task,
+      adapterId: geometry ? 'official_parcel_geometry_required_v1' : 'jurisdiction_source_unknown_v1',
+      timeoutMs: 2_000,
+      async run(): Promise<PublicIntelligenceAdapterResult> {
+        return {
+          status: 'unavailable',
+          evidence: [],
+          confidence: 'none',
+          retryEligible: true,
+          failureReason: geometry ? geometryReason(task) : coverageReason(task),
+        };
+      },
+    };
+  });
 }
 
 function evidence(
@@ -1569,6 +1680,20 @@ function frontageAdapter(p: OfficialParcel, capability: CountyGisCapability | nu
       };
     },
   };
+}
+
+/**
+ * The county GIS zoning polygon, as SUPPLEMENTAL spatial evidence.
+ *
+ * It used to BE the zoning_landuse lane, which made zoning research a
+ * consequence of obtaining a parcel polygon: a county with no tested zoning
+ * layer returned `unavailable` even though the governing authority, the adopted
+ * ordinance and the land-division rules were all researchable from the location
+ * alone. It is now handed to the land-use zoning lane, which keeps the accepted
+ * legal determination primary and merges this in behind it.
+ */
+export function makeCountyGisZoningSupplement(p: OfficialParcel): PublicIntelligenceAdapter {
+  return zoningAdapter(p, findCountyGis(p.county, p.state));
 }
 
 function zoningAdapter(p: OfficialParcel, capability: CountyGisCapability | null): PublicIntelligenceAdapter {

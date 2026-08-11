@@ -23,6 +23,16 @@
 //      comp's status comes from the marketplace that published it.
 
 import type { CompSourcePolicyResult } from './comp-source-policy.js';
+import {
+  buildAcreageMarketContext,
+  compDistanceMiles,
+  inAcreagePool,
+  resolveGeographicTier,
+  routeAcreage,
+  routedAcreageSimilarity,
+  type AcreageMarketContext,
+  type AcreageRoute,
+} from './acreage-router.js';
 import type {
   SnapshotComp, SnapshotComps, SnapshotRejectedComp, SnapshotValuation,
 } from './property-intelligence-snapshot.js';
@@ -58,6 +68,24 @@ export function isEvidenceOnlySource(source: string | null | undefined): boolean
  * decides whether they may price the subject.
  */
 export type CompStatusBasis = 'closed_sale' | 'active_listing' | 'unconfirmed';
+
+export function landPortalSaleStatus(row: {
+  source: string;
+  dateIso: string | null;
+  priceKind?: string | null;
+}): { statusBasis: CompStatusBasis; provenance: string } {
+  if (!/landportal/i.test(row.source)) {
+    return { statusBasis: 'unconfirmed', provenance: 'Not evaluated: this helper governs LandPortal rows only.' };
+  }
+  const statedDate = row.dateIso?.trim() ?? '';
+  if (!statedDate || !Number.isFinite(Date.parse(statedDate))) {
+    return { statusBasis: 'unconfirmed', provenance: 'LandPortal did not state a parseable sale date.' };
+  }
+  return {
+    statusBasis: 'closed_sale',
+    provenance: `LandPortal stated the sale date ${statedDate}.`,
+  };
+}
 
 export interface CompCandidateRow {
   key: string;
@@ -124,6 +152,8 @@ export interface CompSelectionSubject {
   acres: number | null;
   locality: string | null;
   county: string | null;
+  lat?: number | null;
+  lng?: number | null;
   /** Canonical subject identifiers used only to keep the subject itself out of
    *  the comparable working set. A current listing for the subject remains
    *  evidence/seller context, never an "active competitor." */
@@ -151,6 +181,9 @@ export interface CompWorkingSet {
   totalCollected: number;
   /** The ONE conclusion the evidence supports. */
   conclusion: CompConclusion;
+  acreageRouting: AcreageRoute | null;
+  geographicExpansion: string;
+  acreageMarketContext: AcreageMarketContext | null;
 }
 
 /**
@@ -181,8 +214,8 @@ export type CompConclusion =
 
 /** The band a row must sit in to compete with or price the subject. */
 export function acreageBand(subjectAcres: number | null): { lo: number; hi: number } | null {
-  if (subjectAcres == null || !(subjectAcres > 0)) return null;
-  return { lo: subjectAcres * 0.5, hi: subjectAcres * 2.5 };
+  const route = routeAcreage(subjectAcres);
+  return route ? { lo: route.pool.min, hi: route.pool.max } : null;
 }
 
 /**
@@ -192,9 +225,7 @@ export function acreageBand(subjectAcres: number | null): { lo: number; hi: numb
  * 3-acre subject and irrelevant on a 300-acre one.
  */
 export function acreageSimilarity(subjectAcres: number | null, acres: number | null): number {
-  if (subjectAcres == null || acres == null || subjectAcres <= 0 || acres <= 0) return 0;
-  const ratio = acres > subjectAcres ? acres / subjectAcres : subjectAcres / acres;
-  return 1 / ratio;
+  return routedAcreageSimilarity(acres, routeAcreage(subjectAcres));
 }
 
 function recencyScore(dateIso: string | null, nowMs: number): number {
@@ -237,7 +268,7 @@ export function comparabilityScore(
   const land = row.landClass === 'vacant_land' ? 1 : row.landClass === 'unknown' ? 0.4 : 0;
   const bounded = (value: number | null | undefined): number =>
     typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
-  return (
+  const score = (
     acreage * 5 +
     land * 3 +
     localityScore(subject, row) * 2 +
@@ -248,6 +279,7 @@ export function comparabilityScore(
     bounded(row.utilitiesSimilarity) * 0.5 +
     bounded(row.developmentContextSimilarity) * 0.5
   );
+  return score * resolveGeographicTier(row.distanceMiles).weightMultiplier;
 }
 
 /** Operator-facing normalized selection weight. This explains rank; it is not
@@ -445,6 +477,7 @@ function toSnapshotComp(
     ?? (row.price != null && row.acres != null && row.acres > 0 ? Math.round(row.price / row.acres) : null);
   const similarities: string[] = [];
   const differences: string[] = [];
+  const geographicTier = resolveGeographicTier(row.distanceMiles);
   if (row.acres != null && subject.acres != null && subject.acres > 0) {
     const ratio = row.acres / subject.acres;
     if (ratio >= 0.8 && ratio <= 1.25) {
@@ -456,8 +489,10 @@ function toSnapshotComp(
     similarities.push(`${row.acres.toFixed(2)} ac`);
   }
   if (row.distanceMiles != null) {
-    if (row.distanceMiles <= 10) similarities.push(`${row.distanceMiles.toFixed(1)} mi from the subject`);
-    else differences.push(`${row.distanceMiles.toFixed(1)} mi away; local demand may differ.`);
+    if (row.distanceMiles <= 10) similarities.push(`${row.distanceMiles.toFixed(1)} mi from the subject (${geographicTier.label})`);
+    else differences.push(`${row.distanceMiles.toFixed(1)} mi away in the ${geographicTier.label} tier; local demand may differ.`);
+  } else {
+    differences.push(`${geographicTier.label}: no straight-line miles were invented because the comp location could not be resolved.`);
   }
   if (row.acres == null) differences.push('No acreage on the row.');
   if (!row.dateIso) differences.push('No transaction date published.');
@@ -498,7 +533,7 @@ function toSnapshotComp(
     engagement: typeof row.views === 'number' || typeof row.saves === 'number'
       ? ((row.views ?? 0) >= 100 || (row.saves ?? 0) >= 5 ? 'strong' : 'weak')
       : 'inconclusive',
-    whyUseful: `${why} Selection weight ${weight}/100 (${weightLabel}); acreage, property type, locality, recency and distance drive the weight.`,
+    whyUseful: `${why} Geographic tier: ${geographicTier.label}; ${geographicTier.rationale} Selection weight ${weight}/100 (${weightLabel}); acreage, property type, locality, recency and distance drive the weight.`,
     similarities,
     differences,
     weight,
@@ -530,6 +565,16 @@ function bucketEvidence(buckets: Map<string, CompEvidenceBucket>, reason: string
   buckets.set(reason, { reason, count: 1, sources: [source] });
 }
 
+function structureSignal(row: CompCandidateRow): string | null {
+  if (row.homeSizeSqft != null) return `${row.homeSizeSqft.toLocaleString('en-US')} sqft home/building size`;
+  if (row.yearBuilt != null) return `year built ${row.yearBuilt}`;
+  if (row.homeType && /home|house|residen|manufactured|mobile|condo|town|single|multi/i.test(row.homeType)) {
+    return `residential home type ${row.homeType}`;
+  }
+  if (row.landClass === 'improved') return 'provider classification as improved property';
+  return null;
+}
+
 /**
  * Build the operator-facing working set.
  *
@@ -544,15 +589,20 @@ export function selectWorkingComps(input: {
   sourceCaps?: { zillow: number; redfin: number };
 }): CompWorkingSet {
   const { subject, nowMs } = input;
+  const rows = input.rows.map((row): CompCandidateRow => {
+    if (typeof row.distanceMiles === 'number' && Number.isFinite(row.distanceMiles)) return row;
+    const distanceMiles = compDistanceMiles(subject, row);
+    return distanceMiles == null ? row : { ...row, distanceMiles };
+  });
   // Disabled historical aggregators are not part of any current count. Direct
   // callers may still pass them for audit classification, but they do not
   // inflate the current collected/selected totals.
-  const totalCollected = input.rows.filter((row) => !isEvidenceOnlySource(row.source)).length;
+  const totalCollected = rows.filter((row) => !isEvidenceOnlySource(row.source)).length;
   const buckets = new Map<string, CompEvidenceBucket>();
 
   const approved: CompCandidateRow[] = [];
   const manufacturedHomeCandidates: CompCandidateRow[] = [];
-  for (const row of input.rows) {
+  for (const row of rows) {
     if (isEvidenceOnlySource(row.source)) {
       // Keep one generic archival bucket without serializing the disabled
       // provider name into a current snapshot/UI handback.
@@ -589,9 +639,10 @@ export function selectWorkingComps(input: {
   const { rows: unique, removed } = dedupeCompRows(approved);
 
   const band = acreageBand(subject.acres);
+  const acreageRouting = routeAcreage(subject.acres);
   const inBand = (acres: number | null): boolean => {
-    if (band == null || acres == null) return false;
-    return acres >= band.lo && acres <= band.hi;
+    if (acreageRouting == null || acres == null) return false;
+    return inAcreagePool(acres, acreageRouting);
   };
 
   const soldPool: CompCandidateRow[] = [];
@@ -604,7 +655,8 @@ export function selectWorkingComps(input: {
       continue;
     }
     if (row.landClass === 'improved') {
-      bucketEvidence(buckets, 'Improved property — never a vacant-land value basis.', row.source);
+      const signal = structureSignal(row) ?? 'provider classification as improved property';
+      bucketEvidence(buckets, `Improved property (${signal}) — retained as structure evidence and never used as vacant-land value or active vacant-land competition.`, row.source);
       continue;
     }
     if (row.acres == null) {
@@ -620,8 +672,20 @@ export function selectWorkingComps(input: {
       continue;
     }
     if (row.statusBasis === 'closed_sale') soldPool.push(row);
-    else if (row.statusBasis === 'active_listing') activePool.push(row);
-    else askingPool.push(row);
+    else if (row.statusBasis === 'active_listing') {
+      const signal = structureSignal(row);
+      if (row.landClass !== 'vacant_land') {
+        bucketEvidence(
+          buckets,
+          signal
+            ? `Active row carries a structure signal (${signal}); retained as evidence, not active vacant-land competition.`
+            : 'Active row is not affirmatively classified as vacant land; retained as evidence, not active vacant-land competition.',
+          row.source,
+        );
+        continue;
+      }
+      activePool.push(row);
+    } else askingPool.push(row);
   }
 
   const rank = (rows: CompCandidateRow[]): CompCandidateRow[] =>
@@ -683,12 +747,11 @@ export function selectWorkingComps(input: {
     toSnapshotComp(row, 'active', `Active vacant-land listing at ${row.acres!.toFixed(2)} ac — what the subject competes against today.`, subject, nowMs));
   const askingReferences = rankedAsking.slice(0, WORKING_SET_LIMIT).map((row) =>
     toSnapshotComp(row, 'active', `${row.source} asking-market reference at ${row.acres!.toFixed(2)} ac. The source did not state whether it closed, so it is NOT sold evidence.`, subject, nowMs));
-  if (subject.acres) {
+  if (subject.acres && acreageRouting) {
     for (const comp of [...sold, ...active, ...askingReferences]) {
       if (!comp.acres) continue;
-      const ratio = comp.acres / subject.acres;
-      if (ratio < 0.75 || ratio > 1.5) {
-        comp.whyUseful += ' The search widened beyond the preferred 0.75x-1.5x acreage range to the practical 0.5x-2.5x range.';
+      if (comp.acres < acreageRouting.preferred.min || comp.acres > acreageRouting.preferred.max) {
+        comp.whyUseful += ` The acreage search widened beyond the preferred ${acreageRouting.preferred.label} range to the ${acreageRouting.pool.label} participation pool.`;
       }
     }
   }
@@ -696,6 +759,16 @@ export function selectWorkingComps(input: {
   const conclusion: CompConclusion = sold.length > 0
     ? 'sold_supported'
     : (askingReferences.length > 0 || active.length > 0) ? 'asking_indication' : 'not_priceable';
+
+  const marketComps = sold.length > 0 ? sold : [...askingReferences, ...active];
+  const acreageMarketContext = buildAcreageMarketContext({
+    route: acreageRouting,
+    comps: marketComps.map((comp) => ({
+      acres: comp.acres,
+      pricePerAcre: comp.pricePerAcre,
+      distanceMiles: comp.distanceMiles,
+    })),
+  });
 
   return {
     sold,
@@ -706,6 +779,10 @@ export function selectWorkingComps(input: {
     duplicatesRemoved: removed,
     totalCollected,
     conclusion,
+    acreageRouting,
+    geographicExpansion: acreageMarketContext?.expansionExplanation
+      ?? 'Subject acreage is unavailable, so no acreage route or geographic miles expansion was invented.',
+    acreageMarketContext,
   };
 }
 
@@ -729,13 +806,18 @@ export function candidateRowsFromPolicy(policy: CompSourcePolicyResult): CompCan
     .map((decision, index): CompCandidateRow => {
     const c = decision.candidate;
     const kind = String(c.priceKind ?? '').toLowerCase();
+    const landPortalStatus = landPortalSaleStatus({
+      source: c.provider,
+      dateIso: c.saleOrListDate ?? null,
+      priceKind: kind,
+    });
     // A status is 'stated' only when the provider said so. `laneOf` in the
     // policy defaults an unstated row to the sold lane for its own bookkeeping;
     // treating that default as evidence here would price the subject on a guess.
     const statusBasis: CompStatusBasis =
       kind === 'sold' || kind === 'sale' ? 'closed_sale'
         : kind === 'list' || kind === 'active' ? 'active_listing'
-          : 'unconfirmed';
+          : landPortalStatus.statusBasis;
     const landClass: CompCandidateRow['landClass'] =
       decision.compClass === 'vacant_land' || decision.compClass === 'farm' ? 'vacant_land'
         : decision.compClass === 'residential' || decision.compClass === 'manufactured' || decision.compClass === 'commercial' ? 'improved'

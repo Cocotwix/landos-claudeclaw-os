@@ -3097,6 +3097,13 @@ export function insertDashboardBrowserSession(tokenHash: string, expiresAt: numb
   ).run(tokenHash, expiresAt);
 }
 
+/** Expiry timestamp for a stored session hash, or null when absent. */
+export function getDashboardBrowserSessionExpiry(tokenHash: string): number | null {
+  const row = db.prepare('SELECT expires_at FROM dashboard_browser_sessions WHERE token_hash = ? LIMIT 1')
+    .get(tokenHash) as { expires_at: number } | undefined;
+  return row ? row.expires_at : null;
+}
+
 /** True only while the opaque local-browser session remains valid. */
 export function hasDashboardBrowserSession(tokenHash: string, now = Date.now()): boolean {
   const row = db.prepare(

@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url';
 export const BUDGETS = {
   autoTargetTokens: 10_000,
   autoMaxTokens: 20_000,
-  permanentMaxBytes: 4_096,
+  // 5 KB, not the 8_192 the checkpoint gets: permanent memory must stay the
+  // smaller, tighter file. At 4_096 it had five bytes of headroom and could not
+  // take a new invariant without deleting one.
+  permanentMaxBytes: 5_120,
   checkpointMaxBytes: 8_192,
   checkpointStaleDays: 7,
   retrievalMaxTokens: 2_500,

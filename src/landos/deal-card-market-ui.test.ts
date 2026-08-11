@@ -34,8 +34,9 @@ describe('Deal Card Market — registry + clusters, not a worksheet', () => {
     expect(marketTab).toMatch(/<PropertyIntelligenceMarket snapshot=\{piSnapshot\}/);
     expect(marketTab).not.toMatch(/<LandPortalComparableTable\b/);
     expect(marketTab).not.toMatch(/<ValuationPanel\b/);
-    expect(PI_SRC).toMatch(/LandPortal primary/);
-    expect(PI_SRC).toMatch(/LandPortal read .*none priceable/);
+    expect(PI_SRC).toMatch(/Comp methodology & source coverage/);
+    expect(PI_SRC).toMatch(/\{comps\.policyExplanation\}/);
+    expect(PI_SRC).toMatch(/\{comps\.summaryLine\}/);
     expect(PI_SRC).toMatch(/data-testid="pi-working-value"/);
     expect(PI_SRC).toMatch(/<Field label="Supported range"/);
     expect(PI_SRC).toMatch(/<Field label="Disposition"/);
