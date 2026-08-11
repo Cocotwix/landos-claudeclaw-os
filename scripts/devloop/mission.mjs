@@ -20,6 +20,12 @@ import { assertRunId, runsRoot, sha256 } from './run-state.mjs';
 export const LANE_KINDS = new Set(['recon', 'build', 'repair']);
 export const TERMINAL_STATES = new Set(['PASS', 'FAIL', 'NEEDS_ATTENTION']);
 
+// Reconnaissance done while the mission was being AUTHORED belongs to no lane,
+// because no lane existed yet. Its findings are still the most valuable ones in
+// the mission, so they are recorded under this reserved id and inherited by
+// every lane rather than by descendants only.
+export const AUTHORING_LANE_ID = 'authoring';
+
 export function missionDir(root, missionId) {
   assertRunId(missionId);
   return path.join(runsRoot(root), missionId);
@@ -180,6 +186,10 @@ export function createMission(root, plan, { now = new Date(), missionId = newMis
     createdAt: now.toISOString(),
     request: plan.request,
     operatorOutcome: plan.operatorOutcome ?? plan.request,
+    // Carried so the mission record answers "what was this supposed to prove"
+    // and "where did this plan come from" without a second file.
+    acceptanceCriteria: plan.acceptanceCriteria ?? [],
+    authoring: plan.authoring ?? null,
     status: 'running',
     terminalState: null,
     baselineHead: plan.baselineHead ?? null,
@@ -311,7 +321,7 @@ export function recordDiscovery(root, missionId, { laneId, kind, subject, note, 
 export function briefingFor(root, mission, lane) {
   const inherited = ancestorsOf(mission.lanes, lane.id);
   const entries = loadDiscoveries(root, mission.missionId).filter(
-    (entry) => inherited.has(entry.laneId) || entry.kind === 'shared',
+    (entry) => inherited.has(entry.laneId) || entry.kind === 'shared' || entry.laneId === AUTHORING_LANE_ID,
   );
   if (!entries.length) return '';
   const lines = entries.map((entry) => `- [${entry.kind}] ${entry.subject}: ${entry.note}${entry.ref ? ` (${entry.ref})` : ''}`);

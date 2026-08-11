@@ -17,13 +17,14 @@
 // already survived them.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { CC_READONLY_TOOLS, getBuilder, killTree, launchBuilderAsync } from './builders.mjs';
 import { diagnoseFailure, formatDiagnosis } from './diagnose.mjs';
 import { briefingFor, harvestDiscoveries, laneDir, readyLanes, saveMission } from './mission.mjs';
 import { parseGitStatus } from './evaluator.mjs';
+import { sha256 } from './run-state.mjs';
 
 const DEFAULT_LANE_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_CHECK_TIMEOUT_MS = 15 * 60 * 1000;
@@ -96,6 +97,41 @@ export function laneChangedPaths(workspace) {
   return [...parseGitStatus(status)].filter((target) => !target.endsWith('/')).sort();
 }
 
+/**
+ * A content fingerprint of every dirty path in a tree.
+ *
+ * An isolated lane starts from a clean checkout, so `git status` alone is an
+ * exact record of what it did. A repair lane does not: it works on the primary
+ * tree, which legitimately carries unrelated uncommitted work, and asking git
+ * for the dirty set there answers "what is dirty" when the question is "what did
+ * THIS lane change". That is how a repair got blamed for six files it never
+ * opened. Comparing fingerprints before and after answers the real question.
+ */
+export function snapshotTree(root) {
+  const snapshot = new Map();
+  const dirty = [...parseGitStatus(git(root, ['status', '--short', '--untracked-files=all']).stdout)].filter(
+    (target) => !target.endsWith('/'),
+  );
+  for (const file of dirty) {
+    const full = path.join(root, file);
+    snapshot.set(file, existsSync(full) ? sha256(readFileSync(full)) : null);
+  }
+  return snapshot;
+}
+
+/** Paths whose content differs from the snapshot: this lane's own delta. */
+export function changedSince(root, snapshot) {
+  const now = snapshotTree(root);
+  const changed = [];
+  for (const [file, digest] of now) {
+    if (!snapshot.has(file) || snapshot.get(file) !== digest) changed.push(file);
+  }
+  // A path that was dirty before and is clean now was reverted by this lane,
+  // which is just as much its doing as an edit.
+  for (const file of snapshot.keys()) if (!now.has(file)) changed.push(file);
+  return [...new Set(changed)].sort();
+}
+
 export function outOfScope(changedPaths, ownedPaths) {
   const owned = ownedPaths.map((entry) => entry.split('\\').join('/'));
   return changedPaths.filter((target) => !owned.some((prefix) => target === prefix || target.startsWith(prefix))).sort();
@@ -116,6 +152,11 @@ export function composeLanePrompt(root, mission, lane) {
     `OPERATOR OUTCOME (what must be true when the whole mission is done):`,
     mission.operatorOutcome,
     '',
+    // An authored mission carries the criteria acceptance is decided on. A lane
+    // that cannot see them builds to the brief and misses the point of it.
+    mission.acceptanceCriteria?.length
+      ? `ACCEPTANCE CRITERIA for the whole mission:\n${mission.acceptanceCriteria.map((entry) => `  - ${entry}`).join('\n')}\n`
+      : '',
     `YOUR LANE: ${lane.id} — ${lane.title}`,
     lane.brief,
     '',
@@ -202,6 +243,9 @@ export async function runLane(root, mission, lane, { report, timeoutMs = DEFAULT
   const directory = laneDir(root, mission.missionId, lane.id);
   mkdirSync(directory, { recursive: true });
   const workspace = prepareLaneWorkspace(root, mission, lane);
+  // Only a shared (non-isolated) workspace needs a before-picture; an isolated
+  // checkout is clean by construction, so its git status IS the delta.
+  const before = workspace.measure && !workspace.isolated ? snapshotTree(workspace.path) : null;
   const builder = getBuilder(lane.builderId ?? 'cc');
   const prompt = promptText ?? composeLanePrompt(root, mission, lane);
   writeFileSync(path.join(directory, 'prompt.md'), prompt, 'utf8');
@@ -234,7 +278,11 @@ export async function runLane(root, mission, lane, { report, timeoutMs = DEFAULT
   const report_text = launch.finalMessage ?? launch.stdout;
   const discoveries = harvestDiscoveries(root, mission.missionId, lane.id, report_text);
 
-  const changed = workspace.measure ? laneChangedPaths(workspace.path) : [];
+  const changed = workspace.measure
+    ? before
+      ? changedSince(workspace.path, before)
+      : laneChangedPaths(workspace.path)
+    : [];
   const strays = workspace.measure ? outOfScope(changed, lane.ownedPaths) : [];
 
   lane.finishedAt = new Date().toISOString();

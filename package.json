@@ -48,7 +48,7 @@
     "landos:devloop:test": "node --test scripts/devloop/devloop.test.mjs",
     "landos:build": "node scripts/devloop/mission-cli.mjs",
     "landos:build:watch": "node scripts/devloop/watcher.mjs",
-    "landos:build:test": "node --test scripts/devloop/mission.test.mjs",
+    "landos:build:test": "node --test --test-concurrency=1 scripts/devloop/mission.test.mjs scripts/devloop/author.test.mjs",
     "landos:data:backup": "node scripts/data/landos-business-backup.mjs backup",
     "landos:data:restore": "node scripts/data/landos-business-backup.mjs restore",
     "landos:data:drill": "node scripts/data/landos-business-backup.mjs drill",

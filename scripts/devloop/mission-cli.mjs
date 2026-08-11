@@ -1,11 +1,19 @@
 #!/usr/bin/env node
-// LandOS parallel-first development harness — operator CLI.
+// LandOS parallel-first development harness — operator CLI, and the one front
+// door every coding agent uses.
 //
-//   npm run landos:mission:run -- <plan.json> [--max-repairs 2] [--no-validate]
-//   npm run landos:mission:run -- status [missionId]
-//   npm run landos:mission:run -- show <missionId>
-//   npm run landos:mission:run -- cleanup <missionId> | --all
-//   npm run landos:mission:run -- accept <missionId> --message "..."
+//   npm run landos:build -- "make the comps section easier to read"
+//   npm run landos:build -- --file sprint-spec.md          (a pasted specification)
+//   npm run landos:build -- "..." --author-only            (stop at a valid mission)
+//   npm run landos:build -- <plan.json> [--max-repairs 2] [--no-validate]
+//   npm run landos:build -- status [missionId]
+//   npm run landos:build -- show <missionId>
+//   npm run landos:build -- cleanup <missionId> | --all
+//   npm run landos:build -- accept <missionId> --message "..."
+//
+// The first two forms are the point: Claude Code, Codex and a bare terminal all
+// reach the same authoring and the same executor. There is no provider-specific
+// planning path and no provider-specific mission format.
 //
 // The phase order is the point:
 //
@@ -23,9 +31,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { authorMission } from './author.mjs';
 import { probeBuilders, BUILDERS } from './builders.mjs';
-import { formatDiagnosis } from './diagnose.mjs';
+import { diagnoseFailure, formatDiagnosis, tail } from './diagnose.mjs';
 import {
+  AUTHORING_LANE_ID,
   createMission,
   createReporter,
   criticalPathLength,
@@ -35,6 +45,7 @@ import {
   loadMission,
   missionDir,
   readEvents,
+  recordDiscovery,
   saveMission,
   setTerminalState,
   validatePlan,
@@ -85,27 +96,163 @@ async function preflight(report) {
 // mission's defect. Recording the baseline is what lets the repair brief say
 // "this one is pre-existing, do not fix it".
 async function captureBaseline(checks, report) {
-  if (!checks?.length) return [];
+  if (!checks?.length) return { failures: [], redChecks: [] };
   report('baseline', { message: `baseline: recording pre-existing failures for ${checks.length} focused check(s)` });
   const { results } = await runCommandChecks(ROOT, checks, { report: null, label: 'baseline' });
   const failures = [];
+  const redChecks = [];
   for (const result of results) {
     if (result.pass) continue;
     const diagnosis = diagnoseFirstFailure([result]);
-    failures.push(...(diagnosis?.failures ?? []));
+    const parsed = diagnosis?.failures ?? [];
+    failures.push(...parsed);
+    // "Red at baseline" and "red at baseline with parseable per-test failures"
+    // are different facts, and conflating them is a real defect this harness
+    // hit: a check whose COMMAND cannot execute (vitest aimed at a node:test
+    // file) exits non-zero with no per-test detail, contributed nothing to
+    // `failures`, and so read as a clean baseline. The identical failure after
+    // integration then looked like the builder's, and consumed the entire
+    // repair budget on code that was never broken. The check-level record below
+    // is what makes the distinction survive.
+    redChecks.push({
+      id: result.id,
+      command: result.command ?? null,
+      exitCode: result.exitCode ?? null,
+      parsedFailures: parsed.length,
+      detail: parsed.length ? null : tail(result.output, 12),
+      // The signature is what separates the two very different reasons a focused
+      // check is red before any lane runs. A check written for behaviour this
+      // mission is meant to CREATE is red now and green later, and its output
+      // changes the moment a lane touches it: that one must still be repaired.
+      // A check that cannot execute at all fails identically forever, no matter
+      // what any builder writes: repairing that one is pure waste.
+      signature: failureSignature(result.output),
+    });
   }
   report('baseline.done', {
-    message: `baseline: ${failures.length} pre-existing failure(s) recorded${
-      failures.length ? ` — ${[...new Set(failures.map((f) => f.file))].join(', ')}` : ''
-    }`,
+    message: redChecks.length
+      ? `baseline: ${redChecks.length} check(s) ALREADY RED before any lane ran — ${redChecks
+          .map((entry) =>
+            entry.parsedFailures
+              ? `${entry.id} (${entry.parsedFailures} pre-existing failure(s))`
+              : `${entry.id} (exit ${entry.exitCode}, no per-test detail available)`,
+          )
+          .join('; ')}`
+      : 'baseline: clean, 0 check(s) red before any lane ran',
   });
-  return failures;
+  return { failures, redChecks };
+}
+
+/**
+ * A stable fingerprint of how a check failed, used only to ask one question:
+ * did anything the lanes wrote change this failure at all? Volatile detail —
+ * timings, paths, digits — is stripped, so "same failure" means the same shape,
+ * not the same bytes.
+ */
+export function failureSignature(output) {
+  return tail(output, 20)
+    .replace(/\d+/g, '#')
+    .replace(/[A-Za-z]:[\\/][^\s]+/g, 'PATH')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
+}
+
+/**
+ * The first failing check this mission is actually answerable for.
+ *
+ * "Red at baseline" alone is NOT a reason to skip a repair. A focused check
+ * written for behaviour the mission is meant to create is red at baseline by
+ * design, and making it green is the entire job. What is never worth the budget
+ * is a check that fails IDENTICALLY to baseline — nothing any lane wrote moved
+ * it, which is the signature of a check that cannot execute rather than code
+ * that is wrong. Only that case is treated as unrepairable, and a genuine
+ * failure behind it is always preferred over both.
+ */
+function firstActionableFailure(results, { baselineFailures, baselineRed }) {
+  const failed = results.filter((result) => !result.pass);
+  if (!failed.length) return null;
+  for (const result of failed) {
+    const diagnosis = diagnoseFailure(result, result.output, { baselineFailures });
+    if (!unrepairable(result, diagnosis, baselineRed)) return { diagnosis, preExistingOnly: false };
+  }
+  return { diagnosis: diagnoseFailure(failed[0], failed[0].output, { baselineFailures }), preExistingOnly: true };
+}
+
+function unrepairable(result, diagnosis, baselineRed) {
+  const baseline = baselineRed.get(result.id);
+  if (!baseline) return false;
+  if (diagnosis.newFailures.length) return false;
+  return failureSignature(result.output) === baseline.signature;
+}
+
+function preExistingReason(diagnosis, redChecks) {
+  const entry = redChecks.find((record) => record.id === diagnosis.checkId);
+  const evidence = entry?.parsedFailures
+    ? `${entry.parsedFailures} failure(s) were already present at baseline`
+    : `it exited ${entry?.exitCode} at baseline with no per-test detail`;
+  return (
+    `focused check "${diagnosis.checkId}" fails EXACTLY as it did before any lane ran, so nothing the builders ` +
+    `wrote moved it and no repair was attempted or budget spent: ${evidence}. That is the signature of a check ` +
+    `that cannot execute rather than code that is wrong. Fix the check itself, then rerun.` +
+    (entry?.command ? ` Baseline command: ${entry.command}` : '')
+  );
+}
+
+function indented(text) {
+  return String(text)
+    .split('\n')
+    .map((line) => `        ${line}`)
+    .join('\n');
+}
+
+/**
+ * Launch one targeted repair from an exact diagnosis. Shared by the focused and
+ * the validation phases so a late failure gets the same precise treatment as an
+ * early one: the worker receives the assertion, never a bare check name.
+ */
+async function runTargetedRepair(mission, report, { diagnosis, integration, argv, attempt, maxRepairs, phase }) {
+  const target = diagnosis.candidateFiles.length ? diagnosis.candidateFiles : integration.files;
+  const repairLane = {
+    id: `repair-${attempt}`,
+    kind: 'repair',
+    title: `repair ${diagnosis.checkId}`,
+    brief: 'Repair the exact failure below.',
+    dependsOn: [],
+    // The repair works on the integrated primary tree, so it may touch the
+    // files the failure actually named plus everything the mission changed.
+    ownedPaths: [...new Set([...target, ...integration.files])],
+    builderId: flag(argv, '--repair-builder', 'cc'),
+    // Repairs run on the integrated primary tree: the failure only exists in
+    // the combination of lanes, so an isolated per-lane checkout cannot see it.
+    workspace: 'primary',
+    status: 'pending',
+    changedPaths: [],
+    diagnosis,
+  };
+  mission.lanes.push(repairLane);
+  mission.repairs.push({ attempt, checkId: diagnosis.checkId, phase, diagnosis });
+  saveMission(ROOT, mission);
+
+  report('repair.launch', {
+    message:
+      `targeted repair ${attempt}/${maxRepairs} launched from the ${phase} failure on ` +
+      `${diagnosis.candidateFiles.join(', ') || 'the integrated files'} (repair worker receives the exact assertion, not a rerun)`,
+  });
+
+  const lane = laneById(mission, repairLane.id);
+  await runLane(ROOT, mission, lane, { report, promptText: composeRepairPrompt(ROOT, mission, lane, diagnosis) });
+  saveMission(ROOT, mission);
+  return lane;
 }
 
 // ----------------------------------------------------------------------- run
 
 async function runMission(planPath, argv) {
-  const plan = JSON.parse(readFileSync(path.resolve(ROOT, planPath), 'utf8'));
+  return runPlan(JSON.parse(readFileSync(path.resolve(ROOT, planPath), 'utf8')), argv);
+}
+
+async function runPlan(plan, argv, { discoveries = [] } = {}) {
   const issues = validatePlan(plan);
   if (issues.length) {
     console.error(`Invalid mission plan:\n- ${issues.join('\n- ')}`);
@@ -141,6 +288,21 @@ async function runMission(planPath, argv) {
   const mission = createMission(ROOT, { ...plan, baselineHead: state.head });
   const report = createReporter(ROOT, mission);
 
+  // Everything authoring learned is seeded before any lane starts, so the build
+  // lanes inherit it instead of paying for the same reconnaissance again.
+  for (const entry of discoveries) {
+    recordDiscovery(ROOT, mission.missionId, {
+      laneId: AUTHORING_LANE_ID,
+      kind: entry.kind,
+      subject: entry.subject,
+      note: entry.note,
+      ref: entry.from ? `authoring/${entry.from}` : null,
+    });
+  }
+  if (discoveries.length) {
+    report('mission.seed', { message: `seeded ${discoveries.length} discovery(ies) from authoring; every lane inherits them` });
+  }
+
   const writeLanes = mission.lanes.filter((lane) => lane.kind !== 'recon');
   report('mission.start', {
     message:
@@ -155,8 +317,11 @@ async function runMission(planPath, argv) {
     });
   }
 
-  const baselineFailures = await captureBaseline(mission.focusedChecks, report);
+  const baseline = await captureBaseline(mission.focusedChecks, report);
+  const baselineFailures = baseline.failures;
+  const baselineRed = new Map(baseline.redChecks.map((entry) => [entry.id, entry]));
   mission.baselineFailures = baselineFailures;
+  mission.baselineRedChecks = baseline.redChecks;
   saveMission(ROOT, mission);
 
   // ---- parallel lanes
@@ -198,48 +363,23 @@ async function runMission(planPath, argv) {
 
   let repairs = 0;
   while (!focused.pass && repairs < maxRepairs) {
-    const diagnosis = diagnoseFirstFailure(focused.results, { baselineFailures });
+    const actionable = firstActionableFailure(focused.results, { baselineFailures, baselineRed });
+    if (actionable.preExistingOnly) {
+      finish(mission, report, 'NEEDS_ATTENTION', preExistingReason(actionable.diagnosis, baseline.redChecks));
+      return;
+    }
+    const { diagnosis } = actionable;
     repairs += 1;
-    report('repair.diagnose', {
-      message:
-        `FOCUSED FAIL — exact diagnosis:\n${formatDiagnosis(diagnosis)
-          .split('\n')
-          .map((line) => `        ${line}`)
-          .join('\n')}`,
-    });
+    report('repair.diagnose', { message: `FOCUSED FAIL — exact diagnosis:\n${indented(formatDiagnosis(diagnosis))}` });
 
-    const target = diagnosis.candidateFiles.length ? diagnosis.candidateFiles : integration.files;
-    const repairLane = {
-      id: `repair-${repairs}`,
-      kind: 'repair',
-      title: `repair ${diagnosis.checkId}`,
-      brief: 'Repair the exact failure below.',
-      dependsOn: [],
-      // The repair works on the integrated primary tree, so it may touch the
-      // files the failure actually named plus everything the mission changed.
-      ownedPaths: [...new Set([...target, ...integration.files])],
-      builderId: flag(argv, '--repair-builder', 'cc'),
-      // Repairs run on the integrated primary tree: the failure only exists in
-      // the combination of lanes, so an isolated per-lane checkout cannot see it.
-      workspace: 'primary',
-      status: 'pending',
-      changedPaths: [],
+    await runTargetedRepair(mission, report, {
       diagnosis,
-    };
-    mission.lanes.push(repairLane);
-    mission.repairs.push({ attempt: repairs, checkId: diagnosis.checkId, diagnosis });
-    saveMission(ROOT, mission);
-
-    report('repair.launch', {
-      message: `targeted repair ${repairs}/${maxRepairs} launched on ${diagnosis.candidateFiles.join(', ') || 'the integrated files'} (repair worker receives the exact assertion, not a rerun)`,
+      integration,
+      argv,
+      attempt: repairs,
+      maxRepairs,
+      phase: 'focused',
     });
-
-    const lane = laneById(mission, repairLane.id);
-    await runLane(ROOT, mission, lane, {
-      report,
-      promptText: composeRepairPrompt(ROOT, mission, lane, diagnosis),
-    });
-    saveMission(ROOT, mission);
 
     focused = await runCommandChecks(ROOT, mission.focusedChecks, { report, label: 'focused' });
     mission.focusedResult = focused;
@@ -247,23 +387,85 @@ async function runMission(planPath, argv) {
   }
 
   if (!focused.pass) {
-    const diagnosis = diagnoseFirstFailure(focused.results, { baselineFailures });
-    finish(mission, report, 'FAIL', `focused checks still failing after ${repairs} repair(s): ${formatDiagnosis(diagnosis)}`);
+    const actionable = firstActionableFailure(focused.results, { baselineFailures, baselineRed });
+    if (actionable.preExistingOnly) {
+      finish(mission, report, 'NEEDS_ATTENTION', preExistingReason(actionable.diagnosis, baseline.redChecks));
+      return;
+    }
+    finish(
+      mission,
+      report,
+      'FAIL',
+      `focused checks still failing after ${repairs} repair(s): ${formatDiagnosis(actionable.diagnosis)}`,
+    );
     return;
   }
   report('focused.pass', { message: `focused checks PASS${repairs ? ` after ${repairs} targeted repair(s)` : ''}` });
 
   // ---- proportional validation, only now that a viable candidate exists
   if (!skipValidation && mission.validationChecks.length) {
-    const validation = await runCommandChecks(ROOT, mission.validationChecks, { report, label: 'validation' });
+    let validation = await runCommandChecks(ROOT, mission.validationChecks, { report, label: 'validation' });
     mission.validationResult = validation;
     saveMission(ROOT, mission);
+
+    // A validation failure is not automatically the end of the mission. It
+    // carries an exact diagnosis exactly like a focused one, and the repair
+    // budget is usually not spent. Terminating here threw away candidates that
+    // were one targeted edit from correct — which is precisely what happened
+    // when a lane rewrote an npm test script into something Node could not
+    // resolve. The check is not weakened; it simply gets the same repair the
+    // cheap checks already got, and must then pass on its own terms.
+    while (!validation.pass && repairs < maxRepairs) {
+      const actionable = firstActionableFailure(validation.results, { baselineFailures, baselineRed });
+      if (actionable.preExistingOnly) {
+        finish(mission, report, 'NEEDS_ATTENTION', preExistingReason(actionable.diagnosis, baseline.redChecks));
+        return;
+      }
+      const { diagnosis } = actionable;
+      repairs += 1;
+      report('repair.diagnose', { message: `VALIDATION FAIL — exact diagnosis:\n${indented(formatDiagnosis(diagnosis))}` });
+
+      await runTargetedRepair(mission, report, {
+        diagnosis,
+        integration,
+        argv,
+        attempt: repairs,
+        maxRepairs,
+        phase: 'validation',
+      });
+
+      // Cheap checks first. A validation repair must never buy final
+      // certification by breaking something the focused checks already proved.
+      focused = await runCommandChecks(ROOT, mission.focusedChecks, { report, label: 'focused' });
+      mission.focusedResult = focused;
+      saveMission(ROOT, mission);
+      if (!focused.pass) {
+        const regressed = firstActionableFailure(focused.results, { baselineFailures, baselineRed });
+        finish(
+          mission,
+          report,
+          'FAIL',
+          `the validation repair regressed a focused check: ${formatDiagnosis(regressed.diagnosis)}`,
+        );
+        return;
+      }
+
+      validation = await runCommandChecks(ROOT, mission.validationChecks, { report, label: 'validation' });
+      mission.validationResult = validation;
+      saveMission(ROOT, mission);
+    }
+
     if (!validation.pass) {
-      const diagnosis = diagnoseFirstFailure(validation.results, { baselineFailures });
-      finish(mission, report, 'FAIL', `validation failed: ${formatDiagnosis(diagnosis)}`);
+      const actionable = firstActionableFailure(validation.results, { baselineFailures, baselineRed });
+      finish(
+        mission,
+        report,
+        'FAIL',
+        `validation still failing after ${repairs} repair(s): ${formatDiagnosis(actionable.diagnosis)}`,
+      );
       return;
     }
-    report('validation.pass', { message: 'validation PASS' });
+    report('validation.pass', { message: `validation PASS${repairs ? ` after ${repairs} targeted repair(s)` : ''}` });
   } else {
     report('validation.skip', { message: 'validation skipped' });
   }
@@ -448,6 +650,102 @@ function cleanup(argv) {
   }
 }
 
+// ------------------------------------------------------------- the front door
+//
+// Everything above executes a mission. This is how one comes to exist without
+// Tyler writing it. The request arrives as ordinary language, from whichever
+// coding agent Tyler happened to be talking to, or from a bare terminal. The
+// harness authors the mission and launches it in the same breath.
+
+const FLAGS_WITH_VALUES = new Set(['--file', '--max-repairs', '--repair-builder', '--author-builder', '--recon']);
+
+/** The request itself: positional words, a file, or stdin for a pasted spec. */
+function requestFromArgv(argv) {
+  const file = flag(argv, '--file', null);
+  if (file) return readFileSync(path.resolve(ROOT, file), 'utf8').trim();
+  if (argv.includes('--stdin')) return readFileSync(0, 'utf8').trim();
+
+  const words = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value.startsWith('--')) {
+      if (FLAGS_WITH_VALUES.has(value)) index += 1;
+      continue;
+    }
+    words.push(value);
+  }
+  return words.join(' ').trim();
+}
+
+// The authoring trail, printed for transparency. It is never an approval gate:
+// the launch below does not wait for anyone to read it.
+function printAuthoringSummary(record) {
+  console.log('');
+  console.log('--- generated mission ---------------------------------------------');
+  console.log(`mode:             ${record.mode}`);
+  console.log(`operator outcome: ${record.operatorOutcome}`);
+  for (const [index, criterion] of (record.acceptanceCriteria ?? []).entries()) {
+    console.log(`  acceptance ${index + 1}:   ${criterion}`);
+  }
+  console.log(`lanes:            ${record.graph.length}`);
+  for (const lane of record.graph) {
+    console.log(
+      `  ${lane.id.padEnd(22)} ${lane.kind.padEnd(6)} builder=${(lane.builderId ?? 'cc').padEnd(6)} ` +
+        `deps=[${lane.dependsOn.join(', ') || 'none'}] owns=[${lane.ownedPaths.join(', ') || 'read-only'}]`,
+    );
+  }
+  console.log(`focused checks:   ${record.focusedChecks.join(', ') || 'none'}`);
+  console.log(`validation:       ${record.validationChecks.join(', ') || 'none'}`);
+  console.log(`browser check:    ${record.browserCheck ? `${record.browserCheck.commands.join(' && ')} -> ${record.browserCheck.url}` : 'none'}`);
+  console.log(`author attempts:  ${record.authorAttempts}, ${record.autoRepairs.length} auto-repair(s), ${record.autoCompletions.length} auto-completion(s)`);
+  console.log(
+    `timing:           recon ${Math.round(record.timings.reconMs / 1000)}s + author ${Math.round(record.timings.authorMs / 1000)}s ` +
+      `= ${Math.round(record.timings.totalMs / 1000)}s to a valid mission`,
+  );
+  console.log(`trail:            ${record.planPath}`);
+  console.log('-------------------------------------------------------------------');
+  console.log('');
+}
+
+async function authorAndRun(argv) {
+  const request = requestFromArgv(argv);
+  if (!request) {
+    console.error('Nothing to build. Say what you want LandOS to do:\n  npm run landos:build -- "make the comps section easier to read"');
+    process.exitCode = 2;
+    return;
+  }
+
+  const requestReceivedAt = Date.now();
+  const report = createReporter(ROOT, { missionId: 'boot', createdAt: new Date().toISOString() });
+
+  let authored;
+  try {
+    authored = await authorMission({
+      root: ROOT,
+      request,
+      workerId: flag(argv, '--author-builder', null),
+      reconCount: Number(flag(argv, '--recon', '3')),
+      report,
+    });
+  } catch (error) {
+    console.error(`\n=== AUTHORING FAILED ===\n${error.message}`);
+    if (error.authoringDir) console.error(`authoring trail: ${path.relative(ROOT, error.authoringDir)}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  printAuthoringSummary(authored.record);
+
+  if (argv.includes('--author-only')) {
+    console.log(`--author-only: stopping at a validated mission. Plan written to ${path.relative(ROOT, authored.planPath)}`);
+    console.log(`Launch it with: npm run landos:build -- ${path.relative(ROOT, authored.planPath).split('\\').join('/')}`);
+    return;
+  }
+
+  console.log(`launching the parallel build ${Math.round((Date.now() - requestReceivedAt) / 1000)}s after the request was received`);
+  return runPlan(authored.plan, argv, { discoveries: authored.discoveries });
+}
+
 // ---------------------------------------------------------------------- main
 
 async function main() {
@@ -455,7 +753,14 @@ async function main() {
   const command = argv[0];
 
   if (!command || command === 'help') {
-    console.log('Use: <plan.json> | status [missionId] | timeline <missionId> | show <missionId> | cleanup <missionId>|--all | accept <missionId> --message "..."');
+    console.log('Use one of:');
+    console.log('  "<what you want LandOS to do>"        author a mission automatically and run it');
+    console.log('  --file <spec.md>                      the same, from a written specification');
+    console.log('  --stdin                               the same, from piped input');
+    console.log('  ... --author-only                     stop at a validated mission, do not launch');
+    console.log('  <plan.json>                           run a hand-written mission plan');
+    console.log('  status [missionId] | timeline <missionId> | show <missionId>');
+    console.log('  cleanup <missionId>|--all | accept <missionId> --message "..."');
     return;
   }
   if (command === 'status') return printStatus(argv[1]);
@@ -464,12 +769,12 @@ async function main() {
   if (command === 'cleanup') return cleanup(argv);
   if (command === 'accept') return acceptMission(argv[1], argv);
 
-  if (!existsSync(path.resolve(ROOT, command))) {
-    console.error(`No such plan file: ${command}`);
-    process.exitCode = 2;
-    return;
+  // A path that exists is a hand-written plan; anything else is a request in
+  // ordinary language. Both enter the same downstream lifecycle.
+  if (!command.startsWith('--') && existsSync(path.resolve(ROOT, command)) && command.endsWith('.json')) {
+    return runMission(command, argv);
   }
-  return runMission(command, argv);
+  return authorAndRun(argv);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -479,4 +784,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   });
 }
 
-export { runMission, preflight, ROOT };
+export {
+  runMission,
+  runPlan,
+  authorAndRun,
+  requestFromArgv,
+  preflight,
+  captureBaseline,
+  firstActionableFailure,
+  preExistingReason,
+  ROOT,
+};
+

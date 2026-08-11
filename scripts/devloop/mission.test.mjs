@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -37,7 +37,8 @@ import {
 } from './mission.mjs';
 import { diagnoseFailure, formatDiagnosis, parseTypescript, parseVitest } from './diagnose.mjs';
 import { launchBuilderAsync } from './builders.mjs';
-import { outOfScope } from './mission-exec.mjs';
+import { changedSince, outOfScope, snapshotTree } from './mission-exec.mjs';
+import { captureBaseline, failureSignature, firstActionableFailure, preExistingReason } from './mission-cli.mjs';
 import { analyse } from './watcher.mjs';
 
 function sandbox() {
@@ -326,32 +327,57 @@ const NODE = `"${process.execPath}"`;
 // satisfy this test.
 const claimFromOutput = (stdout) => (String(stdout).includes('ATTEMPT_COMPLETE') ? 'COMPLETE' : 'UNKNOWN');
 
-test('launchBuilderAsync really is concurrent: two launches overlap in time', async () => {
-  const { dir, cleanup } = sandbox();
-  try {
-    const builder = {
-      id: 'stub',
-      command: NODE,
-      claimFrom: claimFromOutput,
-      invoke: () => ({ args: ['-e', '"setTimeout(()=>console.log(\'ATTEMPT_COMPLETE\'),300)"'], stdin: '' }),
-    };
-    const started = Date.now();
-    const results = await Promise.all([
-      launchBuilderAsync(builder, { cwd: dir, promptText: 'x', attemptDir: dir, timeoutMs: 10_000 }),
-      launchBuilderAsync(builder, { cwd: dir, promptText: 'x', attemptDir: dir, timeoutMs: 10_000 }),
-    ]);
-    const wallClock = Date.now() - started;
-    // Both must have actually run to completion, not merely failed fast.
-    for (const result of results) {
-      assert.equal(result.launched, true, `builder did not launch: ${result.stderr}`);
-      assert.equal(result.claim, 'COMPLETE');
-      assert.ok(result.durationMs >= 250, `builder returned in ${result.durationMs}ms; it cannot have run the 300ms body`);
-    }
-    // Serial execution would need ~600ms. Overlapping needs ~300ms. The margin
-    // is wide enough that a slow machine cannot turn a real pass into a fail.
-    assert.ok(wallClock < 550, `two 300ms builders took ${wallClock}ms; they did not overlap`);
-  } finally {
-    cleanup();
+// Concurrency proven by a barrier rather than by a stopwatch.
+//
+// The previous version launched two 300ms processes and asserted the pair
+// finished in under 550ms. That measures the machine as much as the code: under
+// load it failed while `launchBuilderAsync` was perfectly correct, which is the
+// worst kind of test — it cries wolf about the one property it exists to guard.
+//
+// Here neither child can finish until BOTH have been spawned. A serial
+// implementation would still be awaiting the first child's close when the
+// second was due to start, so the second spawn never happens and the barrier
+// never opens. Concurrency is therefore the only way this test can complete at
+// all, and no amount of machine load can change that.
+test('launchBuilderAsync really is concurrent: both workers are in flight at once', async () => {
+  const { EventEmitter } = await import('node:events');
+  const spawned = [];
+  let openBarrier;
+  const barrier = new Promise((resolve) => {
+    openBarrier = resolve;
+  });
+
+  const spawnFn = () => {
+    const child = new EventEmitter();
+    child.pid = 4000 + spawned.length;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    spawned.push(child);
+    if (spawned.length === 2) openBarrier();
+    barrier.then(() => {
+      child.stdout.emit('data', Buffer.from('ATTEMPT_COMPLETE'));
+      child.emit('close', 0);
+    });
+    return child;
+  };
+
+  const builder = {
+    id: 'stub',
+    command: 'stub',
+    claimFrom: claimFromOutput,
+    invoke: () => ({ args: [], stdin: '' }),
+  };
+
+  const results = await Promise.all([
+    launchBuilderAsync(builder, { cwd: '.', promptText: 'a', attemptDir: '.' }, { spawnFn }),
+    launchBuilderAsync(builder, { cwd: '.', promptText: 'b', attemptDir: '.' }, { spawnFn }),
+  ]);
+
+  assert.equal(spawned.length, 2, 'both builders must be in flight before either may finish');
+  for (const result of results) {
+    assert.equal(result.launched, true);
+    assert.equal(result.claim, 'COMPLETE', 'the claim must come from the child stdout the launcher actually read');
   }
 });
 
@@ -469,4 +495,125 @@ test('the watcher names the waste rather than just counting agents', () => {
   assert.ok(kinds.includes('useless-recon'));
   assert.ok(kinds.includes('repeated-repair'));
   assert.ok(kinds.includes('scope-miss'));
+});
+
+// ------------------------------------------------- pre-existing baseline red
+//
+// A real mission ended FAIL because of the gap these cover. Its focused check
+// was `npx vitest run scripts/devloop/mission.test.mjs` — a command that cannot
+// execute, because vitest does not collect `scripts/**`. It exited 1 with no
+// per-test detail, so the old baseline recorded ZERO pre-existing failures, the
+// identical failure after integration was charged to the builder, and both
+// repair attempts were spent on code that was never broken.
+
+test('a baseline check that fails with no per-test detail is recorded as red, not as clean', async () => {
+  const { redChecks, failures } = await captureBaseline(
+    [{ id: 'unrunnable', command: 'node -e "console.log(\'No test files found, exiting with code 1\')" && exit 1', requirement: 'r' }],
+    () => {},
+  );
+  assert.equal(failures.length, 0, 'there is genuinely no parseable per-test failure');
+  assert.equal(redChecks.length, 1, 'but the check itself was red before any lane ran');
+  assert.equal(redChecks[0].id, 'unrunnable');
+  assert.equal(redChecks[0].parsedFailures, 0);
+  assert.ok(redChecks[0].detail, 'the raw evidence is kept so the operator can see why');
+});
+
+test('a clean baseline records no red checks', async () => {
+  const { redChecks, failures } = await captureBaseline([{ id: 'fine', command: 'exit 0', requirement: 'r' }], () => {});
+  assert.deepEqual(redChecks, []);
+  assert.deepEqual(failures, []);
+});
+
+test('a check that fails identically to baseline is never handed to a repair worker', () => {
+  const output = 'No test files found, exiting with code 1';
+  const baselineRed = new Map([['unrunnable', { id: 'unrunnable', exitCode: 1, parsedFailures: 0, signature: failureSignature(output) }]]);
+  const results = [{ id: 'unrunnable', kind: 'command', pass: false, exitCode: 1, output }];
+  const actionable = firstActionableFailure(results, { baselineFailures: [], baselineRed });
+  assert.equal(actionable.preExistingOnly, true, 'nothing any lane wrote moved it, so repairing it is waste');
+  assert.match(preExistingReason(actionable.diagnosis, [{ id: 'unrunnable', exitCode: 1, parsedFailures: 0 }]), /EXACTLY as it did before/);
+});
+
+// The distinction that matters: a focused check written for behaviour the
+// mission is meant to CREATE is red at baseline by design. Turning it green is
+// the entire job, so it must still be repaired. Only a check nothing can move
+// is abandoned.
+test('a check red at baseline for behaviour the mission must build is still repaired', () => {
+  const baselineOutput = "Cannot find module 'scripts/knowledge/query.test.mjs'";
+  const baselineRed = new Map([['query-unit', { id: 'query-unit', exitCode: 1, parsedFailures: 0, signature: failureSignature(baselineOutput) }]]);
+  const results = [
+    { id: 'query-unit', kind: 'command', pass: false, exitCode: 1, output: 'tests 3\nfail 1\nnot ok 2 - suggests the closest topics' },
+  ];
+  const actionable = firstActionableFailure(results, { baselineFailures: [], baselineRed });
+  assert.equal(actionable.preExistingOnly, false, 'the lane moved the failure, so a repair worker can finish it');
+});
+
+test('the same unparseable failure is repaired normally when the baseline was clean', () => {
+  const results = [{ id: 'unrunnable', kind: 'command', pass: false, exitCode: 1, output: 'No test files found, exiting with code 1' }];
+  const actionable = firstActionableFailure(results, { baselineFailures: [], baselineRed: new Map() });
+  assert.equal(actionable.preExistingOnly, false, 'a genuinely new failure is still the builder to answer for');
+});
+
+test('a real new failure behind an unrepairable one is what the repair worker receives', () => {
+  const stale = 'No test files found, exiting with code 1';
+  const baselineRed = new Map([['stale', { id: 'stale', exitCode: 1, parsedFailures: 0, signature: failureSignature(stale) }]]);
+  const results = [
+    { id: 'stale', kind: 'command', pass: false, exitCode: 1, output: stale },
+    {
+      id: 'real',
+      kind: 'command',
+      pass: false,
+      exitCode: 1,
+      output: ' FAIL  src/landos/comps.test.ts > caps the set\n    AssertionError: expected 3 to be 2\n',
+    },
+  ];
+  const actionable = firstActionableFailure(results, { baselineFailures: [], baselineRed });
+  assert.equal(actionable.preExistingOnly, false);
+  assert.equal(actionable.diagnosis.checkId, 'real', 'the stuck check must not mask the genuine one');
+  assert.equal(actionable.diagnosis.newFailures.length, 1);
+});
+
+test('the failure signature ignores volatile detail but not the failure itself', () => {
+  assert.equal(failureSignature('done in 41ms'), failureSignature('done in 907ms'));
+  assert.notEqual(failureSignature('No test files found'), failureSignature('not ok 2 - suggests the closest topics'));
+});
+
+// ------------------------------------------------- repair-lane scope accuracy
+//
+// A repair lane works on the primary tree, which legitimately carries unrelated
+// uncommitted work. Measuring "what is dirty" there answered the wrong question
+// and blamed one repair for six files it never opened.
+
+test('a shared-workspace lane reports only the files it actually changed', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'unrelated.txt'), 'pre-existing uncommitted work\n');
+    writeFileSync(path.join(dir, 'touched.txt'), 'before\n');
+
+    const before = snapshotTree(dir);
+    assert.equal(before.size, 2, 'both files are dirty before the lane runs');
+
+    writeFileSync(path.join(dir, 'touched.txt'), 'after\n');
+    writeFileSync(path.join(dir, 'created.txt'), 'new\n');
+
+    assert.deepEqual(
+      changedSince(dir, before),
+      ['created.txt', 'touched.txt'],
+      'unrelated.txt was dirty throughout and is not this lane’s doing',
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('a shared-workspace lane that changes nothing reports nothing', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'unrelated.txt'), 'pre-existing\n');
+    const before = snapshotTree(dir);
+    assert.deepEqual(changedSince(dir, before), [], 'a no-op repair must not inherit the tree’s dirt');
+  } finally {
+    cleanup();
+  }
 });
