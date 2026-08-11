@@ -18,7 +18,7 @@ import {
   resetPropertyIntelligenceStoreCache,
 } from '../property-intelligence-store.js';
 import { resetPropertyResearchStoreCache } from '../property-research-store.js';
-import { executeLandosBridgeOperation } from './mcp-bridge.js';
+import { executeLandosBridgeOperation, isLockContention } from './mcp-bridge.js';
 
 const ADDRESS = '704 Bell Rd, Red Creek, NY 13143';
 const APN = '056400 37.00-1-33';
@@ -432,5 +432,60 @@ describe.sequential('governed LandOS MCP canonical bridge', () => {
       run_id: thirdRunId,
       artifact: screenshot,
     })).rejects.toThrow(/byte length differs|sha-256 differs/i);
+  });
+});
+
+describe('journal lock contention', () => {
+  // The journal lock is taken with open(lock, 'wx'). POSIX reports a held lock
+  // as EEXIST, but Windows has a second way to say it: a lock that was unlinked
+  // while a handle was still open is delete-pending, and opening it returns
+  // ERROR_ACCESS_DENIED, which libuv maps to EPERM. That is precisely the window
+  // between one holder's close() and its unlink(), so treating it as fatal made
+  // the suite fail intermittently under parallel load and pass in isolation.
+  it('treats every "someone else holds it" code as contention, not as a fault', () => {
+    expect(isLockContention('EEXIST')).toBe(true);
+    expect(isLockContention('EPERM')).toBe(true);
+    expect(isLockContention('EACCES')).toBe(true);
+  });
+
+  it('still treats a genuine fault as fatal rather than waiting on it', () => {
+    expect(isLockContention('ENOSPC')).toBe(false);
+    expect(isLockContention('ENOENT')).toBe(false);
+    expect(isLockContention('EROFS')).toBe(false);
+    expect(isLockContention(undefined)).toBe(false);
+  });
+
+  it('survives concurrent holders racing close() against unlink() on the same lock', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'landos-lock-race-'));
+    const lock = path.join(root, 'run.lock');
+    const { open, unlink } = await import('node:fs/promises');
+
+    const take = async () => {
+      const deadline = Date.now() + 5_000;
+      let handle: Awaited<ReturnType<typeof open>> | null = null;
+      while (!handle) {
+        try {
+          handle = await open(lock, 'wx');
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          // The assertion under test: an unrecognised code would throw here.
+          if (!isLockContention(code)) throw error;
+          if (Date.now() >= deadline) throw new Error('lock deadline exceeded');
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+      }
+      try {
+        return true;
+      } finally {
+        await handle.close();
+        await unlink(lock).catch(() => undefined);
+      }
+    };
+
+    for (let round = 0; round < 20; round += 1) {
+      const results = await Promise.all(Array.from({ length: 12 }, () => take()));
+      expect(results.every(Boolean)).toBe(true);
+    }
+    await rm(root, { recursive: true, force: true });
   });
 });

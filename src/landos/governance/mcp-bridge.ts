@@ -453,6 +453,25 @@ function journalPath(runId: string): string {
   return file;
 }
 
+/**
+ * Whether a failure to create the lock file means "someone else holds it right
+ * now", rather than a real fault.
+ *
+ * `open(lock, 'wx')` reports EEXIST on POSIX when the lock is held. Windows has
+ * a second way to say the same thing: a file that has been unlinked while a
+ * handle is still open enters a delete-pending state, and opening it returns
+ * ERROR_ACCESS_DENIED, which libuv maps to EPERM (EACCES on some paths). That
+ * is exactly the window between another holder's close() and its unlink(), so
+ * treating it as fatal turns ordinary contention into an intermittent failure
+ * under parallel load. Both are contention, and both must wait for the lock.
+ *
+ * A genuine permission fault still surfaces: it simply does so as a bounded
+ * `conflict` after the deadline, carrying the underlying code.
+ */
+export function isLockContention(code: string | undefined): boolean {
+  return code === 'EEXIST' || code === 'EPERM' || code === 'EACCES';
+}
+
 async function withJournalLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
   const root = path.join(acceptanceRoot(), '.mcp-journals');
   await mkdir(root, { recursive: true });
@@ -461,12 +480,20 @@ async function withJournalLock<T>(runId: string, operation: () => Promise<T>): P
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new BridgeError('policy_blocked', 'acceptance lock escaped its governed root');
   const deadline = Date.now() + 5_000;
   let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let lastCode: string | undefined;
   while (!handle) {
     try {
       handle = await open(lock, 'wx');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw new BridgeError('conflict', 'acceptance run is busy with another immutable journal update');
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!isLockContention(code)) throw error;
+      lastCode = code;
+      if (Date.now() >= deadline) {
+        throw new BridgeError(
+          'conflict',
+          `acceptance run is busy with another immutable journal update (last lock error ${lastCode})`,
+        );
+      }
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
