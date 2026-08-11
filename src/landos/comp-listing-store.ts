@@ -15,6 +15,28 @@
 import { getLandosDb } from './db.js';
 import type { PersistedListingDetail } from './comp-listing-detail.js';
 
+/** Structured facts a reconciled listing page can add to a thin LandPortal row.
+ * They remain listing-reported evidence and never overwrite assessor facts. */
+export interface CompListingPropertyFacts {
+  address?: string | null;
+  acreage?: number | null;
+  improvementType?: string | null;
+  buildingSqft?: number | null;
+  beds?: number | null;
+  baths?: number | null;
+  yearBuilt?: number | null;
+  utilities?: string[];
+  accessClues?: string[];
+  features?: string[];
+}
+
+export type PersistedCompListingDetail = PersistedListingDetail & {
+  /** Best-available property/listing characteristics from the reconciled page. */
+  propertyFacts?: CompListingPropertyFacts;
+  /** Every provider page attached to this physical property after enrichment. */
+  sourcePages?: Array<{ provider: string; url: string }>;
+};
+
 export interface ListingDetailWriteResult {
   compId: number;
   persisted: boolean;
@@ -23,7 +45,7 @@ export interface ListingDetailWriteResult {
 }
 
 /** Persist one comparable's capture. Refuses an image the capture did not reconcile. */
-export function saveCompListingDetail(detail: PersistedListingDetail): ListingDetailWriteResult {
+export function saveCompListingDetail(detail: PersistedCompListingDetail): ListingDetailWriteResult {
   const db = getLandosDb();
   const row = db.prepare('SELECT id, thumbnail_url, listing_detail_json FROM landos_comp WHERE id = ?')
     .get(detail.compId) as { id: number; thumbnail_url: string; listing_detail_json: string } | undefined;
@@ -35,9 +57,20 @@ export function saveCompListingDetail(detail: PersistedListingDetail): ListingDe
   // The photo SET passes through the same gate as the single image — a gallery
   // is not a weaker claim than a hero, it is the same claim made twelve times,
   // so an unreconciled capture loses all of it.
-  const gated: PersistedListingDetail = detail.reconciliation.matched
-    ? { ...detail, photoCount: detail.photos?.length ?? (detail.image ? 1 : 0) }
-    : { ...detail, image: null, photos: [], photoCount: 0, events: [], sourceDescription: null };
+  const firstPhoto = detail.photos?.find((photo) => photo?.isOriginalListingImage && /^https?:\/\//i.test(photo.url ?? '')) ?? null;
+  const promotedImage = detail.image ?? (firstPhoto ? {
+    url: firstPhoto.url,
+    label: firstPhoto.label,
+    provenance: firstPhoto.provenance,
+    tier: firstPhoto.context === 'hero' ? 'hero' as const : 'thumbnail' as const,
+    context: firstPhoto.context,
+    isOriginalListingImage: true,
+    sourceProperty: detail.propertyFacts?.address ?? null,
+    reconciledOn: detail.reconciliation.matchedOn,
+  } : null);
+  const gated: PersistedCompListingDetail = detail.reconciliation.matched
+    ? { ...detail, image: promotedImage, photoCount: detail.photos?.length ?? (promotedImage ? 1 : 0) }
+    : { ...detail, image: null, photos: [], photoCount: 0, events: [], sourceDescription: null, propertyFacts: undefined, sourcePages: [] };
 
   // A REFUSED capture must never destroy evidence a previous reconciled capture
   // already proved.
@@ -51,10 +84,13 @@ export function saveCompListingDetail(detail: PersistedListingDetail): ListingDe
   // timestamp) while the proven image, photo set, events and description are
   // carried forward from the capture that earned them.
   const prior = parseListingDetail(row.listing_detail_json);
-  const priorWasProven = !!prior?.reconciliation?.matched && (!!prior.image || (prior.photos?.length ?? 0) > 0 || !!prior.sourceDescription);
+  const priorWasProven = !!prior?.reconciliation?.matched && (
+    !!prior.image || (prior.photos?.length ?? 0) > 0 || !!prior.sourceDescription
+    || !!prior.propertyFacts || (prior.sourcePages?.length ?? 0) > 0 || (prior.events?.length ?? 0) > 0
+  );
   const preserving = !detail.reconciliation.matched && priorWasProven;
 
-  const safe: PersistedListingDetail = preserving
+  const safe: PersistedCompListingDetail = preserving
     ? {
       ...gated,
       image: prior!.image,
@@ -62,6 +98,8 @@ export function saveCompListingDetail(detail: PersistedListingDetail): ListingDe
       photoCount: prior!.photos?.length ?? (prior!.image ? 1 : 0),
       events: prior!.events ?? [],
       sourceDescription: prior!.sourceDescription,
+      propertyFacts: prior!.propertyFacts,
+      sourcePages: prior!.sourcePages,
       // The retained evidence keeps the reconciliation that justified it; the
       // failed revisit is reported alongside rather than replacing it.
       reconciliation: prior!.reconciliation,
@@ -92,11 +130,11 @@ export function saveCompListingDetail(detail: PersistedListingDetail): ListingDe
 }
 
 /** Parse a stored capture. Returns null for never-visited or corrupt rows. */
-export function parseListingDetail(json: string | null | undefined): PersistedListingDetail | null {
+export function parseListingDetail(json: string | null | undefined): PersistedCompListingDetail | null {
   const raw = (json ?? '').trim();
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as PersistedListingDetail;
+    const parsed = JSON.parse(raw) as PersistedCompListingDetail;
     if (!parsed || typeof parsed !== 'object') return null;
     // A capture written before the photo set existed carries only `image`. It is
     // still a reconciled genuine photograph, so it is lifted into a one-photo set
@@ -119,15 +157,43 @@ export function parseListingDetail(json: string | null | undefined): PersistedLi
       photoCount: photos.length,
       events: Array.isArray(parsed.events) ? parsed.events : [],
       unusableRows: Array.isArray(parsed.unusableRows) ? parsed.unusableRows : [],
+      propertyFacts: normalizePropertyFacts(parsed.propertyFacts),
+      sourcePages: Array.isArray(parsed.sourcePages)
+        ? parsed.sourcePages.filter((page) => page && typeof page.provider === 'string' && /^https?:\/\//i.test(page.url ?? ''))
+        : [],
     };
   } catch {
     return null;
   }
 }
 
-export function loadCompListingDetail(compId: number): PersistedListingDetail | null {
+export function loadCompListingDetail(compId: number): PersistedCompListingDetail | null {
   const db = getLandosDb();
   const row = db.prepare('SELECT listing_detail_json FROM landos_comp WHERE id = ?')
     .get(compId) as { listing_detail_json: string } | undefined;
   return parseListingDetail(row?.listing_detail_json);
+}
+
+function normalizePropertyFacts(value: CompListingPropertyFacts | null | undefined): CompListingPropertyFacts | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const text = (input: unknown): string | null => typeof input === 'string' && input.trim() ? input.trim() : null;
+  const number = (input: unknown): number | null => typeof input === 'number' && Number.isFinite(input) && input > 0 ? input : null;
+  const list = (input: unknown): string[] => Array.isArray(input)
+    ? [...new Set(input.map(text).filter((item): item is string => item != null))].slice(0, 30)
+    : [];
+  const normalized: CompListingPropertyFacts = {
+    address: text(value.address),
+    acreage: number(value.acreage),
+    improvementType: text(value.improvementType),
+    buildingSqft: number(value.buildingSqft),
+    beds: number(value.beds),
+    baths: number(value.baths),
+    yearBuilt: number(value.yearBuilt),
+    utilities: list(value.utilities),
+    accessClues: list(value.accessClues),
+    features: list(value.features),
+  };
+  return Object.values(normalized).some((item) => Array.isArray(item) ? item.length > 0 : item != null)
+    ? normalized
+    : undefined;
 }

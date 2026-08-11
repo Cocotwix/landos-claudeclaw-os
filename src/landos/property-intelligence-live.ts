@@ -50,7 +50,7 @@ import type {
   SpecialistOutcome,
   ZoningContribution,
 } from './property-intelligence-collector-types.js';
-import type { CompRegistryCandidate } from './comp-registry.js';
+import { buildCompRegistry, type CompRegistryCandidate } from './comp-registry.js';
 import { landosArtifactPath } from './storage-profile.js';
 import {
   executePropertyProvider,
@@ -67,6 +67,7 @@ import {
   type ExtractedListingEvidence,
 } from './exact-address-web-discovery.js';
 import type { CompLaneInput } from './comp-lane-accountability.js';
+import { saveSubjectListingDetail, type SubjectListingWriteResult } from './subject-listing-store.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
 
@@ -92,6 +93,7 @@ export interface LandMarketplaceComp {
   yearBuilt?: number | null;
   homeSizeSqft?: number | null;
   thumbnailUrl?: string | null;
+  photoUrls?: string[];
 }
 
 export interface LandMarketplaceResult {
@@ -117,6 +119,8 @@ export interface ExactAddressWebResult {
   note: string;
   /** Owned-page cleanup record, written by the shared browser-scope wrapper. */
   browserCleanup?: { closed: number; failed: number; preserved: number };
+  /** Truthful durable-write outcome for the canonical subject record. */
+  persistence?: SubjectListingWriteResult;
 }
 
 export interface LiveCollectorDeps {
@@ -132,6 +136,11 @@ export interface LiveCollectorDeps {
   }) => Promise<LandMarketplaceResult>;
   /** Redfin public land comps, already scoped to the subject market. */
   captureRedfinComps?: (input: {
+    address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
+    apn: string | null; owner: string | null; lat: number | null; lng: number | null; subjectAcres: number | null;
+  }) => Promise<LandMarketplaceResult>;
+  /** Direct Realtor.com public land comps (not the excluded HomeHarvest feed). */
+  captureRealtorComps?: (input: {
     address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
     apn: string | null; owner: string | null; lat: number | null; lng: number | null; subjectAcres: number | null;
   }) => Promise<LandMarketplaceResult>;
@@ -1184,7 +1193,11 @@ function marketplaceCandidates(
     lat: row.lat ?? null,
     lng: row.lng ?? null,
     thumbnailUrl: row.thumbnailUrl ?? null,
-    compClass: 'vacant_land',
+    photoUrls: row.photoUrls ?? [],
+    compClass: row.homeType || row.homeSizeSqft ? 'residential' : 'vacant_land',
+    homeType: row.homeType ?? null,
+    yearBuilt: row.yearBuilt ?? null,
+    homeSizeSqft: row.homeSizeSqft ?? null,
   } as CompRegistryCandidate));
   return [...map(result.sold ?? [], 'sold'), ...map(result.active ?? [], 'active')];
 }
@@ -1327,7 +1340,7 @@ function hermesLandPortalProviderAdapter(input: {
 }
 
 function marketplaceProviderAdapter(input: {
-  laneId: 'zillow' | 'redfin' | 'manufactured_home';
+  laneId: 'zillow' | 'redfin' | 'realtor' | 'manufactured_home';
   providerId: string;
   execute: () => Promise<LandMarketplaceResult>;
 }): PropertyProviderAdapter<LandMarketplaceResult> {
@@ -1523,9 +1536,61 @@ function landPortalComparableAdapter(input: {
   };
 }
 
+type ExactAddressOutcome = { result: ExactAddressWebResult | null; error: unknown };
+
+async function runStandingExactAddressDiscovery(
+  ctx: MissionContext,
+  deps: LiveCollectorDeps,
+): Promise<ExactAddressOutcome> {
+  const canonicalInput = canonicalPropertyInputForDeal(ctx.dealCardId);
+  if (!deps.captureExactAddressWeb || !canonicalInput?.address.trim()) {
+    return { result: null, error: null };
+  }
+  try {
+    const providerResult = await executePropertyProvider({
+      runId: ctx.runId,
+      property: canonicalInput,
+      adapter: exactAddressProviderAdapter(() => deps.captureExactAddressWeb!(canonicalInput)),
+    });
+    const result = providerResult.execution.result;
+    if (!result) {
+      await persistProviderResult(deps, providerResult);
+      return { result: null, error: null };
+    }
+    const propertyCardId = subjectCardId(getDealCard(ctx.dealCardId));
+    if (propertyCardId != null) {
+      try {
+        result.persistence = saveSubjectListingDetail({
+          propertyCardId,
+          dealCardId: ctx.dealCardId,
+          canonicalAddress: canonicalInput.address,
+          completedAtIso: new Date().toISOString(),
+          result,
+        });
+      } catch (error) {
+        result.persistence = {
+          attempted: true,
+          persisted: false,
+          propertyCardId,
+          retainedSourceCount: 0,
+          newlyStoredSourceCount: 0,
+          reason: `subject-listing persistence failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    // Persist only after the subject-listing write so the per-lane attempt and
+    // provider evidence carry the same truthful persistence outcome.
+    await persistProviderResult(deps, providerResult);
+    return { result, error: null };
+  } catch (error) {
+    return { result: null, error };
+  }
+}
+
 export async function collectComparables(
   ctx: MissionContext,
   deps: LiveCollectorDeps,
+  standingExactAddress?: Promise<ExactAddressOutcome>,
 ): Promise<SpecialistOutcome<ComparablesContribution>> {
   const deal = getDealCard(ctx.dealCardId);
   if (!deal) throw new Error(`Deal Card ${ctx.dealCardId} no longer exists.`);
@@ -1625,16 +1690,19 @@ export async function collectComparables(
         (error: unknown) => ({ result: null, error }),
       )
     : null;
-  const exactAddressPromise = deps.captureExactAddressWeb && canonicalInput && canonicalInput.address.trim()
+  const realtorPromise = deps.captureRealtorComps && canonicalInput
     ? executePropertyProvider({
         runId: ctx.runId,
         property: canonicalInput,
-        adapter: exactAddressProviderAdapter(() => deps.captureExactAddressWeb!(canonicalInput)),
+        adapter: marketplaceProviderAdapter({ laneId: 'realtor', providerId: 'realtor', execute: () => deps.captureRealtorComps!(marketInput) }),
       }).then((result) => persistProviderResult(deps, result)).then(
         (providerResult) => ({ result: providerResult.execution.result, error: null as unknown }),
         (error: unknown) => ({ result: null, error }),
       )
     : null;
+  // The factory starts this promise with parcel identity. Direct unit callers
+  // still get the standing behavior through this fallback.
+  const exactAddressPromise = standingExactAddress ?? runStandingExactAddressDiscovery(ctx, deps);
   const manufacturedHomesPromise = deps.captureManufacturedHomeComps && canonicalInput
     ? executePropertyProvider({
         runId: ctx.runId,
@@ -1780,22 +1848,26 @@ export async function collectComparables(
   }
 
   // ── Supplements: Zillow and Redfin public land comps ─────────────────────
-  const [zillowOutcome, redfinOutcome, manufacturedHomesOutcome, exactAddressOutcome] = await Promise.all([
+  const [zillowOutcome, redfinOutcome, realtorOutcome, manufacturedHomesOutcome, exactAddressOutcome] = await Promise.all([
     zillowPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     redfinPromise ?? Promise.resolve({ result: null, error: null as unknown }),
+    realtorPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     manufacturedHomesPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     exactAddressPromise ?? Promise.resolve({ result: null, error: null as unknown }),
   ]);
   if (zillowOutcome.error) notes.push(`Zillow supplement unavailable: ${(zillowOutcome.error as Error)?.message ?? String(zillowOutcome.error)}.`);
   if (redfinOutcome.error) notes.push(`Redfin supplement unavailable: ${(redfinOutcome.error as Error)?.message ?? String(redfinOutcome.error)}.`);
+  if (realtorOutcome.error) notes.push(`Realtor.com supplement unavailable: ${(realtorOutcome.error as Error)?.message ?? String(realtorOutcome.error)}.`);
   if (manufacturedHomesOutcome.error) notes.push(`Manufactured-home supplement unavailable: ${(manufacturedHomesOutcome.error as Error)?.message ?? String(manufacturedHomesOutcome.error)}.`);
   if (exactAddressOutcome.error) notes.push(`Exact-address web discovery failed: ${(exactAddressOutcome.error as Error)?.message ?? String(exactAddressOutcome.error)}.`);
   const zillow = zillowOutcome.result;
   const redfin = redfinOutcome.result;
+  const realtor = realtorOutcome.result;
   const manufacturedHomes = manufacturedHomesOutcome.result;
   const exactAddress = exactAddressOutcome.result;
   candidates.push(...marketplaceCandidates(zillow, 'Zillow', state));
   candidates.push(...marketplaceCandidates(redfin, 'Redfin', state));
+  candidates.push(...marketplaceCandidates(realtor, 'Realtor.com', state));
   if (manufacturedHomes) {
     for (const row of manufacturedHomes.sold ?? []) {
       if ((row.price ?? 0) <= 200_000 || (row.distanceMiles ?? Number.POSITIVE_INFINITY) > 5) continue;
@@ -1826,7 +1898,8 @@ export async function collectComparables(
   }
   if (zillow) notes.push(`Zillow: ${zillow.status} (${(zillow.sold?.length ?? 0)} sold, ${(zillow.active?.length ?? 0)} active).`);
   if (redfin) notes.push(`Redfin: ${redfin.status} (${(redfin.sold?.length ?? 0)} sold, ${(redfin.active?.length ?? 0)} active).`);
-  if (exactAddress) notes.push(`Exact-address web discovery: ${exactAddress.status}; ${exactAddress.pages.length} property-specific page(s) retained as prior listing evidence. ${exactAddress.note}`);
+  if (realtor) notes.push(`Realtor.com: ${realtor.status} (${(realtor.sold?.length ?? 0)} sold, ${(realtor.active?.length ?? 0)} active).`);
+  if (exactAddress) notes.push(`Exact-address web discovery: ${exactAddress.status}; ${exactAddress.pages.length} property-specific page(s) retained. Persistence: ${exactAddress.persistence?.persisted ? 'stored on the canonical subject' : exactAddress.persistence?.reason ?? 'not attempted'}. ${exactAddress.note}`);
 
   // ── Persisted rows already accepted onto this card ───────────────────────
   // Historical rows remain intact in SQLite, but only the three currently
@@ -1835,8 +1908,8 @@ export async function collectComparables(
   // the subject while their stored history remains available for audit.
   const persisted = listComps({ dealCardId: ctx.dealCardId }).filter((row) => {
     const source = `${row.canonical_source ?? ''} ${row.source_label ?? ''}`;
-    if (/home\s*harvest|homeharvest|realtor|realie|really\.?ai/i.test(source)) return false;
-    return /landportal|zillow|redfin/i.test(source);
+    if (/home\s*harvest|homeharvest|realie|really\.?ai/i.test(source)) return false;
+    return /landportal|zillow|redfin|realtor(?:\.com)?/i.test(source);
   });
   for (const row of persisted) {
     candidates.push({
@@ -1886,17 +1959,27 @@ export async function collectComparables(
       retained: redfin ? (redfin.sold?.length ?? 0) + (redfin.active?.length ?? 0) : null,
     },
     {
-      lane: 'realtor', attempted: false,
-      disabledReason: 'Realtor.com HomeHarvest is in FMV_EXCLUDED_FAMILIES and is disabled for the current vacant-land comparable workflow.',
+      lane: 'realtor', attempted: !!realtorPromise,
+      attemptStatus: realtor?.status ?? (realtorOutcome.error ? 'failed' : null),
+      failureReason: realtorOutcome.error ? (realtorOutcome.error as Error)?.message ?? String(realtorOutcome.error) : null,
+      blockedReason: /blocked|disabled|unavailable/i.test(realtor?.status ?? '') ? realtor?.note ?? 'Provider was blocked, disabled, or unavailable.' : null,
+      candidates: realtor ? (realtor.sold?.length ?? 0) + (realtor.active?.length ?? 0) : null,
+      retained: realtor ? (realtor.sold?.length ?? 0) + (realtor.active?.length ?? 0) : null,
     },
   ];
-  const anySource = landPortalRecords.length > 0 || !!zillow || !!redfin || !!manufacturedHomes || !!exactAddress || persisted.length > 0;
+  const anySource = landPortalRecords.length > 0 || !!zillow || !!redfin || !!realtor || !!manufacturedHomes || !!exactAddress || persisted.length > 0;
+  const collectorRegistry = buildCompRegistry({
+    state,
+    county: marketInput.county,
+    zip: marketInput.zip,
+    acres: subjectAcres,
+  }, candidates);
   return {
     status: candidates.length === 0 ? 'partial' : anySource ? 'completed' : 'partial',
     summary: notes.join(' '),
     data: {
       candidates,
-      duplicatesMerged: 0,
+      duplicatesMerged: collectorRegistry.counts.duplicatesMerged,
       landHomeSearchProof: manufacturedHomes?.searchProof ? {
         status: manufacturedHomes.status === 'retrieved' || manufacturedHomes.status === 'none'
           ? 'completed'
@@ -2083,13 +2166,26 @@ export async function collectEvidenceVisuals(ctx: MissionContext): Promise<Speci
 // ── Factory ─────────────────────────────────────────────────────────────────
 
 export function makeLivePropertyIntelligenceCollectors(deps: LiveCollectorDeps): PropertyIntelligenceCollectors {
+  const exactAddressRuns = new Map<string, Promise<ExactAddressOutcome>>();
+  const exactAddressFor = (ctx: MissionContext): Promise<ExactAddressOutcome> => {
+    const existing = exactAddressRuns.get(ctx.runId);
+    if (existing) return existing;
+    const started = runStandingExactAddressDiscovery(ctx, deps);
+    exactAddressRuns.set(ctx.runId, started);
+    return started;
+  };
   return {
-    parcel_identity: (ctx) => collectParcelIdentity(ctx, deps),
+    parcel_identity: (ctx) => {
+      // Standing independent lane: launch before the identity collector waits
+      // on LandPortal/public GIS. Its contained failure cannot abort either.
+      void exactAddressFor(ctx);
+      return collectParcelIdentity(ctx, deps);
+    },
     government_records: (ctx) => collectGovernmentRecords(ctx),
     zoning_land_use: (ctx) => collectZoningLandUse(ctx),
     environmental_terrain: (ctx) => collectEnvironmentalTerrain(ctx),
     access_utilities: (ctx) => collectAccessUtilities(ctx),
-    comparables: (ctx) => collectComparables(ctx, deps),
+    comparables: (ctx) => collectComparables(ctx, deps, exactAddressFor(ctx)),
     market_intelligence: (ctx) => collectMarketIntelligence(ctx, deps),
     evidence_visuals: (ctx) => collectEvidenceVisuals(ctx),
   };

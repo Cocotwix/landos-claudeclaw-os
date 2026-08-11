@@ -18,13 +18,14 @@ const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), 'utf8')
 
 const D_SRC = read('web/src/components/AcquisitionWorkspaceV2CompDetails.tsx');
 const CV_SRC = read('web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx');
+const GALLERY_SRC = read('web/src/components/AcquisitionWorkspaceV2CompPhotoGallery.tsx');
 const CSS_SRC = read('web/src/styles/workspace-v2-comps.css');
 
 describe('the Full details control is preserved and drives the new block', () => {
   it('still toggles per record and now renders CompFullDetails', () => {
     expect(CV_SRC).toMatch(/setExpandedKey\(open \? null : c\.key\)/);
     expect(CV_SRC).toMatch(/\{open \? 'Hide details' : 'Full details'\}/);
-    expect(CV_SRC).toMatch(/<CompFullDetails c=\{c\} adoptedFmv=\{cleaned\.adoptedFmv\} \/>/);
+    expect(CV_SRC).toMatch(/<CompFullDetails c=\{c\} adoptedFmv=\{cleaned\.adoptedFmv\} landBasis=/);
   });
 
   it('opens the same block from the map popup', () => {
@@ -58,7 +59,7 @@ describe('sold comparable full details', () => {
 
   it('renders comparability rather than competition analysis', () => {
     expect(D_SRC).toMatch(/title="COMPARABILITY"/);
-    expect(D_SRC).toMatch(/isActive \? <CompetitionAnalysis c=\{c\} adoptedFmv=\{adoptedFmv\} \/> : <Comparability c=\{c\} \/>/);
+    expect(D_SRC).toMatch(/isActive \? <CompetitionAnalysis c=\{c\} adoptedFmv=\{adoptedFmv\} landBasis=\{landBasis\} \/> : <Comparability c=\{c\} \/>/);
     for (const label of ['Role', 'Valuation weight', 'Distance from subject', 'Acreage difference']) {
       expect(D_SRC).toContain(`label="${label}"`);
     }
@@ -105,12 +106,14 @@ describe('active competitor full details', () => {
 
   it('analyses the competition against the adopted FMV, acreage and exposure', () => {
     expect(D_SRC).toMatch(/title="COMPETITION ANALYSIS"/);
-    expect(D_SRC).toMatch(/ABOVE the adopted cleaned FMV/);
-    expect(D_SRC).toMatch(/BELOW the adopted cleaned FMV/);
+    expect(D_SRC).toMatch(/ABOVE the \$\{valueLabel\}/);
+    expect(D_SRC).toMatch(/BELOW the \$\{valueLabel\}/);
+    expect(D_SRC).toMatch(/landBasis \? 'adopted cleaned land value' : 'adopted cleaned FMV'/);
     expect(D_SRC).toMatch(/Exposed to the market for/);
     expect(D_SRC).toMatch(/met buyer resistance/);
     expect(D_SRC).toMatch(/'larger' : 'smaller'/);
     expect(D_SRC).toMatch(/never enters the cleaned sold-price calculations/);
+    expect(D_SRC).toMatch(/Land-basis comparison only/);
   });
 
   it('names the LandOS notes section for competition rather than comparability', () => {
@@ -150,6 +153,22 @@ describe('listing description and LandOS notes are separate sections', () => {
     expect(D_SRC).toMatch(/independently confirmed/);
     expect(D_SRC).toMatch(/<b>Verified by LandOS:<\/b>/);
     expect(D_SRC).toMatch(/<b>Unresolved:<\/b>/);
+  });
+});
+
+describe('comp photographs are browsable underwriting evidence', () => {
+  it('renders the lane-owned lightweight gallery from Full details', () => {
+    expect(D_SRC).toMatch(/<AcquisitionWorkspaceV2CompPhotoGallery/);
+    expect(GALLERY_SRC).toMatch(/photos\.map/);
+    expect(GALLERY_SRC).toMatch(/setIndex/);
+    expect(GALLERY_SRC).toMatch(/Open original listing/);
+    expect(GALLERY_SRC).toMatch(/another property&apos;s photo is never substituted/);
+  });
+
+  it('shows merged providers as provenance on the canonical property record', () => {
+    expect(D_SRC).toMatch(/Reconciled source provenance/);
+    expect(D_SRC).toMatch(/One property/);
+    expect(D_SRC).toMatch(/c\.origins/);
   });
 });
 

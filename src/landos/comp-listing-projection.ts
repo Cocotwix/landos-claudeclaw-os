@@ -24,7 +24,8 @@ import {
   buildSourceDescription, buildLandosFactualSummary,
   type SourceDescription, type LandosFactualSummary,
 } from './comp-listing-summary.js';
-import type { PersistedListingDetail } from './comp-listing-detail.js';
+import type { PersistedCompListingDetail } from './comp-listing-store.js';
+import { isListingPhotoUrl } from './comp-visual.js';
 
 /** The single distinction the operator must never have to work out. */
 export type CompTransactionKind = 'closed' | 'active' | 'context';
@@ -87,6 +88,21 @@ export interface CompListingProjection {
     source: SourceDescription | null;
     landos: LandosFactualSummary;
   };
+  /** Listing-reported comparison facts retained during provider enrichment.
+   * These supplement, and never masquerade as, assessor facts. */
+  characteristics: {
+    address: string | null;
+    acreage: number | null;
+    improvementType: string | null;
+    buildingSqft: number | null;
+    beds: number | null;
+    baths: number | null;
+    yearBuilt: number | null;
+    utilities: string[];
+    accessClues: string[];
+    features: string[];
+    provenance: 'listing_reported' | 'not_retrieved';
+  };
   /**
    * The property's own photographs, in the order the provider published them.
    *
@@ -109,6 +125,7 @@ export interface CompListingProjection {
     /** Operator-facing: the original page, and who published it. */
     sourcePage: string | null;
     provider: string | null;
+    sourcePages: Array<{ provider: string; url: string }>;
     apn: string | null;
     /**
      * Retrieval diagnostics — retained for audit and debugging, and deliberately
@@ -149,7 +166,7 @@ export interface CompProjectedPhoto {
 }
 
 export interface BuildListingProjectionInput {
-  detail: PersistedListingDetail | null;
+  detail: PersistedCompListingDetail | null;
   transactionKind: CompTransactionKind;
   address: string | null;
   apn: string | null;
@@ -187,6 +204,9 @@ export interface BuildListingProjectionInput {
    * telling the operator there are none while the card beside it displays one.
    */
   retainedVisual?: { url: string; label: string } | null;
+  /** Ordered provider photographs carried by research evidence before a full
+   * listing-detail capture is persisted. */
+  retainedPhotoUrls?: Array<{ url: string; label: string }>;
   todayIso: string;
 }
 
@@ -355,10 +375,26 @@ export function buildCompListingProjection(input: BuildListingProjectionInput): 
     timeline,
     unusableRows: detail?.unusableRows ?? [],
     description: { source: sourceDescription, landos },
+    characteristics: {
+      address: detail?.propertyFacts?.address ?? input.address,
+      acreage: detail?.propertyFacts?.acreage ?? input.acres,
+      improvementType: detail?.propertyFacts?.improvementType ?? null,
+      buildingSqft: detail?.propertyFacts?.buildingSqft ?? input.buildingSqft ?? null,
+      beds: detail?.propertyFacts?.beds ?? null,
+      baths: detail?.propertyFacts?.baths ?? null,
+      yearBuilt: detail?.propertyFacts?.yearBuilt ?? null,
+      utilities: detail?.propertyFacts?.utilities ?? [],
+      accessClues: detail?.propertyFacts?.accessClues ?? [],
+      features: detail?.propertyFacts?.features ?? [],
+      provenance: detail?.propertyFacts ? 'listing_reported' : 'not_retrieved',
+    },
     photos: buildPhotoBlock(detail, input),
     evidence: {
       sourcePage: input.sourceUrl,
       provider: detail?.provider ?? input.sourceLabel,
+      sourcePages: detail?.sourcePages?.length
+        ? detail.sourcePages
+        : input.sourceUrl ? [{ provider: detail?.provider ?? input.sourceLabel, url: input.sourceUrl }] : [],
       apn: input.apn,
       diagnostics: {
         imageProvenance: input.visualProvenanceDetail,
@@ -387,7 +423,7 @@ export function buildCompListingProjection(input: BuildListingProjectionInput): 
  * "the provider blocked us" lead the operator to different next actions.
  */
 function buildPhotoBlock(
-  detail: PersistedListingDetail | null,
+  detail: PersistedCompListingDetail | null,
   input: BuildListingProjectionInput,
 ): CompListingProjection['photos'] {
   const provider = detail?.provider ?? input.sourceLabel;
@@ -413,8 +449,20 @@ function buildPhotoBlock(
   // Fall back to the photograph the row itself retains. This is not a weaker
   // claim: that URL was written by a capture that reconciled to this exact
   // comparable, and it is the same image the card is already showing.
+  const retainedPhotos = (input.retainedPhotoUrls ?? [])
+    .filter((photo, index, all) => photo && isListingPhotoUrl(photo.url)
+      && all.findIndex((candidate) => candidate.url === photo.url) === index)
+    .map((photo, index): CompProjectedPhoto => ({
+      url: photo.url,
+      sequence: index + 1,
+      label: photo.label,
+      provider,
+      context: index === 0 ? 'hero' : 'gallery',
+    }));
   const items: CompProjectedPhoto[] = fromDetail.length > 0
     ? fromDetail
+    : retainedPhotos.length > 0
+      ? retainedPhotos
     : input.retainedVisual
       ? [{
         url: input.retainedVisual.url,
@@ -447,7 +495,7 @@ function buildPhotoBlock(
  * serve the page (worth another look, by hand, later). The counting stays in
  * `evidence.diagnostics`.
  */
-function operatorFallbackNote(detail: PersistedListingDetail | null): string {
+function operatorFallbackNote(detail: PersistedCompListingDetail | null): string {
   if (!detail) return 'The listing page has not been checked for photographs yet.';
   const limitation = detail.limitation ?? '';
   if (/bot-verification|interstitial|denied|captcha|unusual traffic/i.test(limitation)) {

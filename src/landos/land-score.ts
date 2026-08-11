@@ -28,6 +28,41 @@ export interface LandScoreFactor {
   basis: string;
 }
 
+/** One driver of the score, in the concise form the Overview leads with. */
+export interface LandScoreDriver {
+  id: string;
+  label: string;
+  /** One operator-readable phrase, e.g. "road frontage 693 ft". */
+  detail: string;
+  points: number;
+  maxPoints: number;
+}
+
+/**
+ * The concise read: what is good, what is bad, what is still unknown.
+ *
+ * Deliberately SEPARATE from `factors`, which carries the full per-factor
+ * arithmetic. The Overview leads with this summary and keeps the arithmetic
+ * expandable underneath, so the operator is not made to read the rubric to
+ * learn whether the parcel is any good.
+ */
+export interface LandScoreSummary {
+  score: number;
+  maxScore: number;
+  verdict: Verdict;
+  /** "62 / 100 — Moderate". */
+  headline: string;
+  /** Factors carrying most of their available points. */
+  positives: LandScoreDriver[];
+  /** Factors in a low tier — the real deductions. */
+  negatives: LandScoreDriver[];
+  /** Factors LandPortal never answered. Scored 0, never inferred. */
+  unresolved: LandScoreDriver[];
+  confidence: 'full' | 'reduced' | 'severely_reduced';
+  /** One sentence naming the drivers, never the arithmetic. */
+  note: string;
+}
+
 export interface LandScoreResult {
   score: number;
   maxScore: number;
@@ -41,6 +76,8 @@ export interface LandScoreResult {
   /** Honesty label: scoring quality is reduced when factors are data gaps. */
   confidence: 'full' | 'reduced' | 'severely_reduced';
   note: string;
+  /** The concise operator read. The UI leads with this, not with `factors`. */
+  summary: LandScoreSummary;
 }
 
 function truthy(v: string | undefined): boolean {
@@ -125,6 +162,49 @@ function scoreValuationConfidence(val: DukeValuation, sim: DukeSimilars, max: nu
 
 const FACTOR_MAX: Record<string, number> = Object.fromEntries(RUBRIC_FACTORS.map((f) => [f.id, f.maxPoints]));
 
+/** A factor keeping most of its points is a positive; a low tier is a deduction. */
+const STRONG_FACTOR_SHARE = 0.7;
+const WEAK_FACTOR_SHARE = 0.4;
+
+function driverOf(factor: LandScoreFactor): LandScoreDriver {
+  return { id: factor.id, label: factor.label, detail: factor.basis, points: factor.points, maxPoints: factor.maxPoints };
+}
+
+/**
+ * Reduce the full rubric arithmetic to the three lists an operator actually
+ * reads first. The arithmetic is untouched and stays available in `factors`.
+ */
+export function summarizeLandScore(result: Omit<LandScoreResult, 'summary'>): LandScoreSummary {
+  const scored = result.factors.filter((factor) => !factor.dataGap);
+  const positives = scored
+    .filter((factor) => factor.maxPoints > 0 && factor.points / factor.maxPoints >= STRONG_FACTOR_SHARE)
+    .sort((a, b) => b.points - a.points)
+    .slice(0, 4)
+    .map(driverOf);
+  const negatives = scored
+    .filter((factor) => factor.lowestTier || (factor.maxPoints > 0 && factor.points / factor.maxPoints <= WEAK_FACTOR_SHARE))
+    .sort((a, b) => (b.maxPoints - b.points) - (a.maxPoints - a.points))
+    .slice(0, 4)
+    .map(driverOf);
+  const unresolved = result.factors.filter((factor) => factor.dataGap).map(driverOf);
+  const headline = `${result.score} / ${result.maxScore} — ${result.verdict}`;
+  const parts: string[] = [];
+  if (positives.length) parts.push(`strongest: ${positives.map((driver) => driver.label.toLowerCase()).join(', ')}`);
+  if (negatives.length) parts.push(`weakest: ${negatives.map((driver) => driver.label.toLowerCase()).join(', ')}`);
+  if (unresolved.length) parts.push(`unresolved: ${unresolved.map((driver) => driver.label.toLowerCase()).join(', ')}`);
+  return {
+    score: result.score,
+    maxScore: result.maxScore,
+    verdict: result.verdict,
+    headline,
+    positives,
+    negatives,
+    unresolved,
+    confidence: result.confidence,
+    note: parts.length ? `${headline}. ${parts.join('; ')}.` : `${headline}.`,
+  };
+}
+
 /**
  * Compute the 100-point Land Score from normalized LandPortal property data.
  * Pure + deterministic. Missing source fields score 0 and are surfaced as loud
@@ -170,7 +250,7 @@ export function computeLandScore(input: {
   const gapCount = dataGaps.length;
   const confidence: LandScoreResult['confidence'] = gapCount === 0 ? 'full' : gapCount <= 2 ? 'reduced' : 'severely_reduced';
 
-  return {
+  const scored: Omit<LandScoreResult, 'summary'> = {
     score,
     maxScore: RUBRIC_MAX_SCORE,
     verdict,
@@ -183,6 +263,7 @@ export function computeLandScore(input: {
       ? `Land Score computed with ${gapCount} data gap(s); missing factors scored 0, never inferred. Confidence ${confidence}.`
       : 'Land Score computed from complete LandPortal attributes.',
   };
+  return { ...scored, summary: summarizeLandScore(scored) };
 }
 
 /** Convenience: compute the Land Score directly from a normalized DukePropertyData. */

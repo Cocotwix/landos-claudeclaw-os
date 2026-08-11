@@ -16,6 +16,7 @@ import {
   type DealIntelligenceInputPackage,
 } from './deal-intelligence-assembly.js';
 import { APPROVED_STRATEGIES } from './strategy-readiness.js';
+import { buildCanonicalDealState } from './deal-card-reconciliation.js';
 import type { SnapshotIdentity } from './property-intelligence-snapshot.js';
 
 const GENERATED_AT = '2026-07-28T12:00:00.000Z';
@@ -719,5 +720,143 @@ describe('whole-card multimodal Analyst normalization', () => {
     expect(refreshed.analyst.reviewedImages).toEqual(['Parcel aerial']);
     expect(refreshed.analyst.visualSummary).toContain('adjoining road');
     expect(refreshed.analyst.groundingNote).toMatch(/most recent successful multimodal review/i);
+  });
+});
+
+// ── ONE canonical current state governs the Overview ─────────────────────────
+//
+// The Overview is where stale comp/valuation contradictions were generated. It
+// must now MIRROR the canonical state: it may not count comps for itself, may
+// not resurrect a conclusion the accepted records superseded, and may not print
+// a land-basis figure as though it were a completed whole-property value.
+
+describe('canonical current state governs the operator analysis', () => {
+  const PRICED_LAND = {
+    priceable: true,
+    range: { low: 500_000, high: 675_000 },
+    pricePerAcreRange: { low: 7_800, high: 10_500 },
+    likelyRetail: { low: 545_000, high: 675_000 },
+    dispositionRange: { low: 350_000, high: 465_000 },
+    basis: 'Five accepted closed sales.',
+    adjustments: [],
+    confidence: 'medium' as const,
+    uncertainty: [],
+    materialGaps: [],
+    notPriceableReason: null,
+    nextActionToPrice: null,
+    workingValue: 545_000,
+  };
+
+  /** 9490-style: materially improved subject, land priced, improvements not. */
+  const improvedSubjectState = () => buildCanonicalDealState({
+    comps: {
+      sold: Array.from({ length: 5 }, (_, index) => ({
+        key: `sold-${index}`, address: `${index} Comp Rd`, lane: 'sold' as const, source: 'LandPortal',
+        providerAttributions: ['LandPortal', 'Zillow'], sourceUrl: null, status: 'Source-stated sale',
+        dateIso: '2026-01-15', price: 400_000, acres: 40, pricePerAcre: 10_000, distanceMiles: 4,
+        whyUseful: 'Acreage-band sale.', similarities: [], differences: [],
+      })),
+      active: [],
+      askingReferences: [],
+      totalCollected: 9,
+      duplicatesMerged: 4,
+    },
+    valuation: PRICED_LAND,
+    subject: { improved: true, improvementBasis: 'house and outbuildings', improvementsValued: false },
+    ownerSeller: { ownerOfRecord: 'WELLS MICHAEL C', ownerVerified: true, sellerName: null, sellerIntakeCollected: false },
+    rawBlockers: ['No usable comp survived the acreage-band filter.', 'Recorded legal access is not established.'],
+    rawMissingInformation: ['Another closed sale is still required before pricing.', 'Surveyed frontage'],
+  });
+
+  it('reads its comp counts from the canonical state instead of counting again', () => {
+    const canonical = improvedSubjectState();
+    expect(canonical.comps.sold).toBe(5);
+    expect(canonical.comps.duplicatesMerged).toBe(4);
+    // One physical property = one comp; a corroborating marketplace is a SOURCE.
+    expect(canonical.comps.sources).toEqual(['LandPortal', 'Zillow']);
+
+    const analysis = buildDealOperatorAnalysis({
+      pkg: packageFor({ valuation: PRICED_LAND }),
+      context: emptyDealOperatorContext(),
+      generatedAt: GENERATED_AT,
+      canonical,
+    });
+    expect(analysis.canonicalState).toBe(canonical);
+    expect(analysis.scores.market.strongestPositiveFactors.join(' '))
+      .toContain('5 selected source-stated sale(s)');
+    expect(analysis.scores.market.materiallyChangeWith.join(' '))
+      .toMatch(/canonical Comps & Valuation registry counts/);
+  });
+
+  it('drops the superseded comp conclusions from risks and open questions', () => {
+    const canonical = improvedSubjectState();
+    expect(canonical.supersededStatements.map((entry) => entry.statement)).toEqual([
+      'No usable comp survived the acreage-band filter.',
+      'Another closed sale is still required before pricing.',
+    ]);
+
+    const analysis = buildDealOperatorAnalysis({
+      pkg: packageFor({ valuation: PRICED_LAND }),
+      context: emptyDealOperatorContext(),
+      generatedAt: GENERATED_AT,
+      canonical,
+    });
+    const surface = JSON.stringify(analysis.overall);
+    expect(surface).not.toMatch(/No usable comp survived/);
+    expect(surface).not.toMatch(/Another closed sale is still required/);
+    // Genuine, unsuperseded blockers still lead.
+    expect(analysis.overall.mainRisks).toContain('Recorded legal access is not established.');
+  });
+
+  it('labels every acquisition figure as a LAND-BASIS reference on an improved subject', () => {
+    const canonical = improvedSubjectState();
+    const analysis = buildDealOperatorAnalysis({
+      pkg: packageFor({ valuation: PRICED_LAND }),
+      context: emptyDealOperatorContext(),
+      generatedAt: GENERATED_AT,
+      canonical,
+    });
+
+    expect(analysis.values.figureKind).toBe('land_basis_reference');
+    expect(analysis.values.figureLabel).toMatch(/not a whole-property offer recommendation/i);
+    expect(analysis.values.wholePropertyValue.state).toBe('pending');
+    expect(analysis.values.wholePropertyValue.why).toMatch(/materially improved/i);
+    expect(analysis.values.expectedMarketValue!.label).toBe('Land-basis expected market value');
+    expect(analysis.values.targetAcquisitionRange!.label).toBe('Land-basis target acquisition range');
+    expect(analysis.values.explanation).toMatch(/must not be read as a completed whole-property value/i);
+    expect(analysis.overall.recommendation).toMatch(/Whole-property value remains pending/);
+  });
+
+  it('a vacant priceable subject keeps the plain whole-property labels', () => {
+    const analysis = buildDealOperatorAnalysis({
+      pkg: packageFor({ valuation: PRICED_LAND }),
+      context: emptyDealOperatorContext(),
+      generatedAt: GENERATED_AT,
+      subjectImprovement: { improved: false },
+    });
+    expect(analysis.values.figureKind).toBe('whole_property_recommendation');
+    expect(analysis.values.expectedMarketValue!.label).toBe('Expected market value');
+    expect(analysis.values.wholePropertyValue.state).toBe('established');
+  });
+
+  it('defaults to a land-basis reference rather than assuming whole-property', () => {
+    const analysis = buildDealOperatorAnalysis({
+      pkg: packageFor(),
+      context: emptyDealOperatorContext(),
+      generatedAt: GENERATED_AT,
+    });
+    // Unpriced and unimproved: no completed whole-property value may be implied.
+    expect(analysis.values.figureKind).toBe('land_basis_reference');
+    expect(analysis.values.wholePropertyValue.state).toBe('pending');
+    expect(analysis.canonicalState).toBeNull();
+  });
+
+  it('keeps "Seller: Not collected" valid beside a known owner of record', () => {
+    const canonical = improvedSubjectState();
+    expect(canonical.ownerSeller.ownerOfRecord).toBe('WELLS MICHAEL C');
+    expect(canonical.ownerSeller.sellerName).toBeNull();
+    expect(canonical.ownerSeller.sellerCollected).toBe(false);
+    expect(canonical.ownerSeller.sellerLabel).toBe('Not collected');
+    expect(canonical.ownerSeller.distinctionNote).toMatch(/not a confirmed seller or lead/i);
   });
 });

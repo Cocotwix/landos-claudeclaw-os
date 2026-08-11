@@ -30,6 +30,7 @@
 //     provider's name and a link to the original page.
 
 import { ExternalLink } from 'lucide-preact';
+import { AcquisitionWorkspaceV2CompPhotoGallery } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { CompPhotoCarousel } from './CompPhotoCarousel';
 import type { CvComp, CvTimelineRow } from './AcquisitionWorkspaceV2CompsValuation';
 
@@ -161,10 +162,23 @@ function LandosNotes({ c, active }: { c: CvComp; active: boolean }) {
 /** The one piece of provenance the operator genuinely uses: where to re-check. */
 function Source({ c }: { c: CvComp }) {
   const provider = c.listing?.evidence.provider ?? c.source;
+  const displayProvider = (value: string) => {
+    const key = value.toLowerCase().replace(/[^a-z]/g, '');
+    if (key.includes('landportal')) return 'LandPortal';
+    if (key.includes('zillow')) return 'Zillow';
+    if (key.includes('redfin')) return 'Redfin';
+    if (key.includes('realtor')) return 'Realtor.com';
+    return value;
+  };
+  const providers = Array.from(new Set([c.source, ...c.origins].filter(Boolean).map(displayProvider)));
   return (
     <Section title="SOURCE">
       <div class="awv2-cvd-source">
         <Figure label="Source" value={provider} />
+        <div class="awv2-cvd-sourcebadges" aria-label="Reconciled source provenance">
+          {providers.map((name) => <span class="source-badge" key={name}>{name}</span>)}
+          {providers.length > 1 && <span class="merged">One property · {providers.length} sources reconciled</span>}
+        </div>
         {c.sourceUrl ? (
           <a class="awv2-cvd-sourcelink" href={c.sourceUrl} target="_blank" rel="noopener noreferrer">
             <ExternalLink size={14} /> Open original listing
@@ -197,16 +211,17 @@ function Comparability({ c }: { c: CvComp }) {
   );
 }
 
-function CompetitionAnalysis({ c, adoptedFmv }: { c: CvComp; adoptedFmv: number | null }) {
+function CompetitionAnalysis({ c, adoptedFmv, landBasis }: { c: CvComp; adoptedFmv: number | null; landBasis: boolean }) {
   const m = c.listing?.marketTime;
   const ask = c.listing?.price.amount ?? c.price;
+  const valueLabel = landBasis ? 'adopted cleaned land value' : 'adopted cleaned FMV';
   const vsFmv = ask != null && adoptedFmv != null
     ? ask > adoptedFmv
-      ? `Priced ${usd(ask - adoptedFmv)} ABOVE the adopted cleaned FMV of ${usd(adoptedFmv)}.`
+      ? `Priced ${usd(ask - adoptedFmv)} ABOVE the ${valueLabel} of ${usd(adoptedFmv)}.`
       : ask < adoptedFmv
-        ? `Priced ${usd(adoptedFmv - ask)} BELOW the adopted cleaned FMV of ${usd(adoptedFmv)}.`
-        : `Priced at the adopted cleaned FMV of ${usd(adoptedFmv)}.`
-    : 'The adopted FMV is unavailable, so this listing cannot be positioned against it.';
+        ? `Priced ${usd(adoptedFmv - ask)} BELOW the ${valueLabel} of ${usd(adoptedFmv)}.`
+        : `Priced at the ${valueLabel} of ${usd(adoptedFmv)}.`
+    : `The ${landBasis ? 'adopted land value' : 'adopted FMV'} is unavailable, so this listing cannot be positioned against it.`;
   const acreCompare = c.acresDeltaFromSubject != null
     ? `${Math.abs(c.acresDeltaFromSubject)} acre${Math.abs(c.acresDeltaFromSubject) === 1 ? '' : 's'} ${c.acresDeltaFromSubject > 0 ? 'larger' : 'smaller'} than the subject.`
     : 'Acreage cannot be compared to the subject from the retained record.';
@@ -226,6 +241,7 @@ function CompetitionAnalysis({ c, adoptedFmv }: { c: CvComp; adoptedFmv: number 
       <p class="awv2-cvd-body">{acreCompare}</p>
       <p class="awv2-cvd-body">{exposure}</p>
       <p class="awv2-cvd-body">{resistance}</p>
+      {landBasis && <p class="awv2-cvd-note">Land-basis comparison only. It is not a completed whole-property value or offer recommendation.</p>}
       {m?.freshnessLabel && <p class="awv2-cvd-body">{m.freshnessLabel}</p>}
       {c.listing?.description.landos.comparability.map((l) => (
         <p class="awv2-cvd-body" key={l.slice(0, 30)}>{l}</p>
@@ -242,18 +258,28 @@ function Photos({ c }: { c: CvComp }) {
   const p = c.listing?.photos;
   return (
     <Section title="PHOTOS">
-      <CompPhotoCarousel
-        photos={p?.items ?? []}
-        address={nameOf(c)}
-        sourcePage={p?.sourcePage ?? c.sourceUrl}
-        provider={p?.provider ?? null}
-        fallbackNote={p?.fallbackNote ?? null}
-      />
+      {(p?.items.length ?? 0) > 1 ? (
+        <CompPhotoCarousel
+          photos={p?.items ?? []}
+          address={nameOf(c)}
+          sourcePage={p?.sourcePage ?? c.sourceUrl}
+          provider={p?.provider ?? null}
+          fallbackNote={p?.fallbackNote ?? null}
+        />
+      ) : (
+        <AcquisitionWorkspaceV2CompPhotoGallery
+          photos={p?.items ?? []}
+          address={nameOf(c)}
+          sourcePage={p?.sourcePage ?? c.sourceUrl}
+          provider={p?.provider ?? null}
+          fallbackNote={p?.fallbackNote ?? null}
+        />
+      )}
     </Section>
   );
 }
 
-export function CompFullDetails({ c, adoptedFmv }: { c: CvComp; adoptedFmv: number | null }) {
+export function CompFullDetails({ c, adoptedFmv, landBasis = false }: { c: CvComp; adoptedFmv: number | null; landBasis?: boolean }) {
   const identity = identity_of(c);
   const l = c.listing;
   const m = l?.marketTime;
@@ -335,7 +361,7 @@ export function CompFullDetails({ c, adoptedFmv }: { c: CvComp; adoptedFmv: numb
       <ListingDescription c={c} />
       <LandosNotes c={c} active={isActive} />
       <Timeline c={c} />
-      {isActive ? <CompetitionAnalysis c={c} adoptedFmv={adoptedFmv} /> : <Comparability c={c} />}
+      {isActive ? <CompetitionAnalysis c={c} adoptedFmv={adoptedFmv} landBasis={landBasis} /> : <Comparability c={c} />}
       <Source c={c} />
     </div>
   );

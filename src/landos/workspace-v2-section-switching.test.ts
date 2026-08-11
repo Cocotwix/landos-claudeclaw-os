@@ -19,6 +19,10 @@ const PI_SRC = fs.readFileSync(
   path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx'),
   'utf8',
 );
+const OVERVIEW_SRC = fs.readFileSync(
+  path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2Overview.tsx'),
+  'utf8',
+);
 
 describe('V2 section switching is client-side over one loaded record', () => {
   it('switches sections with pushState instead of full document navigation', () => {
@@ -50,8 +54,13 @@ describe('V2 section switching is client-side over one loaded record', () => {
     expect(PI_SRC).toMatch(/soils: SoilDetail\[\] \| null/);
   });
 
+  it('gives the extracted Overview its already-loaded projections as props', () => {
+    expect(OVERVIEW_SRC).not.toMatch(/apiGet|apiPost/);
+    expect(PAGE_SRC).toMatch(/<OverviewSection[\s\S]*?snap=\{snap\}[\s\S]*?compsValuation=\{compsValuation\}/);
+  });
+
   it('never triggers research or any mutation from section navigation', () => {
-    for (const src of [PAGE_SRC, PI_SRC]) {
+    for (const src of [PAGE_SRC, PI_SRC, OVERVIEW_SRC]) {
       expect(src).not.toMatch(/apiPost|apiPut|apiDelete|method:\s*'POST'/);
       expect(src).not.toMatch(/\/research|\/rerun|\/run\b/);
     }

@@ -2,13 +2,16 @@ import fs from 'node:fs';
 import { APPROVED_STRATEGIES, type ApprovedStrategy } from './strategy-readiness.js';
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
 import { dedupeImages, type VisionSourceImage } from './browser-vision.js';
+import { resolveValuationScope } from './property-intelligence-snapshot.js';
 import type {
   OpportunityPosture,
   PropertyIntelligenceSnapshot,
   SnapshotDueDiligenceItem,
   SnapshotStrategy,
   SnapshotValuation,
+  ValuationScopeState,
 } from './property-intelligence-snapshot.js';
+import type { CanonicalDealState } from './deal-card-reconciliation.js';
 
 export type OperatorRating = 'Excellent' | 'Strong' | 'Moderate' | 'Weak' | 'Very weak' | 'Pending';
 
@@ -320,6 +323,16 @@ export interface DealOperatorAnalysis {
     subdivisionUpsideIncluded: false;
     explanation: string;
     scenarios: OperatorAcquisitionScenario[];
+    /**
+     * What every figure above actually IS. On a materially improved subject
+     * whose improvements are not separately valued, Opening / Target / Ceiling
+     * are LAND-BASIS references and must be labelled as such — never as a
+     * completed whole-property offer recommendation.
+     */
+    valuationScope: ValuationScopeState;
+    figureKind: ValuationScopeState['figureKind'];
+    figureLabel: string;
+    wholePropertyValue: ValuationScopeState['wholeProperty'];
   };
   comps: {
     soldSelectionTarget: 5;
@@ -355,6 +368,14 @@ export interface DealOperatorAnalysis {
   researchAttempts: OperatorResearchAttempt[];
   changeNotes: string[];
   evidenceNotes: string[];
+  /**
+   * The one canonical current state this analysis was reconciled against, when
+   * the caller supplied it. Comp counts, valuation status, blockers, missing
+   * information, decision summary and next actions are read from HERE by every
+   * page, so Overview, Property Intelligence and Comps & Valuation cannot
+   * disagree about the same evidence.
+   */
+  canonicalState: CanonicalDealState | null;
 }
 
 export type WholeCardVisionGenerator = (
@@ -1117,7 +1138,17 @@ function sellerScore(pkg: DealIntelligenceInputPackage, seller: OperatorSellerCo
   };
 }
 
-function valueAnalysis(valuation: SnapshotValuation, seller: OperatorSellerContext): DealOperatorAnalysis['values'] {
+function valueAnalysis(
+  valuation: SnapshotValuation,
+  seller: OperatorSellerContext,
+  scope: ValuationScopeState,
+): DealOperatorAnalysis['values'] {
+  const scopeFields = {
+    valuationScope: scope,
+    figureKind: scope.figureKind,
+    figureLabel: scope.figureLabel,
+    wholePropertyValue: scope.wholeProperty,
+  };
   if (!valuation.priceable || !valuation.range || !valuation.likelyRetail || !valuation.dispositionRange) {
     return {
       expectedMarketValue: null,
@@ -1132,6 +1163,7 @@ function valueAnalysis(valuation: SnapshotValuation, seller: OperatorSellerConte
       subdivisionUpsideIncluded: false,
       explanation: valuation.notPriceableReason ?? valuation.basis,
       scenarios: [],
+      ...scopeFields,
     };
   }
   const working = valuation.workingValue ?? Math.round((valuation.range.low + valuation.range.high) / 2);
@@ -1155,28 +1187,32 @@ function valueAnalysis(valuation: SnapshotValuation, seller: OperatorSellerConte
       assumption: `${Math.round(costPct * 100)}% resale/holding/closing allowance plus ${compactMoney(extra)} strategy work; planning math, not a quote.`,
     };
   };
+  // Every band label carries the scope, so no figure can be read as a completed
+  // whole-property value on a subject whose improvements are not yet valued.
+  const bandLabel = (name: string): string => (scope.scope === 'land_only' ? `Land-basis ${name.toLowerCase()}` : name);
   return {
-    expectedMarketValue: { ...valuation.range, label: 'Expected market value', basis: valuation.basis },
-    retailAskingRange: { ...valuation.likelyRetail, label: 'Retail asking range', basis: 'Marketed retail positioning from the supported value band and active competition.' },
-    quickSaleDispositionRange: { ...valuation.dispositionRange, label: 'Quick-sale / disposition range', basis: 'Faster-exit planning range derived from the supported retail band.' },
+    expectedMarketValue: { ...valuation.range, label: bandLabel('Expected market value'), basis: `${valuation.basis} ${scope.figureLabel}.` },
+    retailAskingRange: { ...valuation.likelyRetail, label: bandLabel('Retail asking range'), basis: `Marketed retail positioning from the supported value band and active competition. ${scope.figureLabel}.` },
+    quickSaleDispositionRange: { ...valuation.dispositionRange, label: bandLabel('Quick-sale / disposition range'), basis: `Faster-exit planning range derived from the supported retail band. ${scope.figureLabel}.` },
     workingUnderwritingValue: working,
     openingPosition: opening,
     targetAcquisitionRange: {
       low: targetLow,
       high: targetHigh,
-      label: 'Target acquisition range',
-      basis: `Approximately ${Math.round(lowPct * 100)}–${Math.round(highPct * 100)}% of working value, leaving room for selling, holding, closing, and deal-specific work.`,
+      label: bandLabel('Target acquisition range'),
+      basis: `Approximately ${Math.round(lowPct * 100)}–${Math.round(highPct * 100)}% of working value, leaving room for selling, holding, closing, and deal-specific work. ${scope.figureLabel}.`,
     },
     practicalMaximumAcquisitionPrice: maximum,
     walkAwayLevel: maximum,
     offerBasis: 'whole_tract_resale_only',
     subdivisionUpsideIncluded: false,
-    explanation: `${valuation.basis} Working value is ${compactMoney(working)}. Opening position ${compactMoney(opening)}, target ${compactMoney(targetLow)}–${compactMoney(targetHigh)}, and walk away above ${compactMoney(maximum)} use the whole-tract resale case only. No subdivision upside is included. These are separate investor-planning assumptions, not observed market facts.`,
+    explanation: `${valuation.basis} Working value is ${compactMoney(working)}. Opening position ${compactMoney(opening)}, target ${compactMoney(targetLow)}–${compactMoney(targetHigh)}, and walk away above ${compactMoney(maximum)} use the whole-tract resale case only. No subdivision upside is included. These are separate investor-planning assumptions, not observed market facts. ${scope.explanation}`,
     scenarios: [
       scenario('Conservative', valuation.dispositionRange.low, opening, 0.12, 5_000),
       scenario('Expected', working, Math.round((targetLow + targetHigh) / 2), 0.10, 7_500),
       scenario('Stronger', valuation.likelyRetail.high, maximum, 0.10, 10_000),
     ],
+    ...scopeFields,
   };
 }
 
@@ -1622,33 +1658,65 @@ export function buildDealOperatorAnalysis(input: {
   /** Canonical Comps & Valuation counts; when supplied they govern the market
    *  score's comp counts so the two operator sections cannot disagree. */
   canonicalCompCounts?: CanonicalCompCounts | null;
+  /**
+   * The one canonical current state. When supplied it governs comp counts,
+   * valuation status, blockers, missing information, decision summary and next
+   * actions, and any historical statement it supersedes is dropped here too.
+   */
+  canonical?: CanonicalDealState | null;
+  /** Whether the SUBJECT carries material improvements, and whether those
+   *  improvements have been separately valued. Decides whether an
+   *  Opening/Target/Ceiling figure is a land-basis reference or a completed
+   *  whole-property recommendation. */
+  subjectImprovement?: { improved: boolean; basis?: string | null; improvementsValued?: boolean } | null;
 }): DealOperatorAnalysis {
   const { pkg, context } = input;
+  const canonical = input.canonical ?? null;
   const market = marketAnalysis(pkg, context);
   const property = propertyScore(pkg, context.visualAnalysis);
-  const marketScored = marketScore(pkg, market, input.canonicalCompCounts ?? null);
+  // One comp tally. An explicit count still wins, but the canonical state is
+  // the next authority — the market score may never count comps for itself.
+  const compCounts = input.canonicalCompCounts
+    ?? (canonical ? { sold: canonical.comps.sold, active: canonical.comps.active, soldAllSourceStated: canonical.comps.soldAllSourceStated } : null);
+  const marketScored = marketScore(pkg, market, compCounts);
   const sellerScored = sellerScore(pkg, context.seller);
   const scores = { property, market: marketScored, seller: sellerScored };
-  const values = valueAnalysis(pkg.valuation, context.seller);
+  const scope = canonical?.valuation.scope ?? resolveValuationScope({
+    subjectImproved: input.subjectImprovement?.improved === true,
+    improvementBasis: input.subjectImprovement?.basis ?? null,
+    improvementsValued: input.subjectImprovement?.improvementsValued === true,
+    landValuePriceable: pkg.valuation.priceable === true,
+  });
+  const values = valueAnalysis(pkg.valuation, context.seller, scope);
+  // Anything the canonical state superseded is a historical conclusion the
+  // current records contradict. It must not resurface as a risk or a question.
+  const supersededText = new Set((canonical?.supersededStatements ?? []).map((entry) => entry.statement));
+  const currentOnly = (values_: string[]): string[] => values_.filter((value) => !supersededText.has(value.trim()));
   const subdivision = subdivisionAnalysis(pkg, values, market.acreageBands);
   const rankedStrategies = strategyEvaluations(pkg, values, context.seller, subdivision);
   // A ranked internal evaluation is not an operator recommendation. Until a
   // usable closed-comp value basis exists, all acquisition structures remain
   // hypotheses and the card must show strategy selection as pending.
   const best = pkg.valuation.priceable ? rankedStrategies[0]?.strategy ?? null : null;
-  const recommendation = best
+  const baseRecommendation = best
     ? best === 'Subdivide or Minor Split' && subdivision.automaticFirstLook
       ? `Highest-upside hypothesis: Subdivision. ${subdivision.signalExplanation} Whole-tract Quick Flip is the practical fallback if the gating checks fail or the added complexity does not pay.`
       : `${pkg.recommendation.posture === 'reject' ? 'Do not pursue on current terms' : 'Lead with'} ${best}. ${pkg.recommendation.why}`
     : 'Strategy selection is pending valuation evidence. Continue practical research and the seller conversation before choosing an acquisition path.';
+  // The decision line every page shows comes from the canonical state, so the
+  // Overview cannot narrate a comp or valuation position the other two pages
+  // contradict.
+  const recommendation = canonical ? `${baseRecommendation} ${canonical.decisionSummary}` : baseRecommendation;
   const seller = sellerAnalysis(context.seller, sellerScored, pkg, values);
-  const unanswered = unique([
+  const unanswered = unique(currentOnly([
     ...property.materiallyChangeWith,
     ...marketScored.materiallyChangeWith,
     ...sellerScored.materiallyChangeWith,
     ...subdivision.nextChecks,
-  ]).slice(0, 10);
+    ...(canonical?.missingInformation ?? []),
+  ])).slice(0, 10);
   const actions = unique([
+    ...(canonical?.nextActions ?? []),
     subdivision.automaticFirstLook ? 'Retrieve the subdivision rules and determine a practical lot count.' : null,
     subdivision.automaticFirstLook ? 'Test septic, utility, frontage, and access feasibility for the strongest lot concepts.' : null,
     seller.nextContactAction,
@@ -1659,13 +1727,14 @@ export function buildDealOperatorAnalysis(input: {
       ? 'Retry the highest-value public-record source that did not return an answer.'
       : null,
   ]).slice(0, 6);
-  const mainRisks = unique([
+  const mainRisks = unique(currentOnly([
+    ...(canonical?.blockers ?? []),
     ...property.mainDeductions,
     ...sellerScored.mainDeductions,
     ...pkg.dueDiligence
       .filter((item) => item.verdict === 'risk' && !unsupportedPhysicalConclusion(item))
       .map(evidenceText),
-  ]).slice(0, 6);
+  ])).slice(0, 6);
   const mainOpportunity = subdivision.automaticFirstLook && best === 'Subdivide or Minor Split'
     ? `${subdivision.signalExplanation} Whole-tract Quick Flip remains the lower-complexity fallback.`
     : values.workingUnderwritingValue != null && best
@@ -1697,12 +1766,12 @@ export function buildDealOperatorAnalysis(input: {
       mainRisks,
       unansweredQuestions: unanswered,
       nextBestActions: actions,
-      whatCouldMateriallyChangeConclusion: unique([
+      whatCouldMateriallyChangeConclusion: unique(currentOnly([
         ...property.materiallyChangeWith,
         ...marketScored.materiallyChangeWith,
         ...sellerScored.materiallyChangeWith,
         ...pkg.recommendation.whatWouldChangeIt,
-      ]).slice(0, 10),
+      ])).slice(0, 10),
     },
     values,
     comps: {
@@ -1741,6 +1810,7 @@ export function buildDealOperatorAnalysis(input: {
       ...pkg.dueDiligence.map((item) => `${item.label}: ${item.grade}`),
       ...pkg.evidence.map((item) => `${item.label}: ${item.sourceType}`),
     ]),
+    canonicalState: canonical,
   };
 }
 
@@ -2032,8 +2102,17 @@ export async function runWholeCardOperatorAnalyst(input: {
   images: VisionSourceImage[];
   generate: WholeCardVisionGenerator;
   model: string;
+  canonicalCompCounts?: CanonicalCompCounts | null;
+  /** The one canonical current state, forwarded to the deterministic build and
+   *  used to reject any model text the current records contradict. */
+  canonical?: CanonicalDealState | null;
+  subjectImprovement?: { improved: boolean; basis?: string | null; improvementsValued?: boolean } | null;
 }): Promise<DealOperatorAnalysis> {
   const fallback = buildDealOperatorAnalysis(input);
+  // The Analyst may reword, but it may never resurrect a conclusion the current
+  // accepted records already superseded.
+  const supersededText = new Set((fallback.canonicalState?.supersededStatements ?? []).map((entry) => entry.statement));
+  const currentOnly = (values: string[]): string[] => values.filter((value) => !supersededText.has(value.trim()));
   const { keep } = dedupeImages(input.images);
   if (!keep.length) return fallback;
   const labels = new Set(keep.map((image) => image.label));
@@ -2114,13 +2193,14 @@ export async function runWholeCardOperatorAnalyst(input: {
         ? fallback.overall.mainOpportunity
         : typeof parsed.mainOpportunity === 'string' && parsed.mainOpportunity.trim()
         ? practicalOperatorText(parsed.mainOpportunity) : fallback.overall.mainOpportunity,
-      mainRisks: stringArray(parsed.mainRisks).filter((risk) => !unsupportedParcelTerrainClaim(risk, input.pkg)).length
-        ? stringArray(parsed.mainRisks).filter((risk) => !unsupportedParcelTerrainClaim(risk, input.pkg))
+      mainRisks: currentOnly(stringArray(parsed.mainRisks).filter((risk) => !unsupportedParcelTerrainClaim(risk, input.pkg))).length
+        ? currentOnly(stringArray(parsed.mainRisks).filter((risk) => !unsupportedParcelTerrainClaim(risk, input.pkg)))
         : fallback.overall.mainRisks,
-      unansweredQuestions: stringArray(parsed.unansweredQuestions).length ? stringArray(parsed.unansweredQuestions) : fallback.overall.unansweredQuestions,
+      unansweredQuestions: currentOnly(stringArray(parsed.unansweredQuestions)).length
+        ? currentOnly(stringArray(parsed.unansweredQuestions)) : fallback.overall.unansweredQuestions,
       nextBestActions: stringArray(parsed.nextBestActions).length ? stringArray(parsed.nextBestActions) : fallback.overall.nextBestActions,
-      whatCouldMateriallyChangeConclusion: stringArray(parsed.whatCouldMateriallyChangeConclusion).length
-        ? stringArray(parsed.whatCouldMateriallyChangeConclusion) : fallback.overall.whatCouldMateriallyChangeConclusion,
+      whatCouldMateriallyChangeConclusion: currentOnly(stringArray(parsed.whatCouldMateriallyChangeConclusion)).length
+        ? currentOnly(stringArray(parsed.whatCouldMateriallyChangeConclusion)) : fallback.overall.whatCouldMateriallyChangeConclusion,
     },
     market: {
       ...fallback.market,

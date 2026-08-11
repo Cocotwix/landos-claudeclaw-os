@@ -16,13 +16,15 @@
 // It does NOT collect, score value, or decide strategy. Pure: no I/O, no clock.
 //
 // Two rules are structural rather than advisory:
-//   1. Only LandPortal, Zillow and Redfin may enter the current handback.
+//   1. LandPortal, Zillow, Redfin and direct Realtor.com property evidence may
+//      enter the current handback.
 //      HomeHarvest and Realie stay in historical storage only; they never enter
 //      current counts, maps, snapshots, rendering, or valuation.
 //   2. Nothing here consults an assessor, recorder, deed or parcel record. A
 //      comp's status comes from the marketplace that published it.
 
 import type { CompSourcePolicyResult } from './comp-source-policy.js';
+import { listingPhotoPriority } from './comp-visual.js';
 import {
   buildAcreageMarketContext,
   compDistanceMiles,
@@ -43,10 +45,10 @@ export const WORKING_SET_LIMIT = 5;
 export const ACTIVE_WORKING_SET_LIMIT = 4;
 
 /** Marketplaces whose rows may price or compete with the subject. */
-export const WORKING_SET_SOURCES = [/landportal/i, /zillow/i, /redfin/i];
+export const WORKING_SET_SOURCES = [/landportal/i, /zillow/i, /redfin/i, /realtor(?:\.com)?/i];
 
 /** Aggregators retained as evidence only. They never enter the working set. */
-export const EVIDENCE_ONLY_SOURCES = [/homeharvest/i, /realtor/i, /realie/i];
+export const EVIDENCE_ONLY_SOURCES = [/homeharvest/i, /realie/i];
 
 export function isWorkingSetSource(source: string | null | undefined): boolean {
   const value = (source ?? '').trim();
@@ -131,6 +133,9 @@ export interface CompCandidateRow {
   acreageConflict?: boolean;
   /** All marketplaces that corroborated this physical property/event. */
   providerAttributions?: string[];
+  /** Number of provider rows collapsed into this canonical property beyond the
+   * one row retained. This is provenance, never another comp count. */
+  duplicatesMerged?: number;
   /** Optional normalized (0-1) subject-similarity signals. Missing is neutral. */
   accessSimilarity?: number | null;
   terrainSimilarity?: number | null;
@@ -200,6 +205,7 @@ export interface WeightedSnapshotComp extends SnapshotComp {
   homeSizeSqft?: number | null;
   thumbnailUrl?: string | null;
   photoUrls?: string[];
+  duplicatesMerged?: number;
 }
 
 export type CompConclusion =
@@ -324,12 +330,15 @@ function isSubjectProperty(subject: CompSelectionSubject, row: CompCandidateRow)
 export function compIdentity(row: CompCandidateRow): string {
   const apn = (row.apn ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (apn) return `apn:${apn}`;
-  if (row.providerId) return `provider:${row.source.toLowerCase()}:${row.providerId.trim().toLowerCase()}`;
   const address = normAddress(row.address);
   if (address) return `addr:${address}`;
   if (typeof row.lat === 'number' && typeof row.lng === 'number') {
     return `coord:${row.lat.toFixed(5)}:${row.lng.toFixed(5)}`;
   }
+  // Provider ids are deliberately below cross-provider property identifiers.
+  // They are useful only inside one marketplace and must never prevent the
+  // same address/APN from reconciling across four sources.
+  if (row.providerId) return `provider:${row.source.toLowerCase()}:${row.providerId.trim().toLowerCase()}`;
   const price = row.price != null ? Math.round(row.price) : 'x';
   const acres = row.acres != null ? row.acres.toFixed(2) : 'x';
   return `event:${row.statusBasis}:${price}:${acres}:${row.dateIso ?? 'undated'}`;
@@ -354,10 +363,22 @@ function validPhotoUrl(value: unknown): string | null {
 }
 
 function mergedPhotoUrls(...rows: CompCandidateRow[]): string[] {
-  return [...new Set(rows.flatMap((row) => [
+  const unique = [...new Set(rows.flatMap((row) => [
     validPhotoUrl(row.thumbnailUrl),
     ...(row.photoUrls ?? []).map(validPhotoUrl),
-  ]).filter((value): value is string => value != null))].slice(0, 20);
+  ]).filter((value): value is string => value != null))];
+  // A genuine listing photograph is the underwriting aid. Keep it ahead of a
+  // generic provider tile or LandPortal thumbnail while preserving provider
+  // order inside each tier.
+  return unique
+    .map((url, index) => ({ url, index, priority: listingPhotoPriority(url) }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)
+    .map(({ url }) => url)
+    .slice(0, 20);
+}
+
+function bestThumbnail(...rows: CompCandidateRow[]): string | null {
+  return mergedPhotoUrls(...rows)[0] ?? null;
 }
 
 function sameCoordinates(a: CompCandidateRow, b: CompCandidateRow): boolean {
@@ -370,14 +391,17 @@ function sameCoordinates(a: CompCandidateRow, b: CompCandidateRow): boolean {
 
 function sameSaleEvent(a: CompCandidateRow, b: CompCandidateRow): boolean {
   if (priceAcreKey(a) == null || priceAcreKey(a) !== priceAcreKey(b)) return false;
+  const oneAnonymous = !normAddress(a.address) || !normAddress(b.address);
   const sameDatedEvent = !!a.dateIso && !!b.dateIso
     && a.dateIso.slice(0, 10) === b.dateIso.slice(0, 10)
     && a.statusBasis === b.statusBasis;
-  if (sameDatedEvent) return true;
+  // An exact transaction signature can bridge an address-less LandPortal row
+  // to a richer listing record. It must never collapse two explicitly different
+  // addressed properties that happened to sell for the same amount and acreage.
+  if (sameDatedEvent && oneAnonymous) return true;
   // LandPortal can expose an address-less priced row whose status is unstated;
   // merge it into a corroborating marketplace event only when the exact price
   // and acreage match and the anonymous row carries no conflicting identifier.
-  const oneAnonymous = !normAddress(a.address) || !normAddress(b.address);
   const oneUnconfirmed = a.statusBasis === 'unconfirmed' || b.statusBasis === 'unconfirmed';
   return oneAnonymous && oneUnconfirmed && a.source.toLowerCase() !== b.source.toLowerCase();
 }
@@ -385,6 +409,9 @@ function sameSaleEvent(a: CompCandidateRow, b: CompCandidateRow): boolean {
 function samePhysicalProperty(a: CompCandidateRow, b: CompCandidateRow): boolean {
   const aApn = normalizedApn(a.apn);
   const bApn = normalizedApn(b.apn);
+  // A shared price, acreage, coordinate, or address must never override an
+  // explicit parcel-identity conflict.
+  if (aApn && bApn && aApn !== bApn) return false;
   if (aApn && bApn && aApn === bApn) return true;
   if (a.providerId && b.providerId
     && a.source.toLowerCase() === b.source.toLowerCase()
@@ -412,32 +439,26 @@ function samePhysicalProperty(a: CompCandidateRow, b: CompCandidateRow): boolean
 export function dedupeCompRows(rows: CompCandidateRow[]): { rows: CompCandidateRow[]; removed: number } {
   const basisRank: Record<CompStatusBasis, number> = { closed_sale: 3, active_listing: 2, unconfirmed: 1 };
   const completeness = (row: CompCandidateRow): number =>
-    (row.acres != null ? 2 : 0) + (row.dateIso ? 1 : 0) + (row.address ? 1 : 0) + (row.sourceUrl ? 1 : 0);
+    (row.acres != null ? 2 : 0) + (row.dateIso ? 1 : 0) + (row.address ? 1 : 0)
+    + (row.apn ? 2 : 0) + (row.sourceUrl ? 1 : 0) + (row.photoUrls?.length ?? 0);
 
-  const kept: CompCandidateRow[] = [];
-  let removed = 0;
+  const normalizeRow = (row: CompCandidateRow): CompCandidateRow => {
+    const photos = mergedPhotoUrls(row);
+    return {
+      ...row,
+      thumbnailUrl: bestThumbnail(row) ?? null,
+      photoUrls: photos,
+      providerAttributions: [...new Set(row.providerAttributions ?? [row.source])],
+      duplicatesMerged: row.duplicatesMerged ?? 0,
+    };
+  };
 
-  for (const row of rows) {
-    const slot = kept.findIndex((held) => samePhysicalProperty(held, row));
-
-    if (slot < 0) {
-      const photos = mergedPhotoUrls(row);
-      kept.push({
-        ...row,
-        thumbnailUrl: validPhotoUrl(row.thumbnailUrl) ?? photos[0] ?? null,
-        photoUrls: photos,
-        providerAttributions: [...new Set(row.providerAttributions ?? [row.source])],
-      });
-      continue;
-    }
-
-    removed += 1;
-    const held = kept[slot];
-    const winner = basisRank[row.statusBasis] !== basisRank[held.statusBasis]
-      ? (basisRank[row.statusBasis] > basisRank[held.statusBasis] ? row : held)
-      : (completeness(row) > completeness(held) ? row : held);
-    const loser = winner === row ? held : row;
-    const merged: CompCandidateRow = {
+  const mergeRows = (a: CompCandidateRow, b: CompCandidateRow): CompCandidateRow => {
+    const winner = basisRank[b.statusBasis] !== basisRank[a.statusBasis]
+      ? (basisRank[b.statusBasis] > basisRank[a.statusBasis] ? b : a)
+      : (completeness(b) > completeness(a) ? b : a);
+    const loser = winner === b ? a : b;
+    return {
       ...winner,
       providerId: winner.providerId ?? loser.providerId,
       acres: winner.acres ?? loser.acres,
@@ -447,19 +468,53 @@ export function dedupeCompRows(rows: CompCandidateRow[]): { rows: CompCandidateR
       pricePerAcre: winner.pricePerAcre ?? loser.pricePerAcre,
       distanceMiles: winner.distanceMiles ?? loser.distanceMiles,
       sourceUrl: winner.sourceUrl ?? loser.sourceUrl,
+      listingDate: winner.listingDate ?? loser.listingDate,
+      daysOnMarket: winner.daysOnMarket ?? loser.daysOnMarket,
+      views: winner.views ?? loser.views,
+      saves: winner.saves ?? loser.saves,
+      collectedAt: winner.collectedAt ?? loser.collectedAt,
+      priceChanges: [...(winner.priceChanges ?? []), ...(loser.priceChanges ?? [])]
+        .filter((change, index, all) => all.findIndex((candidate) => candidate.at === change.at
+          && candidate.price === change.price && candidate.note === change.note) === index),
       lat: winner.lat ?? loser.lat,
       lng: winner.lng ?? loser.lng,
-      thumbnailUrl: validPhotoUrl(winner.thumbnailUrl)
-        ?? validPhotoUrl(loser.thumbnailUrl)
-        ?? mergedPhotoUrls(winner, loser)[0]
-        ?? null,
+      thumbnailUrl: bestThumbnail(winner, loser),
       photoUrls: mergedPhotoUrls(winner, loser),
       providerAttributions: [...new Set([
         ...(winner.providerAttributions ?? [winner.source]),
         ...(loser.providerAttributions ?? [loser.source]),
       ])],
+      duplicatesMerged: (winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1,
+      homeType: winner.homeType ?? loser.homeType,
+      yearBuilt: winner.yearBuilt ?? loser.yearBuilt,
+      homeSizeSqft: winner.homeSizeSqft ?? loser.homeSizeSqft,
+      accessSimilarity: winner.accessSimilarity ?? loser.accessSimilarity,
+      terrainSimilarity: winner.terrainSimilarity ?? loser.terrainSimilarity,
+      terrainSimilarityReliable: winner.terrainSimilarityReliable ?? loser.terrainSimilarityReliable,
+      utilitiesSimilarity: winner.utilitiesSimilarity ?? loser.utilitiesSimilarity,
+      developmentContextSimilarity: winner.developmentContextSimilarity ?? loser.developmentContextSimilarity,
     };
-    kept[slot] = merged;
+  };
+
+  const kept: CompCandidateRow[] = [];
+  let removed = 0;
+
+  for (const row of rows) {
+    let merged = normalizeRow(row);
+    let insertion = kept.length;
+    // A later provider page can be the bridge between an APN-only LandPortal
+    // row and an earlier address-only marketplace row. Keep coalescing after
+    // every merge so identity is transitive and input order cannot leave the
+    // same physical property in two canonical records.
+    for (;;) {
+      const slot = kept.findIndex((held) => samePhysicalProperty(held, merged));
+      if (slot < 0) break;
+      insertion = Math.min(insertion, slot);
+      merged = mergeRows(kept[slot], merged);
+      kept.splice(slot, 1);
+      removed += 1;
+    }
+    kept.splice(Math.min(insertion, kept.length), 0, merged);
   }
   return { rows: kept, removed };
 }
@@ -544,6 +599,7 @@ function toSnapshotComp(
     homeSizeSqft: row.homeSizeSqft ?? null,
     thumbnailUrl: validPhotoUrl(row.thumbnailUrl) ?? mergedPhotoUrls(row)[0] ?? null,
     photoUrls: mergedPhotoUrls(row),
+    duplicatesMerged: row.duplicatesMerged ?? 0,
   };
 }
 
@@ -586,7 +642,7 @@ export function selectWorkingComps(input: {
   subject: CompSelectionSubject;
   rows: CompCandidateRow[];
   nowMs: number;
-  sourceCaps?: { zillow: number; redfin: number };
+  sourceCaps?: { zillow: number; redfin: number; realtor?: number };
 }): CompWorkingSet {
   const { subject, nowMs } = input;
   const rows = input.rows.map((row): CompCandidateRow => {
@@ -614,7 +670,7 @@ export function selectWorkingComps(input: {
       continue;
     }
     if (!isWorkingSetSource(row.source)) {
-      bucketEvidence(buckets, 'Source is not one of the approved comparable marketplaces (LandPortal, Zillow, Redfin).', row.source || 'unknown');
+      bucketEvidence(buckets, 'Source is not one of the approved comparable marketplaces (LandPortal, Zillow, Redfin, Realtor.com).', row.source || 'unknown');
       continue;
     }
     if (isSubjectProperty(subject, row)) {
@@ -691,14 +747,18 @@ export function selectWorkingComps(input: {
   const rank = (rows: CompCandidateRow[]): CompCandidateRow[] =>
     [...rows].sort((a, b) => comparabilityScore(subject, b, nowMs) - comparabilityScore(subject, a, nowMs));
 
-  const sourceCaps = input.sourceCaps ?? { zillow: WORKING_SET_LIMIT, redfin: WORKING_SET_LIMIT };
+  const sourceCaps = input.sourceCaps ?? { zillow: WORKING_SET_LIMIT, redfin: WORKING_SET_LIMIT, realtor: WORKING_SET_LIMIT };
   const applySourceCaps = (rows: CompCandidateRow[], laneLabel: string): CompCandidateRow[] => {
     const accepted: CompCandidateRow[] = [];
-    const used = { zillow: 0, redfin: 0 };
+    const used = { zillow: 0, redfin: 0, realtor: 0 };
     for (const row of rank(rows)) {
-      const family = /zillow/i.test(row.source) ? 'zillow' : /redfin/i.test(row.source) ? 'redfin' : null;
-      if (family && used[family] >= sourceCaps[family]) {
-        bucketEvidence(buckets, `${family === 'zillow' ? 'Zillow' : 'Redfin'} ${laneLabel} supplement cap is ${sourceCaps[family]}.`, row.source);
+      const family = /zillow/i.test(row.source) ? 'zillow'
+        : /redfin/i.test(row.source) ? 'redfin'
+          : /realtor/i.test(row.source) ? 'realtor' : null;
+      const cap = family === 'realtor' ? (sourceCaps.realtor ?? WORKING_SET_LIMIT) : family ? sourceCaps[family] : null;
+      if (family && cap != null && used[family] >= cap) {
+        const label = family === 'zillow' ? 'Zillow' : family === 'redfin' ? 'Redfin' : 'Realtor.com';
+        bucketEvidence(buckets, `${label} ${laneLabel} supplement cap is ${cap}.`, row.source);
         continue;
       }
       if (family) used[family] += 1;
@@ -869,6 +929,7 @@ export function candidateRowsFromPolicy(policy: CompSourcePolicyResult): CompCan
       lat: typeof c.lat === 'number' ? c.lat : null,
       lng: typeof c.lng === 'number' ? c.lng : null,
       providerAttributions: [c.provider],
+      duplicatesMerged: 0,
       homeType: c.homeType ?? null,
       yearBuilt: typeof c.yearBuilt === 'number' ? c.yearBuilt : null,
       homeSizeSqft: typeof c.homeSizeSqft === 'number' ? c.homeSizeSqft : null,

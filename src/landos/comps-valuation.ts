@@ -42,7 +42,7 @@ import {
   routeAcreage,
   routedAcreageSimilarity,
 } from './acreage-router.js';
-import { resolveCompVisual, tallyCompVisuals, type CompVisual, type CompVisualCounts } from './comp-visual.js';
+import { isListingPhotoUrl, resolveCompVisual, tallyCompVisuals, type CompVisual, type CompVisualCounts } from './comp-visual.js';
 import { parseListingDetail } from './comp-listing-store.js';
 import {
   buildCompListingProjection, type CompListingProjection, type CompTransactionKind,
@@ -50,6 +50,7 @@ import {
 import { landPortalSaleStatus } from './deal-intelligence-comps.js';
 import { inferSubjectPropertyType } from './comparable-intelligence.js';
 import type { CompSaleVerification } from './comp-transaction-price.js';
+import { addressStateCode, normalizeCompAddress } from './comp-registry.js';
 
 export type WorkspaceCompCategory =
   | 'accepted_closed_sale'
@@ -129,6 +130,8 @@ export interface WorkspaceComp {
   source: string;
   sourceUrl: string | null;
   origins: string[];
+  /** Provider rows merged behind this physical property. */
+  duplicatesMerged?: number;
   fromLandPortalSidebar: boolean;
   fromLandPortalShowOnMap: boolean;
   mergeStatus: string | null;
@@ -159,6 +162,8 @@ export interface WorkspaceComp {
   buildingSqft: number | null;
   propertyClass: 'land' | 'improved' | 'unknown';
   thumbnailUrl: string | null;
+  /** Ordered property/listing photos available to the lightweight gallery. */
+  photoUrls?: string[];
   /** The visual actually shown for this record, with honest provenance. Every
    *  record has one; only a genuinely unresolvable location yields a
    *  location_unresolved placeholder. */
@@ -284,6 +289,10 @@ export interface CompsValuationView {
   summary: CompsValuationSummary;
   comps: WorkspaceComp[];
   counts: Record<WorkspaceCompCategory, number> & { total: number };
+  /** The sole cross-surface comparable count: one physical property once. */
+  canonicalCompCount: number;
+  /** Provider rows collapsed behind those canonical physical properties. */
+  duplicatesMerged: number;
   /** Unique retained records vs records actually placeable on the map, whole
    *  and per category, so the map legend and the evidence registry can never
    *  disagree by more than the disclosed unresolved locations. */
@@ -574,6 +583,7 @@ function comparabilityLines(opts: {
 
 function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceComp {
   const attributions = parseAttributions(row.source_attributions_json);
+  const origins = [...new Set([row.source_label, ...attributions.map((a) => a.provider)].filter(Boolean))];
   const fromSidebar = attributions.some((a) => /sidebar/i.test(a.provider));
   const fromShowOnMap = attributions.some((a) => /show on map/i.test(a.provider));
   const merged = /merged landportal sidebar \+ show on map/i.test(row.notes);
@@ -750,9 +760,10 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     selectionMode,
     operatorExcluded,
     exclusionReason: operatorExcluded ? (row.valuation_selection_reason || null) : null,
-    source: row.source_label,
     sourceUrl: row.source_url || null,
-    origins: attributions.map((a) => a.provider),
+    source: origins.join(' + '),
+    origins,
+    duplicatesMerged: Math.max(0, origins.length - 1),
     fromLandPortalSidebar: fromSidebar,
     fromLandPortalShowOnMap: fromShowOnMap,
     mergeStatus: merged
@@ -788,6 +799,7 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     buildingSqft,
     propertyClass: improved ? 'improved' : (row.property_class === 'land' || row.property_class === 'vacant_land') ? 'land' : 'unknown',
     thumbnailUrl: row.thumbnail_url || null,
+    photoUrls: listing.photos.items.map((photo) => photo.url),
     visual,
     acresDeltaFromSubject: acres != null && ctx.subjectAcres != null
       ? Math.round((acres - ctx.subjectAcres) * 100) / 100 : null,
@@ -812,10 +824,10 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
 }
 
 interface EvidenceCompValue {
-  address?: unknown; price?: unknown; acres?: unknown; pricePerAcre?: unknown; url?: unknown;
-  status?: unknown; saleDate?: unknown; listingDate?: unknown; daysOnMarket?: unknown; thumbnailUrl?: unknown;
+  address?: unknown; apn?: unknown; county?: unknown; state?: unknown; price?: unknown; acres?: unknown; pricePerAcre?: unknown; url?: unknown;
+  status?: unknown; saleDate?: unknown; listingDate?: unknown; daysOnMarket?: unknown; thumbnailUrl?: unknown; photoUrls?: unknown;
   /** Structure signals when the source published them; absent on most rows. */
-  propertyType?: unknown; description?: unknown;
+  propertyType?: unknown; description?: unknown; buildingSqft?: unknown; homeSizeSqft?: unknown; yearBuilt?: unknown;
 }
 
 /** Provider comp evidence retained in the research record but not persisted in landos_comp. */
@@ -834,6 +846,9 @@ function classifyEvidenceComp(
   const isActive = status === 'active' || status === 'listed' || status === 'pending';
   const isSold = status === 'sold';
   const source = /redfin/i.test(providerId) ? 'Redfin' : /zillow/i.test(providerId) ? 'Zillow' : /realtor/i.test(providerId) ? 'Realtor.com' : providerId;
+  const evidenceBuildingSqft = typeof value.buildingSqft === 'number' && value.buildingSqft > 0
+    ? value.buildingSqft
+    : typeof value.homeSizeSqft === 'number' && value.homeSizeSqft > 0 ? value.homeSizeSqft : null;
   // Research-record rows reach this path without a property class, so listing
   // status alone used to decide the lane and every marketplace house listing
   // landed in active vacant-land competition. The row's own text is the only
@@ -842,6 +857,7 @@ function classifyEvidenceComp(
     propertyClass: typeof value.propertyType === 'string' ? value.propertyType : null,
     addressDesc: typeof value.address === 'string' ? value.address : null,
     descriptionText: typeof value.description === 'string' ? value.description : null,
+    buildingSqft: evidenceBuildingSqft,
   });
   const category: WorkspaceCompCategory = evidenceImproved.improved
     ? 'improved_context'
@@ -854,6 +870,9 @@ function classifyEvidenceComp(
         ? `Sold record retained from ${source} research evidence only; it has not been promoted into the canonical comp registry, so it cannot support valuation.`
         : `Priced reference retained from ${source} without a stated transaction status.`;
   const address = typeof value.address === 'string' && value.address ? value.address : null;
+  const evidenceApn = typeof value.apn === 'string' && value.apn.trim() ? value.apn.trim() : null;
+  const evidenceCounty = typeof value.county === 'string' && value.county.trim() ? value.county.trim() : null;
+  const evidenceState = typeof value.state === 'string' && value.state.trim() ? value.state.trim() : addressStateCode(address);
   const cached = ctx.locations.get(address);
   const location: ResolvedLocation = cached
     ? {
@@ -867,12 +886,16 @@ function classifyEvidenceComp(
   const missing: string[] = [];
   if (acres == null) missing.push('acreage');
   if (!value.saleDate && !value.listingDate) missing.push('date');
-  missing.push('APN');
+  if (!evidenceApn) missing.push('APN');
   const dateIso = typeof value.saleDate === 'string' && value.saleDate ? value.saleDate
     : typeof value.listingDate === 'string' && value.listingDate ? value.listingDate : null;
   const thumbnailUrl = typeof value.thumbnailUrl === 'string' && value.thumbnailUrl ? value.thumbnailUrl : null;
+  const photoUrls = Array.isArray(value.photoUrls)
+    ? [...new Set(value.photoUrls.filter((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url)))]
+    : [];
   const visual = resolveCompVisual({
     thumbnailUrl,
+    photoUrls,
     sourceLabel: source,
     lat: location.lat, lng: location.lng,
     locationResolved: location.resolved,
@@ -886,9 +909,9 @@ function classifyEvidenceComp(
     detail: null,
     transactionKind,
     address,
-    apn: null,
-    county: null,
-    state: null,
+    apn: evidenceApn,
+    county: evidenceCounty,
+    state: evidenceState,
     acres,
     subjectAcres: ctx.subjectAcres,
     distanceMiles: distance,
@@ -901,10 +924,11 @@ function classifyEvidenceComp(
     retainedDateIso: dateIso,
     providerDaysOnMarket: typeof value.daysOnMarket === 'number' && value.daysOnMarket >= 0 ? value.daysOnMarket : null,
     retainedListingDateIso: typeof value.listingDate === 'string' && value.listingDate ? value.listingDate : null,
-    propertyClass: 'unknown',
-    buildingSqft: null,
+    propertyClass: evidenceImproved.improved ? 'improved' : 'unknown',
+    buildingSqft: evidenceBuildingSqft,
     roadFrontageVerified: null,
     visualProvenanceDetail: visual.detail,
+    retainedPhotoUrls: photoUrls.map((url) => ({ url, label: visual.label })),
     todayIso: new Date(ctx.nowMs).toISOString().slice(0, 10),
   });
   return {
@@ -922,13 +946,14 @@ function classifyEvidenceComp(
     source,
     sourceUrl,
     origins: [source],
+    duplicatesMerged: 0,
     fromLandPortalSidebar: false,
     fromLandPortalShowOnMap: false,
     mergeStatus: null,
     address,
-    apn: null,
-    county: null,
-    state: null,
+    apn: evidenceApn,
+    county: evidenceCounty,
+    state: evidenceState,
     distanceMiles: distance,
     outsideInitialRadius: distance != null ? distance > INITIAL_COMP_RADIUS_MILES : null,
     lat: location.lat,
@@ -945,9 +970,10 @@ function classifyEvidenceComp(
     dateIso,
     daysOnMarket: typeof value.daysOnMarket === 'number' && value.daysOnMarket >= 0 ? value.daysOnMarket : null,
     soldBy: null,
-    buildingSqft: null,
-    propertyClass: 'unknown',
+    buildingSqft: evidenceBuildingSqft,
+    propertyClass: evidenceImproved.improved ? 'improved' : 'unknown',
     thumbnailUrl,
+    photoUrls: listing.photos.items.map((photo) => photo.url),
     visual,
     acresDeltaFromSubject: acres != null && ctx.subjectAcres != null
       ? Math.round((acres - ctx.subjectAcres) * 100) / 100 : null,
@@ -1514,6 +1540,10 @@ export interface NegotiationReconciliation {
   hardCeiling: number;
   ceilingBasis: 'technical_inside_band' | 'technical_above_band' | 'technical_below_band';
   standardBand: { pct40: number; pct50: number; pct60: number };
+  referenceScope: 'land_basis' | 'whole_property_basis';
+  openingLabel: string;
+  targetLabel: string;
+  ceilingLabel: string;
   lines: string[];
   remainingAssumptions: string[];
 }
@@ -1522,6 +1552,7 @@ export function reconcileNegotiation(
   cleaned: CleanedValuation,
   quickFlip: QuickFlipUnderwriting | null,
   acquisitionLevels: { pct40: number; pct50: number; pct60: number } | null,
+  referenceScope: NegotiationReconciliation['referenceScope'] = 'whole_property_basis',
 ): NegotiationReconciliation | null {
   if (!quickFlip || cleaned.adoptedFmv == null) return null;
   const fmv = cleaned.adoptedFmv;
@@ -1549,13 +1580,21 @@ export function reconcileNegotiation(
     target = Math.min(band.pct50, round500(mao * 0.95));
     lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) is below the ${FLIP_STANDARD_BAND.low}% reference, so the ceiling is lowered below the standard band — the ${FLIP_STANDARD_BAND.low}% level is not treated as a floor. Cost, risk-reserve, and required-profit loads on this price point drive the reduction.`);
   }
-  lines.push(`Standard reference: ${money(band.pct40)} opening (40%), ${money(band.pct50)} target (50%), ${money(band.pct60)} upper reference (60%).`);
+  const scopeLabel = referenceScope === 'land_basis' ? 'LAND-BASIS reference' : 'whole-property reference';
+  lines.push(`Standard ${scopeLabel}: ${money(band.pct40)} opening (40%), ${money(band.pct50)} target (50%), ${money(band.pct60)} upper reference (60%).`);
+  if (referenceScope === 'land_basis') {
+    lines.push('These are LAND-BASIS negotiation references only. They are not completed whole-property offer recommendations; improvement value remains pending.');
+  }
   return {
     recommendedOpening: opening,
     recommendedTarget: target,
     hardCeiling: ceiling,
     ceilingBasis: basis,
     standardBand: band,
+    referenceScope,
+    openingLabel: referenceScope === 'land_basis' ? 'Land-basis opening reference' : 'Opening reference',
+    targetLabel: referenceScope === 'land_basis' ? 'Land-basis target reference' : 'Target reference',
+    ceilingLabel: referenceScope === 'land_basis' ? 'Land-basis ceiling reference' : 'Ceiling reference',
     lines,
     remainingAssumptions: [
       'Executable sale price equals the adopted cleaned FMV (no forced-sale discount applied).',
@@ -1594,6 +1633,117 @@ function compareComps(a: WorkspaceComp, b: WorkspaceComp): number {
   const db = b.distanceMiles ?? Number.POSITIVE_INFINITY;
   if (da !== db) return da - db;
   return (a.address ?? '').localeCompare(b.address ?? '');
+}
+
+const canonicalAddress = (value: string | null): string =>
+  (normalizeCompAddress(value) ?? '').replace(/\s+/g, '');
+
+function sameWorkspaceProperty(a: WorkspaceComp, b: WorkspaceComp): boolean {
+  const aApn = compactApn(a.apn);
+  const bApn = compactApn(b.apn);
+  if (aApn.length >= 5 && bApn.length >= 5 && aApn !== bApn) return false;
+  if (aApn.length >= 5 && bApn.length >= 5 && aApn === bApn) return true;
+  const aAddress = canonicalAddress(a.address);
+  const bAddress = canonicalAddress(b.address);
+  if (aAddress && bAddress && aAddress === bAddress) return true;
+  if (a.locationResolved && b.locationResolved && a.lat != null && a.lng != null && b.lat != null && b.lng != null) {
+    return Math.abs(a.lat - b.lat) <= 0.0005 && Math.abs(a.lng - b.lng) <= 0.0005;
+  }
+  return !!a.sourceUrl && !!b.sourceUrl && a.sourceUrl.replace(/\/+$/, '').toLowerCase() === b.sourceUrl.replace(/\/+$/, '').toLowerCase();
+}
+
+/** One physical property once, with every provider and photograph attached. */
+function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[]; duplicatesMerged: number } {
+  const kept: WorkspaceComp[] = [];
+  let duplicatesMerged = 0;
+  const rank = (comp: WorkspaceComp): number =>
+    (comp.compId != null ? 100 : 0)
+    + (comp.category === 'accepted_closed_sale' ? 30 : comp.category === 'candidate_closed_sale' ? 20 : comp.category === 'active_competition' ? 10 : 0)
+    + (comp.listing?.photos.count ?? 0);
+  const merge = (a: WorkspaceComp, b: WorkspaceComp): WorkspaceComp => {
+    const winner = rank(b) > rank(a) ? b : a;
+    const loser = winner === b ? a : b;
+    const origins = [...new Set([...winner.origins, ...loser.origins, winner.source, loser.source].filter(Boolean))];
+    const photos = [...new Set([
+      ...(winner.photoUrls ?? []), ...(loser.photoUrls ?? []),
+      ...(winner.listing?.photos.items ?? []).map((photo) => photo.url),
+      ...(loser.listing?.photos.items ?? []).map((photo) => photo.url),
+      winner.thumbnailUrl, loser.thumbnailUrl,
+    ].filter((url): url is string => typeof url === 'string' && isListingPhotoUrl(url)))];
+    const listing = winner.listing ? {
+      ...winner.listing,
+      photos: {
+        ...winner.listing.photos,
+        items: photos.map((url, photoIndex) => {
+          const existing = [...(winner.listing?.photos.items ?? []), ...(loser.listing?.photos.items ?? [])].find((photo) => photo.url === url);
+          return existing ?? { url, sequence: photoIndex + 1, label: winner.visual.label, provider: origins[0] ?? winner.source, context: photoIndex === 0 ? 'hero' as const : 'gallery' as const };
+        }),
+        count: photos.length,
+        hasGenuinePhotos: photos.length > 0,
+        provider: photos.length ? origins.join(' + ') : null,
+        fallbackNote: photos.length ? null : winner.listing.photos.fallbackNote,
+      },
+      evidence: {
+        ...winner.listing.evidence,
+        sourcePages: [...winner.listing.evidence.sourcePages, ...(loser.listing?.evidence.sourcePages ?? [])]
+          .filter((page, pageIndex, all) => all.findIndex((candidate) => candidate.url === page.url) === pageIndex),
+      },
+    } : loser.listing;
+    const improved = winner.propertyClass === 'improved' || loser.propertyClass === 'improved'
+      || winner.category === 'improved_context' || loser.category === 'improved_context';
+    const thumbnailUrl = photos[0] ?? winner.thumbnailUrl ?? loser.thumbnailUrl;
+    const visual = resolveCompVisual({
+      thumbnailUrl,
+      photoUrls: photos,
+      sourceLabel: origins.join(' + '),
+      aerialUrl: winner.visual.provenance === 'parcel_aerial' || winner.visual.provenance === 'satellite_fallback'
+        ? winner.visual.url
+        : loser.visual.provenance === 'parcel_aerial' || loser.visual.provenance === 'satellite_fallback' ? loser.visual.url : null,
+      hasParcelGeometry: winner.visual.provenance === 'parcel_aerial' || loser.visual.provenance === 'parcel_aerial',
+      lat: winner.lat ?? loser.lat,
+      lng: winner.lng ?? loser.lng,
+      locationResolved: winner.locationResolved || loser.locationResolved,
+      addressOrApn: winner.address ?? loser.address ?? winner.apn ?? loser.apn,
+    });
+    return {
+      ...winner,
+      source: origins.join(' + '),
+      origins,
+      sourceUrl: winner.sourceUrl ?? loser.sourceUrl,
+      thumbnailUrl,
+      photoUrls: photos,
+      listing,
+      visual,
+      duplicatesMerged: (winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1,
+      mergeStatus: `${origins.length} source observation(s) reconciled to one physical property; ${(winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1} duplicate row(s) merged.`,
+      ...(improved ? {
+        category: 'improved_context' as const,
+        categoryLabel: WORKSPACE_CATEGORY_LABELS.improved_context,
+        classificationReason: `Reconciled listing evidence identifies improvements on this property. It is retained as improved-property context and excluded from the vacant-land valuation even when another provider supplied a land-classified row. ${winner.classificationReason}`,
+        eligibleForValuation: false,
+        selectedForValuation: false,
+        propertyClass: 'improved' as const,
+        inValuationSet: false,
+        valuationRole: null,
+        valuationWeight: null,
+        zeroWeightReason: 'Improvement evidence is attached to this physical property; its price cannot silently enter the vacant-land calculation.',
+      } : {}),
+    };
+  };
+  for (const comp of input) {
+    let merged: WorkspaceComp = { ...comp, origins: [...new Set(comp.origins.length ? comp.origins : [comp.source])] };
+    let insertion = kept.length;
+    for (;;) {
+      const index = kept.findIndex((candidate) => sameWorkspaceProperty(candidate, merged));
+      if (index < 0) break;
+      insertion = Math.min(insertion, index);
+      merged = merge(kept[index], merged);
+      kept.splice(index, 1);
+      duplicatesMerged += 1;
+    }
+    kept.splice(Math.min(insertion, kept.length), 0, merged);
+  }
+  return { comps: kept.sort(compareComps), duplicatesMerged };
 }
 
 export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: number } = {}): CompsValuationView | null {
@@ -1647,6 +1797,7 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   };
 
   const inspection = propertyCardId != null ? loadPropertyInspection(propertyCardId) : null;
+  const subjectImprovement = readSubjectImprovement(inspection);
   const retainedInspection = inspection ? currentComparables(inspection) : [];
   const ctx: ClassifyContext = {
     subjectAcres,
@@ -1659,11 +1810,9 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
 
   const persisted = listComps({ dealCardId }).map((row) => classifyPersistedComp(row, ctx));
 
-  // Research-record comp evidence not already represented by a persisted row
-  // (matched by source URL or compacted APN). Display-only; never selectable.
-  const persistedUrls = new Set(persisted.map((c) => c.sourceUrl).filter(Boolean) as string[]);
-  const persistedApns = new Set(persisted.map((c) => compactApn(c.apn)).filter((k) => k.length >= 5));
-  const persistedAddresses = new Set(persisted.map((c) => (c.address ?? '').replace(/\s+/g, ' ').trim().toLowerCase()).filter(Boolean));
+  // Research-record comp evidence joins the persisted registry here. The
+  // canonical dedupe pass below attaches marketplace provenance to the same
+  // physical property rather than silently dropping the corroborating source.
   const evidenceComps: WorkspaceComp[] = [];
   if (propertyCardId != null) {
     const record = new PropertyResearchStore().loadForProperty(propertyCardId);
@@ -1671,16 +1820,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
       if (item.kind !== 'comp') continue;
       const value = (item.value ?? {}) as EvidenceCompValue & { apn?: unknown };
       const url = typeof value.url === 'string' && value.url ? value.url : item.sourceUrl ?? null;
-      if (url && persistedUrls.has(url)) continue;
-      const apnKey = compactApn(typeof value.apn === 'string' ? value.apn : null);
-      if (apnKey.length >= 5 && persistedApns.has(apnKey)) continue;
-      const addressKey = typeof value.address === 'string' ? value.address.replace(/\s+/g, ' ').trim().toLowerCase() : '';
-      if (addressKey && persistedAddresses.has(addressKey)) continue;
       evidenceComps.push(classifyEvidenceComp(item.id, item.providerId, value, url, ctx));
     }
   }
 
-  const comps = [...persisted, ...evidenceComps].sort(compareComps);
+  const canonical = dedupeWorkspaceComps([...persisted, ...evidenceComps]);
+  const comps = canonical.comps;
 
   // ── Acreage band + sale-recency window ────────────────────────────────────
   // Every credible closed vacant-land sale is offered to the selector; the
@@ -1806,7 +1951,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const expectedMarketingDays = marketContext.subjectBand.metrics?.medianDaysOnMarket
     ?? marketContext.county.metrics?.medianDaysOnMarket ?? null;
   const quickFlip = computeQuickFlipUnderwriting(cleaned.adoptedFmv, expectedMarketingDays);
-  const negotiation = reconcileNegotiation(cleaned, quickFlip, summary.acquisitionLevels);
+  const negotiation = reconcileNegotiation(
+    cleaned,
+    quickFlip,
+    summary.acquisitionLevels,
+    subjectImprovement.improved ? 'land_basis' : 'whole_property_basis',
+  );
 
   const sidebarCount = persisted.filter((c) => c.fromLandPortalSidebar).length;
   const showOnMapCount = persisted.filter((c) => c.fromLandPortalShowOnMap).length;
@@ -1844,10 +1994,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     dealCardId,
     propertyCardId,
     subject,
-    subjectImprovement: readSubjectImprovement(inspection),
+    subjectImprovement,
     summary,
     comps,
     counts,
+    canonicalCompCount: counts.total,
+    duplicatesMerged: comps.reduce((sum, comp) => sum + (comp.duplicatesMerged ?? 0), 0),
     mapCounts,
     landPortal: { sidebarCount, showOnMapCount, mergedUniqueCount },
     cleaned,

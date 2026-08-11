@@ -1919,3 +1919,484 @@ body:has(.awv2) .awv2 {
   .awv2-lu-scenario { padding: 10px 11px; }
   .awv2-lu-use-head { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
+
+/* ══ Shared workspace primitives ═══════════════════════════════════════════
+   Everything below is used by all three sections (Overview, Property
+   Intelligence, Comps & Valuation) so a resolved fact looks the same
+   wherever it lands, and so the reading order — summary, then
+   decision-useful intelligence, then supporting evidence — is carried by
+   weight rather than by the operator's patience. Nothing here is
+   section-specific; a section that needs a variant adds it in its own
+   stylesheet on top of these. */
+
+/* ── 1. Summary-first hierarchy scale ─────────────────────────────────────
+   Three tiers, deliberately far apart. The lead block is the only thing
+   sized to be read at a glance; the support tier is sized to be skipped.
+   Each may be used on its own or as a modifier on .awv2-panel. */
+
+.awv2-lead {
+  background: linear-gradient(180deg, rgba(201, 164, 92, 0.06), transparent 60%), var(--awv2-panel);
+  border: 1px solid var(--awv2-line-strong);
+  border-left: 3px solid var(--awv2-brass);
+  border-radius: 12px;
+  padding: 20px 24px;
+  min-width: 0;
+}
+.awv2-lead .awv2-panel-title { color: var(--awv2-brass); margin-bottom: 14px; }
+.awv2-lead-headline {
+  font-family: var(--awv2-serif);
+  font-size: clamp(19px, 1.5vw, 25px);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--awv2-bone);
+  margin: 0 0 6px;
+}
+.awv2-lead-sub {
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--awv2-bone-dim);
+  margin: 0;
+  max-width: 78ch;
+}
+.awv2-lead-sub b { color: var(--awv2-bone); font-weight: 600; }
+
+.awv2-intel {
+  background: var(--awv2-panel);
+  border: 1px solid var(--awv2-line);
+  border-radius: 12px;
+  padding: 16px 20px;
+  min-width: 0;
+}
+.awv2-intel-head {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-dim);
+  margin-bottom: 10px;
+}
+.awv2-intel p, .awv2-intel li { font-size: 13.5px; line-height: 1.6; color: var(--awv2-bone-dim); }
+
+/* The support tier recedes on purpose: no fill, dashed rule, one step down
+   in size and two in contrast. Evidence stays reachable without competing
+   with the answer it supports. */
+.awv2-support {
+  background: transparent;
+  border: 1px dashed var(--awv2-line);
+  border-radius: 10px;
+  padding: 12px 16px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--awv2-bone-faint);
+}
+.awv2-support .awv2-panel-title,
+.awv2-support-head {
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  margin-bottom: 8px;
+}
+.awv2-support p, .awv2-support li { font-size: 12.5px; line-height: 1.55; color: var(--awv2-bone-faint); margin: 0 0 4px; }
+.awv2-support b { color: var(--awv2-bone-dim); font-weight: 600; }
+.awv2-support a { color: var(--awv2-brass); }
+
+/* Vertical rhythm between the three tiers when a page stacks them. */
+.awv2-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.awv2-stack > .awv2-support { margin-top: -4px; }
+
+/* ── 2. Canonical fact rows + provenance ──────────────────────────────────
+   A resolved fact is written once, here. The sources that agreed on it sit
+   underneath as provenance, at a weight that reads as a footnote rather
+   than as four more facts. */
+
+.awv2-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px 24px;
+  min-width: 0;
+}
+.awv2-facts.narrow { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.awv2-facts.rows { grid-template-columns: 1fr; gap: 8px; }
+
+.awv2-fact { min-width: 0; }
+.awv2-fact > .k {
+  display: block;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  margin-bottom: 3px;
+}
+.awv2-fact > .v {
+  font-family: var(--awv2-mono);
+  font-size: 15px;
+  line-height: 1.35;
+  color: var(--awv2-bone);
+  overflow-wrap: anywhere;
+}
+.awv2-fact > .v.lg { font-size: 19px; font-weight: 700; }
+.awv2-fact > .v.good { color: var(--awv2-moss); }
+.awv2-fact > .v.warn { color: var(--awv2-amber); }
+.awv2-fact > .v.bad { color: var(--awv2-rust); }
+.awv2-fact > .n { display: block; font-size: 11.5px; line-height: 1.45; color: var(--awv2-bone-faint); margin-top: 3px; }
+
+/* Definition-list variant for a dense single column of canonical identity. */
+.awv2-deflist { display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 7px 16px; font-size: 13.5px; min-width: 0; }
+.awv2-deflist dt, .awv2-deflist .k {
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  align-self: baseline;
+}
+.awv2-deflist dd, .awv2-deflist .v { margin: 0; color: var(--awv2-bone); min-width: 0; overflow-wrap: anywhere; }
+
+/* Provenance: who said it, not what it is. Never sized to be read first. */
+.awv2-prov {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+}
+.awv2-prov-src {
+  border: 1px solid var(--awv2-line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+/* Sources that agreed are one quiet mark, not one row each. */
+.awv2-prov-agree { color: var(--awv2-moss); border-color: rgba(143, 174, 124, 0.35); }
+.awv2-prov-src a { color: inherit; text-decoration: none; }
+.awv2-prov-src a:hover { color: var(--awv2-brass-bright); }
+.awv2-prov-stamp { font-style: italic; letter-spacing: 0.04em; text-transform: none; }
+
+/* ── 3. Collapsed diagnostics ─────────────────────────────────────────────
+   Collector, adapter, polygon-dependency and source-count text is evidence,
+   not reading. It uses the existing .awv2-collapse summary idiom so every
+   expander on the workspace opens the same way. */
+
+.awv2-diag > summary { color: var(--awv2-bone-faint); font-family: var(--awv2-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.awv2-diag > summary:hover { color: var(--awv2-bone-dim); }
+.awv2-diag-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 8px;
+  background: var(--awv2-panel-2);
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--awv2-bone-faint);
+  max-height: 340px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.awv2-diag-body p, .awv2-diag-body li { font-family: inherit; font-size: inherit; line-height: inherit; color: inherit; margin: 0 0 4px; }
+.awv2-diag-body b { color: var(--awv2-bone-dim); font-weight: 600; }
+
+/* ── 4. Status & uncertainty chips ────────────────────────────────────────
+   Uncertainty gets one small chip, never a paragraph. The rule that matters
+   most: `unavailable` must not read like a value. It is dashed, unfilled and
+   italic, and it never carries a number — a real zero is a solid mono
+   figure (.awv2-num.zero) and cannot be mistaken for it. */
+
+.awv2-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  color: var(--awv2-bone-faint);
+  vertical-align: 1px;
+}
+.awv2-flag.verified { color: var(--awv2-moss); background: var(--awv2-moss-soft); border-color: rgba(143, 174, 124, 0.4); }
+.awv2-flag.reported { color: var(--awv2-brass-bright); background: var(--awv2-brass-soft); border-color: rgba(201, 164, 92, 0.4); }
+.awv2-flag.pending { color: var(--awv2-amber); background: var(--awv2-amber-soft); border-color: rgba(217, 161, 61, 0.4); }
+.awv2-flag.unverified { color: var(--awv2-amber); background: transparent; border-color: rgba(217, 161, 61, 0.45); border-style: dashed; }
+.awv2-flag.not-located { color: var(--awv2-bone-faint); background: transparent; border-style: dashed; }
+.awv2-flag.conflict { color: var(--awv2-rust); background: var(--awv2-rust-soft); border-color: rgba(217, 118, 98, 0.45); }
+/* Absence of data, never a quantity. */
+.awv2-flag.unavailable {
+  color: var(--awv2-bone-faint);
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--awv2-line-strong);
+  font-style: italic;
+  letter-spacing: 0.06em;
+}
+.awv2-flag.unavailable::before { content: '—'; color: var(--awv2-line-strong); font-style: normal; }
+
+/* A real count. Solid, mono, full-contrast — including when it is 0. */
+.awv2-num { font-family: var(--awv2-mono); font-size: 15px; color: var(--awv2-bone); font-variant-numeric: tabular-nums; }
+.awv2-num.lg { font-size: 21px; font-weight: 700; }
+.awv2-num.zero { color: var(--awv2-bone); font-style: normal; }
+
+/* One-line uncertainty note where a chip alone is too terse. Capped so it
+   can never grow back into a caveat block. */
+.awv2-uncertain { font-size: 12px; line-height: 1.5; color: var(--awv2-bone-faint); font-style: italic; max-width: 72ch; margin: 4px 0 0; }
+.awv2-uncertain b { color: var(--awv2-bone-dim); font-style: normal; }
+
+/* ── 5. Active-listing card ───────────────────────────────────────────────
+   The subject is on the open market: that is a headline, so it gets brass
+   and a price at display size. Engagement counts sit beside the listing age
+   they have to be read against. */
+
+.awv2-listing {
+  border: 1px solid rgba(201, 164, 92, 0.5);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(201, 164, 92, 0.08), transparent 55%), var(--awv2-panel);
+  padding: 16px 20px;
+  min-width: 0;
+}
+.awv2-listing.inactive { border-color: var(--awv2-line); background: var(--awv2-panel); }
+.awv2-listing-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 10px; }
+.awv2-listing-status {
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--awv2-moss);
+  background: var(--awv2-moss-soft);
+  border: 1px solid rgba(143, 174, 124, 0.45);
+  border-radius: 999px;
+  padding: 3px 11px;
+  white-space: nowrap;
+}
+.awv2-listing-status.pending { color: var(--awv2-amber); background: var(--awv2-amber-soft); border-color: rgba(217, 161, 61, 0.45); }
+.awv2-listing-status.off { color: var(--awv2-bone-faint); background: transparent; border-color: var(--awv2-line-strong); }
+.awv2-listing-price { font-family: var(--awv2-mono); font-size: 26px; font-weight: 700; color: var(--awv2-brass-bright); line-height: 1; }
+.awv2-listing-price .per { font-size: 12.5px; font-weight: 400; color: var(--awv2-bone-faint); margin-left: 6px; }
+.awv2-listing-age { font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-bone-dim); }
+
+.awv2-listing-engagement { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 10px 0; padding: 9px 0; border-top: 1px solid var(--awv2-line); border-bottom: 1px solid var(--awv2-line); }
+.awv2-listing-engagement .e { min-width: 0; }
+.awv2-listing-engagement .e .k {
+  display: block;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  margin-bottom: 2px;
+}
+.awv2-listing-engagement .e .v { font-family: var(--awv2-mono); font-size: 17px; color: var(--awv2-bone); font-variant-numeric: tabular-nums; }
+.awv2-listing-engagement .note { flex: 1 1 100%; font-size: 11.5px; color: var(--awv2-bone-faint); font-style: italic; }
+
+.awv2-listing-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 9px 20px; margin-bottom: 10px; }
+.awv2-listing-changes { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.awv2-listing-change { display: flex; align-items: baseline; gap: 10px; font-size: 12.5px; color: var(--awv2-bone-dim); }
+.awv2-listing-change .d { font-family: var(--awv2-mono); font-size: 11px; color: var(--awv2-bone-faint); flex: none; min-width: 78px; }
+.awv2-listing-change .amt { font-family: var(--awv2-mono); color: var(--awv2-bone); }
+.awv2-listing-change.down .amt { color: var(--awv2-rust); }
+.awv2-listing-change.up .amt { color: var(--awv2-moss); }
+
+.awv2-listing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.awv2-listing-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--awv2-brass-bright);
+  background: var(--awv2-brass-soft);
+  border: 1px solid rgba(201, 164, 92, 0.45);
+  border-radius: 8px;
+  padding: 6px 12px;
+  text-decoration: none;
+}
+.awv2-listing-link:hover { border-color: var(--awv2-brass); }
+.awv2-listing-link:focus-visible { outline: 2px solid var(--awv2-brass); outline-offset: 1px; }
+/* Engagement counts move; the read is only meaningful with its timestamp. */
+.awv2-listing-stamp { font-family: var(--awv2-mono); font-size: 10.5px; color: var(--awv2-bone-faint); letter-spacing: 0.05em; }
+
+/* ── 6. Zoning / subdivision matrix ───────────────────────────────────────
+   A question per row, an answer per row, and the source beside it. Replaces
+   the repeated Unverified / No provision located paragraphs: the same
+   uncertainty, one line each, scannable down the answer column. */
+
+.awv2-matrix { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(180px, 1.4fr) auto; gap: 0; min-width: 0; font-size: 13px; }
+.awv2-matrix-head {
+  display: contents;
+}
+.awv2-matrix-head > span {
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  padding: 0 12px 6px 0;
+  border-bottom: 1px solid var(--awv2-line-strong);
+}
+.awv2-matrix-row { display: contents; }
+.awv2-matrix-row > * { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--awv2-line); min-width: 0; }
+.awv2-matrix-row:last-child > * { border-bottom: none; }
+.awv2-matrix-row .q { color: var(--awv2-bone-dim); }
+.awv2-matrix-row .a { color: var(--awv2-bone); overflow-wrap: anywhere; }
+.awv2-matrix-row .a.unresolved { color: var(--awv2-bone-faint); font-style: italic; }
+.awv2-matrix-row .s { text-align: right; padding-right: 0; white-space: nowrap; }
+@media (max-width: 720px) {
+  .awv2-matrix { grid-template-columns: 1fr; }
+  .awv2-matrix-head { display: none; }
+  .awv2-matrix-row > * { border-bottom: none; padding-bottom: 2px; }
+  .awv2-matrix-row .s { text-align: left; padding-bottom: 10px; border-bottom: 1px solid var(--awv2-line); }
+}
+/* Said once, under the matrix, not repeated per row. */
+.awv2-matrix-note { font-size: 11.5px; line-height: 1.55; color: var(--awv2-bone-faint); font-style: italic; margin-top: 10px; max-width: 76ch; }
+
+/* ── 7. Access evidence ladder ────────────────────────────────────────────
+   Four rungs, rendered once: parcel/landlocked flag, apparent physical
+   access, reported legal/easement access, verified recorded legal access.
+   The rungs are numbered and the last one is styled to stay visibly empty
+   until it is genuinely earned — a visible driveway is rung two, never
+   rung four. */
+
+.awv2-access { display: flex; flex-direction: column; gap: 8px; min-width: 0; counter-reset: awv2-rung; }
+.awv2-access-rung {
+  display: grid;
+  grid-template-columns: 26px minmax(140px, 1fr) minmax(0, 2fr) auto;
+  align-items: baseline;
+  gap: 6px 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--awv2-line);
+  border-left: 2px solid var(--awv2-line-strong);
+  border-radius: 8px;
+  background: var(--awv2-panel-2);
+  min-width: 0;
+}
+.awv2-access-rung::before {
+  counter-increment: awv2-rung;
+  content: counter(awv2-rung);
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  color: var(--awv2-bone-faint);
+  text-align: center;
+}
+.awv2-access-rung .rung-label { font-size: 13px; color: var(--awv2-bone); font-weight: 600; }
+.awv2-access-rung .rung-detail { font-size: 12.5px; line-height: 1.5; color: var(--awv2-bone-dim); min-width: 0; overflow-wrap: anywhere; }
+.awv2-access-rung .rung-state { justify-self: end; }
+.awv2-access-rung.confirmed { border-left-color: var(--awv2-moss); }
+.awv2-access-rung.apparent { border-left-color: var(--awv2-brass); }
+.awv2-access-rung.reported { border-left-color: var(--awv2-amber); }
+.awv2-access-rung.unverified { border-style: dashed; border-left-color: var(--awv2-line-strong); background: transparent; }
+.awv2-access-rung.unverified .rung-label { color: var(--awv2-bone-dim); font-weight: 500; }
+@media (max-width: 720px) {
+  .awv2-access-rung { grid-template-columns: 26px 1fr; }
+  .awv2-access-rung .rung-detail { grid-column: 2; }
+  .awv2-access-rung .rung-state { grid-column: 2; justify-self: start; }
+}
+
+/* ── 8. Comp thumbnail + photo carousel ───────────────────────────────────
+   Thumbnail, one stage image, prev/next and a thumbnail strip. No lightbox
+   dependency: the existing .awv2-viewer already owns full-screen inspection,
+   so this stays a browse affordance inside the card. */
+
+.awv2-thumb {
+  position: relative;
+  display: block;
+  width: 132px;
+  height: 94px;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--awv2-panel-2);
+  flex: none;
+  padding: 0;
+  cursor: pointer;
+}
+.awv2-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.awv2-thumb:hover img { opacity: 0.9; }
+.awv2-thumb:focus-visible { outline: 2px solid var(--awv2-brass); outline-offset: 1px; }
+.awv2-thumb.none { display: grid; place-items: center; border-style: dashed; cursor: default; font-size: 10px; color: var(--awv2-bone-faint); text-align: center; }
+/* Photo count badge: tells the operator a gallery exists before they click. */
+.awv2-thumb-count {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  font-family: var(--awv2-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--awv2-bone);
+  background: rgba(9, 11, 14, 0.82);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.awv2-carousel { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.awv2-carousel-stage {
+  position: relative;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--awv2-ink);
+  min-width: 0;
+}
+.awv2-carousel-stage img { display: block; width: 100%; height: clamp(200px, 30vh, 340px); object-fit: contain; }
+.awv2-carousel-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 999px;
+  background: rgba(22, 26, 23, 0.9);
+  color: var(--awv2-bone-dim);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+.awv2-carousel-nav.prev { left: 8px; }
+.awv2-carousel-nav.next { right: 8px; }
+.awv2-carousel-nav:hover { color: var(--awv2-bone); border-color: var(--awv2-brass); }
+.awv2-carousel-nav:focus-visible { outline: 2px solid var(--awv2-brass); outline-offset: 1px; }
+.awv2-carousel-nav:disabled { opacity: 0.35; cursor: default; }
+.awv2-carousel-pos {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  color: var(--awv2-bone-dim);
+  background: rgba(9, 11, 14, 0.82);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.awv2-carousel-caption { font-size: 11.5px; line-height: 1.45; color: var(--awv2-bone-faint); overflow-wrap: anywhere; }
+.awv2-carousel-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.awv2-carousel-thumb {
+  flex: none;
+  width: 64px;
+  height: 46px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--awv2-panel-2);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.65;
+}
+.awv2-carousel-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.awv2-carousel-thumb:hover { opacity: 0.9; }
+.awv2-carousel-thumb.active { opacity: 1; border-color: var(--awv2-brass); box-shadow: 0 0 0 1px rgba(201, 164, 92, 0.4); }
+.awv2-carousel-thumb:focus-visible { outline: 2px solid var(--awv2-brass); outline-offset: 1px; }

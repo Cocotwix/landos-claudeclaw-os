@@ -30,12 +30,35 @@ const DEFAULT_LANE_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_CHECK_TIMEOUT_MS = 15 * 60 * 1000;
 
 function git(cwd, args, { maxBuffer = 64 * 1024 * 1024 } = {}) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer });
+  // A mission may be resumed by a different local account (for example the
+  // Codex desktop sandbox) than the account that created its worktrees. Trust
+  // only the exact cwd for this invocation; never mutate global git config.
+  const result = spawnSync('git', ['-c', `safe.directory=${path.resolve(cwd)}`, ...args], { cwd, encoding: 'utf8', maxBuffer });
+  const status = result.status ?? null;
   return {
-    status: result.status ?? null,
+    // Three outcomes, never two. A git read that FAILED and a git read that
+    // legitimately returned nothing produce the same empty stdout, and every
+    // caller here used to collapse them into "nothing changed". That is how a
+    // sprint's lanes were reported as "0 file(s) changed" and dropped as
+    // "empty diff" while their worktrees held thousands of lines of real work.
+    // `ok` is the distinction; callers must consult it before trusting stdout.
+    ok: status === 0 && !result.error,
+    status,
     stdout: String(result.stdout ?? ''),
     stderr: String(result.stderr ?? result.error?.message ?? ''),
   };
+}
+
+/** A git read that could not be performed. Never silently degrades to "empty". */
+export class GitReadError extends Error {
+  constructor(what, cwd, result) {
+    super(`${what} failed in ${cwd} (exit ${result.status}): ${result.stderr.trim() || 'no stderr'}`);
+    this.name = 'GitReadError';
+    this.what = what;
+    this.cwd = cwd;
+    this.status = result.status;
+    this.stderr = result.stderr;
+  }
 }
 
 /** Run a shell command without blocking the event loop, so checks can overlap. */
@@ -83,7 +106,11 @@ export function prepareLaneWorkspace(root, mission, lane) {
   if (lane.workspace === 'primary') return { path: root, isolated: false, measure: true };
 
   const target = path.join(laneDir(root, mission.missionId, lane.id), 'worktree');
-  if (existsSync(target)) return { path: target, isolated: true };
+  // A worktree that already exists is a RESUMED lane, and it must still be
+  // measured. Omitting `measure` here made runLane take its `: []` branch, so a
+  // resumed lane reported zero changed paths and zero out-of-scope paths no
+  // matter what it did — the measurement was not wrong, it never ran.
+  if (existsSync(target)) return { path: target, isolated: true, measure: true, reused: true };
   mkdirSync(path.dirname(target), { recursive: true });
   const head = mission.baselineHead ?? git(root, ['rev-parse', 'HEAD']).stdout.trim();
   const result = git(root, ['worktree', 'add', '--detach', target, head]);
@@ -91,10 +118,18 @@ export function prepareLaneWorkspace(root, mission, lane) {
   return { path: target, isolated: true, measure: true };
 }
 
-/** What a lane changed, measured against its own clean starting checkout. */
+/**
+ * What a lane changed, measured against its own clean starting checkout.
+ *
+ * Throws rather than returning [] when git cannot be read. An unreadable
+ * worktree is not an empty one, and the caller must be forced to say which it
+ * saw: reporting "0 file(s) changed" for work the harness merely failed to
+ * measure is worse than reporting nothing at all, because it reads as a fact.
+ */
 export function laneChangedPaths(workspace) {
-  const status = git(workspace, ['status', '--short', '--untracked-files=all']).stdout;
-  return [...parseGitStatus(status)].filter((target) => !target.endsWith('/')).sort();
+  const result = git(workspace, ['status', '--short', '--untracked-files=all']);
+  if (!result.ok) throw new GitReadError('git status', workspace, result);
+  return [...parseGitStatus(result.stdout)].filter((target) => !target.endsWith('/')).sort();
 }
 
 /**
@@ -109,7 +144,9 @@ export function laneChangedPaths(workspace) {
  */
 export function snapshotTree(root) {
   const snapshot = new Map();
-  const dirty = [...parseGitStatus(git(root, ['status', '--short', '--untracked-files=all']).stdout)].filter(
+  const result = git(root, ['status', '--short', '--untracked-files=all']);
+  if (!result.ok) throw new GitReadError('git status', root, result);
+  const dirty = [...parseGitStatus(result.stdout)].filter(
     (target) => !target.endsWith('/'),
   );
   for (const file of dirty) {
@@ -245,7 +282,20 @@ export async function runLane(root, mission, lane, { report, timeoutMs = DEFAULT
   const workspace = prepareLaneWorkspace(root, mission, lane);
   // Only a shared (non-isolated) workspace needs a before-picture; an isolated
   // checkout is clean by construction, so its git status IS the delta.
-  const before = workspace.measure && !workspace.isolated ? snapshotTree(workspace.path) : null;
+  // A failed before-picture must not take the whole mission down, but it must
+  // also not silently become "no baseline". Falling back to null here would
+  // make the lane measure the whole tree's dirt as its own; recording the
+  // failure instead lets the delta read below report UNREADABLE honestly.
+  let before = null;
+  let beforeError = null;
+  if (workspace.measure && !workspace.isolated) {
+    try {
+      before = snapshotTree(workspace.path);
+    } catch (error) {
+      if (!(error instanceof GitReadError)) throw error;
+      beforeError = error;
+    }
+  }
   const builder = getBuilder(lane.builderId ?? 'cc');
   const prompt = promptText ?? composeLanePrompt(root, mission, lane);
   writeFileSync(path.join(directory, 'prompt.md'), prompt, 'utf8');
@@ -278,31 +328,55 @@ export async function runLane(root, mission, lane, { report, timeoutMs = DEFAULT
   const report_text = launch.finalMessage ?? launch.stdout;
   const discoveries = harvestDiscoveries(root, mission.missionId, lane.id, report_text);
 
-  const changed = workspace.measure
-    ? before
-      ? changedSince(workspace.path, before)
-      : laneChangedPaths(workspace.path)
-    : [];
-  const strays = workspace.measure ? outOfScope(changed, lane.ownedPaths) : [];
+  // Measuring the lane's delta can itself fail. When it does, the honest record
+  // is "unknown", never []. `changedPaths: null` is what downstream integration
+  // reads to know it must re-derive the delta from the worktree instead of
+  // concluding the lane changed nothing.
+  let changed = [];
+  let readError = beforeError;
+  if (workspace.measure && !readError) {
+    try {
+      changed = before ? changedSince(workspace.path, before) : laneChangedPaths(workspace.path);
+    } catch (error) {
+      if (!(error instanceof GitReadError)) throw error;
+      readError = error;
+    }
+  }
+  const strays = workspace.measure && !readError ? outOfScope(changed, lane.ownedPaths) : [];
 
   lane.finishedAt = new Date().toISOString();
   lane.durationMs = launch.durationMs;
   lane.exitCode = launch.exitCode;
   lane.claim = launch.claim;
   lane.error = launch.error;
-  lane.changedPaths = changed;
+  lane.changedPaths = readError ? null : changed;
+  lane.changedPathsRead = workspace.measure ? (readError ? 'failed' : 'ok') : 'not-measured';
+  lane.changedPathsError = readError
+    ? { what: readError.what, status: readError.status, stderr: readError.stderr.slice(0, 4000) }
+    : null;
+  lane.workspaceReused = workspace.reused === true;
   lane.outOfScopePaths = strays;
   lane.discoveryCount = discoveries.length;
   // A recon lane that produced no discovery taught nobody anything, which is a
   // failure of the lane even though the process exited cleanly.
+  // A lane whose delta could not be read is never "complete": its scope cannot
+  // be checked, so promoting it would integrate unreviewed paths. It is also
+  // never "changed nothing" — integration re-derives it from the worktree.
+  lane.timedOut = launch.timedOut === true;
   lane.status =
-    launch.launched && !strays.length && (lane.kind !== 'recon' || discoveries.length > 0) ? 'complete' : 'failed';
+    launch.launched && !readError && !strays.length && (lane.kind !== 'recon' || discoveries.length > 0)
+      ? 'complete'
+      : 'failed';
+  if (readError && !lane.error) lane.error = `changed-path read failed: ${readError.message}`;
   saveMission(root, mission);
 
+  const deltaText = readError
+    ? `changed paths UNREADABLE (${readError.what} exit ${readError.status})`
+    : `${changed.length} file(s) changed`;
   report?.('lane.finish', {
     message:
       `lane ${lane.id} ${lane.status} in ${Math.round(launch.durationMs / 1000)}s ` +
-      `(claim ${launch.claim}, ${changed.length} file(s) changed, ${discoveries.length} discovery(ies))` +
+      `(claim ${launch.claim}${launch.timedOut ? ', TIMED OUT' : ''}, ${deltaText}, ${discoveries.length} discovery(ies))` +
       (strays.length ? ` OUT OF SCOPE: ${strays.join(', ')}` : ''),
     laneId: lane.id,
     durationMs: launch.durationMs,
@@ -368,10 +442,42 @@ export function integrate(root, mission, { report } = {}) {
   // contract requires be preserved. The property that actually matters is that
   // nothing this integration patches is already modified, because that is the
   // only case where applying a lane patch could destroy someone else's edit.
-  const primaryDirty = new Set(parseGitStatus(git(root, ['status', '--short', '--untracked-files=all']).stdout));
-  const incoming = mission.lanes
-    .filter((lane) => lane.kind !== 'recon' && lane.status === 'complete')
-    .flatMap((lane) => lane.changedPaths);
+  const primaryStatus = git(root, ['status', '--short', '--untracked-files=all']);
+  if (!primaryStatus.ok) {
+    return {
+      integrated: false,
+      reason:
+        `cannot read the primary worktree's status, so it is unknown whether applying lane patches would overwrite ` +
+        `uncommitted work (git status exit ${primaryStatus.status}): ${primaryStatus.stderr.trim() || 'no stderr'}`,
+      lanes: [],
+      files: [],
+    };
+  }
+  const primaryDirty = new Set(parseGitStatus(primaryStatus.stdout));
+  // A mission can be resumed after integration when a focused, validation or
+  // browser check fails. Those patches are already present on the primary tree
+  // and are intentionally dirty. Replaying them would collide with the
+  // mission's own work, so retain the prior integration record and apply only
+  // lanes that have not yet been integrated.
+  const priorApplied = new Map(
+    (mission.integration?.lanes ?? [])
+      .filter((entry) => entry.applied)
+      .map((entry) => [entry.laneId, entry]),
+  );
+  const primaryWorkspaceApplied = mission.lanes
+    .filter((lane) => lane.kind !== 'recon' && lane.status === 'complete' && lane.workspace === 'primary')
+    .map((lane) => ({
+      laneId: lane.id,
+      applied: true,
+      reason: null,
+      files: lane.changedPaths ?? [],
+      alreadyApplied: true,
+    }));
+  const candidates = mission.lanes.filter(
+    (lane) => lane.kind !== 'recon' && lane.status === 'complete' && lane.workspace !== 'primary' && !priorApplied.has(lane.id),
+  );
+  const incoming = candidates
+    .flatMap((lane) => lane.changedPaths ?? []);
   const collisions = [...new Set(incoming.filter((target) => primaryDirty.has(target)))].sort();
   if (collisions.length) {
     return {
@@ -384,34 +490,76 @@ export function integrate(root, mission, { report } = {}) {
     };
   }
 
-  const results = [];
-  const applied = [];
-  for (const lane of mission.lanes.filter((entry) => entry.kind !== 'recon' && entry.status === 'complete')) {
-    if (!lane.changedPaths.length) {
+  const results = [
+    ...[...priorApplied.values()].map((entry) => ({ ...entry, alreadyApplied: true })),
+    ...primaryWorkspaceApplied.filter((entry) => !priorApplied.has(entry.laneId)),
+  ];
+  const applied = results.flatMap((entry) => entry.files ?? []);
+  for (const lane of candidates) {
+    // `changedPaths: null` means the measurement failed, NOT that the lane was
+    // idle. Only an empty array is evidence of an idle lane.
+    if (Array.isArray(lane.changedPaths) && !lane.changedPaths.length) {
       results.push({ laneId: lane.id, applied: false, reason: 'lane changed nothing', files: [] });
       continue;
     }
     const workspace = path.resolve(root, lane.worktree);
     // Staging inside the disposable lane worktree is what makes new files show
     // up in the diff at all; the worktree is thrown away afterwards.
-    git(workspace, ['add', '-A']);
-    const diff = git(workspace, ['diff', '--cached', '--binary']).stdout;
+    //
+    // Both of these reads used to be trusted blindly. `git add -A`'s result was
+    // discarded outright, and a failed `git diff` returns the same empty stdout
+    // as a clean tree — so any failure here was reported as "empty diff" and the
+    // lane's work was silently thrown away. Check both.
+    const staged = git(workspace, ['add', '-A']);
+    if (!staged.ok) {
+      const detail = `git add -A failed (exit ${staged.status}): ${staged.stderr.trim() || 'no stderr'}`;
+      results.push({
+        laneId: lane.id, applied: false, reason: `stage failed — ${detail}`, files: [],
+        readFailure: true, status: staged.status, stderr: staged.stderr.slice(0, 4000),
+      });
+      report?.('integration.readfail', { message: `integration READ FAILURE on lane ${lane.id}: ${detail}`, laneId: lane.id });
+      continue;
+    }
+    const diffResult = git(workspace, ['diff', '--cached', '--binary']);
+    if (!diffResult.ok) {
+      const detail = `git diff --cached failed (exit ${diffResult.status}): ${diffResult.stderr.trim() || 'no stderr'}`;
+      results.push({
+        laneId: lane.id, applied: false, reason: `diff read failed — ${detail}`, files: [],
+        readFailure: true, status: diffResult.status, stderr: diffResult.stderr.slice(0, 4000),
+      });
+      report?.('integration.readfail', { message: `integration READ FAILURE on lane ${lane.id}: ${detail}`, laneId: lane.id });
+      continue;
+    }
+    const diff = diffResult.stdout;
     if (!diff.trim()) {
+      // Genuinely empty: the read succeeded and there was nothing staged.
       results.push({ laneId: lane.id, applied: false, reason: 'empty diff', files: [] });
       continue;
     }
+    // The staged diff is the authority on which files this lane touched. When
+    // the lane's own measurement failed, this recovers the file list rather
+    // than reporting the lane as having changed nothing.
+    const named = git(workspace, ['diff', '--cached', '--name-only']);
+    const laneFiles = named.ok
+      ? named.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).sort()
+      : (lane.changedPaths ?? []);
+    if (!Array.isArray(lane.changedPaths) || !lane.changedPaths.length) {
+      lane.changedPaths = laneFiles;
+      lane.changedPathsRecoveredFrom = 'integration diff';
+    }
+
     const patchFile = path.join(laneDir(root, mission.missionId, lane.id), 'lane.patch');
     writeFileSync(patchFile, diff, 'utf8');
 
     const apply = git(root, ['apply', '--3way', '--whitespace=nowarn', patchFile]);
     if (apply.status !== 0) {
-      results.push({ laneId: lane.id, applied: false, reason: `patch did not apply: ${apply.stderr.trim()}`, files: lane.changedPaths });
+      results.push({ laneId: lane.id, applied: false, reason: `patch did not apply: ${apply.stderr.trim()}`, files: laneFiles });
       report?.('integration.conflict', { message: `integration CONFLICT on lane ${lane.id}: ${apply.stderr.trim()}`, laneId: lane.id });
       continue;
     }
-    applied.push(...lane.changedPaths);
-    results.push({ laneId: lane.id, applied: true, reason: null, files: lane.changedPaths });
-    report?.('integration.lane', { message: `integrated lane ${lane.id}: ${lane.changedPaths.length} file(s)`, laneId: lane.id });
+    applied.push(...laneFiles);
+    results.push({ laneId: lane.id, applied: true, reason: null, files: laneFiles });
+    report?.('integration.lane', { message: `integrated lane ${lane.id}: ${laneFiles.length} file(s)`, laneId: lane.id });
   }
 
   const outcome = {

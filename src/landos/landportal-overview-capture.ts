@@ -1,6 +1,21 @@
+// LandOS — LandPortal Overview (parcel-context) capture framing.
+//
+// Screenshot style rule, settled: LandPortal's normal THIN NAVIGATION SIDEBAR is
+// acceptable and is never chased. What is not acceptable is the expanded
+// PROPERTY-DETAIL PANEL, which covers a substantial part of the parcel imagery
+// and leaves the operator looking at a UI panel instead of the parcel. That
+// panel is collapsed before capture, and a capture that still carries it is
+// rejected with the reason said plainly.
+
 import { contextZoomOutSteps } from './parcel-visual-framing.js';
 
 export const OVERVIEW_CAPTURE_KEY: string = 'landportal_overview';
+
+/** The thin navigation rail. Acceptable in frame; never worth removing. */
+const ACCEPTABLE_CHROME = /\b(?:nav(?:igation)?\s*(?:side\s*bar|sidebar|rail|bar)|left\s*nav|side\s*nav|toolbar|top\s*bar|header)\b/i;
+
+/** The expanded property-detail panel. Must be dismissed before capture. */
+const DETAIL_PANEL = /\b(?:property\s*(?:detail|info(?:rmation)?|panel|card)|detail\s*(?:panel|pane|sidebar|drawer)|parcel\s*(?:detail|info(?:rmation)?)\s*(?:panel|pane|sidebar|drawer)?|info\s*(?:panel|drawer)|overlay\s*panel|popup|modal|dialog)\b/i;
 
 export interface OverviewCapturePlan {
   view: 'parcel_context';
@@ -8,7 +23,23 @@ export interface OverviewCapturePlan {
   purpose: string;
   framingIntent: string;
   mustShow: string[];
+  /** Panels collapsed or dismissed before the shutter, in order. */
+  mustDismiss: string[];
+  /** Chrome that may remain in frame; removing it is not worth any effort. */
+  acceptableChrome: string[];
   requires: { boundaryVisible: boolean; tilesLoaded: boolean; roadInFrame: boolean };
+}
+
+/**
+ * Classify one named obstruction. Acceptable chrome does not reject a capture;
+ * a property-detail panel always does.
+ */
+export function obstructionVerdict(obstruction: string): 'acceptable' | 'detail_panel' | 'obstruction' {
+  const value = obstruction.trim();
+  if (!value) return 'acceptable';
+  if (DETAIL_PANEL.test(value)) return 'detail_panel';
+  if (ACCEPTABLE_CHROME.test(value)) return 'acceptable';
+  return 'obstruction';
 }
 
 export function planOverviewCapture(input: { subjectAcres: number | null; roadName?: string | null }): OverviewCapturePlan {
@@ -23,6 +54,13 @@ export function planOverviewCapture(input: { subjectAcres: number | null; roadNa
       `Nearest public road (${road})`,
       'Any apparent driveway or physical access route',
       'Immediately surrounding parcels for context',
+    ],
+    mustDismiss: [
+      'Collapse or close the expanded property-detail panel before the shutter — it must not cover a substantial part of the parcel imagery.',
+      'Close any open popup, modal, or overlay panel sitting over the map.',
+    ],
+    acceptableChrome: [
+      'The normal thin LandPortal navigation sidebar may stay in frame; do not spend effort removing it.',
     ],
     requires: { boundaryVisible: true, tilesLoaded: true, roadInFrame: true },
   };
@@ -44,8 +82,22 @@ export function assessOverviewFraming(artifact: {
   if (artifact.boundary_visible !== true) return { accepted: false, reason: 'Overview rejected because the complete subject parcel boundary is not visibly retained.' };
   if (artifact.tiles_loaded !== true) return { accepted: false, reason: 'Overview rejected because the satellite or map tiles were not fully loaded.' };
   if (artifact.clipped === true) return { accepted: false, reason: 'Overview rejected because the useful parcel-context map is clipped.' };
-  if ((artifact.obstructions ?? []).length > 0) return { accepted: false, reason: `Overview rejected because ${artifact.obstructions!.join(', ')} obstructs the useful map frame.` };
-  return { accepted: true, reason: 'Accepted deliberately framed parcel-context Overview with boundary and map tiles visible.' };
+  const obstructions = (artifact.obstructions ?? []).filter(Boolean);
+  const detailPanels = obstructions.filter((item) => obstructionVerdict(item) === 'detail_panel');
+  if (detailPanels.length) {
+    return {
+      accepted: false,
+      reason: `Overview rejected because ${detailPanels.join(', ')} covers a substantial part of the parcel imagery; collapse the property-detail panel and recapture. The thin navigation sidebar is fine and does not need removing.`,
+    };
+  }
+  const blocking = obstructions.filter((item) => obstructionVerdict(item) === 'obstruction');
+  if (blocking.length) return { accepted: false, reason: `Overview rejected because ${blocking.join(', ')} obstructs the useful map frame.` };
+  return {
+    accepted: true,
+    reason: obstructions.length
+      ? 'Accepted deliberately framed parcel-context Overview with boundary and map tiles visible; only the normal thin LandPortal navigation chrome is in frame.'
+      : 'Accepted deliberately framed parcel-context Overview with boundary and map tiles visible.',
+  };
 }
 
 export interface OverviewSelection<T> { artifact: T | null; accepted: boolean; reason: string }

@@ -11,6 +11,13 @@ import {
   type OfficialSourceCandidate,
 } from './official-source-discovery.js';
 import {
+  OFFICIAL_PARCEL_SOURCE_NOT_RUN,
+  OFFICIAL_PARCEL_SOURCE_UNRESOLVED,
+  emptyOfficialParcelGisView,
+  toOfficialParcelGisView,
+} from './official-parcel-gis-view.js';
+import { emptyParcelGisResult, type OfficialParcelGisResult } from './gis-platform-types.js';
+import {
   createBackgroundBrowserFetchText,
   looksLikeTransportRefusal,
   withBrowserFallback,
@@ -374,5 +381,91 @@ describe('a preloaded challenge widget is not a block', () => {
   it('still catches an actual challenge page', () => {
     expect(looksBlocked(200, '<html><body>Just a moment...</body></html>', 'text/html')).toBe(true);
     expect(looksBlocked(403, '<html>Attention Required!</html>', 'text/html')).toBe(true);
+  });
+});
+
+// A failed official source is ONE concise line plus retry/details. It is never a
+// second, emptier subject card: the subject summary already carries owner, APN
+// and acreage from the retained LandPortal evidence, and reprinting them here as
+// "unavailable" is the duplicate card the operator complained about.
+describe('an unresolved official parcel source collapses to one line', () => {
+  const record = (result: Partial<OfficialParcelGisResult>) => ({
+    id: 1,
+    dealCardId: 83,
+    result: emptyParcelGisResult({
+      sourcePlatform: 'custom_government_portal',
+      sourceUrl: 'https://gis.example.gov/parcels',
+      retrievedAt: '2026-08-11T12:00:00.000Z',
+      sourceJurisdiction: 'Grand Traverse County, MI',
+      ...result,
+    }),
+    fingerprint: null,
+    escalation: null,
+    handoff: null,
+    retrievedAt: '2026-08-11T12:00:00.000Z',
+  });
+
+  it('states the fixed unresolved headline when the source answered with nothing', () => {
+    const view = toOfficialParcelGisView(record({ failureStates: ['PARCEL_NOT_FOUND'] }));
+    expect(view.resolution).toBe('not_resolved');
+    expect(view.statusHeadline).toBe(OFFICIAL_PARCEL_SOURCE_UNRESOLVED);
+    expect(view.statusHeadline).toBe('Official county parcel source — not resolved');
+    expect(view.identityRetained).toBe(false);
+  });
+
+  it('never hands a renderer Owner/APN/Acreage to print as unavailable', () => {
+    const view = toOfficialParcelGisView(record({
+      failureStates: ['OFFICIAL_SOURCE_UNAVAILABLE'],
+      unresolvedFields: ['owner', 'parcel_id', 'APN', 'acres', 'Parcel Address', 'zoning', 'geometry'],
+    }));
+    expect(view.owner).toBeNull();
+    expect(view.parcelId).toBeNull();
+    expect(view.acres).toBeNull();
+    expect(view.parcelAddress).toBeNull();
+    // The identity rows are stripped from the unresolved state; the genuinely
+    // source-specific gaps survive.
+    expect(view.unresolvedFields).toEqual(['zoning', 'geometry']);
+  });
+
+  it('offers retry and details rather than a data dump', () => {
+    const view = toOfficialParcelGisView(record({ failureStates: ['STRUCTURED_SERVICE_NOT_FOUND'] }));
+    expect(view.actions.map((action) => action.kind)).toEqual(['retry', 'details']);
+    expect(view.actions.find((action) => action.kind === 'retry')?.available).toBe(true);
+    expect(view.actions.find((action) => action.kind === 'details')?.available).toBe(true);
+    // One sentence, not a diagnostics dump.
+    expect(view.statusDetail.split('. ').length).toBeLessThanOrEqual(3);
+  });
+
+  it('says plainly that the subject summary is carried by other retained evidence', () => {
+    const view = toOfficialParcelGisView(record({ failureStates: ['PARCEL_NOT_FOUND'] }));
+    expect(view.statusDetail).toMatch(/subject summary is unaffected/i);
+    // This source's failure is not a statement about LandPortal retention.
+    expect(view.statusDetail).not.toMatch(/not retained/i);
+  });
+
+  it('keeps the resolved state whole when the source did answer', () => {
+    const view = toOfficialParcelGisView(record({
+      parcelMatchStatus: 'verified',
+      parcelId: '13-116-015-01',
+      owner: 'WELLS MICHAEL C',
+      acres: 60,
+      unresolvedFields: ['owner', 'zoning'],
+    }));
+    expect(view.resolution).toBe('resolved');
+    expect(view.identityRetained).toBe(true);
+    expect(view.statusHeadline).not.toBe(OFFICIAL_PARCEL_SOURCE_UNRESOLVED);
+    expect(view.owner).toBe('WELLS MICHAEL C');
+    // A resolved source keeps its own honest unresolved-field list untouched.
+    expect(view.unresolvedFields).toEqual(['owner', 'zoning']);
+  });
+
+  it('distinguishes never-run from ran-and-failed', () => {
+    const empty = emptyOfficialParcelGisView();
+    expect(empty.present).toBe(false);
+    expect(empty.resolution).toBe('not_run');
+    expect(empty.statusHeadline).toBe(OFFICIAL_PARCEL_SOURCE_NOT_RUN);
+    expect(empty.statusHeadline).not.toBe(OFFICIAL_PARCEL_SOURCE_UNRESOLVED);
+    expect(empty.unresolvedFields).toEqual([]);
+    expect(empty.identityRetained).toBe(false);
   });
 });

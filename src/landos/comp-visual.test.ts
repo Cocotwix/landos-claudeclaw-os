@@ -32,6 +32,7 @@ describe('tier 1 — the original listing photograph', () => {
     expect(isListingPhotoUrl('https://photos.zillowstatic.com/fp/abc-d_d.jpg')).toBe(true);
     expect(isListingPhotoUrl('https://ssl.cdn-redfin.com/photo/189/islphoto/312/x.webp')).toBe(true);
     expect(isListingPhotoUrl('https://ap.rdcpix.com/abc/x.jpg')).toBe(true);
+    expect(isListingPhotoUrl('https://media.realtor.com/listing/x.webp')).toBe(true);
     expect(isListingPhotoUrl('https://images.thelandportal.com/images/abc')).toBe(true);
     expect(isListingPhotoUrl('https://example.com/whatever.png')).toBe(false);
     expect(isListingPhotoUrl(null)).toBe(false);
@@ -52,6 +53,29 @@ describe('tier 1 — the original listing photograph', () => {
   it('shows a listing photo even when the location never resolved', () => {
     const v = resolveCompVisual(base({ thumbnailUrl: 'https://ssl.cdn-redfin.com/photo/x.webp' }));
     expect(v.provenance).toBe('listing_photo');
+  });
+
+  it('prefers an exposed listing photo over a generic retained thumbnail', () => {
+    const v = resolveCompVisual(base({
+      sourceLabel: 'Realtor.com',
+      thumbnailUrl: 'https://cdn.example.net/search-tile.png',
+      photoUrls: ['https://ap.rdcpix.com/property-hero.webp', 'https://ap.rdcpix.com/drive.webp'],
+    }));
+    expect(v).toMatchObject({
+      url: 'https://ap.rdcpix.com/property-hero.webp',
+      provenance: 'listing_photo',
+      label: 'Realtor.com listing photo',
+      isPhotograph: true,
+    });
+  });
+
+  it('labels the selected photo by its CDN publisher after source reconciliation', () => {
+    const v = resolveCompVisual(base({
+      sourceLabel: 'LandPortal visible + Zillow + Realtor.com',
+      thumbnailUrl: 'https://photos.zillowstatic.com/fp/merged-hero.jpg',
+    }));
+    expect(v.label).toBe('Zillow listing photo');
+    expect(v.detail).toMatch(/from the Zillow property page/);
   });
 });
 

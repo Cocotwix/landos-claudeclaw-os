@@ -19,12 +19,13 @@ import { describe, expect, it } from 'vitest';
 const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), 'utf8');
 
 const NAV_SRC = read('web/src/lib/workspace-v2-nav.ts');
-const PAGE_SRC = read('web/src/pages/AcquisitionWorkspaceV2.tsx');
+const PAGE_SRC = `${read('web/src/pages/AcquisitionWorkspaceV2.tsx')}\n${read('web/src/components/AcquisitionWorkspaceV2Overview.tsx')}`;
 const CV_SRC = read('web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx');
 const MAP_SRC = read('web/src/components/AcquisitionWorkspaceV2CompMap.tsx');
 const D_SRC = read('web/src/components/AcquisitionWorkspaceV2CompDetails.tsx');
 const THUMB_SRC = read('web/src/components/CompVisualThumb.tsx');
-const CSS_SRC = read('web/src/styles/workspace-v2.css');
+const GALLERY_SRC = read('web/src/components/AcquisitionWorkspaceV2CompPhotoGallery.tsx');
+const CSS_SRC = `${read('web/src/styles/workspace-v2.css')}\n${read('web/src/styles/workspace-v2-comps.css')}`;
 
 describe('Comps & Valuation is a live V2 section', () => {
   it('has a real section slug so the URL round-trips and refresh restores it', () => {
@@ -94,6 +95,24 @@ describe('the decision strip leads the page', () => {
     expect(CV_SRC).toMatch(/Recommended target/);
     expect(CV_SRC).toMatch(/Hard ceiling/);
     expect(CV_SRC).toMatch(/cleaned\.confidence/);
+  });
+
+  it('labels an improved subject as land-only and leaves whole-property value pending', () => {
+    expect(CV_SRC).toMatch(/Land-only indication/);
+    expect(CV_SRC).toMatch(/Land-basis opening reference/);
+    expect(CV_SRC).toMatch(/Land-basis target reference/);
+    expect(CV_SRC).toMatch(/Land-basis ceiling reference/);
+    expect(CV_SRC).toMatch(/LAND BASIS ONLY/);
+    expect(CV_SRC).toMatch(/Land-basis 40 \/ 50 \/ 60 references/);
+    expect(CV_SRC).toMatch(/Whole-property value/);
+    expect(CV_SRC).toMatch(/<div class="v">PENDING<\/div>/);
+  });
+
+  it('does not repeat stale no-comp blockers when canonical accepted comps exist', () => {
+    expect(CV_SRC).toMatch(/isStaleCompConclusion/);
+    expect(CV_SRC).toMatch(/summary\.acceptedCount > 0/);
+    expect(CV_SRC).toMatch(/no usable comp\|another/);
+    expect(CV_SRC).toMatch(/reconciledNeededEvidence/);
   });
 
   it('explains which comp window was selected and why it stopped there', () => {
@@ -167,7 +186,7 @@ describe('one filtered record set drives both the list and the map', () => {
     expect(CV_SRC).toMatch(/awv2-cv-forensics/);
     // The expanded evidence now lives in CompFullDetails, which owns the
     // transaction/competition summary, timeline, descriptions and evidence.
-    expect(CV_SRC).toMatch(/<CompFullDetails c=\{c\} adoptedFmv=\{cleaned\.adoptedFmv\} \/>/);
+    expect(CV_SRC).toMatch(/<CompFullDetails c=\{c\} adoptedFmv=\{cleaned\.adoptedFmv\} landBasis=/);
     expect(D_SRC).toMatch(/label="Valuation weight"/);
     expect(D_SRC).toMatch(/target="_blank" rel="noopener noreferrer"/);
     // Retrieval diagnostics were removed from the operator's Full details; the
@@ -197,7 +216,7 @@ describe('one filtered record set drives both the list and the map', () => {
 
 describe('every comparable carries a visual with stated provenance', () => {
   it('renders the server-resolved visual and always shows what it is', () => {
-    expect(CV_SRC).toMatch(/<CompVisualThumb visual=\{c\.visual\}/);
+    expect(CV_SRC).toMatch(/<CompVisualThumb visual=\{c\.visual\} thumbnailUrl=\{c\.thumbnailUrl\}/);
     expect(THUMB_SRC).toMatch(/awv2-cv-prov/);
     // The chip states what the image IS, which is the honesty requirement. It
     // carries no native `title`: the browser rendered that as a second wide
@@ -211,6 +230,22 @@ describe('every comparable carries a visual with stated provenance', () => {
     // The empty "No photo supplied" block is no longer the normal state.
     expect(CV_SRC).not.toMatch(/No photo supplied/);
     expect(CV_SRC).not.toMatch(/awv2-cv-thumb/);
+  });
+
+  it('shows one reconciled card with every contributing provider badge', () => {
+    expect(CV_SRC).toMatch(/sourceBadges\(c\)\.map/);
+    expect(CV_SRC).toMatch(/One property/);
+    expect(CV_SRC).toMatch(/canonical accepted comps/);
+    expect(CV_SRC).toMatch(/Improved-property context only/);
+    expect(CV_SRC).toMatch(/Never included in the vacant-land pricing calculation/);
+  });
+
+  it('provides a lightweight multi-photo gallery without a new dependency', () => {
+    expect(D_SRC).toMatch(/AcquisitionWorkspaceV2CompPhotoGallery/);
+    expect(GALLERY_SRC).toMatch(/Previous comp photo/);
+    expect(GALLERY_SRC).toMatch(/Next comp photo/);
+    expect(GALLERY_SRC).toMatch(/Comp photo thumbnails/);
+    expect(GALLERY_SRC).toMatch(/Compare clearing, terrain, road relationship, improvements, water, utilities/);
   });
 
   it('reports the visual provenance tallies to the operator', () => {
@@ -229,19 +264,21 @@ describe('the Overview mirrors the same numbers', () => {
     expect(PAGE_SRC).toMatch(/const cvSummary = compsValuation\?\.summary \?\? null/);
     expect(PAGE_SRC).toMatch(/cvSummary\.basisLabel/);
     expect(PAGE_SRC).toMatch(/Open Comps &amp; Valuation →/);
-    expect(PAGE_SRC).toMatch(/switchSection\(e as unknown as MouseEvent, 'comps-valuation'\)/);
+    expect(PAGE_SRC).toMatch(/onOpenSection\('comps-valuation'\)/);
     expect(PAGE_SRC).toMatch(/cvSummary\?\.acquisitionLevels \? usd\(/);
   });
 });
 
 describe('styles the section within the V2 visual system', () => {
   it('keeps the shared comps styles and adds the workspace styles', () => {
+    expect(PAGE_SRC).toMatch(/import '\.\.\/styles\/workspace-v2-comps\.css'/);
     expect(CSS_SRC).toMatch(/── Comps & Valuation ──/);
     for (const cls of ['awv2-cv-filter', 'awv2-cv-card', 'awv2-cv-actions',
       'awv2-cv-map-canvas', 'awv2-cv-unresolved', 'awv2-cv-forensics',
       'awv2-cv-decision', 'awv2-cv-window', 'awv2-cv-workspace', 'awv2-cv-list',
       'awv2-cv-mapcol', 'awv2-cv-visual', 'awv2-cv-prov', 'awv2-cv-marker',
-      'awv2-cv-clusterrow', 'awv2-cv-ledger']) {
+      'awv2-cv-clusterrow', 'awv2-cv-ledger', 'awv2-cv-sourcebadges',
+      'awv2-cv-improved-context', 'awv2-cvd-gallery']) {
       expect(CSS_SRC).toContain(`.${cls}`);
     }
   });

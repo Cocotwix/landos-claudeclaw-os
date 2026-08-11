@@ -12,11 +12,14 @@ const PI_SRC = fs.readFileSync(
   path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx'),
   'utf8',
 );
-const PAGE_SRC = fs.readFileSync(
-  path.join(process.cwd(), 'web/src/pages/AcquisitionWorkspaceV2.tsx'),
-  'utf8',
-);
+const PAGE_SRC = [
+  'web/src/pages/AcquisitionWorkspaceV2.tsx',
+  'web/src/components/AcquisitionWorkspaceV2Overview.tsx',
+].map((file) => fs.readFileSync(path.join(process.cwd(), file), 'utf8')).join('\n');
 const CSS_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/styles/workspace-v2.css'), 'utf8');
+const PI_CSS_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/styles/workspace-v2-property-intelligence.css'), 'utf8');
+const GIS_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2OfficialParcelGis.tsx'), 'utf8');
+const LAND_USE_SRC = fs.readFileSync(path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2LandUse.tsx'), 'utf8');
 
 describe('Visual Buyer Analysis presentation', () => {
   it('renders the concise narrative by default and collapses the detailed A–E analysis', () => {
@@ -68,25 +71,17 @@ describe('Soils & Preliminary Septic Outlook', () => {
 });
 
 describe('access terminology', () => {
-  it('shows the four-part access evidence ladder instead of one collapsed legal-access row', () => {
-    // Mapped road frontage is not legal access. The old collapsed "Legal access"
-    // row overstated what LandPortal's parcel panel supports, so it is gone and
-    // the row now says exactly what the mapped evidence proves: road abutment.
-    expect(PI_SRC).toMatch(/k="Mapped road abutment"/);
+  it('shows one four-rung access ladder instead of duplicated access claims', () => {
     expect(PI_SRC).not.toMatch(/k="Legal access"/);
-    expect(PI_SRC).toMatch(/k="Apparent entrance"/);
-    expect(PI_SRC).toMatch(/Not confirmed from retained imagery/);
-    // All four evidence types stay separate on screen, each with its own source,
-    // evidentiary basis and weight, rather than collapsing to a yes/no field.
     expect(PI_SRC).toMatch(/Four-part access evidence ladder/);
     for (const tier of ['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal']) {
       expect(PI_SRC).toContain(`'${tier}'`);
     }
+    expect(PI_SRC).toMatch(/accessView\?\.evidence\?\.rungs/);
     expect(PI_SRC).toMatch(/accessView\?\.evidence\?\.byTier/);
-    expect(PI_SRC).toMatch(/item\.sourceLabel/);
-    expect(PI_SRC).toMatch(/item\.basis/);
-    expect(PI_SRC).toMatch(/item\.weight/);
+    expect(PI_SRC).toMatch(/accessRungs\.map/);
     expect(PI_SRC).toMatch(/Reconciled operator read:/);
+    expect(LAND_USE_SRC).not.toMatch(/<div class="awv2-opg-sub">Access<\/div>/);
   });
 
   it('never shows driveway-approval or permit language in the V2 surfaces', () => {
@@ -113,5 +108,68 @@ describe('access terminology', () => {
     expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.verifiedLegalAccess/);
     // A recorded instrument stays outstanding diligence until one is read.
     expect(PAGE_SRC).toMatch(/Recorded-instrument access remains separate diligence/);
+  });
+});
+
+describe('operator-question hierarchy', () => {
+  it('shows canonical subject identity once and treats equivalent acreage observations as reconciled', () => {
+    expect(PI_SRC.match(/<Kv k="Acreage"/g)).toHaveLength(1);
+    expect(PI_SRC.match(/<Kv k="Owner of record"/g)).toHaveLength(1);
+    expect(PI_SRC).toMatch(/numerically equivalent observations reconciled/);
+    expect(PI_SRC).not.toMatch(/Sources disagree \(\{acreNumbers/);
+    expect(PI_SRC).toMatch(/workspace-v2-property-intelligence\.css/);
+  });
+
+  it('puts public listing context next to the subject with honest Zillow engagement and photos', () => {
+    expect(PI_SRC).toMatch(/Current listing \/ public property context/);
+    expect(PI_SRC).toMatch(/primaryListing\.family\.toLowerCase\(\)\.includes\('zillow'\)/);
+    expect(PI_SRC).toContain('Not collected (never shown as zero)');
+    expect(PI_SRC).toMatch(/Engagement retrieved/);
+    expect(PI_SRC).toMatch(/listingPhotos\[listingPhotoIndex\]/);
+    expect(PI_SRC).toMatch(/Open \{primaryListing\.sourceLabel\} listing/);
+  });
+
+  it('renders Street View findings only when a real panorama capture exists', () => {
+    expect(PI_SRC).toMatch(/streetView && streetView\.available && hasStreetViewCapture/);
+    expect(PI_SRC).toMatch(/!!observation\.evidence\?\.trim\(\)/);
+    expect(PI_SRC).toMatch(/supportedStreetObservations\.map/);
+    expect(PI_SRC).toContain('No real captured Street View panorama is retained, so no Street View observation is shown.');
+    expect(PI_SRC).not.toContain('Street View observations were recorded; no capture is retained yet.');
+  });
+
+  it('separates research lane delivery from diligence-question resolution', () => {
+    expect(PI_SRC).toContain('Research lanes completed');
+    expect(PI_SRC).toContain('Diligence questions resolved');
+    expect(PI_SRC).toContain('does not mean every diligence question is resolved');
+  });
+
+  it('keeps market and collector detail collapsed behind the operator read', () => {
+    expect(PI_SRC).toMatch(/market\.read\?\.resolvedVia/);
+    expect(PI_SRC).toContain("market.liquidity?.competition != null ? market.liquidity.competition : 'unmeasured'");
+    expect(PI_SRC).toMatch(/<summary>Market records and methodology<\/summary>/);
+    expect(PI_SRC).toMatch(/<summary>Collection diagnostics<\/summary>/);
+  });
+
+  it('loads lane-owned responsive styles', () => {
+    expect(PI_CSS_SRC).toMatch(/\.awv2-listing-layout/);
+    expect(PI_CSS_SRC).toMatch(/\.awv2-access-ladder/);
+    expect(PI_CSS_SRC).toMatch(/\.awv2-lu-operator-summary/);
+  });
+});
+
+describe('official source and land-use summaries', () => {
+  it('collapses unresolved official GIS without repeating subject identity fields', () => {
+    expect(GIS_SRC).toContain('Official county parcel source — not resolved');
+    expect(GIS_SRC).toMatch(/<button type="button" onClick=\{run\} disabled=\{running\}>Retry<\/button>/);
+    expect(GIS_SRC).toMatch(/<summary>Details<\/summary>/);
+    expect(GIS_SRC).not.toMatch(/<Row k="Owner of record"/);
+    expect(GIS_SRC).not.toMatch(/<Row k="Acreage"/);
+    expect(GIS_SRC).not.toMatch(/<Row k="Parcel ID"/);
+  });
+
+  it('leads land use with a scannable matrix and says the missing-rule caveat once', () => {
+    expect(LAND_USE_SRC).toMatch(/awv2-lu-operator-summary/);
+    expect(LAND_USE_SRC).toContain('absence from the retained research is not evidence that no rule exists');
+    expect(LAND_USE_SRC).toMatch(/<summary>Rules matrix, scenarios, sources and diagnostics<\/summary>/);
   });
 });

@@ -130,7 +130,25 @@ export interface SellerIdentityCandidate {
 }
 
 /** Labeled forms: "Seller: Davan Smith", "Seller is Davan Smith", "lead - Davan Smith". */
-const LABELS = ['seller name', 'seller', 'lead name', 'lead', 'contact name', 'contact', 'owner name', 'owner', 'landowner', 'caller'];
+const SELLER_LABELS = ['seller name', 'seller', 'lead name', 'lead', 'contact name', 'contact', 'caller'];
+
+/**
+ * Owner-of-record labels. Deliberately NOT seller labels.
+ *
+ * An owner of record is an ownership fact about the parcel that only an
+ * official source can establish; a seller/lead is a person LandOS is talking
+ * to. Reading "Owner: WELLS MICHAEL C" as the seller backfills the seller field
+ * from the ownership record — which is exactly the conflation the card must
+ * prevent, and which would also silently satisfy the seller-authority name
+ * match that exists to catch an unverified seller.
+ */
+const OWNER_OF_RECORD_LABELS = ['owner of record', 'owner name', 'owner', 'landowner'];
+
+function labeledValue(raw: string, labels: string[]): string | null {
+  const escaped = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const match = raw.match(new RegExp(`(?:^|[\\n.!?;])\\s*(?:${escaped})\\s*(?:[:=-]|\\bis\\b|\\bwas\\b)\\s*([^\\n,;.]+)`, 'i'));
+  return match?.[1] ?? null;
+}
 
 /** Verb-led forms: "talked to Davan Smith", "call from Davan Smith". */
 const INTRODUCERS = /\b(?:talked to|spoke (?:with|to)|speaking with|call (?:from|with)|called by|heard (?:back )?from|met with|referred by|inquiry from|message from)\s+/i;
@@ -147,11 +165,11 @@ export function extractSellerIdentity(rawInput: string): SellerIdentityCandidate
   const raw = (rawInput ?? '').trim();
   if (!raw) return null;
 
-  // 1. Explicit label. A labeled single token is accepted — the operator said
-  //    outright that this is the contact.
-  const escaped = LABELS.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  const labeled = raw.match(new RegExp(`(?:^|[\\n.!?;])\\s*(?:${escaped})\\s*(?:[:=-]|\\bis\\b|\\bwas\\b)\\s*([^\\n,;.]+)`, 'i'));
-  const labeledName = labeled?.[1] ? personNameFrom(labeled[1], { minTokens: 1, vocabulary: 'labeled' }) : null;
+  // 1. Explicit SELLER label. A labeled single token is accepted — the operator
+  //    said outright that this is the contact. An owner-of-record label is not
+  //    a seller label: see `extractOwnerOfRecordCandidate`.
+  const labeled = labeledValue(raw, SELLER_LABELS);
+  const labeledName = labeled ? personNameFrom(labeled, { minTokens: 1, vocabulary: 'labeled' }) : null;
   if (labeledName) return { name: labeledName, basis: 'Operator labeled this text as the seller/lead contact.' };
 
   // 2. Verb-led introduction anywhere in the paste.
@@ -173,6 +191,34 @@ export function extractSellerIdentity(rawInput: string): SellerIdentityCandidate
   if (leadingName) return { name: leadingName, basis: 'Read as the lead contact named ahead of the property in the paste.' };
 
   return null;
+}
+
+/** An owner-of-record name the operator typed, kept strictly apart from the seller. */
+export interface OwnerOfRecordCandidate {
+  /** The owner name exactly as the operator wrote it. */
+  name: string;
+  basis: string;
+}
+
+/**
+ * Read an OWNER-OF-RECORD mention out of a paste ("Owner: WELLS MICHAEL C").
+ *
+ * The information is preserved rather than discarded, but it is returned on its
+ * own channel so no caller can route it into the seller/lead field. A name the
+ * operator typed beside "owner" is still not an official ownership record, so
+ * the basis says so and the seller-authority assessment continues to treat the
+ * owner as unverified until an official source confirms it.
+ */
+export function extractOwnerOfRecordCandidate(rawInput: string): OwnerOfRecordCandidate | null {
+  const raw = (rawInput ?? '').trim();
+  if (!raw) return null;
+  const labeled = labeledValue(raw, OWNER_OF_RECORD_LABELS);
+  const name = labeled ? personNameFrom(labeled, { minTokens: 1, vocabulary: 'labeled' }) : null;
+  if (!name) return null;
+  return {
+    name,
+    basis: 'Operator labeled this text as the owner of record. It is not a seller or lead, and it is not an official ownership record until a source confirms it.',
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

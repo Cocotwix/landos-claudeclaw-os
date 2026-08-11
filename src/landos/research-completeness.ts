@@ -52,6 +52,15 @@ export interface LaneSignal {
 
 export interface ResearchLane extends LaneSignal {
   tier: EvidenceTier;
+  /** True when the LANE completed its work (a provider ran and returned usable
+   *  data). Completing a lane is not resolving its question. */
+  laneCompleted: boolean;
+  /** True when the lane's underwriting QUESTION is answered. */
+  questionResolved: boolean;
+  /** Why the question is still open (null once resolved). */
+  reason: string | null;
+  /** The next action that would resolve it (null once resolved). */
+  nextAction: string | null;
 }
 
 export interface ResearchCompleteness {
@@ -79,6 +88,41 @@ export interface ResearchCompleteness {
    * longer inflates the "evidenced" count.
    */
   withEvidence: number;
+  /** Research LANES completed (a provider ran and returned usable data). */
+  lanesCompleted: number;
+  /** Underwriting QUESTIONS resolved. Never implied by `lanesCompleted`. */
+  questionsResolved: number;
+  /** "N of M research lanes completed" — work done, nothing more. */
+  laneHeadline: string;
+  /** "N of M diligence questions resolved" — the answer count. */
+  questionHeadline: string;
+  /** Every lane whose question is still open, named with reason + next action. */
+  openQuestions: Array<{ key: string; label: string; reason: string; nextAction: string }>;
+}
+
+/** Why a lane's question is still open, in operator language. */
+function laneReason(lane: ResearchLane): string | null {
+  if (TIER_RANK[lane.tier] >= TIER_RANK.resolved) {
+    if (lane.externalConfirmationRequired && !lane.externalConfirmed) {
+      return `${lane.label} is resolved for discovery, but the external/legal confirmation is outstanding.`;
+    }
+    return null;
+  }
+  if (lane.remaining && lane.remaining.trim()) return lane.remaining.trim();
+  if (!lane.attempted) return `${lane.label} has not been attempted by any provider.`;
+  if (!lane.dataRetrieved) return `${lane.label} ran but returned no usable data.`;
+  return `${lane.label} has partial evidence only; the underwriting question is unresolved.`;
+}
+
+function laneNextAction(lane: ResearchLane): string | null {
+  if (TIER_RANK[lane.tier] >= TIER_RANK.resolved) {
+    return lane.externalConfirmationRequired && !lane.externalConfirmed
+      ? `Obtain the external/legal confirmation for ${lane.label.toLowerCase()}.`
+      : null;
+  }
+  if (!lane.attempted) return `Run the ${lane.label.toLowerCase()} lane.`;
+  if (!lane.dataRetrieved) return `Retry ${lane.label.toLowerCase()} through a different source or route.`;
+  return `Resolve ${lane.label.toLowerCase()} against a parcel-specific source.`;
 }
 
 export function tierOf(signal: LaneSignal): EvidenceTier {
@@ -90,7 +134,18 @@ export function tierOf(signal: LaneSignal): EvidenceTier {
 }
 
 export function computeResearchCompleteness(signals: LaneSignal[]): ResearchCompleteness {
-  const lanes: ResearchLane[] = signals.map((s) => ({ ...s, tier: tierOf(s) }));
+  const lanes: ResearchLane[] = signals.map((s) => {
+    const tier = tierOf(s);
+    const base: ResearchLane = {
+      ...s,
+      tier,
+      laneCompleted: TIER_RANK[tier] >= TIER_RANK.retrieved,
+      questionResolved: TIER_RANK[tier] >= TIER_RANK.resolved,
+      reason: null,
+      nextAction: null,
+    };
+    return { ...base, reason: laneReason(base), nextAction: laneNextAction(base) };
+  });
   const atLeast = (tier: EvidenceTier) => lanes.filter((l) => TIER_RANK[l.tier] >= TIER_RANK[tier]);
   const screened = atLeast('retrieved');
   const resolved = atLeast('resolved');
@@ -114,6 +169,18 @@ export function computeResearchCompleteness(signals: LaneSignal[]): ResearchComp
     awaitingExternalConfirmation,
     complete: lanes.length > 0 && resolved.length === lanes.length,
     withEvidence: resolved.length,
+    lanesCompleted: screened.length,
+    questionsResolved: resolved.length,
+    laneHeadline: `${screened.length} of ${lanes.length} research lanes completed`,
+    questionHeadline: `${resolved.length} of ${lanes.length} diligence questions resolved`,
+    openQuestions: lanes
+      .filter((l) => !l.questionResolved)
+      .map((l) => ({
+        key: l.key,
+        label: l.label,
+        reason: l.reason ?? `${l.label} is unresolved.`,
+        nextAction: l.nextAction ?? `Resolve ${l.label.toLowerCase()}.`,
+      })),
   };
 }
 
@@ -124,4 +191,21 @@ export function researchCompletenessSummary(rc: ResearchCompleteness): string {
   if (rc.missing.length) parts.push(`${rc.missing.length} not yet screened (${rc.missing.join(', ')})`);
   if (rc.awaitingExternalConfirmation.length) parts.push(`awaiting external confirmation: ${rc.awaitingExternalConfirmation.join(', ')}`);
   return `${parts.join('; ')}.`;
+}
+
+/**
+ * The two counts a surface may show, kept separate on purpose. "8 of 8 lanes
+ * completed" is a statement about work; it must never be rendered as though
+ * every diligence question were answered.
+ */
+export function researchCompletenessHeadlines(rc: ResearchCompleteness): {
+  lanes: string;
+  questions: string;
+  summaryLine: string;
+} {
+  return {
+    lanes: rc.laneHeadline,
+    questions: rc.questionHeadline,
+    summaryLine: `${rc.laneHeadline}; ${rc.questionHeadline}. A completed lane is work done, not a question answered.`,
+  };
 }

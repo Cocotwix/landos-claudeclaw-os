@@ -63,6 +63,19 @@ export function listingPhotoLabelFor(sourceLabel: string): string {
   return COMP_VISUAL_LABELS.listing_photo;
 }
 
+/** Identify the publisher from a recognized photo CDN. This keeps merged-source
+ * records honest when the canonical comp's first provenance is LandPortal but
+ * the selected photograph actually came from Zillow/Redfin/Realtor.com. */
+export function listingPhotoProviderForUrl(url: string | null | undefined): string | null {
+  const host = hostOf(url ?? '');
+  if (!host) return null;
+  if (host === 'photos.zillowstatic.com' || host.endsWith('.zillowstatic.com')) return 'Zillow';
+  if (host === 'cdn-redfin.com' || host.endsWith('.cdn-redfin.com')) return 'Redfin';
+  if (host === 'rdcpix.com' || host.endsWith('.rdcpix.com') || host === 'media.realtor.com' || host.endsWith('.realtor.com')) return 'Realtor.com';
+  if (host === 'images.thelandportal.com' || host.endsWith('.thelandportal.com')) return 'LandPortal';
+  return null;
+}
+
 export interface CompVisual {
   /** Image URL for the raster tiers. Null for map_fallback (drawn from tiles at
    *  `lat`/`lng`) and for location_unresolved (nothing is drawn). */
@@ -87,6 +100,9 @@ const LISTING_PHOTO_HOSTS = [
   'cdn-redfin.com',
   'ap.rdcpix.com',
   'rdcpix.com',
+  'p.rdcpix.com',
+  'media.realtor.com',
+  'images.realtor.com',
   'images.thelandportal.com',
 ];
 
@@ -105,9 +121,21 @@ export function isListingPhotoUrl(url: string | null | undefined): boolean {
   return LISTING_PHOTO_HOSTS.some((known) => host === known || host.endsWith(`.${known}`));
 }
 
+/** Marketplace listing photography outranks LandPortal's useful but less
+ * descriptive listing thumbnail when several providers reconcile to one comp. */
+export function listingPhotoPriority(url: string | null | undefined): number {
+  const provider = listingPhotoProviderForUrl(url);
+  if (provider && provider !== 'LandPortal') return 0;
+  if (provider === 'LandPortal') return 1;
+  return 2;
+}
+
 export interface CompVisualInput {
   /** Whatever thumbnail the source retained for this record. */
   thumbnailUrl: string | null;
+  /** Additional provider photos, in provider order. A genuine listing photo in
+   * this set outranks a generic thumbnail. */
+  photoUrls?: string[];
   sourceLabel: string;
   /** Retained aerial imagery for THIS comparable, if any was ever captured. */
   aerialUrl?: string | null;
@@ -125,14 +153,18 @@ export interface CompVisualInput {
  */
 export function resolveCompVisual(input: CompVisualInput): CompVisual {
   const where = input.addressOrApn ? ` for ${input.addressOrApn}` : '';
-  const thumb = input.thumbnailUrl && input.thumbnailUrl.trim() ? input.thumbnailUrl.trim() : null;
+  const candidates = [input.thumbnailUrl, ...(input.photoUrls ?? [])]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim());
+  const thumb = candidates.find((url) => isListingPhotoUrl(url)) ?? candidates[0] ?? null;
 
   if (thumb && isListingPhotoUrl(thumb)) {
+    const photoProvider = listingPhotoProviderForUrl(thumb) ?? input.sourceLabel;
     return {
       url: thumb,
       provenance: 'listing_photo',
-      label: listingPhotoLabelFor(input.sourceLabel),
-      detail: `Original listing photograph retained from the ${input.sourceLabel} property page${where}.`,
+      label: listingPhotoLabelFor(photoProvider),
+      detail: `Original listing photograph retained from the ${photoProvider} property page${where}.`,
       lat: input.lat, lng: input.lng,
       isPhotograph: true,
     };

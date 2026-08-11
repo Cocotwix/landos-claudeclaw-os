@@ -186,6 +186,7 @@ export interface CvComp {
   daysOnMarket: number | null;
   soldBy: string | null;
   buildingSqft: number | null;
+  propertyClass: 'land' | 'improved' | 'unknown';
   thumbnailUrl: string | null;
   visual: CvVisual;
   acresDeltaFromSubject: number | null;
@@ -417,6 +418,20 @@ const usdOrDash = (n: number | null) => (n == null ? '—' : usd(n));
 const tok = (u: string) => `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
 const nameOf = (c: CvComp) => c.address ?? (c.apn ? `APN ${c.apn}` : 'Unnamed parcel');
 const cardDomId = (key: string) => `cv-card-${key.replace(/[^a-z0-9]+/gi, '-')}`;
+const providerLabel = (value: string) => {
+  const key = value.toLowerCase().replace(/[^a-z]/g, '');
+  if (key.includes('landportal')) return 'LandPortal';
+  if (key.includes('zillow')) return 'Zillow';
+  if (key.includes('redfin')) return 'Redfin';
+  if (key.includes('realtor')) return 'Realtor.com';
+  return value;
+};
+const sourceBadges = (c: CvComp) => Array.from(new Set([c.source, ...c.origins].filter(Boolean).map(providerLabel)));
+const propertyTypeLabel = (c: CvComp) => c.propertyClass === 'improved'
+  ? 'Improved property'
+  : c.propertyClass === 'land'
+    ? 'Vacant land'
+    : 'Property type unresolved';
 
 const RADIUS_TEXT: Record<string, string> = {
   initial_10: 'within 10 mi',
@@ -564,6 +579,11 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
   const mapCounts = view.mapCounts;
   const win = view.valuationWindow;
   const visuals = view.visualCounts;
+  const isStaleCompConclusion = (line: string | null) => summary.acceptedCount > 0 && line != null
+    && /no usable comp|another (?:comparable )?sale[^.]*required/i.test(line);
+  const reconciledWarning = isStaleCompConclusion(cleaned.insufficiencyWarning) ? null : cleaned.insufficiencyWarning;
+  const reconciledLockedReason = isStaleCompConclusion(summary.acquisitionLockedReason) ? null : summary.acquisitionLockedReason;
+  const reconciledNeededEvidence = view.explanation.neededEvidence.filter((line) => !isStaleCompConclusion(line));
   const valuationSet = comps.filter((c) => c.inValuationSet);
   const mapCaptureUrl = view.propertyCardId != null
     ? tok(`/api/landos/inspection/image?cardId=${view.propertyCardId}&key=comps_map`)
@@ -605,7 +625,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
   return (
     <>
       {/* ── 1. Decision strip ── */}
-      <section class="awv2-panel awv2-cv-decisionpanel" aria-label="Valuation decision">
+      <section class={`awv2-panel awv2-cv-decisionpanel status-${summary.status}`} aria-label="Valuation decision">
         <div class="awv2-panel-title">
           Comps &amp; Valuation <span class="awv2-src-tag">{summary.basisLabel}</span>
         </div>
@@ -623,25 +643,25 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
             <div class="v">{usdOrDash(cleaned.adoptedFmv)}</div>
           </div>
           {subjectImprovement?.wholePropertyPending && (
-            <div class="awv2-cv-dec" data-testid="cv-whole-property-pending">
+            <div class="awv2-cv-dec" data-testid="cv-whole-property-pending" aria-label="Whole-property value Pending">
               <div class="k">Whole-property value</div>
-              <div class="v">Pending</div>
+              <div class="v">PENDING</div>
             </div>
           )}
           <div class="awv2-cv-dec">
-            <div class="k">Supported retail range</div>
+            <div class="k">{subjectImprovement?.improved ? 'Supported land retail range' : 'Supported retail range'}</div>
             <div class="v">{usdOrDash(cleaned.retailRangeLow)} – {usdOrDash(cleaned.retailRangeHigh)}</div>
           </div>
           <div class="awv2-cv-dec">
-            <div class="k">Recommended opening</div>
+            <div class="k">{subjectImprovement?.improved ? 'Land-basis opening reference' : 'Recommended opening'}</div>
             <div class="v">{negotiation ? usd(negotiation.recommendedOpening) : '—'}</div>
           </div>
           <div class="awv2-cv-dec">
-            <div class="k">Recommended target</div>
+            <div class="k">{subjectImprovement?.improved ? 'Land-basis target reference' : 'Recommended target'}</div>
             <div class="v">{negotiation ? usd(negotiation.recommendedTarget) : '—'}</div>
           </div>
           <div class="awv2-cv-dec ceiling">
-            <div class="k">Hard ceiling</div>
+            <div class="k">{subjectImprovement?.improved ? 'Land-basis ceiling reference' : 'Hard ceiling'}</div>
             <div class="v">{negotiation ? usd(negotiation.hardCeiling) : '—'}</div>
           </div>
           <div class={`awv2-cv-dec conf ${cleaned.confidence}`}>
@@ -649,11 +669,11 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
             <div class="v">{cleaned.confidence}</div>
           </div>
         </div>
-        {cleaned.insufficiencyWarning && (
-          <div class="awv2-cv-error" role="alert">{cleaned.insufficiencyWarning}</div>
+        {reconciledWarning && (
+          <div class="awv2-cv-error" role="alert">{reconciledWarning}</div>
         )}
-        {summary.acquisitionLockedReason && (
-          <div class="awv2-cv-error" role="alert">{summary.acquisitionLockedReason}</div>
+        {reconciledLockedReason && (
+          <div class="awv2-cv-error" role="alert">{reconciledLockedReason}</div>
         )}
 
         {view.laneAccountability && (
@@ -677,6 +697,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
             <span class="chip">{win.selectedMonths}-month sale window</span>
             <span class="chip">{win.acreageBand?.label ?? 'no acreage band'}</span>
             <span class="chip">{win.valuationSetCount} comps price the subject</span>
+            <span class="chip">{summary.acceptedCount} canonical accepted comps</span>
             <span class="chip dim">cutoff {win.cutoffIso}</span>
             {win.addedFrom25To30 > 0 && <span class="chip warn">{win.addedFrom25To30} supplemental historical</span>}
           </div>
@@ -690,7 +711,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
           {win.explanation.map((line) => <p class="awv2-pi-note" key={line.slice(0, 40)}>{line}</p>)}
           {cleaned.adoptedFmv != null && (
             <p class="awv2-pi-note">
-              <b>Why this FMV:</b> {cleaned.reconciliationLines[cleaned.reconciliationLines.length - 1]}
+              <b>{subjectImprovement?.improved ? 'Why this land value:' : 'Why this FMV:'}</b> {cleaned.reconciliationLines[cleaned.reconciliationLines.length - 1]}
             </p>
           )}
         </div>
@@ -699,7 +720,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
       {/* ── 3. Valuation methods, compact ── */}
       <section class="awv2-panel" aria-label="Valuation methods">
         <div class="awv2-panel-title">
-          Valuation methods <span class="awv2-src-tag">Average · median · weighted · active competition · offer methods</span>
+          Valuation methods <span class="awv2-src-tag">{subjectImprovement?.improved ? 'LAND BASIS ONLY · ' : ''}Average · median · weighted · active competition · offer methods</span>
         </div>
         {cleaned.adoptedFmv == null ? (
           <p class="awv2-pi-note">{cleaned.reconciliationLines[0]}</p>
@@ -713,18 +734,18 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                 <b>{cleaned.activeCompetition?.executableLow != null ? `${usd(cleaned.activeCompetition.executableLow)} – ${usd(cleaned.activeCompetition.executableHigh!)}` : '—'}</b>
                 <i>{cleaned.activeCompetition ? `${cleaned.activeCompetition.count} active${cleaned.activeCompetition.staleCount ? `, ${cleaned.activeCompetition.staleCount} stale excluded` : ''}` : 'no active listings'}</i>
               </div>
-              <div class="awv2-cv-m adopted"><span class="k">Adopted cleaned FMV</span><b>{usd(cleaned.adoptedFmv)}</b><i>confidence {cleaned.confidence}</i></div>
+              <div class="awv2-cv-m adopted"><span class="k">{subjectImprovement?.improved ? 'Adopted cleaned land value' : 'Adopted cleaned FMV'}</span><b>{usd(cleaned.adoptedFmv)}</b><i>confidence {cleaned.confidence}</i></div>
               {quickFlip && (
-                <div class="awv2-cv-m"><span class="k">Technical quick-flip max</span><b>{usd(quickFlip.technicalMaxOffer)}</b><i>{quickFlip.technicalMaxPctOfFmv}% of cleaned FMV</i></div>
+                <div class="awv2-cv-m"><span class="k">{subjectImprovement?.improved ? 'Land-basis technical quick-flip max' : 'Technical quick-flip max'}</span><b>{usd(quickFlip.technicalMaxOffer)}</b><i>{quickFlip.technicalMaxPctOfFmv}% of cleaned {subjectImprovement?.improved ? 'land value' : 'FMV'}</i></div>
               )}
             </div>
 
             {negotiation && (
               <div class="awv2-cv-methodrows">
                 <div class="awv2-cv-method">
-                  <div class="mt">Simplified 40 / 50 / 60 method</div>
-                  <div class="mrow"><span>40% opening offer</span><b>{usd(negotiation.standardBand.pct40)}</b></div>
-                  <div class="mrow"><span>50% target offer</span><b>{usd(negotiation.standardBand.pct50)}</b></div>
+                  <div class="mt">{subjectImprovement?.improved ? 'Land-basis 40 / 50 / 60 references' : 'Simplified 40 / 50 / 60 method'}</div>
+                  <div class="mrow"><span>40% {subjectImprovement?.improved ? 'opening reference' : 'opening offer'}</span><b>{usd(negotiation.standardBand.pct40)}</b></div>
+                  <div class="mrow"><span>50% {subjectImprovement?.improved ? 'target reference' : 'target offer'}</span><b>{usd(negotiation.standardBand.pct50)}</b></div>
                   <div class="mrow"><span>60% upper reference</span><b>{usd(negotiation.standardBand.pct60)}</b></div>
                 </div>
                 {quickFlip && (
@@ -733,8 +754,8 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                     <div class="mrow"><span>Expected executable sale price</span><b>{usd(quickFlip.expectedSalePrice)}</b></div>
                     <div class="mrow"><span>Total non-acquisition costs</span><b>−{usd(quickFlip.totalNonAcquisitionCosts)}</b></div>
                     <div class="mrow"><span>Required minimum profit</span><b>−{usd(quickFlip.requiredProfit)}</b></div>
-                    <div class="mrow total"><span>Technical maximum allowable offer</span><b>{usd(quickFlip.technicalMaxOffer)}</b></div>
-                    <div class="mrow"><span>As a percentage of cleaned FMV</span><b>{quickFlip.technicalMaxPctOfFmv}%</b></div>
+                    <div class="mrow total"><span>{subjectImprovement?.improved ? 'Land-basis technical maximum reference' : 'Technical maximum allowable offer'}</span><b>{usd(quickFlip.technicalMaxOffer)}</b></div>
+                    <div class="mrow"><span>{subjectImprovement?.improved ? 'As a percentage of cleaned land value' : 'As a percentage of cleaned FMV'}</span><b>{quickFlip.technicalMaxPctOfFmv}%</b></div>
                   </div>
                 )}
                 <div class="awv2-cv-method reconcile">
@@ -925,7 +946,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                       it never promises a gallery that a labeled fallback cannot
                       deliver when the card is opened. */}
                   <div class="awv2-cv-photowrap">
-                    <CompVisualThumb visual={c.visual} alt={nameOf(c)} width={150} height={112} />
+                    <CompVisualThumb visual={c.visual} thumbnailUrl={c.thumbnailUrl} alt={nameOf(c)} width={150} height={112} />
                     {(c.listing?.photos.count ?? 0) > 1 && (
                       <span class="awv2-cv-photocount">{c.listing!.photos.count} photos</span>
                     )}
@@ -941,6 +962,13 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                       )}
                       {isExcluded(c) && <span class="role excluded">Excluded</span>}
                     </div>
+                    <div class="awv2-cv-sourcebadges" aria-label="Reconciled source provenance">
+                      {sourceBadges(c).map((name) => <span class="source-badge" key={name}>{name}</span>)}
+                      {sourceBadges(c).length > 1 && <span class="merged">One property · {sourceBadges(c).length} sources</span>}
+                    </div>
+                    {isImproved(c) && (
+                      <p class="awv2-cv-improved-context"><b>Improved-property context only.</b> Never included in the vacant-land pricing calculation.</p>
+                    )}
                     {/* Closed comps lead with sold price and how long it took to
                         sell; active competitors lead with the ask and how long
                         the market has refused it. Same component, opposite story. */}
@@ -955,12 +983,12 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                       </span>
                       <span class="f"><span class="u">{active ? 'Listed' : 'Sold'}</span><b>{(active ? mt?.originalListingDateIso : c.listing?.soldDateIso) ?? c.dateIso ?? '—'}</b>{c.monthsOld != null && <span class="d"> ({c.monthsOld} mo ago)</span>}</span>
                       <span class="f"><span class="u">Acres</span><b>{c.acres ?? '—'}</b>{c.acresDeltaFromSubject != null && <span class="d"> ({c.acresDeltaFromSubject > 0 ? '+' : ''}{c.acresDeltaFromSubject} vs subject)</span>}</span>
+                      <span class="f"><span class="u">Property type</span><b>{propertyTypeLabel(c)}</b>{c.buildingSqft != null && <span class="d"> ({c.buildingSqft.toLocaleString('en-US')} building sq ft)</span>}</span>
                       <span class="f"><span class="u">Distance</span><b>{compDistanceLabel(c.distanceMiles)}</b></span>
                       <span class="f"><span class="u">Radius stage</span><b>{RADIUS_TEXT[c.radiusStage ?? 'none']}</b></span>
                       {active && (mt?.priceReductions.length ?? 0) > 0 && (
                         <span class="f"><span class="u">Price reductions</span><b>{mt!.priceReductions.length}</b></span>
                       )}
-                      <span class="f"><span class="u">Source</span><b>{c.source}</b></span>
                     </div>
                     {c.listing?.price.confidence === 'estimated_proxy' && (
                       <p class="awv2-cv-proxy" role="note">{c.listing.price.amountLabel} — an estimate, not a verified sale price. Reduced transaction price confidence.</p>
@@ -997,7 +1025,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
                         are deliberately not rendered here. */}
                     {open && (
                       <div class="awv2-cv-forensics">
-                        <CompFullDetails c={c} adoptedFmv={cleaned.adoptedFmv} />
+                        <CompFullDetails c={c} adoptedFmv={cleaned.adoptedFmv} landBasis={subjectImprovement?.valuationScope === 'land_only'} />
                       </div>
                     )}
                   </div>
@@ -1085,7 +1113,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
           {evidenceLine(highEvidence, 'Upper-value evidence:')}
         </ul>
         <p class="awv2-pi-note">
-          <b>Adopted FMV:</b> {cleaned.adoptedFmv != null
+          <b>{subjectImprovement?.improved ? 'Adopted land value:' : 'Adopted FMV:'}</b> {cleaned.adoptedFmv != null
             ? cleaned.reconciliationLines[cleaned.reconciliationLines.length - 1]
             : cleaned.reconciliationLines[0]}
         </p>
@@ -1096,8 +1124,8 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
               ? `${win.addedFrom25To30} record${win.addedFrom25To30 === 1 ? '' : 's'} from months 25–30 had to be admitted as supplemental historical evidence because 2 or fewer credible sales survived inside 24 months.`
               : 'No credible closed sale fell outside the selected window, so nothing was set aside as historical context.'}
         </p>
-        {view.explanation.neededEvidence.length > 0 && (
-          <p class="awv2-pi-note"><b>What would change this:</b> {view.explanation.neededEvidence.join(' ')}</p>
+        {reconciledNeededEvidence.length > 0 && (
+          <p class="awv2-pi-note"><b>What would change this:</b> {reconciledNeededEvidence.join(' ')}</p>
         )}
         <details class="awv2-collapse">
           <summary>Full calculation ledger — every record and its valuation weight ({comps.length})</summary>
@@ -1122,7 +1150,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
           </table>
           <p class="awv2-pi-note">
             Only rows with a weight enter the cleaned average, cleaned median, weighted indication,
-            adopted FMV, the 40/50/60 levels, the technical maximum, and the final range.
+            adopted {subjectImprovement?.improved ? 'land value and land-basis references' : 'FMV, the 40/50/60 levels, the technical maximum, and the final range'}.
           </p>
         </details>
       </section>

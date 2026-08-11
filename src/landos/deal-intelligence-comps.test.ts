@@ -42,8 +42,8 @@ function row(over: Partial<CompCandidateRow> = {}): CompCandidateRow {
 
 describe('working-set sources', () => {
   it('admits only the approved marketplaces', () => {
-    for (const s of ['LandPortal visible', 'Zillow', 'Redfin']) expect(isWorkingSetSource(s)).toBe(true);
-    for (const s of ['homeharvest', 'realie', 'Realtor.com']) expect(isWorkingSetSource(s)).toBe(false);
+    for (const s of ['LandPortal visible', 'Zillow', 'Redfin', 'Realtor.com']) expect(isWorkingSetSource(s)).toBe(true);
+    for (const s of ['homeharvest', 'realie']) expect(isWorkingSetSource(s)).toBe(false);
   });
 
   it('classifies the aggregators as evidence-only', () => {
@@ -137,9 +137,25 @@ describe('deduplication', () => {
     expect(dedupeCompRows([base, row({ source: 'LandPortal visible', providerId: 'lp-1', apn: null, address: '2 Ridge Rd' })]).rows).toHaveLength(1);
     expect(dedupeCompRows([base, row({ source: 'Zillow', apn: null, address: '3 Ridge Rd', lat: 35.9002, lng: -84.5002 })]).rows).toHaveLength(1);
     expect(dedupeCompRows([
-      row({ source: 'Zillow', address: '10 A Rd', price: 88_000, acres: 9.5, dateIso: '2025-04-01' }),
+      row({ source: 'LandPortal visible', address: null, price: 88_000, acres: 9.5, dateIso: '2025-04-01' }),
       row({ source: 'Redfin', address: '20 B Rd', price: 88_000, acres: 9.5, dateIso: '2025-04-01' }),
     ]).rows).toHaveLength(1);
+  });
+
+  it('does not merge two addressed properties merely because price, acreage and date match', () => {
+    const { rows } = dedupeCompRows([
+      row({ source: 'Zillow', address: '10 A Rd', price: 88_000, acres: 9.5, dateIso: '2025-04-01' }),
+      row({ source: 'Redfin', address: '20 B Rd', price: 88_000, acres: 9.5, dateIso: '2025-04-01' }),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('never lets a transaction signature override conflicting APNs', () => {
+    const { rows } = dedupeCompRows([
+      row({ source: 'LandPortal visible', apn: '11-11', address: null, price: 88_000, acres: 9.5, statusBasis: 'unconfirmed' }),
+      row({ source: 'Realtor.com', apn: '22-22', address: null, price: 88_000, acres: 9.5, statusBasis: 'closed_sale' }),
+    ]);
+    expect(rows).toHaveLength(2);
   });
 
   it('never merges two genuinely different properties', () => {
@@ -171,6 +187,34 @@ describe('deduplication', () => {
       'https://photos.test/redfin-1.jpg',
     ]));
     expect(rows[0].photoUrls?.join(' ')).not.toMatch(/javascript:/i);
+  });
+
+  it('reconciles four provider observations to one comp and leads with a listing photo', () => {
+    const shared = { address: '117 Hensley Rd, Kingston, TN 37763', apn: '115-02100', price: 100_000, acres: 10.3 };
+    const { rows, removed } = dedupeCompRows([
+      row({ ...shared, source: 'LandPortal visible', thumbnailUrl: 'https://images.thelandportal.com/tile.jpg' }),
+      row({ ...shared, source: 'Zillow', thumbnailUrl: 'https://photos.zillowstatic.com/fp/hero.jpg' }),
+      row({ ...shared, source: 'Redfin', photoUrls: ['https://ssl.cdn-redfin.com/photo/road.jpg'] }),
+      row({ ...shared, source: 'Realtor.com', photoUrls: ['https://ap.rdcpix.com/water.jpg'] }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(removed).toBe(3);
+    expect(rows[0].duplicatesMerged).toBe(3);
+    expect(rows[0].providerAttributions?.sort()).toEqual(['LandPortal visible', 'Realtor.com', 'Redfin', 'Zillow']);
+    expect(rows[0].thumbnailUrl).toBe('https://photos.zillowstatic.com/fp/hero.jpg');
+    expect(rows[0].photoUrls).toHaveLength(4);
+  });
+
+  it('dedupes transitively when a later provider page bridges APN-only and address-only rows', () => {
+    const { rows, removed } = dedupeCompRows([
+      row({ source: 'LandPortal visible', apn: '13-116-015-01', address: null, price: 400_000, acres: 40 }),
+      row({ source: 'Zillow', apn: null, address: '100 Comp Road, Williamsburg, MI 49690', price: 400_000, acres: 40 }),
+      row({ source: 'Realtor.com', apn: '13-116-015-01', address: '100 Comp Road, Williamsburg, MI 49690', price: 400_000, acres: 40 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(removed).toBe(2);
+    expect(rows[0]).toMatchObject({ apn: '13-116-015-01', address: '100 Comp Road, Williamsburg, MI 49690', duplicatesMerged: 2 });
+    expect(rows[0].providerAttributions).toEqual(expect.arrayContaining(['LandPortal visible', 'Zillow', 'Realtor.com']));
   });
 
   it('retains only the card-scoped internal comp-image route', () => {
@@ -532,7 +576,7 @@ describe('policy verdicts travel with the row', () => {
       decision(),
     ]));
     expect(rows).toHaveLength(1);
-    expect(rows.some((candidate) => /realie|homeharvest|realtor/i.test(candidate.source))).toBe(false);
+    expect(rows.some((candidate) => /realie|homeharvest/i.test(candidate.source))).toBe(false);
   });
 
   it('keeps an over-cap sold supplement out of the sold set, so the two-supplement cap holds', () => {

@@ -584,11 +584,33 @@ export async function authorMission({
     const text = result.finalMessage ?? result.stdout;
     writeFileSync(path.join(attemptDirectory, 'response.txt'), String(text ?? ''), 'utf8');
 
+    // A killed worker writes no final message, so its reply is empty — which is
+    // indistinguishable from a worker that answered without JSON unless the
+    // timeout is checked first. Reporting "no plan JSON found in the reply" for
+    // a wall-clock kill sends the reader hunting for a formatting bug that does
+    // not exist, and hides the only fact that matters: it ran out of time.
+    if (result.timedOut) {
+      const seconds = Math.round(AUTHOR_TIMEOUT_MS / 1000);
+      issues = [`the authoring worker was killed at AUTHOR_TIMEOUT after ${seconds}s before it produced a plan`];
+      plan = null;
+      writeFileSync(
+        path.join(attemptDirectory, 'timeout.txt'),
+        `AUTHOR_TIMEOUT after ${seconds}s\nexit=${result.exitCode}\nstderr:\n${String(result.stderr ?? '').slice(-8000)}\n`,
+        'utf8',
+      );
+      report('author.timeout', {
+        message: `attempt ${attempts}: AUTHOR_TIMEOUT after ${seconds}s — worker killed, no reply captured (not a formatting problem)`,
+      });
+      continue;
+    }
+
     const extracted = extractPlan(text);
     if (!extracted) {
       issues = ['no JSON mission plan could be extracted from your reply; emit exactly one fenced ```json block'];
       plan = null;
-      report('author.reject', { message: `attempt ${attempts}: no plan JSON found in the reply` });
+      report('author.reject', {
+        message: `attempt ${attempts}: no plan JSON found in the reply (${String(text ?? '').length} char reply, exit ${result.exitCode})`,
+      });
       continue;
     }
 

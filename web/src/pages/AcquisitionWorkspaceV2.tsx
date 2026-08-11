@@ -9,8 +9,8 @@
 //
 // This route is separate from the existing Deal Card and changes no backend
 // behavior. Values missing from the current data interfaces render as missing;
-// nothing is fabricated. Only the Overview is built; the other workspace
-// sections are visible navigation placeholders.
+// nothing is fabricated. The page owns loading, record identity, and section
+// navigation; each of the three built sections owns its operator presentation.
 import { useEffect, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
 import {
@@ -23,7 +23,7 @@ import {
 } from '@/lib/workspace-v2-nav';
 import {
   PropertyIntelligenceSection,
-  type MarketContextView, type PiCompRow, type PiEvidenceItem, type PiFact,
+  type MarketContextView, type PiCompRow,
   type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
   type MissingDiligenceView, type AccessPresentationView, type SoilsSepticView,
   type ExactAddressListingsView,
@@ -32,6 +32,9 @@ import {
 import {
   CompsValuationSection, type CompsValuationViewData,
 } from '../components/AcquisitionWorkspaceV2CompsValuation';
+import {
+  OverviewSection, type OverviewSnapshotView,
+} from '../components/AcquisitionWorkspaceV2Overview';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
 import type { LandUseView } from '../components/AcquisitionWorkspaceV2LandUse';
 import '../styles/workspace-v2.css';
@@ -45,19 +48,8 @@ interface DdItem {
   key: string; label: string; verdict: string; headline: string; detail?: string;
   missing?: string[];
 }
-interface ScoreView {
-  score: number | null; rating: string; explanation?: string;
-  strongestPositiveFactors?: string[]; mainDeductions?: string[];
-  materiallyChangeWith?: string[];
-}
-interface SnapshotView {
+interface SnapshotView extends OverviewSnapshotView {
   status?: string;
-  identity?: {
-    displayAddress?: string; normalizedAddress?: string; owner?: string | null;
-    county?: string; state_?: string; apn?: string; acres?: number | null;
-    lpPropertyId?: string | null; hasParcelGeometry?: boolean;
-  };
-  facts?: PiFact[];
   dueDiligence?: DdItem[];
   valuation?: {
     priceable?: boolean; pricePerAcreRange?: { low: number; high: number } | null;
@@ -76,10 +68,7 @@ interface SnapshotView {
     sold?: PiCompRow[]; active?: PiCompRow[]; askingReferences?: PiCompRow[]; summaryLine?: string;
     conclusion?: string; landPortalRowsSeen?: number; totalCollected?: number; duplicatesMerged?: number;
   };
-  evidence?: PiEvidenceItem[];
-  operatorAnalysis?: { scores?: { property?: ScoreView; market?: ScoreView; seller?: ScoreView } };
   missingInformation?: unknown[];
-  subjectParcelUrl?: string | null;
 }
 interface DealResp {
   dealCard?: {
@@ -278,50 +267,27 @@ export function AcquisitionWorkspaceV2() {
   const owner = id.owner || deal?.dealCard?.propertyCards?.[0]?.owner || '';
   const acres = id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
 
-  const dd = new Map<string, DdItem>((snap.dueDiligence || []).map((x) => [x.key, x]));
-  const access = dd.get('access');
-  const wetlands = dd.get('wetlands');
-  const flood = dd.get('flood');
-  const terrain = dd.get('terrain');
-  const frontageFt = matchNum(access?.headline, /([\d.]+)\s*ft frontage/);
-  const landlocked = matchNum(access?.headline, /landlocked flag:\s*(\w+)/);
-  const wetPct = matchNum(wetlands?.headline, /([\d.]+)%/);
-  const floodPct = matchNum(flood?.headline, /(\d+(?:\.\d+)?)/);
-  const slopePct = matchNum(terrain?.headline, /([\d.]+)%\s*average slope/);
-  const buildPct = matchNum(terrain?.headline, /([\d.]+)%\s*buildability/);
-
   const heroUrl = (snap.evidence || []).find((e) => e.id === 'inspection-landportal_overview')?.viewUrl
     ?? (snap.evidence || []).find((e) => e.id === 'inspection-parcel_context')?.viewUrl
     ?? (snap.evidence || []).find((e) => e.id === 'inspection-close_parcel_aerial')?.viewUrl;
   const visualCount = (snap.evidence || []).filter((e) => e.viewUrl).length;
 
-  const scores = snap.operatorAnalysis?.scores || {};
-  const val = snap.valuation || {};
-  const perAcre = val.pricePerAcreRange || null;
-  const totalLow = perAcre && acres ? perAcre.low * acres : null;
-  const totalHigh = perAcre && acres ? perAcre.high * acres : null;
-  const lpEstimate = (snap.facts || []).find((f) => f.key === 'lpEstimateTotal')?.value || null;
-  const lpEstimatePerAcre = (snap.facts || []).find((f) => f.key === 'lpEstimatePerAcre')?.value || null;
-
-  const marketSubject = (snap.facts || []).find((f) => f.key === 'market_matrix_subject')?.value;
-  const marketOverall = (snap.facts || []).find((f) => f.key === 'market_matrix_overall')?.value;
-  const subjPpa = matchNum(marketSubject, /Price per Acre:\s*\$([\d,]+)/);
-  const subjDom = matchNum(marketSubject, /Days on Market:\s*(\d+)/);
-  const overallPpa = matchNum(marketOverall, /Price per Acre:\s*\$([\d,]+)/);
-  const overallDom = matchNum(marketOverall, /Days on Market:\s*(\d+)/);
-
   const stageLabel = acq?.stageLabel || 'New lead';
-  const nextActionLabel = acq?.nextAction?.label || snap.nextActions?.[0] || '';
+  const nextActionLabel = acq?.nextAction?.label
+    || snap.operatorAnalysis?.canonical?.nextActions?.[0]
+    || snap.operatorAnalysis?.overall?.nextBestActions?.[0]
+    || '';
   const nextActionReason = acq?.nextAction?.reason || '';
   // Recomputed from current accepted research state (server re-derivation),
   // never a stale snapshot count; the exact incomplete area is named below.
   const researchProgress = researchStatus
-    ? researchStatus.headline
+    ? `${researchStatus.delivered} of ${researchStatus.total} research lanes delivered`
     : (() => {
         const m = snap.headline?.confidenceWhy?.match(/(\d+)\s+of\s+(\d+)/);
         return m ? `${m[1]} of ${m[2]} research areas delivered` : (snap.status === 'complete_with_gaps' ? 'Complete with gaps' : '—');
       })();
   const incompleteArea = researchStatus?.incomplete?.[0] ?? null;
+  const researchQuestions = researchStatus as (ResearchStatusView & { questionsHeadline?: string }) | null;
   const lastEvent = activity?.events?.[0];
   const lastActivity = lastEvent
     ? `${activityLabel(lastEvent.kind, lastEvent.summary)} · ${new Date(lastEvent.createdAt * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
@@ -330,45 +296,24 @@ export function AcquisitionWorkspaceV2() {
 
   const seller = deal?.dealCard?.people?.[0] || null;
   const askingPrice = deal?.dealCard?.asking_price ?? null;
-  const discoveryDone = (acq?.acquisition?.discovery || []).length > 0;
-
-  const rec = snap.recommendation || {};
-  const strategies = snap.strategies || [];
-  const soldCount = snap.comps?.sold?.length ?? 0;
-  const activeCount = snap.comps?.active?.length ?? 0;
-  const askingCount = snap.comps?.askingReferences?.length ?? 0;
-  // Comps & Valuation is the valuation authority: Overview mirrors its summary
-  // so both surfaces always agree.
   const cvSummary = compsValuation?.summary ?? null;
-  const cvSubject = compsValuation?.subjectImprovement ?? null;
-  const cvCleaned = compsValuation?.cleaned ?? null;
-  const cvQuickFlip = compsValuation?.quickFlip ?? null;
-  const cvNegotiation = compsValuation?.negotiation ?? null;
-  const cvCandidateCount = (compsValuation?.counts?.candidate_closed_sale ?? 0)
-    + (compsValuation?.counts?.accepted_closed_sale ?? 0);
-  const cvActiveCount = compsValuation?.counts?.active_competition ?? 0;
-
-  // Missing information, grouped compactly. Sourced from unresolved diligence,
-  // valuation gaps, and the not-yet-collected seller record.
-  const missingProperty: string[] = [];
-  for (const k of ['zoning', 'septic', 'utilities']) {
-    const item = dd.get(k);
-    if (item && (item.verdict === 'unknown' || item.verdict === 'unresolved')) missingProperty.push(item.label);
-  }
-  if (access?.missing?.some((m) => /legal access/i.test(m))) missingProperty.push('Legal access (recorded instruments)');
-  if (id.hasParcelGeometry === false) missingProperty.push('Parcel boundary / survey');
-  if (!(snap.facts || []).some((f) => f.key === 'lp_sidebar_water_feature_type' && f.value)) missingProperty.push('Water features');
-  const missingValuation = cvSummary
-    ? (cvSummary.status === 'supported' ? []
-      : cvSummary.status === 'provisional' ? ['A third credible closed vacant-land sale']
-        : ['Two credible closed vacant-land sales'])
-    : (val.priceable ? [] : ['A closed in-band land sale (price + date)']);
-  const missingSeller: string[] = [];
-  if (!seller?.name) missingSeller.push('Seller contact');
-  if (!seller?.phone) missingSeller.push('Phone');
-  if (!seller?.email) missingSeller.push('Email');
-  if (askingPrice == null) missingSeller.push('Asking price');
-  if (!discoveryDone) missingSeller.push('Motivation', 'Timeline', 'Decision-makers');
+  const canonicalValuationSummary = cvSummary;
+  const valuationBasisLabel = cvSummary ? cvSummary.basisLabel : null;
+  const landBasisOpeningReference = cvSummary?.acquisitionLevels ? usd(cvSummary.acquisitionLevels.pct40) : null;
+  const visualBuyerSummary = vba?.overviewSummary ? {
+    physicalCharacter: vba.overviewSummary.physicalCharacter,
+    mainBuyerAppeal: vba.overviewSummary.mainBuyerAppeal,
+    topConcern: vba.overviewSummary.topConcern,
+  } : null;
+  const visualBuyerSummaryLabel = 'Visual buyer summary';
+  const visualBuyerAnalysisLabel = 'Open the full Visual Buyer Analysis';
+  const openCompsValuationLabel = 'Open Comps &amp; Valuation →';
+  const onOpenSection = (slug: 'property-intelligence' | 'comps-valuation') => {
+    const href = sectionHref(window.location.pathname, window.location.search, slug);
+    if (href !== window.location.pathname + window.location.search) window.history.pushState(null, '', href);
+    setSection(readSection(window.location.search));
+  };
+  const openCompsValuation = () => onOpenSection('comps-valuation');
 
   return (
     <div class="awv2">
@@ -378,7 +323,6 @@ export function AcquisitionWorkspaceV2() {
           <span>Acquisitions</span><span class="sep">/</span>
           <span class="brass">Workspace V2</span><span class="sep">/</span>
           <span>Deal {dealId}</span>
-          {id.apn && (<><span class="sep">·</span><span>APN {id.apn}</span></>)}
         </div>
 
         <h1 class="awv2-address">
@@ -412,13 +356,17 @@ export function AcquisitionWorkspaceV2() {
 
         <div class="awv2-statusbar">
           <div class="awv2-status-item">
-            <div class="k">Research</div>
+            <div class="k">Research lanes</div>
             <div class="v"><b>{researchProgress}</b></div>
             {incompleteArea && (
               <div class="awv2-status-sub">
                 Missing: <b>{incompleteArea.label}</b>{incompleteArea.reason ? ` — ${incompleteArea.reason}` : ''}{incompleteArea.nextAction ? ` Next: ${incompleteArea.nextAction}` : ''}
               </div>
             )}
+          </div>
+          <div class="awv2-status-item">
+            <div class="k">Diligence questions</div>
+            <div class="v"><b>{researchQuestions?.questionsHeadline || 'Resolution status not yet recorded'}</b></div>
           </div>
           <div class="awv2-status-item">
             <div class="k">Last activity</div>
@@ -482,439 +430,41 @@ export function AcquisitionWorkspaceV2() {
 
         {section === 'Property Intelligence' ? (
           <main class="awv2-main">
-            {/* ── Scores first: the operator's opening read ── */}
-            <div class="awv2-grid cols-3 awv2-scorestrip">
-              <ScoreCard title="Property score" view={scores.property} />
-              <ScoreCard title="Market score" view={scores.market} />
-              <ScoreCard title="Seller score" view={scores.seller} />
-            </div>
-            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} exactAddressListings={exactAddressListings} />
+            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} />
           </main>
         ) : section === 'Comps & Valuation' ? (
           <main class="awv2-main">
-            {/* ── Scores first: the operator's opening read ── */}
-            <div class="awv2-grid cols-3 awv2-scorestrip">
-              <ScoreCard title="Property score" view={scores.property} />
-              <ScoreCard title="Market score" view={scores.market} />
-              <ScoreCard title="Seller score" view={scores.seller} />
-            </div>
             <CompsValuationSection dealId={dealId} initial={compsValuation} />
           </main>
         ) : (
-        <main class="awv2-main">
-          {/* ── Scores first: the operator's opening read ── */}
-          <div class="awv2-grid cols-3 awv2-scorestrip">
-            <ScoreCard title="Property score" view={scores.property} />
-            <ScoreCard title="Market score" view={scores.market} />
-            <ScoreCard title="Seller score" view={scores.seller} />
-          </div>
-
-          {/* ── Property hero: full uncropped parcel aerial + site facts ── */}
-          <section class="awv2-hero" aria-label="Property hero">
-            <div class="awv2-hero-media">
-              <span class="tick tl" /><span class="tick tr" /><span class="tick bl" /><span class="tick br" />
-              {heroUrl && <img src={tok(heroUrl)} alt={`LandPortal satellite Overview of ${address}, its parcel boundary, nearest road, and apparent access relationship`} />}
-            </div>
-            <aside class="awv2-hero-side">
-              <div class="awv2-hero-facts">
-                {acres != null && <div class="f"><span class="u">Acreage</span><span class="v">{acres} AC</span></div>}
-                {id.apn && <div class="f"><span class="u">APN</span><span class="v">{id.apn}</span></div>}
-                {id.county && <div class="f"><span class="u">County</span><span class="v">{id.county}</span></div>}
-                {zip && <div class="f"><span class="u">ZIP</span><span class="v">{zip}</span></div>}
-                {frontageFt && <div class="f"><span class="u">Frontage</span><span class="v">{Math.round(Number(frontageFt))} FT</span></div>}
-                {landlocked && (
-                  <div class="f"><span class="u">Landlocked</span>
-                    <span class={`v ${landlocked.toLowerCase() === 'no' ? 'good' : 'warn'}`}>{landlocked.toUpperCase()}</span>
-                  </div>
-                )}
-                {wetPct && <div class="f"><span class="u">Wetlands</span><span class="v warn">{wetPct}%</span></div>}
-                {floodPct && <div class="f"><span class="u">Flood overlay</span><span class="v warn">{floodPct}%</span></div>}
-                {slopePct && <div class="f"><span class="u">Avg slope</span><span class="v">{slopePct}%</span></div>}
-                {buildPct && <div class="f"><span class="u">Buildable</span><span class="v good">{buildPct}%</span></div>}
-                {accessView?.evidence?.parcelFlagged && (
-                  <div class="f"><span class="u">Parcel flag</span><span class="v warn">LAND LOCKED</span></div>
-                )}
-                {accessView?.evidence?.apparentPhysicalAccess && (
-                  <div class="f"><span class="u">Physical route</span><span class="v">APPARENT</span></div>
-                )}
-                {accessView?.evidence?.reportedLegalAccess && (
-                  <div class="f"><span class="u">Listing access</span><span class="v">REPORTED</span></div>
-                )}
-                {accessView?.evidence?.verifiedLegalAccess && (
-                  <div class="f"><span class="u">Recorded access</span><span class="v good">VERIFIED</span></div>
-                )}
-                {soilsSeptic && (
-                  <div class="f"><span class="u">Septic outlook</span>
-                    <span class={`v ${soilsSeptic.category === 'high' ? 'good' : 'warn'}`}>
-                      {soilsSeptic.category === 'low' ? 'LOW (PRELIM)' : soilsSeptic.category === 'high' ? 'FAVORABLE (PRELIM)' : soilsSeptic.category.toUpperCase()}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div class="awv2-hero-caption">
-                {/* The subject's own improvement evidence decides this noun.
-                    Calling an improved parcel vacant misstates the asset. */}
-                <b>{acres != null ? `${acres}-acre` : 'A'} {cvSubject?.captionNoun ?? 'vacant parcel'}</b> in {id.county || '—'} County
-                {cvSubject?.improved && cvSubject.buildingSqft != null
-                  ? `, carrying approx. ${Math.round(cvSubject.buildingSqft).toLocaleString('en-US')} sqft of improvements`
-                  : ''}
-                {frontageFt ? ` with ${Math.round(Number(frontageFt))} ft of mapped road frontage` : ''}
-                {landlocked?.toLowerCase() === 'no' ? ', not flagged landlocked' : ''}
-                {wetPct && floodPct ? `, light wetlands (${wetPct}%) and flood (${floodPct}%) coverage` : ''}
-                {buildPct ? `, and ${Math.round(Number(buildPct))}% of the site shown buildable` : ''}.
-                {' '}{accessView?.evidence?.operatorConclusion
-                  ?? (accessView?.established
-                    ? `Mapped road abutment: ${accessView.legalAccess}. Apparent entrance: ${accessView.apparentEntrance.charAt(0).toLowerCase()}${accessView.apparentEntrance.slice(1)}. Recorded-instrument access remains separate diligence.`
-                    : 'Physical and legal access evidence remains unresolved; zoning, septic and utilities still need confirmation.')}
-                {' '}{visualCount > 0 && <span>{visualCount} verified visuals on file → Evidence & Documents.</span>}
-              </div>
-              {snap.subjectParcelUrl && (
-                <a
-                  class="awv2-hero-lp"
-                  href={snap.subjectParcelUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <ExternalLink size={14} /> Open this subject in LandPortal
-                </a>
-              )}
-            </aside>
-          </section>
-
-          {/* ── Visual Buyer Summary (grounded in the multi-view analysis) ── */}
-          {vba?.overviewSummary && (
-            <section class="awv2-panel" aria-label="Visual Buyer Summary">
-              <div class="awv2-panel-title">
-                Visual buyer summary <span class="awv2-src-tag">Multi-view visual analysis</span>
-              </div>
-              <div class="awv2-kv">
-                <span class="k">Physical character</span>
-                <span class="v">{vba.overviewSummary.physicalCharacter}</span>
-                <span class="k">Main buyer appeal</span>
-                <span class="v">{vba.overviewSummary.mainBuyerAppeal}</span>
-                <span class="k">Top visual concern</span>
-                <span class="v">{vba.overviewSummary.topConcern}</span>
-                {narrative?.overviewMarketLine && (
-                  <>
-                    <span class="k">Market context</span>
-                    <span class="v">{narrative.overviewMarketLine}</span>
-                  </>
-                )}
-              </div>
-              <button
-                type="button"
-                class="awv2-vbs-open"
-                onClick={(e) => {
-                  switchSection(e as unknown as MouseEvent, 'property-intelligence');
-                  requestAnimationFrame(() => document.getElementById('visual-buyer-analysis')?.scrollIntoView({ behavior: 'smooth' }));
-                }}
-              >
-                Open the full Visual Buyer Analysis →
-              </button>
-            </section>
-          )}
-
-          {/* ── Septic outlook (compact, grounded in mapped soils) ── */}
-          {soilsSeptic && (
-            <section class="awv2-panel" aria-label="Septic outlook">
-              <div class="awv2-panel-title">
-                Septic outlook <span class="awv2-src-tag">Mapped soils · preliminary screening</span>
-              </div>
-              <div class="awv2-kv">
-                <span class="k">Preliminary outlook</span>
-                <span class="v"><b>{soilsSeptic.categoryLabel}</b></span>
-                <span class="k">Read</span>
-                <span class="v">
-                  {soilsSeptic.category === 'low'
-                    ? 'Mapped soils carry official limitations for a conventional in-ground system; engineered options stay possible.'
-                    : soilsSeptic.category === 'insufficient'
-                      ? 'Not enough retained soil data for a parcel-level read.'
-                      : 'Mapped soils suggest potentially suitable areas.'}
-                  {' '}Field testing remains required.
-                </span>
-              </div>
-              <button
-                type="button"
-                class="awv2-vbs-open"
-                onClick={(e) => {
-                  switchSection(e as unknown as MouseEvent, 'property-intelligence');
-                  requestAnimationFrame(() => document.getElementById('soils-septic')?.scrollIntoView({ behavior: 'smooth' }));
-                }}
-              >
-                Open Soils &amp; Preliminary Septic Outlook →
-              </button>
-            </section>
-          )}
-
-          {/* ── Valuation + Seller ── */}
-          <div class="awv2-grid cols-3-2">
-            <section class="awv2-panel">
-              <div class="awv2-panel-title">Valuation</div>
-              {cvSummary ? (
-                <div class={`awv2-val-status awv2-cv-status ${cvSummary.status}`}>
-                  {cvSummary.basisLabel ?? cvSummary.statusLabel}
-                  {cvSummary.confidence !== 'unavailable' && <span class="conf"> · confidence {cvSummary.confidence}</span>}
-                </div>
-              ) : (
-                !val.priceable && <div class="awv2-val-status">Not priceable yet · confidence {val.confidence || 'low'}</div>
-              )}
-              <div class="awv2-val-figures">
-                {cvSummary?.fmv && (
-                  <div class="awv2-val-fig">
-                    {/* Land comps price land. On an improved subject this figure
-                        is named a land-only indication, never a property FMV. */}
-                    <div class="k">{cvSubject?.valuationScopeLabel ?? 'Preliminary fair market value'}</div>
-                    <div class="v">{usd(cvSummary.fmv.central)}</div>
-                    <div class="s">
-                      median {cvSummary.medianPricePerAcre != null ? `${usd(cvSummary.medianPricePerAcre)}/ac` : '—'} × {cvSummary.workingAcres} acres
-                      {cvSummary.fmv.low != null && cvSummary.fmv.high != null ? ` · range ${usd(cvSummary.fmv.low)}–${usd(cvSummary.fmv.high)}` : ''}
-                    </div>
-                  </div>
-                )}
-                {cvSubject?.wholePropertyPending && (
-                  <div class="awv2-val-fig" data-testid="overview-whole-property-pending">
-                    <div class="k">Whole-property value</div>
-                    <div class="v">Pending</div>
-                    <div class="s">{cvSubject.wholePropertyNote}</div>
-                  </div>
-                )}
-                {perAcre && (
-                  <div class="awv2-val-fig">
-                    <div class="k">Asking-market indication</div>
-                    <div class="v">{usd(perAcre.low)}–{usd(perAcre.high)} / ac</div>
-                    {totalLow != null && totalHigh != null && (
-                      <div class="s">≈ {usd(totalLow)}–{usd(totalHigh)} across {acres} acres · what sellers ask, not what buyers paid</div>
-                    )}
-                  </div>
-                )}
-                {lpEstimate && (
-                  <div class="awv2-val-fig">
-                    <div class="k">LandPortal estimate</div>
-                    <div class="v">{lpEstimate}</div>
-                    <div class="s">{lpEstimatePerAcre ? `${lpEstimatePerAcre} / ac · ` : ''}marketplace indication only</div>
-                  </div>
-                )}
-                <div class="awv2-val-fig">
-                  <div class="k">{cvSubject?.improved ? 'Supporting land sales' : 'Supporting closed sales'}</div>
-                  <div class="v">{cvSummary ? cvSummary.acceptedCount : soldCount}</div>
-                  <div class="s">
-                    {cvSummary
-                      ? `${cvCandidateCount} ${cvSubject?.improved ? 'land-sale' : 'closed-sale'} candidate${cvCandidateCount === 1 ? '' : 's'} · ${cvActiveCount} active competitor${cvActiveCount === 1 ? '' : 's'} retained`
-                      : `${activeCount} active competitor · ${askingCount} asking references`}
-                  </div>
-                </div>
-              </div>
-
-              <div class="awv2-ladder">
-                <div class="awv2-ladder-title">
-                  {cvSummary?.acquisitionLevels
-                    ? `Acquisition levels — from the ${cvSummary.status} central value`
-                    : 'Acquisition levels — locked until fair market value is supported'}
-                </div>
-                <div class="awv2-rungs">
-                  {([40, 50, 60] as const).map((p) => (
-                    <div class="awv2-rung">
-                      <div class="pct">{p}%</div>
-                      <div class="lbl">{cvSubject?.improved ? 'of land value' : 'of FMV'}</div>
-                      <div class="val">
-                        {cvSummary?.acquisitionLevels ? usd(cvSummary.acquisitionLevels[`pct${p}` as 'pct40' | 'pct50' | 'pct60']) : '—'}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div class="awv2-ladder-note">
-                  {cvSummary?.acquisitionLevels
-                    ? (cvCleaned?.adoptedFmv != null
-                      ? `Derived from the adopted cleaned ${cvSubject?.improved ? 'LAND value' : 'fair market value'} of ${usd(cvCleaned.adoptedFmv)}, which reconciles the cleaned average, cleaned median, and weighted direct-comp indications.${cvSubject?.improved ? ' It excludes the structure; the whole-property value is pending.' : ''}`
-                      : cvSummary.status === 'provisional'
-                        ? `Provisional: automatically derived from ${cvSummary.acceptedCount} credible closed vacant-land sales; treat as a working figure, not a supported FMV.`
-                        : 'Derived from the median closed vacant-land sale price per acre in the valuation set.')
-                    : (cvSummary?.acquisitionLockedReason
-                      || val.notPriceableReason
-                      || 'Fair market value is not yet supported.')}
-                  {!cvSummary?.acquisitionLevels && (
-                    <>{' '}<b>To price it: {val.nextActionToPrice || 'confirm one closed in-band sale.'}</b></>
-                  )}
-                </div>
-              </div>
-
-              {/* The same final recommendation Comps & Valuation shows — one
-                  set of numbers across both sections. */}
-              {cvNegotiation && (
-                <div class="awv2-ladder">
-                  <div class="awv2-ladder-title">Final recommended negotiation range</div>
-                  <div class="awv2-rungs">
-                    <div class="awv2-rung">
-                      <div class="pct">Opening</div>
-                      <div class="lbl">recommended</div>
-                      <div class="val">{usd(cvNegotiation.recommendedOpening)}</div>
-                    </div>
-                    <div class="awv2-rung">
-                      <div class="pct">Target</div>
-                      <div class="lbl">recommended</div>
-                      <div class="val">{usd(cvNegotiation.recommendedTarget)}</div>
-                    </div>
-                    <div class="awv2-rung ceiling">
-                      <div class="pct">Ceiling</div>
-                      <div class="lbl">technical max</div>
-                      <div class="val">{usd(cvNegotiation.hardCeiling)}</div>
-                    </div>
-                  </div>
-                  <div class="awv2-ladder-note">
-                    {cvQuickFlip
-                      ? `Technical quick-flip maximum is ${usd(cvQuickFlip.technicalMaxOffer)} (${cvQuickFlip.technicalMaxPctOfFmv}% of the adopted cleaned ${cvSubject?.improved ? 'land value' : 'FMV'}) after ${usd(cvQuickFlip.totalNonAcquisitionCosts)} of non-acquisition costs and ${usd(cvQuickFlip.requiredProfit)} required profit.`
-                      : cvNegotiation.lines[0]}
-                  </div>
-                </div>
-              )}
-
-              <button
-                type="button"
-                class="awv2-vbs-open"
-                onClick={(e) => switchSection(e as unknown as MouseEvent, 'comps-valuation')}
-              >
-                Open Comps &amp; Valuation →
-              </button>
-
-              {(subjPpa || overallPpa) && (
-                <div class="awv2-market-context">
-                  {subjPpa && (
-                    <div class="item">County 10–20 ac band (2026-Q3): <b>${subjPpa}/ac</b>{subjDom ? ` · ${subjDom} days on market` : ''}</div>
-                  )}
-                  {overallPpa && (
-                    <div class="item">County overall: <b>${overallPpa}/ac</b>{overallDom ? ` · ${overallDom} days on market` : ''}</div>
-                  )}
-                </div>
-              )}
-            </section>
-
-            <section class="awv2-panel">
-              <div class="awv2-panel-title">Seller & lead</div>
-              <div class="awv2-kv">
-                <span class="k">Seller</span>
-                {seller?.name ? <span class="v">{seller.name}</span> : <span class="v empty">Not collected</span>}
-                <span class="k">Phone</span>
-                {seller?.phone ? <span class="v">{seller.phone}</span> : <span class="v empty">Not collected</span>}
-                <span class="k">Email</span>
-                {seller?.email ? <span class="v">{seller.email}</span> : <span class="v empty">Not collected</span>}
-                <span class="k">Asking price</span>
-                {askingPrice != null ? <span class="v">{usd(askingPrice)}</span> : <span class="v empty">Not stated</span>}
-                <span class="k">Motivation</span>
-                <span class="v empty">Unknown — establish on the next call</span>
-                <span class="k">Timeline</span>
-                <span class="v empty">Unknown</span>
-                <span class="k">Last contact</span>
-                <span class="v empty">None yet</span>
-                <span class="k">Follow-up</span>
-                <span class="v">{followUp || <span class="v empty">None scheduled</span>}</span>
-                <span class="k">Discovery call</span>
-                <span class="v">{discoveryDone ? 'Captured' : <span class="v empty">Not run</span>}</span>
-              </div>
-              <div class="awv2-seller-callout">
-                <b>This record is intentionally thin.</b> The owner of record is {owner || 'unknown'}; no seller
-                contact has been collected yet. The discovery call fills in motivation, timeline, price
-                expectation and decision-makers.
-              </div>
-            </section>
-          </div>
-
-          {/* ── Decision summary ── */}
-          <section class="awv2-panel">
-            <div class="awv2-panel-title">Decision summary</div>
-            <div class="awv2-decision">
-              <div class="awv2-dec-block">
-                <div class="h brass">Primary opportunity</div>
-                <p>{snap.headline?.keyOpportunity || '—'}</p>
-                <div class="h rust" style="margin-top:14px">Top blockers</div>
-                <ul>
-                  {(snap.blockers?.length ? snap.blockers : ['None recorded']).map((b) => <li>{b}</li>)}
-                </ul>
-              </div>
-              <div class="awv2-dec-block">
-                <div class="h brass">Recommended next action</div>
-                <ul>
-                  {nextActionLabel && <li><b>{nextActionLabel}</b>{nextActionReason ? ` — ${nextActionReason}` : ''}</li>}
-                  {(snap.nextActions || []).map((a) => <li>{a}</li>)}
-                </ul>
-                <div class="h" style="margin-top:14px">Current strategy</div>
-                <div class="awv2-posture">Posture · {rec.posture || '—'}</div>
-                <p>{rec.why || rec.postureWhy || ''}</p>
-              </div>
-              <div class="awv2-dec-block">
-                <div class="h">Alternative strategies</div>
-                {strategies.slice(0, 5).map((s) => (
-                  <div class="awv2-strategy-row">
-                    <span class="name">{s.strategy}</span>
-                    <span class="st">{s.applicability}</span>
-                  </div>
-                ))}
-                <div class="h" style="margin-top:14px">What unlocks a decision</div>
-                <ul>
-                  {(rec.nextConfirmations || []).slice(0, 4).map((c) => <li>{c}</li>)}
-                </ul>
-              </div>
-            </div>
-          </section>
-
-          {/* ── Missing information (compact) ── */}
-          <section class="awv2-missing">
-            <div class="awv2-panel-title">Missing information</div>
-            <div class="awv2-missing-groups">
-              <div class="awv2-missing-group">
-                <div class="g">Property</div>
-                <div class="awv2-missing-chips">
-                  {missingProperty.map((m) => <span class="awv2-chip">{m}</span>)}
-                </div>
-              </div>
-              <div class="awv2-missing-group">
-                <div class="g">Valuation</div>
-                <div class="awv2-missing-chips">
-                  {missingValuation.map((m) => <span class="awv2-chip">{m}</span>)}
-                </div>
-              </div>
-              <div class="awv2-missing-group">
-                <div class="g">Seller</div>
-                <div class="awv2-missing-chips">
-                  {missingSeller.map((m) => <span class="awv2-chip">{m}</span>)}
-                </div>
-              </div>
-            </div>
-          </section>
-        </main>
+        <OverviewSection
+          snap={snap}
+          address={address}
+          zip={zip}
+          heroSrc={heroUrl ? tok(heroUrl) : null}
+          visualCount={visualCount}
+          seller={seller}
+          askingPrice={askingPrice}
+          researchStatus={researchStatus}
+          accessView={accessView}
+          soilsSeptic={soilsSeptic}
+          narrative={narrative}
+          visualBuyerSummary={visualBuyerSummary}
+          visualBuyerSummaryLabel={visualBuyerSummaryLabel}
+          visualBuyerAnalysisLabel={visualBuyerAnalysisLabel}
+          onOpenVisualBuyerAnalysis={(e) => switchSection(e as unknown as MouseEvent, 'property-intelligence')}
+          exactAddressListings={exactAddressListings}
+          compsValuation={compsValuation}
+          valuationBasisLabel={valuationBasisLabel}
+          landBasisOpeningReference={landBasisOpeningReference}
+          openCompsValuationLabel={openCompsValuationLabel}
+          openCompsValuation={openCompsValuation}
+          acquisitionNextAction={acq?.nextAction ?? null}
+          formatUsd={usd}
+          onOpenSection={onOpenSection}
+        />
         )}
       </div>
     </div>
-  );
-}
-
-// ── Score card ─────────────────────────────────────────────────────────
-
-function ScoreCard({ title, view }: { title: string; view?: ScoreView }) {
-  const score = view?.score ?? null;
-  const rating = view?.rating || 'Pending';
-  const tone = score == null ? 'pending' : score < 50 ? 'weak' : score < 70 ? 'moderate' : 'strong';
-  return (
-    <section class="awv2-panel">
-      <div class="awv2-panel-title">{title}</div>
-      <div class="awv2-score-head">
-        <span class={`awv2-score-num ${tone}`}>{score ?? 'Pending'}</span>
-        <span class={`awv2-score-rating ${tone}`}>{score == null ? '' : rating}</span>
-      </div>
-      {score != null && (
-        <div class="awv2-meter"><span class={`fill ${tone}`} style={`width:${Math.max(2, Math.min(100, score))}%`} /></div>
-      )}
-      {view?.explanation && (
-        <p class="awv2-score-expl">{view.explanation}</p>
-      )}
-      {(view?.strongestPositiveFactors || []).slice(0, 2).map((f) => (
-        <div class="awv2-reason"><span class="sig plus">+</span><span>{f}</span></div>
-      ))}
-      {(view?.mainDeductions || []).slice(0, 2).map((f) => (
-        <div class="awv2-reason"><span class="sig minus">−</span><span>{f}</span></div>
-      ))}
-      {score == null && (view?.materiallyChangeWith || []).slice(0, 2).map((f) => (
-        <div class="awv2-reason"><span class="sig dot">·</span><span>{f}</span></div>
-      ))}
-    </section>
   );
 }

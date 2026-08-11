@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildLandPortalCompPersistence, compVisualForLandPortalComp, mergeCompDetail, planCompDrilldown, type LandPortalSidebarComp } from './landportal-comp-drilldown.js';
+import {
+  buildLandPortalCompPersistence,
+  compVisualForLandPortalComp,
+  landPortalEnrichmentCandidates,
+  mergeCompDetail,
+  planCompDrilldown,
+  planLandPortalCompEnrichment,
+  reconcileLandPortalCompEnrichment,
+  type LandPortalSidebarComp,
+} from './landportal-comp-drilldown.js';
 import { compDistanceMiles, resolveGeographicTier } from './acreage-router.js';
 
 const sidebar: LandPortalSidebarComp = { propertyId: '123', apn: '01-02', price: 400000, acres: 40, saleDate: '2024-06-02', pricePerAcre: 10000, detailUrl: 'https://app.thelandportal.com/property/123' };
@@ -52,5 +61,55 @@ describe('visual and persistence', () => {
   it('persists no image and unknown status when neither is stated', () => {
     const result = buildLandPortalCompPersistence(mergeCompDetail({ price: 1, acres: 1 }, null, {}));
     expect(result).toMatchObject({ price_kind: 'unknown', thumbnail_url: null, lat: null, lng: null, distance_miles: null });
+  });
+});
+
+describe('multi-source LandPortal comp enrichment', () => {
+  const comp = mergeCompDetail(sidebar, {
+    address: '100 Comp Rd', city: 'Williamsburg', state: 'MI', zip: '49690', apn: '01-02',
+    lat: 44.9, lng: -85.5,
+  }, {});
+
+  it('plans Zillow, Redfin, Realtor.com and open-web resolution independently', () => {
+    const plan = planLandPortalCompEnrichment(comp, { county: 'Grand Traverse', state: 'MI' });
+    expect(plan.map((step) => step.provider)).toEqual(['Zillow', 'Redfin', 'Realtor.com', 'Web']);
+    expect(plan.every((step) => step.query.includes('100 Comp Rd') && step.requiresOpenedPageReconciliation)).toBe(true);
+  });
+
+  it('accepts a strong exact-property match and refuses a conflicting APN', () => {
+    const accepted = reconcileLandPortalCompEnrichment(comp, {
+      provider: 'Realtor.com', sourceUrl: 'https://www.realtor.com/property/100',
+      address: '100 Comp Rd', apn: '01-02', acres: 40,
+    });
+    const refused = reconcileLandPortalCompEnrichment(comp, {
+      provider: 'Zillow', sourceUrl: 'https://www.zillow.com/homedetails/other',
+      address: '100 Comp Rd', apn: '99-99', acres: 40,
+    });
+    expect(accepted.matched).toBe(true);
+    expect(refused).toMatchObject({ matched: false, reason: expect.stringMatching(/APN differs/) });
+  });
+
+  it('creates additional registry candidates only for reconciled pages', () => {
+    const rows = landPortalEnrichmentCandidates(comp, [
+      {
+        provider: 'Realtor.com', sourceUrl: 'https://www.realtor.com/property/100',
+        address: '100 Comp Rd', apn: '01-02', acres: 40, price: 400_000,
+        saleDate: '2024-06-02', status: 'sold', thumbnailUrl: 'https://ap.rdcpix.com/hero.webp',
+        photoUrls: ['https://ap.rdcpix.com/hero.webp', 'https://ap.rdcpix.com/road.webp'],
+      },
+      { provider: 'Redfin', sourceUrl: 'https://www.redfin.com/other', address: '999 Other Rd', apn: '99-99' },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ provider: 'Realtor.com', apn: '01-02', priceKind: 'sold' });
+    expect(rows[0].photoUrls).toHaveLength(2);
+  });
+
+  it('keeps unstated transaction status unconfirmed and structure descriptions out of land valuation', () => {
+    const rows = landPortalEnrichmentCandidates(comp, [{
+      provider: 'Zillow', sourceUrl: 'https://www.zillow.com/homedetails/100',
+      address: '100 Comp Road, Williamsburg, MI 49690', apn: '01-02', acres: 40,
+      price: 625_000, status: 'unknown', description: 'Cabin residence with well and septic',
+    }]);
+    expect(rows[0]).toMatchObject({ lane: 'unknown', priceKind: 'unknown', compClass: 'residential' });
   });
 });

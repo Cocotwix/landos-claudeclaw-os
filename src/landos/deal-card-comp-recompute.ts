@@ -23,6 +23,10 @@ function median(nums: number[]): number | null {
 export interface CompSummary {
   /** Count of usable sold comps (price_kind 'sale', positive price). */
   soldCount: number;
+  /** Count of active/asking rows retained beside the sold set. */
+  activeCount: number;
+  /** Distinct marketplaces behind the retained rows (one property, many sources). */
+  sources: string[];
   medianSoldPriceUsd: number | null;
   medianPricePerAcreUsd: number | null;
   /** EV re-derived from survivors: $/acre x acres, else median sold price, else null. */
@@ -31,10 +35,44 @@ export interface CompSummary {
   compValueUsd: number | null;
 }
 
+/**
+ * The ONE rule for what counts as a sold comp on a Deal Card row.
+ *
+ * Every consumer that needs a sold count calls this. A second, slightly
+ * different predicate somewhere else is how the same comp set produced
+ * different counts on different pages.
+ */
+export function isSoldCompRow(row: CompRow): boolean {
+  return row.price_kind === 'sale' && typeof row.price === 'number' && (row.price as number) > 0;
+}
+
+/** The counterpart lane: priced rows the publisher stated as list/active. */
+export function isActiveCompRow(row: CompRow): boolean {
+  return !isSoldCompRow(row) && /list|active|asking|pending/i.test(row.price_kind ?? '');
+}
+
+/**
+ * The single recomputed comp tally for a Deal Card row set, in the same shape
+ * the canonical Deal state uses. Callers must read THIS rather than counting
+ * rows themselves.
+ */
+export function compCountsFromRows(comps: CompRow[]): { sold: number; active: number; sources: string[] } {
+  const sources = [...new Set(comps
+    .flatMap((row) => [row.canonical_source, row.source_label])
+    .map((value) => (value ?? '').trim())
+    .filter(Boolean))];
+  return {
+    sold: comps.filter(isSoldCompRow).length,
+    active: comps.filter(isActiveCompRow).length,
+    sources,
+  };
+}
+
 /** Summarize a comp set for offer recomputation. Pure. Uses only verifiable sold
  *  comps (price_kind 'sale' with a positive price); never invents a value. */
 export function summarizeComps(comps: CompRow[], subjectAcres?: number | null): CompSummary {
-  const sold = comps.filter((c) => c.price_kind === 'sale' && typeof c.price === 'number' && (c.price as number) > 0);
+  const sold = comps.filter(isSoldCompRow);
+  const counts = compCountsFromRows(comps);
   const prices = sold.map((c) => c.price as number);
   const ppas = sold
     .map((c) => c.price_per_acre)
@@ -51,7 +89,9 @@ export function summarizeComps(comps: CompRow[], subjectAcres?: number | null): 
   }
 
   return {
-    soldCount: sold.length,
+    soldCount: counts.sold,
+    activeCount: counts.active,
+    sources: counts.sources,
     medianSoldPriceUsd,
     medianPricePerAcreUsd,
     impliedEvUsd,

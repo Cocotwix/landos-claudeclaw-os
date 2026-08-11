@@ -8,6 +8,18 @@
 // nothing and never duplicates the Market Research dataset. A missing exact
 // county, ZIP, or band record is reported honestly as unavailable; no other
 // geography or band is silently substituted.
+//
+// Two things are true at once and this module keeps them apart:
+//   - The per-scope records (county / ZIP / subject band / fastest band) are
+//     EXACT. A miss stays a miss; nothing is substituted into them.
+//   - The operator-facing `read` and `liquidity` projections run the subject's
+//     full geography chain (ZIP → county → county all-acreage → ZIP all-acreage
+//     → state, each across every band the subject's acreage belongs to) and
+//     always NAME the key that carried the answer. So "no market record exists"
+//     is only ever said when no key for THIS subject carried one — a single
+//     failed lookup key is not evidence of missing research.
+// Both projections come from one resolution, so the Property Intelligence market
+// read and the Comps & Valuation liquidity context can never disagree.
 
 import {
   ACREAGE_BAND_LABEL,
@@ -21,7 +33,13 @@ import {
   listCountyRef,
   type CountyDrilldownSnapshot,
 } from './market-matrix-store.js';
-import { acreageBandForAcres, resolveMarketMatrix } from './market-matrix-read.js';
+import {
+  acreageBandForAcres,
+  acreageBandsForAcres,
+  resolveMarketMatrix,
+  type MarketMatrixResolution,
+  type MatchLevel,
+} from './market-matrix-read.js';
 
 export const PROPERTY_MARKET_CONTEXT_SOURCE = 'LandOS Market Research';
 
@@ -52,6 +70,69 @@ export interface MarketContextRecord {
   note: string;
 }
 
+/** One decision-useful market number, already formatted. */
+export interface MarketReadFact { label: string; value: string }
+
+/**
+ * The concise operator market read for Property Intelligence: one headline, at
+ * most four numbers, and the geography key that carried them. Not a research
+ * dump — the detail stays in the per-scope records underneath.
+ */
+export interface MarketReadProjection {
+  available: boolean;
+  /** Single operator line. Empty when nothing was carried. */
+  headline: string;
+  /** Which geography key answered: `county:<fips>`, `zip:<zip>`, `state:<st>`. */
+  resolvedKey: string | null;
+  /** Operator label for that key, e.g. "<County> County (50–100 acres)". */
+  resolvedVia: string | null;
+  /** Whether the carrying key was the subject's own band, a wider band, or a
+   *  wider geography — so the surface can show the caveat once, compactly. */
+  matchLevel: MatchLevel;
+  exactSubjectBand: boolean;
+  acreageBandLabel: string | null;
+  period: string | null;
+  staleness: string | null;
+  isStale: boolean;
+  facts: MarketReadFact[];
+  note: string;
+}
+
+/**
+ * Liquidity and competition context for Comps & Valuation. Same resolution as
+ * the Property Intelligence read, projected for underwriting: how fast the band
+ * turns over, and what the subject would be competing against. Never a value
+ * conclusion — the valuation stays with the comps.
+ */
+export interface MarketLiquidityProjection {
+  available: boolean;
+  resolvedKey: string | null;
+  resolvedVia: string | null;
+  acreageBandLabel: string | null;
+  period: string | null;
+  isStale: boolean;
+  soldCount: number | null;
+  activeCount: number | null;
+  medianDaysOnMarket: number | null;
+  sellThroughRate: number | null;
+  absorptionRate: number | null;
+  monthsOfSupply: number | null;
+  medianPricePerAcre: number | null;
+  /** Supply read derived from months-of-supply / sell-through, or null. */
+  liquidityLabel: string | null;
+  /** What is on the market now, from the for-sale side of the SAME geography.
+   *  Null when the store carries no for-sale record for this subject. */
+  competition: {
+    activeListings: number | null;
+    medianPricePerAcre: number | null;
+    medianDaysOnMarket: number | null;
+    resolvedVia: string | null;
+    period: string | null;
+  } | null;
+  /** One compact underwriting line. */
+  summary: string;
+}
+
 export interface PropertyMarketContext {
   source: typeof PROPERTY_MARKET_CONTEXT_SOURCE;
   geography: {
@@ -66,6 +147,10 @@ export interface PropertyMarketContext {
   zip: MarketContextRecord;
   subjectBand: MarketContextRecord;
   fastestBand: MarketContextRecord;
+  /** Property Intelligence market read (concise). */
+  read: MarketReadProjection;
+  /** Comps & Valuation liquidity/competition context (concise). */
+  liquidity: MarketLiquidityProjection;
   interpretation: string;
 }
 
@@ -135,6 +220,123 @@ function resolveCountyFips(county: string | null, state: string | null): { fips:
 function pct(value: number | null): string | null {
   return value === null ? null : `${Math.round(value)}%`;
 }
+function money(value: number | null): string | null {
+  return value === null ? null : `$${Math.round(value).toLocaleString('en-US')}`;
+}
+function domText(value: number | null): string | null {
+  return value === null ? null : `${Math.round(value)} days`;
+}
+
+/**
+ * The concise Property Intelligence market read, built from ONE resolution so it
+ * can never disagree with the liquidity context. Only real values appear; a
+ * missing metric is simply absent, never zero. When the answer came from a wider
+ * key than the subject's own band or geography, the note says so — the record is
+ * found, and the caveat is stated once rather than reported as "no record".
+ */
+function buildMarketRead(res: MarketMatrixResolution): MarketReadProjection {
+  if (!res.available || !res.metrics) {
+    return {
+      available: false, headline: '', resolvedKey: null, resolvedVia: null,
+      matchLevel: res.matchLevel, exactSubjectBand: false, acreageBandLabel: null,
+      period: null, staleness: null, isStale: false, facts: [],
+      note: res.note,
+    };
+  }
+  const m = res.metrics;
+  const bandUsed = res.acreageBandUsed;
+  const exactSubjectBand = bandUsed !== null && bandUsed !== 'all';
+  const via = res.resolvedKeyLabel ?? 'the resolved geography';
+
+  const facts: MarketReadFact[] = [];
+  const phrases: string[] = [];
+  const add = (label: string, value: string | null, phrase: string | null): void => {
+    if (value === null || phrase === null || facts.length >= 4) return;
+    facts.push({ label, value });
+    phrases.push(phrase);
+  };
+  add('Median $/acre', money(m.medianPricePerAcre), m.medianPricePerAcre === null ? null : `${money(m.medianPricePerAcre)}/acre`);
+  add('Median DOM', domText(m.daysOnMarket), m.daysOnMarket === null ? null : `${Math.round(m.daysOnMarket)}-day median DOM`);
+  add('Sell-through', pct(m.sellThroughRate), m.sellThroughRate === null ? null : `${pct(m.sellThroughRate)} sell-through`);
+  add('Sold (period)', m.salesCount === null ? null : `${Math.round(m.salesCount)}`, m.salesCount === null ? null : `${Math.round(m.salesCount)} recorded sales`);
+
+  return {
+    available: true,
+    headline: phrases.length
+      ? `${via}, ${res.period}: ${phrases.join(' · ')}.`
+      : `${via} holds a ${res.period} record, but none of the headline market metrics were retained.`,
+    resolvedKey: res.resolvedKey,
+    resolvedVia: via,
+    matchLevel: res.matchLevel,
+    exactSubjectBand,
+    acreageBandLabel: bandUsed ? ACREAGE_BAND_LABEL[bandUsed] : null,
+    period: res.period,
+    staleness: res.staleness.label,
+    isStale: res.staleness.isStale,
+    facts,
+    note: exactSubjectBand
+      ? `LandOS Market Research record for the subject's own acreage band, carried by ${via}.`
+      : `No LandOS Market Research record exists for the subject's acreage band, so this read is carried by ${via}. Band-specific demand stays unproven.`,
+  };
+}
+
+/**
+ * Liquidity and competition context for Comps & Valuation, from the same
+ * resolution as the market read. `forSale` is the for-sale side of the same
+ * subject geography; it answers "what is the subject competing against", and is
+ * null rather than zero when the store carries no for-sale record.
+ */
+function buildMarketLiquidity(res: MarketMatrixResolution, forSale: MarketMatrixResolution): MarketLiquidityProjection {
+  if (!res.available || !res.metrics) {
+    return {
+      available: false, resolvedKey: null, resolvedVia: null, acreageBandLabel: null,
+      period: null, isStale: false,
+      soldCount: null, activeCount: null, medianDaysOnMarket: null, sellThroughRate: null,
+      absorptionRate: null, monthsOfSupply: null, medianPricePerAcre: null,
+      liquidityLabel: null, competition: null,
+      summary: res.note,
+    };
+  }
+  const m = res.metrics;
+  const via = res.resolvedKeyLabel ?? 'the resolved geography';
+  const competition = forSale.available && forSale.metrics
+    ? {
+      activeListings: forSale.metrics.listingCount,
+      medianPricePerAcre: forSale.metrics.medianPricePerAcre,
+      medianDaysOnMarket: forSale.metrics.daysOnMarket,
+      resolvedVia: forSale.resolvedKeyLabel,
+      period: forSale.period,
+    }
+    : null;
+
+  const parts: string[] = [];
+  if (m.salesCount !== null) parts.push(`${Math.round(m.salesCount)} sold`);
+  if (m.listingCount !== null) parts.push(`${Math.round(m.listingCount)} listed`);
+  if (m.daysOnMarket !== null) parts.push(`${Math.round(m.daysOnMarket)}-day median DOM`);
+  if (res.facts.liquidity) parts.push(res.facts.liquidity.toLowerCase());
+  const competitionLine = competition && competition.activeListings !== null
+    ? ` Active competition: ${Math.round(competition.activeListings)} for-sale listings${competition.medianPricePerAcre !== null ? ` around ${money(competition.medianPricePerAcre)}/acre` : ''} (${competition.resolvedVia ?? 'same geography'}, ${competition.period}).`
+    : ' No for-sale record is retained for this geography, so active competition is unmeasured — not zero.';
+
+  return {
+    available: true,
+    resolvedKey: res.resolvedKey,
+    resolvedVia: via,
+    acreageBandLabel: res.acreageBandUsed ? ACREAGE_BAND_LABEL[res.acreageBandUsed] : null,
+    period: res.period,
+    isStale: res.staleness.isStale,
+    soldCount: m.salesCount,
+    activeCount: m.listingCount,
+    medianDaysOnMarket: m.daysOnMarket,
+    sellThroughRate: m.sellThroughRate,
+    absorptionRate: m.absorptionRate,
+    monthsOfSupply: m.monthsOfSupply,
+    medianPricePerAcre: m.medianPricePerAcre,
+    liquidityLabel: res.facts.liquidity,
+    competition,
+    summary: `${via}, ${res.period}${parts.length ? `: ${parts.join(', ')}` : ''}.${competitionLine}`,
+  };
+}
 
 function buildInterpretation(context: PropertyMarketContext): string {
   const parts: string[] = [];
@@ -144,6 +346,11 @@ function buildInterpretation(context: PropertyMarketContext): string {
     const str = pct(band.metrics.sellThroughRate);
     const dom = band.metrics.medianDaysOnMarket;
     parts.push(`${countyName} ${band.acreageBandLabel} land ${str ? `is turning over at a ${str} sell-through rate` : 'has retained band data'}${dom !== null ? ` with a ${Math.round(dom)}-day median DOM` : ''}.`);
+  } else if (context.read.available) {
+    // The exact band missed, but research for this subject exists under a wider
+    // key. Name it here so no surface can read "no record" beside a live market
+    // read — band demand is still unproven, and that is what is said.
+    parts.push(`No exact ${countyName} record exists for the subject acreage band, so the market read is carried by ${context.read.resolvedVia}; band demand is unproven, not assumed.`);
   } else {
     parts.push(`No exact ${countyName} record exists for the subject acreage band; band demand is unproven, not assumed.`);
   }
@@ -153,9 +360,9 @@ function buildInterpretation(context: PropertyMarketContext): string {
   }
   const zip = context.zip;
   if (zip.available && zip.metrics) {
-    parts.push(`ZIP ${context.geography.zip} recorded ${zip.metrics.soldCount ?? 'an unknown number of'} sales across all acreage in the period.`);
+    parts.push(`ZIP ${context.geography.zip} recorded ${zip.metrics.soldCount ?? 'an unknown number of'} sales across ${(zip.acreageBandLabel ?? ACREAGE_BAND_LABEL.all).toLowerCase()} in the period.`);
   } else if (context.geography.zip) {
-    parts.push(`No LandOS Market Research record exists for ZIP ${context.geography.zip}.`);
+    parts.push(`No LandOS Market Research record exists for ZIP ${context.geography.zip} under any acreage band.`);
   }
   return parts.join(' ');
 }
@@ -174,6 +381,10 @@ export function propertyMarketContextFor(input: {
   const { fips, countyName } = resolveCountyFips(input.county, state);
   const acres = typeof input.acres === 'number' && Number.isFinite(input.acres) && input.acres > 0 ? input.acres : null;
   const subjectBandKey = acres !== null ? acreageBandForAcres(acres) : null;
+  // Every band label this acreage genuinely belongs to. A 60-acre subject is a
+  // "50+" AND a "50–100" property, so a county filed under the other label is
+  // still the subject's own band record — not a substitution, and not a miss.
+  const subjectBandCandidates = acres !== null ? acreageBandsForAcres(acres) : [];
   const countyLabel = countyName ?? input.county ?? 'Unknown county';
 
   // County-scope records come from the county drilldown so the extraction
@@ -195,13 +406,19 @@ export function propertyMarketContextFor(input: {
       ? `No LandOS Market Research county record exists for ${countyLabel}.`
       : 'The subject county could not be resolved against the Market Research county reference.');
 
-  const subjectSnapshot = subjectBandKey ? bandSnapshot(subjectBandKey) : undefined;
+  const subjectSnapshot = (() => {
+    for (const b of subjectBandCandidates) {
+      const found = bandSnapshot(b);
+      if (found) return found;
+    }
+    return undefined;
+  })();
   const subjectBand: MarketContextRecord = subjectSnapshot
-    ? fromDrilldownSnapshot('subject_band', `${countyLabel} — subject band ${ACREAGE_BAND_LABEL[subjectBandKey as AcreageBand]}`, subjectSnapshot)
+    ? fromDrilldownSnapshot('subject_band', `${countyLabel} — subject band ${ACREAGE_BAND_LABEL[subjectSnapshot.acreageBand]}`, subjectSnapshot)
     : unavailable('subject_band',
       subjectBandKey ? `${countyLabel} — subject band ${ACREAGE_BAND_LABEL[subjectBandKey]}` : `${countyLabel} — subject band`,
       subjectBandKey
-        ? `No exact ${countyLabel} record exists for the ${ACREAGE_BAND_LABEL[subjectBandKey]} band; no other band was substituted.`
+        ? `No exact ${countyLabel} record exists for the ${subjectBandCandidates.map((b) => ACREAGE_BAND_LABEL[b]).join(' or ')} band; no unrelated band was substituted.`
         : 'Subject acreage is unknown, so no acreage band can be resolved.',
       subjectBandKey);
 
@@ -217,26 +434,59 @@ export function propertyMarketContextFor(input: {
       `No ${countyLabel} band carries a sell-through rate, so a fastest-selling band cannot be named.`);
 
   // The ZIP record must be an exact ZIP match; the resolver receives no
-  // county/state so its fallback chain cannot silently widen the geography.
+  // county/state so its fallback chain cannot silently widen the GEOGRAPHY. It
+  // does try the subject's own acreage bands after all-acreage, because a ZIP
+  // record filed under a band label is still a record for this ZIP — the record
+  // states which band carried it, so nothing is substituted silently.
   const zipResolution = input.zip
-    ? resolveMarketMatrix({ zip: input.zip, acreageBand: 'all', side: 'sold' })
+    ? resolveMarketMatrix({ zip: input.zip, acreageBand: 'all', acreageBands: subjectBandCandidates, side: 'sold' })
     : null;
+  const zipBandUsed: AcreageBand = zipResolution?.acreageBandUsed ?? 'all';
+  const zipLabel = (band: AcreageBand): string => `ZIP ${input.zip} (${ACREAGE_BAND_LABEL[band].toLowerCase()})`;
   const zip: MarketContextRecord = zipResolution && zipResolution.available && zipResolution.matchLevel === 'zip' && zipResolution.metrics
     ? {
       scope: 'zip',
-      label: `ZIP ${input.zip} (all acreage)`,
+      label: zipLabel(zipBandUsed),
       available: true,
-      acreageBand: 'all',
-      acreageBandLabel: ACREAGE_BAND_LABEL.all,
+      acreageBand: zipBandUsed,
+      acreageBandLabel: ACREAGE_BAND_LABEL[zipBandUsed],
       period: zipResolution.period,
       snapshotDate: null,
       provider: zipResolution.provider,
       metrics: toContextMetrics(zipResolution.metrics),
-      note: `LandOS Market Research ZIP record (${zipResolution.period}).`,
+      note: `LandOS Market Research ZIP record (${ACREAGE_BAND_LABEL[zipBandUsed]}, ${zipResolution.period}).`,
     }
-    : unavailable('zip', input.zip ? `ZIP ${input.zip} (all acreage)` : 'ZIP record', input.zip
-      ? `No LandOS Market Research record exists for ZIP ${input.zip}; no other ZIP was substituted.`
+    : unavailable('zip', input.zip ? zipLabel('all') : 'ZIP record', input.zip
+      ? `No LandOS Market Research record exists for ZIP ${input.zip} under any acreage band; no other ZIP was substituted.`
       : 'The subject ZIP is unknown.');
+
+  // The operator-facing read: the subject's FULL geography chain, sold side,
+  // plus the for-sale side of the same chain for competition. One resolution
+  // feeds both projections, so Property Intelligence and Comps & Valuation
+  // cannot state different market facts.
+  const readInput = {
+    state: state ?? undefined,
+    county: fips ?? input.county ?? undefined,
+    zip: input.zip ?? undefined,
+    // Unknown acreage asks for the all-acreage read explicitly, rather than
+    // letting the default band imply a band this subject may not be in.
+    acreageBand: subjectBandKey ?? ('all' as AcreageBand),
+    acreageBands: subjectBandCandidates,
+  };
+  const soldResolution = resolveMarketMatrix({ ...readInput, side: 'sold' });
+  const forSaleResolution = resolveMarketMatrix({ ...readInput, side: 'for_sale' });
+  const read = buildMarketRead(soldResolution);
+  const liquidity = buildMarketLiquidity(soldResolution, forSaleResolution);
+
+  // The exact per-scope records stay exact — but a record that missed while the
+  // subject's research exists elsewhere must say where, or the page contradicts
+  // itself.
+  if (!subjectBand.available && read.available && read.resolvedVia) {
+    subjectBand.note = `${subjectBand.note} The market read for this subject is carried by ${read.resolvedVia} instead.`;
+  }
+  if (!county.available && read.available && read.resolvedVia && read.resolvedKey !== null && !read.resolvedKey.startsWith('county:')) {
+    county.note = `${county.note} The market read for this subject is carried by ${read.resolvedVia} instead.`;
+  }
 
   const context: PropertyMarketContext = {
     source: PROPERTY_MARKET_CONTEXT_SOURCE,
@@ -252,6 +502,8 @@ export function propertyMarketContextFor(input: {
     zip,
     subjectBand,
     fastestBand,
+    read,
+    liquidity,
     interpretation: '',
   };
   context.interpretation = buildInterpretation(context);

@@ -19,7 +19,7 @@ export function buildExactAddressQueries(input: { address: string; city?: string
   return [...new Set(queries.map((query) => query.replace(/\s+/g, ' ').trim()).filter(Boolean))];
 }
 
-export type DiscoveryResultFamily = 'zillow' | 'redfin' | 'realtor' | 'landwatch' | 'land_listing' | 'auction' | 'brokerage' | 'mls_mirror' | 'cached' | 'other';
+export type DiscoveryResultFamily = 'zillow' | 'redfin' | 'realtor' | 'landwatch' | 'land_listing' | 'auction' | 'brokerage' | 'mls_mirror' | 'official_property' | 'planning_permit' | 'cached' | 'other';
 
 export function classifyDiscoveryResult(url: string): { host: string | null; family: DiscoveryResultFamily; propertySpecific: boolean } {
   let parsed: URL;
@@ -45,10 +45,32 @@ export function classifyDiscoveryResult(url: string): { host: string | null; fam
   if (/cache|cached|webcache/.test(host)) return { host, family: 'cached', propertySpecific: false };
   if (/mls|homesnap|movoto|trulia/.test(host)) return { host, family: 'mls_mirror', propertySpecific: /\d/.test(path) };
   if (/realty|realtor|properties|broker/.test(host)) return { host, family: 'brokerage', propertySpecific: /\d/.test(path) };
-  return { host, family: 'other', propertySpecific: false };
+  const locator = `${host}${path}`;
+  const hasRecordIdentity = /\d/.test(path) || parsed.search.length > 1;
+  if (/assessor|equalization|parcel|property[-_]?search|county.*gis|gis.*county/.test(locator)) {
+    return { host, family: 'official_property', propertySpecific: hasRecordIdentity };
+  }
+  if (/planning|permit|zoning/.test(locator)) {
+    return { host, family: 'planning_permit', propertySpecific: hasRecordIdentity };
+  }
+  // A previously unknown but credible result can still be followed when its URL
+  // itself identifies a property detail. The opened page must still pass the
+  // exact street + ZIP identity gate before any evidence is retained.
+  const genericPropertyDetail = /\/(?:property|listing|home|real-estate|auction|sale|parcel|permit)s?\//.test(path)
+    && hasRecordIdentity;
+  return { host, family: 'other', propertySpecific: genericPropertyDetail };
 }
 
 export interface ListingAccessStatement { text: string; tier: 'reported_legal'; sourceUrl: string; sourceLabel: string }
+export interface ListingEngagementSignal {
+  provider: 'zillow';
+  views: number | null;
+  saves: number | null;
+  viewsAvailability: 'available' | 'unavailable';
+  savesAvailability: 'available' | 'unavailable';
+  /** Engagement is volatile, so even an unavailable observation is time-stamped. */
+  retrievedAt: string | null;
+}
 export interface ExtractedListingEvidence {
   sourceUrl: string; sourceLabel: string; retrievedAt: string | null;
   legalAccessStatements: ListingAccessStatement[];
@@ -60,9 +82,23 @@ export interface ExtractedListingEvidence {
   well: boolean | null;
   septic: boolean | null;
   remarks: string[];
+  listingStatus: string | null;
+  currentPrice: number | null;
   priorAskingPrice: number | null;
+  originalListPrice: number | null;
+  listingDate: string | null;
+  daysOnMarket: number | null;
+  beds: number | null;
+  baths: number | null;
+  yearBuilt: number | null;
+  structures: string[];
+  description: string | null;
+  features: string[];
+  brokerage: string | null;
+  mls: string | null;
   listingHistory: Array<{ date: string | null; event: string; price: number | null }>;
   photoUrls: string[];
+  engagement: ListingEngagementSignal | null;
 }
 
 const moneyValue = (raw: string): number | null => {
@@ -73,6 +109,20 @@ const moneyValue = (raw: string): number | null => {
 const numberValue = (raw: string): number | null => {
   const value = Number(raw.replace(/,/g, ''));
   return Number.isFinite(value) ? value : null;
+};
+const firstCapture = (body: string, patterns: RegExp[]): string | null => {
+  for (const pattern of patterns) {
+    const value = body.match(pattern)?.[1]?.trim();
+    if (value) return value;
+  }
+  return null;
+};
+const countValue = (body: string, label: 'views' | 'saves'): number | null => {
+  const raw = firstCapture(body, [
+    new RegExp(`\\b([\\d,]+)\\s+${label}\\b`, 'i'),
+    new RegExp(`\\b${label}\\s*[:\\-]?\\s*([\\d,]+)\\b`, 'i'),
+  ]);
+  return raw == null ? null : numberValue(raw);
 };
 const sentences = (text: string): string[] => text
   .replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+|[\r\n]+/)
@@ -88,6 +138,11 @@ export function extractListingEvidence(input: { url: string; sourceLabel?: strin
   const sqft = body.match(/\b([\d,]+(?:\.\d+)?)\s*(?:sq\.?\s*ft\.?|sqft|square feet)\b/i);
   const acresMatch = body.match(/\b([\d,]+(?:\.\d+)?)\s*(?:acres?|ac\.)\b/i);
   const propertyTypeMatch = body.match(/\b(vacant land|residential land|undeveloped land|farm|ranch|single[- ]family(?: home)?|manufactured home|mobile home|house|townhouse|condo)\b/i);
+  const status = firstCapture(body, [
+    /\b(?:listing status|home status|status)\s*[:\-]?\s*(active(?: under contract)?|for sale|pending|contingent|sold|off market|recently sold)\b/i,
+    /\b(active(?: under contract)?|for sale|pending|contingent|off market)\s+(?:listing|home|property)\b/i,
+    /\b(for sale)\b/i,
+  ]);
   const wellMention = /\bwell\b/i.test(body);
   const septicMention = /\bseptic\b/i.test(body);
   const well = !wellMention ? null : /\b(?:no|without|not connected to)\s+(?:a\s+)?well\b/i.test(body) ? false : true;
@@ -110,8 +165,46 @@ export function extractListingEvidence(input: { url: string; sourceLabel?: strin
   const priorAskingPrice = listingHistory.find((entry) => entry.event === 'Listed')?.price
     ?? moneyValue(body.match(/\b(?:asking price|listed at|list price)\s*[:\-]?\s*(\$[\d,]+(?:\.\d{2})?)/i)?.[1] ?? '')
     ?? null;
+  const currentPrice = moneyValue(firstCapture(body, [
+    /\b(?:current price|asking price|list price|price)\s*[:\-]?\s*(\$[\d,]+(?:\.\d{2})?)/i,
+    /\b(?:for sale|active)\s+(?:at|for)\s+(\$[\d,]+(?:\.\d{2})?)/i,
+  ]) ?? '') ?? [...listingHistory].reverse().find((entry) => entry.price != null)?.price ?? priorAskingPrice;
+  const originalListPrice = moneyValue(firstCapture(body, [
+    /\b(?:original list price|originally listed (?:at|for))\s*[:\-]?\s*(\$[\d,]+(?:\.\d{2})?)/i,
+  ]) ?? '') ?? listingHistory.find((entry) => entry.event === 'Listed')?.price ?? priorAskingPrice;
+  const listingDate = firstCapture(body, [
+    /\b(?:listed on|listing date|date listed)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2})/i,
+  ]) ?? listingHistory.find((entry) => entry.event === 'Listed')?.date ?? null;
+  const domRaw = firstCapture(body, [/\b(\d[\d,]*)\s+(?:days? on (?:zillow|market)|DOM)\b/i, /\b(?:days? on market|DOM)\s*[:\-]?\s*(\d[\d,]*)\b/i]);
+  const bedsRaw = firstCapture(body, [/\b([\d.]+)\s*(?:beds?|bd)\b/i, /\b(?:beds?|bedrooms?)\s*[:\-]?\s*([\d.]+)\b/i]);
+  const bathsRaw = firstCapture(body, [/\b([\d.]+)\s*(?:baths?|ba)\b/i, /\b(?:baths?|bathrooms?)\s*[:\-]?\s*([\d.]+)\b/i]);
+  const yearRaw = firstCapture(body, [/\b(?:year built|built in|built)\s*[:\-]?\s*((?:18|19|20)\d{2})\b/i]);
+  const structures = allSentences.filter((sentence) => /\b(?:house|home|barn|garage|shed|cabin|workshop|outbuilding|pole building|structure|improvement)\b/i.test(sentence));
+  const description = firstCapture(body, [
+    /\b(?:listing description|property description|public remarks|remarks)\s*[:\-]\s*([^\r\n]{20,1500})/i,
+  ]);
+  const featureText = firstCapture(body, [/\b(?:property features|features|highlights)\s*[:\-]\s*([^\r\n]{3,1000})/i]);
+  const features = featureText ? featureText.split(/[|;,\u2022]/).map((value) => value.trim()).filter(Boolean) : [];
+  const brokerage = firstCapture(body, [
+    /\b(?:listed by|listing provided by|brokerage|broker)\s*[:\-]?\s*([^|\r\n]{2,160})/i,
+  ]);
+  const mls = firstCapture(body, [/\b(?:MLS(?: ID| #| number)?|source)\s*[:#\-]?\s*([A-Z0-9-]{3,30})\b/i]);
   const photoUrls = [...new Set(Array.from(body.matchAll(/https?:\/\/[^\s"'<>]+?\.(?:jpe?g|png|webp)(?:\?[^\s"'<>]*)?/gi), (match) => match[0]))];
   const remarks = allSentences.filter((sentence) => /\b(?:remark|property|parcel|acre|access|driveway|utility|well|septic)\b/i.test(sentence));
+  const engagement = parsed.family === 'zillow'
+    ? (() => {
+      const views = countValue(body, 'views');
+      const saves = countValue(body, 'saves');
+      return {
+        provider: 'zillow' as const,
+        views,
+        saves,
+        viewsAvailability: views == null ? 'unavailable' as const : 'available' as const,
+        savesAvailability: saves == null ? 'unavailable' as const : 'available' as const,
+        retrievedAt: input.retrievedAt?.trim() || null,
+      };
+    })()
+    : null;
   return {
     sourceUrl: input.url,
     sourceLabel,
@@ -125,9 +218,23 @@ export function extractListingEvidence(input: { url: string; sourceLabel?: strin
     well,
     septic,
     remarks,
+    listingStatus: status,
+    currentPrice,
     priorAskingPrice,
+    originalListPrice,
+    listingDate,
+    daysOnMarket: domRaw == null ? null : numberValue(domRaw),
+    beds: bedsRaw == null ? null : numberValue(bedsRaw),
+    baths: bathsRaw == null ? null : numberValue(bathsRaw),
+    yearBuilt: yearRaw == null ? null : numberValue(yearRaw),
+    structures,
+    description,
+    features,
+    brokerage,
+    mls,
     listingHistory,
     photoUrls,
+    engagement,
   };
 }
 
@@ -150,6 +257,7 @@ export function listingAccessEvidenceItems(evidence: ExtractedListingEvidence): 
 // listing claim into a verified government or legal fact.
 
 export interface ListingEvidenceSourceView {
+  evidenceLabel: 'Listing-reported';
   sourceLabel: string;
   family: DiscoveryResultFamily;
   sourceUrl: string;
@@ -161,9 +269,23 @@ export interface ListingEvidenceSourceView {
   listingStatus: string | null;
   listingStatusDate: string | null;
   price: number | null;
+  originalListPrice: number | null;
+  listingDate: string | null;
+  daysOnMarket: number | null;
+  beds: number | null;
+  baths: number | null;
+  yearBuilt: number | null;
   utilities: string[];
   well: boolean | null;
   septic: boolean | null;
+  structures: string[];
+  description: string | null;
+  features: string[];
+  brokerage: string | null;
+  mls: string | null;
+  listingHistory: Array<{ date: string | null; event: string; price: number | null }>;
+  photoUrls: string[];
+  engagement: ListingEngagementSignal | null;
   /** Reported legal/easement wording, verbatim. Empty means none was published. */
   accessStatements: string[];
   drivewayStatements: string[];
@@ -184,6 +306,34 @@ export interface ExactAddressListingEvidenceView {
     buildingSqft: number | null;
     acres: number | null;
     statement: string;
+  } | null;
+  /** Concise, reconciled operator card. Source detail remains available above. */
+  listingCard: {
+    active: boolean;
+    status: string | null;
+    currentPrice: number | null;
+    originalListPrice: number | null;
+    listingDate: string | null;
+    daysOnMarket: number | null;
+    priceChanges: Array<{ date: string | null; event: string; price: number | null }>;
+    listingUrl: string;
+    sourceLabel: string;
+    primaryPhotoUrl: string | null;
+    additionalPhotoUrls: string[];
+    improvementFacts: {
+      propertyType: string | null;
+      buildingSqft: number | null;
+      beds: number | null;
+      baths: number | null;
+      yearBuilt: number | null;
+      structures: string[];
+      utilities: string[];
+      well: boolean | null;
+      septic: boolean | null;
+    };
+    zillowEngagement: ListingEngagementSignal | null;
+    engagementNote: string;
+    evidenceLabel: 'Listing-reported';
   } | null;
   disclaimer: string;
 }
@@ -230,7 +380,19 @@ export function projectExactAddressListingEvidence(result: {
       .pop() ?? null;
     const accessStatements = page.legalAccessStatements
       .map((statement) => listingWordingExcerpt(statement.text, ACCESS_TERM));
+    const listingStatus = page.listingStatus ?? latest?.event ?? null;
+    const engagement = classification.family === 'zillow'
+      ? page.engagement ?? {
+        provider: 'zillow' as const,
+        views: null,
+        saves: null,
+        viewsAvailability: 'unavailable' as const,
+        savesAvailability: 'unavailable' as const,
+        retrievedAt: page.retrievedAt,
+      }
+      : null;
     return {
+      evidenceLabel: 'Listing-reported' as const,
       sourceLabel: page.sourceLabel,
       family: classification.family,
       sourceUrl: page.sourceUrl,
@@ -238,12 +400,26 @@ export function projectExactAddressListingEvidence(result: {
       propertyType: page.propertyType,
       buildingSqft: page.buildingSqft,
       acres: page.acres,
-      listingStatus: latest?.event ?? null,
+      listingStatus,
       listingStatusDate: latest?.date ?? null,
-      price: page.priorAskingPrice,
+      price: page.currentPrice ?? page.priorAskingPrice,
+      originalListPrice: page.originalListPrice ?? page.priorAskingPrice,
+      listingDate: page.listingDate ?? null,
+      daysOnMarket: page.daysOnMarket ?? null,
+      beds: page.beds ?? null,
+      baths: page.baths ?? null,
+      yearBuilt: page.yearBuilt ?? null,
       utilities: page.utilities,
       well: page.well,
       septic: page.septic,
+      structures: page.structures ?? [],
+      description: page.description ?? null,
+      features: page.features ?? [],
+      brokerage: page.brokerage ?? null,
+      mls: page.mls ?? null,
+      listingHistory: page.listingHistory ?? [],
+      photoUrls: page.photoUrls ?? [],
+      engagement,
       accessStatements,
       drivewayStatements: page.drivewayStatements
         .map((text) => listingWordingExcerpt(text, DRIVEWAY_TERM)),
@@ -274,6 +450,45 @@ export function projectExactAddressListingEvidence(result: {
     }
     : null;
 
+  const isActive = (status: string | null): boolean => !!status && /\b(?:active|for sale|listed for sale)\b/i.test(status)
+    && !/sold|off market/i.test(status);
+  const cardSource = [...sources].sort((a, b) => {
+    const aRank = (isActive(a.listingStatus) ? 4 : 0) + (a.family === 'zillow' ? 2 : 0) + (a.photoUrls.length ? 1 : 0);
+    const bRank = (isActive(b.listingStatus) ? 4 : 0) + (b.family === 'zillow' ? 2 : 0) + (b.photoUrls.length ? 1 : 0);
+    return bRank - aRank;
+  })[0] ?? null;
+  const zillowSource = sources.find((source) => source.family === 'zillow') ?? null;
+  const photos = cardSource ? [...new Set(cardSource.photoUrls)] : [];
+  const listingCard = cardSource
+    ? {
+      active: isActive(cardSource.listingStatus),
+      status: cardSource.listingStatus,
+      currentPrice: cardSource.price,
+      originalListPrice: cardSource.originalListPrice,
+      listingDate: cardSource.listingDate,
+      daysOnMarket: cardSource.daysOnMarket,
+      priceChanges: cardSource.listingHistory.filter((event) => /price|cut|reduced/i.test(event.event)),
+      listingUrl: cardSource.sourceUrl,
+      sourceLabel: cardSource.sourceLabel,
+      primaryPhotoUrl: photos[0] ?? null,
+      additionalPhotoUrls: photos.slice(1),
+      improvementFacts: {
+        propertyType: cardSource.propertyType,
+        buildingSqft: cardSource.buildingSqft,
+        beds: cardSource.beds,
+        baths: cardSource.baths,
+        yearBuilt: cardSource.yearBuilt,
+        structures: cardSource.structures,
+        utilities: cardSource.utilities,
+        well: cardSource.well,
+        septic: cardSource.septic,
+      },
+      zillowEngagement: zillowSource?.engagement ?? null,
+      engagementNote: 'Zillow views and saves are a time-varying interest signal, not proof of value or guaranteed buyer demand.',
+      evidenceLabel: 'Listing-reported' as const,
+    }
+    : null;
+
   return {
     status: result.status,
     note: result.note ?? '',
@@ -281,6 +496,7 @@ export function projectExactAddressListingEvidence(result: {
     retrievedAtIso: sources.map((s) => s.retrievedAt).filter(Boolean).sort().pop() ?? null,
     sources,
     subjectRead,
+    listingCard,
     disclaimer: LISTING_DISCLAIMER,
   };
 }

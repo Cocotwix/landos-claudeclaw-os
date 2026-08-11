@@ -133,7 +133,7 @@ export interface LandUseView {
   } | null;
   access: {
     roadName: string | null; roadType: ValueView; statusLabel: string; authority: AuthorityView | null;
-    drivewayPermitRequired: ValueView; spacingStandards: ValueView; constraintNotes: string[];
+    spacingStandards: ValueView; constraintNotes: string[];
   };
   septicWell: {
     authority: AuthorityView | null; perLotApprovalRequired: ValueView; divisionRequiresHealthReview: ValueView;
@@ -269,7 +269,7 @@ export function LandUsePanel({ dealId, initial }: { dealId: number; initial: Lan
   return (
     <section class="awv2-panel" id="land-use-subdivision">
       <div class="awv2-panel-title">
-        Land Use &amp; Subdivision
+        Zoning / land use &amp; subdivision potential
         {researched && (
           <span class={`awv2-opg-badge ${v!.zoning.presence === 'zoning_established' ? 'verified' : v!.zoning.presence === 'no_conventional_zoning' ? 'provisional' : 'not_found'}`}>
             {v!.zoning.presenceLabel}
@@ -284,13 +284,23 @@ export function LandUsePanel({ dealId, initial }: { dealId: number; initial: Lan
 
       {!researched && !running && (
         <div class="awv2-pi-note">
-          Land use, zoning and subdivision research has not been run for this property. Opening a Deal Card never
-          starts legal research on its own. This lane reads the parcel and GIS evidence first, so run that lane before this one.
+          Zoning and subdivision are not resolved yet. Run land-use research after parcel identity is established.
         </div>
       )}
 
       {researched && (
         <>
+          <div class="awv2-lu-operator-summary">
+            <div class="awv2-lu-summary-row"><span>Governing authority</span><b>{v!.governingAuthority.patternLabel}</b></div>
+            <div class="awv2-lu-summary-row"><span>Zoning / land use</span><b>{v!.zoning.presenceLabel}</b></div>
+            <div class="awv2-lu-summary-row"><span>Uses with located support</span><b>{[...v!.byRightUses, ...v!.manufacturedHousing].filter((use) => use.isByRight).length}</b></div>
+            <div class="awv2-lu-summary-row"><span>Subdivision path</span><b>{v!.subdivision.reviewPathSummary || 'Not yet resolved'}</b></div>
+            <div class="awv2-lu-summary-row"><span>Legal lot maximum</span><b>{v!.subjectPotential.legal.maximumLots != null ? `${v!.subjectPotential.legal.maximumLots} lots` : 'Not yet resolved'}</b></div>
+            <div class="awv2-lu-summary-row"><span>Septic / well</span><b>{v!.septicWell.authority?.body.value || 'Field and authority review still required'}</b></div>
+          </div>
+          <div class="awv2-pi-note">A rule LandOS has not located remains unresolved; absence from the retained research is not evidence that no rule exists.</div>
+          <details class="awv2-collapse awv2-lu-details">
+            <summary>Rules matrix, scenarios, sources and diagnostics</summary>
           {/* ── GOVERNING AUTHORITY ── */}
           <div class="awv2-opg-sub">Governing authority</div>
           <div class="awv2-pi-note"><b>{v!.governingAuthority.patternLabel}.</b> {v!.governingAuthority.patternExplanation}</div>
@@ -547,24 +557,6 @@ export function LandUsePanel({ dealId, initial }: { dealId: number; initial: Lan
             </>
           )}
 
-          {/* ── ACCESS ── */}
-          <div class="awv2-opg-sub">Access</div>
-          <div class="awv2-kv">
-            <span class="k">Road</span>
-            <span class="v">{v!.access.roadName || <span class="awv2-lu-unresolved">Not established.</span>}</span>
-            <Rule k="Road type" v={v!.access.roadType} />
-            <span class="k">Status</span>
-            <span class="v">{v!.access.statusLabel}</span>
-            {v!.access.authority && <Rule k="Access authority" v={v!.access.authority.body} />}
-            <Rule k="Driveway permit" v={v!.access.drivewayPermitRequired} />
-            <Rule k="Spacing standards" v={v!.access.spacingStandards} />
-          </div>
-          {v!.access.constraintNotes.length > 0 && (
-            <ul class="awv2-opg-list" style="margin-top:10px">
-              {v!.access.constraintNotes.map((note) => <li>{note}</li>)}
-            </ul>
-          )}
-
           {/* ── SEPTIC / WELL ── */}
           <div class="awv2-opg-sub">Septic / well</div>
           <div class="awv2-kv">
@@ -731,6 +723,7 @@ export function LandUsePanel({ dealId, initial }: { dealId: number; initial: Lan
               {v!.lanes.map((l) => `${l.label}: ${l.status}`).join(' · ')}
             </div>
           )}
+          </details>
         </>
       )}
     </section>

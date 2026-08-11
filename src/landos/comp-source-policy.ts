@@ -10,8 +10,8 @@
 // THE POLICY (operator-approved, not negotiable by an individual agent):
 //   Primary source .......... LandPortal visible vacant-land comparable rows.
 //   LandPortal HAS usable ... retain the strongest LandPortal comps, then
-//                             supplement with at most 2 Zillow and 2 Redfin.
-//   LandPortal has NONE ..... search up to 5 Zillow and up to 5 Redfin.
+//                             supplement from Zillow, Redfin and Realtor.com.
+//   LandPortal has NONE ..... search all three independent marketplaces.
 //   Realie / HomeHarvest .... NEVER establish vacant-land FMV. Realie may still
 //                             resolve parcels and supply non-comp facts.
 //   Improved / manufactured . retained for the Land-Home Package strategy only;
@@ -33,13 +33,13 @@ import {
 } from './comp-lane-accountability.js';
 
 /** Source families the policy reasons about. */
-export type CompSourceFamily = 'landportal' | 'zillow' | 'redfin' | 'realie' | 'homeharvest' | 'county' | 'other';
+export type CompSourceFamily = 'landportal' | 'zillow' | 'redfin' | 'realtor' | 'realie' | 'homeharvest' | 'county' | 'other';
 
 /** Why a candidate may or may not touch vacant-land FMV. */
 export type CompPolicyRole =
   /** LandPortal primary vacant-land comparable. */
   | 'primary'
-  /** Capped Zillow/Redfin supplement. */
+  /** Capped Zillow/Redfin/Realtor.com supplement. */
   | 'supplement'
   /** Retained as market context but excluded from FMV. */
   | 'context_only'
@@ -82,6 +82,8 @@ export interface CompSourcePolicyPlan {
    */
   landPortalRowsSeen: number;
   /** Per-source cap actually applied this run. */
+  /** Serialized legacy marketplace caps retained for snapshot compatibility.
+   * Realtor.com uses the same `cap` internally and is named in `explanation`. */
   caps: { zillow: number; redfin: number };
   /** Plain sentence describing which branch of the policy ran. */
   explanation: string;
@@ -126,7 +128,12 @@ const FAMILY_PATTERNS: Array<{ family: CompSourceFamily; re: RegExp }> = [
   { family: 'zillow', re: /zillow/i },
   { family: 'redfin', re: /redfin|apify/i },
   { family: 'realie', re: /realie|really\.?ai/i },
-  { family: 'homeharvest', re: /home\s*harvest|homeharvest|realtor/i },
+  // HomeHarvest is a broad residential aggregator and remains disabled. A
+  // direct Realtor.com property page is a different, first-class marketplace
+  // source and must not inherit the aggregator exclusion merely because older
+  // labels combined the two names.
+  { family: 'homeharvest', re: /home\s*harvest|homeharvest/i },
+  { family: 'realtor', re: /realtor(?:\.com)?/i },
   { family: 'county', re: /county|assessor|recorder/i },
 ];
 
@@ -144,6 +151,7 @@ export function familyDisplayName(family: CompSourceFamily): string {
     case 'landportal': return 'LandPortal';
     case 'zillow': return 'Zillow';
     case 'redfin': return 'Redfin';
+    case 'realtor': return 'Realtor.com';
     case 'realie': return 'Realie.ai';
     case 'homeharvest': return 'Realtor.com (HomeHarvest)';
     case 'county': return 'County records';
@@ -266,13 +274,13 @@ export function applyCompSourcePolicy(
       : landPortalRowsSeen > 0
         // LandPortal ANSWERED. Saying it "returned no comparables" would be a
         // false statement about a source that was read successfully.
-        ? `LandPortal was read and returned ${landPortalRowsSeen} comparable row(s), but none qualify as a vacant-land closed sale (see the excluded list for the exact reason on each). The search therefore widened to up to ${cap} Zillow and up to ${cap} Redfin rows.`
-        : `LandPortal returned no comparable rows at all, so the search widened to up to ${cap} Zillow and up to ${cap} Redfin rows.`,
+        ? `LandPortal was read and returned ${landPortalRowsSeen} comparable row(s), but none qualify as a vacant-land closed sale (see the excluded list for the exact reason on each). The search therefore widened to up to ${cap} Zillow, ${cap} Redfin and ${cap} Realtor.com rows.`
+        : `LandPortal returned no comparable rows at all, so the search widened to up to ${cap} Zillow, ${cap} Redfin and ${cap} Realtor.com rows.`,
   };
 
   // ── Step 2: rank supplement candidates inside each capped family ──────────
   const supplementRank = new Map<CompRegistryCandidate, number>();
-  for (const family of ['zillow', 'redfin'] as const) {
+  for (const family of ['zillow', 'redfin', 'realtor'] as const) {
     const eligible = enriched
       .filter((row) => row.family === family
         && row.lane === 'sold'
@@ -361,7 +369,7 @@ export function applyCompSourcePolicy(
       };
     }
 
-    if (family === 'zillow' || family === 'redfin') {
+    if (family === 'zillow' || family === 'redfin' || family === 'realtor') {
       const rank = supplementRank.get(candidate);
       if (rank == null) {
         return { candidate, family, role: 'context_only', lane, fmvEligible: false, compClass, reason: `${displayFamily} row is not a usable vacant-land closed sale — kept as context.` };
@@ -400,7 +408,7 @@ export function applyCompSourcePolicy(
     d.role === 'context_only'
     && d.lane === 'active'
     && isRawLandClass(d.compClass)
-    && (d.family === 'landportal' || d.family === 'zillow' || d.family === 'redfin'));
+    && (d.family === 'landportal' || d.family === 'zillow' || d.family === 'redfin' || d.family === 'realtor'));
   const landHomeOnly = decisions.filter((d) => d.role === 'land_home_only');
   const rejected = decisions.filter((d) => d.role === 'rejected');
   /** Disabled aggregator rows, kept visible as history and counted separately. */
@@ -420,14 +428,17 @@ export function applyCompSourcePolicy(
   if (acceptedSold.length === 0) {
     valuationBlockers.push(hasLandPortal
       ? 'No accepted vacant-land closed sale survived the comp source policy, so no value basis exists yet.'
-      : 'LandPortal returned no usable vacant-land comps and no Zillow or Redfin closed land sale was accepted, so no value basis exists yet.');
+      : 'LandPortal returned no usable vacant-land comps and no Zillow, Redfin or Realtor.com closed land sale was accepted, so no value basis exists yet.');
   }
   const withAcres = acceptedSold.filter((d) => typeof d.candidate.acres === 'number' && d.candidate.acres! > 0);
   if (acceptedSold.length > 0 && withAcres.length === 0) {
     valuationBlockers.push('Accepted closed sales carry no acreage, so a price-per-acre basis cannot be computed.');
   }
 
-  const summaryLine = `${acceptedSold.length} accepted sold comp${acceptedSold.length === 1 ? '' : 's'} `
+  // This is source-policy accounting, deliberately not the canonical comp
+  // count. Cross-provider duplicates are still observations at this stage and
+  // become one physical property in the registry/working-set dedupe pass.
+  const summaryLine = `${acceptedSold.length} accepted sold source observation${acceptedSold.length === 1 ? '' : 's'} `
     + `(${decisions.filter((d) => d.role === 'primary').length} LandPortal primary, ${decisions.filter((d) => d.role === 'supplement').length} supplement), `
     + `${acceptedActive.length} active listing${acceptedActive.length === 1 ? '' : 's'} tracked separately, `
     + `${landHomeOnly.length} improved row${landHomeOnly.length === 1 ? '' : 's'} held for Land-Home only, `
@@ -437,7 +448,7 @@ export function applyCompSourcePolicy(
 
   const inferredAttempts: CompLaneInput[] = [];
   if (laneAttempts == null) {
-    for (const lane of ['landportal', 'zillow', 'redfin'] as const) {
+    for (const lane of ['landportal', 'zillow', 'redfin', 'realtor'] as const) {
       const laneCandidates = decisions.filter((decision) => decision.family === lane);
       if (!laneCandidates.length) continue;
       const retainedCount = laneCandidates.filter((decision) => decision.role === 'primary'
@@ -449,13 +460,6 @@ export function applyCompSourcePolicy(
         retained: retainedCount,
         retainedAs: 'current comparable evidence',
         filteredReasons: laneCandidates.filter((decision) => decision.role === 'rejected').map((decision) => decision.reason),
-      });
-    }
-    const realtorRows = decisions.filter((decision) => decision.family === 'homeharvest');
-    if (realtorRows.length) {
-      inferredAttempts.push({
-        lane: 'realtor', attempted: false,
-        disabledReason: 'Realtor.com HomeHarvest is excluded from the current vacant-land comparable workflow by FMV_EXCLUDED_FAMILIES.',
       });
     }
   }

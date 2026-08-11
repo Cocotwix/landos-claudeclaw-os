@@ -110,3 +110,103 @@ describe('buildParcelFactSheet', () => {
     expect(zoning?.value).toBe('Needs verification');
   });
 });
+
+// What LandPortal actually supplied must be RETAINED. "Not retained" is a claim
+// about LandOS losing evidence, and it may never be made about a field the
+// source published. The retention read is what a surface must consult before
+// printing it.
+describe('LandPortal intelligence is retained, field by field', () => {
+  const s = buildParcelFactSheet(REAL_FIELDS);
+
+  it('retains terrain: slope and elevation, with a readable label', () => {
+    expect(s.terrain.slopeAvgPct).toBe('10.45%');
+    expect(s.terrain.elevationAvg).toBe('18.83 ft');
+    expect(s.terrain.elevationMin).toBe('16.96 ft');
+    expect(s.terrain.elevationMax).toBe('23.69 ft');
+    expect(s.terrain.label).toMatch(/avg slope 10\.45%/);
+    expect(s.terrain.label).toMatch(/range 16\.96 ft to 23\.69 ft/);
+    expect(s.terrain.label).not.toBe('Needs verification');
+  });
+
+  it('retains soils when the panel exposes them, and stays silent when it does not', () => {
+    expect(s.soils.label).toBeNull();
+    const withSoils = buildParcelFactSheet({
+      ...REAL_FIELDS,
+      'Soil Type': 'Rubicon sand',
+      'Soil Description': '0 to 6 percent slopes, well drained',
+    });
+    expect(withSoils.soils.type).toBe('Rubicon sand');
+    expect(withSoils.soils.label).toBe('Rubicon sand — 0 to 6 percent slopes, well drained');
+    expect(withSoils.retention.retained).toContain('soils');
+    expect(s.retention.notSupplied).toContain('soils');
+  });
+
+  it('keeps improvement evidence separate from buildability', () => {
+    // Building SqFt 0.0 on a vacant lot is a reported zero, not buildability.
+    expect(s.improvement.buildingSqft).toBe('0.0');
+    expect(s.improvement.improved).toBe(false);
+    expect(s.improvement.label).toMatch(/No improvement reported/i);
+    expect(s.buildability.pct).toBe('28.1%');
+
+    const improved = buildParcelFactSheet({
+      ...REAL_FIELDS,
+      'Building SqFt': '2,184',
+      'Year Built': '1994',
+      'Improvement Value': '$212,400.00',
+    });
+    expect(improved.improvement.improved).toBe(true);
+    expect(improved.improvement.label).toMatch(/Improved · 2,184 building sq ft · built 1994/);
+    expect(improved.retention.retained).toEqual(
+      expect.arrayContaining(['buildingSqft', 'yearBuilt', 'improvementValue']),
+    );
+  });
+
+  it('retains parcel context (use, zoning, size, subdivision) as one read', () => {
+    expect(s.parcelContext.landUse).toBe('Residential-Vacant Land');
+    expect(s.parcelContext.zoning).toBe('RS-1');
+    expect(s.parcelContext.parcelSqft).toBe('10890');
+    expect(s.parcelContext.label).toBe('Residential-Vacant Land · zoned RS-1 · 10890 sq ft');
+    expect(buildParcelFactSheet({ ...REAL_FIELDS, Subdivision: 'Lehigh Acres Unit 8' }).parcelContext.subdivision)
+      .toBe('Lehigh Acres Unit 8');
+  });
+
+  it('reports retention per field, so nothing LandPortal supplied reads as "Not retained"', () => {
+    for (const key of [
+      'owner', 'apn', 'acres', 'landLocked', 'roadFrontage',
+      'buildabilityPct', 'buildabilityAcres', 'slopeAvg',
+      'elevationAvg', 'elevationRange',
+      'femaFloodZone', 'femaCoverage', 'wetlandsCoverage', 'waterFeature',
+      'zoning', 'landUse', 'parcelSqft', 'lastSale', 'assessedValue', 'centroid',
+    ]) {
+      expect(s.retention.retained).toContain(key);
+      expect(s.retention.notSupplied).not.toContain(key);
+    }
+    // Every canonical field lands on exactly one side of the read.
+    const overlap = s.retention.retained.filter((key) => s.retention.notSupplied.includes(key));
+    expect(overlap).toEqual([]);
+  });
+
+  it('separates "the source did not publish it" from "we failed to keep it"', () => {
+    const sparse = buildParcelFactSheet({ 'Parcel ID': 'X', 'Owner Name': 'Y' });
+    expect(sparse.retention.retained).toEqual(['owner', 'apn']);
+    expect(sparse.retention.notSupplied).toContain('slopeAvg');
+    expect(sparse.retention.notSupplied).toContain('wetlandsCoverage');
+  });
+
+  it('retains the FEMA answer LandPortal displays even when only the description is exposed', () => {
+    const descriptionOnly = buildParcelFactSheet({
+      'FEMA Flood Zone Description': 'Area of minimal flood hazard (Zone X)',
+    });
+    expect(descriptionOnly.environment.femaFloodZoneDescription).toBe('Area of minimal flood hazard (Zone X)');
+    expect(descriptionOnly.environment.femaFloodZone).toBe('Area of minimal flood hazard (Zone X)');
+    expect(descriptionOnly.retention.retained).toContain('femaFloodZone');
+  });
+
+  it('is built from the LandPortal fields alone — no other source can demote it', () => {
+    // The fact sheet takes exactly one argument. There is no seam through which
+    // an official-GIS outcome could reach it, so a failure there cannot turn
+    // retained LandPortal terrain, wetlands or buildability into "Not retained".
+    expect(buildParcelFactSheet.length).toBe(1);
+    expect(buildParcelFactSheet(REAL_FIELDS).retention).toEqual(s.retention);
+  });
+});

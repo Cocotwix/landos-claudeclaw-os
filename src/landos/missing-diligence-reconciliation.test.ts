@@ -177,6 +177,65 @@ describe('duplicate warnings condense', () => {
   });
 });
 
+// ── Missing information derives from the ACCEPTED comp/valuation record ──────
+//
+// The named contradiction: a card showing accepted vacant-land sales while
+// another section says no usable comp survived, or that another sale is still
+// required. Both statements are historical conclusions the current accepted
+// records disprove, so they are superseded here rather than rendered.
+
+describe('missing information is derived from the accepted comp record', () => {
+  const ACCEPTED = screenedState({ acceptedSoldComps: 5, acceptedActiveComps: 2, acceptedAskingReferences: 1 });
+
+  it('supersedes "no usable comp survived" when accepted closed sales are retained', () => {
+    const result = reconcileMissingDiligence(ACCEPTED, [
+      'No usable comparable survived the selection filters.',
+    ]);
+    expect(JSON.stringify(result.items)).not.toMatch(/no usable comparable survived/i);
+    expect(result.passthrough).toHaveLength(0);
+    expect(result.supersededByAcceptedRecords).toHaveLength(1);
+    expect(result.supersededByAcceptedRecords[0].supersededBy).toMatch(/5 accepted closed sale\(s\)/);
+  });
+
+  it('supersedes "another sale is still required" against the same accepted record', () => {
+    const result = reconcileMissingDiligence(ACCEPTED, [
+      'Another closed sale is still required before a value can be stated.',
+    ]);
+    expect(result.supersededByAcceptedRecords).toHaveLength(1);
+    // Nothing vanishes silently: the statement is retained with its reason.
+    expect(result.supersededByAcceptedRecords[0].statement).toMatch(/Another closed sale/);
+  });
+
+  it('the valuation item reflects the accepted sales instead of denying them', () => {
+    const item = reconcileMissingDiligence(ACCEPTED, []).items.find((i) => i.key === 'valuation')!;
+    expect(item.currentFinding).toMatch(/5 accepted closed in-band sale\(s\) are retained/);
+    expect(item.currentFinding).not.toMatch(/no accepted closed in-band vacant-land sale/i);
+    expect(item.shortStatus).toBe('5 closed sale(s), value not yet reconciled');
+  });
+
+  it('with NO accepted sales the honest asking-only wording is preserved', () => {
+    const state = screenedState({ acceptedSoldComps: 0, acceptedActiveComps: 3, acceptedAskingReferences: 4 });
+    const item = reconcileMissingDiligence(state, []).items.find((i) => i.key === 'valuation')!;
+    expect(item.currentFinding).toMatch(/4 asking-market reference\(s\) and 3 active competitor\(s\)/);
+    expect(item.currentFinding).toMatch(/no accepted closed in-band vacant-land sale yet/);
+    expect(item.shortStatus).toBe('Not priceable yet');
+  });
+
+  it('does NOT supersede a comp statement the current record cannot disprove', () => {
+    const state = screenedState({ acceptedSoldComps: 0, acceptedActiveComps: 0, acceptedAskingReferences: 0 });
+    const result = reconcileMissingDiligence(state, ['No usable comparable survived the selection filters.']);
+    expect(result.supersededByAcceptedRecords).toHaveLength(0);
+    // Genuine uncertainty is never deleted on a guess.
+    expect(JSON.stringify(result)).toMatch(/No usable comparable survived/);
+  });
+
+  it('degrades honestly when a caller has not wired the canonical counts yet', () => {
+    const item = reconcileMissingDiligence(screenedState(), []).items.find((i) => i.key === 'valuation')!;
+    expect(item.currentFinding).toBe('No comparable evidence is retained yet.');
+    expect(item.shortStatus).toBe('Not priceable yet');
+  });
+});
+
 describe('V2 projection wiring (source contract)', () => {
   const ROUTES_SRC = fs.readFileSync(path.join(process.cwd(), 'src/landos/routes.ts'), 'utf8');
   const PI_SRC = fs.readFileSync(

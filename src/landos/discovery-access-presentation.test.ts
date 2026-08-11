@@ -108,10 +108,14 @@ describe('apparent entrance (separate from legal access, never fabricated)', () 
     expect(read.display).toBe('Not confirmed from retained imagery');
   });
 
+  // The observation text here describes only what a retained panorama shows.
+  // An earlier fixture asserted a gated entrance that no capture ever supported;
+  // a visual finding now exists only where its image does (see the artifact gate
+  // in hermes-landportal-import and google-visual-capture).
   it('carries the observation record\'s own evidence label and confidence', () => {
     const read = apparentEntranceFromObservations([{
       label: 'Entrances and barriers',
-      detail: 'A fenced/gated gravel entrance is visible in the Street View scene; whether it is the subject\'s legal entrance is unconfirmed from this view alone.',
+      detail: 'A gravel drive meeting the road is visible in the captured Street View panorama; whether it serves the subject is unconfirmed from this view alone.',
       evidence: 'Street View — unconfirmed',
       confidence: 'low',
     }], 'Elk Lake Road');
@@ -192,5 +196,22 @@ describe('four-tier access evidence projection', () => {
     expect(result).toMatchObject({ parcelFlagged: true, apparentPhysicalAccess: true, reportedLegalAccess: true, verifiedLegalAccess: false });
     expect(result.items).toHaveLength(3);
     expect(result.outstanding.join(' ')).toMatch(/recorded instrument/i);
+  });
+
+  it('projects exactly four rungs so a surface renders each concept once', () => {
+    const result = presentDiscoveryAccessEvidence([
+      { tier: 'parcel_flag', statement: 'Land Locked: Yes', sourceLabel: 'LandPortal', sourceKind: 'landportal_parcel_flag', basis: 'source_stated', weight: 'likely' },
+      { tier: 'apparent_physical', statement: 'Apparent gravel drive', sourceLabel: 'Satellite', sourceKind: 'satellite_imagery', basis: 'direct_observation', weight: 'well_supported' },
+    ]);
+    expect(result.rungs.map((rung) => rung.tier)).toEqual(['parcel_flag', 'apparent_physical', 'reported_legal', 'verified_legal']);
+    expect(result.rungs.filter((rung) => rung.status === 'not_evidenced').map((rung) => rung.tier))
+      .toEqual(['reported_legal', 'verified_legal']);
+    // Each rung's sentence appears once, and the conclusion is assembled from
+    // them rather than repeated per source.
+    for (const rung of result.rungs) {
+      if (rung.status === 'not_evidenced') continue;
+      const occurrences = result.operatorConclusion.split(rung.statement).length - 1;
+      expect(occurrences).toBe(1);
+    }
   });
 });

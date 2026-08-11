@@ -22,6 +22,7 @@ import {
   computeCompsValuation,
   detectImprovedProperty,
   readSubjectImprovement,
+  reconcileNegotiation,
   setCompValuationSelection,
   haversineMiles,
   type WorkspaceComp,
@@ -258,11 +259,15 @@ describe('workspace classification', () => {
           strength: 'provider_observed', subjectClassification: 'context_only', retrievedAt: '2026-08-03T17:03:55.195Z',
         },
         {
-          // Same source URL as the persisted LandPortal row → must be skipped.
-          id: 'hermes-landportal:comp:dupe',
-          providerId: 'hermes_landportal_import', field: 'comparables.landportal.x', kind: 'comp',
-          value: { price: 129000, acres: 16.88, apn: '052289 77.00-2-27.113', url: 'https://landportal.com/NY/Weedsport/Clinton-Rd-13166/home/73216983' },
-          sourceUrl: 'https://landportal.com/NY/Weedsport/Clinton-Rd-13166/home/73216983',
+          // Same APN from a richer provider must merge, not become another comp.
+          id: 'zillow:comp:dupe',
+          providerId: 'zillow', field: 'comparables.zillow.x', kind: 'comp',
+          value: {
+            price: 129000, acres: 16.88, apn: '052289 77.00-2-27.113', status: 'sold',
+            propertyType: 'single family', homeSizeSqft: 1800, description: 'Improved residence on acreage',
+            url: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+          },
+          sourceUrl: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
           strength: 'provider_observed', subjectClassification: 'context_only', retrievedAt: '2026-08-03T22:47:18.904Z',
         },
       ],
@@ -270,6 +275,12 @@ describe('workspace classification', () => {
     }), '2026-08-03', '2026-08-03');
     const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
     expect(view.counts.total).toBe(2);
+    expect(view.canonicalCompCount).toBe(view.counts.total);
+    expect(view.duplicatesMerged).toBeGreaterThanOrEqual(1);
+    const reconciledImproved = view.comps.find((row) => row.apn === '052289 77.00-2-27.113')!;
+    expect(reconciledImproved.category).toBe('improved_context');
+    expect(reconciledImproved.inValuationSet).toBe(false);
+    expect(reconciledImproved.source).toMatch(/LandPortal.*Zillow|Zillow.*LandPortal/);
     const active = view.comps.find((row) => row.category === 'active_competition')!;
     expect(active.source).toBe('Redfin');
     expect(active.eligibleForValuation).toBe(false);
@@ -611,6 +622,15 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
     expect(neg.standardBand.pct40).toBe(view.summary.acquisitionLevels!.pct40);
     expect(neg.hardCeiling).toBe(qf.technicalMaxOffer);
     expect(neg.remainingAssumptions.length).toBeGreaterThan(0);
+
+    const landBasis = reconcileNegotiation(view.cleaned, qf, view.summary.acquisitionLevels, 'land_basis')!;
+    expect(landBasis).toMatchObject({
+      referenceScope: 'land_basis',
+      openingLabel: 'Land-basis opening reference',
+      targetLabel: 'Land-basis target reference',
+      ceilingLabel: 'Land-basis ceiling reference',
+    });
+    expect(landBasis.lines.join(' ')).toMatch(/not completed whole-property offer recommendations/i);
   });
 
   it('attributes a LandOS exclusion to LandOS and the operator exclusion to the operator', () => {

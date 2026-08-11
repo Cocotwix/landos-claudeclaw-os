@@ -36,7 +36,8 @@ describe('compSourceFamily', () => {
     expect(compSourceFamily('apify')).toBe('redfin');
     expect(compSourceFamily('Realie')).toBe('realie');
     expect(compSourceFamily('homeharvest')).toBe('homeharvest');
-    expect(compSourceFamily('Realtor.com (HomeHarvest)')).toBe('homeharvest');
+    expect(compSourceFamily('Realtor.com')).toBe('realtor');
+    expect(compSourceFamily('HomeHarvest Realtor mirror')).toBe('homeharvest');
     expect(compSourceFamily('County records')).toBe('county');
     expect(compSourceFamily('mystery feed')).toBe('other');
   });
@@ -113,6 +114,16 @@ describe('applyCompSourcePolicy — excluded valuation sources', () => {
     expect(realie.reason).toMatch(/disabled for the current comparable workflow/);
     expect(result.acceptedSold.every((d) => d.family !== 'realie' && d.family !== 'homeharvest')).toBe(true);
     expect(result.registryCandidates.every((c) => !/realie|homeharvest/i.test(c.provider))).toBe(true);
+  });
+
+  it('admits direct Realtor.com land evidence as an independent supplement', () => {
+    const result = applyCompSourcePolicy(SUBJECT, [
+      comp({ provider: 'LandPortal visible', addressDesc: '1 Primary Rd, Kingston, TN 37763' }),
+      comp({ provider: 'Realtor.com', addressDesc: '2 Market Rd, Kingston, TN 37763' }),
+    ]);
+    const realtor = result.decisions.find((decision) => decision.family === 'realtor')!;
+    expect(realtor).toMatchObject({ role: 'supplement', fmvEligible: true, lane: 'sold' });
+    expect(result.registryCandidates.some((candidate) => candidate.provider === 'Realtor.com')).toBe(true);
   });
 
   it('keeps a disabled aggregator out of the ACTIVE competition lane too', () => {
@@ -213,7 +224,7 @@ describe('applyCompSourcePolicy — valuation blockers', () => {
   it('produces no blocker when an accepted priced land sale exists', () => {
     const result = applyCompSourcePolicy(SUBJECT, [comp({ provider: 'LandPortal visible' })]);
     expect(result.valuationBlockers).toEqual([]);
-    expect(result.summaryLine).toMatch(/1 accepted sold comp/);
+    expect(result.summaryLine).toMatch(/1 accepted sold source observation/);
   });
 
   it('gives every decision an operator-readable reason', () => {
@@ -272,15 +283,15 @@ describe('comparable lane accountability', () => {
     expect(result.laneAccountability.lanes.every((lane) => lane.candidates == null)).toBe(true);
   });
 
-  it('uses explicit lane attempts for honest no-result, blocked, and policy-disabled outcomes', () => {
+  it('uses explicit lane attempts for honest no-result and blocked outcomes across all four sources', () => {
     const result = applyCompSourcePolicy(SUBJECT, [], [
       { lane: 'landportal', attempted: true, candidates: 0 },
       { lane: 'zillow', attempted: true, blockedReason: 'challenge page' },
       { lane: 'redfin', attempted: true, candidates: 0 },
-      { lane: 'realtor', attempted: false, disabledReason: 'HomeHarvest policy exclusion' },
+      { lane: 'realtor', attempted: true, candidates: 0 },
     ]);
     expect(result.laneAccountability.lanes.map((lane) => lane.status)).toEqual([
-      'ran_no_results', 'blocked', 'ran_no_results', 'disabled_by_policy',
+      'ran_no_results', 'blocked', 'ran_no_results', 'ran_no_results',
     ]);
     expect(result.laneAccountability.everyLaneAccountedFor).toBe(true);
   });

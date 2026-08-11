@@ -119,6 +119,7 @@ import { runDukeVerification, mapResolveToVerification, type DukeVerificationRes
 import { resolveParcelIdentityResult } from './parcel-capability.js';
 import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
 import { fetchRedfinLandComps } from './redfin-land-comps.js';
+import { fetchRealtorLandComps } from './realtor-land-comps.js';
 import { runBrockovichDataCenterMap } from './brockovich-data-center.js';
 import { extractPropertyArgs } from './duke-preflight.js';
 import { suggestAddresses } from './address-suggest.js';
@@ -322,7 +323,7 @@ import {
   listOpportunityTranscripts,
 } from './opportunity-transcript-reconciliation.js';
 import { buildAcreageBasis, pinOverlayAcresToGeometry } from './acreage-basis.js';
-import { acreageFactFromBasis, reconcileFacts } from './deal-card-reconciliation.js';
+import { acreageFactFromBasis, buildCanonicalDealState, reconcileFacts, type CanonicalDealState } from './deal-card-reconciliation.js';
 import {
   compRegistryForDeal, retainedCompRunsFromReport, strategyReadinessForDeal, unifiedReadinessForDeal, documentRegistryForCard, modelVersionForCard,
   missionViewForCard, reconcileDealCard, compStateFromRegistry, DEAL_CARD_MODEL_VERSION,
@@ -406,6 +407,7 @@ import {
   EXACT_ADDRESS_LANE_ID,
   type ExtractedListingEvidence,
 } from './exact-address-web-discovery.js';
+import { loadSubjectListingDetail } from './subject-listing-store.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -3842,6 +3844,13 @@ export function registerLandosRoutes(app: Hono): void {
       { band: '1-2', sourceBand: '1-2' },
       { band: '0-1', sourceBand: '0-1' },
     ];
+    // A derived Market Research snapshot is never evidence on its own. It may
+    // outlive its canonical `landos_market_snapshot` source after a geography
+    // correction. If this county has no current source rows, render no county
+    // coverage rather than carrying stale (and potentially cross-state) counts
+    // into the operator's Market Score.
+    const drilldown = getCountyDrilldown(countyRef.fips);
+    if (!drilldown?.snapshots.length) return [];
     const retained = practicalBandSources.flatMap(({ band, sourceBand }) => {
       const snapshot = listMrSnapshots()
         .filter((candidate) => candidate.filters.acreageBand === sourceBand)
@@ -3861,8 +3870,6 @@ export function registerLandosRoutes(app: Hono): void {
         coverage: `${summary.row.name || countyRef.countyName}, sold ${sourceBand}-acre LandOS Market Research snapshot, ${summary.snapshot.quarter}`,
       }];
     });
-    const drilldown = getCountyDrilldown(countyRef.fips);
-    if (!drilldown) return retained;
     const requiredBands = new Set(['50+', '20-50', '10-20', '5-10', '2-5', '1-2', '0-1']);
     const legacy = drilldown.snapshots
       .filter((snapshot) => requiredBands.has(snapshot.acreageBand))
@@ -4724,7 +4731,7 @@ export function registerLandosRoutes(app: Hono): void {
       value: { state: projection.canonical.unifiedReadiness.value.state, why: projection.canonical.unifiedReadiness.value.why },
       strategyActionability: { stateLabel: projection.canonical.unifiedReadiness.strategyActionability.stateLabel, why: projection.canonical.unifiedReadiness.strategyActionability.why },
     },
-  });
+  }, canonicalDealStateFor(report.dealCardId));
 
   // Read-only composition of existing canonical records. This route deliberately
   // does not invoke browser or provider lanes, or independently derive WS1-WS3.
@@ -5401,6 +5408,9 @@ export function registerLandosRoutes(app: Hono): void {
   const acqView = (id: number) => {
     const acq = getAcquisition(id);
     const report = getDealCardReport(id);
+    const deal = getDealCard(id);
+    const propertyCardId = deal ? subjectCardId(deal) : null;
+    const inspection = propertyCardId ? loadPropertyInspection(propertyCardId) : null;
     const na = acquisitionNextAction(acq, { ddParcelVerified: report.parcelVerified });
     return {
       acquisition: acq,
@@ -5410,6 +5420,11 @@ export function registerLandosRoutes(app: Hono): void {
       callPrep: buildCallPrep(acq, na, acqContext(id)),
       playbook: acquisitionPlaybook(),
       trainingReadiness: acquisitionTrainingReadiness(),
+      canonicalState: canonicalDealStateFor(id),
+      subjectListing: propertyCardId ? loadSubjectListingDetail(propertyCardId) : null,
+      landPortalFacts: inspection ? buildParcelFactSheet(inspection.parcelFacts) : null,
+      marketContext: deal ? marketContextFor(deal) : null,
+      compsValuation: buildCompsValuationView(id),
     };
   };
   app.get('/api/landos/deal-cards/:id/acquisition', (c) => {
@@ -6803,6 +6818,81 @@ export function registerLandosRoutes(app: Hono): void {
   // snapshot is written back to THIS Deal Card and becomes the primary read.
   const propertyIntelligenceStore = new PropertyIntelligenceStore();
   const propertyResearchStore = new PropertyResearchStore();
+
+  /** One cross-page decision state, assembled from the current accepted comp
+   * workspace and the promoted Property Intelligence snapshot. Routes project
+   * this object verbatim; none of them recomputes counts or conclusions. */
+  const canonicalDealStateFor = (
+    dealCardId: number,
+    snapshotOverride?: ReturnType<typeof presentPropertyIntelligenceSnapshot> | null,
+  ): CanonicalDealState | null => {
+    const snapshot = snapshotOverride
+      ?? (() => {
+        const stored = propertyIntelligenceStore.primaryRun(dealCardId)?.snapshot ?? null;
+        return stored ? presentPropertyIntelligenceSnapshot(stored) : null;
+      })();
+    const compsView = buildCompsValuationView(dealCardId);
+    if (!snapshot || !compsView) return null;
+    const toSnapshotComp = (comp: (typeof compsView.comps)[number], lane: 'sold' | 'active') => ({
+      key: comp.key,
+      apn: comp.apn,
+      address: comp.address,
+      lane,
+      source: comp.source,
+      providerAttributions: comp.origins,
+      sourceUrl: comp.sourceUrl,
+      status: comp.saleVerification === 'source_stated' ? 'source_stated' : comp.statusLabel,
+      dateIso: comp.dateIso,
+      price: comp.price,
+      acres: comp.acres,
+      pricePerAcre: comp.pricePerAcre,
+      distanceMiles: comp.distanceMiles,
+      daysOnMarket: comp.daysOnMarket,
+      thumbnailUrl: comp.thumbnailUrl,
+      photoUrls: comp.photoUrls ?? [],
+      whyUseful: comp.classificationReason,
+      similarities: comp.primaryComparability ? [comp.primaryComparability] : [],
+      differences: comp.keyDifference ? [comp.keyDifference] : [],
+    });
+    const sold = compsView.comps.filter((comp) => comp.inValuationSet).map((comp) => toSnapshotComp(comp, 'sold'));
+    const active = compsView.comps.filter((comp) => comp.category === 'active_competition').map((comp) => toSnapshotComp(comp, 'active'));
+    const askingReferences = compsView.comps.filter((comp) => comp.category === 'asking_reference').map((comp) => toSnapshotComp(comp, 'active'));
+    const acquisition = getAcquisition(dealCardId);
+    const research = researchStatusFrom(snapshot.specialists, snapshot.dueDiligence);
+    return buildCanonicalDealState({
+      comps: {
+        sold,
+        active,
+        askingReferences,
+        totalCollected: compsView.canonicalCompCount,
+        duplicatesMerged: compsView.duplicatesMerged,
+      },
+      valuation: {
+        ...snapshot.valuation,
+        priceable: compsView.summary.fmv != null,
+        notPriceableReason: compsView.summary.fmv == null
+          ? compsView.summary.acquisitionLockedReason ?? snapshot.valuation.notPriceableReason
+          : null,
+        materialGaps: compsView.explanation.neededEvidence,
+      },
+      subject: {
+        improved: compsView.subjectImprovement.improved,
+        improvementBasis: compsView.subjectImprovement.evidence,
+        improvementsValued: !compsView.subjectImprovement.wholePropertyPending,
+      },
+      ownerSeller: {
+        ownerOfRecord: snapshot.identity.owner,
+        ownerSource: snapshot.identity.explanation,
+        ownerVerified: snapshot.identity.state === 'confirmed',
+        sellerName: acquisition.profile.name ?? null,
+        sellerIntakeCollected: !!acquisition.profile.name?.trim(),
+      },
+      research,
+      rawBlockers: snapshot.blockers,
+      rawMissingInformation: snapshot.missingInformation,
+      extraNextActions: [snapshot.valuation.nextActionToPrice],
+    });
+  };
   // Leave bounded headroom inside the 300-second parcel-identity mission for
   // the subsequent official parcel lookup and public-intelligence task graph.
   // runPropertyInspection shares this budget across LandPortal + county work.
@@ -7066,6 +7156,55 @@ export function registerLandosRoutes(app: Hono): void {
           thumbnailUrl: comp.thumbnailUrl ?? null,
           collectedAt: new Date().toISOString(),
         })),
+      };
+    },
+    captureRealtorComps: async (input) => {
+      const market = publicLocalityFallback(dealCardId, {
+        address: input.address ?? undefined,
+        city: input.city ?? undefined,
+        county: input.county ?? undefined,
+        state: input.state ?? undefined,
+        zip: input.zip ?? undefined,
+        apn: input.apn ?? undefined,
+        owner: input.owner ?? undefined,
+        lat: input.lat ?? undefined,
+        lng: input.lng ?? undefined,
+      });
+      const [soldResult, activeResult] = await Promise.all([
+        fetchRealtorLandComps({ ...market, subjectAcres: input.subjectAcres, mode: 'sold' }),
+        fetchRealtorLandComps({ ...market, subjectAcres: input.subjectAcres, mode: 'active' }),
+      ]);
+      const resultStatus = soldResult.status === 'retrieved' || activeResult.status === 'retrieved'
+        ? 'retrieved'
+        : soldResult.status === 'blocked' || activeResult.status === 'blocked'
+          ? 'blocked'
+          : soldResult.status === 'error' || activeResult.status === 'error'
+            ? 'error'
+            : soldResult.status === 'disabled' && activeResult.status === 'disabled'
+              ? 'disabled'
+              : 'none';
+      const project = (comp: (typeof soldResult.comps)[number]) => ({
+        address: comp.address,
+        price: comp.price,
+        acres: comp.acres,
+        pricePerAcre: comp.pricePerAcre,
+        url: comp.url,
+        status: comp.status,
+        saleDate: comp.soldDate ?? comp.listingDate ?? null,
+        listingDate: comp.listingDate ?? null,
+        daysOnMarket: comp.daysOnMarket ?? null,
+        homeType: comp.homeType ?? null,
+        yearBuilt: comp.yearBuilt ?? null,
+        homeSizeSqft: comp.homeSizeSqft ?? null,
+        thumbnailUrl: comp.thumbnailUrl ?? null,
+        photoUrls: comp.photoUrls ?? [],
+        collectedAt: new Date().toISOString(),
+      });
+      return {
+        status: resultStatus,
+        note: `Sold board: ${soldResult.note} Active board: ${activeResult.note}`,
+        sold: soldResult.comps.filter((comp) => comp.status === 'sold').map(project),
+        active: activeResult.comps.filter((comp) => comp.status === 'active').map(project),
       };
     },
     // PRIMARY comp lane. Reads the authenticated LandPortal parcel page through
@@ -8198,26 +8337,13 @@ export function registerLandosRoutes(app: Hono): void {
           incomplete: snapshot.specialists.filter((item) => item.status !== 'completed').length,
         },
       };
-      // The Market score counts the SAME canonical comp registry the Comps &
-      // Valuation section displays. The snapshot comp lane applies a provider
-      // allowlist and a never-downgrade guard, so its counts can lag; the
-      // canonical projection governs so the two sections cannot disagree.
-      const canonicalCompsView = buildCompsValuationView(dealCardId);
+      const canonicalState = canonicalDealStateFor(dealCardId, snapshot);
       snapshot.operatorAnalysis = buildDealOperatorAnalysis({
         pkg: packageForRead,
         context,
         previousSnapshot: storedSnapshot,
         generatedAt: primary?.updatedAt ?? snapshot.completedAt ?? '',
-        canonicalCompCounts: canonicalCompsView
-          ? {
-              sold: canonicalCompsView.summary.acceptedCount,
-              active: canonicalCompsView.counts.active_competition ?? 0,
-              soldAllSourceStated: (() => {
-                const selected = canonicalCompsView.comps.filter((comp) => comp.inValuationSet);
-                return selected.length > 0 && selected.every((comp) => comp.saleVerification === 'source_stated');
-              })(),
-            }
-          : null,
+        canonical: canonicalState,
       });
       const bestCurrentStrategy = snapshot.valuation.priceable
         ? snapshot.operatorAnalysis.rankedStrategies[0]?.strategy ?? null
@@ -8266,6 +8392,8 @@ export function registerLandosRoutes(app: Hono): void {
     const linkDeal = getDealCard(dealCardId);
     const linkCardId = linkDeal ? subjectCardId(linkDeal) : null;
     const linkInspection = linkCardId ? loadPropertyInspection(linkCardId) : null;
+    const subjectListing = linkCardId ? loadSubjectListingDetail(linkCardId) : null;
+    const landPortalFacts = linkInspection ? buildParcelFactSheet(linkInspection.parcelFacts) : null;
     const canonicalParcel = linkInspection?.parcelUrlRecord;
     const subjectParcel = canonicalParcel?.verifiedSubject && isVerifiedLandPortalSubjectUrl(canonicalParcel.url)
       ? {
@@ -8293,11 +8421,20 @@ export function registerLandosRoutes(app: Hono): void {
     // (each carrying its evidentiary basis) and the explicit availability
     // record. Served from the durable inspection record; never fabricated.
     const streetViewProjection = (() => {
+      const screenshot = snapshot?.evidence.find((item) => item.id === 'inspection-street_view' && !!item.viewUrl)
+        ?? snapshot?.evidence.find((item) => /street view/i.test(item.label) && !!item.viewUrl)
+        ?? null;
       const observations = (linkInspection?.visualObservations ?? [])
         .filter((item) => /street view/i.test(`${item.evidence ?? ''} ${item.label ?? ''}`));
-      if (!observations.length) return null;
+      // A visual claim without its retained visual artifact is not operator
+      // evidence. Keep the truthful availability state, but never render the
+      // unsupported observation (the former gated-entrance defect).
+      if (!screenshot) return observations.length
+        ? { available: false, observations: [], screenshot: null, reason: 'Street View observations have no retained screenshot and are not presented as findings.' }
+        : null;
+      if (!observations.length) return { available: true, observations: [], screenshot: screenshot.viewUrl, reason: 'A retained Street View capture is available; no visual finding was forced.' };
       const unavailable = observations.some((item) => /unavailable/i.test(item.label));
-      return { available: !unavailable, observations };
+      return { available: !unavailable, observations, screenshot: screenshot.viewUrl, reason: unavailable ? 'The retained Street View attempt did not expose usable coverage.' : 'Observation is backed by the retained Street View screenshot.' };
     })();
     // Specialist delivery refresh against the FINAL merged evidence: the
     // stored snapshot's evidence array can be empty while the read-time view
@@ -8491,12 +8628,12 @@ export function registerLandosRoutes(app: Hono): void {
       visualBuyerNarrative,
       // Named research areas with the exact incomplete one, so the operator
       // never has to guess what "N of M delivered" is missing.
-      researchStatus: snapshot ? researchStatusFrom(snapshot.specialists) : null,
+      researchStatus: snapshot ? researchStatusFrom(snapshot.specialists, snapshot.dueDiligence) : null,
       // The exact-address lane already retrieves and extracts listing pages.
       // This projects the LATEST attempt that actually retained pages, so the
       // operator can see which providers answered and what they published,
       // rather than the facts living only inside the run record.
-      exactAddressListings: (() => {
+      exactAddressListings: subjectListing?.projection ?? (() => {
         const cardId = resolveSubjectPropertyCard(getDealCard(dealCardId)).cardId;
         if (cardId == null) return null;
         const attempts = propertyResearchStore.listLaneAttempts(cardId)
@@ -8509,6 +8646,9 @@ export function registerLandosRoutes(app: Hono): void {
           chosen.execution?.result as Parameters<typeof projectExactAddressListingEvidence>[0],
         );
       })(),
+      subjectListing,
+      landPortalFacts,
+      canonicalState: canonicalDealStateFor(dealCardId, snapshot),
       hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
       providerResearch: (() => {
         const deal = getDealCard(dealCardId);
@@ -8583,7 +8723,7 @@ export function registerLandosRoutes(app: Hono): void {
           evidence?: Array<{ providerId?: string; field?: string; kind?: string; value?: unknown }>;
         } | null;
         const retainedFor = (pattern: RegExp): number => view.comps.filter((comp) => pattern.test(comp.source)).length;
-        const inputFor = (lane: 'zillow' | 'redfin'): CompLaneInput => {
+        const inputFor = (lane: 'zillow' | 'redfin' | 'realtor'): CompLaneInput => {
           const raw = researchRecord?.lanes?.[lane];
           const statusEvidence = researchRecord?.evidence?.find((entry) => entry.providerId === lane && entry.field === `comparables.${lane}.attempt_status`);
           const stated = statusEvidence?.value as { status?: string; note?: string | null; candidates?: number } | undefined;
@@ -8620,10 +8760,7 @@ export function registerLandosRoutes(app: Hono): void {
           },
           inputFor('zillow'),
           inputFor('redfin'),
-          {
-            lane: 'realtor', attempted: false,
-            disabledReason: 'Realtor.com HomeHarvest is in FMV_EXCLUDED_FAMILIES and is disabled for the current vacant-land comparable workflow.',
-          },
+          inputFor('realtor'),
         ]);
         return { ...view, laneAccountability };
       })(),
@@ -8646,14 +8783,23 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const cardId = subjectCardId(deal) ?? null;
+    const propertyIntelligence = propertyIntelligenceView(id);
     return c.json({
-      propertyIntelligence: propertyIntelligenceView(id),
+      propertyIntelligence,
       // Historical uploads and retained evidence remain available without
       // reviving the obsolete operational-report projection.
       documentRegistry: documentRegistryForCard(cardId, { dealCardId: id }),
       parcelRoster: parcelRosterFor(deal),
       // SOP 10B read-time join; never sourced from LandPortal market panels.
       marketContext: marketContextFor(deal),
+      canonicalState: propertyIntelligence.canonicalState,
+      subjectListing: propertyIntelligence.subjectListing,
+      landPortalFacts: propertyIntelligence.landPortalFacts,
+      access: propertyIntelligence.access,
+      streetView: propertyIntelligence.streetView,
+      compsValuation: propertyIntelligence.compsValuation,
+      officialParcelGis: propertyIntelligence.officialParcelGis,
+      landUse: propertyIntelligence.landUse,
     });
   });
 
@@ -8663,7 +8809,16 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ officialParcelGis: buildOfficialParcelGisView(id) });
+    const propertyIntelligence = propertyIntelligenceView(id);
+    return c.json({
+      officialParcelGis: propertyIntelligence.officialParcelGis,
+      canonicalState: propertyIntelligence.canonicalState,
+      subjectListing: propertyIntelligence.subjectListing,
+      landPortalFacts: propertyIntelligence.landPortalFacts,
+      access: propertyIntelligence.access,
+      streetView: propertyIntelligence.streetView,
+      marketContext: marketContextFor(getDealCard(id)!),
+    });
   });
 
   // Run the official parcel & GIS lane for one deal. This is the only endpoint
@@ -8722,7 +8877,16 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ landUse: buildLandUseView(id) });
+    const propertyIntelligence = propertyIntelligenceView(id);
+    return c.json({
+      landUse: propertyIntelligence.landUse,
+      canonicalState: propertyIntelligence.canonicalState,
+      subjectListing: propertyIntelligence.subjectListing,
+      landPortalFacts: propertyIntelligence.landPortalFacts,
+      access: propertyIntelligence.access,
+      streetView: propertyIntelligence.streetView,
+      marketContext: marketContextFor(getDealCard(id)!),
+    });
   });
 
   // Run the nationwide land-use lane for one deal. Operator-initiated, like the
@@ -8797,7 +8961,18 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const view = buildCompsValuationView(id);
     if (!view) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ compsValuation: view });
+    const deal = getDealCard(id)!;
+    const cardId = subjectCardId(deal);
+    const propertyIntelligence = propertyIntelligenceView(id);
+    return c.json({
+      compsValuation: view,
+      canonicalState: propertyIntelligence.canonicalState,
+      subjectListing: cardId ? loadSubjectListingDetail(cardId) : null,
+      landPortalFacts: propertyIntelligence.landPortalFacts,
+      access: propertyIntelligence.access,
+      streetView: propertyIntelligence.streetView,
+      marketContext: marketContextFor(deal),
+    });
   });
 
   // Operator valuation-comp selection: include / exclude (with reason) /

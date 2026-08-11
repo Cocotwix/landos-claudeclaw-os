@@ -36,8 +36,10 @@ const TONE: Record<CvVisualProvenance, string> = {
   location_unresolved: 'none',
 };
 
-export function CompVisualThumb({ visual, alt, width = 132, height = 96, zoom = 13 }: {
+export function CompVisualThumb({ visual, thumbnailUrl, alt, width = 132, height = 96, zoom = 13 }: {
   visual: CvVisual;
+  /** Reconciled listing-source thumbnail projected on the canonical comp. */
+  thumbnailUrl?: string | null;
   alt: string;
   width?: number;
   height?: number;
@@ -54,10 +56,14 @@ export function CompVisualThumb({ visual, alt, width = 132, height = 96, zoom = 
     </span>
   );
 
-  if (visual.url) {
+  const displayUrl = thumbnailUrl && (visual.provenance === 'listing_photo' || visual.provenance === 'provider_thumbnail')
+    ? thumbnailUrl
+    : visual.url;
+
+  if (displayUrl) {
     return (
       <figure class="awv2-cv-visual" style={{ width, height }}>
-        <img src={visual.url} alt={alt} loading="lazy" width={width} height={height} />
+        <img src={displayUrl} alt={alt} loading="lazy" width={width} height={height} />
         {chip}
       </figure>
     );

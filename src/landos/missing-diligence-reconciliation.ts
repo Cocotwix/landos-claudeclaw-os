@@ -35,6 +35,12 @@ export interface MissingDiligenceChecklist {
   evidenceGaps: string[];
   /** Raw messages retained because no category or checklist item covers them. */
   passthrough: string[];
+  /**
+   * Messages the CURRENT accepted comp/valuation records directly contradict,
+   * with the record that superseded each. Retained so nothing vanishes
+   * silently, never rendered on the operator surface.
+   */
+  supersededByAcceptedRecords: Array<{ statement: string; supersededBy: string }>;
 }
 
 export interface DiscoveryDiligenceState {
@@ -54,6 +60,17 @@ export interface DiscoveryDiligenceState {
   septicConfirmed: boolean;
   officialRecordsRetrieved: boolean;
   valuationPriceable: boolean;
+  /**
+   * The CURRENT accepted comparable record. Missing-information statements are
+   * derived from these counts, never from a historical conclusion: a card that
+   * shows accepted vacant-land sales may not simultaneously claim that no
+   * usable comp survived or that another sale is still required. Optional so a
+   * caller that has not wired the canonical counts yet degrades to the honest
+   * "no accepted closed sale yet" wording rather than fabricating one.
+   */
+  acceptedSoldComps?: number;
+  acceptedActiveComps?: number;
+  acceptedAskingReferences?: number;
   /** Road name once discovery-stage legal access is established by road
    *  abutment evidence (mapped frontage + no landlocked flag); null keeps
    *  access honestly open. */
@@ -245,15 +262,27 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
   }
 
   if (!state.valuationPriceable) {
+    // Derived from the CURRENT accepted comp record. Saying "no accepted closed
+    // in-band sale" while the working set holds accepted sales is the exact
+    // contradiction this reconciliation exists to prevent.
+    const sold = state.acceptedSoldComps ?? 0;
+    const active = state.acceptedActiveComps ?? 0;
+    const asking = state.acceptedAskingReferences ?? 0;
     items.push({
       key: 'valuation',
       label: 'Closed-sale evidence for valuation',
-      currentFinding: 'An asking-market indication is retained; no accepted closed in-band vacant-land sale yet.',
-      stillUnresolved: 'One or more closed vacant-land sales inside the subject acreage band.',
+      currentFinding: sold > 0
+        ? `${sold} accepted closed in-band sale(s) are retained, but the valuation record is not yet marked priceable against them.`
+        : asking + active > 0
+          ? `${asking} asking-market reference(s) and ${active} active competitor(s) are retained; no accepted closed in-band vacant-land sale yet.`
+          : 'No comparable evidence is retained yet.',
+      stillUnresolved: sold > 0
+        ? 'Reconciliation of the retained closed sales into a supported value band.'
+        : 'One or more closed vacant-land sales inside the subject acreage band.',
       whyItMatters: 'Fair market value and every acquisition level stay locked without closed evidence.',
       nextSource: 'Comp providers and county transfer records.',
-      shortStatus: 'Not priceable yet',
-      shortNext: 'One closed in-band sale',
+      shortStatus: sold > 0 ? `${sold} closed sale(s), value not yet reconciled` : 'Not priceable yet',
+      shortNext: sold > 0 ? 'Reconcile the retained sales' : 'One closed in-band sale',
       urgent: true,
     });
   }
@@ -266,6 +295,46 @@ function isEvidenceGap(message: string): boolean {
   return message.length <= 48 && !/[:—]/.test(message) && !STALE_LANGUAGE.test(message);
 }
 
+/**
+ * Historical comp/valuation conclusions the CURRENT accepted records can
+ * contradict. Each rule names the exact record that supersedes it, so genuine
+ * uncertainty is never deleted on a guess.
+ */
+const SUPERSEDED_BY_ACCEPTED_COMPS: Array<{
+  pattern: RegExp;
+  supersededWhen: (state: DiscoveryDiligenceState) => boolean;
+  because: (state: DiscoveryDiligenceState) => string;
+}> = [
+  {
+    // "…survived", "…remain", "…retained", "…retrieved yet" are all the same
+    // historical claim: that the working set is empty.
+    pattern: /no usable comp(?:arable)?s?[^.]*(?:surviv|remain|retain|retriev)/i,
+    supersededWhen: (s) => (s.acceptedSoldComps ?? 0) > 0,
+    because: (s) => `${s.acceptedSoldComps} accepted closed sale(s) are retained in the current working set.`,
+  },
+  {
+    // The provider-search wording: "No usable comps found after searching …".
+    pattern: /no usable comps? (?:found|available|were found)/i,
+    supersededWhen: (s) => (s.acceptedSoldComps ?? 0) > 0,
+    because: (s) => `${s.acceptedSoldComps} accepted closed sale(s) are retained in the current working set.`,
+  },
+  {
+    pattern: /(?:another|one more|an additional)[^.]*sale[^.]*(?:still )?(?:required|needed)/i,
+    supersededWhen: (s) => (s.acceptedSoldComps ?? 0) > 0,
+    because: (s) => `${s.acceptedSoldComps} accepted closed sale(s) are already retained.`,
+  },
+  {
+    pattern: /no (?:accepted |usable )?closed[^.]*sale/i,
+    supersededWhen: (s) => (s.acceptedSoldComps ?? 0) > 0,
+    because: (s) => `${s.acceptedSoldComps} accepted closed sale(s) are retained.`,
+  },
+  {
+    pattern: /no comparable evidence|comps? (?:are |is )?missing/i,
+    supersededWhen: (s) => (s.acceptedSoldComps ?? 0) + (s.acceptedActiveComps ?? 0) + (s.acceptedAskingReferences ?? 0) > 0,
+    because: (s) => `${(s.acceptedSoldComps ?? 0) + (s.acceptedActiveComps ?? 0) + (s.acceptedAskingReferences ?? 0)} comparable record(s) are retained.`,
+  },
+];
+
 export function reconcileMissingDiligence(
   state: DiscoveryDiligenceState,
   rawMessages: string[],
@@ -274,8 +343,21 @@ export function reconcileMissingDiligence(
   const coveredKeys = new Set(items.map((item) => item.key));
   const evidenceGaps: string[] = [];
   const passthrough: string[] = [];
+  const supersededByAcceptedRecords: Array<{ statement: string; supersededBy: string }> = [];
 
   for (const raw of rawMessages.map((value) => value.trim()).filter(Boolean)) {
+    // A statement the accepted comp record contradicts is superseded before any
+    // category matching, so a stale comp conclusion can never reach the surface
+    // beside the accepted sales that disprove it.
+    const contradicted = SUPERSEDED_BY_ACCEPTED_COMPS.find(
+      (rule) => rule.pattern.test(raw) && rule.supersededWhen(state),
+    );
+    if (contradicted) {
+      if (!supersededByAcceptedRecords.some((entry) => entry.statement === raw)) {
+        supersededByAcceptedRecords.push({ statement: raw, supersededBy: contradicted.because(state) });
+      }
+      continue;
+    }
     const matched = CATEGORY_MATCHERS.filter((matcher) => matcher.pattern.test(raw));
     if (!matched.length) {
       if (isEvidenceGap(raw)) { if (!evidenceGaps.includes(raw)) evidenceGaps.push(raw); }
@@ -289,5 +371,5 @@ export function reconcileMissingDiligence(
     if (!fullyRepresented && !passthrough.includes(raw)) passthrough.push(raw);
   }
 
-  return { items, evidenceGaps, passthrough };
+  return { items, evidenceGaps, passthrough, supersededByAcceptedRecords };
 }

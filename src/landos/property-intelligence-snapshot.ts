@@ -548,6 +548,215 @@ export function distinctApnIdentities(values: Array<string | null | undefined>):
   return kept;
 }
 
+// ── Canonical fact-once / agreement rule ─────────────────────────────────────
+//
+// The APN rules above answer "are these two spellings the same parcel?". The
+// same question applies to every measured quantity a card shows: LandPortal
+// says 60, operator intake says 60.0, listing research says 60.00. That is ONE
+// observation written three ways, never a factual disagreement, and it must
+// resolve to a single displayed value with the source-level observations kept
+// underneath as provenance. Agreement between sources SIMPLIFIES the resolved
+// output; it never multiplies rows.
+
+/** Widest gap at which two stated measurements are still the same observation. */
+export const NUMERIC_AGREEMENT_TOLERANCE = 0.005;
+
+/** True when two stated measurements are the same value written differently. */
+export function numericallyEquivalent(
+  a: number | null | undefined,
+  b: number | null | undefined,
+  tolerance = NUMERIC_AGREEMENT_TOLERANCE,
+): boolean {
+  if (typeof a !== 'number' || !Number.isFinite(a)) return false;
+  if (typeof b !== 'number' || !Number.isFinite(b)) return false;
+  return Math.abs(a - b) <= tolerance;
+}
+
+/**
+ * Reduce stated measurements to genuinely distinct values. Formatting
+ * differences (60 / 60.0 / 60.00) collapse; a real second measurement survives.
+ * The APN analogue is `distinctApnIdentities`; the first spelling wins so the
+ * caller's source ordering decides which value is canonical.
+ */
+export function distinctNumericValues(
+  values: Array<number | null | undefined>,
+  tolerance = NUMERIC_AGREEMENT_TOLERANCE,
+): number[] {
+  const kept: number[] = [];
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    if (kept.some((existing) => numericallyEquivalent(existing, value, tolerance))) continue;
+    kept.push(value);
+  }
+  return kept;
+}
+
+/**
+ * The one operator-facing spelling of a measurement. Trailing zeros are
+ * formatting, not precision, so 60.00 renders "60" and 60.25 renders "60.25".
+ */
+export function formatCanonicalNumber(value: number | null | undefined, unit?: string | null, decimals = 2): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const rounded = Number(value.toFixed(decimals));
+  const text = String(rounded);
+  return unit ? `${text} ${unit}` : text;
+}
+
+/** One source-level observation, retained underneath the resolved value. */
+export interface CanonicalObservation {
+  value: number | null;
+  source: string | null;
+  sourceUrl?: string | null;
+  retrievedAt?: string | null;
+  note?: string | null;
+}
+
+export interface CanonicalNumericFact {
+  /** The single value every surface shows. */
+  value: number | null;
+  /** The single string every surface prints, e.g. "60 AC". */
+  display: string | null;
+  agreement: 'unknown' | 'single_source' | 'agreed' | 'disputed';
+  /** Sources that stated a value, in the order supplied. */
+  sources: string[];
+  /** Every source-level observation, kept for evidence and debugging. */
+  observations: CanonicalObservation[];
+  /** Genuinely different measurements (never formatting variants). */
+  distinctValues: number[];
+  /** Present only on a real disagreement. */
+  conflictNote: string | null;
+}
+
+/**
+ * Resolve many source-level observations of one measurement into the single
+ * value the operator reads, keeping every observation as provenance. Sources
+ * that merely agree never earn a second visible row.
+ */
+export function resolveCanonicalNumericFact(
+  observations: CanonicalObservation[],
+  options: { unit?: string | null; tolerance?: number; decimals?: number; label?: string } = {},
+): CanonicalNumericFact {
+  const tolerance = options.tolerance ?? NUMERIC_AGREEMENT_TOLERANCE;
+  const stated = observations.filter((item) => typeof item.value === 'number' && Number.isFinite(item.value));
+  const distinct = distinctNumericValues(stated.map((item) => item.value), tolerance);
+  const value = distinct[0] ?? null;
+  const sources = [...new Set(stated.map((item) => (item.source ?? '').trim()).filter(Boolean))];
+  const label = options.label ?? 'This measurement';
+  const agreement: CanonicalNumericFact['agreement'] = distinct.length === 0
+    ? 'unknown'
+    : distinct.length > 1
+      ? 'disputed'
+      : stated.length > 1 ? 'agreed' : 'single_source';
+  return {
+    value,
+    display: formatCanonicalNumber(value, options.unit ?? null, options.decimals ?? 2),
+    agreement,
+    sources,
+    observations: stated,
+    distinctValues: distinct,
+    conflictNote: agreement === 'disputed'
+      ? `${label} is genuinely disputed: ${distinct.map((entry) => formatCanonicalNumber(entry, options.unit ?? null, options.decimals ?? 2)).join(' vs ')}. Showing ${formatCanonicalNumber(value, options.unit ?? null, options.decimals ?? 2)} from ${sources[0] ?? 'the strongest source'}; the other reading is retained as provenance.`
+      : null,
+  };
+}
+
+/** Acreage convenience: one "60 AC", however many sources stated it. */
+export function resolveCanonicalAcreage(
+  observations: CanonicalObservation[],
+  tolerance = NUMERIC_AGREEMENT_TOLERANCE,
+): CanonicalNumericFact {
+  return resolveCanonicalNumericFact(observations, { unit: 'AC', tolerance, label: 'Acreage' });
+}
+
+// ── Valuation scope: land-basis reference vs whole-property recommendation ────
+
+export type ValuationScope = 'land_only' | 'whole_property';
+
+/**
+ * What a valuation figure on this subject actually IS.
+ *
+ * A materially improved subject whose improvements have not been separately
+ * valued has a LAND-ONLY basis. Opening / Target / Ceiling figures derived from
+ * it are land-basis references, never completed whole-property offer
+ * recommendations, and the whole-property value reads as pending until the
+ * improvements are valued and reconciled.
+ */
+export interface ValuationScopeState {
+  scope: ValuationScope;
+  subjectImproved: boolean;
+  improvementBasis: string | null;
+  improvementsValued: boolean;
+  figureKind: 'land_basis_reference' | 'whole_property_recommendation';
+  /** The label an Opening/Target/Ceiling figure must carry. */
+  figureLabel: string;
+  landOnlyLabel: string;
+  wholeProperty: { state: 'pending' | 'established' | 'not_applicable'; why: string };
+  explanation: string;
+}
+
+export function resolveValuationScope(input: {
+  subjectImproved: boolean;
+  improvementBasis?: string | null;
+  improvementsValued?: boolean;
+  landValuePriceable: boolean;
+}): ValuationScopeState {
+  const improvementsValued = input.improvementsValued === true;
+  const landBasisOnly = input.subjectImproved && !improvementsValued;
+  const improvementBasis = input.improvementBasis?.trim() || null;
+  if (landBasisOnly) {
+    return {
+      scope: 'land_only',
+      subjectImproved: true,
+      improvementBasis,
+      improvementsValued: false,
+      figureKind: 'land_basis_reference',
+      figureLabel: 'Land-basis reference — not a whole-property offer recommendation',
+      landOnlyLabel: 'Land-only value (improvements excluded)',
+      wholeProperty: {
+        state: 'pending',
+        why: `The subject is materially improved${improvementBasis ? ` (${improvementBasis})` : ''} and the improvements have not been separately valued or reconciled, so no whole-property value exists yet.`,
+      },
+      explanation: 'Every figure below is derived from the land only. It is a land-basis reference for negotiation context and must not be read as a completed whole-property value or offer recommendation. Whole-property value remains pending until the improvements are separately valued.',
+    };
+  }
+  if (!input.subjectImproved) {
+    return {
+      scope: 'whole_property',
+      subjectImproved: false,
+      improvementBasis,
+      improvementsValued: false,
+      figureKind: input.landValuePriceable ? 'whole_property_recommendation' : 'land_basis_reference',
+      figureLabel: input.landValuePriceable
+        ? 'Whole-property value (vacant land: land value is the whole property)'
+        : 'Land-basis reference — no supported value yet',
+      landOnlyLabel: 'Land value',
+      wholeProperty: {
+        state: input.landValuePriceable ? 'established' : 'pending',
+        why: input.landValuePriceable
+          ? 'No material improvement is recorded on the subject, so the supported land value is the whole-property value.'
+          : 'No material improvement is recorded, but the land value is not yet supported by accepted evidence.',
+      },
+      explanation: input.landValuePriceable
+        ? 'The subject carries no material improvement, so the supported land value is the whole-property value.'
+        : 'The subject carries no material improvement, but no supported land value exists yet, so no whole-property value can be stated.',
+    };
+  }
+  return {
+    scope: 'whole_property',
+    subjectImproved: true,
+    improvementBasis,
+    improvementsValued: true,
+    figureKind: 'whole_property_recommendation',
+    figureLabel: 'Whole-property value (land plus separately valued improvements)',
+    landOnlyLabel: 'Land-only component',
+    wholeProperty: {
+      state: 'established',
+      why: `The improvements${improvementBasis ? ` (${improvementBasis})` : ''} were separately valued and reconciled with the land basis.`,
+    },
+    explanation: 'The improvements were separately valued and reconciled with the land basis, so these figures are whole-property figures.',
+  };
+}
+
 function confidenceFrom(
   identity: SnapshotIdentity,
   specialists: SnapshotSpecialistRecord[],
@@ -793,12 +1002,80 @@ export interface ResearchAreaStatus {
   nextAction: string | null;
 }
 
+/**
+ * One diligence QUESTION, which is a different thing from a research lane. A
+ * lane is a unit of work the machine ran; a question is something the operator
+ * needed to know. Delivering every lane does not answer every question.
+ */
+export interface ResearchQuestionStatus {
+  key: string;
+  label: string;
+  resolved: boolean;
+  /** Why the question is still open (only for unresolved questions). */
+  reason: string | null;
+  /** The next action required to answer it (only for unresolved questions). */
+  nextAction: string | null;
+}
+
 export interface ResearchStatusView {
   delivered: number;
   total: number;
   headline: string;
   areas: ResearchAreaStatus[];
   incomplete: ResearchAreaStatus[];
+  /** Research LANES completed. Identical to `delivered`; named so no surface
+   *  can mistake lane delivery for an answered question. */
+  lanesDelivered: number;
+  lanesTotal: number;
+  lanesHeadline: string;
+  /** Diligence QUESTIONS resolved — never implied by the lane count. */
+  questionsResolved: number;
+  questionsTotal: number;
+  questionsHeadline: string;
+  questions: ResearchQuestionStatus[];
+  openQuestions: ResearchQuestionStatus[];
+  /** The one sentence a surface may show. It can never read as "everything is
+   *  answered" merely because every lane reported back. */
+  summaryLine: string;
+}
+
+/** A diligence item is ANSWERED only when it reached a verdict, carries real
+ *  supporting evidence, and has nothing outstanding against it. */
+function diligenceQuestionResolved(item: SnapshotDueDiligenceItem): boolean {
+  if (item.verdict === 'unknown') return false;
+  if (item.missing.length > 0) return false;
+  return item.grade === 'confirmed_fact'
+    || item.grade === 'likely_indication'
+    || item.grade === 'unavailable_public_record';
+}
+
+function diligenceQuestions(items: SnapshotDueDiligenceItem[]): ResearchQuestionStatus[] {
+  const seen = new Set<string>();
+  const questions: ResearchQuestionStatus[] = [];
+  for (const item of items) {
+    // Nothing is counted twice: one diligence key is one question.
+    if (seen.has(item.key)) continue;
+    seen.add(item.key);
+    const resolved = diligenceQuestionResolved(item);
+    const reason = resolved
+      ? null
+      : item.missing.length > 0
+        ? `Outstanding: ${item.missing.join('; ')}.`
+        : item.verdict === 'unknown'
+          ? (item.headline || `${item.label} has not reached a determination.`)
+          : item.grade === 'post_contract_verification'
+            ? 'Only a professional post-contract review can settle this.'
+            : (item.headline || `${item.label} is not resolved by the retained evidence.`);
+    const nextAction = resolved
+      ? null
+      : item.missing.length > 0
+        ? item.missing[0]
+        : item.grade === 'post_contract_verification'
+          ? `Order the post-contract review that settles ${item.label.toLowerCase()}.`
+          : `Retrieve parcel-specific evidence that answers ${item.label.toLowerCase()}.`;
+    questions.push({ key: item.key, label: item.label, resolved, reason, nextAction });
+  }
+  return questions;
 }
 
 /**
@@ -806,8 +1083,16 @@ export interface ResearchStatusView {
  * operator never has to guess what "7 of 8" is missing. Each required
  * specialist is one research area; nothing is counted twice and the count is
  * computed from the presented (re-derived) specialist state.
+ *
+ * The diligence items are the second, INDEPENDENT count: "8 of 8 research
+ * areas delivered" says every lane reported back, and says nothing at all
+ * about how many diligence questions those lanes actually answered. Both
+ * counts are exposed distinctly so no surface can present one as the other.
  */
-export function researchStatusFrom(specialists: SnapshotSpecialistRecord[]): ResearchStatusView {
+export function researchStatusFrom(
+  specialists: SnapshotSpecialistRecord[],
+  dueDiligence: SnapshotDueDiligenceItem[] = [],
+): ResearchStatusView {
   const required = specialists.filter((specialist) => specialist.role === 'required');
   const areas: ResearchAreaStatus[] = required.map((specialist) => {
     const delivered = contributedResult(specialist.status);
@@ -826,12 +1111,28 @@ export function researchStatusFrom(specialists: SnapshotSpecialistRecord[]): Res
   });
   const incomplete = areas.filter((area) => !area.delivered);
   const delivered = areas.length - incomplete.length;
+  const questions = diligenceQuestions(dueDiligence);
+  const openQuestions = questions.filter((question) => !question.resolved);
+  const questionsResolved = questions.length - openQuestions.length;
+  const lanesHeadline = `${delivered} of ${areas.length} research areas delivered`;
+  const questionsHeadline = questions.length
+    ? `${questionsResolved} of ${questions.length} diligence questions resolved`
+    : 'No diligence questions have been recorded yet';
   return {
     delivered,
     total: areas.length,
-    headline: `${delivered} of ${areas.length} research areas delivered`,
+    headline: lanesHeadline,
     areas,
     incomplete,
+    lanesDelivered: delivered,
+    lanesTotal: areas.length,
+    lanesHeadline,
+    questionsResolved,
+    questionsTotal: questions.length,
+    questionsHeadline,
+    questions,
+    openQuestions,
+    summaryLine: `${lanesHeadline}; ${questionsHeadline}. A delivered lane is work completed, not a question answered.`,
   };
 }
 

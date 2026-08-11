@@ -184,6 +184,130 @@ describe('LandPortal sidebar fact capture', () => {
   });
 });
 
+// LandPortal terrain, soils, improvement and parcel context are intelligence in
+// their own right. Whatever the source published must survive the import, and
+// no other source's outcome may demote it — a failed official county GIS lane
+// cannot turn retained LandPortal evidence into "Not retained".
+describe('LandPortal terrain / soils / improvement / parcel-context retention', () => {
+  const RICH = {
+    fema_flood_zone: 'X',
+    elevation_avg: '882 ft',
+    elevation_min: '861 ft',
+    elevation_max: '934 ft',
+    soil_type: 'Kalkaska sand',
+    soil_description: '0 to 6 percent slopes, somewhat excessively drained',
+    building_sqft: 2184,
+    year_built: 1994,
+    improvement_value: '$212,400.00',
+    parcel_sqft: 3297240,
+    land_use_description: 'Residential improved',
+    subdivision: 'None of record',
+  } as const;
+
+  it('retains every extra LandPortal field under the exact label the fact sheet reads', () => {
+    const target = subjectCard();
+    importHermesLandPortalFile(fixture({ ...payload(), ...RICH }), { propertyCardId: target.card.id });
+    const parcelFacts = loadPropertyInspection(target.card.id)?.parcelFacts ?? {};
+    expect(parcelFacts['FEMA Flood Zone']).toBe('X');
+    expect(parcelFacts['Elevation Avg']).toBe('882 ft');
+    expect(parcelFacts['Elevation Min']).toBe('861 ft');
+    expect(parcelFacts['Elevation Max']).toBe('934 ft');
+    expect(parcelFacts['Soil Type']).toBe('Kalkaska sand');
+    expect(parcelFacts['Soil Description']).toBe('0 to 6 percent slopes, somewhat excessively drained');
+    expect(parcelFacts['Building SqFt']).toBe('2184');
+    expect(parcelFacts['Year Built']).toBe('1994');
+    expect(parcelFacts['Improvement Value']).toBe('$212,400.00');
+    expect(parcelFacts['Parcel SqFt']).toBe('3297240');
+    expect(parcelFacts['Parcel Use Description']).toBe('Residential improved');
+    expect(parcelFacts.Subdivision).toBe('None of record');
+  });
+
+  it('surfaces them as retained fact-sheet intelligence, never as "Not retained"', () => {
+    const target = subjectCard();
+    importHermesLandPortalFile(fixture({ ...payload(), ...RICH }), { propertyCardId: target.card.id });
+    const sheet = buildParcelFactSheet(loadPropertyInspection(target.card.id)?.parcelFacts ?? {});
+    expect(sheet.terrain.elevationAvg).toBe('882 ft');
+    expect(sheet.terrain.label).not.toBe('Needs verification');
+    expect(sheet.soils.label).toBe('Kalkaska sand — 0 to 6 percent slopes, somewhat excessively drained');
+    expect(sheet.improvement.improved).toBe(true);
+    expect(sheet.improvement.buildingSqft).toBe('2184');
+    expect(sheet.parcelContext.landUse).toBe('Residential improved');
+    expect(sheet.parcelContext.subdivision).toBe('None of record');
+    expect(sheet.retention.retained).toEqual(expect.arrayContaining([
+      'elevationAvg', 'elevationRange', 'soils', 'buildingSqft', 'yearBuilt',
+      'improvementValue', 'parcelSqft', 'landUse', 'femaFloodZone',
+    ]));
+    for (const key of ['elevationAvg', 'soils', 'buildingSqft', 'landUse']) {
+      expect(sheet.retention.notSupplied).not.toContain(key);
+    }
+  });
+
+  it('persists them through the canonical fact path with LandPortal provenance', () => {
+    const target = subjectCard();
+    importHermesLandPortalFile(fixture({ ...payload(), ...RICH }), { propertyCardId: target.card.id });
+    const record = new PropertyResearchStore().loadForProperty(target.card.id);
+    for (const [field, value] of Object.entries(RICH)) {
+      const fact = record?.facts[field];
+      expect(fact, `canonical fact for ${field}`).toBeDefined();
+      expect(fact?.value).toBe(value);
+      expect(fact?.providerId).toBe('hermes_landportal_import');
+    }
+  });
+
+  it('omits what LandPortal did not publish instead of inventing it', () => {
+    const target = subjectCard();
+    importHermesLandPortalFile(fixture(payload()), { propertyCardId: target.card.id });
+    const parcelFacts = loadPropertyInspection(target.card.id)?.parcelFacts ?? {};
+    expect(parcelFacts['Soil Type']).toBeUndefined();
+    expect(parcelFacts['Elevation Avg']).toBeUndefined();
+    // Absent-from-source is a different statement from not-retained, and the
+    // fact sheet says which one it is.
+    expect(buildParcelFactSheet(parcelFacts).retention.notSupplied).toEqual(
+      expect.arrayContaining(['soils', 'elevationAvg']),
+    );
+  });
+
+  it('never republishes written access evidence as a visual observation', () => {
+    const target = subjectCard();
+    importHermesLandPortalFile(fixture({
+      ...payload(),
+      landlocked_status: 'Yes',
+      access_evidence: [{
+        tier: 'apparent_physical',
+        statement: 'A gravel drive is apparent in the retained aerial.',
+        source_label: 'LandPortal satellite',
+        source_kind: 'satellite_imagery',
+        basis: 'direct_observation',
+        weight: 'well_supported',
+      }],
+    }), { propertyCardId: target.card.id });
+    const inspection = loadPropertyInspection(target.card.id)!;
+    // The access ladder carries it; the visual-observation record does not.
+    // Looping access wording back through visual observations is exactly how a
+    // described feature became a "seen" one.
+    expect(inspection.parcelFacts['Access Evidence · Apparent Physical']).toMatch(/gravel drive/);
+    expect(inspection.visualObservations).toEqual([]);
+  });
+
+  it('refuses an imagery claim that asserts a legal right, and records the refusal', () => {
+    const target = subjectCard();
+    const imported = importHermesLandPortalFile(fixture({
+      ...payload(),
+      access_evidence: [{
+        tier: 'reported_legal',
+        statement: 'The aerial shows the drive, so an easement exists.',
+        source_label: 'Satellite review',
+        source_kind: 'satellite_imagery',
+        basis: 'direct_observation',
+        weight: 'likely',
+      }],
+    }), { propertyCardId: target.card.id });
+    const parcelFacts = loadPropertyInspection(target.card.id)?.parcelFacts ?? {};
+    expect(parcelFacts['Access Evidence · Reported Legal']).toBeUndefined();
+    expect(imported.rejectedFields.join(' ')).toMatch(/imagery cannot report a legal or easement right/i);
+  });
+});
+
 describe('V2 Property Intelligence sidebar projection (source contract)', () => {
   const ROUTES_SRC = fs.readFileSync(path.join(process.cwd(), 'src/landos/routes.ts'), 'utf8');
   const PI_UI_SRC = fs.readFileSync(

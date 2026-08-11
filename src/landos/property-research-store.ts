@@ -14,6 +14,11 @@ import {
   validatePropertyProviderResult,
 } from './property-intelligence-contract.js';
 import { apnEquivalent } from './property-intelligence-snapshot.js';
+import { EXACT_ADDRESS_LANE_ID } from './exact-address-web-discovery.js';
+import {
+  saveSubjectListingDetail,
+  type SubjectListingDiscoveryResult,
+} from './subject-listing-store.js';
 
 const STRENGTH: Readonly<Record<PropertyEvidenceStrength, number>> = {
   context_only: 0,
@@ -89,6 +94,24 @@ function blank(value: unknown): boolean {
 
 function canonicalKey(input: CanonicalPropertyInput): string {
   return `property-card:${input.propertyCardId}`;
+}
+
+function subjectAddress(input: CanonicalPropertyInput): string {
+  return [input.address.trim(), input.city?.trim(), [input.state?.trim(), input.zip?.trim()].filter(Boolean).join(' ')]
+    .filter(Boolean).join(', ');
+}
+
+function exactAddressResult(result: PropertyProviderResult): SubjectListingDiscoveryResult | null {
+  if (result.laneId !== EXACT_ADDRESS_LANE_ID) return null;
+  const value = result.execution.result as Partial<SubjectListingDiscoveryResult> | null;
+  if (!value || !Array.isArray(value.queries) || !Array.isArray(value.pages)) return null;
+  if (!['retrieved', 'none', 'blocked', 'error'].includes(String(value.status))) return null;
+  return {
+    status: value.status as SubjectListingDiscoveryResult['status'],
+    queries: value.queries.filter((query): query is string => typeof query === 'string'),
+    pages: value.pages,
+    note: typeof value.note === 'string' ? value.note : '',
+  };
 }
 
 function sameCanonicalProperty(a: CanonicalPropertyInput, b: CanonicalPropertyInput): boolean {
@@ -304,15 +327,29 @@ export class PropertyResearchStore {
     const db = getLandosDb();
     const current = this.loadForProperty(result.input.propertyCardId);
     const merged = mergeCanonicalPropertyResearch(current, result);
-    const persistence = {
+    let persistence = {
       attempted: true,
       persisted: merged.accepted,
       retainedEvidenceCount: merged.retainedEvidenceCount,
       rejectedEvidenceCount: merged.rejectedEvidenceCount,
       reason: merged.reasons.join(' ') || null,
     };
-    const persistedResult: PropertyProviderResult = { ...result, persistence };
     const apply = db.transaction(() => {
+      const discovery = merged.accepted ? exactAddressResult(result) : null;
+      if (discovery) {
+        const subjectListingWrite = saveSubjectListingDetail({
+          propertyCardId: result.input.propertyCardId,
+          dealCardId: result.input.dealCardId,
+          canonicalAddress: subjectAddress(result.input),
+          completedAtIso: result.execution.completedAt,
+          result: discovery,
+        });
+        persistence = {
+          ...persistence,
+          persisted: persistence.persisted && subjectListingWrite.persisted,
+          reason: subjectListingWrite.reason,
+        };
+      }
       db.prepare(`
         INSERT INTO landos_property_research_lane_attempt (
           run_id, property_card_id, deal_card_id, lane_id, provider_id, status,
@@ -356,7 +393,7 @@ export class PropertyResearchStore {
       );
     });
     apply();
-    return persistedResult;
+    return { ...result, persistence };
   }
 
   listLaneAttempts(propertyCardId: number): PropertyProviderResult[] {

@@ -136,10 +136,90 @@ export function assessSellerAuthority(input: {
     authorityToSellStatus,
     relationshipGuess,
     verificationTasks: tasks,
-    summary: !input.sellerName || !input.ownerOfRecord
-      ? (input.parcelVerified ? 'Parcel verified. Owner-of-record on file; seller relationship Seller-stated.' : 'Parcel not yet verified.')
+    summary: !input.sellerName
+      ? (input.parcelVerified
+          // No seller was collected. The owner of record is an ownership fact
+          // about the parcel and is NEVER promoted into the seller field to
+          // make the card look complete.
+          ? `Parcel verified. Owner of record on file${input.ownerOfRecord ? ` (${input.ownerOfRecord})` : ''}; no seller or lead has been collected for this subject.`
+          : 'Parcel not yet verified.')
+      : !input.ownerOfRecord
+      ? (input.parcelVerified ? 'Parcel verified. Seller on file; owner of record not yet established from an official source.' : 'Parcel not yet verified.')
       : nameMatch
         ? 'Parcel verified. Seller name matches owner of record (no authority flag).'
         : `Parcel verified. Seller (${input.sellerName}) differs from owner of record (${input.ownerOfRecord}) — parcel is NOT rejected; seller authority Needs Verification.`,
+  };
+}
+
+// ── Owner of record vs seller / lead (one presentation, two facts) ───────────
+//
+// These are different things and the card must keep them apart. The owner of
+// record is an official ownership fact about the PARCEL. The seller/lead is a
+// person LandOS is in contact with about buying it. A subject entered as a test
+// property with no seller intake has a valid, correct seller state: none. That
+// field is never backfilled from the owner of record to make the card look
+// finished — doing so would also silently satisfy the name-match check above,
+// which exists precisely to catch an unverified seller.
+
+/** What the Seller field prints when no seller intake has happened. */
+export const SELLER_NOT_COLLECTED_LABEL = 'Not collected';
+
+export interface OwnerSellerPresentation {
+  ownerOfRecord: {
+    value: string | null;
+    label: string;
+    status: IdentityStatus;
+    source: string | null;
+  };
+  seller: {
+    value: string | null;
+    label: string;
+    /** False whenever intake produced no seller. Never inferred from the owner. */
+    collected: boolean;
+    why: string;
+  };
+  /** True when the two are genuinely the same person per an official record. */
+  sameParty: boolean;
+  distinctionNote: string;
+}
+
+/**
+ * Present the owner of record and the seller/lead as two independent facts.
+ * `seller.value` stays null unless a seller was actually collected, whatever
+ * the owner of record says.
+ */
+export function presentOwnerAndSeller(input: {
+  ownerOfRecord?: string | null;
+  ownerSource?: string | null;
+  ownerFromOfficialSource?: boolean;
+  sellerName?: string | null;
+  /** True only when seller intake actually ran and produced a contact. */
+  sellerIntakeCollected?: boolean;
+}): OwnerSellerPresentation {
+  const owner = (input.ownerOfRecord ?? '').trim() || null;
+  const stated = (input.sellerName ?? '').trim() || null;
+  const collected = input.sellerIntakeCollected === true && !!stated;
+  const ownerStatus: IdentityStatus = owner
+    ? (input.ownerFromOfficialSource ? 'verified' : 'needs_verification')
+    : 'not_verified';
+  return {
+    ownerOfRecord: {
+      value: owner,
+      label: owner ?? 'Not established',
+      status: ownerStatus,
+      source: (input.ownerSource ?? '').trim() || null,
+    },
+    seller: {
+      value: collected ? stated : null,
+      label: collected && stated ? stated : SELLER_NOT_COLLECTED_LABEL,
+      collected,
+      why: collected
+        ? 'A seller/lead contact was collected through intake.'
+        : 'No seller intake has happened on this subject, so no seller or lead is known. The owner of record is not the seller until intake or an official document establishes that.',
+    },
+    sameParty: collected && !!owner && namesLikelyMatch(stated ?? undefined, owner),
+    distinctionNote: owner
+      ? `${owner} is the owner of record for this parcel — an ownership fact, not a confirmed seller or lead.`
+      : 'No owner of record has been established from an official source yet.',
   };
 }

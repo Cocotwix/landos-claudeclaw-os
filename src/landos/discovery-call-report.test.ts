@@ -51,6 +51,8 @@ function exec(over: {
     } as any,
     strategyRanking: [], strongestStrategy: { strategy: 'x', why: 'x' },
     dealEconomics: {} as any, topRisks: [], sellerQuestions: [], verifyBeforeOffer: [], nextSteps: [], confidence: 'low',
+    canonical: null,
+    methodology: { assumptions: [], notes: [], whyUnderwritingLater: null },
   } as ExecutiveSummary;
 }
 

@@ -5,6 +5,12 @@
 // the normalized evidence through PropertyResearchStore, and projects the
 // accepted result through the existing Property Card, inspection, and comp
 // registries used by the normal Deal Card read.
+//
+// Retention is independent of every other source. Each result category persists
+// in its own transaction, and nothing here consults the official county GIS
+// lane: a failure over there can never stop LandPortal terrain, slope,
+// buildability, wetlands, FEMA, soils, water, frontage, acreage, improvement or
+// parcel-context evidence from being retained.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -78,6 +84,8 @@ export interface HermesLandPortalAccessEvidence {
   weight: AccessEvidenceWeight;
   source_url?: string | null;
   observed_at?: string | null;
+  /** Key of the retained visual artifact this observation was read from. */
+  artifact_key?: string | null;
 }
 
 export type HermesLandPortalResultCategory = 'subject' | 'comps' | 'visuals';
@@ -144,7 +152,22 @@ export interface HermesLandPortalSubject {
   // reinterpreted; the FEMA description is kept complete).
   water_feature_type?: string | null;
   zoning_code?: string | null;
+  fema_flood_zone?: string | null;
   fema_flood_zone_description?: string | null;
+  // Terrain, soils, improvement and parcel context. Retained whenever LandPortal
+  // supplies them; their absence here means the source did not publish them, and
+  // is never a consequence of any other source's outcome.
+  elevation_avg?: number | string | null;
+  elevation_min?: number | string | null;
+  elevation_max?: number | string | null;
+  soil_type?: string | null;
+  soil_description?: string | null;
+  building_sqft?: number | string | null;
+  year_built?: number | string | null;
+  improvement_value?: number | string | null;
+  parcel_sqft?: number | string | null;
+  land_use_description?: string | null;
+  subdivision?: string | null;
   last_sale_price?: number | string | null;
   last_sale_date?: string | null;
   book_number?: number | string | null;
@@ -445,6 +468,7 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
             weight: enumText(item.weight, `access_evidence[${index}].weight`, ACCESS_WEIGHTS),
             source_url: text(item.source_url) || null,
             observed_at: text(item.observed_at) || null,
+            artifact_key: text(item.artifact_key) || null,
           };
         });
       })();
@@ -660,7 +684,19 @@ const SUBJECT_FIELDS: Array<{ key: keyof HermesLandPortalSubject | 'landportal_p
   { key: 'lp_estimate_per_acre', kind: 'estimate' },
   { key: 'water_feature_type', kind: 'fact' },
   { key: 'zoning_code', kind: 'fact' },
+  { key: 'fema_flood_zone', kind: 'fact' },
   { key: 'fema_flood_zone_description', kind: 'fact' },
+  { key: 'elevation_avg', kind: 'fact' },
+  { key: 'elevation_min', kind: 'fact' },
+  { key: 'elevation_max', kind: 'fact' },
+  { key: 'soil_type', kind: 'fact' },
+  { key: 'soil_description', kind: 'fact' },
+  { key: 'building_sqft', kind: 'fact' },
+  { key: 'year_built', kind: 'fact' },
+  { key: 'improvement_value', kind: 'fact' },
+  { key: 'parcel_sqft', kind: 'fact' },
+  { key: 'land_use_description', kind: 'fact' },
+  { key: 'subdivision', kind: 'fact' },
   { key: 'last_sale_price', kind: 'fact' },
   { key: 'last_sale_date', kind: 'fact' },
   { key: 'book_number', kind: 'fact' },
@@ -700,15 +736,26 @@ function subjectEvidence(input: CanonicalPropertyInput, subject: HermesLandPorta
     });
   }
   const accessItems = accessEvidenceItems(subject);
+  // Only evidence the ladder RETAINS is persisted. A visual claim it refuses —
+  // an interpretation dressed as an apparent route, or imagery asserting a legal
+  // right — is recorded as a refused field instead of becoming an access fact,
+  // which is how a written description of a scene nobody captured used to become
+  // a finding. (`requireVisualArtifact` tightens this further once every worker
+  // handback names the artifact it read; see the DISCOVERY note.)
   const accessReconciliation = reconcileAccessEvidence(accessItems);
-  for (const [index, item] of accessItems.entries()) {
+  const rawAccessEvidence = new Map<AccessEvidenceItem, unknown>();
+  accessItems.forEach((item, index) => rawAccessEvidence.set(item, subject.access_evidence?.[index] ?? item));
+  for (const { item, reason } of accessReconciliation.rejected) {
+    rejectedFields.push(`access_evidence.${item.tier} (${reason})`);
+  }
+  for (const [index, item] of accessReconciliation.items.entries()) {
     evidence.push({
       id: `hermes-landportal:subject:access-evidence:${index + 1}`,
       propertyCardId: input.propertyCardId,
       dealCardId: input.dealCardId,
       providerId: 'hermes_landportal_import',
       field: `access_evidence.${item.tier}.${index + 1}`,
-      value: subject.access_evidence?.[index] ?? item,
+      value: rawAccessEvidence.get(item) ?? item,
       subjectClassification: 'verified_subject',
       strength: item.basis === 'recorded_instrument' ? 'provider_verified' : 'provider_observed',
       sourceUrl: item.sourceUrl || subject.subject_url,
@@ -718,7 +765,7 @@ function subjectEvidence(input: CanonicalPropertyInput, subject: HermesLandPorta
       validation: { valid: true, reasons: [] },
     });
   }
-  if (accessItems.length) {
+  if (accessReconciliation.items.length) {
     evidence.push({
       id: 'hermes-landportal:subject:access-reconciliation',
       propertyCardId: input.propertyCardId,
@@ -748,6 +795,7 @@ function accessEvidenceItems(subject: HermesLandPortalSubject): AccessEvidenceIt
     weight: item.weight,
     sourceUrl: item.source_url ?? subject.subject_url,
     observedAt: item.observed_at ?? subject.captured_at ?? subject.retrieved_at ?? null,
+    artifactRef: item.artifact_key ?? null,
   }));
   if (/^(?:yes|true|1|land\s*locked|land\s*locked\s*:\s*yes)$/i.test(text(subject.landlocked_status))
     && !items.some((item) => item.tier === 'parcel_flag')) {
@@ -760,6 +808,7 @@ function accessEvidenceItems(subject: HermesLandPortalSubject): AccessEvidenceIt
       weight: 'likely',
       sourceUrl: subject.subject_url,
       observedAt: subject.captured_at ?? subject.retrieved_at ?? null,
+      artifactRef: null,
     });
   }
   return items;
@@ -968,6 +1017,8 @@ const displayed = (value: number | string | null | undefined): string | null =>
   value == null ? null : typeof value === 'number' ? String(value) : text(value) || null;
 
 function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<string, string>): Record<string, string> {
+  // Same rule as the evidence path: an Access Evidence fact row can only restate
+  // what the ladder retained, so a refused visual claim never reaches one.
   const access = reconcileAccessEvidence(accessEvidenceItems(subject));
   const candidates: Record<string, string | null> = {
     'Owner Name': text(subject.owner) || null,
@@ -995,7 +1046,22 @@ function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<stri
     'Buildability area (acres)': finite(subject.buildability_area_acres) == null ? null : String(finite(subject.buildability_area_acres)),
     'Water Feature Type': displayed(subject.water_feature_type),
     'Zoning Code': displayed(subject.zoning_code),
+    'FEMA Flood Zone': displayed(subject.fema_flood_zone),
     'FEMA Flood Zone Description': displayed(subject.fema_flood_zone_description),
+    // Terrain / soils / improvement / parcel context, under the exact labels the
+    // fact sheet reads, so LandPortal-supplied intelligence is retained rather
+    // than surfacing as "Not retained".
+    'Elevation Avg': displayed(subject.elevation_avg),
+    'Elevation Min': displayed(subject.elevation_min),
+    'Elevation Max': displayed(subject.elevation_max),
+    'Soil Type': displayed(subject.soil_type),
+    'Soil Description': displayed(subject.soil_description),
+    'Building SqFt': displayed(subject.building_sqft),
+    'Year Built': displayed(subject.year_built),
+    'Improvement Value': displayed(subject.improvement_value),
+    'Parcel SqFt': displayed(subject.parcel_sqft),
+    'Parcel Use Description': displayed(subject.land_use_description),
+    Subdivision: displayed(subject.subdivision),
     'Last Sale Price': displayed(subject.last_sale_price),
     'Last Sale Date': displayed(subject.last_sale_date),
     'Book Number': displayed(subject.book_number),
@@ -1009,7 +1075,7 @@ function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<stri
       ? access.byTier.reported_legal.map((item) => `${item.statement} — ${item.sourceLabel}`).join(' | ') : null,
     'Access Evidence · Verified Legal': access.byTier.verified_legal.length
       ? access.byTier.verified_legal.map((item) => `${item.statement} — ${item.sourceLabel} (${item.basis.replace(/_/g, ' ')})`).join(' | ') : null,
-    'Access Evidence · Operator Conclusion': accessEvidenceItems(subject).length ? access.operatorConclusion : null,
+    'Access Evidence · Operator Conclusion': access.items.length ? access.operatorConclusion : null,
   };
   return Object.fromEntries(Object.entries(candidates).filter(([label, value]) => !present(retained[label]) && present(value))) as Record<string, string>;
 }
@@ -1215,12 +1281,13 @@ export function importHermesLandPortalFile(
             comparablesUrl: retainedInspection?.comparablesUrl ?? null,
             comparablesCapturedAt: null,
             parcelFacts: inspectionFacts(subject, retainedInspection?.parcelFacts ?? {}),
-            assets: [], overlays: [], visualObservations: accessEvidenceItems(subject).map((item) => ({
-              label: `Access evidence · ${item.tier.replace(/_/g, ' ')}`,
-              detail: `${item.statement} Source: ${item.sourceLabel}. Basis: ${item.basis.replace(/_/g, ' ')}.`,
-              confidence: (item.weight === 'unresolved' ? 'low' : 'medium') as 'low' | 'medium',
-              evidence: item.sourceUrl || item.sourceLabel,
-            })), comparables: [],
+            // Access evidence is NOT republished as a visual observation. It
+            // carries no image, and looping written access wording back through
+            // the visual-observation record is exactly how a described feature
+            // became a "seen" one. Access evidence lives on the ladder and in
+            // the Access Evidence facts above; visual observations come only
+            // from the visuals category, and only with a retained panorama.
+            assets: [], overlays: [], visualObservations: [], comparables: [],
             sources: [{ provider: 'LandPortal', stage: 'hermes_subject_import', status: 'used', resultKind: 'retrieved', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `Exact subject identity for ${subject.address} persisted independently from ${path.basename(sourceFile)}.` }],
             evidence: [{ label: 'Hermes LandPortal verified subject import', status: 'verified', detail: `Exact address, APN, subject URL, and LandPortal property identifier validated for ${subject.address}.`, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url }],
           });
@@ -1325,12 +1392,29 @@ export function importHermesLandPortalFile(
           // Street View outcomes persist as visual observations: structured
           // sightings keep their evidentiary basis, and unavailability is an
           // explicit record rather than a silent skip.
-          const streetViewObservations = (subject.street_view_observations ?? []).map((observation) => ({
+          //
+          // ARTIFACT GATE: an observation may only exist where a panorama was
+          // actually captured and accepted in this same handback. Without one,
+          // the "observation" is a written description of a scene nobody
+          // retained — the exact shape the unsupported gated-entrance finding
+          // took — so it is refused and the refusal is recorded instead.
+          const panoramaRetained = prepared.accepted.some(({ artifact }) =>
+            artifact.requested_view === 'street_view' || artifact.kind === 'street_view');
+          const claimedObservations = subject.street_view_observations ?? [];
+          const streetViewObservations = (panoramaRetained ? claimedObservations : []).map((observation) => ({
             label: observation.label,
             detail: observation.detail,
             confidence: (observation.basis === 'direct_observation' ? 'medium' : 'low') as 'medium' | 'low',
             evidence: `Street View — ${observation.basis.replace(/_/g, ' ')}`,
           }));
+          if (!panoramaRetained && claimedObservations.length) {
+            streetViewObservations.push({
+              label: 'Street View observations not retained',
+              detail: `${claimedObservations.length} Street View observation(s) were reported without a retained panorama, so none was kept. A visual finding requires the captured image it was read from.`,
+              confidence: 'low',
+              evidence: 'Street View artifact gate',
+            });
+          }
           if (subject.street_view_available === false) {
             streetViewObservations.push({
               label: 'Street View unavailable',

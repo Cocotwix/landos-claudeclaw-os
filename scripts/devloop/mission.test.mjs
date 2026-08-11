@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -37,8 +37,22 @@ import {
 } from './mission.mjs';
 import { diagnoseFailure, formatDiagnosis, parseTypescript, parseVitest } from './diagnose.mjs';
 import { launchBuilderAsync } from './builders.mjs';
-import { changedSince, outOfScope, snapshotTree } from './mission-exec.mjs';
-import { captureBaseline, failureSignature, firstActionableFailure, preExistingReason } from './mission-cli.mjs';
+import {
+  GitReadError,
+  changedSince,
+  integrate,
+  laneChangedPaths,
+  outOfScope,
+  prepareLaneWorkspace,
+  snapshotTree,
+} from './mission-exec.mjs';
+import {
+  captureBaseline,
+  failureSignature,
+  firstActionableFailure,
+  preExistingReason,
+  prepareMissionForResume,
+} from './mission-cli.mjs';
 import { analyse } from './watcher.mjs';
 
 function sandbox() {
@@ -613,6 +627,267 @@ test('a shared-workspace lane that changes nothing reports nothing', () => {
     writeFileSync(path.join(dir, 'unrelated.txt'), 'pre-existing\n');
     const before = snapshotTree(dir);
     assert.deepEqual(changedSince(dir, before), [], 'a no-op repair must not inherit the tree’s dirt');
+  } finally {
+    cleanup();
+  }
+});
+
+// ------------------------------------------- unreadable is not empty
+//
+// The defect these cover cost a whole sprint. Every git read below used to be
+// consumed as `.stdout` alone, so a read that FAILED and a read that returned
+// nothing were the same value. Six lanes that had written thousands of lines
+// were reported as "0 file(s) changed" and "empty diff", and their work was
+// discarded as though they had been idle. The rule is now: a failed read is
+// never evidence of absence.
+
+test('laneChangedPaths throws rather than reporting zero changes when git cannot be read', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    // Not a git repository: `git status` exits non-zero and prints nothing to
+    // stdout — precisely the shape that used to read as "the lane changed
+    // nothing".
+    assert.throws(() => laneChangedPaths(dir), GitReadError, 'an unreadable worktree must not look idle');
+  } finally {
+    cleanup();
+  }
+});
+
+test('snapshotTree throws rather than returning an empty baseline when git cannot be read', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    assert.throws(() => snapshotTree(dir), GitReadError);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a genuinely clean worktree still reports zero changes, so the fix does not cry wolf', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    assert.deepEqual(laneChangedPaths(dir), [], 'a real, readable, clean tree is legitimately empty');
+  } finally {
+    cleanup();
+  }
+});
+
+test('a resumed lane whose worktree already exists is still measured', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    const mission = { missionId: 'm-resume', lanes: [] };
+    const laneId = 'resumed';
+    const target = path.join(dir, '.runtime', 'devloop', 'm-resume', 'lanes', laneId, 'worktree');
+    mkdirSync(target, { recursive: true });
+    const workspace = prepareLaneWorkspace(dir, mission, { id: laneId, kind: 'build' });
+    assert.equal(workspace.isolated, true);
+    assert.equal(
+      workspace.measure,
+      true,
+      'an existing worktree used to come back without `measure`, so runLane took its `: []` branch and the ' +
+        'resumed lane reported zero changed paths and zero out-of-scope paths no matter what it did',
+    );
+    assert.equal(workspace.reused, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test('integration reports a read failure instead of calling an unreadable lane empty', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-m', 'seed'], { cwd: dir });
+
+    // A complete lane whose worktree cannot be read at all — the directory is
+    // gone, so git cannot even start. Previously this produced "empty diff" and
+    // the lane's work was discarded as though it had been idle. (A directory
+    // merely lacking its own .git would NOT do: nested inside this repo, git
+    // walks up and succeeds.)
+    const strandedWorktree = path.join(dir, 'vanished-worktree');
+    const mission = {
+      missionId: 'm-readfail',
+      lanes: [
+        {
+          id: 'stranded',
+          kind: 'build',
+          status: 'complete',
+          changedPaths: ['src/thing.ts'],
+          ownedPaths: ['src/thing.ts'],
+          worktree: path.relative(dir, strandedWorktree),
+        },
+      ],
+    };
+    const outcome = integrate(dir, mission, { report: null });
+    const entry = outcome.lanes.find((lane) => lane.laneId === 'stranded');
+    assert.equal(outcome.integrated, false);
+    assert.equal(entry.readFailure, true, 'a failed read must be labelled a read failure');
+    assert.notEqual(entry.reason, 'empty diff', 'a read failure must never be reported as an empty diff');
+    assert.match(entry.reason, /failed/i);
+    assert.ok(entry.stderr, 'the diagnostic evidence must be preserved, not swallowed');
+    // git that could not start at all has no exit status; the reason it could
+    // not start is in stderr, and that is the evidence that must survive.
+    assert.ok(entry.status === null || typeof entry.status === 'number');
+    assert.ok('status' in entry, 'the exit status must be recorded even when it is null');
+  } finally {
+    cleanup();
+  }
+});
+
+test('integration recovers a lane whose own change measurement failed', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-m', 'seed'], { cwd: dir });
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+
+    const worktree = path.join(dir, 'lane-worktree');
+    spawnSync('git', ['worktree', 'add', '--detach', worktree, head], { cwd: dir });
+    writeFileSync(path.join(worktree, 'seed.txt'), 'lane rewrote this\n');
+    writeFileSync(path.join(worktree, 'brand-new.ts'), 'export const added = true;\n');
+
+    const mission = {
+      missionId: 'm-recover',
+      lanes: [
+        {
+          id: 'unmeasured',
+          kind: 'build',
+          status: 'complete',
+          // null, not []: the lane's own measurement failed. This must NOT be
+          // read as "the lane changed nothing".
+          changedPaths: null,
+          changedPathsRead: 'failed',
+          ownedPaths: ['seed.txt', 'brand-new.ts'],
+          worktree: path.relative(dir, worktree),
+        },
+      ],
+    };
+    mkdirSync(path.join(dir, '.runtime', 'devloop', 'm-recover', 'lanes', 'unmeasured'), { recursive: true });
+
+    const outcome = integrate(dir, mission, { report: null });
+    const entry = outcome.lanes.find((lane) => lane.laneId === 'unmeasured');
+    assert.equal(entry.applied, true, 'work whose measurement failed must still integrate');
+    assert.deepEqual(entry.files, ['brand-new.ts', 'seed.txt'], 'the file list is recovered from the staged diff');
+    assert.equal(
+      readFileSync(path.join(dir, 'brand-new.ts'), 'utf8').trim(),
+      'export const added = true;',
+      'the recovered patch actually reached the primary tree',
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('a lane that truly changed nothing is still reported as changing nothing', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-m', 'seed'], { cwd: dir });
+    const mission = {
+      missionId: 'm-idle',
+      lanes: [{ id: 'idle', kind: 'build', status: 'complete', changedPaths: [], ownedPaths: ['x.ts'], worktree: '.' }],
+    };
+    const outcome = integrate(dir, mission, { report: null });
+    assert.equal(outcome.lanes[0].reason, 'lane changed nothing');
+    assert.equal(outcome.integrated, true, 'an idle lane is not a failure');
+  } finally {
+    cleanup();
+  }
+});
+
+test('post-integration resume keeps applied patches and integrates only newly completed lanes', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'already.txt'), 'before\n');
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-m', 'seed'], { cwd: dir });
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+
+    writeFileSync(path.join(dir, 'already.txt'), 'integrated earlier\n');
+    spawnSync('git', ['add', 'already.txt'], { cwd: dir });
+
+    const worktree = path.join(dir, 'new-lane-worktree');
+    spawnSync('git', ['worktree', 'add', '--detach', worktree, head], { cwd: dir });
+    writeFileSync(path.join(worktree, 'new.txt'), 'new lane\n');
+    mkdirSync(path.join(dir, '.runtime', 'devloop', 'm-resumed', 'lanes', 'new-lane'), { recursive: true });
+
+    const mission = {
+      missionId: 'm-resumed',
+      lanes: [
+        { id: 'already', kind: 'build', status: 'complete', changedPaths: ['already.txt'], worktree: '.' },
+        { id: 'new-lane', kind: 'build', status: 'complete', changedPaths: ['new.txt'], worktree: path.relative(dir, worktree) },
+      ],
+      integration: {
+        integrated: true,
+        lanes: [{ laneId: 'already', applied: true, reason: null, files: ['already.txt'] }],
+        files: ['already.txt'],
+      },
+    };
+
+    const outcome = integrate(dir, mission, { report: null });
+    assert.equal(outcome.integrated, true);
+    assert.equal(outcome.lanes.find((entry) => entry.laneId === 'already').alreadyApplied, true);
+    assert.equal(readFileSync(path.join(dir, 'already.txt'), 'utf8'), 'integrated earlier\n');
+    assert.equal(readFileSync(path.join(dir, 'new.txt'), 'utf8').replace(/\r\n/g, '\n'), 'new lane\n');
+    assert.deepEqual(outcome.files, ['already.txt', 'new.txt']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resume retries authored unfinished lanes without replaying failed repair workers', () => {
+  const mission = {
+    terminalState: 'FAIL',
+    terminalReason: 'repair provider quota',
+    lanes: [
+      { id: 'done', kind: 'build', status: 'complete' },
+      { id: 'unfinished', kind: 'build', status: 'failed', error: 'quota' },
+      { id: 'repair-1', kind: 'repair', status: 'failed', error: 'quota' },
+    ],
+  };
+  const result = prepareMissionForResume(mission);
+  assert.deepEqual(mission.lanes.map((lane) => lane.id), ['done', 'unfinished']);
+  assert.equal(mission.lanes[1].status, 'pending');
+  assert.equal(mission.lanes[1].error, null);
+  assert.deepEqual(result.kept, ['done']);
+  assert.deepEqual(result.retried, ['unfinished']);
+  assert.deepEqual(result.abandonedRepairs.map((lane) => lane.id), ['repair-1']);
+  assert.equal(mission.terminalState, null);
+});
+
+test('integration treats completed primary-workspace repairs as already applied', () => {
+  const { dir, cleanup } = sandbox();
+  try {
+    spawnSync('git', ['init'], { cwd: dir });
+    writeFileSync(path.join(dir, 'fixed.ts'), 'before\n');
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-m', 'seed'], { cwd: dir });
+    writeFileSync(path.join(dir, 'fixed.ts'), 'repaired on primary\n');
+
+    const mission = {
+      missionId: 'm-primary-repair',
+      lanes: [
+        {
+          id: 'repair-2',
+          kind: 'repair',
+          status: 'complete',
+          workspace: 'primary',
+          changedPaths: ['fixed.ts'],
+          worktree: '.',
+        },
+      ],
+    };
+    const outcome = integrate(dir, mission, { report: null });
+    assert.equal(outcome.integrated, true);
+    assert.equal(outcome.lanes[0].alreadyApplied, true);
+    assert.equal(readFileSync(path.join(dir, 'fixed.ts'), 'utf8'), 'repaired on primary\n');
   } finally {
     cleanup();
   }

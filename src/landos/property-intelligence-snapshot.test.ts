@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   apnEquivalent,
   distinctApnIdentities,
+  distinctNumericValues,
+  formatCanonicalNumber,
   initialSpecialistRecords,
   joinPropertyIntelligence,
   normalizeApn,
+  numericallyEquivalent,
   presentPropertyIntelligenceSnapshot,
   reconcilePropertyIntelligenceSnapshot,
+  resolveCanonicalAcreage,
+  resolveValuationScope,
   type SnapshotIdentity,
   type SnapshotJoinInput,
   type SnapshotSpecialistRecord,
@@ -405,5 +410,101 @@ describe('merged comp counts, sentence and verdict cannot contradict each other'
     const merged = reconcilePropertyIntelligenceSnapshot(retained, incoming).snapshot.comps;
     expect(merged.conclusion).toBe('not_priceable');
     expect(merged.summaryLine).toContain('0 asking-market reference(s)');
+  });
+});
+
+// ── Canonical fact-once / agreement rule ─────────────────────────────────────
+//
+// The operator reads a resolved fact ONCE. Sources that agree become provenance
+// underneath a single value, never four rows that read like a dispute. This is
+// the numeric analogue of `apnEquivalent` / `distinctApnIdentities`.
+
+describe('canonical fact-once — numeric agreement', () => {
+  it('treats 60, 60.0 and 60.00 as one observation, not three', () => {
+    const stated = ['60', '60.0', '60.00'].map(Number);
+    expect(stated.every((value) => numericallyEquivalent(60, value))).toBe(true);
+    expect(distinctNumericValues(stated)).toEqual([60]);
+  });
+
+  it('renders the single canonical spelling without trailing-zero noise', () => {
+    expect(formatCanonicalNumber(60, 'AC')).toBe('60 AC');
+    expect(formatCanonicalNumber(Number('60.00'), 'AC')).toBe('60 AC');
+    expect(formatCanonicalNumber(60.25, 'AC')).toBe('60.25 AC');
+    expect(formatCanonicalNumber(null, 'AC')).toBeNull();
+  });
+
+  it('collapses agreeing sources into one displayed acreage, provenance kept', () => {
+    const fact = resolveCanonicalAcreage([
+      { value: 60, source: 'LandPortal parcel' },
+      { value: Number('60.0'), source: 'Operator intake' },
+      { value: 60.002, source: 'Listing research' },
+      { value: Number('60.00'), source: 'County assessor roll' },
+    ]);
+    expect(fact.display).toBe('60 AC');
+    expect(fact.agreement).toBe('agreed');
+    expect(fact.conflictNote).toBeNull();
+    // ONE value displayed; every observation retained underneath.
+    expect(fact.distinctValues).toEqual([60]);
+    expect(fact.observations).toHaveLength(4);
+    expect(fact.sources).toEqual([
+      'LandPortal parcel', 'Operator intake', 'Listing research', 'County assessor roll',
+    ]);
+  });
+
+  it('still reports a GENUINE second measurement as disputed', () => {
+    const fact = resolveCanonicalAcreage([
+      { value: 60, source: 'County assessor roll' },
+      { value: 57.4, source: 'County GIS geometry' },
+    ]);
+    expect(fact.agreement).toBe('disputed');
+    expect(fact.distinctValues).toEqual([60, 57.4]);
+    expect(fact.conflictNote).toMatch(/60 AC vs 57.4 AC/);
+  });
+
+  it('says unknown rather than inventing a value when no source stated one', () => {
+    const fact = resolveCanonicalAcreage([{ value: null, source: 'LandPortal parcel' }]);
+    expect(fact.agreement).toBe('unknown');
+    expect(fact.value).toBeNull();
+    expect(fact.display).toBeNull();
+  });
+});
+
+// ── Land-basis reference vs completed whole-property value ───────────────────
+
+describe('valuation scope labelling', () => {
+  it('9490-style improved subject: land basis only, whole-property pending', () => {
+    const scope = resolveValuationScope({
+      subjectImproved: true,
+      improvementBasis: 'house and outbuildings',
+      improvementsValued: false,
+      landValuePriceable: true,
+    });
+    expect(scope.scope).toBe('land_only');
+    expect(scope.figureKind).toBe('land_basis_reference');
+    expect(scope.figureLabel).toMatch(/not a whole-property offer recommendation/i);
+    expect(scope.wholeProperty.state).toBe('pending');
+    expect(scope.wholeProperty.why).toMatch(/materially improved/i);
+    expect(scope.wholeProperty.why).toMatch(/house and outbuildings/);
+  });
+
+  it('vacant subject with a supported land value IS the whole-property value', () => {
+    const scope = resolveValuationScope({ subjectImproved: false, landValuePriceable: true });
+    expect(scope.figureKind).toBe('whole_property_recommendation');
+    expect(scope.wholeProperty.state).toBe('established');
+  });
+
+  it('vacant subject with no supported value states no whole-property value', () => {
+    const scope = resolveValuationScope({ subjectImproved: false, landValuePriceable: false });
+    expect(scope.figureKind).toBe('land_basis_reference');
+    expect(scope.wholeProperty.state).toBe('pending');
+  });
+
+  it('only separately valued improvements promote the figures to whole-property', () => {
+    const scope = resolveValuationScope({
+      subjectImproved: true, improvementBasis: 'house', improvementsValued: true, landValuePriceable: true,
+    });
+    expect(scope.figureKind).toBe('whole_property_recommendation');
+    expect(scope.wholeProperty.state).toBe('established');
+    expect(scope.landOnlyLabel).toBe('Land-only component');
   });
 });

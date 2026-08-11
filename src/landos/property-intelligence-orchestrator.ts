@@ -56,6 +56,14 @@ export interface OrchestratorRun {
   downstreamAllowed: boolean;
   /** Official GIS parcel ring retained for read-only owner map projection. */
   subjectGeometry?: { rings: number[][][] } | null;
+  /** Standing exact-address discovery outcome, including its durable-write result. */
+  exactAddress?: {
+    attempted: boolean;
+    status: 'retrieved' | 'none' | 'blocked' | 'error' | 'not_configured';
+    persistenceAttempted: boolean;
+    persisted: boolean;
+    note: string;
+  };
 }
 
 export interface OrchestratorOptions {
@@ -75,6 +83,13 @@ export interface OrchestratorOptions {
    * launch a new comp provider. New provider candidates still build a fresh
    * registry; callers must never replace newer candidates with this seed. */
   seedRegistry?: CompRegistry | null;
+  /** Independent subject discovery. Callers that own the live collector may
+   * supply the same memoized promise; it is started beside public/GIS work. */
+  exactAddressJob?: () => Promise<{
+    status: 'retrieved' | 'none' | 'blocked' | 'error';
+    note: string;
+    persistence?: { attempted: boolean; persisted: boolean } | null;
+  }>;
 }
 
 const DEFAULT_ORCHESTRATOR_TIMEOUT_MS = 600_000;
@@ -176,9 +191,33 @@ export async function runPropertyIntelligenceOrchestrator(
   let registry: CompRegistry | null = null;
   let stages: OrchestratorStageRecord[] = [];
   let status: OrchestratorStatus = 'running';
+  let exactAddress: NonNullable<OrchestratorRun['exactAddress']> = {
+    attempted: false,
+    status: 'not_configured',
+    persistenceAttempted: false,
+    persisted: false,
+    note: 'Exact-address discovery is owned by the live collector for this orchestration.',
+  };
 
   try {
     const gate = evaluatePublicIntelligenceGate(options.subject);
+    // Start independently, before any official/public adapter can block or
+    // fail. The callback is expected to include the canonical-subject write.
+    const exactAddressPromise: Promise<NonNullable<OrchestratorRun['exactAddress']>> = options.exactAddressJob
+      ? options.exactAddressJob().then((result) => ({
+          attempted: true,
+          status: result.status,
+          persistenceAttempted: result.persistence?.attempted === true,
+          persisted: result.persistence?.persisted === true,
+          note: result.note,
+        })).catch((error: unknown) => ({
+          attempted: true,
+          status: 'error' as const,
+          persistenceAttempted: false,
+          persisted: false,
+          note: error instanceof Error ? error.message : String(error),
+        }))
+      : Promise.resolve(exactAddress);
     const publicPromise = runPublicPropertyIntelligence(options.subject, {
       adapters: options.adapters,
       captureMode: options.captureMode ?? 'live',
@@ -188,7 +227,7 @@ export async function runPropertyIntelligenceOrchestrator(
       clockMs,
     });
     if (!gate.allowed) {
-      propertyIntelligence = await publicPromise;
+      [propertyIntelligence, exactAddress] = await Promise.all([publicPromise, exactAddressPromise]);
       status = 'blocked_identity';
       // The identity gate prevents new provider or valuation work, but report
       // lanes may already have completed before this canonical reconciliation.
@@ -221,6 +260,7 @@ export async function runPropertyIntelligenceOrchestrator(
         startedAt, completedAt: now(), durationMs: clockMs() - startMs,
         nonBlockingGaps, downstreamAllowed: false,
         subjectGeometry: retainedSubjectGeometry(options.subject.parcelGeometry),
+        exactAddress,
       };
       blockedRun.validation = validateOrchestratorOutput(PROPERTY_INTELLIGENCE_CONTRACT, blockedRun);
       return blockedRun;
@@ -230,7 +270,8 @@ export async function runPropertyIntelligenceOrchestrator(
       perProviderTimeoutMs: Math.min(options.defaultTimeoutMs ?? 180_000, PROPERTY_INTELLIGENCE_CONTRACT.parallelPolicy.maxRunMs),
       now: clockMs,
     });
-    const [publicResult, freshCompRuns] = await Promise.all([publicPromise, compPromise]);
+    const [publicResult, freshCompRuns, exactAddressResult] = await Promise.all([publicPromise, compPromise, exactAddressPromise]);
+    exactAddress = exactAddressResult;
     propertyIntelligence = publicResult;
     const freshProviders = new Set(freshCompRuns.map((run) => run.provider.trim().toLowerCase()));
     compRuns = [
@@ -271,6 +312,7 @@ export async function runPropertyIntelligenceOrchestrator(
       startedAt, completedAt: now(), durationMs: clockMs() - startMs,
       nonBlockingGaps, downstreamAllowed: propertyIntelligence.downstreamAllowed,
       subjectGeometry: retainedSubjectGeometry(options.subject.parcelGeometry),
+      exactAddress,
     };
     result.validation = validateOrchestratorOutput(PROPERTY_INTELLIGENCE_CONTRACT, result);
     if (!result.validation.valid && result.status === 'complete') result.status = 'complete_with_gaps';
@@ -297,6 +339,7 @@ export async function runPropertyIntelligenceOrchestrator(
       nonBlockingGaps: nonBlockingGaps.length ? nonBlockingGaps : [`Orchestrator failed: ${error instanceof Error ? error.message : String(error)}`],
       downstreamAllowed: false,
       subjectGeometry: retainedSubjectGeometry(options.subject.parcelGeometry),
+      exactAddress,
     };
   }
 }

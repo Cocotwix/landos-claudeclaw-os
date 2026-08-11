@@ -22,6 +22,9 @@ const APP = read('../../web/src/App.tsx');
 const LANDOS = read('../../web/src/pages/LandOS.tsx');
 const BOARD = read('../../web/src/pages/PropertyBoard.tsx');
 const DEALCARD = read('../../web/src/components/DealCard.tsx');
+const V2 = read('../../web/src/pages/AcquisitionWorkspaceV2.tsx');
+const OVERVIEW = read('../../web/src/components/AcquisitionWorkspaceV2Overview.tsx');
+const OVERVIEW_CSS = read('../../web/src/styles/workspace-v2-overview.css');
 
 describe('Acquisitions is one cohesive department workspace', () => {
   it('defines the seven business sections', () => {
@@ -99,5 +102,73 @@ describe('LandOS spine — old feature nav demoted', () => {
     expect(LANDOS).toMatch(/view === 'dealcard' && <DealCard/);
     expect(LANDOS).toMatch(/'acquire', 'intake'/);
     expect(LANDOS).toMatch(/view === 'acquire' && <Acquire/);
+  });
+});
+
+describe('Acquisition Workspace V2 Overview is an executive dashboard', () => {
+  it('keeps the page as a data/navigation shell and extracts a peer Overview section', () => {
+    expect(V2).toMatch(/import \{\s*OverviewSection, type OverviewSnapshotView/);
+    expect(V2).toMatch(/<OverviewSection[\s\S]*?compsValuation=\{compsValuation\}/);
+    expect(OVERVIEW).toMatch(/export function OverviewSection/);
+    expect(OVERVIEW).toMatch(/import '\.\.\/styles\/workspace-v2-overview\.css'/);
+    expect(OVERVIEW_CSS).toMatch(/\.awv2-overview-hero/);
+  });
+
+  it('uses one canonical decision and valuation state instead of local comp math', () => {
+    expect(OVERVIEW).toMatch(/const canonical = operator\?\.canonical/);
+    expect(OVERVIEW).toMatch(/const summary = compsValuation\?\.summary/);
+    expect(OVERVIEW).toMatch(/summary\.acceptedCount/);
+    expect(OVERVIEW).not.toMatch(/snap\.comps|\.sold\?\.length|candidate_closed_sale.*accepted_closed_sale/);
+    expect(OVERVIEW).not.toMatch(/A third credible closed vacant-land sale|Two credible closed vacant-land sales/);
+  });
+
+  it('separates research delivery from diligence resolution', () => {
+    expect(V2).toMatch(/Research lanes/);
+    expect(V2).toMatch(/Diligence questions/);
+    expect(V2).toMatch(/questionsHeadline/);
+    expect(OVERVIEW).toMatch(/Diligence questions, not research-lane progress/);
+  });
+
+  it('keeps owner and seller identities separate and collapses canonical acreage display', () => {
+    expect(V2).toMatch(/Owner of record <b>\{owner \|\| 'Unknown'\}/);
+    expect(OVERVIEW).toMatch(/<dt>Seller \/ lead<\/dt><dd>\{seller\?\.name \|\| 'Not collected'\}/);
+    expect(V2.match(/\{acres\} AC/g)).toHaveLength(1);
+    expect(OVERVIEW).not.toMatch(/acres\.toFixed|60\.00|60\.0/);
+  });
+
+  it('shows the access ladder once without equating physical and legal access', () => {
+    for (const label of [
+      'Parcel / landlocked flag',
+      'Apparent physical access',
+      'Reported legal / easement access',
+      'Verified recorded legal access',
+    ]) expect(OVERVIEW).toContain(label);
+    expect(OVERVIEW).toMatch(/Physical evidence is not legal proof/);
+  });
+
+  it('makes listing context and unavailable Zillow engagement explicit', () => {
+    expect(OVERVIEW).toMatch(/Current listing \/ public marketing/);
+    expect(OVERVIEW).toMatch(/Zillow views/);
+    expect(OVERVIEW).toMatch(/Zillow saves/);
+    expect(OVERVIEW).toMatch(/Not collected \(never shown as zero\)/);
+    expect(OVERVIEW).toMatch(/Open listing &amp; photos/);
+    expect(OVERVIEW).toMatch(/interest signal, not proof of value/);
+  });
+
+  it('visually separates land basis from the pending whole-property value', () => {
+    expect(OVERVIEW).toMatch(/LAND-ONLY INDICATION/);
+    expect(OVERVIEW).toMatch(/WHOLE-PROPERTY VALUE/);
+    expect(OVERVIEW).toMatch(/Land-basis opening reference/);
+    expect(OVERVIEW).toMatch(/not completed whole-property offer recommendations/);
+    expect(OVERVIEW_CSS).toMatch(/\.awv2-overview-valuation \.primary b/);
+    expect(OVERVIEW_CSS).toMatch(/\.awv2-overview-valuation \.whole b/);
+  });
+
+  it('keeps score arithmetic and methodology secondary', () => {
+    expect(OVERVIEW).toMatch(/<details class="awv2-overview-details">/);
+    expect(OVERVIEW).toMatch(/<details class="awv2-overview-methodology">/);
+    expect(OVERVIEW).toMatch(/Positives/);
+    expect(OVERVIEW).toMatch(/Risks/);
+    expect(OVERVIEW).toMatch(/Could change/);
   });
 });

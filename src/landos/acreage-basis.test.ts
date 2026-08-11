@@ -6,6 +6,7 @@ import {
   materiallyDifferentAcres,
   pinOverlayAcresToGeometry,
 } from './acreage-basis.js';
+import { acreageFactFromBasis } from './deal-card-reconciliation.js';
 
 describe('pinOverlayAcresToGeometry (WS1 F1 regression — overlay acreage from geometry)', () => {
   it('recomputes a 100% zone against mapped geometry, not the persisted assessed acreage', () => {
@@ -176,5 +177,52 @@ describe('detectAcceptedOverwrite (operator-confirmation rule)', () => {
   });
   it('ignores immaterial drift', () => {
     expect(detectAcceptedOverwrite({ previouslyAccepted: 5.0, newGoverning: 5.02, reaccepted: false })).toBeNull();
+  });
+});
+
+// ── 60 vs 60.0 vs 60.00 is agreement, never a disagreement ───────────────────
+//
+// Four sources stating the same 60 acres used to render as four acreage rows
+// that read like a dispute. Agreement must SIMPLIFY the resolved output: one
+// displayed value, the corroborating sources listed underneath as provenance.
+
+describe('acreage fact-once (60 AC shown once)', () => {
+  const agreeingBasis = buildAcreageBasis({
+    operatorAccepted: { value: Number('60.00'), source: 'Operator accepted' },
+    assessed: { value: 60, source: 'Grand Traverse County assessor roll' },
+    gisGeometry: { value: Number('60.0'), source: 'Grand Traverse County GIS geometry' },
+    deeded: { value: 60.002, source: 'Recorded deed recital' },
+  });
+
+  it('does not call formatting variants a dispute', () => {
+    expect(agreeingBasis.disputed).toBe(false);
+    expect(agreeingBasis.tylerDecisionRequired).toBe(false);
+  });
+
+  it('shows one acreage value with the agreeing sources kept as provenance', () => {
+    const fact = acreageFactFromBasis(agreeingBasis)!;
+    expect(fact.primary).toBe('60 ac');
+    expect(fact.status).toBe('reconciled');
+    // The whole point: no second row that looks like a competing measurement.
+    expect(fact.alternates).toEqual([]);
+    expect(fact.agreeingSources).toEqual([
+      'Operator accepted',
+      'Recorded deed recital',
+      'Grand Traverse County assessor roll',
+      'Grand Traverse County GIS geometry',
+    ]);
+    // Nothing is lost: every observation is still available underneath.
+    expect(fact.provenance).toHaveLength(4);
+    expect(fact.conflictNote).toBeNull();
+  });
+
+  it('still surfaces a GENUINELY different measurement as an alternate', () => {
+    const fact = acreageFactFromBasis(buildAcreageBasis({
+      assessed: { value: 60, source: 'County assessor roll' },
+      gisGeometry: { value: 52.4, source: 'County GIS geometry' },
+    }))!;
+    expect(fact.primary).toBe('52.4 ac');
+    expect(fact.alternates.map((a) => a.value)).toEqual(['60 ac']);
+    expect(fact.conflict).toBe(true);
   });
 });

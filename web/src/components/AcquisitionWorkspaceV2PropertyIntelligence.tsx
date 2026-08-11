@@ -12,6 +12,8 @@ import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide
 import { dashboardToken } from '@/lib/api';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
 import { LandUsePanel, type LandUseView } from './AcquisitionWorkspaceV2LandUse';
+import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
+import '../styles/workspace-v2-property-intelligence.css';
 
 // ── View types (structural; every field optional and defensive) ────────
 
@@ -41,6 +43,7 @@ export interface PiSnapshot {
   dueDiligence?: PiDdItem[];
   evidence?: PiEvidenceItem[];
   comps?: PiComps;
+  researchStatus?: ResearchStatusView;
   missingInformation?: unknown[];
   subjectParcelUrl?: string | null;
 }
@@ -63,6 +66,14 @@ export interface MarketContextView {
   county: MarketContextRecordView; zip: MarketContextRecordView;
   subjectBand: MarketContextRecordView; fastestBand: MarketContextRecordView;
   interpretation: string;
+  read?: {
+    headline?: string | null; summary?: string | null; resolvedVia?: string | null;
+    exactSubjectBand?: boolean; note?: string | null;
+  } | null;
+  liquidity?: {
+    headline?: string | null; summary?: string | null; resolvedVia?: string | null;
+    competition?: number | null; note?: string | null;
+  } | null;
 }
 
 export interface SoilDetail { symbol?: string; name?: string; fields?: Record<string, string> }
@@ -102,6 +113,11 @@ export interface AccessPresentationView {
     operatorConclusion: string;
     outstanding: string[];
     conclusionWeight: string;
+    rungs?: Array<{
+      tier: 'parcel_flag' | 'apparent_physical' | 'reported_legal' | 'verified_legal';
+      statement: string; sourceLabel?: string; basis?: string; weight?: string;
+      sourceUrl?: string | null;
+    }>;
   };
 }
 export interface AccessEvidenceView {
@@ -133,6 +149,7 @@ export interface VisualBuyerNarrativeView {
 
 export interface ResearchStatusView {
   delivered: number; total: number; headline: string;
+  questionsResolved?: number; questionsTotal?: number; unresolvedQuestions?: number;
   areas: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
   incomplete: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
 }
@@ -156,6 +173,25 @@ export interface ExactAddressListingSourceView {
   drivewayStatements: string[];
   accessLanguageNote: string;
   provenanceNote: string;
+  originalListPrice?: number | null;
+  listDate?: string | null;
+  daysOnMarket?: number | null;
+  views?: number | null;
+  saves?: number | null;
+  zillowViews?: number | null;
+  zillowSaves?: number | null;
+  engagementRetrievedAt?: string | null;
+  priceHistory?: Array<{ date?: string | null; price?: number | null; event?: string | null }>;
+  photos?: string[];
+  photoUrls?: string[];
+  primaryPhotoUrl?: string | null;
+  beds?: number | null;
+  baths?: number | null;
+  yearBuilt?: number | null;
+  brokerage?: string | null;
+  mls?: string | null;
+  description?: string | null;
+  features?: string[];
 }
 export interface ExactAddressListingsView {
   status: string;
@@ -234,7 +270,7 @@ function Kv({ k, v, empty }: { k: string; v: string | null | undefined; empty?: 
   return (
     <>
       <span class="k">{k}</span>
-      {v ? <span class="v">{v}</span> : <span class="v empty">{empty || 'Not retained'}</span>}
+      {v ? <span class="v">{v}</span> : <span class="v empty">{empty || 'Not supplied by retained sources'}</span>}
     </>
   );
 }
@@ -271,7 +307,7 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, exactAddressListings }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, exactAddressListings, researchStatus: researchStatusProp, valuationSummary }: {
   snap: PiSnapshot;
   market: MarketContextView | null;
   soils: SoilDetail[] | null;
@@ -285,6 +321,8 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   officialParcelGis?: OfficialParcelGisView | null;
   landUse?: LandUseView | null;
   exactAddressListings?: ExactAddressListingsView | null;
+  researchStatus?: ResearchStatusView | null;
+  valuationSummary?: CvSummary | null;
 }) {
   // Same-page evidence viewer: index into the ordered gallery, or null.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -303,9 +341,24 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   const fact = (key: string): PiFact | undefined => facts.find((f) => f.key === key);
   // Retained LandPortal sidebar values (discovery-stage source, verbatim).
   const sidebar = (name: string): string | null => fact(`lp_sidebar_${name}`)?.value || null;
+  const firstFact = (...keys: string[]): string | null => {
+    for (const key of keys) {
+      const retained = fact(key)?.value;
+      if (retained) return retained;
+    }
+    return null;
+  };
   const waterFeature = sidebar('water_feature_type');
   const zoningCode = sidebar('zoning_code');
   const femaDescription = sidebar('fema_flood_zone_description');
+  const landPortalTerrain = firstFact('lp_sidebar_terrain', 'lp_sidebar_terrain_type', 'lp_sidebar_topography');
+  const landPortalSlope = firstFact('lp_sidebar_slope', 'lp_sidebar_average_slope', 'lp_sidebar_slope_description');
+  const landPortalBuildability = firstFact('lp_sidebar_buildability', 'lp_sidebar_buildable_area', 'lp_sidebar_buildability_pct');
+  const landPortalWetlands = firstFact('lp_sidebar_wetlands', 'lp_sidebar_wetlands_pct', 'lp_sidebar_wetland_type');
+  const landPortalSoils = firstFact('lp_sidebar_soils', 'lp_sidebar_soil_type', 'lp_sidebar_soil_description');
+  const landPortalFrontage = firstFact('lp_sidebar_frontage', 'lp_sidebar_road_frontage');
+  const landPortalImprovement = firstFact('lp_sidebar_improvements', 'lp_sidebar_improvement_type', 'lp_sidebar_building_sqft');
+  const landPortalParcelContext = firstFact('lp_sidebar_parcel_context', 'lp_sidebar_land_use', 'lp_sidebar_property_type');
   const lastSalePrice = sidebar('last_sale_price');
   const lastSaleDate = sidebar('last_sale_date');
   const bookNumber = sidebar('book_number');
@@ -320,8 +373,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     { label: 'Operator input', fact: fact('discovery_operator_input_acres') },
     { label: 'LandPortal parcel panel', fact: fact('discovery_marketplace_parcel_panel_acres') },
   ].filter((e) => e.fact);
-  const acreNumbers = [...new Set(acreageFacts.map((e) => num(e.fact?.value ?? '', /([\d.]+)/)).filter(Boolean))];
-  const acreConflict = acreNumbers.length > 1;
+  const acreNumbers = acreageFacts
+    .map((e) => Number(num(e.fact?.value ?? '', /([\d.]+)/)))
+    .filter((value) => Number.isFinite(value));
+  const acreConflict = acreNumbers.some((value) => Math.abs(value - acreNumbers[0]) > 0.01);
 
   const dd = new Map<string, PiDdItem>((snap.dueDiligence || []).map((x) => [x.key, x]));
   const access = dd.get('access');
@@ -333,17 +388,11 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   const septic = dd.get('septic');
 
   const frontageFt = num(access?.headline, /([\d.]+)\s*ft frontage/);
-  const landlocked = num(access?.headline, /landlocked flag:\s*(\w+)/);
   const slopePct = num(terrain?.headline, /([\d.]+)%\s*average slope/);
   const buildPct = num(terrain?.headline, /([\d.]+)%\s*buildability/);
   const wetPct = num(wetlands?.headline, /([\d.]+)%/);
   const floodPct = num(flood?.headline, /(\d+(?:\.\d+)?)/);
   const acres = id.acres ?? null;
-  const approxAcres = (pct: string | null): string | null => {
-    if (!pct || acres == null) return null;
-    return (acres * Number(pct) / 100).toFixed(2);
-  };
-  const usableAcres = buildPct && acres != null ? (acres * Number(buildPct) / 100).toFixed(1) : null;
 
   const evidence = (snap.evidence || []).filter((e) => e.viewUrl);
   const byId = new Map(evidence.map((e) => [e.id, e]));
@@ -356,12 +405,37 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   const has3d = hasDefault3d || byId.has('inspection-front_side_3d') || byId.has('inspection-rear_side_3d');
   const hasBuildabilityCapture = byId.has('inspection-buildability');
   const hasStreetViewCapture = byId.has('inspection-street_view');
+  const supportedStreetObservations = hasStreetViewCapture
+    ? (streetView?.observations ?? []).filter((observation) => !!observation.evidence?.trim() && !/unavailable/i.test(observation.label))
+    : [];
 
   const comps = snap.comps || {};
-  const activeComps = comps.active || [];
-  const asking = comps.askingReferences || [];
-  const soldComps = comps.sold || [];
-  const finalCompCount = soldComps.length + activeComps.length + asking.length;
+  const researchStatus = researchStatusProp ?? snap.researchStatus;
+  const accessRungs = accessView?.evidence?.rungs ?? ([
+    ['parcel_flag', 'LandPortal parcel flag'],
+    ['apparent_physical', 'Apparent physical route'],
+    ['reported_legal', 'Reported legal / easement access'],
+    ['verified_legal', 'Verified recorded legal access'],
+  ] as const).map(([tier, label]) => {
+    const item = accessView?.evidence?.byTier?.[tier]?.[0];
+    return {
+      tier,
+      statement: item?.statement || `${label}: no evidence retained.`,
+      sourceLabel: item?.sourceLabel,
+      basis: item?.basis,
+      weight: item?.weight,
+      sourceUrl: item?.sourceUrl,
+    };
+  });
+  const listingSources = exactAddressListings?.sources ?? [];
+  const primaryListing = listingSources.find((source) => source.family.toLowerCase().includes('zillow')) ?? listingSources[0] ?? null;
+  const listingPhotos = primaryListing
+    ? [...new Set([primaryListing.primaryPhotoUrl, ...(primaryListing.photos ?? []), ...(primaryListing.photoUrls ?? [])].filter((url): url is string => !!url))]
+    : [];
+  const listingViews = primaryListing?.views ?? primaryListing?.zillowViews ?? null;
+  const listingSaves = primaryListing?.saves ?? primaryListing?.zillowSaves ?? null;
+  const [listingPhotoIndex, setListingPhotoIndex] = useState(0);
+  const canonicalAcres = acres == null ? null : `${Number(acres).toLocaleString('en-US', { maximumFractionDigits: 2 })} AC`;
 
   // Missing diligence, grouped once, honestly.
   const missing: string[] = [];
@@ -373,81 +447,135 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     const label = missingLabel(entry);
     if (label && !missing.includes(label)) missing.push(label);
   }
-  if (!byId.has('inspection-comps_map')) missing.push('Show on Map comparable capture');
   if (!waterFeature) missing.push('Water features');
-  missing.push('Building information', 'Wider-context aerial');
+  if (!primaryListing?.buildingSqft && !landPortalImprovement) missing.push('Building information');
+  if (!byId.has('inspection-parcel_context')) missing.push('Wider-context aerial');
   if (!hasStreetViewCapture && streetView?.available !== false) missing.push('Street View capture');
-  if (!hasBuildabilityCapture) missing.push('Dedicated buildability capture');
+  if (!hasBuildabilityCapture && !landPortalBuildability) missing.push('Dedicated buildability capture');
 
   return (
     <>
       {/* ── Subject summary ── */}
-      <div class="awv2-grid cols-3-2">
-        <section class="awv2-panel">
-          <div class="awv2-panel-title">Subject summary</div>
+      <div class="awv2-pi-questions">
+        <section class="awv2-panel awv2-pi-subject" id="pi-subject">
+          <div class="awv2-panel-title">Subject</div>
           <div class="awv2-kv">
             <Kv k="Address" v={address} />
-            <Kv k="Owner" v={id.owner || null} />
+            <Kv k="Owner of record" v={id.owner || null} />
             <Kv k="APN" v={id.apn || null} />
-            <Kv k="LandPortal ID" v={id.lpPropertyId || null} />
+            <Kv k="Acreage" v={canonicalAcres} />
             <Kv k="County" v={id.county ? `${id.county} County` : null} />
+            <Kv k="Municipality / jurisdiction" v={id.city || null} empty="Not yet resolved" />
             <Kv k="State" v={id.state_ || null} />
             <Kv k="ZIP" v={zip} />
-            <Kv k="Working acreage" v={acres != null ? `${acres} ac (${id.acreageBasis || 'basis not stated'})` : null} />
           </div>
-          <div class="awv2-pi-note" style="margin-top:12px">
-            {acreageFacts.map((e) => (
-              <div>
-                <b>{num(e.fact?.value ?? '', /([\d.]+)/) ?? e.fact?.value} ac</b>
-                {' '}· {e.label}{e.fact?.source ? ` — ${e.fact.source}` : ''}
-              </div>
-            ))}
-            {acreConflict
-              ? <div style="margin-top:6px">Sources disagree ({acreNumbers.join(' vs ')} ac) within the same practical comp band; the working acreage above is the {id.acreageBasis || 'retained'} value.</div>
-              : <div style="margin-top:6px">All retained acreage sources agree.</div>}
-            {(id.conflicts || []).map((c) => <div>Conflict: {c}</div>)}
-          </div>
+          <details class="awv2-collapse awv2-pi-provenance">
+            <summary>Identity provenance</summary>
+            <div class="awv2-pi-note">
+              Acreage basis: {id.acreageBasis || 'not stated'} · {acreageFacts.length} retained source observation(s)
+              {acreConflict ? ' · a material conflict remains in source evidence' : ' · numerically equivalent observations reconciled'}.
+              {id.lpPropertyId ? ` LandPortal parcel ${id.lpPropertyId}.` : ''}
+            </div>
+            {(id.conflicts || []).map((c) => <div class="awv2-pi-note">Conflict: {c}</div>)}
+          </details>
+          {valuationSummary && <p class="awv2-pi-note">Canonical valuation state: {valuationSummary.acceptedCount} accepted comp{valuationSummary.acceptedCount === 1 ? '' : 's'} · {valuationSummary.status}.</p>}
         </section>
 
+        {/* Current listing / public property context from the existing exact-address lane. */}
+        {exactAddressListings ? (
+          <section class="awv2-panel awv2-listing-card" id="exact-address-listing-evidence">
+            <div class="awv2-panel-title">
+              Current listing / public property context
+              <span class="awv2-src-tag">Exact-address web discovery · {exactAddressListings.status}</span>
+            </div>
+            {primaryListing ? (
+              <div class="awv2-listing-layout">
+                {listingPhotos.length > 0 && (
+                  <div class="awv2-listing-photos">
+                    <img src={listingPhotos[listingPhotoIndex].startsWith('/api/') ? tok(listingPhotos[listingPhotoIndex]) : listingPhotos[listingPhotoIndex]} alt={`${primaryListing.sourceLabel} subject listing photo ${listingPhotoIndex + 1}`} />
+                    {listingPhotos.length > 1 && (
+                      <div class="awv2-listing-photo-controls">
+                        <button type="button" onClick={() => setListingPhotoIndex((listingPhotoIndex - 1 + listingPhotos.length) % listingPhotos.length)}>Previous</button>
+                        <span>{listingPhotoIndex + 1} / {listingPhotos.length}</span>
+                        <button type="button" onClick={() => setListingPhotoIndex((listingPhotoIndex + 1) % listingPhotos.length)}>Next</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div>
+                  <div class="awv2-listing-status">
+                    <strong>{primaryListing.listingStatus || 'Listing status not published'}</strong>
+                    {primaryListing.price != null && <span>{usd(primaryListing.price)}</span>}
+                  </div>
+                  <div class="awv2-listing-metrics">
+                    <div><span>Listing age</span><b>{primaryListing.daysOnMarket != null ? `${primaryListing.daysOnMarket} days` : primaryListing.listDate || 'Unavailable'}</b></div>
+                    <div><span>Zillow views</span><b>{primaryListing.family.toLowerCase().includes('zillow') && listingViews != null && listingViews > 0 ? listingViews.toLocaleString('en-US') : 'Not collected (never shown as zero)'}</b></div>
+                    <div><span>Zillow saves</span><b>{primaryListing.family.toLowerCase().includes('zillow') && listingSaves != null && listingSaves > 0 ? listingSaves.toLocaleString('en-US') : 'Not collected (never shown as zero)'}</b></div>
+                    <div><span>Original list price</span><b>{primaryListing.originalListPrice != null ? usd(primaryListing.originalListPrice) : 'Unavailable'}</b></div>
+                    <div><span>Price changes</span><b>{primaryListing.priceHistory?.length ? `${primaryListing.priceHistory.length} retained event(s)` : 'Unavailable'}</b></div>
+                  </div>
+                  <div class="awv2-listing-facts">
+                    {[primaryListing.propertyType,
+                      primaryListing.buildingSqft != null ? `${primaryListing.buildingSqft.toLocaleString('en-US')} sqft` : null,
+                      primaryListing.beds != null ? `${primaryListing.beds} beds` : null,
+                      primaryListing.baths != null ? `${primaryListing.baths} baths` : null,
+                      primaryListing.yearBuilt != null ? `Built ${primaryListing.yearBuilt}` : null,
+                      primaryListing.well === true ? 'Well' : null,
+                      primaryListing.septic === true ? 'Septic' : null,
+                      ...(primaryListing.utilities ?? [])].filter(Boolean).map((value) => <span>{value}</span>)}
+                  </div>
+                  {(primaryListing.brokerage || primaryListing.mls) && <div class="awv2-pi-note">{[primaryListing.brokerage, primaryListing.mls].filter(Boolean).join(' · ')}</div>}
+                  <a class="awv2-listing-link" href={primaryListing.sourceUrl} target="_blank" rel="noreferrer">Open {primaryListing.sourceLabel} listing</a>
+                  <div class="awv2-sv-basis">Engagement retrieved {primaryListing.engagementRetrievedAt || primaryListing.retrievedAt || exactAddressListings.retrievedAtIso || 'time unavailable'} · interest signal, not proof of value.</div>
+                </div>
+              </div>
+            ) : (
+              <div class="awv2-pi-note">{exactAddressListings.note || 'No property-specific listing page was retained.'}</div>
+            )}
+            <details class="awv2-collapse awv2-listing-details">
+              <summary>Listing details and source provenance</summary>
+              {exactAddressListings.subjectRead && <div class="awv2-pi-note" data-testid="ea-subject-read"><b>Resolved subject context:</b> {exactAddressListings.subjectRead.statement}</div>}
+              {listingSources.map((source) => (
+                <div class="awv2-pi-note" data-testid="ea-listing-source">
+                  <b>{source.sourceLabel}</b> · {source.provenanceNote} <a href={source.sourceUrl} target="_blank" rel="noreferrer">source</a>
+                  {source.accessLanguageNote && <div class="awv2-sv-basis">{source.accessLanguageNote}</div>}
+                  {source.description && <p>{source.description}</p>}
+                  {(source.features ?? []).length > 0 && <div>{source.features!.join(' · ')}</div>}
+                  {(source.priceHistory ?? []).length > 0 && <div>{source.priceHistory!.map((row) => [row.date, row.event, row.price != null ? usd(row.price) : null].filter(Boolean).join(' · ')).join(' | ')}</div>}
+                  {[...source.accessStatements, ...source.drivewayStatements].map((text) => <div class="awv2-sv-basis">Listing-reported access wording: “{text}”</div>)}
+                </div>
+              ))}
+              <div class="awv2-pi-note">{exactAddressListings.disclaimer}</div>
+            </details>
+          </section>
+        ) : (
+          <section class="awv2-panel" id="exact-address-listing-evidence">
+            <div class="awv2-panel-title">Current listing / public property context</div>
+            <div class="awv2-pi-note">Exact-address discovery has not returned a retained public-property result yet.</div>
+          </section>
+        )}
+
         {/* ── Access & road frontage ── */}
-        <section class="awv2-panel">
+        <section class="awv2-panel" id="access-road-frontage">
           <div class="awv2-panel-title">Access &amp; road frontage</div>
           <div class="awv2-kv">
-            <Kv
-              k="Mapped road abutment"
-              v={accessView?.established ? accessView.legalAccess : null}
-              empty="Not established from mapped frontage"
-            />
-            <Kv k="Apparent entrance" v={accessView ? accessView.apparentEntrance : null} empty="Not confirmed from retained imagery" />
-            <Kv k="Road frontage" v={frontageFt ? `${Math.round(Number(frontageFt))} ft (LandPortal parcel panel)` : null} />
-            <Kv k="Landlocked" v={landlocked ? landlocked.toUpperCase() : null} />
+            <Kv k="Road frontage" v={landPortalFrontage || (frontageFt ? `${Math.round(Number(frontageFt))} ft` : null)} empty="Not supplied by LandPortal" />
             <Kv k="Road" v={roadName ? `${roadName} (situs road)` : null} />
-            <Kv k="Road relationship" v={byId.has('inspection-road_frontage_aerial') ? 'Frontage visible on the road-frontage aerial below' : null} empty="No frontage capture" />
           </div>
-          {access?.detail && <div class="awv2-pi-note">{access.detail}</div>}
-          {accessView?.apparentEntranceObservation && (
-            <div class="awv2-pi-note"><b>Retained imagery basis:</b> {accessView.apparentEntranceObservation}</div>
-          )}
-          <div class="awv2-pi-note"><b>Four-part access evidence ladder</b></div>
-          {([
-            ['parcel_flag', 'LandPortal parcel flag'],
-            ['apparent_physical', 'Apparent physical access'],
-            ['reported_legal', 'Reported legal/easement access'],
-            ['verified_legal', 'Verified recorded legal access'],
-          ] as const).map(([tier, label]) => {
-            const tierItems = accessView?.evidence?.byTier?.[tier] ?? [];
-            return (
-              <div class="awv2-pi-note">
-                <b>{label}:</b>{' '}
-                {tierItems.length
-                  ? tierItems.map((item) => (
-                      <span>{item.statement} — {item.sourceLabel} ({item.basis.replace(/_/g, ' ')}, {item.weight}){item.sourceUrl ? <> · <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer">source</a></> : null}</span>
-                    ))
-                  : 'No evidence retained in this tier.'}
+          <div class="awv2-access-ladder" aria-label="Four-part access evidence ladder">
+            {accessRungs.map((rung, index) => (
+              <div class="awv2-access-rung">
+                <span class="step">{index + 1}</span>
+                <div><b>{({ parcel_flag: 'LandPortal parcel flag', apparent_physical: 'Apparent physical route', reported_legal: 'Reported legal / easement access', verified_legal: 'Verified recorded legal access' } as const)[rung.tier]}</b><p>{rung.statement}</p></div>
+                <span class="weight">{rung.weight || 'Unresolved'}</span>
               </div>
-            );
-          })}
+            ))}
+          </div>
           {accessView?.evidence?.operatorConclusion && <div class="awv2-pi-note"><b>Reconciled operator read:</b> {accessView.evidence.operatorConclusion}</div>}
+          <details class="awv2-collapse awv2-access-details">
+            <summary>Access sources and unresolved diligence</summary>
+            {accessRungs.map((rung) => <div class="awv2-pi-note">{rung.sourceLabel || 'No source retained'}{rung.basis ? ` · ${rung.basis.replace(/_/g, ' ')}` : ''}{rung.sourceUrl ? <> · <a href={rung.sourceUrl} target="_blank" rel="noreferrer">source</a></> : null}</div>)}
+          </details>
           {(access?.missing || []).length > 0 && (
             missingDiligence
               ? <div class="awv2-pi-note">Survey-grade frontage and easement review are tracked under Missing diligence below.</div>
@@ -461,11 +589,12 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <section class="awv2-panel">
           <div class="awv2-panel-title">Terrain &amp; usable area</div>
           <div class="awv2-kv">
-            <Kv k="Average slope" v={slopePct ? `${slopePct}%` : null} />
-            <Kv k="Slope bands" v={null} empty="Band breakdown not retained" />
-            <Kv k="Buildability" v={buildPct ? `${buildPct}% shown${usableAcres ? ` (≈${usableAcres} of ${acres} ac)` : ''}` : null} />
+            <Kv k="Average slope" v={landPortalSlope || (slopePct ? `${slopePct}%` : null)} />
+            <Kv k="Buildability" v={landPortalBuildability || (buildPct ? `${buildPct}% shown` : null)} />
             <Kv k="Buildability view" v={hasBuildabilityCapture ? 'Dedicated yellow-overlay capture retained (gallery below)' : null} empty="No dedicated buildability capture" />
-            <Kv k="Terrain" v={terrain?.detail || null} />
+            <Kv k="Terrain" v={landPortalTerrain || terrain?.detail || null} />
+            <Kv k="Improvement context" v={landPortalImprovement || (exactAddressListings?.subjectRead?.improved ? exactAddressListings.subjectRead.statement : null)} empty="No improvement fact supplied" />
+            <Kv k="Parcel context" v={landPortalParcelContext} empty="No parcel-context fact supplied" />
             <Kv
               k="3D evidence"
               v={has3d
@@ -481,9 +610,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <section class="awv2-panel">
           <div class="awv2-panel-title">Environmental &amp; soils</div>
           <div class="awv2-kv">
-            <Kv k="Wetlands" v={wetPct ? `${wetPct}%${approxAcres(wetPct) ? ` (≈${approxAcres(wetPct)} ac)` : ''} — parcel panel` : null} />
-            <Kv k="FEMA flood" v={floodPct ? `${floodPct}%${approxAcres(floodPct) ? ` (≈${approxAcres(floodPct)} ac)` : ''}${femaDescription ? '' : ' — zone not retained'}` : null} />
-            <Kv k="Water feature" v={waterFeature ? `${waterFeature} — LandPortal sidebar` : null} empty="Not retained" />
+            <Kv k="Wetlands" v={landPortalWetlands || (wetPct ? `${wetPct}% — parcel panel` : null)} />
+            <Kv k="FEMA flood" v={femaDescription || (floodPct ? `${floodPct}% — parcel panel` : null)} />
+            <Kv k="Soils" v={landPortalSoils} empty="See retained soil overlay below" />
+            <Kv k="Water feature" v={waterFeature ? `${waterFeature} — LandPortal sidebar` : null} empty="Not supplied by LandPortal" />
             <Kv k="Contours" v={byId.has('inspection-contour_terrain_view') ? 'Contour view captured (gallery below)' : null} empty="No contour capture" />
           </div>
           {femaDescription && (
@@ -492,7 +622,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           {(soils && soils.length > 0) || soilsSeptic ? (
             <div class="awv2-pi-note">Mapped soil units and the preliminary septic outlook are detailed under <b>Soils &amp; Preliminary Septic Outlook</b> below.</div>
           ) : (
-            <div class="awv2-pi-note">Soil unit details are not retained for this parcel yet.</div>
+            <div class="awv2-pi-note">The retained LandPortal evidence did not supply soil-unit details for this parcel.</div>
           )}
           {wetlands?.detail && <div class="awv2-pi-note">{wetlands.detail}</div>}
         </section>
@@ -515,6 +645,18 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <LandUsePanel dealId={dealId} initial={landUse ?? null} />
       )}
 
+      <section class="awv2-panel" id="utilities-septic">
+        <div class="awv2-panel-title">Utilities / septic</div>
+        <div class="awv2-pi-question-read">
+          <div><span>Utilities</span><b>{utilities?.headline || 'Not yet resolved'}</b></div>
+          <div><span>Septic</span><b>{soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required'}</b></div>
+          <div><span>Listing-reported context</span><b>{primaryListing?.utilities?.length ? primaryListing.utilities.join(', ') : 'No utility detail retained from listing'}</b></div>
+        </div>
+        {(utilities?.detail || septic?.detail) && (
+          <details class="awv2-collapse"><summary>Supporting utility and septic evidence</summary><div class="awv2-pi-note">{[utilities?.detail, septic?.detail].filter(Boolean).join(' ')}</div></details>
+        )}
+      </section>
+
       {/* ── Soils & Preliminary Septic Outlook ── */}
       <section class="awv2-panel" id="soils-septic">
         <div class="awv2-panel-title">
@@ -532,21 +674,21 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
                   <div class="h">{[u.symbol, u.name].filter(Boolean).join(' · ')}</div>
                   <div class="rows">
                     <span class="k">Slope</span>
-                    {u.slopeRange ? <span class="v">{u.slopeRange}</span> : <span class="v empty">Not retained</span>}
+                    {u.slopeRange ? <span class="v">{u.slopeRange}</span> : <span class="v empty">Not supplied</span>}
                     <span class="k">Drainage</span>
-                    {u.drainageClass ? <span class="v">{u.drainageClass}</span> : <span class="v empty">Not retained</span>}
+                    {u.drainageClass ? <span class="v">{u.drainageClass}</span> : <span class="v empty">Not supplied</span>}
                     <span class="k">Hydrologic group</span>
-                    {u.hydrologicGroup ? <span class="v">{u.hydrologicGroup}</span> : <span class="v empty">Not retained</span>}
+                    {u.hydrologicGroup ? <span class="v">{u.hydrologicGroup}</span> : <span class="v empty">Not supplied</span>}
                     <span class="k">Seasonal water table</span>
-                    {u.waterTableDepthCm != null ? <span class="v">≈{Math.round(u.waterTableDepthCm / 2.54)} in ({u.waterTableDepthCm} cm)</span> : <span class="v empty">Not retained</span>}
+                    {u.waterTableDepthCm != null ? <span class="v">≈{Math.round(u.waterTableDepthCm / 2.54)} in ({u.waterTableDepthCm} cm)</span> : <span class="v empty">Not supplied</span>}
                     <span class="k">Bedrock</span>
                     {u.bedrockDepthCm != null ? <span class="v">{u.bedrockDepthCm} cm</span> : <span class="v">None mapped in profile</span>}
                     <span class="k">Flooding / ponding</span>
-                    {u.floodingFrequency ? <span class="v">{u.floodingFrequency}{u.pondingFrequency ? ` / ${u.pondingFrequency}` : ''}</span> : <span class="v empty">Not retained</span>}
+                    {u.floodingFrequency ? <span class="v">{u.floodingFrequency}{u.pondingFrequency ? ` / ${u.pondingFrequency}` : ''}</span> : <span class="v empty">Not supplied</span>}
                     <span class="k">Septic field rating</span>
                     {u.septicRating ? <span class="v">{u.septicRating}{u.limitationReasons?.length ? ` — ${u.limitationReasons.join('; ')}` : ''}</span> : <span class="v empty">No official rating retained</span>}
                     <span class="k">Parcel share</span>
-                    {u.parcelSharePct != null ? <span class="v">{u.parcelSharePct}%</span> : <span class="v empty">Not retained</span>}
+                    {u.parcelSharePct != null ? <span class="v">{u.parcelSharePct}%</span> : <span class="v empty">Not supplied</span>}
                   </div>
                 </div>
               ))}
@@ -571,11 +713,13 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       </section>
 
       {/* ── Zoning, sale history, and assessment (LandPortal sidebar) ── */}
+      <details class="awv2-collapse awv2-pi-diagnostics">
+        <summary>LandPortal source facts and provenance</summary>
       <div class="awv2-grid cols-3">
         <section class="awv2-panel">
           <div class="awv2-panel-title">Zoning &amp; land use <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
-            <Kv k="Zoning code" v={zoningCode} empty="Not retained" />
+            <Kv k="Zoning code" v={zoningCode} empty="Not supplied" />
             <Kv k="Official zoning" v={zoning && zoning.verdict !== 'unknown' && zoning.verdict !== 'unresolved' ? zoning.headline : null} empty="Not confirmed — official record pending" />
           </div>
           {zoningCode && (
@@ -589,10 +733,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <section class="awv2-panel">
           <div class="awv2-panel-title">Sale &amp; deed history <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
-            <Kv k="Last sale price" v={lastSalePrice ? `${lastSalePriceUsd ? `${lastSalePriceUsd} · ` : ''}displayed “${lastSalePrice}”` : null} empty="Not retained" />
-            <Kv k="Last sale date" v={lastSaleDate} empty="Not retained" />
-            <Kv k="Book number" v={bookNumber} empty="Not retained" />
-            <Kv k="Page number" v={pageNumber} empty="Not retained" />
+            <Kv k="Last sale price" v={lastSalePrice ? `${lastSalePriceUsd ? `${lastSalePriceUsd} · ` : ''}displayed “${lastSalePrice}”` : null} empty="Not supplied" />
+            <Kv k="Last sale date" v={lastSaleDate} empty="Not supplied" />
+            <Kv k="Book number" v={bookNumber} empty="Not supplied" />
+            <Kv k="Page number" v={pageNumber} empty="Not supplied" />
           </div>
           {(lastSalePrice || bookNumber) && (
             <div class="awv2-pi-note">
@@ -605,8 +749,8 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         <section class="awv2-panel">
           <div class="awv2-panel-title">Value &amp; assessment <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
-            <Kv k="Assessed value" v={assessedValue} empty="Not retained" />
-            <Kv k="LandPortal estimate" v={fact('lpEstimateTotal')?.value || null} empty="Not retained" />
+            <Kv k="Assessed value" v={assessedValue} empty="Not supplied" />
+            <Kv k="LandPortal estimate" v={fact('lpEstimateTotal')?.value || null} empty="Not supplied" />
           </div>
           {assessedValue && (
             <div class="awv2-pi-note">
@@ -616,6 +760,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           )}
         </section>
       </div>
+      </details>
 
       {/* ── Visual evidence ── */}
       <section class="awv2-panel">
@@ -649,88 +794,32 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         )}
       </section>
 
-      {/* ── Exact-address listing evidence ──
-             What the exact-address web lane actually retrieved, per provider.
-             Everything here is listing-reported: it never becomes an assessor,
-             government, or recorded-instrument fact. ── */}
-      {exactAddressListings && (
-        <section class="awv2-panel" id="exact-address-listing-evidence">
-          <div class="awv2-panel-title">
-            Exact-address listing evidence{' '}
-            <span class="awv2-src-tag">Web discovery · {exactAddressListings.status}</span>
-          </div>
-          {exactAddressListings.subjectRead && (
-            <div class="awv2-pi-note" data-testid="ea-subject-read">
-              <b>Subject read:</b> {exactAddressListings.subjectRead.statement}
-            </div>
-          )}
-          {exactAddressListings.sources.length > 0 ? (
-            <>
-              <div class="awv2-pi-note">
-                {exactAddressListings.sources.length} property-specific source(s) retrieved:{' '}
-                {[...new Set(exactAddressListings.sources.map((s) => s.sourceLabel))].join(', ')}.
-              </div>
-              {exactAddressListings.sources.map((s) => (
-                <div class="awv2-pi-note" data-testid="ea-listing-source">
-                  <b>{s.sourceLabel}</b>
-                  {s.listingStatus ? ` · ${s.listingStatus}${s.listingStatusDate ? ` (${s.listingStatusDate})` : ''}` : ''}
-                  {s.price != null ? ` · $${Math.round(s.price).toLocaleString('en-US')}` : ''}
-                  {s.propertyType ? ` · ${s.propertyType}` : ''}
-                  {s.buildingSqft != null ? ` · ${s.buildingSqft.toLocaleString('en-US')} sqft` : ''}
-                  {s.acres != null ? ` · ${s.acres} ac` : ''}
-                  {s.well === true ? ' · well' : ''}
-                  {s.septic === true ? ' · septic' : ''}
-                  {s.utilities.length ? ` · utilities: ${s.utilities.join(', ')}` : ''}
-                  <div class="awv2-sv-basis">{s.accessLanguageNote}</div>
-                  {s.accessStatements.map((text) => (
-                    <div class="awv2-sv-basis">“{text}”</div>
-                  ))}
-                  {s.drivewayStatements.map((text) => (
-                    <div class="awv2-sv-basis">Driveway wording: “{text}”</div>
-                  ))}
-                  <div class="awv2-sv-basis">
-                    {s.provenanceNote}{' '}
-                    <a href={s.sourceUrl} target="_blank" rel="noreferrer">source</a>
-                  </div>
-                </div>
-              ))}
-            </>
-          ) : (
-            <div class="awv2-pi-note">{exactAddressListings.note || 'No property-specific listing page was retained.'}</div>
-          )}
-          <div class="awv2-pi-note"><b>Confidence:</b> {exactAddressListings.disclaimer}</div>
-        </section>
-      )}
-
       {/* ── Street View observations ── */}
       <section class="awv2-panel">
         <div class="awv2-panel-title">
           Street View observations <span class="awv2-src-tag">G Maps Street View via LandPortal</span>
         </div>
-        {streetView ? (
-          streetView.available ? (
+        {streetView && streetView.available && hasStreetViewCapture ? (
             <>
               <div class="awv2-pi-note">
-                {hasStreetViewCapture
-                  ? 'Street View was scanned along the subject frontage; captures are in the gallery above.'
-                  : 'Street View observations were recorded; no capture is retained yet.'}
+                A usable Street View panorama was captured at the investigated public-road connection; the retained screenshot is in the gallery above.
               </div>
-              {streetView.observations.filter((o) => !/unavailable/i.test(o.label)).map((o) => (
+              {supportedStreetObservations.map((o) => (
                 <div class="awv2-pi-note">
                   <b>{o.label}:</b> {o.detail}
                   {o.evidence && <span class="awv2-sv-basis"> — {o.evidence}</span>}
                 </div>
               ))}
+              {supportedStreetObservations.length === 0 && <div class="awv2-pi-note">No panorama-backed textual observation is retained; inspect the screenshot directly.</div>}
             </>
-          ) : (
+        ) : streetView?.available === false ? (
             <div class="awv2-pi-note">
-              <b>Street View unavailable.</b>{' '}
+              <b>Usable Street View coverage does not exist for the investigated connection point.</b>{' '}
               {streetView.observations.find((o) => /unavailable/i.test(o.label))?.detail
-                || 'LandPortal Street View was not available for this subject frontage.'}
+                || 'No supported visual observation is stated.'}
             </div>
-          )
         ) : (
-          <div class="awv2-pi-note">No Street View pass has been recorded for this subject yet.</div>
+          <div class="awv2-pi-note">No real captured Street View panorama is retained, so no Street View observation is shown.</div>
         )}
       </section>
 
@@ -796,13 +885,21 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         </div>
         {market ? (
           <>
-            <div class="awv2-mkt-grid">
-              <MarketCard rec={market.county} />
-              <MarketCard rec={market.zip} />
-              <MarketCard rec={market.subjectBand} />
-              <MarketCard rec={market.fastestBand} />
+            <div class="awv2-market-read">
+              <strong>{market.read?.headline || market.read?.summary || market.interpretation || 'No concise market read is retained.'}</strong>
+              {market.read?.resolvedVia && <span>Resolved via {market.read.resolvedVia}</span>}
+              {market.read?.note && <span>{market.read.note}</span>}
+              <span>Competition: {market.liquidity?.competition != null ? market.liquidity.competition : 'unmeasured'}</span>
             </div>
-            {market.interpretation && <div class="awv2-pi-note"><b>Read:</b> {market.interpretation}</div>}
+            <details class="awv2-collapse awv2-pi-diagnostics">
+              <summary>Market records and methodology</summary>
+              <div class="awv2-mkt-grid">
+                <MarketCard rec={market.county} />
+                <MarketCard rec={market.zip} />
+                <MarketCard rec={market.subjectBand} />
+                <MarketCard rec={market.fastestBand} />
+              </div>
+            </details>
           </>
         ) : (
           <div class="awv2-pi-note">No LandOS Market Research context was returned for this lead.</div>
@@ -812,16 +909,15 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       {/* ── Comparable research summary ── */}
       <div class="awv2-grid cols-3-2">
         <section class="awv2-panel">
-          <div class="awv2-panel-title">Comparable research</div>
-          <div class="awv2-kv">
-            <Kv k="LandPortal rows seen" v={comps.landPortalRowsSeen != null ? String(comps.landPortalRowsSeen) : null} />
-            <Kv k="Collected" v={comps.totalCollected != null ? String(comps.totalCollected) : null} />
-            <Kv k="Duplicates merged" v={comps.duplicatesMerged != null ? String(comps.duplicatesMerged) : null} />
-            <Kv k="Final records" v={finalCompCount ? `${finalCompCount} (${soldComps.length} sold · ${activeComps.length} active · ${asking.length} asking)` : null} />
-            <Kv k="Research status" v={comps.conclusion || null} />
-          </div>
-          {comps.summaryLine && <div class="awv2-pi-note">{comps.summaryLine}</div>}
-          <div class="awv2-pi-note">Full comparable work continues in Comps &amp; Valuation.</div>
+          <div class="awv2-panel-title">Comparable evidence handoff</div>
+          <div class="awv2-pi-note">{comps.summaryLine || 'Current comparable state is maintained in Comps & Valuation.'}</div>
+          <div class="awv2-pi-note">Counts and valuation conclusions are not recomputed on this page; Comps &amp; Valuation is the canonical detailed surface.</div>
+          <details class="awv2-collapse awv2-pi-diagnostics">
+            <summary>Collection diagnostics</summary>
+            <div>LandPortal rows seen: {comps.landPortalRowsSeen ?? 'not reported'}</div>
+            <div>Total collected: {comps.totalCollected ?? 'not reported'}</div>
+            <div>Duplicates merged: {comps.duplicatesMerged ?? 'not reported'}</div>
+          </details>
         </section>
 
         <section class="awv2-panel">
@@ -843,6 +939,22 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           )}
         </section>
       </div>
+
+      {/* Evidence / unresolved diligence: delivery is not the same as resolution. */}
+      {researchStatus && (
+        <section class="awv2-panel awv2-research-status" id="research-status">
+          <div class="awv2-panel-title">Research status</div>
+          <div class="awv2-research-counts">
+            <div><span>Research lanes completed</span><b>{researchStatus.delivered} / {researchStatus.total}</b></div>
+            <div><span>Diligence questions resolved</span><b>{researchStatus.questionsResolved != null ? `${researchStatus.questionsResolved}${researchStatus.questionsTotal != null ? ` / ${researchStatus.questionsTotal}` : ''}` : 'Tracked separately'}</b></div>
+          </div>
+          <div class="awv2-pi-note">Completed research means the lane delivered its current evidence; it does not mean every diligence question is resolved.</div>
+          <details class="awv2-collapse awv2-pi-diagnostics">
+            <summary>Lane delivery details</summary>
+            {researchStatus.areas.map((area) => <div class="awv2-pi-note"><b>{area.label}:</b> {area.status}{area.reason ? ` · ${area.reason}` : ''}{area.nextAction ? ` · Next: ${area.nextAction}` : ''}</div>)}
+          </details>
+        </section>
+      )}
 
       {/* ── Missing diligence: reconciled operator checklist ── */}
       {missingDiligence ? (

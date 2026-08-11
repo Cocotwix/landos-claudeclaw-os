@@ -20,6 +20,16 @@
 // Pure + deterministic. No I/O, no secrets, no provider calls. Loose input shapes so
 // the engine is testable without constructing the full report view.
 
+import {
+  compSummaryLine,
+  numericallyEquivalent,
+  resolveValuationScope,
+  type SnapshotComps,
+  type SnapshotValuation,
+  type ResearchStatusView,
+  type ValuationScopeState,
+} from './property-intelligence-snapshot.js';
+
 // ── Source tiers (higher rank wins for the authoritative value) ──────────────
 export type SourceTier = 'official' | 'provider' | 'visual' | 'none';
 const TIER_RANK: Record<SourceTier, number> = { official: 3, provider: 2, visual: 1, none: 0 };
@@ -41,8 +51,15 @@ export interface ReconciledFactValue {
   primary: string | null;        // the authoritative value the whole card uses
   primarySource: string | null;
   primaryTier: SourceTier;
-  /** Other trusted/visual readings, kept for transparency, never silently dropped. */
+  /** Genuinely DIFFERENT readings, kept for transparency, never silently dropped.
+   *  A source that merely restates the primary value is not an alternate — it is
+   *  provenance, and lives in `agreeingSources`. */
   alternates: FactCandidate[];
+  /** Sources that stated the same value as the primary. Agreement between
+   *  sources simplifies the visible row; it never multiplies it. */
+  agreeingSources: string[];
+  /** Every source-level observation, primary included, for evidence/debugging. */
+  provenance: FactCandidate[];
   conflict: boolean;
   conflictNote: string | null;   // human explanation shown when trusted sources disagree
   status: 'reconciled' | 'needs_confirmation' | 'unknown';
@@ -100,6 +117,34 @@ function normalizedFloodMeaning(value: string): string {
   return v;
 }
 
+/**
+ * True when two candidates are the SAME reading written differently. 60, 60.0
+ * and 60.00 are one observation, not three, and "Zone X" vs "zone x." is one
+ * flood answer. Only a genuinely different value survives as an alternate row.
+ */
+function sameReading(a: FactCandidate, b: FactCandidate): boolean {
+  if (a.num != null && b.num != null) return numericallyEquivalent(a.num, b.num);
+  return normalizeCat(a.value) === normalizeCat(b.value);
+}
+
+/**
+ * Split the non-primary candidates into genuinely different readings and mere
+ * corroboration. This is the fact-once rule: agreement collapses into a source
+ * list underneath the single displayed value.
+ */
+function splitAgreement(primary: FactCandidate, others: FactCandidate[]): {
+  alternates: FactCandidate[];
+  agreeingSources: string[];
+} {
+  const alternates: FactCandidate[] = [];
+  const agreeing: string[] = [];
+  for (const candidate of others) {
+    if (sameReading(primary, candidate)) agreeing.push(candidate.source);
+    else alternates.push(candidate);
+  }
+  return { alternates, agreeingSources: [...new Set([primary.source, ...agreeing])] };
+}
+
 function reconcileFlood(candidates: FactCandidate[]): ReconciledFactValue {
   const result = reconcileField('flood', candidates);
   const trusted = candidates.filter((c) => c.tier === 'official' || c.tier === 'provider');
@@ -112,10 +157,13 @@ function reconcileFlood(candidates: FactCandidate[]): ReconciledFactValue {
 function reconcileWetlands(candidates: FactCandidate[]): ReconciledFactValue {
   const landPortal = candidates.find((c) => c.source === 'LandPortal parcel');
   if (!landPortal) return reconcileField('wetlands', candidates);
+  const split = splitAgreement(landPortal, candidates.filter((c) => c !== landPortal));
   return {
     field: 'wetlands', label: LABEL.wetlands,
     primary: landPortal.value, primarySource: landPortal.source, primaryTier: landPortal.tier,
-    alternates: candidates.filter((c) => c !== landPortal),
+    alternates: split.alternates,
+    agreeingSources: split.agreeingSources,
+    provenance: candidates,
     conflict: false, conflictNote: null, status: 'reconciled',
   };
 }
@@ -129,14 +177,16 @@ function reconcileField(field: ReconciledFactField, candidatesIn: FactCandidate[
   const candidates = candidatesIn.filter((c) => c && c.value != null && String(c.value).trim() !== '');
   const base: ReconciledFactValue = {
     field, label: LABEL[field], primary: null, primarySource: null, primaryTier: 'none',
-    alternates: [], conflict: false, conflictNote: null, status: 'unknown',
+    alternates: [], agreeingSources: [], provenance: [], conflict: false, conflictNote: null, status: 'unknown',
   };
   if (candidates.length === 0) return base;
 
   // Authoritative = highest tier; ties broken by input order (first wins).
   const sorted = [...candidates].sort((a, b) => TIER_RANK[b.tier] - TIER_RANK[a.tier]);
   const primary = sorted[0];
-  const alternates = sorted.slice(1);
+  // Fact-once: a source that restates the primary value corroborates it and is
+  // recorded as provenance. Only a genuinely different reading is an alternate.
+  const { alternates, agreeingSources } = splitAgreement(primary, sorted.slice(1));
 
   // Conflict only counts among TRUSTED sources (official/provider). A visual
   // reading that differs is expected signal, not a data conflict — it is labeled,
@@ -168,6 +218,8 @@ function reconcileField(field: ReconciledFactField, candidatesIn: FactCandidate[
     primarySource: primary.source,
     primaryTier: primary.tier,
     alternates,
+    agreeingSources,
+    provenance: candidates,
     conflict,
     conflictNote,
     status: primary.tier === 'official' || primary.tier === 'provider' ? 'reconciled' : 'needs_confirmation',
@@ -276,9 +328,16 @@ export function acreageFactFromBasis(basis: AcreageReconciliation | null | undef
   const toCandidate = (e: { value: number | null; source: string | null }): FactCandidate => ({
     value: `${e.value} ac`, num: e.value, source: e.source ?? 'Parcel record', tier: 'official',
   });
-  const alternates: FactCandidate[] = basis.entries
+  const others = basis.entries
     .filter((e) => e !== primaryEntry && e.value != null && (e.kind === 'assessed' || e.kind === 'gis_geometry' || e.kind === 'operator_accepted' || e.kind === 'deeded' || e.kind === 'surveyed'))
     .map(toCandidate);
+  const primaryCandidate = toCandidate(primaryEntry);
+  // Fact-once. The assessor roll, the GIS polygon, the operator-accepted value
+  // and a deeded recital routinely state the SAME acreage with different
+  // trailing zeros. Rendering each as its own row is how "60 AC" became four
+  // rows of 60 / 60.0 / 60.00 that read like a disagreement. Agreement
+  // collapses into a source list; only a genuinely different size survives.
+  const { alternates, agreeingSources } = splitAgreement(primaryCandidate, others);
   return {
     field: 'acreage',
     label: 'Acreage',
@@ -286,6 +345,8 @@ export function acreageFactFromBasis(basis: AcreageReconciliation | null | undef
     primarySource: primaryEntry.source ?? 'Parcel record',
     primaryTier: 'official',
     alternates,
+    agreeingSources,
+    provenance: [primaryCandidate, ...others],
     conflict: basis.disputed,
     conflictNote: basis.disputed ? (basis.explanation || basis.decision) : null,
     status: basis.disputed ? 'needs_confirmation' : 'reconciled',
@@ -838,5 +899,347 @@ export function selectBestComps(subjectAcres: number | null, candidates: CompCan
       contextSampleCount: contextCandidates.length,
       duplicatesRemoved: deduped.removed,
     },
+  };
+}
+
+// ── ONE canonical current state ──────────────────────────────────────────────
+//
+// Overview, Property Intelligence and Comps & Valuation each used to derive
+// their own comp counts, valuation verdict, blockers and missing-information
+// list from whatever record was nearest to hand. That is how one section could
+// show accepted vacant-land sales while another said "no usable comp survived"
+// and a third said "another sale is still required". This record is the single
+// derivation: every surface reads THESE counts, THIS valuation status and
+// THESE blockers, or it is wrong.
+//
+// The rule for stale text is narrow and evidence-driven: a historical statement
+// is superseded only when the CURRENT accepted records directly contradict it.
+// Genuine uncertainty is never deleted, and a superseded statement is retained
+// in `supersededStatements` so nothing disappears silently.
+
+/** The one comp tally. Structurally compatible with `CanonicalCompCounts`. */
+export interface CanonicalCompState {
+  /** Accepted closed sales in the working set. */
+  sold: number;
+  /** Active competitors retained. */
+  active: number;
+  /** Priced rows whose publisher never stated whether they closed. */
+  asking: number;
+  /** Rows collected before selection. */
+  totalCollected: number;
+  /** One physical property = one comp; how many duplicates were merged. */
+  duplicatesMerged: number;
+  /** Marketplaces that corroborated at least one retained comp. */
+  sources: string[];
+  /** True when no selected sale carries an independently verified closed price. */
+  soldAllSourceStated: boolean;
+  /** The single sentence every page prints about the working set. */
+  summaryLine: string;
+  /** Which of the three conclusions this evidence supports. */
+  conclusion: 'sold_supported' | 'asking_indication' | 'not_priceable';
+}
+
+export interface CanonicalValuationState {
+  status: 'sold_supported' | 'asking_indication' | 'not_priceable';
+  priceable: boolean;
+  basis: string;
+  /** Land-basis-only vs completed whole-property. The UI labels from this. */
+  scope: ValuationScopeState;
+  /** What blocks a supported value right now. Empty when priceable. */
+  blockers: string[];
+  nextActionToPrice: string | null;
+}
+
+export interface CanonicalOwnerSellerState {
+  ownerOfRecord: string | null;
+  ownerSource: string | null;
+  ownerVerified: boolean;
+  sellerName: string | null;
+  /** False whenever no seller intake happened. Never inferred from the owner. */
+  sellerCollected: boolean;
+  /** What the Seller field prints. "Not collected" is a valid, correct state. */
+  sellerLabel: string;
+  distinctionNote: string;
+}
+
+export interface CanonicalScoreSummary {
+  headline: string;
+  positives: string[];
+  negatives: string[];
+  unresolved: string[];
+}
+
+export interface CanonicalDealState {
+  comps: CanonicalCompState;
+  valuation: CanonicalValuationState;
+  ownerSeller: CanonicalOwnerSellerState;
+  research: {
+    lanesHeadline: string;
+    questionsHeadline: string;
+    summaryLine: string;
+    openQuestions: Array<{ label: string; reason: string | null; nextAction: string | null }>;
+  } | null;
+  scoreSummary: CanonicalScoreSummary | null;
+  /** The blockers every page shows, in one order. */
+  blockers: string[];
+  /** The missing-information list every page shows, contradiction-free. */
+  missingInformation: string[];
+  /** The Overview decision line, derived from the state above and nothing else. */
+  decisionSummary: string;
+  nextActions: string[];
+  /** Statements the current records contradict. Retained, never displayed. */
+  supersededStatements: Array<{ statement: string; supersededBy: string }>;
+}
+
+interface SupersessionState {
+  comps: CanonicalCompState;
+  priceable: boolean;
+}
+
+/**
+ * Historical conclusions the current accepted records can contradict. Each one
+ * names the exact condition that supersedes it, so nothing is dropped on a
+ * guess and genuine uncertainty always survives.
+ */
+const SUPERSEDABLE_CONCLUSIONS: Array<{
+  pattern: RegExp;
+  supersededWhen: (state: SupersessionState) => boolean;
+  because: (state: SupersessionState) => string;
+}> = [
+  {
+    // "…survived", "…remain", "…retained", "…retrieved yet" are all the same
+    // historical claim: that the working set is empty.
+    pattern: /no usable comp(?:arable)?s?[^.]*(?:surviv|remain|retain|retriev)/i,
+    supersededWhen: (s) => s.comps.sold > 0,
+    because: (s) => `${s.comps.sold} accepted closed sale(s) are retained in the current working set.`,
+  },
+  {
+    // The provider-search wording: "No usable comps found after searching …".
+    pattern: /no usable comps? (?:found|available|were found)/i,
+    supersededWhen: (s) => s.comps.sold > 0,
+    because: (s) => `${s.comps.sold} accepted closed sale(s) are retained in the current working set.`,
+  },
+  {
+    pattern: /(?:another|one more|an additional)[^.]*sale[^.]*(?:still )?(?:required|needed)/i,
+    supersededWhen: (s) => s.comps.sold > 0,
+    because: (s) => `${s.comps.sold} accepted closed sale(s) are already retained.`,
+  },
+  {
+    pattern: /no (?:accepted |usable )?closed[^.]*sale/i,
+    supersededWhen: (s) => s.comps.sold > 0,
+    because: (s) => `${s.comps.sold} accepted closed sale(s) are retained.`,
+  },
+  {
+    pattern: /comps?[^.]*(?:are |is )?missing|no comparable evidence|comp (?:research|search) has not/i,
+    supersededWhen: (s) => s.comps.sold + s.comps.active + s.comps.asking > 0,
+    because: (s) => `${s.comps.sold + s.comps.active + s.comps.asking} comparable record(s) are retained.`,
+  },
+  {
+    pattern: /not priceable|no (?:supported |defensible )?valuation (?:exists|is available)/i,
+    supersededWhen: (s) => s.priceable,
+    because: () => 'The current valuation record is priceable.',
+  },
+];
+
+function dedupeText(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Drop only the statements the current records genuinely contradict, recording
+ * what was dropped and why. Everything else passes through untouched.
+ */
+export function supersedeStaleConclusions(
+  statements: Array<string | null | undefined>,
+  state: SupersessionState,
+): { kept: string[]; superseded: Array<{ statement: string; supersededBy: string }> } {
+  const kept: string[] = [];
+  const superseded: Array<{ statement: string; supersededBy: string }> = [];
+  for (const statement of dedupeText(statements)) {
+    const hit = SUPERSEDABLE_CONCLUSIONS.find(
+      (rule) => rule.pattern.test(statement) && rule.supersededWhen(state),
+    );
+    if (hit) superseded.push({ statement, supersededBy: hit.because(state) });
+    else kept.push(statement);
+  }
+  return { kept, superseded };
+}
+
+type CanonicalCompInput = Pick<
+  SnapshotComps,
+  'sold' | 'active' | 'askingReferences' | 'totalCollected' | 'duplicatesMerged'
+>;
+
+/** The one comp tally, derived from the current accepted comp record. */
+export function canonicalCompState(comps: CanonicalCompInput): CanonicalCompState {
+  const sold = comps.sold ?? [];
+  const active = comps.active ?? [];
+  const asking = comps.askingReferences ?? [];
+  const rows = [...sold, ...active, ...asking];
+  // One physical property = one comp, so a marketplace that corroborated a row
+  // is a SOURCE on that row, never a second comp.
+  const sources = [...new Set(rows
+    .flatMap((row) => [row.source, ...(row.providerAttributions ?? [])])
+    .map((value) => (value ?? '').trim())
+    .filter(Boolean))];
+  const totalCollected = comps.totalCollected ?? rows.length;
+  const duplicatesMerged = comps.duplicatesMerged ?? 0;
+  return {
+    sold: sold.length,
+    active: active.length,
+    asking: asking.length,
+    totalCollected,
+    duplicatesMerged,
+    sources,
+    soldAllSourceStated: sold.length > 0 && sold.every((row) => /source[- ]stated|unverified/i.test(row.status ?? '')),
+    summaryLine: compSummaryLine({
+      sold: sold.length,
+      active: active.length,
+      asking: asking.length,
+      totalCollected,
+      duplicatesMerged,
+    }),
+    conclusion: sold.length > 0
+      ? 'sold_supported'
+      : (asking.length > 0 || active.length > 0) ? 'asking_indication' : 'not_priceable',
+  };
+}
+
+/**
+ * Build the one current state every page reads.
+ *
+ * Every derived field comes from the accepted current records passed in. No
+ * caller may recompute a comp count, a valuation verdict, a blocker list or a
+ * decision line beside this one — that second derivation is exactly what let
+ * three pages disagree about the same evidence.
+ */
+export function buildCanonicalDealState(input: {
+  comps: CanonicalCompInput;
+  valuation: Pick<SnapshotValuation, 'priceable' | 'basis' | 'notPriceableReason' | 'nextActionToPrice' | 'materialGaps'>;
+  subject: {
+    /** True when the subject carries material improvements (9490 does). */
+    improved: boolean;
+    improvementBasis?: string | null;
+    /** True only when improvements were separately valued AND reconciled. */
+    improvementsValued?: boolean;
+  };
+  ownerSeller: {
+    ownerOfRecord?: string | null;
+    ownerSource?: string | null;
+    ownerVerified?: boolean;
+    sellerName?: string | null;
+    /** True only when seller intake actually happened. */
+    sellerIntakeCollected?: boolean;
+  };
+  research?: ResearchStatusView | null;
+  scoreSummary?: CanonicalScoreSummary | null;
+  /** Historical blockers/gaps from the stored record, reconciled here. */
+  rawBlockers?: Array<string | null | undefined>;
+  rawMissingInformation?: Array<string | null | undefined>;
+  extraNextActions?: Array<string | null | undefined>;
+}): CanonicalDealState {
+  const comps = canonicalCompState(input.comps);
+  const priceable = input.valuation.priceable === true;
+  const scope = resolveValuationScope({
+    subjectImproved: input.subject.improved,
+    improvementBasis: input.subject.improvementBasis ?? null,
+    improvementsValued: input.subject.improvementsValued === true,
+    landValuePriceable: priceable,
+  });
+
+  const supersessionState: SupersessionState = { comps, priceable };
+  const blockerSource = supersedeStaleConclusions(input.rawBlockers ?? [], supersessionState);
+  const missingSource = supersedeStaleConclusions(
+    [...(input.rawMissingInformation ?? []), ...(input.valuation.materialGaps ?? [])],
+    supersessionState,
+  );
+
+  const valuation: CanonicalValuationState = {
+    status: comps.conclusion,
+    priceable,
+    basis: input.valuation.basis,
+    scope,
+    blockers: dedupeText([
+      priceable ? null : (input.valuation.notPriceableReason ?? 'No accepted evidence supports a value yet.'),
+      scope.subjectImproved && scope.wholeProperty.state === 'pending' ? scope.wholeProperty.why : null,
+    ]),
+    nextActionToPrice: priceable ? null : (input.valuation.nextActionToPrice ?? null),
+  };
+
+  const ownerOfRecord = (input.ownerSeller.ownerOfRecord ?? '').trim() || null;
+  const statedSeller = (input.ownerSeller.sellerName ?? '').trim() || null;
+  // A seller is collected only when intake actually produced one. The owner of
+  // record is an official ownership fact about the parcel and never a lead, so
+  // "Not collected" survives no matter how well the owner is established.
+  const sellerCollected = input.ownerSeller.sellerIntakeCollected === true && !!statedSeller;
+  const ownerSeller: CanonicalOwnerSellerState = {
+    ownerOfRecord,
+    ownerSource: (input.ownerSeller.ownerSource ?? '').trim() || null,
+    ownerVerified: input.ownerSeller.ownerVerified === true,
+    sellerName: sellerCollected ? statedSeller : null,
+    sellerCollected,
+    sellerLabel: sellerCollected && statedSeller ? statedSeller : 'Not collected',
+    distinctionNote: ownerOfRecord
+      ? `${ownerOfRecord} is the owner of record for this parcel. That is an ownership fact, not a confirmed seller or lead${sellerCollected ? '' : ', and no seller intake has happened on this subject'}.`
+      : 'No owner of record has been established from an official source yet.',
+  };
+
+  const blockers = dedupeText([...blockerSource.kept, ...valuation.blockers]);
+  const missingInformation = dedupeText([
+    ...missingSource.kept,
+    ...(input.research?.openQuestions ?? []).map((question) => `${question.label}: ${question.reason ?? 'unresolved'}`),
+  ]);
+
+  const decisionSummary = [
+    priceable
+      ? `${scope.landOnlyLabel} is supported by ${comps.sold} accepted closed sale(s)${comps.active ? ` against ${comps.active} active competitor(s)` : ''}.`
+      : comps.conclusion === 'asking_indication'
+        ? `Only asking-market evidence is retained (${comps.asking} asking reference(s), ${comps.active} active competitor(s)); no closed sale supports a value yet.`
+        : 'No comparable evidence supports a value yet.',
+    scope.subjectImproved && scope.wholeProperty.state === 'pending'
+      ? 'Whole-property value remains pending: the subject is materially improved and the improvements are not separately valued.'
+      : null,
+    blockers.length ? `${blockers.length} blocker(s) outstanding.` : 'No blocker is outstanding.',
+  ].filter(Boolean).join(' ');
+
+  const nextActions = dedupeText([
+    valuation.nextActionToPrice,
+    scope.subjectImproved && scope.wholeProperty.state === 'pending'
+      ? 'Value the improvements separately before stating any whole-property number.'
+      : null,
+    ...(input.research?.openQuestions ?? []).map((question) => question.nextAction),
+    ...(input.extraNextActions ?? []),
+  ]);
+
+  return {
+    comps,
+    valuation,
+    ownerSeller,
+    research: input.research
+      ? {
+          lanesHeadline: input.research.lanesHeadline,
+          questionsHeadline: input.research.questionsHeadline,
+          summaryLine: input.research.summaryLine,
+          openQuestions: input.research.openQuestions.map((question) => ({
+            label: question.label,
+            reason: question.reason,
+            nextAction: question.nextAction,
+          })),
+        }
+      : null,
+    scoreSummary: input.scoreSummary ?? null,
+    blockers,
+    missingInformation,
+    decisionSummary,
+    nextActions,
+    supersededStatements: [...blockerSource.superseded, ...missingSource.superseded],
   };
 }

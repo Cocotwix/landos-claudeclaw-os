@@ -44,6 +44,11 @@ export interface OfficialParcelGisView {
   planningLinks: Array<{ label: string; url: string }>;
   retrievedAt: string | null;
   access?: PublicRecordAccessView | null;
+  resolution?: 'resolved' | 'not_resolved' | 'not_run';
+  statusHeadline?: string;
+  statusDetail?: string;
+  identityRetained?: boolean;
+  actions?: Array<{ id?: string; label: string; href?: string | null }>;
 }
 
 /** Access status only. There is no password, handle, username or email here. */
@@ -104,7 +109,8 @@ export function OfficialParcelGisPanel({ dealId, initial }: { dealId: number; in
   };
 
   const v = view;
-  const researched = !!v?.present;
+  const researched = !!v?.present || (v?.resolution != null && v.resolution !== 'not_run');
+  const unresolved = !v || v.resolution === 'not_resolved' || (researched && v.parcelMatch === 'not_found');
 
   return (
     <section class="awv2-panel" id="official-parcel-gis">
@@ -113,30 +119,42 @@ export function OfficialParcelGisPanel({ dealId, initial }: { dealId: number; in
         {researched && (
           <span class={`awv2-opg-badge ${v!.parcelMatch}`}>{v!.parcelMatchLabel}</span>
         )}
-        <button class="awv2-opg-run" onClick={run} disabled={running}>
-          {running ? 'Researching…' : researched ? 'Re-run' : 'Research official source'}
-        </button>
+        {(!researched || !unresolved) && (
+          <button class="awv2-opg-run" onClick={run} disabled={running}>
+            {running ? 'Researching…' : researched ? 'Re-run' : 'Research official source'}
+          </button>
+        )}
       </div>
 
       {error && <div class="awv2-opg-warn">{error}</div>}
 
       {!researched && !running && (
         <div class="awv2-pi-note">
-          Official parcel and GIS research has not been run for this property. Opening a Deal Card never
-          starts government research on its own.
+          Official county parcel source — not run
         </div>
       )}
 
-      {researched && (
+      {unresolved && researched && (
+        <div class="awv2-opg-unresolved">
+          <div><b>{v?.statusHeadline || 'Official county parcel source — not resolved'}</b></div>
+          <div>{v?.statusDetail || 'The official source did not return a subject parcel. Canonical subject facts and independent LandPortal intelligence remain available above.'}</div>
+          <div class="awv2-opg-actions">
+            <button type="button" onClick={run} disabled={running}>Retry</button>
+            <details class="awv2-collapse awv2-opg-details">
+              <summary>Details</summary>
+              {(v?.failureStates || []).map((failure) => <div>{failure.label}</div>)}
+              {(v?.unresolvedFields || []).map((field) => <div>{fieldLabel(field)} was not returned</div>)}
+              {v?.retrievalMethodLabel && <div>Attempt: {v.retrievalMethodLabel}</div>}
+            </details>
+          </div>
+        </div>
+      )}
+
+      {researched && !unresolved && (
         <>
           <div class="awv2-kv">
             <Row k="Provider" v={v!.providerVariant ? `${v!.provider} (${v!.providerVariant})` : v!.provider} />
-            <Row k="Serves" v={v!.sourceLabel} empty="Jurisdiction not stated by source" />
-            <Row k="Parcel ID" v={v!.parcelId} />
-            <Row k="Parcel address" v={v!.parcelAddress} />
-            <Row k="Owner of record" v={v!.owner} />
-            <Row k="Acreage" v={v!.acres != null ? `${v!.acres} ac` : null} />
-            <Row k="Retrieval" v={`${v!.retrievalMethodLabel} · ${v!.confidence} confidence`} />
+            <Row k="Subject match" v={v!.parcelMatchLabel} />
             <Row
               k="Geometry"
               v={v!.geometryStatus === 'retained'
@@ -146,8 +164,6 @@ export function OfficialParcelGisPanel({ dealId, initial }: { dealId: number; in
             />
           </div>
 
-          {/* A conflict is stated in full: the operator must see exactly what
-              disagreed rather than a bare status word. */}
           {v!.parcelMatch === 'conflict' && v!.conflictDetails.length > 0 && (
             <div class="awv2-opg-warn">
               <b>Parcel identity conflict.</b> LandOS did not accept this record as the subject.
@@ -155,8 +171,8 @@ export function OfficialParcelGisPanel({ dealId, initial }: { dealId: number; in
             </div>
           )}
 
-          {/* Zoning. The authority distinction is the whole point of this
-              block: an assessment classification must never read as zoning. */}
+          <details class="awv2-collapse awv2-opg-details">
+          <summary>Official zoning and source provenance</summary>
           <div class="awv2-opg-sub">Official zoning layer</div>
           {v!.zoningStatus === 'found' ? (
             <>
@@ -184,64 +200,14 @@ export function OfficialParcelGisPanel({ dealId, initial }: { dealId: number; in
             </div>
           )}
 
-          {/* Access. Four lines at most: what the source demands, whether
-              LandOS holds an account, how far that account reaches, and the one
-              thing the operator has to do. Never a credential. */}
-          {v!.access?.present && (
-            <>
-              <div class="awv2-opg-sub">Access</div>
-              <div class="awv2-kv">
-                <Row k="Access" v={v!.access.accessLabel} />
-                {v!.access.registrationLabel && <Row k="Registration" v={v!.access.registrationLabel} />}
-                {v!.access.accountLabel && <Row k="Account" v={v!.access.accountLabel} />}
-                {v!.access.scopeLabel && <Row k="Scope" v={v!.access.scopeLabel} />}
-                {v!.access.lastLogin && (
-                  <Row k="Last login" v={new Date(v!.access.lastLogin).toLocaleDateString()} />
-                )}
-              </div>
-              {v!.access.actionLabel && (
-                <div class="awv2-opg-warn"><b>Action:</b> {v!.access.actionLabel}</div>
-              )}
-              {v!.access.paidRecordsNote && (
-                <div class="awv2-pi-note">{v!.access.paidRecordsNote}</div>
-              )}
-            </>
-          )}
-
-          {/* Jurisdiction clues. Evidence about who governs, not a legal
-              determination — that belongs to the zoning sprint. */}
-          <div class="awv2-opg-sub">Jurisdiction clues</div>
-          {v!.jurisdictionClues.length > 0 ? (
-            <ul class="awv2-opg-list">
-              {v!.jurisdictionClues.map((c) => (
-                <li><b>{c.level}:</b> {c.name}</li>
-              ))}
-            </ul>
-          ) : (
-            <div class="awv2-pi-note">The official source published no jurisdiction attributes.</div>
-          )}
-
-          {(v!.failureStates.length > 0 || v!.unresolvedFields.length > 0) && (
-            <>
-              <div class="awv2-opg-sub">Unresolved</div>
-              <ul class="awv2-opg-list">
-                {v!.failureStates.map((f) => <li>{f.label}</li>)}
-                {v!.unresolvedFields.map((f) => <li>{fieldLabel(f)} not returned by this source</li>)}
-              </ul>
-            </>
-          )}
-
-          <div class="awv2-opg-links">
-            {v!.sourceUrl && (
-              <a href={v!.sourceUrl} target="_blank" rel="noreferrer">Official source</a>
-            )}
-            {v!.planningLinks.map((l) => (
-              <a href={l.url} target="_blank" rel="noreferrer">{l.label}</a>
-            ))}
+          <div class="awv2-opg-provenance">
+            {v!.sourceLabel && <div class="awv2-pi-note"><b>Source jurisdiction:</b> {v!.sourceLabel}</div>}
+            {v!.jurisdictionClues.map((clue) => <div class="awv2-pi-note"><b>{clue.level}:</b> {clue.name}</div>)}
+            {v!.sourceUrl && <a href={v!.sourceUrl} target="_blank" rel="noreferrer">Official source</a>}
+            {v!.planningLinks.map((link) => <a href={link.url} target="_blank" rel="noreferrer">{link.label}</a>)}
+            <div class="awv2-pi-note">{v!.retrievalMethodLabel} · {v!.confidence} confidence{v!.retrievedAt ? ` · retrieved ${new Date(v!.retrievedAt).toLocaleString()}` : ''}</div>
           </div>
-          {v!.retrievedAt && (
-            <div class="awv2-pi-note" style="margin-top:8px">Retrieved {new Date(v!.retrievedAt).toLocaleString()}.</div>
-          )}
+          </details>
         </>
       )}
     </section>

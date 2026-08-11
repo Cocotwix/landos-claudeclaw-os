@@ -30,6 +30,16 @@ describe('result classification', () => {
       .toMatchObject({ family: 'land_listing', propertySpecific: false });
   });
   it('handles malformed URLs without throwing', () => expect(classifyDiscoveryResult('not a url')).toEqual({ host: null, family: 'other', propertySpecific: false }));
+  it('follows exact parcel, assessor, permit and credible property-detail results beyond listing portals', () => {
+    expect(classifyDiscoveryResult('https://gis.examplecounty.gov/parcel/13-116-015-01'))
+      .toMatchObject({ family: 'official_property', propertySpecific: true });
+    expect(classifyDiscoveryResult('https://planning.example.gov/permits/2024-991'))
+      .toMatchObject({ family: 'planning_permit', propertySpecific: true });
+    expect(classifyDiscoveryResult('https://credible.example/property/9490-elk-lake-rd'))
+      .toMatchObject({ family: 'other', propertySpecific: true });
+    expect(classifyDiscoveryResult('https://gis.examplecounty.gov/parcel-search'))
+      .toMatchObject({ family: 'official_property', propertySpecific: false });
+  });
 });
 
 describe('listing extraction', () => {
@@ -43,8 +53,50 @@ describe('listing extraction', () => {
   });
   it('leaves absent facts null or empty', () => {
     const result = extractListingEvidence({ url: 'bad', text: '' });
-    expect(result).toMatchObject({ buildingSqft: null, acres: null, well: null, septic: null, priorAskingPrice: null });
+    expect(result).toMatchObject({ buildingSqft: null, acres: null, well: null, septic: null, priorAskingPrice: null, engagement: null });
     expect(result.legalAccessStatements).toEqual([]); expect(result.listingHistory).toEqual([]); expect(result.photoUrls).toEqual([]);
+  });
+
+  it('extracts a generic actively marketed improved subject and time-stamped Zillow interest signals', () => {
+    const result = extractListingEvidence({
+      url: 'https://www.zillow.com/homedetails/9490-Elk-Lake-Rd-Williamsburg-MI-49690/243126665_zpid/',
+      retrievedAt: '2026-08-11T14:15:00.000Z',
+      text: `Listing status: Active. Current price: $1,450,000. Original list price: $1,595,000.
+        Listed on July 19, 2026. 23 days on Zillow. Single-family home on 60 acres.
+        4 beds 3 baths, 2,750 sqft, built in 2001. Well and septic. Electric and propane.
+        Property features: pole barn; detached garage; wooded trails.
+        Public remarks: Improved rural estate with a home, barn, driveway and landscaped grounds.
+        Listed by: North Woods Realty. MLS # 1923456. 8,421 views. 317 saves.
+        https://photos.zillowstatic.com/fp/primary.jpg https://photos.zillowstatic.com/fp/second.webp`,
+    });
+    expect(result).toMatchObject({
+      listingStatus: 'Active', currentPrice: 1_450_000, originalListPrice: 1_595_000,
+      listingDate: 'July 19, 2026', daysOnMarket: 23, propertyType: 'Single-family home',
+      buildingSqft: 2750, acres: 60, beds: 4, baths: 3, yearBuilt: 2001,
+      engagement: {
+        views: 8421, saves: 317, viewsAvailability: 'available', savesAvailability: 'available',
+        retrievedAt: '2026-08-11T14:15:00.000Z',
+      },
+    });
+    expect(result.photoUrls).toHaveLength(2);
+    expect(result.features).toEqual(expect.arrayContaining(['pole barn', 'detached garage', 'wooded trails.']));
+    expect(result.brokerage).toContain('North Woods Realty');
+    expect(result.mls).toBe('1923456');
+  });
+
+  it('records Zillow engagement as unavailable rather than zero when the page exposes no counts', () => {
+    const result = extractListingEvidence({
+      url: 'https://www.zillow.com/homedetails/a/1_zpid/',
+      text: 'For sale listing. House on 10 acres.',
+      retrievedAt: '2026-08-11T15:00:00.000Z',
+    });
+    expect(result.engagement).toEqual({
+      provider: 'zillow', views: null, saves: null,
+      viewsAvailability: 'unavailable', savesAvailability: 'unavailable',
+      retrievedAt: '2026-08-11T15:00:00.000Z',
+    });
+    expect(result.engagement?.views).not.toBe(0);
+    expect(result.engagement?.saves).not.toBe(0);
   });
 });
 
@@ -62,9 +114,23 @@ describe('operator projection of retained listing evidence', () => {
     well: true,
     septic: true,
     remarks: [],
+    listingStatus: 'Active',
+    currentPrice: 1_450_000,
     priorAskingPrice: 1_450_000,
+    originalListPrice: 1_595_000,
+    listingDate: '2026-07-19',
+    daysOnMarket: 23,
+    beds: 4,
+    baths: 3,
+    yearBuilt: 2001,
+    structures: ['House and pole barn.'],
+    description: 'Improved rural estate.',
+    features: ['wooded trails'],
+    brokerage: 'North Woods Realty',
+    mls: '1923456',
     listingHistory: [{ date: '2026-07-19', event: 'Listed for sale', price: 1_595_000 }],
-    photoUrls: [],
+    photoUrls: ['https://photos.example/primary.jpg', 'https://photos.example/second.jpg'],
+    engagement: null,
     ...over,
   });
 
@@ -86,7 +152,7 @@ describe('operator projection of retained listing evidence', () => {
     expect(view.sources[0].buildingSqft).toBe(2000);
     expect(view.sources[0].acres).toBe(60);
     expect(view.sources[0].price).toBe(1_450_000);
-    expect(view.sources[0].listingStatus).toBe('Listed for sale');
+    expect(view.sources[0].listingStatus).toBe('Active');
     expect(view.sources[0].provenanceNote).toContain('redfin.com');
     expect(view.disclaimer).toMatch(/never becomes a verified/i);
   });
@@ -120,6 +186,36 @@ describe('operator projection of retained listing evidence', () => {
     expect(view.subjectRead?.acres).toBe(60);
     expect(view.subjectRead?.statement).toMatch(/improved property/i);
     expect(view.subjectRead?.statement).toMatch(/not an assessor record/i);
+  });
+
+  it('projects one concise active-listing card with photos, listing facts and raw Zillow engagement', () => {
+    const view = projectExactAddressListingEvidence({
+      status: 'retrieved',
+      pages: [
+        page(),
+        page({
+          sourceUrl: 'https://www.zillow.com/homedetails/9490-Elk-Lake-Rd-Williamsburg-MI-49690/243126665_zpid/',
+          sourceLabel: 'Zillow',
+          engagement: {
+            provider: 'zillow', views: 8421, saves: 317,
+            viewsAvailability: 'available', savesAvailability: 'available',
+            retrievedAt: '2026-08-10T22:46:00.000Z',
+          },
+        }),
+      ],
+    })!;
+    expect(view.listingCard).toMatchObject({
+      active: true,
+      currentPrice: 1_450_000,
+      originalListPrice: 1_595_000,
+      daysOnMarket: 23,
+      listingUrl: expect.stringContaining('zillow.com/homedetails'),
+      primaryPhotoUrl: 'https://photos.example/primary.jpg',
+      additionalPhotoUrls: ['https://photos.example/second.jpg'],
+      zillowEngagement: { views: 8421, saves: 317, retrievedAt: '2026-08-10T22:46:00.000Z' },
+      evidenceLabel: 'Listing-reported',
+    });
+    expect(view.listingCard?.engagementNote).toMatch(/interest signal, not proof of value/i);
   });
 
   it('does not claim improvements from a vacant-land listing', () => {

@@ -64,6 +64,7 @@ describe('comp registry — dedup', () => {
     expect(r.counts.duplicatesMerged).toBe(2);
     expect(r.uniqueComps[0].providers.sort()).toEqual(['LandPortal visible', 'Realie', 'Zillow']);
     expect(r.uniqueComps[0].sourceConfidence).toBe('high');
+    expect(r.uniqueComps[0].duplicatesMerged).toBe(2);
     expect(r.duplicateMerges).toHaveLength(1);
   });
 
@@ -170,6 +171,43 @@ describe('comp registry — valuation gate', () => {
     expect(comp.lng).toBe(-80.8);
     expect(comp.coordinateProvider).toBe('Zillow');
     expect(comp.primary.acres).toBe(4);
+  });
+
+  it('preserves ordered marketplace photos and merged provenance through dedupe', () => {
+    const common = { lane: 'sold' as const, priceKind: 'sold', addressDesc: '7 Gallery Rd, Town, SC', acres: 4, saleOrListDate: '2026-01-01' };
+    const r = buildCompRegistry(SUBJECT, [
+      cand({ ...common, provider: 'LandPortal visible', thumbnailUrl: 'https://images.thelandportal.com/tile.jpg' }),
+      cand({ ...common, provider: 'Realtor.com', thumbnailUrl: 'https://ap.rdcpix.com/hero.webp', photoUrls: ['https://ap.rdcpix.com/hero.webp', 'https://ap.rdcpix.com/drive.webp'] }),
+    ]);
+    expect(r.uniqueComps).toHaveLength(1);
+    expect(r.uniqueComps[0].providers).toEqual(expect.arrayContaining(['LandPortal visible', 'Realtor.com']));
+    expect(r.uniqueComps[0].primary.thumbnailUrl).toBe('https://ap.rdcpix.com/hero.webp');
+    expect(r.uniqueComps[0].primary.photoUrls).toEqual(expect.arrayContaining([
+      'https://ap.rdcpix.com/hero.webp', 'https://ap.rdcpix.com/drive.webp',
+    ]));
+  });
+
+  it('coalesces APN-only and address-only groups through a later enriched provider page', () => {
+    const sale = { lane: 'sold' as const, priceKind: 'sold', price: 400_000, acres: 40, saleOrListDate: '2025-06-01' };
+    const r = buildCompRegistry(SUBJECT, [
+      cand({ ...sale, provider: 'LandPortal visible', apn: '13-116-015-01', addressDesc: null, sourceUrl: 'https://app.thelandportal.com/property/1' }),
+      cand({ ...sale, provider: 'Zillow', apn: null, addressDesc: '100 Comp Road, Town, SC', sourceUrl: 'https://www.zillow.com/homedetails/1' }),
+      cand({ ...sale, provider: 'Realtor.com', apn: '13-116-015-01', addressDesc: '100 Comp Rd, Town, SC', sourceUrl: 'https://www.realtor.com/realestateandhomes-detail/1' }),
+    ]);
+    expect(r.uniqueComps).toHaveLength(1);
+    expect(r.counts.duplicatesMerged).toBe(2);
+    expect(r.uniqueComps[0]).toMatchObject({ matchedBy: 'apn', apn: '13-116-015-01', duplicatesMerged: 2 });
+    expect(r.uniqueComps[0].providers).toEqual(expect.arrayContaining(['LandPortal visible', 'Zillow', 'Realtor.com']));
+  });
+
+  it('does not merge the same address when providers state conflicting APNs', () => {
+    const common = { lane: 'sold' as const, priceKind: 'sold', addressDesc: '100 Shared Rd, Town, SC', price: 400_000, acres: 40, saleOrListDate: '2025-06-01' };
+    const r = buildCompRegistry(SUBJECT, [
+      cand({ ...common, provider: 'Zillow', apn: '11-111-111' }),
+      cand({ ...common, provider: 'Realtor.com', apn: '22-222-222' }),
+    ]);
+    expect(r.uniqueComps).toHaveLength(2);
+    expect(r.counts.duplicatesMerged).toBe(0);
   });
 });
 

@@ -1,6 +1,7 @@
 import { compDistanceMiles, resolveGeographicTier, type GeographicTierId } from './acreage-router.js';
 import { landPortalSaleStatus } from './deal-intelligence-comps.js';
 import { resolveCompVisual, type CompVisual } from './comp-visual.js';
+import { normalizeCompAddress, type CompRegistryCandidate } from './comp-registry.js';
 
 export interface LandPortalSidebarComp { propertyId?: string | null; apn?: string | null; price: number | null; acres: number | null; saleDate?: string | null; pricePerAcre?: number | null; rawText?: string | null; detailUrl?: string | null }
 export interface CompDrilldownStep { compKey: string; action: 'open_comp_detail' | 'show_on_map'; target: string | null; capture: string[]; reason: string }
@@ -23,6 +24,154 @@ export function planCompDrilldown(comps: LandPortalSidebarComp[], subject: { fip
 export interface LandPortalCompDetail { address?: string | null; city?: string | null; state?: string | null; zip?: string | null; apn?: string | null; acres?: number | null; price?: number | null; saleDate?: string | null; pricePerAcre?: number | null; lat?: number | null; lng?: number | null; imageUrl?: string | null; imageSourceLabel?: string | null; detailUrl?: string | null }
 export interface CompLocationResolution { resolved: boolean; basis: 'coordinates' | 'address' | 'unresolved'; distanceMiles: number | null; tierId: GeographicTierId; weightMultiplier: number; statement: string }
 export interface EnrichedLandPortalComp { compKey: string; apn: string | null; address: string | null; city: string | null; state: string | null; zip: string | null; acres: number | null; price: number | null; pricePerAcre: number | null; saleDate: string | null; lat: number | null; lng: number | null; imageUrl: string | null; imageSourceLabel: string | null; detailUrl: string | null; drilledDown: boolean; provenance: string[]; locationResolution: CompLocationResolution }
+
+export type CompEnrichmentProvider = 'Zillow' | 'Redfin' | 'Realtor.com' | 'Web';
+export interface CompEnrichmentQuery {
+  provider: CompEnrichmentProvider;
+  query: string;
+  identityBasis: 'address' | 'apn' | 'transaction_signature';
+  /** A discovery query is never itself a match; the opened result must pass the
+   * reconciliation gate below before any fact or photograph is retained. */
+  requiresOpenedPageReconciliation: true;
+}
+
+export interface CompListingEnrichmentCandidate {
+  provider: CompEnrichmentProvider;
+  sourceUrl: string;
+  address?: string | null;
+  apn?: string | null;
+  acres?: number | null;
+  price?: number | null;
+  saleDate?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  status?: 'sold' | 'active' | 'unknown';
+  thumbnailUrl?: string | null;
+  photoUrls?: string[];
+  description?: string | null;
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
+}
+
+export interface ReconciledCompEnrichment {
+  candidate: CompListingEnrichmentCandidate;
+  matched: boolean;
+  matchedOn: string[];
+  reason: string;
+}
+
+/** Independent provider searches for enriching this exact LandPortal comp.
+ * Strong identifiers are preferred; price+acreage is discovery-only fallback. */
+export function planLandPortalCompEnrichment(
+  comp: EnrichedLandPortalComp,
+  geography: { county?: string | null; state?: string | null },
+): CompEnrichmentQuery[] {
+  const locality = [comp.city, geography.county ? `${geography.county} County` : null, comp.state ?? geography.state, comp.zip]
+    .filter(Boolean).join(' ');
+  const identity = comp.address?.trim()
+    ? { text: [comp.address, locality].filter(Boolean).join(' '), basis: 'address' as const }
+    : comp.apn?.trim()
+      ? { text: `parcel ${comp.apn.trim()} ${locality}`.trim(), basis: 'apn' as const }
+      : { text: `${comp.acres ?? ''} acres ${comp.price != null ? `$${Math.round(comp.price)}` : ''} ${locality}`.trim(), basis: 'transaction_signature' as const };
+  return (['Zillow', 'Redfin', 'Realtor.com', 'Web'] as const).map((provider) => ({
+    provider,
+    query: `${identity.text} ${provider === 'Web' ? 'property sale listing' : provider}`.trim(),
+    identityBasis: identity.basis,
+    requiresOpenedPageReconciliation: true,
+  }));
+}
+
+const compactApn = (value: string | null | undefined): string =>
+  (value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Refuse cross-property contamination while allowing best-available enrichment.
+ * APN or exact address is sufficient. Otherwise acreage + price/date or nearby
+ * coordinates must independently agree; a search snippet alone never passes. */
+export function reconcileLandPortalCompEnrichment(
+  comp: EnrichedLandPortalComp,
+  candidate: CompListingEnrichmentCandidate,
+): ReconciledCompEnrichment {
+  const matchedOn: string[] = [];
+  const hardConflicts: string[] = [];
+  const compApn = compactApn(comp.apn);
+  const candidateApn = compactApn(candidate.apn);
+  if (compApn && candidateApn) {
+    if (compApn === candidateApn) matchedOn.push('APN');
+    else hardConflicts.push('APN differs');
+  }
+  const compAddress = normalizeCompAddress(comp.address);
+  const candidateAddress = normalizeCompAddress(candidate.address);
+  if (compAddress && candidateAddress) {
+    if (compAddress === candidateAddress) matchedOn.push('address');
+    else hardConflicts.push('address differs');
+  }
+  if (comp.acres != null && candidate.acres != null) {
+    const drift = Math.abs(comp.acres - candidate.acres) / Math.max(comp.acres, 0.01);
+    if (drift <= 0.03) matchedOn.push('acreage');
+    else hardConflicts.push('acreage differs');
+  }
+  if (comp.price != null && candidate.price != null && Math.abs(comp.price - candidate.price) / Math.max(comp.price, 1) <= 0.02) matchedOn.push('price');
+  if (comp.saleDate && candidate.saleDate && comp.saleDate.slice(0, 10) === candidate.saleDate.slice(0, 10)) matchedOn.push('sale date');
+  if (comp.lat != null && comp.lng != null && candidate.lat != null && candidate.lng != null) {
+    const miles = compDistanceMiles(comp, candidate);
+    if (miles != null && miles <= 0.35) matchedOn.push('coordinates');
+    else if (miles != null) hardConflicts.push('coordinates differ');
+  }
+  const strongIdentity = matchedOn.includes('APN') || matchedOn.includes('address');
+  const matched = hardConflicts.length === 0 && (strongIdentity || matchedOn.length >= 2);
+  return {
+    candidate,
+    matched,
+    matchedOn,
+    reason: matched
+      ? `Reconciled to the LandPortal comp on ${matchedOn.join(', ')}.`
+      : hardConflicts.length
+        ? `Enrichment refused: ${hardConflicts.join('; ')}.`
+        : `Enrichment unresolved: only ${matchedOn.length} independent identity signal(s) agreed.`,
+  };
+}
+
+/** Convert only reconciled provider pages into additional registry candidates.
+ * Failure to resolve a provider produces no row and never invalidates the
+ * original LandPortal comp. The canonical registry later merges these by APN,
+ * address or transaction identity and exposes all providers on one property. */
+export function landPortalEnrichmentCandidates(
+  comp: EnrichedLandPortalComp,
+  candidates: CompListingEnrichmentCandidate[],
+): CompRegistryCandidate[] {
+  return candidates
+    .map((candidate) => reconcileLandPortalCompEnrichment(comp, candidate))
+    .filter((result) => result.matched)
+    .map(({ candidate, matchedOn }): CompRegistryCandidate => {
+      const improved = !!(candidate.homeType || candidate.homeSizeSqft || candidate.yearBuilt
+        || /\b(?:bed|bath|house|home|cabin|residence|dwelling|manufactured)\b/i.test(candidate.description ?? ''));
+      return ({
+      provider: candidate.provider,
+      lane: candidate.status === 'active' ? 'active' : candidate.status === 'sold' ? 'supplemental' : 'unknown',
+      addressDesc: candidate.address ?? comp.address,
+      apn: candidate.apn ?? comp.apn,
+      state: comp.state,
+      lat: candidate.lat ?? comp.lat,
+      lng: candidate.lng ?? comp.lng,
+      price: candidate.price ?? comp.price,
+      priceKind: candidate.status === 'active' ? 'list' : candidate.status === 'sold' ? 'sold' : 'unknown',
+      saleOrListDate: candidate.saleDate ?? comp.saleDate,
+      acres: candidate.acres ?? comp.acres,
+      pricePerAcre: candidate.price != null && (candidate.acres ?? comp.acres) != null
+        ? Math.round(candidate.price / (candidate.acres ?? comp.acres)!)
+        : comp.pricePerAcre,
+      sourceUrl: candidate.sourceUrl,
+      thumbnailUrl: candidate.thumbnailUrl ?? candidate.photoUrls?.[0] ?? null,
+      photoUrls: candidate.photoUrls ?? [],
+      compClass: improved ? 'residential' : 'vacant_land',
+      statusSource: `${candidate.provider} opened property page reconciled on ${matchedOn.join(', ')}`,
+      homeType: candidate.homeType ?? null,
+      yearBuilt: candidate.yearBuilt ?? null,
+      homeSizeSqft: candidate.homeSizeSqft ?? null,
+      });
+    });
+}
 
 const stated = <T>(value: T | null | undefined): value is T => value !== null && value !== undefined && (typeof value !== 'string' || value.trim().length > 0);
 

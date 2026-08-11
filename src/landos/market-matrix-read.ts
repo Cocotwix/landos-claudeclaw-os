@@ -2,8 +2,15 @@
 //
 // Given a Property Card's geography (state, county, zip) + acreage band, resolve
 // the single best applicable Market Matrix snapshot using the fallback chain:
-//     ZIP → County → County (All Acreage) → State → Unavailable
-// and return a compact, honest packet: match level, the snapshot's displayed
+//     ZIP → County → County (All Acreage) → ZIP (All Acreage) → State → Unavailable
+// where each geography rung is tried against EVERY acreage band that genuinely
+// contains the subject's acreage before the geography widens — a 60-acre subject
+// belongs to both "50+" and "50–100", so a store holding only one of them is not
+// a missing record. Unavailable therefore means the Market Matrix carries nothing
+// for this subject, never that one lookup key happened to miss. Every resolution
+// reports `resolvedKey` — the geography key that actually carried it — so a
+// surface can never imply the subject's primary key answered when a wider one did.
+// The packet returned is compact and honest: match level, the snapshot's displayed
 // facts (PPA / DOM / STR / population growth / liquidity), source + confidence,
 // staleness (always shown, never hidden), and 2–3 discovery-call talking points
 // that may reference ONLY the displayed facts. This is the read side of the
@@ -17,12 +24,13 @@ import {
   type MarketMetrics, type MarketMetric, type MarketSide, type AcreageBand, type Confidence,
 } from './market-matrix.js';
 
-export type MatchLevel = 'zip' | 'county' | 'county_all_acreage' | 'state' | 'unavailable';
+export type MatchLevel = 'zip' | 'county' | 'county_all_acreage' | 'zip_all_acreage' | 'state' | 'unavailable';
 
 export const MATCH_LEVEL_LABEL: Record<MatchLevel, string> = {
   zip: 'ZIP match',
   county: 'County match',
   county_all_acreage: 'County (all acreage) match',
+  zip_all_acreage: 'ZIP (all acreage) match',
   state: 'State match',
   unavailable: 'No Market Matrix data',
 };
@@ -31,6 +39,13 @@ export interface MarketMatrixResolution {
   matchLevel: MatchLevel;
   available: boolean;
   geography: { state?: string; county?: string; fips?: string; zip?: string };
+  /** The geography key that ACTUALLY carried this record (`zip:<zip>`,
+   *  `county:<fips>`, `state:<st>`), null when nothing did. A record found under
+   *  a wider key than the subject's primary one is still a found record — but the
+   *  surface must say which key answered, so this is never optional. */
+  resolvedKey: string | null;
+  /** Compact operator label for `resolvedKey`, e.g. "<County> County (50–100 acres)". */
+  resolvedKeyLabel: string | null;
   acreageBandRequested: AcreageBand;
   acreageBandUsed: AcreageBand | null;
   side: MarketSide;
@@ -72,6 +87,13 @@ function newest(rows: SnapRow[]): SnapRow | undefined {
   let best: SnapRow | undefined;
   for (const r of rows) if (!best || comparePeriods(r.period, best.period) > 0) best = r;
   return best;
+}
+
+/** County names arrive both with and without the "County" suffix (seed vs.
+ *  ingestion); render exactly one. */
+function countyDisplay(name: string): string {
+  const bare = name.replace(/\s+county$/i, '').trim();
+  return bare ? `${bare} County` : '';
 }
 
 /** Resolve a county FIPS from a fips-or-name + state. */
@@ -128,15 +150,23 @@ function buildTalkingPoints(res: MarketMatrixResolution, countyLabel: string): s
 
 /**
  * Resolve the best Market Matrix snapshot for a Property Card. Pure over the DB:
- * runs the ZIP → County → County-All-Acreage → State fallback and returns the
- * displayed facts + talking points, or an honest "unavailable" packet. Never
- * fabricates a metric; talking points reference only displayed (non-null) facts.
+ * runs the ZIP → County → County-All-Acreage → ZIP-All-Acreage → State fallback,
+ * trying every band the subject's acreage belongs to at each geography rung, and
+ * returns the displayed facts + talking points, the key that carried them, or an
+ * honest "unavailable" packet once every key for this subject has been tried.
+ * Never fabricates a metric; talking points reference only displayed facts.
  */
 export function resolveMarketMatrix(input: {
   state?: string;
   county?: string;   // FIPS or county name
   zip?: string;
   acreageBand?: AcreageBand;
+  /** Every other band that also genuinely contains the subject's acreage (see
+   *  acreageBandsForAcres). Tried, in order, at each geography rung after the
+   *  primary band and before the geography widens — so a store that recorded
+   *  60 acres under "50–100" still answers a "50+" request. Bands that do NOT
+   *  contain the subject acreage must never be passed here. */
+  acreageBands?: AcreageBand[];
   side?: MarketSide;
   nowPeriod?: string;
 }): MarketMatrixResolution {
@@ -148,9 +178,14 @@ export function resolveMarketMatrix(input: {
   const fips = resolveFips(input.county, state);
   const countyName = fips ? (listCountyRef(state).find((c) => c.fips === fips)?.countyName ?? input.county ?? fips) : (input.county ?? '');
 
+  // Primary band first; every additional containing band after it, deduped.
+  const bands: AcreageBand[] = [];
+  for (const b of [band, ...(input.acreageBands ?? [])]) if (!bands.includes(b)) bands.push(b);
+
   const base: MarketMatrixResolution = {
     matchLevel: 'unavailable', available: false,
     geography: { state, county: countyName || undefined, fips, zip: input.zip },
+    resolvedKey: null, resolvedKeyLabel: null,
     acreageBandRequested: band, acreageBandUsed: null, side, period: null, confidence: null,
     source: null, provider: null,
     staleness: { label: 'No snapshot', quartersOld: null, isStale: false },
@@ -158,11 +193,27 @@ export function resolveMarketMatrix(input: {
     metrics: null, talkingPoints: [], note: '',
   };
 
+  const resolvedKeyFor = (row: SnapRow, matchLevel: MatchLevel): { key: string; label: string } => {
+    if (matchLevel === 'zip' || matchLevel === 'zip_all_acreage') {
+      const z = row.zip || input.zip || '';
+      return { key: `zip:${z}`, label: `ZIP ${z}` };
+    }
+    if (matchLevel === 'state') {
+      const s = row.state || state || '';
+      return { key: `state:${s}`, label: `${s} statewide` };
+    }
+    const f = row.fips || fips || '';
+    return { key: `county:${f}`, label: countyDisplay(countyName || row.county_name || f) || f };
+  };
+
   const finalize = (row: SnapRow, matchLevel: MatchLevel, bandUsed: AcreageBand): MarketMatrixResolution => {
     const metrics = metricsFromJson(row.metrics_json);
+    const resolved = resolvedKeyFor(row, matchLevel);
     const res: MarketMatrixResolution = {
       ...base,
       matchLevel, available: true, acreageBandUsed: bandUsed,
+      resolvedKey: resolved.key,
+      resolvedKeyLabel: `${resolved.label} (${ACREAGE_BAND_LABEL[bandUsed].toLowerCase()})`,
       period: row.period, confidence: row.confidence as Confidence,
       source: row.source_ref || row.provider || null, provider: row.provider || null,
       staleness: computeStaleness(row.period, nowPeriod),
@@ -175,57 +226,69 @@ export function resolveMarketMatrix(input: {
       },
       metrics,
       talkingPoints: [],
-      note: `Resolved via ${MATCH_LEVEL_LABEL[matchLevel]} from the Market Matrix (master market database).`,
+      note: `Resolved via ${MATCH_LEVEL_LABEL[matchLevel]} (${resolved.label}) from the Market Matrix (master market database).`,
     };
     res.talkingPoints = buildTalkingPoints(res, countyName || (fips ?? ''));
     return res;
   };
 
-  // 1. ZIP
+  const SELECT = `SELECT fips, county_name, state, zip, period, acreage_band, metrics_json, confidence, provider, source_ref
+       FROM landos_market_snapshot`;
+
+  // 1. ZIP, every containing band
   if (input.zip) {
-    const rows = db.prepare(
-      `SELECT fips, county_name, state, zip, period, acreage_band, metrics_json, confidence, provider, source_ref
-       FROM landos_market_snapshot WHERE geo_level = 'zip' AND zip = ? AND side = ? AND acreage_band = ?`,
-    ).all(input.zip, side, band) as SnapRow[];
-    const row = newest(rows);
-    if (row) return finalize(row, 'zip', band);
+    for (const b of bands) {
+      const row = newest(db.prepare(
+        `${SELECT} WHERE geo_level = 'zip' AND zip = ? AND side = ? AND acreage_band = ?`,
+      ).all(input.zip, side, b) as SnapRow[]);
+      if (row) return finalize(row, 'zip', b);
+    }
   }
 
-  // 2. County (requested band)
+  // 2. County, every containing band
   if (fips) {
-    const rows = db.prepare(
-      `SELECT fips, county_name, state, zip, period, acreage_band, metrics_json, confidence, provider, source_ref
-       FROM landos_market_snapshot WHERE geo_level = 'county' AND fips = ? AND side = ? AND acreage_band = ?`,
-    ).all(fips, side, band) as SnapRow[];
-    const row = newest(rows);
-    if (row) return finalize(row, 'county', band);
+    for (const b of bands) {
+      const row = newest(db.prepare(
+        `${SELECT} WHERE geo_level = 'county' AND fips = ? AND side = ? AND acreage_band = ?`,
+      ).all(fips, side, b) as SnapRow[]);
+      if (row) return finalize(row, 'county', b);
+    }
 
-    // 3. County (All Acreage)
-    if (band !== 'all') {
-      const allRows = db.prepare(
-        `SELECT fips, county_name, state, zip, period, acreage_band, metrics_json, confidence, provider, source_ref
-         FROM landos_market_snapshot WHERE geo_level = 'county' AND fips = ? AND side = ? AND acreage_band = 'all'`,
-      ).all(fips, side) as SnapRow[];
-      const allRow = newest(allRows);
+    // 3. County (All Acreage) — the county is the operator's primary market
+    //    geography, so its all-acreage read is preferred over a much thinner
+    //    ZIP-level sample before either widens to the state.
+    if (!bands.includes('all')) {
+      const allRow = newest(db.prepare(
+        `${SELECT} WHERE geo_level = 'county' AND fips = ? AND side = ? AND acreage_band = 'all'`,
+      ).all(fips, side) as SnapRow[]);
       if (allRow) return finalize(allRow, 'county_all_acreage', 'all');
     }
   }
 
-  // 4. State
-  if (state) {
-    const rows = db.prepare(
-      `SELECT fips, county_name, state, zip, period, acreage_band, metrics_json, confidence, provider, source_ref
-       FROM landos_market_snapshot WHERE geo_level = 'state' AND state = ? AND side = ? AND (acreage_band = ? OR acreage_band = 'all')`,
-    ).all(state, side, band) as SnapRow[];
-    const row = newest(rows);
-    if (row) return finalize(row, 'state', (row.acreage_band as AcreageBand) ?? band);
+  // 4. ZIP (All Acreage) — the subject's own ZIP still holds a record; only its
+  //    band missed. That is a found record, not a missing one.
+  if (input.zip && !bands.includes('all')) {
+    const allRow = newest(db.prepare(
+      `${SELECT} WHERE geo_level = 'zip' AND zip = ? AND side = ? AND acreage_band = 'all'`,
+    ).all(input.zip, side) as SnapRow[]);
+    if (allRow) return finalize(allRow, 'zip_all_acreage', 'all');
   }
 
-  // 5. Unavailable
+  // 5. State
+  if (state) {
+    for (const b of [...bands, 'all' as AcreageBand]) {
+      const row = newest(db.prepare(
+        `${SELECT} WHERE geo_level = 'state' AND state = ? AND side = ? AND acreage_band = ?`,
+      ).all(state, side, b) as SnapRow[]);
+      if (row) return finalize(row, 'state', (row.acreage_band as AcreageBand) ?? b);
+    }
+  }
+
+  // 6. Unavailable — every geography key for this subject was tried.
   return {
     ...base,
-    note: fips || state
-      ? `No Market Matrix snapshot for ${countyName || state || 'this area'} (${ACREAGE_BAND_LABEL[band]}, ${side}). This county is a Browser Agent ingestion candidate; nothing is fabricated.`
+    note: fips || state || input.zip
+      ? `No Market Matrix snapshot for ${countyName || input.zip || state || 'this area'} (${ACREAGE_BAND_LABEL[band]}, ${side}) under any of its resolved geography keys — ZIP, county, county all-acreage or state. This county is a Browser Agent ingestion candidate; nothing is fabricated.`
       : 'No resolvable geography (need state + county or ZIP) to consume the Market Matrix.',
   };
 }
@@ -248,11 +311,52 @@ export function acreageBandForAcres(acres: number | null | undefined): AcreageBa
   return '50+';
 }
 
+/** The numeric span of each supported band, so containment is decided by the
+ *  subject's acreage rather than by a string key. 'all' is not a span. */
+const ACREAGE_BAND_SPAN: Record<Exclude<AcreageBand, 'all'>, { min: number; max: number }> = {
+  '0-1': { min: 0, max: 1 },
+  '1-2': { min: 1, max: 2 },
+  '2-5': { min: 2, max: 5 },
+  '5-10': { min: 5, max: 10 },
+  '10-20': { min: 10, max: 20 },
+  '20-50': { min: 20, max: 50 },
+  '50-100': { min: 50, max: 100 },
+  '100+': { min: 100, max: Number.POSITIVE_INFINITY },
+  '50+': { min: 50, max: Number.POSITIVE_INFINITY },
+};
+
+/**
+ * Every band a subject of this acreage genuinely belongs to, primary band first
+ * then narrowest containing span onward. A 60-acre subject is a "50+" property
+ * AND a "50–100" property, so a Market Matrix that recorded the county under
+ * only one of those labels has NOT failed to cover it — the lookup key did.
+ * This never widens past containment: a 60-acre subject never reaches "20–50".
+ */
+export function acreageBandsForAcres(acres: number | null | undefined): AcreageBand[] {
+  const primary = acreageBandForAcres(acres);
+  const out: AcreageBand[] = [primary];
+  if (typeof acres !== 'number' || !Number.isFinite(acres) || acres <= 0) return out;
+  // An open-ended band ("50+", "100+") is the widest possible span; keep the
+  // width finite so the narrowest-first ordering stays a real comparison.
+  const width = (b: Exclude<AcreageBand, 'all'>): number => {
+    const span = ACREAGE_BAND_SPAN[b];
+    return Number.isFinite(span.max) ? span.max - span.min : Number.MAX_SAFE_INTEGER - span.min;
+  };
+  const containing = (Object.keys(ACREAGE_BAND_SPAN) as Array<Exclude<AcreageBand, 'all'>>)
+    .filter((b) => acres >= ACREAGE_BAND_SPAN[b].min && acres < ACREAGE_BAND_SPAN[b].max)
+    .sort((a, b) => width(a) - width(b));
+  for (const b of containing) if (!out.includes(b)) out.push(b);
+  return out;
+}
+
 export interface MarketMatrixReportField { label: string; value: string | null; unknown: boolean }
 export interface MarketMatrixReportSection {
   available: boolean;
   coverageLevel: MatchLevel;
   coverageLabel: string;
+  /** The geography key that actually carried the record, and its operator label. */
+  resolvedKey: string | null;
+  resolvedKeyLabel: string | null;
   acreageBandRequested: string;
   acreageBandUsed: string | null;
   side: MarketSide;
@@ -303,6 +407,8 @@ export function buildMarketMatrixReportSection(res: MarketMatrixResolution): Mar
     available: res.available,
     coverageLevel: res.matchLevel,
     coverageLabel: MATCH_LEVEL_LABEL[res.matchLevel],
+    resolvedKey: res.resolvedKey,
+    resolvedKeyLabel: res.resolvedKeyLabel,
     acreageBandRequested: ACREAGE_BAND_LABEL[res.acreageBandRequested],
     acreageBandUsed: res.acreageBandUsed ? ACREAGE_BAND_LABEL[res.acreageBandUsed] : null,
     side: res.side,
@@ -316,18 +422,25 @@ export function buildMarketMatrixReportSection(res: MarketMatrixResolution): Mar
     fields,
     talkingPoints: res.talkingPoints,
     note: res.available
-      ? `Market Matrix ${MATCH_LEVEL_LABEL[res.matchLevel].toLowerCase()} for ${ACREAGE_BAND_LABEL[res.acreageBandUsed ?? res.acreageBandRequested].toLowerCase()}, ${res.side}, ${res.period}. Confidence ${res.confidence}. ${res.staleness.label}.`
+      ? `Market Matrix ${MATCH_LEVEL_LABEL[res.matchLevel].toLowerCase()} carried by ${res.resolvedKeyLabel ?? 'the resolved geography'}, ${res.side}, ${res.period}. Confidence ${res.confidence}. ${res.staleness.label}.`
       : res.note,
   };
 }
 
 /** One-call convenience: resolve a property's geography against the Market Matrix
- *  and format the operator section. Used by the deal-card report route. */
+ *  and format the operator section. Used by the deal-card report route. Every
+ *  band the subject's acreage belongs to is tried, so a band-label mismatch in
+ *  the store never reads as missing coverage. */
 export function resolveMarketMatrixSection(input: {
   state?: string; county?: string; zip?: string; acres?: number | null; side?: MarketSide; nowPeriod?: string;
 }): MarketMatrixReportSection {
-  const band = acreageBandForAcres(input.acres ?? null);
-  const res = resolveMarketMatrix({ state: input.state, county: input.county, zip: input.zip, acreageBand: band, side: input.side ?? 'sold', nowPeriod: input.nowPeriod });
+  const acres = input.acres ?? null;
+  const res = resolveMarketMatrix({
+    state: input.state, county: input.county, zip: input.zip,
+    acreageBand: acreageBandForAcres(acres),
+    acreageBands: acreageBandsForAcres(acres),
+    side: input.side ?? 'sold', nowPeriod: input.nowPeriod,
+  });
   return buildMarketMatrixReportSection(res);
 }
 

@@ -13,6 +13,7 @@ import type { GrowthDriverSummary } from './browser-market-intelligence.js';
 
 import type { PublicIntelligenceRun, PublicIntelligenceTaskRecord } from './public-property-intelligence.js';
 import { landPortalValuationStats } from './landportal-valuation.js';
+import type { CanonicalDealState } from './deal-card-reconciliation.js';
 export type MarketDirection = 'strengthening' | 'softening' | 'stable' | 'unknown';
 
 export interface MarketPulseSynthesis {
@@ -89,6 +90,61 @@ export interface DealEconomics {
   whyUnderwritingLater: string;
 }
 
+/**
+ * The canonical current state projected onto the Overview.
+ *
+ * The Overview is a MIRROR, never a second derivation. Comp counts, valuation
+ * status, blockers, missing information, the decision line, next actions, the
+ * research split, the score read and the owner-vs-seller distinction are read
+ * from `buildCanonicalDealState` and reproduced here verbatim, so the executive
+ * snapshot cannot narrate a position Property Intelligence or Comps & Valuation
+ * contradicts.
+ */
+export interface ExecutiveCanonicalState {
+  /** The single sentence describing the working comp set. */
+  compSummaryLine: string;
+  compCounts: { sold: number; active: number; asking: number; duplicatesMerged: number; sources: string[] };
+  valuation: {
+    status: 'sold_supported' | 'asking_indication' | 'not_priceable';
+    priceable: boolean;
+    /** 'land_basis_reference' means Opening/Target/Ceiling are NOT a
+     *  whole-property offer recommendation. */
+    figureKind: 'land_basis_reference' | 'whole_property_recommendation';
+    figureLabel: string;
+    landOnlyLabel: string;
+    wholeProperty: { state: 'pending' | 'established' | 'not_applicable'; why: string };
+    blockers: string[];
+  };
+  ownerSeller: {
+    ownerOfRecord: string | null;
+    ownerVerified: boolean;
+    /** "Not collected" is a valid, correct state; never backfilled from the owner. */
+    sellerLabel: string;
+    sellerCollected: boolean;
+    distinctionNote: string;
+  };
+  research: { lanesHeadline: string; questionsHeadline: string; summaryLine: string } | null;
+  score: { headline: string; positives: string[]; negatives: string[]; unresolved: string[] } | null;
+  decisionSummary: string;
+  blockers: string[];
+  missingInformation: string[];
+  nextActions: string[];
+}
+
+/**
+ * Methodology prose, lifted OFF the primary surface.
+ *
+ * The assumption lists, band notes and underwriting caveats are real and are
+ * kept, but they are the same sentences repeated by three different blocks. The
+ * Overview leads with the decision; this collection is what it keeps expandable
+ * underneath, deduplicated so one caveat is printed once.
+ */
+export interface ExecutiveMethodology {
+  assumptions: string[];
+  notes: string[];
+  whyUnderwritingLater: string | null;
+}
+
 export interface ExecutiveSummary {
   headline: string;
   whatItIs: string;
@@ -103,6 +159,11 @@ export interface ExecutiveSummary {
   verifyBeforeOffer: string[];
   nextSteps: string[];
   confidence: 'high' | 'medium' | 'low';
+  /** The one canonical current state, when the caller supplied it. Null only
+   *  for legacy callers that have not been wired to it yet. */
+  canonical: ExecutiveCanonicalState | null;
+  /** Everything the primary surface should NOT lead with. */
+  methodology: ExecutiveMethodology;
   /** Mirror of the shared unified readiness record (present when the caller
    *  supplies canonical gates) — the executive review shows the same readiness
    *  every tab shows. */
@@ -513,6 +574,79 @@ function buildDealEconomics(range: PreliminaryAcquisitionRange, pulse: MarketPul
   return { available: true, estValueLow: lo, estValueMid: range.estMidValue, estValueHigh: hi, acquisitionRange: range.recommendedRange, roughSpread, confidence: pulse.confidence === 'none' ? 'low' : pulse.confidence, assumptions, missingCostItems, whyUnderwritingLater };
 }
 
+/** Project the canonical current state onto the Overview. No recomputation. */
+export function projectCanonicalExecutiveState(canonical: CanonicalDealState): ExecutiveCanonicalState {
+  return {
+    compSummaryLine: canonical.comps.summaryLine,
+    compCounts: {
+      sold: canonical.comps.sold,
+      active: canonical.comps.active,
+      asking: canonical.comps.asking,
+      duplicatesMerged: canonical.comps.duplicatesMerged,
+      sources: canonical.comps.sources,
+    },
+    valuation: {
+      status: canonical.valuation.status,
+      priceable: canonical.valuation.priceable,
+      figureKind: canonical.valuation.scope.figureKind,
+      figureLabel: canonical.valuation.scope.figureLabel,
+      landOnlyLabel: canonical.valuation.scope.landOnlyLabel,
+      wholeProperty: canonical.valuation.scope.wholeProperty,
+      blockers: canonical.valuation.blockers,
+    },
+    ownerSeller: {
+      ownerOfRecord: canonical.ownerSeller.ownerOfRecord,
+      ownerVerified: canonical.ownerSeller.ownerVerified,
+      sellerLabel: canonical.ownerSeller.sellerLabel,
+      sellerCollected: canonical.ownerSeller.sellerCollected,
+      distinctionNote: canonical.ownerSeller.distinctionNote,
+    },
+    research: canonical.research
+      ? {
+          lanesHeadline: canonical.research.lanesHeadline,
+          questionsHeadline: canonical.research.questionsHeadline,
+          summaryLine: canonical.research.summaryLine,
+        }
+      : null,
+    score: canonical.scoreSummary
+      ? {
+          headline: canonical.scoreSummary.headline,
+          positives: canonical.scoreSummary.positives,
+          negatives: canonical.scoreSummary.negatives,
+          unresolved: canonical.scoreSummary.unresolved,
+        }
+      : null,
+    decisionSummary: canonical.decisionSummary,
+    blockers: canonical.blockers,
+    missingInformation: canonical.missingInformation,
+    nextActions: canonical.nextActions,
+  };
+}
+
+function dedupeStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Collect every methodology sentence the three pricing blocks each restate, so
+ * the primary surface can show the decision and keep the rubric expandable.
+ */
+function buildMethodology(range: PreliminaryAcquisitionRange, economics: DealEconomics): ExecutiveMethodology {
+  return {
+    assumptions: dedupeStrings([...range.assumptions, ...economics.assumptions]),
+    notes: dedupeStrings([range.note, economics.missingCostItems.length ? `Costs not yet priced: ${economics.missingCostItems.join(', ')}.` : null]),
+    whyUnderwritingLater: economics.whyUnderwritingLater || null,
+  };
+}
+
 function verifiedIdentitySource(report: DealCardReportView): string {
   const factSource = report.ddFactChecklist.find((row) => row.status === 'verified' && row.source)?.source?.trim();
   const statusSource = report.parcelVerificationStatus.match(/^Parcel verified \((.*)\)$/i)?.[1]
@@ -529,8 +663,24 @@ function verifiedIdentitySource(report: DealCardReportView): string {
 /** Synthesize the operator-ready Executive Summary from the persisted report.
  *  When the caller supplies gates from the canonical shared records, pricing is
  *  suppressed while the gate is closed and seller questions come from the
- *  property-specific generator instead of the generic fallback. */
-export function buildExecutiveSummary(report: DealCardReportView, growth?: GrowthDriverSummary, publicRun?: PublicIntelligenceRun | null, gates?: ExecutiveGates | null): ExecutiveSummary {
+ *  property-specific generator instead of the generic fallback.
+ *
+ *  When the caller supplies the canonical current state, THAT state governs the
+ *  risks, the outstanding-information list, the next actions and the labelling
+ *  of every acquisition figure. The Overview stops deriving its own position and
+ *  mirrors the one the other two pages read. */
+export function buildExecutiveSummary(
+  report: DealCardReportView,
+  growth?: GrowthDriverSummary,
+  publicRun?: PublicIntelligenceRun | null,
+  gates?: ExecutiveGates | null,
+  canonicalState?: CanonicalDealState | null,
+): ExecutiveSummary {
+  const canonical = canonicalState ? projectCanonicalExecutiveState(canonicalState) : null;
+  // A statement the current accepted records already contradict must not reach
+  // the Overview through any of its lists.
+  const superseded = new Set((canonicalState?.supersededStatements ?? []).map((entry) => entry.statement.trim()));
+  const currentOnly = (values: string[]): string[] => values.filter((value) => !superseded.has(value.trim()));
   const pulse = buildMarketPulse(report, growth);
   const range = buildAcquisitionRange(report, pulse, gates);
   const strategyRanking = reconcileStrategyRanking(report, buildStrategyRanking(report, pulse, range));
@@ -557,15 +707,23 @@ export function buildExecutiveSummary(report: DealCardReportView, growth?: Growt
     whatItIs = `${acres ? `${acres}-acre ` : ''}${landUse || 'parcel'}${county ? ` in ${county}` : ''}. Official parcel match confirmed via ${officialCountyEvidence.sourceName}; supporting provider confirmation may remain on file. Offer-grade title verification and surveyed-boundary verification remain pending.`;
   }
   const gateClosed = !!gates && !gates.pricingAllowed;
+  // A figure derived from land value alone is a land-basis reference. On a
+  // materially improved subject it is never an acquisition recommendation for
+  // the whole property, and the operator must not have to infer that.
+  const landBasisOnly = canonical?.valuation.figureKind === 'land_basis_reference'
+    && canonical.valuation.wholeProperty.state === 'pending';
+  const targetPhrase = `${landBasisOnly ? 'land-basis reference ' : ''}target ${money(range.acquisition40)}–${money(range.acquisition60)}`;
   const whyInteresting = range.available
-    ? `Verified parcel with a real comp band — there's enough to set a preliminary acquisition target (${money(range.acquisition40)}–${money(range.acquisition60)}) and prep a seller call now.`
+    ? landBasisOnly
+      ? `Verified parcel with a real comp band — enough for a LAND-BASIS reference of ${money(range.acquisition40)}–${money(range.acquisition60)} and a seller call. ${canonical!.valuation.wholeProperty.why}`
+      : `Verified parcel with a real comp band — there's enough to set a preliminary acquisition target (${money(range.acquisition40)}–${money(range.acquisition60)}) and prep a seller call now.`
     : verified
       ? (gateClosed ? `Verified parcel; pricing is blocked (${gates!.pricingBlockers[0] ?? 'evidence gate closed'}) while research continues.` : 'Verified parcel; gather a few sold comps to unlock pricing.')
       : 'Verify identity first to unlock the pipeline.';
 
   return {
     headline: verified
-      ? `${acres ? `${acres} ac ` : ''}${landUse || 'land'}${county ? `, ${county}` : ''} — ${range.available ? `target ${money(range.acquisition40)}–${money(range.acquisition60)}` : gateClosed ? 'pricing blocked, research continuing' : 'verified, pricing pending comps'}`
+      ? `${acres ? `${acres} ac ` : ''}${landUse || 'land'}${county ? `, ${county}` : ''} — ${range.available ? targetPhrase : gateClosed ? 'pricing blocked, research continuing' : 'verified, pricing pending comps'}`
       : 'Needs Verification — resolve the parcel to begin',
     whatItIs,
     whyInteresting,
@@ -574,7 +732,12 @@ export function buildExecutiveSummary(report: DealCardReportView, growth?: Growt
     strategyRanking,
     strongestStrategy: { strategy: (verified || range.available) ? topStrategy.strategy : (report.mostViableStrategy || '(pending verified data)'), why: (verified || range.available) ? `${topStrategy.reason} (Risk: ${topStrategy.risk})${verified ? '' : ' [local area context — verify parcel before any offer]'}` : 'Blocked until identity is verified.' },
     dealEconomics,
-    topRisks: [...new Set([...screeningRisks, ...topRisks(report, gates)])].slice(0, 8),
+    // Canonical blockers lead; anything the current records superseded is gone.
+    topRisks: currentOnly(dedupeStrings([
+      ...(canonical?.blockers ?? []),
+      ...screeningRisks,
+      ...topRisks(report, gates),
+    ])).slice(0, 8),
     // Property-specific questions from the shared generator when available;
     // the generic fallback remains only for callers without an operator record.
     sellerQuestions: gates?.sellerQuestions?.length ? gates.sellerQuestions.slice(0, 12) : [
@@ -584,11 +747,22 @@ export function buildExecutiveSummary(report: DealCardReportView, growth?: Growt
       'Has it been surveyed, perc-tested, or had any offers?',
       'Who else is part of the decision?',
     ],
-    verifyBeforeOffer: [...new Set([...(report.countyVerificationChecklist ?? []), ...(report.dataGaps ?? []).filter((g) => !/not reviewed yet/i.test(g))].map(operatorizePersistedGap).filter((label) => label.trim()))].slice(0, 8),
-    nextSteps: publicRun ? publicNextSteps(publicRun) : range.available
-      ? ['Run the discovery call with the questions above.', 'Tighten sold comps (radius/recency) to firm the range.', 'Confirm access, title, and buildability before any offer.']
-      : verified ? ['Gather sold comps to price the parcel.', 'Run the discovery call.'] : ['Re-enter the address/APN to verify identity.'],
+    // The outstanding-information list is the canonical one when it exists, so
+    // the Overview cannot ask for evidence the accepted records already hold.
+    verifyBeforeOffer: currentOnly(dedupeStrings([
+      ...(canonical?.missingInformation ?? []),
+      ...[...(report.countyVerificationChecklist ?? []), ...(report.dataGaps ?? []).filter((g) => !/not reviewed yet/i.test(g))]
+        .map(operatorizePersistedGap),
+    ])).slice(0, 8),
+    nextSteps: dedupeStrings([
+      ...(canonical?.nextActions ?? []),
+      ...(publicRun ? publicNextSteps(publicRun) : range.available
+        ? ['Run the discovery call with the questions above.', 'Tighten sold comps (radius/recency) to firm the range.', 'Confirm access, title, and buildability before any offer.']
+        : verified ? ['Gather sold comps to price the parcel.', 'Run the discovery call.'] : ['Re-enter the address/APN to verify identity.']),
+    ]).slice(0, 12),
     confidence: range.available ? (pulse.confidence === 'high' ? 'high' : 'medium') : verified ? 'medium' : 'low',
     readiness: gates?.unifiedReadiness ?? null,
+    canonical,
+    methodology: buildMethodology(range, dealEconomics),
   };
 }

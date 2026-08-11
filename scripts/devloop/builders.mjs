@@ -39,6 +39,16 @@ function quote(value) {
   return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
 
+function envWithSafeGitDirectory(cwd) {
+  const env = { ...process.env };
+  const parsed = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10);
+  const index = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  env.GIT_CONFIG_COUNT = String(index + 1);
+  env[`GIT_CONFIG_KEY_${index}`] = 'safe.directory';
+  env[`GIT_CONFIG_VALUE_${index}`] = path.resolve(cwd);
+  return env;
+}
+
 // Some builders echo the prompt they were given, and the prompt names both
 // tokens. Only the last occurrence can be the builder's own sign-off.
 function claimFromText(text) {
@@ -190,7 +200,12 @@ export function launchBuilderAsync(
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnFn(builder.command, plan.args, { cwd, shell: true, windowsHide: true });
+      child = spawnFn(builder.command, plan.args, {
+        cwd,
+        shell: true,
+        windowsHide: true,
+        env: envWithSafeGitDirectory(cwd),
+      });
     } catch (error) {
       resolve({
         builderId: builder.id,
@@ -268,6 +283,7 @@ export function launchBuilder(builder, { cwd, promptText, attemptDir, tools, tim
     cwd,
     shell: true,
     encoding: 'utf8',
+    env: envWithSafeGitDirectory(cwd),
     input: plan.stdin ?? promptText,
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,

@@ -213,8 +213,12 @@ function indented(text) {
  */
 async function runTargetedRepair(mission, report, { diagnosis, integration, argv, attempt, maxRepairs, phase }) {
   const target = diagnosis.candidateFiles.length ? diagnosis.candidateFiles : integration.files;
+  const repairNumber = mission.lanes.reduce((highest, lane) => {
+    const match = /^repair-(\d+)$/.exec(lane.id);
+    return match ? Math.max(highest, Number(match[1])) : highest;
+  }, 0) + 1;
   const repairLane = {
-    id: `repair-${attempt}`,
+    id: `repair-${repairNumber}`,
     kind: 'repair',
     title: `repair ${diagnosis.checkId}`,
     brief: 'Repair the exact failure below.',
@@ -259,10 +263,6 @@ async function runPlan(plan, argv, { discoveries = [] } = {}) {
     process.exitCode = 2;
     return;
   }
-
-  const maxRepairs = Number(flag(argv, '--max-repairs', '2'));
-  const skipValidation = argv.includes('--no-validate');
-  const skipBrowser = argv.includes('--no-browser');
 
   const bootReport = createReporter(ROOT, { missionId: 'boot', createdAt: new Date().toISOString() }, {
     write: (line) => console.log(line),
@@ -317,7 +317,34 @@ async function runPlan(plan, argv, { discoveries = [] } = {}) {
     });
   }
 
-  const baseline = await captureBaseline(mission.focusedChecks, report);
+  return executeMission(mission, argv, report);
+}
+
+/**
+ * Everything after the lane graph exists: baseline, lanes, integration, focused
+ * checks, targeted repair, validation and localhost verification.
+ *
+ * Factored out of runPlan so a mission whose plan was already authored and
+ * VALIDATED can be re-entered without paying for authoring again. Re-authoring
+ * a 20k-character specification to rerun four blocked lanes is pure waste, and
+ * the second authoring would not even produce the same plan.
+ */
+async function executeMission(mission, argv, report) {
+  const maxRepairs = Number(flag(argv, '--max-repairs', '2'));
+  const skipValidation = argv.includes('--no-validate');
+  const skipBrowser = argv.includes('--no-browser');
+  const writeLanes = mission.lanes.filter((lane) => lane.kind !== 'recon');
+
+  const hasIntegratedWork = (mission.integration?.lanes ?? []).some((entry) => entry.applied);
+  const canReuseBaseline = hasIntegratedWork && Array.isArray(mission.baselineRedChecks) && Array.isArray(mission.baselineFailures);
+  const baseline = canReuseBaseline
+    ? { failures: mission.baselineFailures, redChecks: mission.baselineRedChecks }
+    : await captureBaseline(mission.focusedChecks, report);
+  if (canReuseBaseline) {
+    report('baseline.resume', {
+      message: `baseline: retained the original pre-integration result (${baseline.redChecks.length} check(s) red)`,
+    });
+  }
   const baselineFailures = baseline.failures;
   const baselineRed = new Map(baseline.redChecks.map((entry) => [entry.id, entry]));
   mission.baselineFailures = baselineFailures;
@@ -746,6 +773,70 @@ async function authorAndRun(argv) {
   return runPlan(authored.plan, argv, { discoveries: authored.discoveries });
 }
 
+/**
+ * Re-enter a mission that already has a validated plan.
+ *
+ * A lane that completed keeps its work: its worktree is intact and is reused
+ * through the corrected integration path. Every lane that failed or was blocked
+ * by a failure goes back to pending so the scheduler runs it again, reusing its
+ * existing worktree so a rerun continues from whatever it had already written
+ * rather than starting from an empty checkout.
+ *
+ * This is the missing continuation of the existing orchestrator, not a second
+ * one: it runs the same lanes, the same integration, the same checks.
+ */
+function prepareMissionForResume(mission) {
+  const abandonedRepairs = mission.lanes.filter((lane) => lane.kind === 'repair' && lane.status !== 'complete');
+  if (abandonedRepairs.length) {
+    // A repair lane is an ephemeral response to one exact check result, not a
+    // node in the authored dependency graph. Replaying a quota-failed repair on
+    // resume would run stale diagnostics in parallel with the real unfinished
+    // lanes. Its prompt/output remain on disk and in events as evidence.
+    mission.lanes = mission.lanes.filter((lane) => !abandonedRepairs.includes(lane));
+  }
+
+  const retried = [];
+  const kept = [];
+  for (const lane of mission.lanes) {
+    if (lane.status === 'complete') { kept.push(lane.id); continue; }
+    if (lane.status === 'failed' || lane.status === 'blocked' || lane.status === 'pending' || lane.status === 'running') {
+      lane.status = 'pending';
+      lane.error = null;
+      retried.push(lane.id);
+    }
+  }
+  mission.terminalState = null;
+  mission.terminalReason = null;
+  return { retried, kept, abandonedRepairs };
+}
+
+async function resumeMission(missionId, argv) {
+  const mission = loadMission(ROOT, missionId);
+  if (!mission) {
+    console.error(`No mission ${missionId}. Use: npm run landos:build -- status`);
+    process.exitCode = 2;
+    return;
+  }
+  const report = createReporter(ROOT, mission);
+  const state = await preflight(report);
+  if (state.dirty.length && !argv.includes('--allow-dirty')) {
+    console.error(`\nRefusing to resume: the primary worktree has ${state.dirty.length} dirty path(s).`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const { retried, kept, abandonedRepairs } = prepareMissionForResume(mission);
+  saveMission(ROOT, mission);
+  report('mission.resume', {
+    message:
+      `resuming ${mission.missionId}\n` +
+      `        keeping complete: ${kept.join(', ') || 'none'}\n` +
+      `        re-running: ${retried.join(', ') || 'none'}` +
+      (abandonedRepairs.length ? `\n        preserving but not replaying failed repair output: ${abandonedRepairs.map((lane) => lane.id).join(', ')}` : ''),
+  });
+  return executeMission(mission, argv, report);
+}
+
 // ---------------------------------------------------------------------- main
 
 async function main() {
@@ -759,6 +850,7 @@ async function main() {
     console.log('  --stdin                               the same, from piped input');
     console.log('  ... --author-only                     stop at a validated mission, do not launch');
     console.log('  <plan.json>                           run a hand-written mission plan');
+    console.log('  resume <missionId>                    re-run a validated mission\'s unfinished lanes');
     console.log('  status [missionId] | timeline <missionId> | show <missionId>');
     console.log('  cleanup <missionId>|--all | accept <missionId> --message "..."');
     return;
@@ -767,6 +859,7 @@ async function main() {
   if (command === 'timeline') return printTimeline(argv[1]);
   if (command === 'show') return console.log(JSON.stringify(loadMission(ROOT, argv[1]), null, 2));
   if (command === 'cleanup') return cleanup(argv);
+  if (command === 'resume') return resumeMission(argv[1], argv);
   if (command === 'accept') return acceptMission(argv[1], argv);
 
   // A path that exists is a hand-written plan; anything else is a request in
@@ -793,6 +886,6 @@ export {
   captureBaseline,
   firstActionableFailure,
   preExistingReason,
+  prepareMissionForResume,
   ROOT,
 };
-

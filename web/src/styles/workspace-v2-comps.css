@@ -414,6 +414,26 @@
   border: 1px solid var(--awv2-line-strong); border-radius: 4px; padding: 3px 7px;
 }
 
+.awv2-cv-sourcebadges,
+.awv2-cvd-sourcebadges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.awv2-cv-sourcebadges { margin: 2px 0 10px; }
+.awv2-cv-sourcebadges .source-badge,
+.awv2-cvd-sourcebadges .source-badge {
+  font-family: var(--awv2-mono); font-size: 11px; font-weight: 650;
+  color: var(--awv2-brass-bright); background: var(--awv2-brass-soft);
+  border: 1px solid rgba(201, 164, 92, 0.45); border-radius: 999px; padding: 3px 8px;
+}
+.awv2-cv-sourcebadges .merged,
+.awv2-cvd-sourcebadges .merged {
+  font-family: var(--awv2-mono); font-size: 11px; color: #86efac;
+  border: 1px solid rgba(21, 128, 61, 0.5); border-radius: 999px; padding: 3px 8px;
+}
+.awv2-cv-improved-context {
+  margin: 0 0 12px; padding: 8px 10px; font-size: 13px; line-height: 1.55;
+  color: #e7d9bc; background: rgba(138, 133, 119, 0.1);
+  border-left: 3px solid #cbbfa4;
+}
+
 .awv2-cvd-gallery { display: flex; flex-direction: column; gap: 10px; }
 .awv2-cvd-galleryframe {
   position: relative; width: 100%; max-width: 720px;
@@ -452,6 +472,7 @@
 .awv2-cvd-gallerymeta .prov {
   font-family: var(--awv2-mono); font-size: 12px; color: var(--awv2-bone-dim);
 }
+.awv2-cvd-gallerymeta .use { flex-basis: 100%; font-size: 12.5px; line-height: 1.55; color: var(--awv2-bone-faint); }
 .awv2-cvd-gallerymeta a {
   display: inline-flex; align-items: center; gap: 5px;
   font-family: var(--awv2-mono); font-size: 12.5px; color: var(--awv2-brass-bright);

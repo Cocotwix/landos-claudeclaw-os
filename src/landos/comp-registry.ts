@@ -12,6 +12,7 @@
 
 import { formatCountyLabel } from './fact-format.js';
 import { providerDisplayName } from './comp-providers.js';
+import { listingPhotoPriority } from './comp-visual.js';
 
 export interface CompRegistryCandidate {
   id?: number | string | null;
@@ -30,6 +31,8 @@ export interface CompRegistryCandidate {
   sourceUrl?: string | null;
   /** Optional provider-owned listing image. It is evidence decoration only. */
   thumbnailUrl?: string | null;
+  /** Ordered genuine/provider photo URLs retained during listing enrichment. */
+  photoUrls?: string[];
   listingDate?: string | null;
   daysOnMarket?: number | null;
   views?: number | null;
@@ -81,6 +84,7 @@ export interface UniqueCompTransaction {
   providers: string[];
   sourceUrls: string[];
   thumbnailUrl: string | null;
+  photoUrls: string[];
   /** Whether a closed-sale event has the minimum traceable evidence for valuation. */
   qualification: {
     qualifiedForValuation: boolean;
@@ -124,6 +128,8 @@ export interface UniqueComp {
   /** Operator-facing provider names (internal adapter ids stay in `providers`). */
   providersDisplay: string[];
   sourceConfidence: 'high' | 'medium' | 'low';
+  /** Provider rows collapsed behind this one physical-property record. */
+  duplicatesMerged: number;
   comparability: SubjectComparability;
   comparabilityWhy: string;
 }
@@ -271,14 +277,23 @@ function coordKey(lat: number | null | undefined, lng: number | null | undefined
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
 
-function propertyKey(c: CompRegistryCandidate): { key: string; matchedBy: UniqueComp['matchedBy'] } {
+function propertyKeys(c: CompRegistryCandidate): Array<{ key: string; matchedBy: UniqueComp['matchedBy'] }> {
+  const keys: Array<{ key: string; matchedBy: UniqueComp['matchedBy'] }> = [];
   const apn = apnKey(c.apn);
-  if (apn) return { key: `apn:${apn}`, matchedBy: 'apn' };
+  if (apn) keys.push({ key: `apn:${apn}`, matchedBy: 'apn' });
   const addr = normalizeCompAddress(c.addressDesc);
-  if (addr) return { key: `addr:${addr}`, matchedBy: 'address' };
+  if (addr) keys.push({ key: `addr:${addr}`, matchedBy: 'address' });
   const coord = coordKey(c.lat, c.lng);
-  if (coord) return { key: `coord:${coord}`, matchedBy: 'coordinates' };
-  return { key: `pd:${c.price ?? '?'}|${(c.saleOrListDate ?? '').slice(0, 7)}|${c.acres ?? '?'}`, matchedBy: 'price_date' };
+  if (coord) keys.push({ key: `coord:${coord}`, matchedBy: 'coordinates' });
+  return keys.length ? keys : [{ key: `pd:${c.price ?? '?'}|${(c.saleOrListDate ?? '').slice(0, 7)}|${c.acres ?? '?'}`, matchedBy: 'price_date' }];
+}
+
+const identityRank: Record<UniqueComp['matchedBy'], number> = {
+  apn: 4, address: 3, coordinates: 2, price_date: 1,
+};
+
+function strongerIdentity(a: UniqueComp['matchedBy'], b: UniqueComp['matchedBy']): UniqueComp['matchedBy'] {
+  return identityRank[a] >= identityRank[b] ? a : b;
 }
 
 /**
@@ -322,6 +337,17 @@ function eventKind(c: CompRegistryCandidate): CompEventKind {
 function validSourceUrl(value: string | null | undefined): string | null {
   const source = (value ?? '').trim();
   return /^https?:\/\//i.test(source) ? source : null;
+}
+
+function orderedVisualUrls(rows: CompRegistryCandidate[]): string[] {
+  const urls = [...new Set(rows.flatMap((row) => [row.thumbnailUrl, ...(row.photoUrls ?? [])])
+    .map(validSourceUrl)
+    .filter((url): url is string => url != null))];
+  return urls
+    .map((url, index) => ({ url, index, priority: listingPhotoPriority(url) }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)
+    .map(({ url }) => url)
+    .slice(0, 40);
 }
 
 /** A sale date must be a real calendar date, not merely a parseable fragment. */
@@ -508,27 +534,55 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
   const propertyGroups = new Map<string, string>();
   const transactionAliases = new Map<string, string>();
   for (const c of valid) {
-    const { key, matchedBy } = propertyKey(c);
+    const identities = propertyKeys(c);
     const alias = closedTransactionAlias(c);
-    const propertyGroup = propertyGroups.get(key);
-    const aliasGroup = alias ? transactionAliases.get(alias) : undefined;
-    let groupKey = propertyGroup ?? aliasGroup ?? key;
-    if (propertyGroup && aliasGroup && propertyGroup !== aliasGroup) {
-      const target = groups.get(propertyGroup);
-      const source = groups.get(aliasGroup);
-      if (target && source) {
-        target.rows.push(...source.rows);
-        groups.delete(aliasGroup);
-        for (const [k, v] of propertyGroups) if (v === aliasGroup) propertyGroups.set(k, propertyGroup);
-        for (const [k, v] of transactionAliases) if (v === aliasGroup) transactionAliases.set(k, propertyGroup);
-      }
-      groupKey = propertyGroup;
+    const candidateApn = apnKey(c.apn);
+    let existing = [...new Set([
+      ...identities.map((identity) => propertyGroups.get(identity.key)),
+      alias ? transactionAliases.get(alias) : undefined,
+    ].filter((value): value is string => value != null))]
+      .filter((groupKey) => !candidateApn || !(groups.get(groupKey)?.rows ?? [])
+        .some((row) => {
+          const rowApn = apnKey(row.apn);
+          return rowApn != null && rowApn !== candidateApn;
+        }));
+    if (!candidateApn && existing.length > 1) {
+      const knownApns = new Set(existing.flatMap((groupKey) => (groups.get(groupKey)?.rows ?? [])
+        .map((row) => apnKey(row.apn)).filter((value): value is string => value != null)));
+      // An address-only/transaction-only row cannot bridge two explicitly
+      // different parcels. Keep the first established identity group and leave
+      // the conflicting group independent.
+      if (knownApns.size > 1) existing = existing.slice(0, 1);
     }
-    propertyGroups.set(key, groupKey);
-    if (alias) transactionAliases.set(alias, groupKey);
-    const g = groups.get(groupKey);
-    if (g) g.rows.push(c);
-    else groups.set(groupKey, { matchedBy, rows: [c] });
+    const groupKey = existing[0] ?? identities[0].key;
+    let target = groups.get(groupKey);
+    if (!target) {
+      target = { matchedBy: identities[0].matchedBy, rows: [] };
+      groups.set(groupKey, target);
+    }
+    // A later enriched page commonly carries both the APN from LandPortal and
+    // the street address used by listing marketplaces. Merge every group it
+    // bridges, then repoint every identifier so grouping is transitive and does
+    // not depend on provider order.
+    for (const sourceKey of existing.slice(1)) {
+      const source = groups.get(sourceKey);
+      if (!source || source === target) continue;
+      target.rows.push(...source.rows);
+      target.matchedBy = strongerIdentity(target.matchedBy, source.matchedBy);
+      groups.delete(sourceKey);
+      for (const [key, value] of propertyGroups) if (value === sourceKey) propertyGroups.set(key, groupKey);
+      for (const [key, value] of transactionAliases) if (value === sourceKey) transactionAliases.set(key, groupKey);
+    }
+    for (const identity of identities) {
+      const priorGroup = propertyGroups.get(identity.key);
+      if (!priorGroup || priorGroup === groupKey || existing.includes(priorGroup)) propertyGroups.set(identity.key, groupKey);
+      target.matchedBy = strongerIdentity(target.matchedBy, identity.matchedBy);
+    }
+    if (alias) {
+      const priorGroup = transactionAliases.get(alias);
+      if (!priorGroup || priorGroup === groupKey || existing.includes(priorGroup)) transactionAliases.set(alias, groupKey);
+    }
+    target.rows.push(c);
   }
 
   const uniqueComps: UniqueComp[] = [];
@@ -551,6 +605,7 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
       const richest = [...rows].sort((a, b) => nonNullFields(b) - nonNullFields(a))[0];
       const kind = eventKind(richest);
       const sourceUrls = [...new Set(rows.map((r) => validSourceUrl(r.sourceUrl)).filter((u): u is string => u != null))];
+      const photoUrls = orderedVisualUrls(rows);
       const dateIso = rows.map((r) => validEvidenceDate(r.saleOrListDate)).find((d): d is string => d != null) ?? null;
       const missing: Array<'source' | 'sale_date'> = [];
       if (kind === 'sold') {
@@ -567,7 +622,8 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
         daysOnMarket: firstNumber(rows.map((r) => r.daysOnMarket)),
         providers,
         sourceUrls,
-        thumbnailUrl: rows.map((r) => validSourceUrl(r.thumbnailUrl)).find((u): u is string => u != null) ?? null,
+        thumbnailUrl: photoUrls[0] ?? null,
+        photoUrls,
         qualification: { qualifiedForValuation: kind === 'sold' && missing.length === 0, missing },
         mergedCandidates: rows.length,
       });
@@ -610,6 +666,7 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
       // Source confidence is about the RECORD; comparability (below) is about
       // the SUBJECT — the two are never merged into one label.
       sourceConfidence: allProviders.length >= 2 || group.matchedBy === 'apn' ? 'high' : group.matchedBy === 'address' ? 'medium' : 'low',
+      duplicatesMerged: Math.max(0, group.rows.length - transactions.length),
       comparability: cmp.comparability,
       comparabilityWhy: cmp.why,
     };
@@ -665,7 +722,7 @@ export function buildCompRegistry(subject: SubjectMarket, candidates: CompRegist
 }
 
 function nonNullFields(c: CompRegistryCandidate): number {
-  return [c.addressDesc, c.apn, c.price, c.acres, c.pricePerAcre, c.saleOrListDate, c.listingDate, c.sourceUrl, c.lat, c.lng, c.thumbnailUrl]
+  return [c.addressDesc, c.apn, c.price, c.acres, c.pricePerAcre, c.saleOrListDate, c.listingDate, c.sourceUrl, c.lat, c.lng, c.thumbnailUrl, ...(c.photoUrls ?? [])]
     .filter((v) => v != null && v !== '').length;
 }
 

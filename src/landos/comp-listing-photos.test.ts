@@ -244,6 +244,38 @@ describe('photo sets persist through the store under the reconciliation gate', (
     expect(back.photos![0].url).toBe(`${ZG}/hero-p_e.jpg`);
   });
 
+  it('promotes the first reconciled gallery photo when enrichment has no separate hero field', () => {
+    saveCompListingDetail(detail({
+      image: null,
+      photos: [
+        { url: `${ZG}/detail-first.jpg`, sequence: 1, label: 'Zillow listing photo', provenance: 'listing_photo', context: 'gallery', isOriginalListingImage: true },
+        { url: `${ZG}/detail-second.jpg`, sequence: 2, label: 'Zillow listing photo', provenance: 'listing_photo', context: 'gallery', isOriginalListingImage: true },
+      ],
+      propertyFacts: { address: '0 McGibbon Rd, Martville, NY 13111' },
+    }) as never);
+    const back = loadCompListingDetail(compId)!;
+    expect(back.image?.url).toBe(`${ZG}/detail-first.jpg`);
+    expect(listComps({}).find((row) => row.id === compId)?.thumbnail_url).toBe(`${ZG}/detail-first.jpg`);
+  });
+
+  it('round-trips structured listing enrichment and provider provenance', () => {
+    saveCompListingDetail(detail({
+      propertyFacts: {
+        address: '0 McGibbon Rd, Martville, NY 13111', acreage: 8.2,
+        improvementType: 'cabin', buildingSqft: 900, beds: 2, baths: 1,
+        yearBuilt: 1998, utilities: ['electric', 'well'], accessClues: ['gravel drive'], features: ['wooded'],
+      },
+      sourcePages: [
+        { provider: 'LandPortal', url: 'https://landportal.test/a' },
+        { provider: 'Zillow', url: 'https://zillow.test/a' },
+        { provider: 'Realtor.com', url: 'https://realtor.test/a' },
+      ],
+    }) as never);
+    const back = loadCompListingDetail(compId)!;
+    expect(back.propertyFacts).toMatchObject({ improvementType: 'cabin', buildingSqft: 900, utilities: ['electric', 'well'] });
+    expect(back.sourcePages?.map((page) => page.provider)).toEqual(['LandPortal', 'Zillow', 'Realtor.com']);
+  });
+
   it('survives a reload, which is what refresh and managed restart both do', () => {
     saveCompListingDetail(detail() as never);
     expect(loadCompListingDetail(compId)!.photos).toHaveLength(3);
@@ -253,6 +285,8 @@ describe('photo sets persist through the store under the reconciliation gate', (
   it('strips the WHOLE set when the capture did not reconcile', () => {
     saveCompListingDetail(detail({
       compId: otherCompId,
+      propertyFacts: { improvementType: 'house', buildingSqft: 1200 },
+      sourcePages: [{ provider: 'Realtor.com', url: 'https://realtor.test/wrong' }],
       reconciliation: { matched: false, matchedOn: ['retained source page URL'], mismatches: [], note: 'Capture refused: only 1 identity signal agreed.' },
     }) as never);
     const back = loadCompListingDetail(otherCompId)!;
@@ -260,6 +294,8 @@ describe('photo sets persist through the store under the reconciliation gate', (
     expect(back.photoCount).toBe(0);
     expect(back.image).toBeNull();
     expect(back.sourceDescription).toBeNull();
+    expect(back.propertyFacts).toBeUndefined();
+    expect(back.sourcePages).toEqual([]);
   });
 
   it('never lets a later provider block destroy evidence an earlier capture proved', () => {
@@ -358,6 +394,56 @@ describe('the projection exposes the gallery and hides the diagnostics', () => {
     expect(p.photos.sourcePage).toBe('https://zillow.test/a');
     expect(p.photos.items.map((i) => i.sequence)).toEqual([1, 2]);
     expect(p.photos.fallbackNote).toBeNull();
+  });
+
+  it('projects listing-reported enrichment facts and all reconciled source pages', () => {
+    const p = buildCompListingProjection({
+      ...projectionBase,
+      detail: {
+        compId: 1, provider: 'Realtor', sourceUrl: 'https://realtor.test/a',
+        capturedAtIso: '2026-08-06T12:00:00.000Z', image: null, photos: [],
+        events: [], unusableRows: [], refusedImages: [], sourceDescription: 'Wooded acreage with a cabin.',
+        status: 'sold', limitation: null,
+        reconciliation: { matched: true, matchedOn: ['address', 'acreage'], mismatches: [], note: 'ok' },
+        propertyFacts: {
+          address: '0 McGibbon Rd, Martville, NY 13111', acreage: 8.2,
+          improvementType: 'cabin', buildingSqft: 900, yearBuilt: 1998,
+          utilities: ['electric'], accessClues: ['gravel drive'], features: ['wooded'],
+        },
+        sourcePages: [
+          { provider: 'LandPortal', url: 'https://landportal.test/a' },
+          { provider: 'Realtor.com', url: 'https://realtor.test/a' },
+        ],
+      } as never,
+    });
+    expect(p.characteristics).toMatchObject({
+      provenance: 'listing_reported', improvementType: 'cabin', buildingSqft: 900,
+      utilities: ['electric'], accessClues: ['gravel drive'], features: ['wooded'],
+    });
+    expect(p.evidence.sourcePages).toHaveLength(2);
+  });
+
+  it('projects an ordered research-evidence photo list before a full capture exists', () => {
+    const p = buildCompListingProjection({
+      ...projectionBase,
+      detail: null,
+      retainedPhotoUrls: [
+        { url: `${ZG}/hero-p_e.jpg`, label: 'Zillow listing photo' },
+        { url: `${ZG}/drive-p_e.jpg`, label: 'Zillow listing photo' },
+      ],
+    });
+    expect(p.photos.items.map((photo) => photo.url)).toEqual([`${ZG}/hero-p_e.jpg`, `${ZG}/drive-p_e.jpg`]);
+    expect(p.photos.items.map((photo) => photo.context)).toEqual(['hero', 'gallery']);
+  });
+
+  it('does not promote arbitrary research-evidence URLs into a property gallery', () => {
+    const p = buildCompListingProjection({
+      ...projectionBase,
+      detail: null,
+      retainedPhotoUrls: [{ url: 'https://example.com/broker-logo.png', label: 'Listing image' }],
+    });
+    expect(p.photos.items).toEqual([]);
+    expect(p.photos.hasGenuinePhotos).toBe(false);
   });
 
   it('says WHY there is no gallery, because the reasons need different actions', () => {

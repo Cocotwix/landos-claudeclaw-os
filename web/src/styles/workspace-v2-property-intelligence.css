@@ -1,0 +1,204 @@
+/* Property Intelligence owns an operator-question hierarchy distinct from the
+   shared workspace shell. Keep all lane-specific styling here. */
+
+.awv2-pi-questions {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.awv2-pi-subject .awv2-kv {
+  grid-template-columns: minmax(150px, .55fr) minmax(220px, 1.45fr);
+}
+
+.awv2-pi-provenance,
+.awv2-listing-details,
+.awv2-access-details,
+.awv2-pi-diagnostics,
+.awv2-lu-details,
+.awv2-opg-details {
+  margin-top: 12px;
+}
+
+.awv2-listing-card {
+  border-color: color-mix(in srgb, var(--awv2-brass, #b98a4a) 56%, transparent);
+  background: linear-gradient(135deg, rgba(185, 138, 74, .09), transparent 48%);
+}
+
+.awv2-listing-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, .8fr) minmax(0, 1.4fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.awv2-listing-photos img {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .04);
+}
+
+.awv2-listing-photo-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.awv2-listing-photo-controls button,
+.awv2-opg-actions button {
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .05);
+  color: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.awv2-listing-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  font-size: 20px;
+}
+
+.awv2-listing-status strong {
+  color: #78c89a;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-size: 13px;
+}
+
+.awv2-listing-metrics,
+.awv2-research-counts,
+.awv2-pi-question-read {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.awv2-listing-metrics > div,
+.awv2-research-counts > div,
+.awv2-pi-question-read > div {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, .12);
+}
+
+.awv2-listing-metrics span,
+.awv2-research-counts span,
+.awv2-pi-question-read span {
+  color: var(--awv2-muted, #a8a6a0);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.awv2-listing-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.awv2-listing-facts span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .07);
+  font-size: 12px;
+}
+
+.awv2-listing-link {
+  display: inline-block;
+  margin: 10px 0 6px;
+  color: var(--awv2-brass, #d4ad74);
+  font-weight: 700;
+}
+
+.awv2-access-ladder {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.awv2-access-rung {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border-left: 3px solid rgba(185, 138, 74, .58);
+  background: rgba(255, 255, 255, .035);
+}
+
+.awv2-access-rung .step {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(185, 138, 74, .18);
+  font-weight: 800;
+}
+
+.awv2-access-rung p { margin: 4px 0 0; }
+.awv2-access-rung .weight { color: var(--awv2-muted, #a8a6a0); font-size: 11px; }
+
+.awv2-market-read {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+}
+
+.awv2-market-read strong { flex-basis: 100%; font-size: 16px; }
+.awv2-market-read span { color: var(--awv2-muted, #a8a6a0); font-size: 12px; }
+
+.awv2-lu-operator-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.awv2-lu-summary-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 7px;
+}
+
+.awv2-lu-summary-row span { color: var(--awv2-muted, #a8a6a0); font-size: 11px; text-transform: uppercase; }
+
+.awv2-opg-unresolved {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border-left: 3px solid #c89558;
+  background: rgba(200, 149, 88, .08);
+}
+
+.awv2-opg-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .awv2-listing-layout,
+  .awv2-listing-metrics,
+  .awv2-research-counts,
+  .awv2-pi-question-read,
+  .awv2-lu-operator-summary { grid-template-columns: minmax(0, 1fr); }
+  .awv2-access-rung { grid-template-columns: 28px minmax(0, 1fr); }
+  .awv2-access-rung .weight { grid-column: 2; }
+}
