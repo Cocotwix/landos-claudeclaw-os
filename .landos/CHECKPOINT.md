@@ -1,101 +1,110 @@
 # Current Active Task
 
-LandOS fast development harness overhaul. Implementation and its representative
-proof are COMPLETE and UNCOMMITTED, awaiting Tyler's review and acceptance. Do
-not begin any queued LandOS product feature.
+None. The parallel-first development harness and the Windows lock-contention fix
+are both accepted, committed and pushed. Awaiting Tyler's instruction, which is
+expected to be automatic plain-English mission authoring. Do not begin it, and
+do not begin a queued product feature, without that instruction.
 
 # Exact Operator Outcome
 
-Tyler describes a LandOS outcome; the harness decomposes it, runs independent
+Tyler describes a LandOS outcome and the harness decomposes it, runs independent
 lanes concurrently, shares discoveries, integrates, checks cheaply before
 certifying, diagnoses failures exactly, verifies the running application, and
 ends in a machine-detectable state. Tyler manages LandOS, not the coding agents.
 
 # Current State
 
-- **Generated:** 2026-08-11T02:33Z
-- **HEAD at generation:** `7c68925`, equal to origin/main.
-- **Worktree:** DIRTY BY DESIGN, 18 paths counted with `--untracked-files=all`,
-  every one of them this overhaul, none committed and none staged for commit.
-- **Tests:** full suite 6,045 passing / 445 files / 0 failures, the exact
-  baseline. Harness suite 24 passing. `tsc --noEmit` clean.
-- **Runtime:** RUNNING healthy, restarted twice under harness control,
-  http://localhost:3141, HTTP 200.
+- **Generated:** 2026-08-11T03:25Z
+- **HEAD at generation:** `a0c1ec3`, equal to origin/main.
+- **Worktree:** clean. 0 dirty paths, 0 staged files.
+- **Tests:** full suite 6,048 passing across 445 files, 0 failures, verified by
+  three consecutive runs. Harness suite 28 passing; legacy devloop suite 18.
+- **Typecheck:** `tsc --noEmit` clean.
+- **Runtime:** RUNNING healthy, PID 161196, http://localhost:3141, HTTP 200.
+- **Worktrees:** the primary is the only one.
 
 # Completed and Proven
 
-NEW HARNESS, `npm run landos:build`: `mission.mjs` (lane graph, shared
-discoveries, telemetry, terminal state), `mission-exec.mjs` (concurrent
-scheduler, worktree isolation, integration, checks), `diagnose.mjs` (exact
-failure extraction), `mission-cli.mjs` (phases + closeout), `watcher.mjs`
-(passive waste report), `mission.test.mjs` (24 tests).
+HARNESS — `d8c74d2`, 16 files, +2913/-249. `npm run landos:build`.
+`mission.mjs` (lane graph, shared discoveries, telemetry, terminal state),
+`mission-exec.mjs` (concurrent scheduler, worktree isolation, integration,
+checks), `diagnose.mjs` (exact failure extraction), `mission-cli.mjs` (phases
+and closeout), `watcher.mjs` (passive waste report), plus `plan-doctor.mjs` and
+`mission-report.mjs`, which a mission built and which carry their own tests.
+Reused rather than rebuilt: the `builders.mjs` registry, `worktree.mjs`,
+`run-state.mjs`, `evaluator.mjs`, git and the managed-runtime commands.
 
-REUSED, not rebuilt: `builders.mjs` registry, `worktree.mjs`, `run-state.mjs`,
-`evaluator.mjs` parsing, git, the managed runtime commands.
+`launchBuilderAsync` was the missing primitive: `spawnSync` blocked the event
+loop, so concurrency was impossible by construction. `killTree` came with it,
+because a shell-wrapped builder survives `child.kill()` on Windows.
 
-KEY PRIMITIVE: `launchBuilderAsync`. `spawnSync` made concurrency impossible;
-lanes now overlap. `killTree` was required because a shell-wrapped builder
-survived `child.kill()` on Windows and would hang its lane past its timeout.
+PROOF — a 4-lane sprint finished in 4:16 wall clock: 2 waves, peak concurrency
+2, CC and Codex building simultaneously rather than as failover. 21 discoveries
+were shared, and both build lanes coded correctly against `mission.mjs` without
+reading it, which they could not have done, since it was untracked at HEAD and
+therefore absent from their worktrees. Integration was clean, focused checks
+passed first time, validation passed. The watcher measured 124s saved by
+concurrency. A second mission restarted the managed runtime and asserted against
+the live dashboard; an earlier run correctly returned NEEDS_ATTENTION on an
+unmet expectation, so the gate refuses claims it cannot support.
 
-PROOF SPRINT, 4:16 total: 4 lanes, 2 waves, peak concurrency 2, CC and Codex
-building SIMULTANEOUSLY. 21 discoveries shared; both build lanes coded against
-`mission.mjs` without reading it, which they could not have done since it is
-untracked at HEAD and absent from their worktrees. Integration clean, focused
-checks green first pass, validation green. Watcher measured 124s saved by
-concurrency (376s of lane work in 251s wall clock).
+Three real defects surfaced only by running the real thing, all fixed and
+covered: `diagnose.mjs` ran its detectors on raw output, so every coloured run
+degraded to "unrecognised"; the mission never recorded which builder actually
+ran a lane; `mission-report` rendered wave count as an em dash because
+`mission.waves` is a count. Each hand-written fixture had hidden the defect.
 
-BROWSER PROOF: managed restart, health, HTTP 200 and two page-text assertions,
-terminal state PASS. An earlier run correctly returned NEEDS_ATTENTION on a
-wrong expectation, so the gate refuses unmet claims rather than passing.
+Deleted `seed-worktree.mjs`, whose only purpose was reconstructing a chronically
+dirty tree. Clean main made it obsolete.
 
-THREE REAL DEFECTS FOUND BY RUNNING THE REAL THING, all fixed and regression
--covered: `diagnose.mjs` ran its detectors on raw output, so every coloured
-reporter run degraded to "unrecognised"; the mission never recorded which
-builder actually ran a lane; `mission-report.mjs` rendered wave count as an em
-dash because `mission.waves` is a count, not a list. Each hand-written fixture
-had hidden the defect that only real output exposed.
-
-DELETED: `seed-worktree.mjs`, whose only purpose was reconstructing a
-chronically dirty tree. Clean main made it obsolete.
+LOCK FIX — `a0c1ec3`. `mcp-bridge.test.ts` failed two full-suite runs in four
+and passed in isolation. `withJournalLock` retried only on `EEXIST`, but a lock
+unlinked while a handle is open is delete-pending on Windows and opening it
+returns `EPERM`. That is the window between one holder's `close()` and its
+`unlink()`, so ordinary contention was rethrown as a fault. A race harness
+confirmed it: 57 `EPERM` events produced 57 hard failures under the old
+predicate and none under the new one. `EPERM` and `EACCES` now wait like
+`EEXIST`; a real fault still surfaces, bounded by the existing 5s deadline and
+carrying its code. Nothing was skipped or weakened; three regression tests were
+added, one racing twelve concurrent holders.
 
 # Remaining Work
 
-Unchanged deferred product work: house valuation lane; Strategy agent; Pre/Post
-Discovery Revaluation; exact-address `persistence.attempted` still false; no Run
-Property Intelligence control in the V2 workspace; the two dead
-`browser-session.ts` items.
+THE MAJOR HARNESS GAP: automatic plain-English mission authoring. Tyler still
+hand-writes a plan file. The front door should take a plain-English outcome,
+inspect LandOS itself, write its own mission and dependency graph, and launch
+the parallel build. `plan-doctor` already lints a plan; nothing yet authors one.
 
-Harness follow-ons, none started: no model-routing table beyond per-lane
-`builderId`; no automatic plan authoring from a plain request, so a plan file is
-still written by hand; watcher findings are printed, never fed back
-automatically; two stale worktrees from old devloop runs remain on disk.
+Lesser harness follow-ons: no model-routing table beyond per-lane `builderId`;
+watcher findings are printed, never fed back automatically.
+
+Unchanged deferred product work: house valuation lane; Strategy agent; Pre/Post
+Discovery Revaluation; the exact-address lane's `persistence.attempted` still
+false; no Run Property Intelligence control in the V2 workspace; the two dead
+`browser-session.ts` items.
 
 # Exact Next Action
 
-Present the overhaul to Tyler. On acceptance run
-`npm run landos:build -- accept <missionId> --message "..."`, or commit the
-overhaul directly, then verify main equals origin/main with zero dirty and zero
-staged paths. Start nothing else without instruction.
+Wait for Tyler's instruction on automatic plain-English mission authoring. Start
+nothing without it.
 
 # Relevant Files
 
-`scripts/devloop/{mission,mission-exec,mission-cli,diagnose,watcher,mission.test}.mjs`,
-`scripts/devloop/{plans,probes}/`, `scripts/devloop/builders.mjs`,
-`scripts/devloop/{plan-doctor,mission-report}.mjs` (built by the proof sprint),
-`docs/landos/mission-harness.md`, `package.json`.
+`scripts/devloop/{mission,mission-exec,mission-cli,diagnose,watcher}.mjs` and
+`mission.test.mjs`; `scripts/devloop/{plan-doctor,mission-report}.mjs`;
+`scripts/devloop/{plans,probes}/`; `docs/landos/mission-harness.md`;
+`src/landos/governance/mcp-bridge.ts`.
 
 # Relevant Records
 
-Baseline `ca21d0c`; checkpoint closeout `7c68925`. Missions
-`m-give-the-mission-harness-two-operator-co-20260811t021747z` (PASS) and
-`m-prove-the-harness-verifies-the-real-runn-20260811t022903z` (PASS) under
-`.runtime/devloop/`.
+Harness `d8c74d2`; lock fix `a0c1ec3`; prior accepted baseline `ca21d0c`.
+Mission state under `.runtime/devloop/` is gitignored and disposable.
 
 # Known Blockers
 
 None in the repository. `Bash(git push*)` was removed from
-`.claude/settings.local.json` deny rules per instruction; every secret, `.env`
-and token deny rule is intact.
+`.claude/settings.local.json` deny rules; that file is gitignored, so the change
+is local only. Every `.env`, secret and token deny rule is intact.
 
 Unchanged: deployed `~/.hermes` has drifted from committed templates and
 `hermes:governed:check` fails all five profiles; `image_gen`, `bfl` and `tts`
@@ -114,14 +123,15 @@ committed acceptance fixture or drop its `.gitattributes`.
 # Runtime State
 
 Healthy on http://localhost:3141, PID 161196, HTTP 200, restarted under harness
-control and left running. The live database was never touched.
+control during the proof and left running. The live database was never touched.
 
 # Verification Required
 
-Met for the harness. Full suite 6,045 passing across 445 files, 0 failures;
-harness suite 24 passing; `tsc --noEmit` clean; two missions ended PASS; the
-running dashboard was verified after a managed restart. Not run: production
-build, and no operator-facing LandOS surface changed, so none was required.
+Met. Full suite 6,048 passing across 445 files with 0 failures, confirmed by
+three consecutive runs; `tsc --noEmit` clean; harness suite 28 passing; two
+missions ended PASS; the running dashboard was verified after a managed restart.
+Both commits verified equal to origin/main after `git fetch`. Not run: the
+production build, since no operator-facing surface changed.
 
 # Completed and Protected
 
@@ -131,9 +141,9 @@ paths, and a plan violating that is refused before launch; recon lanes are
 read-only and may share the primary tree, write lanes never may; a repair worker
 receives the exact failing file, test title, assertion and expected/received,
 never a bare check name; cheap focused checks run before expensive
-certification; a completion summary names only the gates that actually ran, so a
-mission with no browser check never claims localhost was verified; integration
-refuses only when a file it would patch is already dirty, so unrelated
-uncommitted work is preserved; a test fixture that a real run contradicts is
-replaced with real output, never trusted over it; and accepted work is committed
-before the next sprint begins.
+certification; a completion summary names only the gates that actually ran;
+integration refuses only when a file it would patch is already dirty, so
+unrelated uncommitted work is preserved; a test fixture that a real run
+contradicts is replaced with real output, never trusted over it; a lock error
+meaning "someone else holds it" is contention on every platform, never a fault;
+and accepted work is committed and pushed before the next sprint begins.
