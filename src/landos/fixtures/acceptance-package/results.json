@@ -1,0 +1,330 @@
+{
+  "schemaVersion": "1.0.0",
+  "runId": "governed-multi-agent-os-known-defect-fixture",
+  "contractId": "landos-704-bell-known-defect-v1",
+  "sprintName": "governed-multi-agent-os-known-defect-proof",
+  "mode": "fixture",
+  "startedAt": "2026-08-03T01:47:47.731Z",
+  "completedAt": "2026-08-03T01:48:47.731Z",
+  "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+  "authStateImported": false,
+  "freshness": {
+    "required": false,
+    "isFresh": false,
+    "evidence": "Synthetic committed fixture package: the acceptance property was entered through New Lead and the pre-existing canonical Deal Card was reopened, so freshness is false for this documented known-defect exception."
+  },
+  "claims": [
+    {
+      "claimId": "property-identity-visible",
+      "operatorSection": "Deal Card header",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "The opened Deal Card visibly belongs to the acceptance property.",
+      "expectedValue": "704 Bell Rd, Red Creek, NY 13143",
+      "visibleValue": "704 Bell Rd, Red Creek, NY 13143",
+      "status": "PASS",
+      "evidencePath": "deal-card-loaded.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "property-apn-visible",
+      "operatorSection": "Deal Card header",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "The opened Deal Card visibly shows the acceptance property APN.",
+      "expectedValue": "056400 37.00-1-33",
+      "visibleValue": "056400 37.00-1-33",
+      "status": "PASS",
+      "evidencePath": "deal-card-loaded.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "property-id-visible",
+      "operatorSection": "Deal Card header",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "The opened Deal Card visibly shows the canonical property identifier.",
+      "expectedValue": "89520173",
+      "visibleValue": "",
+      "status": "FAIL",
+      "evidencePath": "deal-card-loaded.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "canonical-comps-visible",
+      "operatorSection": "Comps & Market",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "All canonical Hermes comps are visibly rendered in Comps & Market.",
+      "expectedValue": 4,
+      "visibleValue": 0,
+      "status": "FAIL",
+      "evidencePath": "changed-section.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "comp-count-matches-rows",
+      "operatorSection": "Comps & Market",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "The number of rendered accepted-comp rows equals the canonical Hermes comp count.",
+      "expectedValue": 4,
+      "visibleValue": 0,
+      "status": "FAIL",
+      "evidencePath": "changed-section.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "canonical-visual-visible",
+      "operatorSection": "Documents & Visuals",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "The canonical retained visual is visibly rendered in Documents & Visuals.",
+      "expectedValue": 1,
+      "visibleValue": 0,
+      "status": "FAIL",
+      "evidencePath": "relevant-tab-or-panel.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "imagery-not-empty",
+      "operatorSection": "Documents & Visuals / Hero property imagery",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "The imagery area contains retained subject imagery and does not show an empty state.",
+      "expectedValue": true,
+      "visibleValue": false,
+      "status": "FAIL",
+      "evidencePath": "relevant-tab-or-panel.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "specialist-results-rendered",
+      "operatorSection": "Comps & Market and Documents & Visuals",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "Claimed specialist comp and visual results are visibly rendered in their operator sections.",
+      "expectedValue": true,
+      "visibleValue": false,
+      "status": "FAIL",
+      "evidencePath": "changed-section.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    },
+    {
+      "claimId": "no-cross-property-contamination",
+      "operatorSection": "Whole Deal Card",
+      "propertyAddress": "704 Bell Rd, Red Creek, NY 13143",
+      "claim": "No visible evidence belongs to another property.",
+      "expectedValue": true,
+      "visibleValue": true,
+      "status": "PASS",
+      "evidencePath": "deal-card-loaded.png",
+      "timestamp": "2026-08-03T01:48:47.731Z",
+      "refreshResult": "PASS",
+      "restartResult": "PASS",
+      "contaminationResult": "PASS"
+    }
+  ],
+  "counts": [
+    {
+      "operatorSection": "Comps & Market",
+      "label": "Accepted sold comps",
+      "canonicalAccepted": 4,
+      "displayed": 0,
+      "renderedRows": 0,
+      "emptyStateVisible": true,
+      "timestamp": "2026-08-03T01:48:47.731Z"
+    },
+    {
+      "operatorSection": "Documents & Visuals",
+      "label": "Hero property imagery",
+      "canonicalAccepted": 1,
+      "displayed": 0,
+      "renderedRows": 0,
+      "emptyStateVisible": true,
+      "timestamp": "2026-08-03T01:48:47.731Z"
+    }
+  ],
+  "lifecycle": {
+    "isolatedContext": true,
+    "contextsCreated": 1,
+    "contextsClosed": 1,
+    "pagesCreated": 1,
+    "pagesClosed": 1,
+    "normalOperatorBrowserUntouched": true,
+    "cleanupCompleted": true,
+    "verifiedAt": "2026-08-03T01:48:47.731Z"
+  },
+  "refresh": {
+    "status": "PASS",
+    "visibleValuesRetained": true,
+    "timestamp": "2026-08-03T01:48:47.731Z"
+  },
+  "restart": {
+    "status": "PASS",
+    "visibleValuesRetained": true,
+    "timestamp": "2026-08-03T01:48:47.731Z"
+  },
+  "contamination": {
+    "status": "PASS",
+    "detectedValues": [],
+    "timestamp": "2026-08-03T01:48:47.731Z"
+  },
+  "console": {
+    "path": "console.json",
+    "relevantErrorCount": 0,
+    "timestamp": "2026-08-03T01:48:47.731Z"
+  },
+  "network": {
+    "path": "network-failures.json",
+    "requiredFailureCount": 0,
+    "timestamp": "2026-08-03T01:48:47.731Z"
+  },
+  "artifacts": [
+    {
+      "path": "new-lead.png",
+      "mediaType": "image/png",
+      "byteLength": 1408,
+      "sha256": "ec57eb4ebe9f1fa527845e73ff07c4fbc652132988b5c9de4d6d141115b25524",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "screenshot",
+        "width": 320,
+        "height": 180,
+        "uniqueColorSamples": 40
+      }
+    },
+    {
+      "path": "deal-card-loaded.png",
+      "mediaType": "image/png",
+      "byteLength": 1408,
+      "sha256": "c2f98c3707389866914257515fbdf493e5ac6d07a0fd0cd923d4f0b904c44f1f",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "screenshot",
+        "width": 320,
+        "height": 180,
+        "uniqueColorSamples": 40
+      }
+    },
+    {
+      "path": "changed-section.png",
+      "mediaType": "image/png",
+      "byteLength": 1408,
+      "sha256": "7297a8a0298195310ea99d7bee883c502013d5b2697ca388b0dcdc71ecbcea93",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "screenshot",
+        "width": 320,
+        "height": 180,
+        "uniqueColorSamples": 40
+      }
+    },
+    {
+      "path": "relevant-tab-or-panel.png",
+      "mediaType": "image/png",
+      "byteLength": 1408,
+      "sha256": "2496183328915756565f6d8837c9b7a316b3e72057d817fdccc2f45ae6e65e85",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "screenshot",
+        "width": 320,
+        "height": 180,
+        "uniqueColorSamples": 40
+      }
+    },
+    {
+      "path": "after-refresh.png",
+      "mediaType": "image/png",
+      "byteLength": 1408,
+      "sha256": "f1d6e45d97a9062e550b642efaaeba1462199f4203e53cefa2e83ef03dad349f",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "screenshot",
+        "width": 320,
+        "height": 180,
+        "uniqueColorSamples": 40
+      }
+    },
+    {
+      "path": "after-restart.png",
+      "mediaType": "image/png",
+      "byteLength": 1408,
+      "sha256": "9c644ccbebb13651371980dfccea446f7958e2a036eecaf7f59fa7d5c6c98fda",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "screenshot",
+        "width": 320,
+        "height": 180,
+        "uniqueColorSamples": 40
+      }
+    },
+    {
+      "path": "trace.zip",
+      "mediaType": "application/zip",
+      "byteLength": 1549,
+      "sha256": "e1578f5224383b5bde0d67e415701081ff9ef29a632b2c12b3a91aae88b6797a",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "trace"
+      }
+    },
+    {
+      "path": "video.webm",
+      "mediaType": "video/webm",
+      "byteLength": 1405,
+      "sha256": "c2f1524e387a400b7194c32881c85af435388214a44024cfdf003c0b12ee859e",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "video"
+      }
+    },
+    {
+      "path": "console.json",
+      "mediaType": "application/json",
+      "byteLength": 669,
+      "sha256": "63e2ad2d2b6bb8da0999a18743067d323599c20c7ff951701fe32032c3cc7dab",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "console"
+      }
+    },
+    {
+      "path": "network-failures.json",
+      "mediaType": "application/json",
+      "byteLength": 93,
+      "sha256": "35bd825ff89e184ca2c7e851756e8af4bdb8893dddc7fcd576b34fa128654f94",
+      "capturedAt": "2026-08-03T01:47:52.000Z",
+      "contentValidation": {
+        "validated": true,
+        "kind": "network"
+      }
+    }
+  ],
+  "verdict": "FAIL"
+}

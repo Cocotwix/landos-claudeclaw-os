@@ -49,8 +49,13 @@ describe('Deal Card Market section renders comp-source search status', () => {
   });
 
   it('shows source-linked accepted rows and explicit held-back reasons', () => {
-    expect(PI_PANEL).toMatch(/<CompCards rows=\{comps\.sold\.slice\(0, 5\)\}/);
-    expect(PI_PANEL).toMatch(/<CompCards rows=\{comps\.active\.slice\(0, 4\)\}/);
+    // The caps moved into named locals so the visible-count tile is derived from
+    // the same rows CompCards renders. Assert both halves: the canonical
+    // derivation, and that those exact rows are what reaches the cards.
+    expect(PI_PANEL).toMatch(/const soldShown = comps\.sold\.slice\(0, 5\);/);
+    expect(PI_PANEL).toMatch(/<CompCards rows=\{soldShown\}/);
+    expect(PI_PANEL).toMatch(/const activeShown = comps\.active\.slice\(0, 4\);/);
+    expect(PI_PANEL).toMatch(/<CompCards rows=\{activeShown\}/);
     expect(PI_PANEL).toMatch(/row\.sourceUrl && <a href=\{row\.sourceUrl\}/);
     expect(PI_PANEL).toMatch(/\{row\.source\}/);
     expect(PI_PANEL).toMatch(/Comp exclusions/);

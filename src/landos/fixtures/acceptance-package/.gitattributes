@@ -1,0 +1,6 @@
+# results.json records the exact byteLength and sha256 of every file in this
+# directory, and the governed MCP bridge re-hashes them on every run, so Git
+# must never normalize line endings or apply filters here. core.autocrlf=true
+# would otherwise rewrite console.json/network-failures.json on checkout and
+# break artifact validation on a fresh clone.
+* -text

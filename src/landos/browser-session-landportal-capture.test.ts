@@ -126,7 +126,13 @@ describe('LandPortal visual capture contract', () => {
     const capture = source.slice(start, end);
     expect(source).toMatch(/skip.\?trac\|buy tokens/);
     expect(source).toContain('enhance your leads');
-    expect(capture).toContain('for (let attempt = 1; attempt <= 3; attempt += 1)');
+    // BOUNDED retry: a contaminated frame is deleted and recaptured, and the loop
+    // can never spin forever. The exact bound is an implementation detail, so
+    // assert the shape and a real second chance rather than a magic number.
+    const bound = /for \(let attempt = 1; attempt <= (\d+); attempt \+= 1\)/.exec(capture);
+    expect(bound, 'the contamination recapture loop is gone').not.toBeNull();
+    expect(Number(bound![1])).toBeGreaterThanOrEqual(2);
+    expect(capture).toContain('return false;');
     expect(capture).toContain('inspectSavedParcelVisual');
     expect(capture).toContain('after.dismissed === 0');
     expect(capture).toContain('fs.unlinkSync(file)');

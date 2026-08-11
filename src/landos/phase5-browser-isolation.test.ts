@@ -6,8 +6,10 @@
 //   • Specialist lane drivers each own their OWN page — the live driver no
 //     longer funnels every lane through the one shared working tab, which was
 //     the chokepoint that serialized comparables behind the projection refresh.
-//   • bringToFront is allowed ONLY for the LandOS-spawned background window
-//     (state.launchedBackground); a pre-existing visible Chrome is never raised.
+//   • bringToFront is allowed on research paths ONLY inside the
+//     state.launchedBackground gate, and otherwise only at the operator-initiated
+//     "Open LandPortal" entry point. Ownership verification on connect means the
+//     operator's own Chrome can never be the attached browser at all.
 //   • Cleanup closes exactly the pages LandOS lanes created — never an operator
 //     tab, never pages[0].
 
@@ -29,8 +31,10 @@ import {
   type PageLike,
   type PuppeteerLike,
 } from './browser-session.js';
+import { OFFSCREEN_CHROME_ARGS } from './automation-browser.js';
 
 const SOURCE_PATH = path.join(process.cwd(), 'src/landos/browser-session.ts');
+const OWNER_PATH = path.join(process.cwd(), 'src/landos/automation-browser.ts');
 
 // ── Source-text contract (pattern: browser-session-landportal-capture.test.ts) ──
 
@@ -44,12 +48,18 @@ describe('browser isolation: source contract', () => {
     expect(BACKGROUND_CHROME_ARGS).toContain('--disable-backgrounding-occluded-windows');
     expect(BACKGROUND_CHROME_ARGS).toContain('--disable-background-timer-throttling');
     expect(BACKGROUND_CHROME_ARGS).toContain('--disable-renderer-backgrounding');
-    // And the spawn call actually uses it (unless the operator opts into a
-    // visible window explicitly).
-    const spawnAt = source.indexOf('spawnImpl(chrome.path');
+    // The spawn itself moved to automation-browser.ts — the ONE module allowed to
+    // launch a browser — and it applies the offscreen flags UNCONDITIONALLY. The
+    // old `background ? … : []` opt-out is deliberately gone: a window that can be
+    // placed onscreen is a window that can take the foreground.
+    expect([...BACKGROUND_CHROME_ARGS]).toEqual([...OFFSCREEN_CHROME_ARGS]);
+    expect(source).not.toContain('spawnImpl(');
+    const ownerSource = fs.readFileSync(OWNER_PATH, 'utf8');
+    const spawnAt = ownerSource.indexOf('spawnImpl(config.chromePath');
     expect(spawnAt).toBeGreaterThan(-1);
-    const spawnCall = source.slice(spawnAt, source.indexOf(']);', spawnAt));
-    expect(spawnCall).toContain('...(background ? BACKGROUND_CHROME_ARGS : [])');
+    const spawnCall = ownerSource.slice(spawnAt, ownerSource.indexOf(']);', spawnAt));
+    expect(spawnCall).toContain('...OFFSCREEN_CHROME_ARGS');
+    expect(spawnCall).not.toContain('background ?');
   });
 
   it('the live driver routes lanes through a PER-LANE page, never the shared working tab', () => {
@@ -71,15 +81,33 @@ describe('browser isolation: source contract', () => {
   });
 
   it('NEVER raises a window except the LandOS-spawned offscreen background one', () => {
-    // Every bringToFront CALL site (the optional PageLike declaration aside)
-    // must sit inside the state.launchedBackground guard.
+    // Two things establish this now, and neither is the old blanket guard:
+    //  1. ensureBrowserSession REFUSES to attach unless verifyAutomationOwnership
+    //     proves the answering Chrome is LandOS's own profile+port, so a page in
+    //     this module can never belong to the operator's Chrome.
+    //  2. automation-browser.ts is the only launcher, and it is always offscreen.
+    // Activation therefore survives in exactly TWO places: the research/capture
+    // path, still gated on state.launchedBackground, and the operator pressing
+    // "Open LandPortal" to log in. Research never reaches the second one, and
+    // browser-session-candidate-selection.test.ts pins that exact split.
+    expect(source).toContain('await verifyAutomationOwnership(automationBrowserConfig())');
     const callSites = [...source.matchAll(/bringToFront\?\.\(\)/g)].map((m) => m.index ?? 0);
-    expect(callSites.length).toBeGreaterThan(0);
-    for (const at of callSites) {
+    expect(callSites).toHaveLength(2);
+
+    const openAt = source.indexOf('export async function openLandPortalInSession');
+    expect(openAt).toBeGreaterThan(-1);
+    const openEnd = source.indexOf('export ', openAt + 10);
+    const operatorSites = callSites.filter((at) => at > openAt && at < openEnd);
+    expect(
+      operatorSites,
+      'the one ungated activation must be the operator-initiated Open LandPortal entry point',
+    ).toHaveLength(1);
+
+    for (const at of callSites.filter((at) => !operatorSites.includes(at))) {
       const preceding = source.slice(Math.max(0, at - 400), at);
       expect(
         preceding,
-        'a bringToFront call is not guarded by state.launchedBackground — a visible operator Chrome must never be raised',
+        'a research-path bringToFront is not gated on state.launchedBackground — only the LandOS offscreen window may be activated',
       ).toContain('if (state.launchedBackground)');
     }
     // No unguarded direct invocation form either.

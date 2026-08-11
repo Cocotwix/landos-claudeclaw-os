@@ -188,7 +188,12 @@ describe('closed evidence and active competition never share an identity', () =>
 
   it('reads live competition BEFORE valuation membership so it can never be mistaken for evidence', () => {
     expect(ID_SRC).toMatch(/if \(c\.operatorExcluded\) return COMP_IDENTITIES\.excluded;[\s\S]{0,200}transactionKind === 'active'/);
-    expect(ID_SRC).toMatch(/if \(c\.inValuationSet\) return COMP_IDENTITIES\.closed;/);
+    // inValuationSet is still read AFTER the active check and still yields the
+    // closed identity. A source-stated sale relabels only the badge, never the
+    // identity kind, so that return is a block now rather than one line. Assert
+    // the ORDERING rather than the old single-line shape.
+    expect(ID_SRC).toMatch(/transactionKind === 'active'[\s\S]{0,400}if \(c\.inValuationSet\) \{[\s\S]{0,200}COMP_IDENTITIES\.closed/);
+    expect(ID_SRC).toMatch(/if \(c\.inValuationSet\) \{[\s\S]{0,300}COMP_IDENTITIES\.zeroWeight/);
     // ...and improved property is read before BOTH. A house listing is still an
     // active listing, so testing transactionKind first badged eleven Zillow
     // houses "ACTIVE COMPETITOR" on 9490 Elk Lake Rd even once they had been

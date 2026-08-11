@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1.0.0",
+  "capturedAt": "2026-08-03T01:47:52.000Z",
+  "entries": [
+    {
+      "type": "info",
+      "text": "LandOS dashboard bundle loaded for the acceptance Deal Card.",
+      "relevant": false,
+      "timestamp": "2026-08-03T01:47:52.000Z"
+    },
+    {
+      "type": "log",
+      "text": "Comps & Market rendered 0 accepted rows for the acceptance property.",
+      "relevant": false,
+      "timestamp": "2026-08-03T01:47:52.000Z"
+    },
+    {
+      "type": "warning",
+      "text": "Documents & Visuals showed its empty state while canonical visuals exist.",
+      "relevant": false,
+      "timestamp": "2026-08-03T01:47:52.000Z"
+    }
+  ]
+}

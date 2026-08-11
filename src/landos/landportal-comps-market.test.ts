@@ -41,7 +41,8 @@ describe('LandPortal comps Market wiring (source lock)', () => {
     expect(UI).toMatch(/Comp methodology & source coverage/);
     expect(UI).toMatch(/\{comps\.policyExplanation\}/);
     expect(UI).toMatch(/\{comps\.summaryLine\}/);
-    expect(UI).toMatch(/<CompCards rows=\{comps\.sold\.slice\(0, 5\)\}/);
+    expect(UI).toMatch(/const soldShown = comps\.sold\.slice\(0, 5\);/);
+    expect(UI).toMatch(/<CompCards rows=\{soldShown\}/);
     expect(UI).toMatch(/row\.sourceUrl \? <a href=\{row\.sourceUrl\}/);
   });
 });

@@ -36,8 +36,13 @@ const result = {
     exactNextAction: section('Exact Next Action'),
     relevantFiles: section('Relevant Files'),
   },
-  agentNeutralProtocol: /Codex, Claude Code,[\s\S]*future coding agents/.test(protocol),
-  narrowStartup: /Inspect only files explicitly named/.test(protocol) && /Do not automatically perform a broad repository audit/.test(protocol),
+  // These two probe the CONSOLIDATED contract wording. They previously matched
+  // pre-consolidation prose, so both silently reported false and the proof
+  // claimed the contract was neither agent-neutral nor narrow-startup — the
+  // exact opposite of the truth. A false boolean here is worse than a failing
+  // assertion because nothing surfaces it.
+  agentNeutralProtocol: /[Cc]anonical contract for every coding agent/.test(protocol),
+  narrowStartup: /Inspect only files named in the checkpoint/.test(protocol) && /Never automatically audit the repository broadly/.test(protocol),
   managedRuntimeAvailable: /landos:status[\s\S]*landos:health/.test(permanent),
   safetyBoundariesAvailable: /Do not commit or push/.test(permanent) && /Preserve unrelated dirty work/.test(permanent),
   relevantReports: [...checkpoint.matchAll(/docs\/landos\/[A-Za-z0-9_.-]+\.md/g)].map((match) => match[0]),

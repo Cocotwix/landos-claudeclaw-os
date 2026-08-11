@@ -163,8 +163,14 @@ describe('LandOS memory bootstrap: real repository state', () => {
   });
 
   it('keeps the complete coding-session process agent-neutral and out of bootstraps', () => {
-    expect(protocol).toMatch(/Codex, Claude Code,[\s\S]*future coding agents/);
-    expect(protocol).toMatch(/Do not automatically perform a broad repository audit/);
+    // Agent-neutral: ONE canonical contract governs every coding agent, reached
+    // through either bootstrap entry point rather than one vendor's file. The
+    // consolidated contract names no vendor at all, so assert the neutrality
+    // property itself instead of the old "Codex, Claude Code, ..." roll-call.
+    expect(protocol).toMatch(/[Cc]anonical contract for every coding agent/);
+    expect(protocol).toMatch(/AGENTS\.md/);
+    expect(protocol).toMatch(/CLAUDE\.md/);
+    expect(protocol).toMatch(/Never automatically audit the repository broadly/);
     expect(protocol).toMatch(/Exact Next Action/);
     expect(agentsMd.length).toBeLessThan(1200);
     expect(claudeMd.match(/## Required startup/g) ?? []).toHaveLength(0);
@@ -242,11 +248,18 @@ describe('LandOS memory bootstrap: real repository state', () => {
     // kit's /continue auto-fired on "continue"/"status" wording â€” rejected).
     expect(continueCmd).not.toMatch(/auto-invoke/i);
     expect(continueCmd).toMatch(/must not trigger/i);
-    expect(protocol).toMatch(/Do not automatically perform a broad repository audit/);
+    // The contract still forbids automatic broad auditing, and now also pins the
+    // only conditions that may widen startup plus the duty to state the reason.
+    expect(protocol).toMatch(/Never automatically audit the repository broadly/);
+    expect(protocol).toMatch(/Expand only when/);
+    expect(protocol).toMatch(/state the reason first/);
   });
 
   it('live repository state overrides stale checkpoint narrative', () => {
-    expect(protocol).toMatch(/working tree and live in-scope evidence as authoritative/i);
+    // Live state outranks narrative in BOTH forms the contract now carries it:
+    // as a numbered authority rank, and as prose.
+    expect(protocol).toMatch(/Live repository, working tree, and managed-runtime state/i);
+    expect(protocol).toMatch(/live in-scope evidence\s+outrank/i);
     expect(readFileSync(PERMANENT, 'utf8')).toMatch(/override memory-file\s+narrative/i);
   });
 

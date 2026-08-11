@@ -158,6 +158,13 @@ describe('New Lead intake preserves a complete APN end to end', () => {
     expect(routeApn('Address: 731 Filter Plant Rd, Kingston, TN')).toBeNull();
     expect(routeApn('Parcel: 12 Oak Street, Somewhere, TN')).toBeNull();
     expect(extractPropertyArgs('Address: 731 Filter Plant Rd, Kingston, TN')?.apn).toBeUndefined();
+    // A five-digit floor alone is not enough: a house number can BE five digits.
+    // A labeled value that runs on into a street is a mislabeled address, and
+    // this labeled path outranks every other APN reader, so it must refuse.
+    expect(routeApn('Parcel: 12345 Main St, Somewhere, TX')).toBeNull();
+    expect(extractPropertyArgs('Parcel: 12345 Main St, Somewhere, TX')?.apn).toBeUndefined();
+    expect(extractPropertyArgs('APN: 40126 Nolan Ridge Road, Kingston, TN')?.apn).toBeUndefined();
+    expect(extractPropertyArgs('Parcel: 12345 Highway 153, Dunlap, TN')?.apn).toBeUndefined();
   });
 
   it('does not alter an APN that ends a sentence', () => {

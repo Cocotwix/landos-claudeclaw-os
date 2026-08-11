@@ -24,7 +24,11 @@ const ADDRESS = '704 Bell Rd, Red Creek, NY 13143';
 const APN = '056400 37.00-1-33';
 const PROPERTY_ID = '89520173';
 const NOW = '2026-08-03T02:00:00.000Z';
-const ACCEPTANCE_FIXTURE = path.resolve('.landos/acceptance/2026-08-03T01-47-47-731Z-governed-multi-agent-os-known-defect-proof');
+// A COMMITTED fixture package. This previously pointed at a generated Playwright
+// run under `.landos/acceptance/`, which is gitignored (~20 MB per run) and was
+// deleted, so both submit tests could never run on a fresh checkout. Regenerate
+// byte-identically with `node scripts/acceptance/build-fixture-package.mjs`.
+const ACCEPTANCE_FIXTURE = path.resolve('src/landos/fixtures/acceptance-package');
 const ACCEPTANCE_CONTRACT = path.resolve('config/acceptance/704-bell-known-defect.contract.json');
 const CAPTURE_ARTIFACTS = [
   'new-lead.png',

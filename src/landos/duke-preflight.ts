@@ -250,6 +250,22 @@ const ADDRESS_RE = new RegExp(
 // before the state, e.g. ", Cottageville, SC", ", Arnold MD", ", Winters, Texas".
 const CITY_STATE_RE = new RegExp(`,\\s*([A-Za-z][A-Za-z .'\\-]*?)\\s*,?\\s+([A-Za-z]{2}|${STATE_NAME_ALT})\\b`, 'i');
 
+// A labeled value that continues into a STREET is an address the operator
+// mislabeled, never a parcel number. The five-digit floor below stops
+// "Parcel: 12 Oak Street" but not "Parcel: 12345 Main St", which still handed
+// the house number back as the parcel id — and this labeled path outranks every
+// other APN reader in fieldsFromArgs(), so the corrupt id won. A wrong APN is a
+// DIFFERENT parcel and parcel identity gates all downstream property
+// intelligence, so the value is refused here and the text falls through to the
+// address path that can actually resolve it.
+const LABELED_ADDRESS_VALUE_RE = new RegExp(
+  `^(?:apn|parcel(?:[^\\S\\n]*(?:id|no\\.?|number|#))?)[:\\s]+(?:`
+    + `\\d+[A-Za-z]?[^\\S\\n]+[A-Za-z][A-Za-z'\\-]*(?:[^\\S\\n]+[\\w'\\-]+)*?[^\\S\\n]+(?:${STREET_TYPE_WORDS})\\b`
+    + `|\\d+[A-Za-z]?[^\\S\\n]+${HIGHWAY_STREET}`
+  + `)`,
+  'i',
+);
+
 /**
  * Returns true when the message looks like a specific property address input
  * even if it lacks enough identifiers for a direct LP call. Used to distinguish
@@ -317,9 +333,20 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // "Parcel ID:" / "Parcel No:" / "Parcel #" are the SAME label as "APN:" — a
   // pasted lead using the county's own wording must not fall through to the
   // capped dash pattern below, which truncates long multi-group parcel IDs.
-  const apnKw = text.match(/\b(?:apn|parcel(?:[^\S\n]*(?:id|no\.?|number|#))?)[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*(?:[^\S\n]+(?:[A-Za-z]{1,2}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*)*)/i)?.[1]
-    ?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '');
-  if (apnKw) {
+  const apnKwMatch = text.match(/\b(?:apn|parcel(?:[^\S\n]*(?:id|no\.?|number|#))?)[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*(?:[^\S\n]+(?:[A-Za-z]{1,2}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*)*)/i);
+  const apnKw = apnKwMatch && !LABELED_ADDRESS_VALUE_RE.test(text.slice(apnKwMatch.index ?? 0))
+    ? apnKwMatch[1]?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '')
+    : undefined;
+  // A parcel number carries at least five digits. Without this floor the token
+  // class above stops at the first non-parcel word and hands back the leading
+  // house number of a street address — "Parcel: 12 Oak Street" resolved to the
+  // parcel "12", and this path OUTRANKS the correct extractApnCandidates()
+  // scanner in fieldsFromArgs(), so the corrupt id won. A wrong APN is worse
+  // than no APN: parcel identity gates all downstream property intelligence.
+  // Length only — no separator requirement, so a long single-run county APN
+  // still resolves here.
+  const apnKwDigits = (apnKw ?? '').replace(/[^0-9]/g, '').length;
+  if (apnKw && apnKwDigits >= 5) {
     const state = extractState(text);
     const fips = extractLabeledFips(text);
     // Attach owner + county so the resolver can fall back to owner + county/state search.
