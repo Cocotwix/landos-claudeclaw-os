@@ -1,0 +1,34 @@
+{
+  "request": "example plan: a valid two-wave graph, used as a template and as a fixture",
+  "operatorOutcome": "the operator can copy this file and describe a real outcome in it",
+  "lanes": [
+    {
+      "id": "recon",
+      "kind": "recon",
+      "title": "find the architecture that owns this behaviour",
+      "brief": "Read-only. Report DISCOVERY lines naming the exact files and symbols the change touches."
+    },
+    {
+      "id": "backend",
+      "kind": "build",
+      "title": "backend change",
+      "dependsOn": ["recon"],
+      "ownedPaths": ["src/landos/example-backend.ts"],
+      "brief": "Implement the backend half."
+    },
+    {
+      "id": "frontend",
+      "kind": "build",
+      "title": "frontend change",
+      "dependsOn": ["recon"],
+      "ownedPaths": ["src/web/example-frontend.tsx"],
+      "brief": "Implement the frontend half."
+    }
+  ],
+  "focusedChecks": [
+    { "id": "example-unit", "command": "echo focused", "requirement": "the focused unit test for this feature passes" }
+  ],
+  "validationChecks": [
+    { "id": "example-typecheck", "command": "echo validation", "requirement": "the repository typechecks" }
+  ]
+}

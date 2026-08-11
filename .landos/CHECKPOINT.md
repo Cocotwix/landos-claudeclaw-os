@@ -1,155 +1,139 @@
 # Current Active Task
 
-None. The repository reconciliation and the test-baseline correction are both
-complete, committed and pushed. Awaiting Tyler's next instruction, which is
-expected to be a development/build-system change.
+LandOS fast development harness overhaul. Implementation and its representative
+proof are COMPLETE and UNCOMMITTED, awaiting Tyler's review and acceptance. Do
+not begin any queued LandOS product feature.
 
 # Exact Operator Outcome
 
-`main` truthfully represents the LandOS that is accepted and running, it builds
-and runs from a fresh checkout, and its test suite now describes the accepted
-behavior rather than superseded source shapes.
+Tyler describes a LandOS outcome; the harness decomposes it, runs independent
+lanes concurrently, shares discoveries, integrates, checks cheaply before
+certifying, diagnoses failures exactly, verifies the running application, and
+ends in a machine-detectable state. Tyler manages LandOS, not the coding agents.
 
 # Current State
 
-- **Generated:** 2026-08-11T01:34:08Z
-- **HEAD at generation:** `ca21d0c` — the accepted CODE baseline,
-  `ca21d0c876dab62594ed6034e0a03abc8418151b`, equal to origin/main when this was
-  written. The checkpoint-only closeout that carries this file advances HEAD one
-  commit past it BY DESIGN; that is not drift and must not trigger a rewrite.
-- **Worktree:** clean. 0 dirty paths, 0 staged files.
-- **Tests:** 6,045 passing across 445 files, 0 failures.
-- **Typecheck:** `tsc --noEmit` clean. **Build:** production build clean, only
-  pre-existing chunk-size warnings.
-- **Runtime:** RUNNING healthy, PID 151780, http://localhost:3141, HTTP 200.
-- **Dedicated LandOS Chrome:** running, CDP 9224, owned.
+- **Generated:** 2026-08-11T02:33Z
+- **HEAD at generation:** `7c68925`, equal to origin/main.
+- **Worktree:** DIRTY BY DESIGN, 18 paths counted with `--untracked-files=all`,
+  every one of them this overhaul, none committed and none staged for commit.
+- **Tests:** full suite 6,045 passing / 445 files / 0 failures, the exact
+  baseline. Harness suite 24 passing. `tsc --noEmit` clean.
+- **Runtime:** RUNNING healthy, restarted twice under harness control,
+  http://localhost:3141, HTTP 200.
 
 # Completed and Proven
 
-RECONCILIATION — `395644d`, 378 files, then checkpoint closeout `37d2c12`. Dirty
-paths went 411 to 0. One commit was the only correct shape: 22 untracked modules
-were hard dependencies of tracked, modified production code. Committed the
-acreage router, land-use and zoning stack, GIS transport with ArcGIS/Tyler/
-Schneider adapters, public-record access and browser login, state-law retrieval,
-subject-identity reconciliation, exact-address web discovery, access-evidence
-ladder, comp-lane accountability, LandPortal canonical identity/comp drilldown/
-overview capture, governed Hermes profile templates and capability snapshots,
-knowledge registries, Playwright acceptance harness, Python MCP servers, and the
-matching web components. Ignored rather than committed and left on disk: the
-62 MB of Playwright acceptance artifacts, the devloop lesson queue, two CDP
-dumps, and two stray root captures. Fixed in the same commit: a bare `data/`
-ignore rule also matched `scripts/data/`, excluding the four scripts that
-`landos:data:*` and `landos:qa:init` invoke; narrowed to `/data/`.
+NEW HARNESS, `npm run landos:build`: `mission.mjs` (lane graph, shared
+discoveries, telemetry, terminal state), `mission-exec.mjs` (concurrent
+scheduler, worktree isolation, integration, checks), `diagnose.mjs` (exact
+failure extraction), `mission-cli.mjs` (phases + closeout), `watcher.mjs`
+(passive waste report), `mission.test.mjs` (24 tests).
 
-TEST BASELINE — `ca21d0c`, 24 files. All 13 failures were pre-existing.
+REUSED, not rebuilt: `builders.mjs` registry, `worktree.mjs`, `run-state.mjs`,
+`evaluator.mjs` parsing, git, the managed runtime commands.
 
-REAL DEFECT, fixed in production: `duke-preflight.ts`'s labeled-APN fast path
-applied no shape validation, so "Parcel: 12 Oak Street" resolved to the parcel
-"12" and the street address was dropped. That path outranks every other APN
-reader in `fieldsFromArgs()`, so the corrupt id won. Added a five-digit floor
-plus a guard refusing any labeled value that runs on into a street, which closes
-the wider class a floor alone cannot ("Parcel: 12345 Main St", "APN: 40126 Nolan
-Ridge Road", "Parcel: 12345 Highway 153"). Long single-run and multi-group county
-APNs still resolve; four regression cases added.
+KEY PRIMITIVE: `launchBuilderAsync`. `spawnSync` made concurrency impossible;
+lanes now overlap. `killTree` was required because a shell-wrapped builder
+survived `child.kill()` on Windows and would hang its lane past its timeout.
 
-FIXTURE: `governance/mcp-bridge.test.ts` read a generated Playwright run under
-the gitignored `.landos/acceptance/`, so it could never pass on a fresh
-checkout. Replaced with a committed 23 KB package regenerable byte-identically
-via `scripts/acceptance/build-fixture-package.mjs`. Its `.gitattributes` pins
-`* -text` because `results.json` records each file's exact byteLength and
-sha256, and `core.autocrlf=true` would rewrite the JSON on checkout.
+PROOF SPRINT, 4:16 total: 4 lanes, 2 waves, peak concurrency 2, CC and Codex
+building SIMULTANEOUSLY. 21 discoveries shared; both build lanes coded against
+`mission.mjs` without reading it, which they could not have done since it is
+untracked at HEAD and absent from their worktrees. Integration clean, focused
+checks green first pass, validation green. Watcher measured 124s saved by
+concurrency (376s of lane work in 251s wall clock).
 
-STALE ASSERTIONS re-expressed against current structure, several strengthened,
-none weakened: comp caps now read via named locals; CompRecordIdentity asserts
-the active-before-valuation ORDERING; the offscreen-spawn invariant is asserted
-where it now lives and is unconditional; `bringToFront` is pinned to exactly two
-sites with the ungated one required to be the operator-initiated Open LandPortal
-entry point; the capture loop asserts a bounded retry instead of a literal that
-never matched; memory-bootstrap tracks the consolidated contract wording; and
-the jurisdiction capture check asserts no parcel-identity rejection instead of
-demanding verdicts a stub driver cannot satisfy. Also corrected
-`fresh-session-local-proof.mjs`, where the same stale prose was emitted as
-booleans, silently reporting the contract as neither agent-neutral nor
-narrow-startup.
+BROWSER PROOF: managed restart, health, HTTP 200 and two page-text assertions,
+terminal state PASS. An earlier run correctly returned NEEDS_ATTENTION on a
+wrong expectation, so the gate refuses unmet claims rather than passing.
+
+THREE REAL DEFECTS FOUND BY RUNNING THE REAL THING, all fixed and regression
+-covered: `diagnose.mjs` ran its detectors on raw output, so every coloured
+reporter run degraded to "unrecognised"; the mission never recorded which
+builder actually ran a lane; `mission-report.mjs` rendered wave count as an em
+dash because `mission.waves` is a count, not a list. Each hand-written fixture
+had hidden the defect that only real output exposed.
+
+DELETED: `seed-worktree.mjs`, whose only purpose was reconstructing a
+chronically dirty tree. Clean main made it obsolete.
 
 # Remaining Work
 
-Deferred, unchanged: house valuation lane; Strategy agent; Pre/Post Discovery
-Revaluation; the exact-address lane's `persistence.attempted` still false; no Run
-Property Intelligence control in the V2 workspace.
+Unchanged deferred product work: house valuation lane; Strategy agent; Pre/Post
+Discovery Revaluation; exact-address `persistence.attempted` still false; no Run
+Property Intelligence control in the V2 workspace; the two dead
+`browser-session.ts` items.
 
-Two browser-session items remain DEFERRED and were deliberately not built:
-`BACKGROUND_CHROME_ARGS` and `defaultSpawn`/`SpawnLike` in `browser-session.ts`
-are dead after the isolation refactor; and a `no_match` run retains a screenshot
-in `ev.screenshots` while reporting that no visuals were accepted.
+Harness follow-ons, none started: no model-routing table beyond per-lane
+`builderId`; no automatic plan authoring from a plain request, so a plan file is
+still written by hand; watcher findings are printed, never fed back
+automatically; two stale worktrees from old devloop runs remain on disk.
 
 # Exact Next Action
 
-Wait for Tyler's instruction on the development/build-system change. Do not
-start it, the deferred browser-session items, or any Remaining Work item
-without it.
+Present the overhaul to Tyler. On acceptance run
+`npm run landos:build -- accept <missionId> --message "..."`, or commit the
+overhaul directly, then verify main equals origin/main with zero dirty and zero
+staged paths. Start nothing else without instruction.
 
 # Relevant Files
 
-- `src/landos/duke-preflight.ts` — labeled-APN street guard and digit floor
-- `src/landos/fixtures/acceptance-package/` and
-  `scripts/acceptance/build-fixture-package.mjs`
-- `src/landos/browser-session.ts` — holds both deferred items
-- `scripts/memory/fresh-session-local-proof.mjs`
+`scripts/devloop/{mission,mission-exec,mission-cli,diagnose,watcher,mission.test}.mjs`,
+`scripts/devloop/{plans,probes}/`, `scripts/devloop/builders.mjs`,
+`scripts/devloop/{plan-doctor,mission-report}.mjs` (built by the proof sprint),
+`docs/landos/mission-harness.md`, `package.json`.
 
 # Relevant Records
 
-Code baseline `ca21d0c`; reconciliation `395644d`; prior HEAD before
-reconciliation was `d539e10`. Live run `di_msntkf8z_2vsoyp` (deal 83, sequence
-43) is unchanged and still carries the three retrieved listing URLs the Property
-Intelligence panel projects.
+Baseline `ca21d0c`; checkpoint closeout `7c68925`. Missions
+`m-give-the-mission-harness-two-operator-co-20260811t021747z` (PASS) and
+`m-prove-the-harness-verifies-the-real-runn-20260811t022903z` (PASS) under
+`.runtime/devloop/`.
 
 # Known Blockers
 
-None in the repository. Deployed `~/.hermes` state has drifted from the
-committed templates: `hermes:governed:check` fails all five profiles on CDP
-scope, CLI allowlists and managed-file snapshots, and
-`landos:hermes:profile:check` reports the LandPortal SKILL template mismatched.
-Not run: `hermes:governed:provision --apply-external`, which mutates external
-state and could strip capabilities. `image_gen`, `bfl` and `tts` remain enabled
-and can incur cost, awaiting Tyler's decision.
+None in the repository. `Bash(git push*)` was removed from
+`.claude/settings.local.json` deny rules per instruction; every secret, `.env`
+and token deny rule is intact.
 
-Deal 83's Decision Summary still says no usable comparable survived selection
-from 18 collected rows while the valuation above it prices off five.
-
-`landos:memory:checkpoint` still refuses to write because generator output
-exceeds the 8192-byte ceiling, so this file was written directly under it.
+Unchanged: deployed `~/.hermes` has drifted from committed templates and
+`hermes:governed:check` fails all five profiles; `image_gen`, `bfl` and `tts`
+remain enabled and can incur cost; deal 83's Decision Summary still contradicts
+the valuation above it; `landos:memory:checkpoint` still exceeds its 8192-byte
+ceiling, so this file was written directly under it.
 
 # Do Not Inspect or Modify
 
 Do not expose `.env` or secrets, print either dashboard token, run destructive
 SQL, or delete `store/backups/landos-pre-rescue-2026-08-03.db`. Deny rules
-`Bash(git push*)`, `Bash(rm *)`, `Bash(git clean*)` and broad `git add` are
-intact; Tyler pushes manually. Never disable TLS verification. Do not create a
-second Chrome profile: LandOS uses the one automation Chrome on CDP 9224. Do not
-regenerate the committed acceptance fixture or drop its `.gitattributes`.
+`Bash(rm *)` and `Bash(git clean*)` are intact. Never disable TLS verification.
+Do not create a second Chrome profile: CDP 9224 only. Do not regenerate the
+committed acceptance fixture or drop its `.gitattributes`.
 
 # Runtime State
 
-Healthy on http://localhost:3141, PID 151780, HTTP 200. Dedicated LandOS Chrome
-on CDP 9224, owned. The live database was never touched by either task.
+Healthy on http://localhost:3141, PID 161196, HTTP 200, restarted under harness
+control and left running. The live database was never touched.
 
 # Verification Required
 
-Met. Full suite 6,045 passing across 445 files with 0 failures; `tsc --noEmit`
-clean; production build clean; the nine previously failing files run first and
-green before the full sweep. Both commits verified equal to origin/main with
-`git fetch` after pushing.
+Met for the harness. Full suite 6,045 passing across 445 files, 0 failures;
+harness suite 24 passing; `tsc --noEmit` clean; two missions ended PASS; the
+running dashboard was verified after a managed restart. Not run: production
+build, and no operator-facing LandOS surface changed, so none was required.
 
 # Completed and Protected
 
-Retain everything previously protected. Plus: `main` must keep representing the
-accepted running LandOS, so accepted production work is never left uncommitted
-across a session boundary; generated acceptance, devloop and CDP artifacts stay
-ignored rather than committed; an ignore rule that would exclude live tooling
-must stay root-anchored, as `/data/` now is; a test fixture must be committed
-and reproducible, never a gitignored generated run; a labeled parcel value that
-runs on into a street address is refused rather than accepted as a parcel id,
-because a wrong APN is a different parcel; and a stale assertion is re-expressed
-against current structure or strengthened, never deleted, excluded, or weakened
-into a tautology.
+Retain everything previously protected. Plus: concurrency is the default and
+failover is not parallelism; two lanes that can run at once must own disjoint
+paths, and a plan violating that is refused before launch; recon lanes are
+read-only and may share the primary tree, write lanes never may; a repair worker
+receives the exact failing file, test title, assertion and expected/received,
+never a bare check name; cheap focused checks run before expensive
+certification; a completion summary names only the gates that actually ran, so a
+mission with no browser check never claims localhost was verified; integration
+refuses only when a file it would patch is already dirty, so unrelated
+uncommitted work is preserved; a test fixture that a real run contradicts is
+replaced with real output, never trusted over it; and accepted work is committed
+before the next sprint begins.

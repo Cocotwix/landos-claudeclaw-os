@@ -20,7 +20,7 @@
 // The loop never trusts a builder's claim. It is recorded as evidence about the
 // builder, and the independent evaluator alone decides PASS or FAIL.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -28,7 +28,12 @@ export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 
 // Builder tools are deliberately narrow: read and edit only. The loop runs the
 // tests and the build itself, so a builder never needs a shell to be accepted.
-const CC_TOOLS = 'Read,Write,Edit,Glob,Grep';
+export const CC_TOOLS = 'Read,Write,Edit,Glob,Grep';
+
+// A reconnaissance lane only reports what it found, so it gets no write tool at
+// all. That is what makes it safe to run against the primary worktree with no
+// worktree of its own, and it is why several recon lanes can share one tree.
+export const CC_READONLY_TOOLS = 'Read,Glob,Grep';
 
 function quote(value) {
   return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
@@ -52,9 +57,9 @@ export const BUILDERS = [
     notes:
       'Headless print mode. Prompt on stdin. acceptEdits plus a read/edit-only ' +
       'tool list, so the builder can implement but cannot run shell commands.',
-    invoke({ promptText }) {
+    invoke({ promptText, tools }) {
       return {
-        args: ['-p', '--permission-mode', 'acceptEdits', '--allowedTools', CC_TOOLS, '--output-format', 'text'],
+        args: ['-p', '--permission-mode', 'acceptEdits', '--allowedTools', tools ?? CC_TOOLS, '--output-format', 'text'],
         stdin: promptText,
       };
     },
@@ -144,8 +149,120 @@ export function nextBuilderId(currentId, available) {
   return pool[(index + 1) % pool.length];
 }
 
-export function launchBuilder(builder, { cwd, promptText, attemptDir, timeoutMs = DEFAULT_TIMEOUT_MS }, { run = spawnSync } = {}) {
-  const plan = builder.invoke({ cwd, promptText, attemptDir });
+// Killing a timed-out builder is not as simple as child.kill(). Every builder
+// is launched through a shell, so the child is the shell and the builder is its
+// grandchild. On Windows a SIGTERM to cmd.exe leaves the real process running,
+// holding the stdio pipes open, so 'close' never fires and a hung builder would
+// stall its lane indefinitely past the timeout it was given. Killing the whole
+// tree is what makes the timeout real.
+export function killTree(child) {
+  if (!child?.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+    } else {
+      // Negative pid targets the process group created for the shell.
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+    }
+  } catch {
+    // Nothing further to try; the close handler still resolves the promise.
+  }
+}
+
+// Concurrent lanes are the whole point of the mission harness, and spawnSync
+// makes concurrency impossible: the first builder blocks the event loop until
+// it exits, so four independent lanes cost four serial builder runs. This is
+// the same descriptor contract, awaited instead of blocked on, so a scheduler
+// can hold N builders in flight at once. launchBuilder below is unchanged and
+// still serves the single-attempt loop.
+export function launchBuilderAsync(
+  builder,
+  { cwd, promptText, attemptDir, tools, timeoutMs = DEFAULT_TIMEOUT_MS },
+  { spawnFn = spawn } = {},
+) {
+  const plan = builder.invoke({ cwd, promptText, attemptDir, tools });
+  const startedAt = Date.now();
+
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnFn(builder.command, plan.args, { cwd, shell: true, windowsHide: true });
+    } catch (error) {
+      resolve({
+        builderId: builder.id,
+        launched: false,
+        exitCode: null,
+        timedOut: false,
+        durationMs: 0,
+        stdout: '',
+        stderr: String(error?.message ?? error),
+        finalMessage: null,
+        claim: 'UNKNOWN',
+        error: String(error?.message ?? error),
+      });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+
+    // Bounded in memory on purpose: a runaway builder must not exhaust the
+    // orchestrator's heap and take every other lane down with it.
+    const cap = 32 * 1024 * 1024;
+    child.stdout?.on('data', (chunk) => {
+      if (stdout.length < cap) stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      if (stderr.length < cap) stderr += chunk.toString();
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+    }, timeoutMs);
+
+    const finish = (exitCode, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      let finalMessage = null;
+      if (plan.finalMessageFile) {
+        const file = path.join(attemptDir, plan.finalMessageFile);
+        if (existsSync(file)) finalMessage = readFileSync(file, 'utf8');
+      }
+      resolve({
+        builderId: builder.id,
+        launched: !error && exitCode === 0,
+        exitCode,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        stdout,
+        stderr,
+        finalMessage,
+        claim: builder.claimFrom(finalMessage ?? stdout, stderr),
+        error: error ? String(error) : null,
+      });
+    };
+
+    child.on('error', (error) => finish(null, error?.message ?? error));
+    child.on('close', (code) => finish(code));
+
+    if (plan.stdin !== null || !plan.finalMessageFile) {
+      child.stdin?.end(plan.stdin ?? promptText);
+    } else {
+      child.stdin?.end(promptText);
+    }
+  });
+}
+
+export function launchBuilder(builder, { cwd, promptText, attemptDir, tools, timeoutMs = DEFAULT_TIMEOUT_MS }, { run = spawnSync } = {}) {
+  const plan = builder.invoke({ cwd, promptText, attemptDir, tools });
   const startedAt = Date.now();
   const result = run(builder.command, plan.args, {
     cwd,
