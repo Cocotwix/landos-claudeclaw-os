@@ -44,6 +44,8 @@
     "landos:knowledge:test": "node --test scripts/knowledge/validate-landos-knowledge.test.mjs",
     "landos:knowledge:query": "node scripts/knowledge/query-landos-knowledge.mjs",
     "landos:sprint": "tsx scripts/sprint/landos-sprint-cli.ts",
+    "landos:task": "node scripts/dev/task.mjs",
+    "landos:task:test": "node --test scripts/dev/task.test.mjs scripts/dev/verify.test.mjs scripts/dev/env-guard.test.mjs",
     "landos:devloop": "node scripts/devloop/devloop-cli.mjs",
     "landos:devloop:test": "node --test scripts/devloop/devloop.test.mjs",
     "landos:build": "node scripts/devloop/mission-cli.mjs",

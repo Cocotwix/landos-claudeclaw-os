@@ -7,6 +7,8 @@ This is the LandOS repository. Before coding, read these files in order:
    subagent file, or document under `docs/landos/` disagrees, the contract wins.
 2. `.landos/PERMANENT_MEMORY.md` — stable invariants.
 3. `.landos/CHECKPOINT.md` — the single active handoff.
+4. `.landos/DEVELOPMENT_CONTEXT.md` — durable orientation: architecture,
+   conventions, commands, and what a correct operator-facing result means.
 
 Then run `git status --short`, inspect only the checkpoint's named files and
 minimum required runtime state, and begin its Exact Next Action. Preserve all
