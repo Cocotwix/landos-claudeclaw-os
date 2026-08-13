@@ -32,6 +32,37 @@ describe('comparable intelligence', () => {
     expect(cls.confidence).not.toBe('low');
   });
 
+  // The real 9490 Elk Lake Rd Street View notes: every agricultural keyword sat
+  // in a neighboring/roadside description, and it retyped a 1,701 sqft residence
+  // as agricultural improvements.
+  it('does not let neighboring or roadside orchard text classify the subject', () => {
+    const cls = inferSubjectPropertyType({
+      parcelUrl: 'x', comparablesUrl: null,
+      parcelFacts: { 'Building SqFt': '1701', Acres: '60' },
+      assets: [], overlays: [],
+      visualObservations: [
+        { label: 'Existing improvement', detail: 'Parcel page shows approx. 1,701 sqft of improvements.', confidence: 'high', evidence: 'LandPortal parcel panel' },
+        { label: 'Neighboring land uses', detail: 'Street View shows orchard/agricultural land and nearby outbuildings in the immediate road context.', confidence: 'medium', evidence: 'Street View' },
+        { label: 'Vegetation and privacy', detail: 'Dense roadside vegetation, trees, and open field/orchard edges are visible.', confidence: 'medium', evidence: 'Street View' },
+      ],
+      comparables: [], sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    expect(cls.type).toBe('existing_residence');
+    expect(cls.note).toMatch(/2 observations describing neighboring or off-parcel context/i);
+  });
+
+  it('still classifies agricultural improvements standing on the subject parcel', () => {
+    const cls = inferSubjectPropertyType({
+      parcelUrl: 'x', comparablesUrl: null,
+      parcelFacts: { 'Building SqFt': '4200', Acres: '60', 'Parcel Use Description': 'Agricultural — barn and poultry buildings on parcel' },
+      assets: [], overlays: [],
+      visualObservations: [{ label: 'Existing improvement', detail: 'Large barn stands on the parcel.', confidence: 'high', evidence: 'Satellite' }],
+      comparables: [], sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+    expect(cls.type).toBe('agricultural_improvements');
+    expect(cls.note).not.toMatch(/off-parcel context/i);
+  });
+
   it('does not mistake a manufactured-home use description for a structure when parcel facts show zero improvements', () => {
     const cls = inferSubjectPropertyType({
       parcelUrl: 'x', comparablesUrl: null,

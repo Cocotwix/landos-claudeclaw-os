@@ -121,9 +121,28 @@ function parseDate(raw: string): string | null {
   return Number.isNaN(t) ? found : new Date(t).toISOString().slice(0, 10);
 }
 
+/**
+ * Street View and aerial observations routinely describe what surrounds a
+ * parcel — a neighbor's orchard, an adjacent farm, roadside vegetation, a
+ * commercial building across the highway. That is setting, not subject. Left in
+ * the classification text it silently retypes the subject's own improvements
+ * (a residence on 9490 Elk Lake Rd read as agricultural because the Street View
+ * frontage notes mention orchard edges across the road). Observations describing
+ * off-parcel context are therefore excluded from subject classification; they
+ * remain retained evidence everywhere else.
+ */
+const OFF_PARCEL_CONTEXT = /\b(neighbou?r\w*|adjacent|adjoining|abutting|surrounding|nearby|vicinity|roadside|streetscape|corridor|across the (?:road|street|highway)|down the (?:road|street)|in the (?:immediate )?(?:road )?context)\b/i;
+
+function describesOffParcelContext(text: string): boolean {
+  return OFF_PARCEL_CONTEXT.test(text);
+}
+
 export function inferSubjectPropertyType(inspection?: PropertyInspectionRecord | DealCardReportView['landportalInspection'] | null): SubjectPropertyClassification {
   const facts = inspection?.parcelFacts ?? {};
-  const observations = inspection?.visualObservations ?? [];
+  const allObservations = inspection?.visualObservations ?? [];
+  const observationLine = (o: (typeof allObservations)[number]): string => `${o.label}: ${o.detail} ${'evidence' in o ? o.evidence : ''}`;
+  const observations = allObservations.filter((o) => !describesOffParcelContext(observationLine(o)));
+  const offParcelCount = allObservations.length - observations.length;
   const factNumber = (label: RegExp): number | null => {
     const entry = Object.entries(facts).find(([key]) => label.test(key));
     if (!entry) return null;
@@ -133,7 +152,7 @@ export function inferSubjectPropertyType(inspection?: PropertyInspectionRecord |
   const buildingSqft = factNumber(/^building\s*(sq\s*ft|sqft)?$/i);
   const improvementValue = factNumber(/^improvement value$/i);
   const yearBuilt = factNumber(/^(structure )?year built$/i);
-  const observationText = observations.map((o) => `${o.label}: ${o.detail} ${'evidence' in o ? o.evidence : ''}`).join(' ');
+  const observationText = observations.map(observationLine).join(' ');
   const visualImprovement = /\b(home|house|manufactured|mobile\s*home|structure)\b.{0,45}\b(visible|present|on (?:the )?parcel)\b|\b(visible|present)\b.{0,45}\b(home|house|manufactured|mobile\s*home|structure)\b/i.test(observationText);
   const hasStructure = (buildingSqft != null && buildingSqft > 0)
     || (improvementValue != null && improvementValue > 0)
@@ -158,9 +177,12 @@ export function inferSubjectPropertyType(inspection?: PropertyInspectionRecord |
     type,
     confidence,
     evidence,
-    note: type === 'unknown'
+    note: (type === 'unknown'
       ? 'Property type could not be classified from current visual and parcel evidence; comparable confidence should be reduced.'
-      : `Subject appears to be ${type.replace(/_/g, ' ')} from current visual and parcel evidence.`,
+      : `Subject appears to be ${type.replace(/_/g, ' ')} from current visual and parcel evidence.`)
+      + (offParcelCount > 0
+        ? ` ${offParcelCount} observation${offParcelCount === 1 ? '' : 's'} describing neighboring or off-parcel context did not classify the subject.`
+        : ''),
   };
 }
 

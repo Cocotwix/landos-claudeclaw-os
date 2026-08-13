@@ -1,39 +1,39 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-10T00:05:00.0000000Z",
-  "headUnderReview": "9bfd4bd",
-  "commitState": "UNCOMMITTED. Zoning source-selection + county source-discovery closeout sits in the dirty worktree with ~190 pre-existing dirty paths. No commit, no push.",
+  "recordedAt": "2026-08-13T16:55:00.0000000Z",
+  "headUnderReview": "8d5e7a4",
+  "commitState": "UNCOMMITTED. The residential-overlay gate and the subject-classification off-parcel fix sit in the dirty worktree alongside ~115 pre-existing dirty paths. No commit, no push.",
   "tests": {
-    "status": "PASS",
-    "timestamp": "2026-08-09T23:55:00.0000000Z",
-    "summary": "Focused suites: zoning-source-selection (new), county-source-discovery (new), property-intelligence-parcel-independence, land-use, land-use-county-fallback, state-law-retrieval, zoning-slice, zoning.routes, dashboard.contract, dashboard-cors; 350 tests, 0 failures."
+    "status": "PASS with one pre-existing unrelated failure",
+    "timestamp": "2026-08-13T16:45:00.0000000Z",
+    "summary": "Full vitest run: 450 files, 6361 tests, 6360 passed. The single failure is the pre-existing comps-valuation.test.ts 'retained-comp location reconciliation > keeps the retained point when duplicate observations merge' from unrelated uncommitted comp-location-reconciliation work; it fails identically without this session's changes."
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-09T23:54:00.0000000Z",
+    "timestamp": "2026-08-13T16:44:00.0000000Z",
     "summary": "tsc --noEmit clean on the working tree."
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-08-09T23:52:00.0000000Z",
+    "timestamp": "2026-08-13T16:47:00.0000000Z",
     "summary": "vite production build + tsc server build completed; only the pre-existing chunk-size warnings."
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-08-10T00:03:00.0000000Z",
-    "pid": 82100,
+    "timestamp": "2026-08-13T16:55:00.0000000Z",
+    "pid": 165632,
     "url": "http://localhost:3141"
   },
   "operatorAcceptance": {
-    "status": "PASS with a named external blocker",
-    "workflow": "Zoning source-selection + county source-discovery closeout on deal 83 (9490 Elk Lake Rd, Grand Traverse County MI). One operator-triggered Property Intelligence rerun, run di_msmgpris_68vxmn.",
-    "url": "http://localhost:3141/dept/acquisitions/v2?deal=83&section=property-intelligence",
+    "status": "PASS",
+    "workflow": "Improved-property overlay correction on deal 83 (9490 Elk Lake Rd, Grand Traverse County MI). Primary agent read the live Comps & Valuation section twice: once with the subject classified agricultural, once after the classification fix.",
+    "url": "http://localhost:3141/dept/acquisitions/v2?deal=83&section=comps-valuation",
     "evidence": {
-      "zoningSourceSelection": "zoning_landuse served by adapter land_use_engine_zoning_projection_v1 on the parcel-miss path; jurisdiction Whitewater township; county fallback label and blocker retained; citations include the township site and gtcountymi.gov.",
-      "countySourceDiscovery": "Grand Traverse County resolved to https://www.gtcountymi.gov/ through the official .gov registry (registrant organization match), read, and cached in landos_official_site with verified_via=dotgov_registry.",
-      "tokenRotation": "DASHBOARD_TOKEN rotated in place; 52 of 52 other .env lines byte-identical; no backup file written; managed restart; root and /health 200; authenticated dashboard API 200 with the current token and 401 without it. Neither value printed, logged, or committed.",
-      "externalBlocker": "Michigan statewide framework unavailable this run: www.legislature.mi.gov serves an incomplete TLS chain (UNABLE_TO_VERIFY_LEAF_SIGNATURE) so the server-fetch transport cannot read it. LandPortal Hermes specialists failed because the authenticated LandPortal CDP endpoint 127.0.0.1:9224 was not listening; they refused to fall back to 9222.",
-      "note": "No screenshots taken: the capture path activates the operator's Chrome. Evidence is loopback API and database reads."
+      "residentialGate": "With the subject typed agricultural_improvements, Improvement Valuation and Whole Property Value both rendered the skip reason and no figure; no residential $/sqft was applied.",
+      "classificationFix": "After off-parcel observations stopped classifying the subject, the live page reads existing residence, improvement value $523,908 (1,701 sqft x $308/sqft Redfin 49690 benchmark) and whole property $1,148,908, with 11 off-parcel observations reported as excluded.",
+      "landValueUnchanged": "Adopted cleaned land value $625,000, cleaned average $624,500, median $600,000, weighted $637,500, retail range $600,000-$637,500 and the 40/50/60 references were identical before and after both changes.",
+      "staleTextRemoved": "The PENDING chip and the 'improvement value unavailable' line no longer render alongside a calculated overlay.",
+      "note": "No screenshots recorded as evidence artifacts: capture activates the operator's Chrome. Evidence is the live page read of the Comps & Valuation section."
     }
   }
 }
