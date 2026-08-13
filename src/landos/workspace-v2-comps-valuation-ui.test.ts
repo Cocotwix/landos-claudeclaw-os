@@ -107,6 +107,20 @@ describe('the decision strip leads the page', () => {
     expect(CV_SRC).toMatch(/Whole-property value/);
     expect(CV_SRC).toMatch(/<div class="v">PENDING<\/div>/);
   });
+  it('renders separate improvement and whole-property valuation sections', () => {
+    expect(CV_SRC).toMatch(/Improvement Valuation/);
+    expect(CV_SRC).toMatch(/Subject building sqft/);
+    expect(CV_SRC).toMatch(/Qualifying sold improved comps/);
+    expect(CV_SRC).toMatch(/Median sold \$\/sqft/);
+    expect(CV_SRC).toMatch(/Large-acreage comps/);
+    expect(CV_SRC).toMatch(/Estimated subject improvement value/);
+    expect(CV_SRC).toMatch(/Whole Property Value/);
+    expect(CV_SRC).toMatch(/Land Value/);
+    expect(CV_SRC).toMatch(/\+ Improvement Value/);
+    expect(CV_SRC).toMatch(/= Estimated Whole Property Value/);
+    expect(CV_SRC).toMatch(/Large-acreage improved comp/);
+    expect(CV_SRC).toMatch(/may reflect the influence of additional land/);
+  });
 
   it('does not repeat stale no-comp blockers when canonical accepted comps exist', () => {
     expect(CV_SRC).toMatch(/isStaleCompConclusion/);

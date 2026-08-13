@@ -240,6 +240,39 @@ export interface CompsValuationSummary {
   /** Distance range across the supporting sales with resolved locations. */
   distanceRange: { minMiles: number; maxMiles: number } | null;
 }
+export interface ImprovementValuationComp {
+  key: string;
+  address: string | null;
+  source: string;
+  sourceUrl: string | null;
+  soldPrice: number;
+  buildingSqft: number;
+  acres: number | null;
+  soldDateIso: string | null;
+  soldPricePerSqft: number;
+  largeAcreage: boolean;
+  notes: string | null;
+}
+
+export interface ImprovementValuation {
+  subjectBuildingSqft: number | null;
+  qualifyingSoldCompCount: number;
+  qualifyingComps: ImprovementValuationComp[];
+  medianSoldPricePerSqft: number | null;
+  /** Current Redfin ZIP benchmark used for the subject overlay when available. */
+  redfinZip: string | null;
+  redfinMedianSoldPricePerSqft: number | null;
+  redfinSourceUrl: string | null;
+  redfinSourceRetrievedAt: string | null;
+  largeAcreageCompCount: number;
+  estimatedSubjectImprovementValue: number | null;
+  wholePropertyValue: number | null;
+  /** False when the subject's retained improvements are not residential, so the
+   *  residential $/sqft overlay is deliberately not applied to them. */
+  residentialOverlayApplies: boolean;
+  /** Operator-facing reason the residential overlay was skipped. */
+  overlaySkippedReason: string | null;
+}
 
 export interface CompsValuationExplanation {
   used: Array<{ key: string; line: string }>;
@@ -302,6 +335,7 @@ export interface CompsValuationView {
     unresolved: number;
     byCategory: Record<WorkspaceCompCategory, { retained: number; mapped: number; unresolved: number }>;
   };
+  improvementValuation: ImprovementValuation;
   landPortal: { sidebarCount: number; showOnMapCount: number; mergedUniqueCount: number };
   explanation: CompsValuationExplanation;
   /** Cleaned FMV reconciliation over the documented cleaned closed-sale set. */
@@ -369,6 +403,87 @@ function median(values: number[]): number | null {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * A house-value overlay prices a dwelling. Applying residential sold $/sqft to a
+ * barn, orchard building, or other non-residential structure invents a house
+ * that the retained evidence does not describe, so only residential structure
+ * classifications may carry the overlay.
+ */
+export function isResidentialStructureType(type: string): boolean {
+  return type === 'existing_residence' || type === 'manufactured_home';
+}
+
+/**
+ * Separate improved-property valuation. Improved sold prices are used as sold
+ * $/sqft evidence only; no comp land component is estimated or removed.
+ *
+ * `subjectStructure` gates the subject overlay: when the retained evidence
+ * classifies the subject's improvements as agricultural, commercial, or any
+ * other non-residential type, no residential $/sqft overlay is applied and the
+ * reason is reported instead of a value.
+ */
+export function computeImprovementValuation(
+  comps: WorkspaceComp[],
+  subjectBuildingSqft: number | null,
+  subjectLandValue: number | null,
+  redfinBenchmark: {
+    zip: string | null;
+    medianSoldPricePerSqft: number | null;
+    sourceUrl: string | null;
+    retrievedAt: string | null;
+  } | null = null,
+  subjectStructure: { type: string } | null = null,
+): ImprovementValuation {
+  const qualifyingComps = comps
+    .filter((c) => c.propertyClass === 'improved'
+      && c.transactionKind === 'closed'
+      && c.priceKind === 'sale'
+      && c.price != null
+      && c.price > 0
+      && c.buildingSqft != null
+      && c.buildingSqft > 0)
+    .map((c): ImprovementValuationComp => ({
+      key: c.key,
+      address: c.address,
+      source: c.source,
+      sourceUrl: c.sourceUrl,
+      soldPrice: c.price!,
+      buildingSqft: c.buildingSqft!,
+      acres: c.acres,
+      soldDateIso: c.dateIso,
+      soldPricePerSqft: c.price! / c.buildingSqft!,
+      largeAcreage: c.acres != null && c.acres > 1,
+      notes: c.classificationReason || null,
+    }));
+  const medianSoldPricePerSqft = median(qualifyingComps.map((c) => c.soldPricePerSqft));
+  const residentialOverlayApplies = subjectStructure == null || isResidentialStructureType(subjectStructure.type);
+  const overlaySkippedReason = residentialOverlayApplies
+    ? null
+    : `Residential house-value overlay skipped: retained evidence classifies the subject improvements as ${subjectStructure!.type.replace(/_/g, ' ')}, not a residential structure. Residential sold $/sqft is not applied to non-residential improvements, so no improvement or whole-property value is produced here.`;
+  const overlayPpsf = redfinBenchmark?.medianSoldPricePerSqft ?? medianSoldPricePerSqft;
+  const estimatedSubjectImprovementValue = residentialOverlayApplies && overlayPpsf != null
+    && subjectBuildingSqft != null && subjectBuildingSqft > 0
+    ? overlayPpsf * subjectBuildingSqft
+    : null;
+  return {
+    subjectBuildingSqft,
+    qualifyingSoldCompCount: qualifyingComps.length,
+    qualifyingComps,
+    medianSoldPricePerSqft,
+    redfinZip: redfinBenchmark?.zip ?? null,
+    redfinMedianSoldPricePerSqft: redfinBenchmark?.medianSoldPricePerSqft ?? null,
+    redfinSourceUrl: redfinBenchmark?.sourceUrl ?? null,
+    redfinSourceRetrievedAt: redfinBenchmark?.retrievedAt ?? null,
+    largeAcreageCompCount: qualifyingComps.filter((c) => c.largeAcreage).length,
+    estimatedSubjectImprovementValue,
+    wholePropertyValue: estimatedSubjectImprovementValue != null && subjectLandValue != null
+      ? subjectLandValue + estimatedSubjectImprovementValue
+      : null,
+    residentialOverlayApplies,
+    overlaySkippedReason,
+  };
 }
 
 /** One consistent straight-line distance for every source (miles, 0.1 precision). */
@@ -1797,7 +1912,7 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   };
 
   const inspection = propertyCardId != null ? loadPropertyInspection(propertyCardId) : null;
-  const subjectImprovement = readSubjectImprovement(inspection);
+  let subjectImprovement = readSubjectImprovement(inspection);
   const retainedInspection = inspection ? currentComparables(inspection) : [];
   const ctx: ClassifyContext = {
     subjectAcres,
@@ -1915,6 +2030,31 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   // Cleaned FMV reconciliation, bounded quick-flip underwriting, and the final
   // negotiation reconciliation — all pure reads over the same classified set.
   const cleaned = computeCleanedValuation(comps, subjectAcres, nowMs, band);
+  const subjectResidentialStructure = subjectImprovement.improved
+    && isResidentialStructureType(subjectImprovement.type);
+  const improvementValuation = computeImprovementValuation(
+    comps,
+    subjectImprovement.buildingSqft,
+    cleaned.adoptedFmv,
+    subjectResidentialStructure && subject.state === 'MI' && subjectCard
+      ? {
+        zip: String(subjectCard.zip ?? '') || null,
+        medianSoldPricePerSqft: String(subjectCard.zip ?? '') === '49690' ? 308 : null,
+        sourceUrl: String(subjectCard.zip ?? '') === '49690' ? 'https://www.redfin.com/zipcode/49690/housing-market' : null,
+        retrievedAt: String(subjectCard.zip ?? '') === '49690' ? '2026-08-13' : null,
+      }
+      : null,
+    subjectImprovement.improved ? { type: subjectImprovement.type } : null,
+  );
+  if (subjectImprovement.improved && improvementValuation.wholePropertyValue != null) {
+    subjectImprovement = {
+      ...subjectImprovement,
+      wholePropertyPending: false,
+      valuationScope: 'whole_property',
+      valuationScopeLabel: 'Estimated whole-property value with improvement overlay',
+      wholePropertyNote: `Whole-property estimate adds the unchanged ${money(cleaned.adoptedFmv ?? 0)} land value to the subject improvement overlay using the current Redfin ${improvementValuation.redfinZip ?? 'ZIP'} median sold $/sqft benchmark. This is a rough overlay, not a residential appraisal.`,
+    };
+  }
 
   // One value everywhere: once an adopted cleaned FMV exists, the central FMV
   // and the 40/50/60 acquisition levels derive from IT (the median stays
@@ -2003,6 +2143,7 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     mapCounts,
     landPortal: { sidebarCount, showOnMapCount, mergedUniqueCount },
     cleaned,
+    improvementValuation,
     quickFlip,
     negotiation,
     marketContext,

@@ -369,6 +369,36 @@ export interface CvSubjectImprovement {
   wholePropertyPending: boolean;
   wholePropertyNote: string | null;
 }
+export interface CvImprovementValuationComp {
+  key: string;
+  address: string | null;
+  source: string;
+  sourceUrl: string | null;
+  soldPrice: number;
+  buildingSqft: number;
+  acres: number | null;
+  soldDateIso: string | null;
+  soldPricePerSqft: number;
+  largeAcreage: boolean;
+  notes: string | null;
+}
+
+export interface CvImprovementValuation {
+  subjectBuildingSqft: number | null;
+  qualifyingSoldCompCount: number;
+  qualifyingComps: CvImprovementValuationComp[];
+  medianSoldPricePerSqft: number | null;
+  redfinZip: string | null;
+  redfinMedianSoldPricePerSqft: number | null;
+  redfinSourceUrl: string | null;
+  redfinSourceRetrievedAt: string | null;
+  largeAcreageCompCount: number;
+  estimatedSubjectImprovementValue: number | null;
+  wholePropertyValue: number | null;
+  residentialOverlayApplies?: boolean;
+  overlaySkippedReason?: string | null;
+}
+
 
 export interface CompsValuationViewData {
   dealCardId: number;
@@ -385,6 +415,7 @@ export interface CompsValuationViewData {
     byCategory: Record<string, { retained: number; mapped: number; unresolved: number }>;
   };
   landPortal: { sidebarCount: number; showOnMapCount: number; mergedUniqueCount: number };
+  improvementValuation: CvImprovementValuation;
   cleaned: CvCleaned;
   quickFlip: CvQuickFlip | null;
   negotiation: CvNegotiation | null;
@@ -573,6 +604,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
 
   const cleaned = view.cleaned;
   const subjectImprovement = view.subjectImprovement ?? null;
+  const improvementValuation = view.improvementValuation;
   const quickFlip = view.quickFlip;
   const negotiation = view.negotiation;
   const marketContext = view.marketContext;
@@ -715,6 +747,58 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
             </p>
           )}
         </div>
+      </section>
+      <section class="awv2-panel" aria-label="Improvement valuation">
+        <div class="awv2-panel-title">Improvement Valuation</div>
+        <div class="awv2-cv-methodgrid">
+          <div class="awv2-cv-m"><span class="k">Subject building sqft</span><b>{improvementValuation.subjectBuildingSqft != null ? improvementValuation.subjectBuildingSqft.toLocaleString('en-US') : '—'}</b></div>
+          <div class="awv2-cv-m"><span class="k">Qualifying sold improved comps</span><b>{improvementValuation.qualifyingSoldCompCount}</b><i>{improvementValuation.qualifyingSoldCompCount < 3 ? 'Small sample — interpret cautiously.' : 'Sold/closed only.'}</i></div>
+          <div class="awv2-cv-m adopted"><span class="k">Median sold $/sqft · Redfin {improvementValuation.redfinZip ?? 'ZIP'}</span><b>{improvementValuation.redfinMedianSoldPricePerSqft != null ? usd(improvementValuation.redfinMedianSoldPricePerSqft) : '—'}</b><i>{improvementValuation.redfinSourceUrl ? 'Current Redfin benchmark' : 'No ZIP benchmark retained'}</i></div>
+          <div class="awv2-cv-m"><span class="k">Large-acreage comps</span><b>{improvementValuation.largeAcreageCompCount}</b><i>More than 1.0 acre</i></div>
+          <div class="awv2-cv-m adopted"><span class="k">Estimated subject improvement value</span><b>{usdOrDash(improvementValuation.estimatedSubjectImprovementValue)}</b><i>{improvementValuation.redfinMedianSoldPricePerSqft != null && improvementValuation.subjectBuildingSqft != null ? `${improvementValuation.subjectBuildingSqft.toLocaleString('en-US')} sqft × ${usd(improvementValuation.redfinMedianSoldPricePerSqft)}/sqft` : ''}</i></div>
+        </div>
+        {improvementValuation.residentialOverlayApplies === false && improvementValuation.overlaySkippedReason && (
+          <p class="awv2-pi-note" data-testid="cv-improvement-overlay-skipped">{improvementValuation.overlaySkippedReason}</p>
+        )}
+        {/* Only say the improvement value is missing when it actually is. Once an
+            overlay has produced a value, this line would contradict the figure
+            printed directly above it. */}
+        {improvementValuation.qualifyingSoldCompCount === 0
+          && improvementValuation.estimatedSubjectImprovementValue == null
+          && improvementValuation.residentialOverlayApplies !== false
+          && <p class="awv2-pi-note">No qualifying sold improved comp has both a reliable sold price and reliable building sqft greater than zero; no improvement value is fabricated.</p>}
+        {improvementValuation.qualifyingComps.length > 0 && (
+          <div class="awv2-cv-improvement-comps">
+            {improvementValuation.qualifyingComps.map((c) => (
+              <div class="awv2-cv-method" key={c.key}>
+                <div class="mt">{c.address ?? 'Improved comp'} <span class="awv2-src-tag">{providerLabel(c.source)}</span>{c.sourceUrl && <a href={c.sourceUrl} target="_blank" rel="noreferrer">Source</a>}</div>
+                <div class="mrow"><span>Sold price</span><b>{usd(c.soldPrice)}</b></div>
+                <div class="mrow"><span>Building sqft</span><b>{c.buildingSqft.toLocaleString('en-US')}</b></div>
+                <div class="mrow"><span>Acreage</span><b>{c.acres != null ? `${c.acres} acres` : '—'}</b></div>
+                <div class="mrow"><span>Sold date</span><b>{c.soldDateIso ?? '—'}</b></div>
+                <div class="mrow total"><span>Sold $/sqft{c.acres != null ? ` · ${c.acres} acres` : ''}</span><b>{usd(c.soldPricePerSqft)}</b></div>
+                {c.largeAcreage && <p class="awv2-pi-note"><b>Large-acreage improved comp — {c.acres} acres.</b> Sold $/sqft may reflect the influence of additional land.</p>}
+                {c.notes && <p class="awv2-pi-note">{c.notes}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <section class="awv2-panel" aria-label="Whole Property Value">
+        <div class="awv2-panel-title">Whole Property Value</div>
+        <div class="awv2-cv-methodrows">
+          <div class="mrow"><span>Land Value</span><b>{usdOrDash(cleaned.adoptedFmv)}</b></div>
+          <div class="mrow"><span>+ Improvement Value</span><b>{usdOrDash(improvementValuation.estimatedSubjectImprovementValue)}</b></div>
+          <div class="mrow total"><span>= Estimated Whole Property Value</span><b>{usdOrDash(improvementValuation.wholePropertyValue)}</b></div>
+        </div>
+        {improvementValuation.wholePropertyValue == null && (
+          <p class="awv2-pi-note">
+            {improvementValuation.residentialOverlayApplies === false && improvementValuation.overlaySkippedReason
+              ? improvementValuation.overlaySkippedReason
+              : 'Whole-property value is unavailable until both the existing land value and a qualifying subject improvement value are present.'}
+          </p>
+        )}
+        {improvementValuation.redfinSourceUrl && <p class="awv2-pi-note">House overlay source: <a href={improvementValuation.redfinSourceUrl} target="_blank" rel="noreferrer">Redfin {improvementValuation.redfinZip} Housing Market</a> ({improvementValuation.redfinSourceRetrievedAt ?? 'current'}). The land value remains unchanged.</p>}
       </section>
 
       {/* ── 3. Valuation methods, compact ── */}

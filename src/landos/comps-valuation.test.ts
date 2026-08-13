@@ -20,6 +20,7 @@ import { addComp, getComp } from './comps.js';
 import {
   buildCompsValuationView,
   computeCompsValuation,
+  computeImprovementValuation,
   detectImprovedProperty,
   readSubjectImprovement,
   reconcileNegotiation,
@@ -33,6 +34,107 @@ const NOW = Date.parse('2026-08-04T12:00:00Z');
 
 const SUBJECT_POINT = { lat: 43.33, lng: -76.65 };
 const CLINTON_POINT = { lat: 43.0423195, lng: -76.5755962 };
+const improvedComp = (overrides: Partial<WorkspaceComp> = {}): WorkspaceComp => ({
+  key: 'improved:default',
+  address: '1 Main St',
+  source: 'Zillow',
+  propertyClass: 'improved',
+  transactionKind: 'closed',
+  priceKind: 'sale',
+  price: 200000,
+  buildingSqft: 1000,
+  acres: 1.5,
+  dateIso: '2026-01-01',
+  ...overrides,
+} as WorkspaceComp);
+
+describe('separate improvement valuation', () => {
+  it('uses sold price / sqft, sold-only eligibility, true odd/even medians, subject math, and whole-property math', () => {
+    const comps = [
+      improvedComp({ key: 'a', price: 100000, buildingSqft: 1000, acres: 1 }),
+      improvedComp({ key: 'b', price: 300000, buildingSqft: 1000, acres: 0.8 }),
+      improvedComp({ key: 'c', price: 200000, buildingSqft: 1000, acres: 2 }),
+    ];
+    const odd = computeImprovementValuation(comps, 2000, 625000);
+    expect(odd.qualifyingComps.map((c) => c.soldPricePerSqft)).toEqual([100, 300, 200]);
+    expect(odd.medianSoldPricePerSqft).toBe(200);
+    expect(odd.estimatedSubjectImprovementValue).toBe(400000);
+    expect(odd.wholePropertyValue).toBe(1025000);
+    const even = computeImprovementValuation([...comps, improvedComp({ key: 'd', price: 400000, buildingSqft: 1000, acres: 1 })], 2000, 625000);
+    expect(even.medianSoldPricePerSqft).toBe(250);
+  });
+
+  it('excludes active, missing-price, and missing/zero-sqft improved records', () => {
+    const result = computeImprovementValuation([
+      improvedComp({ key: 'active', transactionKind: 'active', priceKind: 'list' }),
+      improvedComp({ key: 'missing-price', price: null }),
+      improvedComp({ key: 'missing-sqft', buildingSqft: null }),
+      improvedComp({ key: 'zero-sqft', buildingSqft: 0 }),
+    ], 1800, 625000);
+    expect(result.qualifyingSoldCompCount).toBe(0);
+    expect(result.medianSoldPricePerSqft).toBeNull();
+    expect(result.estimatedSubjectImprovementValue).toBeNull();
+    expect(result.wholePropertyValue).toBeNull();
+  });
+
+  it('flags acreage strictly greater than one acre', () => {
+    const result = computeImprovementValuation([
+      improvedComp({ key: 'exact', acres: 1 }),
+      improvedComp({ key: 'large', acres: 7.4 }),
+    ], 1800, 625000);
+    expect(result.largeAcreageCompCount).toBe(1);
+    expect(result.qualifyingComps.find((c) => c.key === 'exact')?.largeAcreage).toBe(false);
+    expect(result.qualifyingComps.find((c) => c.key === 'large')?.largeAcreage).toBe(true);
+  });
+
+  it('projects a bounded sold-improved fixture set with the expected true median', () => {
+    const fixture = [
+      [227000, 1175, 1.48], [425000, 2100, 2.35], [605000, 3104, null],
+      [505000, 1269, null], [646000, 1576, 10], [575000, 2872, 2.3],
+      [580000, 2718, 0.46], [709900, 2382, null], [1400000, 4000, null],
+      [1045000, 4329, 10.5], [2650000, 7072, 5], [2400000, 5881, null],
+    ] as const;
+    const result = computeImprovementValuation(fixture.map(([price, buildingSqft, acres], index) =>
+      improvedComp({
+        key: `hermes:${index}`,
+        address: `Fixture ${index + 1}, Williamsburg, MI 49690`,
+        sourceUrl: `https://provider.example/sold/${index + 1}`,
+        price, buildingSqft, acres,
+      })), 1701, 625000);
+    expect(result.qualifyingSoldCompCount).toBe(12);
+    expect(result.medianSoldPricePerSqft).toBeCloseTo(269.708, 2);
+    expect(result.estimatedSubjectImprovementValue).toBeCloseTo(458778.5, 1);
+    expect(result.wholePropertyValue).toBeCloseTo(1083778.5, 1);
+    expect(result.largeAcreageCompCount).toBe(6);
+    expect(result.qualifyingComps.every((comp) => comp.sourceUrl?.startsWith('https://'))).toBe(true);
+  });
+
+  it('runs the house-value overlay only for a residential subject structure', () => {
+    const comps = [
+      improvedComp({ key: 'a', price: 200000, buildingSqft: 1000, acres: 1 }),
+    ];
+    for (const type of ['existing_residence', 'manufactured_home']) {
+      const residential = computeImprovementValuation(comps, 1701, 625000, null, { type });
+      expect(residential.residentialOverlayApplies).toBe(true);
+      expect(residential.overlaySkippedReason).toBeNull();
+      expect(residential.estimatedSubjectImprovementValue).toBe(340200);
+      expect(residential.wholePropertyValue).toBe(965200);
+    }
+    for (const type of ['agricultural_improvements', 'commercial_improvements']) {
+      const nonResidential = computeImprovementValuation(comps, 1701, 625000, {
+        zip: '49690', medianSoldPricePerSqft: 308, sourceUrl: 'https://example.test', retrievedAt: '2026-08-13',
+      }, { type });
+      expect(nonResidential.residentialOverlayApplies).toBe(false);
+      expect(nonResidential.overlaySkippedReason).toMatch(/not a residential structure/i);
+      expect(nonResidential.estimatedSubjectImprovementValue).toBeNull();
+      expect(nonResidential.wholePropertyValue).toBeNull();
+      // The land valuation evidence itself is untouched by the skip.
+      expect(nonResidential.qualifyingSoldCompCount).toBe(1);
+      expect(nonResidential.medianSoldPricePerSqft).toBe(200);
+    }
+  });
+
+});
 const EAST_ST_POINT = { lat: 43.047844, lng: -76.5558735 };
 
 describe('improved-property detection', () => {

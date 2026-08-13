@@ -586,7 +586,7 @@ Store when available:
 - Geographic search level
 - Acreage basis used
 
-## 17. Comp Reconciliation
+## 17. Comp Reconciliation and Improved-Property Branch
 
 A shared governing comp service must:
 - Merge duplicate properties
@@ -608,6 +608,46 @@ There is no mandatory minimum.
 - Additional qualifying properties in an expanded view
 
 Active listings must remain separate from sold-comp valuation calculations.
+
+### 17A. Normal land workflow
+
+LandOS is a land-investing business. For every subject, continue the existing
+LandPortal vacant-land comp workflow, the existing Zillow/Redfin vacant-land
+comp workflow, and the current land valuation methodology. The improved-property
+branch below does not change or rerun those lanes.
+
+### 17B. Independent improved-property branch
+
+Run this branch only when the subject has a residential structure. If no house
+is present, skip the house-value overlay entirely and do not search house comps
+or residential market data. This branch is independent and non-blocking: it
+must not hold up LandPortal vacant-land comps, Zillow vacant-land comps,
+Redfin vacant-land comps, mapping, or other Property Intelligence lanes.
+
+Use existing property evidence first. When construction type is unclear, use
+the existing visual browser / Street View workflow for a practical
+classification only, not a residential inspection. Classify the structure as
+normal stick-built residential or manufactured/mobile home.
+
+For a stick-built house, once the subject ZIP and building sqft are known, go
+directly to `https://www.redfin.com/zipcode/{ZIP}/housing-market` and read the
+current **median sale price per square foot**. The rough house/improvement
+overlay is that benchmark multiplied by the subject building sqft. For a
+manufactured/mobile home, do not use the ZIP-wide Redfin benchmark; use sold
+manufactured-home comps within approximately five miles and their sold $/sqft
+instead. Keep this branch simple and label it as a rough overlay, not a
+residential appraisal.
+
+Persist the branch result in the same Comps & Valuation workflow as the
+existing land result. Display:
+
+- House Value Overlay: house type, subject sqft, market benchmark, source, and
+  estimated house/improvement value.
+- Whole Property Estimate: existing land value, house/improvement value, and
+  their combined value.
+
+The existing land valuation is never altered. Start the branch as soon as the
+subject structure, ZIP, building sqft, and practical house type are known.
 
 ## 18. Interactive Comp Map Inside LandOS
 
