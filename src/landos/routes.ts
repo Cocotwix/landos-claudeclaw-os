@@ -106,7 +106,7 @@ import {
   upsertPropertyCard,
   promoteRetainedLandPortalParcelUrl,
 } from './property-card.js';
-import { isVerifiedLandPortalSubjectUrl } from './landportal-operating-rules.js';
+import { isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
 import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
 import { captureAndPersistAcceptedIdentityVisuals, captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
@@ -1497,6 +1497,59 @@ async function runParallelParcelResolution(
   timeoutMs: number,
 ): Promise<ParallelResolution> {
   return withBrowserMissionGate(() => runParallelParcelResolutionInner(fields, timeoutMs));
+}
+
+/**
+ * Hand the subject over the moment the parcel's own facts are read.
+ *
+ * The identity lane needs those facts and nothing else, and the direct API path
+ * has them within seconds. It used to wait for the whole inspection — imagery,
+ * overlays, 3D, county deep record — and report a handoff timeout for data it
+ * had been holding since second 36. This persists the facts as soon as they are
+ * read and tells the lane; the inspection itself is untouched and still persists
+ * everything it produces when it finishes.
+ *
+ * IDENTITY GATE: this fires ONLY when the capture read the parcel this card is
+ * already bound to. `promoteRetainedLandPortalParcelUrl` returns a verified
+ * canonical record, and the read URL must decode to the same parcel. A capture
+ * of any other parcel is never promoted early — the ordinary end-of-run path,
+ * with its APN cross-check, stays the only way such a record enters the card.
+ */
+function landPortalSubjectFactsHandoff(input: {
+  cardId: number;
+  dealCardId: number | null;
+  retainedUrl: string | null;
+  onSubjectReady?: (capture: { ok: boolean; note: string; comparableCount: number }) => void;
+}): ((payload: { url: string; fields: Record<string, string> }) => void) | undefined {
+  const { cardId, dealCardId, retainedUrl, onSubjectReady } = input;
+  const retainedIdentity = retainedUrl ? landPortalIdentityFromUrl(retainedUrl) : null;
+  if (!retainedUrl || !retainedIdentity || !onSubjectReady) return undefined;
+  let handedOff = false;
+  return ({ url, fields }) => {
+    if (handedOff) return;
+    if (!sameLandPortalParcel(landPortalIdentityFromUrl(url), retainedIdentity)) {
+      logger.warn({ event: 'landportal_subject_handoff_parcel_mismatch', cardId }, 'landportal_subject_handoff_parcel_mismatch');
+      return;
+    }
+    const factCount = Object.values(fields).filter((value) => String(value ?? '').trim()).length;
+    if (!factCount) return;
+    handedOff = true;
+    // Cumulative, non-destructive: the same merge every other inspection write
+    // uses. No assets are claimed here — the capture still owns them.
+    persistPropertyInspection(cardId, {
+      parcelUrl: retainedUrl,
+      comparablesUrl: null,
+      parcelFacts: fields,
+      assets: [], overlays: [], visualObservations: [], comparables: [],
+    });
+    promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
+    logger.info({ event: 'landportal_subject_facts_handed_off', cardId, factCount }, 'landportal_subject_facts_handed_off');
+    onSubjectReady({
+      ok: true,
+      comparableCount: 0,
+      note: `Verified subject parcel facts (${factCount} field(s)) read from the retained LandPortal parcel record. Visual and deep-record capture continues in the background and lands its evidence when it finishes.`,
+    });
+  };
 }
 
 async function runParallelParcelResolutionInner(
@@ -7211,7 +7264,7 @@ export function registerLandosRoutes(app: Hono): void {
     // the single-tab browser mission gate and persists the inspection with the
     // existing cumulative (non-destructive) merge, so retained evidence and
     // assets survive. Free visible rows only — no paid comp report is requested.
-    captureLandPortalInspection: async ({ cardId, searchKey }) => {
+    captureLandPortalInspection: async ({ cardId, searchKey, onSubjectReady }) => {
       const readiness = await ensureLandPortalAuthenticated()
         .then((value) => ({ authenticated: value.authenticated, phase: String(value.phase), detail: value.note || value.reason || '' }))
         .catch((err) => ({ authenticated: false, phase: 'attach_failed', detail: (err as Error)?.message ?? String(err) }));
@@ -7231,13 +7284,9 @@ export function registerLandosRoutes(app: Hono): void {
           note: `LandPortal session is ${readiness.phase} (${readiness.detail || 'not authenticated'}). Check \`npm run landos:browser status\`, then Start Browser Intelligence so the parcel page can be read.`,
         };
       }
-      // A subject that already carries a verified canonical LandPortal parcel URL
-      // does not need to be searched for again. Hand the URL to the workflow so
-      // the deterministic capture opens the record directly: the surface hops and
-      // ranked search that precede it consumed the whole inspection window on a
-      // live run, and the capture never executed. The workflow still verifies the
-      // opened record against the subject, and falls back to searching when no
-      // usable URL is retained.
+      // A subject that already carries a verified canonical parcel URL is not
+      // searched for again: the workflow opens that record directly (it still
+      // verifies it, and still falls back to searching without one).
       const retainedParcel = promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
       if (retainedParcel?.url) {
         logger.info({
@@ -7246,8 +7295,13 @@ export function registerLandosRoutes(app: Hono): void {
           source: retainedParcel.source,
         }, 'landportal_capture_direct_entry');
       }
+      // Hands the subject over as soon as its facts are read; see the helper.
+      const onLandPortalSubjectFacts = landPortalSubjectFactsHandoff({
+        cardId, dealCardId, retainedUrl: retainedParcel?.url ?? null, onSubjectReady,
+      });
       const result = await withBrowserMissionGate(() => runPropertyInspection({
         cardId,
+        onLandPortalSubjectFacts,
         searchKey: {
           address: searchKey.address ?? undefined,
           apn: searchKey.apn ?? undefined,

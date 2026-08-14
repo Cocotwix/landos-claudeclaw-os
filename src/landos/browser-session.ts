@@ -2014,7 +2014,11 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
     // the real "Show on Map" anchor (js-lp-estimate-show-on-map) and screenshots
     // the comps map. Proves the map was reached (mapReached) and never touches a
     // paid Comp/Slope report control. Read-only; closes the tab it opened.
-    async captureLandPortalVisuals(url: string, opts: { timeoutMs: number; captureLabels?: string[] }) {
+    async captureLandPortalVisuals(url: string, opts: {
+      timeoutMs: number;
+      captureLabels?: string[];
+      onSubjectFacts?: (payload: { url: string; fields: Record<string, string> }) => void;
+    }) {
       // Serialize on the NAMED landportalCaptureGate: camera framing, overlay
       // dialogs and paint-gated screenshots cannot interleave on one Chrome
       // window, even though each capture runs on its own lane page. Ordinary
@@ -2444,6 +2448,17 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             factCount: Object.keys(apiFacts).length,
             comps: apiCompCards.length,
           }, 'landportal_api_subject_read');
+          // HAND THE SUBJECT OVER NOW. The parcel facts are complete at this
+          // point; everything below is imagery, and the identity lane used to
+          // wait the whole capture out for data it already had. This only
+          // announces what was read — the capture continues exactly as before,
+          // and a consumer that throws cannot affect it.
+          if (opts.onSubjectFacts) {
+            try { opts.onSubjectFacts({ url, fields: { ...(fieldsOut.fields ?? {}) } }); }
+            catch (error) {
+              logger.warn({ event: 'landportal_subject_facts_handoff_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_subject_facts_handoff_failed');
+            }
+          }
         }
         // Capture only the painted map canvas, never the full LandPortal page.
         // Before every frame, remove visible ads/offers/modals/chat/banner UI

@@ -1253,7 +1253,7 @@ async function runLandPortalAgentic(
 
     if (obs.url && /[?&]property=/.test(obs.url) && driver.captureLandPortalVisuals) {
       try {
-        const v = await driver.captureLandPortalVisuals(obs.url, t());
+        const v = await driver.captureLandPortalVisuals(obs.url, { ...t(), onSubjectFacts: hooks.onSubjectFacts });
         if (v.parcelShotPath || Object.keys(v.fields).length > 0) {
           lpVisuals = v;
           if (Object.keys(v.fields).length > Object.keys(panelFields).length) panelFields = { ...panelFields, ...v.fields };

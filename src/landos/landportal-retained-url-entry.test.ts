@@ -70,8 +70,10 @@ function landPortalFake(opts: { recordUrlOpens: boolean }): { driver: BrowserDri
     },
     async clickCandidate() { phase = 'record'; },
     async clickByText() { /* nav */ },
-    async captureLandPortalVisuals(url: string) {
+    async captureLandPortalVisuals(url: string, opts: { onSubjectFacts?: (p: { url: string; fields: Record<string, string> }) => void }) {
       calls.capturedAt.push(url);
+      // The live capture announces the parcel facts here, before any imagery.
+      opts.onSubjectFacts?.({ url, fields: recordObs().fields });
       return {
         fields: recordObs().fields, parcelShotPath: null, compsMapShotPath: null,
         compRows: [], mapReached: false, capturedAtIso: 't',
@@ -103,6 +105,20 @@ describe('LandPortal retained parcel URL entry', () => {
     // The parcel is still visually verified before anything is extracted.
     expect(ev.visualCheckpoints?.some((c) => c.kind === 'parcel_selected' && c.passed)).toBe(true);
     expect(ev.facts.find((f) => f.key === 'apn')?.value).toBe('023 003.02');
+  });
+
+  it('hands the subject facts to the run hook as soon as the capture reads them', async () => {
+    const { driver } = landPortalFake({ recordUrlOpens: true });
+    const handoffs: Array<{ url: string; fields: Record<string, string> }> = [];
+    const ev = await makeLandPortalBrowser({ driver }).runWorkflow(
+      { searchKey: { ...SEARCH_KEY, landPortalParcelUrl: RETAINED_URL } },
+      { timeoutMs: 2000, onSubjectFacts: (payload) => handoffs.push(payload) },
+    );
+
+    expect(ev.status).toBe('retrieved');
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0].url).toBe(RETAINED_URL);
+    expect(handoffs[0].fields['Parcel ID']).toBe('023 003.02');
   });
 
   it('still runs the search sequence when no parcel URL is retained', async () => {

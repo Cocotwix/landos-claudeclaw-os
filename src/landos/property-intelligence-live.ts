@@ -11,6 +11,8 @@
 
 import fs from 'node:fs';
 
+import { logger } from '../logger.js';
+import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
 import { currentComparables, getPropertyCard, loadPropertyInspection } from './property-card.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { PublicIntelligenceStore } from './public-intelligence-store.js';
@@ -166,6 +168,10 @@ export interface LiveCollectorDeps {
   captureLandPortalInspection?: (input: {
     cardId: number;
     searchKey: { address: string | null; apn: string | null; county: string | null; state: string | null; city: string | null; owner: string | null };
+    /** Called once the verified subject parcel's own facts are read and
+     *  persisted, ahead of the imagery and deep-record half of the capture. The
+     *  returned promise still settles only when the whole capture is done. */
+    onSubjectReady?: (capture: { ok: boolean; note: string; comparableCount: number }) => void;
   }) => Promise<{ ok: boolean; note: string; comparableCount: number }>;
   /** Automatic Hermes LandPortal lane. It imports its exact-match file through
    *  the canonical importer before settling and never blocks another provider. */
@@ -192,6 +198,25 @@ export interface LiveCollectorDeps {
   persistProviderResult?: (result: PropertyProviderResult) => PropertyProviderResult | Promise<PropertyProviderResult>;
   now?: () => string;
 }
+
+/**
+ * How long parcel identity waits for the authenticated LandPortal capture.
+ *
+ * This was 90 seconds, which is below what a COLD parcel lookup actually costs.
+ * Measured on live runs, a capture that succeeds takes 63-86s and one that has
+ * to search from a bare street address takes materially longer: 5170 Hwy 60
+ * (card 77) resolved its parcel at 220s, 130s after the run had already given
+ * up and recorded the subject as unresolved. The evidence was retrieved, fully
+ * correct, and thrown away — every screening lane had already been gated off
+ * for want of an APN and jurisdiction.
+ *
+ * The window is therefore sized to the work rather than to a round number, and
+ * still nests inside the two bounds above it: the public refresh handoff
+ * (330s) and parcel identity's outer required-child deadline (420s). A capture
+ * that overruns even this is not lost — `capturePromise` continues
+ * independently and promotes its identity when it lands (see below).
+ */
+const LANDPORTAL_CAPTURE_WAIT_MS = 300_000;
 
 const str = (value: unknown): string | null => {
   const text = typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
@@ -312,23 +337,74 @@ export async function collectParcelIdentity(
     });
     return true;
   };
-  const hermesStartedInitially = startHermesWhenUsable(canonicalInitial, initialProperty);
+  // ── DETERMINISTIC CAPTURE FIRST, HERMES AS THE EXCEPTION HANDLER ─────────
+  // Hermes used to be started HERE, before the deterministic capture, and
+  // `capturePromise` below was then skipped whenever it had started. Because
+  // `startHermesWhenUsable` fires as soon as the card carries an APN or a
+  // LandPortal id, the effect was backwards: the moment a lead's identity was
+  // known — precisely when the direct capture is fastest, since it can open the
+  // parcel URL instead of searching for it — LandOS abandoned the direct
+  // capture and handed the whole job to an LLM agent loop.
+  //
+  // Measured on 5170 Hwy 60: the direct capture returned 77 structured parcel
+  // fields, slope/terrain metrics and a verified parcel screenshot. Its two
+  // later runs produced no new visuals and no comps at all, because this
+  // condition meant it never ran again; Hermes spent 18.5 minutes instead and
+  // returned a payload the importer could not read a single artifact from.
+  //
+  // So the direct capture now ALWAYS runs, and Hermes starts after it settles
+  // (the existing call below), supplementing what the direct pass could not
+  // obtain rather than replacing it.
+  const hermesStartedInitially = false;
+  // The UNDERLYING browser capture, held separately from the provider wrapper.
+  //
+  // These settle at different times and the difference is the whole defect: the
+  // provider wrapper rejects the moment its own timeout fires, while the browser
+  // work carries on and lands its parcel evidence later. Hooking the wrapper to
+  // catch a late result therefore fires immediately and sees nothing. Only this
+  // promise settles when the capture has actually finished.
+  let rawCapturePromise: Promise<{ ok: boolean; note: string; comparableCount: number }> | null = null;
+  // Set when the capture handed the subject over early. The lane then settled on
+  // the parcel facts while the imagery and deep-record half was still running,
+  // so the late-promotion below is still required.
+  let subjectHandedOffEarly = false;
   const capturePromise = initialCardId && deps.captureLandPortalInspection && canonicalInitial && !hermesStartedInitially
     ? executePropertyProvider({
       runId: ctx.runId,
       property: canonicalInitial,
-      timeoutMs: Math.max(1, deps.landPortalCaptureWaitMs ?? 90_000),
-      adapter: landPortalSubjectProviderAdapter({ cardId: initialCardId, execute: () => deps.captureLandPortalInspection!({
-        cardId: initialCardId,
-        searchKey: {
-          address: str(initialProperty.active_input_address) ?? str(initialProperty.address),
-          apn: str(initialProperty.apn),
-          county: str(initialProperty.county),
-          state: str(initialProperty.state),
-          city: str(initialProperty.city),
-          owner: str(initialProperty.owner),
-        },
-      }) }),
+      timeoutMs: Math.max(1, deps.landPortalCaptureWaitMs ?? LANDPORTAL_CAPTURE_WAIT_MS),
+      adapter: landPortalSubjectProviderAdapter({ cardId: initialCardId, execute: () => {
+        // ── THE HANDOFF IS THE SUBJECT, NOT THE WHOLE CAPTURE ────────────────
+        // This lane establishes parcel identity. Its input is the parcel's own
+        // facts, which the direct API path returns in seconds; the imagery,
+        // overlays, 3D and county deep-record work that follows belongs to other
+        // lanes entirely. Waiting for all of it is what made the lane report a
+        // 300-second timeout for data it had at 36 seconds. Settle on whichever
+        // comes first — the early subject handoff or the full capture — and
+        // leave the capture itself running and untouched.
+        let settleEarly: ((capture: { ok: boolean; note: string; comparableCount: number }) => void) | null = null;
+        const subjectReady = new Promise<{ ok: boolean; note: string; comparableCount: number }>((resolve) => { settleEarly = resolve; });
+        const started = deps.captureLandPortalInspection!({
+          cardId: initialCardId,
+          searchKey: {
+            address: str(initialProperty.active_input_address) ?? str(initialProperty.address),
+            apn: str(initialProperty.apn),
+            county: str(initialProperty.county),
+            state: str(initialProperty.state),
+            city: str(initialProperty.city),
+            owner: str(initialProperty.owner),
+          },
+          onSubjectReady: (capture) => {
+            subjectHandedOffEarly = true;
+            settleEarly?.(capture);
+          },
+        });
+        rawCapturePromise = started;
+        // The loser of the race must not surface as an unhandled rejection: the
+        // capture keeps running after this lane has already answered.
+        started.catch(() => { /* reported through rawCapturePromise consumers */ });
+        return Promise.race([subjectReady, started]);
+      } }),
     }).then((result) => persistProviderResult(deps, result)).then(
         (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: providerResult.status === 'failed' ? new Error(providerResult.failureReason ?? 'LandPortal subject lane failed.') : null as unknown }),
         (error: unknown) => ({ result: null, error }),
@@ -356,7 +432,7 @@ export async function collectParcelIdentity(
   // capture used to make the two nominal bounds additive and let parcel
   // identity hit its outer seven-minute deadline before either handback was
   // assembled.
-  const landPortalCaptureWaitMs = Math.max(1, deps.landPortalCaptureWaitMs ?? 90_000);
+  const landPortalCaptureWaitMs = Math.max(1, deps.landPortalCaptureWaitMs ?? LANDPORTAL_CAPTURE_WAIT_MS);
   const publicRefreshWaitMs = Math.max(1, deps.publicRefreshWaitMs ?? 330_000);
   let captureWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let publicWaitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -375,15 +451,47 @@ export async function collectParcelIdentity(
   const [capture, live] = await Promise.all([captureWait, publicWait]);
   if (captureWaitTimer) clearTimeout(captureWaitTimer);
   if (publicWaitTimer) clearTimeout(publicWaitTimer);
-  if (capture.timedOut) {
+  // An overrun arrives by either of two routes that mean the same thing: the
+  // race timer above fired, or the provider wrapper hit its own timeout first
+  // and rejected. Card 77 came back through the SECOND one, so anything that
+  // handles only the first misses the case it was written for.
+  const captureOverran = capture.timedOut
+    || (!!capture.error && /provider lane timed out/i.test((capture.error as Error)?.message ?? String(capture.error)));
+  if (captureOverran) {
     inspectionNote = ` LandPortal subject capture exceeded the ${Math.round(landPortalCaptureWaitMs / 1000)}-second identity handoff window; it continues independently and any previously retained parcel evidence is used.`;
   } else if (capture.error) {
-    const captureError = (capture.error as Error)?.message ?? String(capture.error);
-    inspectionNote = /provider lane timed out/i.test(captureError)
-      ? ` LandPortal subject capture exceeded the ${Math.round(landPortalCaptureWaitMs / 1000)}-second identity handoff window; it continues independently and any previously retained parcel evidence is used.`
-      : ` LandPortal subject capture errored (${captureError}).`;
+    inspectionNote = ` LandPortal subject capture errored (${(capture.error as Error)?.message ?? String(capture.error)}).`;
   } else if (capture.result && !capture.result.ok) {
     inspectionNote = ` LandPortal subject capture was limited (${capture.result.note}).`;
+  }
+
+  // ── THE LATE-CAPTURE PROMOTION ────────────────────────────────────────────
+  // "It continues independently" was already true; nothing consumed what it
+  // eventually produced. The run's own identity promotion has long gone by the
+  // time an overrunning capture lands, so its APN, FIPS, county and acreage sat
+  // in retained evidence while the property card every research lane reads from
+  // stayed empty. Card 77 is the measured case: a complete and correct parcel
+  // record, retrieved 130 seconds too late to be used by anything.
+  //
+  // This waits on the RAW capture, not the provider wrapper, so it runs when the
+  // browser work actually finished. Reconciliation is the same step the run
+  // performs itself: idempotent, and it never blanks a retained value.
+  // An early subject handoff leaves the capture running for exactly the same
+  // reason an overrun does, so it needs the same promotion when it lands.
+  if ((captureOverran || subjectHandedOffEarly) && rawCapturePromise) {
+    void (rawCapturePromise as Promise<unknown>)
+      .then(() => reconcileSubjectIdentity(ctx.dealCardId, { actor: 'landportal-late-capture' }))
+      .then((reconciled) => {
+        if (!reconciled.changes.length && !reconciled.conflicts.length) return;
+        logger.info({
+          dealCardId: ctx.dealCardId,
+          runId: ctx.runId,
+          status: reconciled.status,
+          changed: reconciled.changes.map((change) => change.field),
+          conflicts: reconciled.conflicts.length,
+        }, 'landportal_late_capture_identity_promoted');
+      })
+      .catch((err) => logger.warn({ err, dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_late_capture_identity_promotion_failed'));
   }
   if (live.timedOut) {
     liveNote = ` Live public-source refresh exceeded the ${Math.round(publicRefreshWaitMs / 1000)}-second identity handoff window; it continues independently and retained public evidence is used for this handback.`;
@@ -400,8 +508,13 @@ export async function collectParcelIdentity(
     canonicalPropertyInputForDeal(ctx.dealCardId),
     (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,
   );
-  if (!hermesStarted && capturePromise) {
-    void capturePromise.then(() => {
+  // Hermes still waits for the DETERMINISTIC CAPTURE ITSELF, not for this lane's
+  // handback. With the early handoff those are no longer the same moment, and
+  // starting an agent loop on the one dedicated browser while the capture is
+  // still using it would only queue behind it.
+  const captureSettled = rawCapturePromise ?? capturePromise;
+  if (!hermesStarted && captureSettled) {
+    void captureSettled.then(() => {
       startHermesWhenUsable(
         canonicalPropertyInputForDeal(ctx.dealCardId),
         (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,

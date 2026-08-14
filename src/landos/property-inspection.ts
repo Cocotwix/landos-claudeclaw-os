@@ -40,6 +40,11 @@ export interface PropertyInspectionInput {
   mode?: BrowserSearchMode;
   existingEvidence?: BrowserEvidence[];
   timeoutMs: number;
+  /** Fired as soon as the verified LandPortal parcel's own facts are read,
+   *  ahead of this inspection's imagery and county deep-record work. The
+   *  inspection itself is unchanged: it still runs to completion and still
+   *  returns the same result. */
+  onLandPortalSubjectFacts?: (payload: { url: string; fields: Record<string, string> }) => void;
 }
 
 const ROUTE_ORDER = [
@@ -496,7 +501,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   } else if (deps.landPortalBrowser?.configured()) {
     landPortalEvidence = await deps.landPortalBrowser.runWorkflow(
       { searchKey: input.searchKey, mode: input.mode, propertyCardId: input.cardId } satisfies BrowserWorkflowInput,
-      { timeoutMs: Math.max(1, remainingMs()) },
+      { timeoutMs: Math.max(1, remainingMs()), onSubjectFacts: input.onLandPortalSubjectFacts },
     );
     if (landPortalEvidence.inspection) {
       const lp = packageFromLandPortal(landPortalEvidence);

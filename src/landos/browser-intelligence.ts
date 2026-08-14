@@ -216,7 +216,14 @@ export interface BrowserDriver {
   /** ONE-PASS LandPortal capture on the deep-link full view: parcel fields + a
    *  wide parcel screenshot + all comparable rows + the real "Show on Map" comps
    *  map screenshot (mapReached proves it was clicked). Optional; live driver only. */
-  captureLandPortalVisuals?(url: string, opts: { timeoutMs: number; captureLabels?: string[] }): Promise<{
+  captureLandPortalVisuals?(url: string, opts: {
+    timeoutMs: number;
+    captureLabels?: string[];
+    /** Called the moment the verified parcel's own facts have been read, before
+     *  any imagery work. The capture continues; this only lets a caller that
+     *  needs the subject (identity) stop waiting on the visual half. */
+    onSubjectFacts?: (payload: { url: string; fields: Record<string, string> }) => void;
+  }): Promise<{
     fields: Record<string, string>;
     parcelShotPath: string | null;
     compsMapShotPath: string | null;
@@ -495,6 +502,10 @@ export interface BrowserRunHooks {
   onFact?: (fact: BrowserFact) => void;
   /** Polled between steps; true → stop now (operator cancelled). */
   isCancelled?: () => boolean;
+  /** Fired when the verified subject parcel's own facts have been read, ahead of
+   *  the run's imagery and deep-record work. A caller that only needs identity
+   *  can settle on this instead of the whole run. */
+  onSubjectFacts?: (payload: { url: string; fields: Record<string, string> }) => void;
 }
 
 export interface BrowserService {
