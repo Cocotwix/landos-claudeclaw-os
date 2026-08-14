@@ -1,27 +1,27 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-13T16:55:00.0000000Z",
-  "headUnderReview": "8d5e7a4",
-  "commitState": "UNCOMMITTED. The residential-overlay gate and the subject-classification off-parcel fix sit in the dirty worktree alongside ~115 pre-existing dirty paths. No commit, no push.",
+  "recordedAt": "2026-08-14T05:40:00.0000000Z",
+  "headUnderReview": "1b699d8",
+  "commitState": "COMMITTED and PUSHED: f178eb7, 3edda7b, e77d552, 1b699d8. Unrelated dirty paths preserved.",
   "tests": {
     "status": "PASS with one pre-existing unrelated failure",
-    "timestamp": "2026-08-13T16:45:00.0000000Z",
-    "summary": "Full vitest run: 450 files, 6361 tests, 6360 passed. The single failure is the pre-existing comps-valuation.test.ts 'retained-comp location reconciliation > keeps the retained point when duplicate observations merge' from unrelated uncommitted comp-location-reconciliation work; it fails identically without this session's changes."
+    "timestamp": "2026-08-14T05:39:00.0000000Z",
+    "summary": "6400 passed; the comps-valuation duplicatesMerged case fails identically without this session's changes."
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-13T16:44:00.0000000Z",
-    "summary": "tsc --noEmit clean on the working tree."
+    "timestamp": "2026-08-14T05:39:00.0000000Z",
+    "summary": "tsc --noEmit clean."
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-08-13T16:47:00.0000000Z",
-    "summary": "vite production build + tsc server build completed; only the pre-existing chunk-size warnings."
+    "timestamp": "2026-08-14T05:39:00.0000000Z",
+    "summary": "vite + tsc server build clean; pre-existing chunk-size warnings only."
   },
   "runtime": {
     "status": "RUNNING healthy",
-    "timestamp": "2026-08-13T16:55:00.0000000Z",
-    "pid": 165632,
+    "timestamp": "2026-08-14T05:40:00.0000000Z",
+    "pid": 177320,
     "url": "http://localhost:3141"
   },
   "operatorAcceptance": {
