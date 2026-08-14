@@ -49,6 +49,7 @@ import {
 } from './comp-listing-projection.js';
 import { landPortalSaleStatus } from './deal-intelligence-comps.js';
 import { inferSubjectPropertyType } from './comparable-intelligence.js';
+import { subjectParcelMatch, type SubjectParcelIdentity } from './comp-subject-identity.js';
 import type { CompSaleVerification } from './comp-transaction-price.js';
 import { addressStateCode, normalizeCompAddress } from './comp-registry.js';
 
@@ -712,6 +713,7 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     buildingSqft,
   });
   const improved = improvedDetection.improved;
+  subjectIdentity: SubjectParcelIdentity;
   const retainedDateIso = row.sale_or_list_date || null;
   const landPortalStatus = landPortalSaleStatus({
     source: row.source_label,
@@ -750,8 +752,16 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
   let selectionMode: 'auto' | 'operator' | null = null;
   let primaryComparability: string | null = null;
   let keyDifference: string | null = null;
-
-  if (row.status === 'rejected') {
+  const subjectMatch = subjectParcelMatch(
+    { apn: row.apn || null, county: row.county || null, state: row.state || null, sourceUrl: row.source_url || null },
+    ctx.subjectIdentity,
+  );
+  if (subjectMatch) {
+    // The subject cannot price itself. Retained and visible with its reason
+    // stated, never silently dropped, and never eligible for the valuation set.
+    category = 'rejected';
+    reason = `This row is the SUBJECT parcel itself, matched on ${subjectMatch}. A property is never a comparable for its own valuation, so it carries no valuation weight. It stays visible as the subject's own transaction record.`;
+  } else if (row.status === 'rejected') {
     category = 'rejected';
     reason = row.inclusion_reason || row.notes || 'Rejected by canonical comp reconciliation.';
   } else if (improved && (priceKind === 'sale' || priceKind === 'list')) {
@@ -2057,6 +2067,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   }
 
   // One value everywhere: once an adopted cleaned FMV exists, the central FMV
+    subjectIdentity: {
+      apn: subject.apn,
+      county: subject.county,
+      state: subject.state,
+      landPortalPropertyId: subjectCard ? String(subjectCard.lp_property_id ?? '') || null : null,
+    },
   // and the 40/50/60 acquisition levels derive from IT (the median stays
   // visible in the ppaBand and medianNote, but never governs alone).
   if (cleaned.adoptedFmv != null && summary.fmv != null && summary.acquisitionLevels != null) {
@@ -2192,14 +2208,21 @@ export function setCompValuationSelection(opts: {
   if (!row || row.deal_card_id !== opts.dealCardId) return { ok: false, error: 'comp not found on this deal' };
   if (opts.action === 'include' || opts.action === 'restore') {
     const deal = getDealCard(opts.dealCardId);
-    const subjectAcres = (() => {
-      const card = resolveSubjectPropertyCard(deal).card as Record<string, unknown> | null;
-      return card && typeof card.acres === 'number' && card.acres > 0 ? card.acres : null;
-    })();
+    const subjectCard = resolveSubjectPropertyCard(deal).card as Record<string, unknown> | null;
+    const subjectAcres = subjectCard && typeof subjectCard.acres === 'number' && subjectCard.acres > 0 ? subjectCard.acres : null;
+    // The same identity gate the view applies: an operator include must not be
+    // able to put the subject parcel into its own valuation set either.
+    const subjectIdentity: SubjectParcelIdentity = {
+      apn: subjectCard ? String(subjectCard.apn ?? '') || null : null,
+      county: subjectCard ? String(subjectCard.county ?? '') || null : null,
+      state: subjectCard ? String(subjectCard.state ?? '') || null : null,
+      landPortalPropertyId: subjectCard ? String(subjectCard.lp_property_id ?? '') || null : null,
+    };
     const inspection = row.card_id != null ? loadPropertyInspection(row.card_id) : null;
     const view = classifyPersistedComp(row, {
       subjectAcres,
-      subjectCounty: null,
+      subjectCounty: subjectIdentity.county,
+      subjectIdentity,
       subjectPoint: null,
       retainedInspection: inspection ? currentComparables(inspection) : [],
       locations: { get: () => null },
