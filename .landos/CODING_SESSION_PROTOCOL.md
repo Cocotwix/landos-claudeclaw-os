@@ -234,6 +234,18 @@ Protected. A new task replaces the active task; only proven behavior moves into
 Completed and Protected. Never copy permanent memory, prompts, transcripts, raw
 logs, browser output, or secrets into it.
 
+**Clean up before reporting complete.** Every agent and automation lane here,
+Claude Code, Codex, Hermes, and browser automation alike, closes what it opened.
+At the end of a sprint or build, close every browser tab the session opened,
+including the duplicate LandOS, LandPortal, Zillow, Redfin, county and GIS,
+search, and testing tabs it created, and stop leftover watchers, test processes,
+and temporary browser sessions no longer needed. Never close a tab that was
+already open before the session unless it clearly belongs to the dedicated
+LandOS automation browser. Leave the dedicated browser and the managed runtime
+available for LandOS, but clean, carrying no unnecessary tabs; section 7 still
+forbids leaving LandOS stopped. The sprint is not complete, and must not be
+reported complete, until this cleanup is done.
+
 Keep implementation in the repository; never print full source files, schemas,
 or large diffs into chat. The final report states what changed, files
 changed, tests and builds run, the acceptance tier and its result, blockers
