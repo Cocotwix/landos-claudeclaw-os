@@ -16,6 +16,7 @@ import {
   withinExactMonths,
   windowCutoffIso,
   exactMonthsOld,
+  normalizeSaleDateIso,
   subtractMonthsUtc,
   MIN_CREDIBLE_FOR_12_MONTH_WINDOW,
   MIN_CREDIBLE_FOR_24_MONTH_WINDOW,
@@ -247,5 +248,56 @@ describe('records that failed validation never reach the window', () => {
     expect(result.credibleWithin12).toBe(4);
     // Four credible sales is below the threshold, so the window expands.
     expect(result.selectedMonths).not.toBe(12);
+  });
+});
+
+// The recency gate used to accept the ISO shape ALONE. Every other form was
+// treated as undated, which is indistinguishable from "sold before the cutoff":
+// on 5170 Hwy 60 two closed sales dated 06-16-2025 and 06-04-2026 — 13 and 2
+// months old — were pushed to historical context at zero valuation weight
+// against a 24-month cutoff of 2024-08-14, because "06-16-2025" compares below
+// "2024-08-14" as a STRING while the age path read the same value correctly.
+describe('provider sale dates are normalized before any cutoff comparison', () => {
+  it('reads month-first provider dates as the same day as their ISO form', () => {
+    expect(normalizeSaleDateIso('06-16-2025')).toBe('2025-06-16');
+    expect(normalizeSaleDateIso('6/4/2026')).toBe('2026-06-04');
+    expect(normalizeSaleDateIso('2024-06-14')).toBe('2024-06-14');
+    expect(normalizeSaleDateIso('2025-4-9')).toBe('2025-04-09');
+    expect(normalizeSaleDateIso('2025-12-09T00:00:00Z')).toBe('2025-12-09');
+  });
+
+  it('reads a leading component that cannot be a month as the day', () => {
+    expect(normalizeSaleDateIso('16-06-2025')).toBe('2025-06-16');
+  });
+
+  it('stays undated rather than inventing a date it cannot read', () => {
+    for (const value of [null, '', 'unknown', 'June 2025', '13-13-2025', '2025-02-30', '06-16-25']) {
+      expect(normalizeSaleDateIso(value)).toBeNull();
+    }
+  });
+
+  it('keeps a month-first sale inside the window its own age puts it in', () => {
+    // 2026-06-04 is 2 months before NOW; 2025-06-16 is 13 months before it.
+    expect(withinExactMonths('06-04-2026', NOW, 12)).toBe(true);
+    expect(withinExactMonths('06-16-2025', NOW, 24)).toBe(true);
+    expect(withinExactMonths('06-16-2025', NOW, 12)).toBe(false);
+    expect(exactMonthsOld('06-04-2026', NOW)).toBe(2);
+    expect(exactMonthsOld('06-16-2025', NOW)).toBe(13);
+  });
+
+  it('does not push a recent month-first sale into historical context', () => {
+    const candidates = [
+      sale('iso-1', '2026-07-01', 11),
+      sale('iso-2', '2026-05-02', 11),
+      sale('us-recent', '06-04-2026', 11),
+      sale('us-13mo', '06-16-2025', 11),
+      sale('genuinely-old', '2024-06-14', 11),
+    ];
+    const result = selectRecencyWindow(candidates, SUBJECT_ACRES, NOW);
+    expect(result.bucketByKey['us-recent']).toBe('primary');
+    expect(result.bucketByKey['us-13mo']).toBe('primary');
+    // A sale that really is older than the window still loses its weight.
+    expect(result.bucketByKey['genuinely-old']).toBe('historical_context');
+    expect(result.movedToHistoricalContext).toBe(1);
   });
 });

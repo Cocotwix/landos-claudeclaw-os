@@ -90,6 +90,53 @@ export function windowCutoffIso(nowMs: number, months: number): string {
   return subtractMonthsUtc(new Date(nowMs), months).toISOString().slice(0, 10);
 }
 
+/** A real calendar date, so "2025-02-30" or month 13 never becomes a comp date. */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (year < 1000 || month < 1 || month > 12 || day < 1) return false;
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+const pad = (value: number, width: number): string => String(value).padStart(width, '0');
+
+/**
+ * Normalize a provider sale date to YYYY-MM-DD, or null when the value states
+ * no usable calendar date.
+ *
+ * THIS IS THE DEFECT THIS FUNCTION EXISTS TO CLOSE. The window test below used
+ * to accept the ISO shape ALONE and treat every other form as undated, which is
+ * indistinguishable from "sold before the cutoff": on 5170 Hwy 60 two closed
+ * sales dated 06-16-2025 and 06-04-2026 — 13 and 2 months old — were pushed to
+ * historical context at zero valuation weight against a 24-month cutoff of
+ * 2024-08-14, because "06-16-2025" compares below "2024-08-14" as a STRING. The
+ * same rows reported an age of 13 and 2 months at the same time, since that
+ * path parsed them correctly. Normalizing here makes every cutoff, window and
+ * age comparison read one shape.
+ *
+ * Month-first is the providers' convention. A leading component that cannot be
+ * a month is read as the day, which is a fact about the string rather than a
+ * guess; anything still ambiguous or unparseable returns null and stays undated
+ * rather than being dated by assumption.
+ */
+export function normalizeSaleDateIso(value: string | null | undefined): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s].*)?$/.exec(raw);
+  if (iso) {
+    const [year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+    return isRealCalendarDate(year, month, day) ? `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}` : null;
+  }
+  const numeric = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(raw);
+  if (numeric) {
+    const first = Number(numeric[1]);
+    const second = Number(numeric[2]);
+    const year = Number(numeric[3]);
+    const [month, day] = first <= 12 ? [first, second] : [second, first];
+    return isRealCalendarDate(year, month, day) ? `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}` : null;
+  }
+  return null;
+}
+
 /**
  * Does the ACTUAL sale date fall inside an N-month window ending now?
  * A sale remains eligible through its exact anniversary date and becomes older
@@ -97,16 +144,16 @@ export function windowCutoffIso(nowMs: number, months: number): string {
  * LandOS cannot date-qualify a sale it has no date for.
  */
 export function withinExactMonths(dateIso: string | null, nowMs: number, months: number): boolean {
-  if (!dateIso) return false;
-  const day = dateIso.slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const day = normalizeSaleDateIso(dateIso);
+  if (!day) return false;
   return day >= windowCutoffIso(nowMs, months);
 }
 
 /** Exact whole-month age of a sale, or null when it is undated. */
 export function exactMonthsOld(dateIso: string | null, nowMs: number): number | null {
-  if (!dateIso) return null;
-  const t = Date.parse(dateIso.slice(0, 10));
+  const day = normalizeSaleDateIso(dateIso);
+  if (!day) return null;
+  const t = Date.parse(day);
   if (!Number.isFinite(t)) return null;
   const now = new Date(nowMs);
   const then = new Date(t);
