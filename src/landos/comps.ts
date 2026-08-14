@@ -29,6 +29,7 @@ import {
   COMP_STATUSES,
 } from './db.js';
 import { censusSuggestProvider, photonProvider, suggestAddresses, SuggestCache, type AddressSuggestion, type SuggestFetch } from './address-suggest.js';
+import { reconcileCompAddress } from './comp-location-reconciliation.js';
 
 // ── Paid comp-tool guardrail ───────────────────────────────────────────────
 
@@ -185,6 +186,9 @@ export interface CompRow {
   source_attributions_json: string;
   canonical_key: string;
   updated_at: number;
+  /** 'parcel_deed_record' when this row's price and acreage come from the
+   *  parcel's OWN recorded deed rather than the provider's listing figures. */
+  pricing_basis: string;
   /** Operator valuation selection: 1 included, -1 excluded with reason, 0 undecided. */
   valuation_selected: number;
   valuation_selection_reason: string;
@@ -234,6 +238,9 @@ export interface AddCompInput {
   inclusionReason?: string;
   sourceAttributions?: Array<{ provider: string; url?: string | null }>;
   canonicalKey?: string;
+  /** Set to 'parcel_deed_record' when price and acres come from the parcel's
+   *  own recorded deed rather than the provider's listing figures. */
+  pricingBasis?: string;
 }
 
 export function getComp(id: number): CompRow | undefined {
@@ -263,8 +270,8 @@ export function addComp(input: AddCompInput): CompRow {
         price, price_kind, sale_or_list_date, acres, price_per_acre, notes, added_by, status, lat, lng,
         canonical_source, city, zip, distance_miles, listing_date, days_on_market, property_class,
         classification, thumbnail_url, retrieved_at, radius_miles, date_window_months,
-        inclusion_reason, source_attributions_json, canonical_key, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))`,
+        inclusion_reason, source_attributions_json, canonical_key, pricing_basis, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))`,
   ).run(
     input.entity,
     input.dealCardId,
@@ -300,6 +307,7 @@ export function addComp(input: AddCompInput): CompRow {
     input.inclusionReason ?? '',
     JSON.stringify(input.sourceAttributions ?? [{ provider: input.canonicalSource ?? sourceLabel, url: input.sourceUrl ?? null }]),
     input.canonicalKey ?? '',
+    input.pricingBasis ?? '',
   ).lastInsertRowid as number;
   landosAudit(input.addedBy ?? 'tyler/manual', 'comp_added', `deal ${input.dealCardId} comp ${id} (${sourceLabel}, ${status})`, {
     entity: input.entity, refTable: 'landos_comp', refId: id,
@@ -330,6 +338,19 @@ export function upsertNormalizedComp(input: AddCompInput): CompRow {
       ORDER BY updated_at DESC, id DESC LIMIT 1`).get(input.dealCardId, input.addressDesc) as CompRow | undefined;
   }
   if (!existing) return addComp({ ...input, canonicalKey: key });
+  // ── A DEED-SETTLED PAIR IS NOT REWRITTEN BY A LISTING PAIR ────────────────
+  //
+  // Price and the acreage it was paid over are ONE fact. When a row has been
+  // settled on the parcel's own recorded deed, a later import carrying the
+  // provider's listing figures must not replace either half — that is precisely
+  // how APN 044 068.01 kept reverting to $200,000 over 20.55 acres, the figures
+  // belonging to the neighbouring parcel 043 042. Everything else on the row
+  // still merges normally; only the priced pair and its date are held.
+  const deedSettled = existing.pricing_basis === 'parcel_deed_record'
+    && input.pricingBasis !== 'parcel_deed_record';
+  if (deedSettled) {
+    input = { ...input, price: undefined, acres: undefined, pricePerAcre: undefined, saleOrListDate: undefined };
+  }
   let attributions: Array<{ provider: string; url?: string | null }> = [];
   try { attributions = JSON.parse(existing.source_attributions_json || '[]'); } catch { attributions = []; }
   for (const source of input.sourceAttributions ?? [{ provider: input.canonicalSource ?? input.sourceLabel ?? 'Other', url: input.sourceUrl ?? null }]) {
@@ -340,7 +361,7 @@ export function upsertNormalizedComp(input: AddCompInput): CompRow {
       source_url=?, address_desc=?, apn=?, county=?, state=?, price=?, price_kind=?, sale_or_list_date=?,
       acres=?, price_per_acre=?, notes=?, status=?, lat=?, lng=?, canonical_source=?, city=?, zip=?,
       distance_miles=?, listing_date=?, days_on_market=?, property_class=?, classification=?, thumbnail_url=?,
-      retrieved_at=?, radius_miles=?, date_window_months=?, inclusion_reason=?, source_attributions_json=?, canonical_key=?, updated_at=strftime('%s','now')
+      retrieved_at=?, radius_miles=?, date_window_months=?, inclusion_reason=?, source_attributions_json=?, canonical_key=?, pricing_basis=?, updated_at=strftime('%s','now')
     WHERE id=?`).run(
       prefer(input.sourceUrl, existing.source_url), prefer(input.addressDesc, existing.address_desc), prefer(input.apn, existing.apn),
       prefer(input.county, existing.county), prefer(input.state, existing.state), prefer(input.price, existing.price), prefer(input.priceKind, existing.price_kind),
@@ -350,9 +371,38 @@ export function upsertNormalizedComp(input: AddCompInput): CompRow {
       prefer(input.distanceMiles, existing.distance_miles), prefer(input.listingDate, existing.listing_date), prefer(input.daysOnMarket, existing.days_on_market),
       prefer(input.propertyClass, existing.property_class), prefer(input.classification, existing.classification), prefer(input.thumbnailUrl, existing.thumbnail_url),
       prefer(input.retrievedAt, existing.retrieved_at), prefer(input.radiusMiles, existing.radius_miles), prefer(input.dateWindowMonths, existing.date_window_months),
-      prefer(input.inclusionReason, existing.inclusion_reason), JSON.stringify(attributions), key, existing.id,
+      prefer(input.inclusionReason, existing.inclusion_reason), JSON.stringify(attributions), key,
+      prefer(input.pricingBasis, existing.pricing_basis ?? ''), existing.id,
     );
   return getComp(existing.id)!;
+}
+
+/**
+ * Retire a registry row the value-keyed registry forked for a parcel that
+ * another row now carries.
+ *
+ * The row is REJECTED, never deleted. Its superseded figures stay on the record
+ * with the reason attached, so an operator looking at the ledger can see that
+ * LandPortal once stated a different price or acreage for this parcel and which
+ * row now carries it. Only eligibility changes: a retired row cannot price the
+ * subject. No operator selection, note or evidence is touched.
+ */
+export function retireForkedCompRow(stale: CompRow, survivor: CompRow): void {
+  const db = getLandosDb();
+  const detail = `Superseded by comp ${survivor.id} for the same parcel`
+    + `${survivor.apn ? ` (APN ${survivor.apn})` : ''}. `
+    + `This row retained $${(stale.price ?? 0).toLocaleString('en-US')} over ${stale.acres ?? '?'} ac; `
+    + `the surviving row retains $${(survivor.price ?? 0).toLocaleString('en-US')} over ${survivor.acres ?? '?'} ac. `
+    + 'Kept for the record, excluded from valuation.';
+  db.prepare(`UPDATE landos_comp
+      SET status = 'rejected', inclusion_reason = ?, notes = ?, updated_at = strftime('%s','now')
+    WHERE id = ?`).run(detail, `${stale.notes ?? ''} ${detail}`.trim(), stale.id);
+  landosAudit(
+    'landos/comp-parcel-reconciliation',
+    'comp_forked_duplicate_retired',
+    `deal ${stale.deal_card_id} comp ${stale.id} retired; ${detail}`,
+    { entity: stale.entity as LandosEntity, refTable: 'landos_comp', refId: stale.id },
+  );
 }
 
 /**
@@ -507,7 +557,13 @@ export async function enrichCompCoordinates(
   let enriched = 0;
   let cached = 0;
   for (const row of rows) {
-    const key = keyOf(row.address_desc);
+    // Reconcile the captured text into the postal address it actually states
+    // before deciding this row cannot be located. A capture carrying provider
+    // listing chrome is not a geocodable address and never was.
+    const reconciled = reconcileCompAddress({ capturedAddress: row.address_desc, sourceUrl: row.source_url });
+    if (!reconciled) continue;
+    const postalAddress = reconciled.postalAddress;
+    const key = keyOf(postalAddress);
     const hit = cacheGet.get(key) as { lat: number | null; lng: number | null; provider: string } | undefined;
     if (hit) {
       if (typeof hit.lat === 'number' && typeof hit.lng === 'number') { cached++; compUpdate.run(hit.lat, hit.lng, row.id); enriched++; continue; }
@@ -520,18 +576,18 @@ export async function enrichCompCoordinates(
         const listingFetch = deps.listingFetchImpl ?? (globalThis.fetch as unknown as ListingFetch);
         const response = await listingFetch(row.source_url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LandOS/1.0; comp map enrichment)' } });
         if (response.ok) {
-          const extracted = extractListingCoordinates(await response.text(), row.address_desc, row.source_url);
+          const extracted = extractListingCoordinates(await response.text(), postalAddress, row.source_url);
           if (extracted) { point = { lat: extracted.lat, lng: extracted.lng }; provider = extracted.provider; }
         }
       } catch { /* fall through to verified free geocoders */ }
     }
     if (!point) {
       for (const suggestProvider of [censusSuggestProvider(), photonProvider()]) {
-        const result = await suggestAddresses(row.address_desc, {
+        const result = await suggestAddresses(postalAddress, {
           providers: [suggestProvider], fetchImpl: deps.fetchImpl, cache: new SuggestCache(4), limit: 3,
         });
-        const suggestion = result.suggestions.find((item) => safeSuggestion(row.address_desc, item));
-        if (safeSuggestion(row.address_desc, suggestion)) { point = suggestion.coordinates; provider = suggestion.source; break; }
+        const suggestion = result.suggestions.find((item) => safeSuggestion(postalAddress, item));
+        if (safeSuggestion(postalAddress, suggestion)) { point = suggestion.coordinates; provider = suggestion.source; break; }
       }
     }
     cachePut.run(key, point?.lat ?? null, point?.lng ?? null, point ? provider : 'listing_and_geocode_v2');

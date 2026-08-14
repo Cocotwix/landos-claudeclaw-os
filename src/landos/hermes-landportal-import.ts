@@ -16,7 +16,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { listComps, upsertNormalizedComp, type CompRow } from './comps.js';
+import { compParcelRegistryKey, sameCompParcel } from './comp-registry-identity.js';
+import { listComps, retireForkedCompRow, upsertNormalizedComp, type CompRow } from './comps.js';
 import { getLandosDb, type LandosEntity } from './db.js';
 import {
   landPortalIdentityFromUrl,
@@ -187,6 +188,9 @@ export interface HermesLandPortalSubject {
   specialist_category?: HermesLandPortalResultCategory;
   completed_categories?: HermesLandPortalResultCategory[];
   visual_artifacts?: HermesLandPortalVisualArtifact[];
+  /** Artifacts that failed to parse, dropped individually instead of failing
+   *  the whole handback. Reported with the acceptance-stage rejections. */
+  visual_artifact_parse_rejections?: Array<{ index: number; reason: string }>;
   access_evidence?: HermesLandPortalAccessEvidence[];
   comps: HermesLandPortalComp[];
 }
@@ -262,6 +266,39 @@ const percent = (value: number): string => `${value.toFixed(2)}%`;
 const HERMES_RESULT_CATEGORIES = new Set<HermesLandPortalResultCategory>(['subject', 'comps', 'visuals']);
 const HERMES_VISUAL_KINDS = new Set<HermesLandPortalVisualArtifact['kind']>(['parcel_page', 'parcel_3d', 'parcel_boundary', 'overlay', 'comparables_map', 'street_view']);
 const HERMES_VISUAL_VIEWS = new Set<LandPortalVisualView>(['parcel_context', 'road_frontage', 'wetlands', 'fema_flood', 'soil', 'contours', 'front_3d', 'rear_3d', 'default_3d', 'buildability', 'street_view', 'comparables_map']);
+
+/**
+ * View names LandOS itself asks Hermes for that are not view names.
+ *
+ * The capture assignment lists `landportal_overview` among the requested
+ * visuals, and the overview requirement defines it as "an active parcel_context
+ * satellite frame". It is a capture KEY (`OVERVIEW_CAPTURE_KEY`), not a member
+ * of the view enum — but LandOS names it in the same breath as real views, so
+ * Hermes returns it in `requested_view` exactly as instructed and the handback
+ * is then refused for containing it.
+ *
+ * 5170 Hwy 60 lost its entire visuals batch this way: the rejection landed on
+ * `visual_artifacts[0]`, so the wetlands, flood, soil, contour, 3D,
+ * buildability and Street View captures were all taken and all discarded.
+ *
+ * Mapping it to the view it is defined to be resolves the contract without
+ * loosening anything: the artifact still faces the overview framing assessment
+ * and the full visual-evidence gate below.
+ */
+const HERMES_VIEW_ALIASES: Record<string, LandPortalVisualView> = {
+  landportal_overview: 'parcel_context',
+  overview: 'parcel_context',
+  soil_overlay: 'soil',
+  wetland: 'wetlands',
+  flood: 'fema_flood',
+  contour: 'contours',
+};
+
+/** Resolve a Hermes-supplied view name, accepting the aliases LandOS asks for. */
+function canonicalVisualView(value: unknown): string {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return HERMES_VIEW_ALIASES[raw] ?? raw;
+}
 /** Overlay views whose captures must attest visibly rendered overlay polygons. */
 const OVERLAY_RENDER_REQUIRED_VIEWS = new Set<LandPortalVisualView>(['soil', 'buildability']);
 const STREET_VIEW_BASES = new Set<HermesStreetViewObservation['basis']>(['direct_observation', 'reasonable_interpretation', 'unconfirmed']);
@@ -377,11 +414,38 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
   if (specialistCategory && !completedCategories) {
     throw new Error(`Hermes specialist "${specialistCategory}" must declare its completed category.`);
   }
+  const visualArtifactParseRejections: Array<{ index: number; reason: string }> = [];
   const visualArtifacts = raw.visual_artifacts == null
     ? undefined
     : (() => {
         if (!Array.isArray(raw.visual_artifacts)) throw new Error('Hermes JSON field "visual_artifacts" must be an array.');
-        return raw.visual_artifacts.map((entry, index): HermesLandPortalVisualArtifact => {
+        // ── ONE BAD ARTIFACT MUST NOT DESTROY THE BATCH ──────────────────
+        // This map used to throw, which aborted the whole handback: a single
+        // malformed field in visual_artifacts[0] discarded every other capture
+        // in the payload AND the categories alongside it. That has now bitten
+        // twice — free-text camera_scale first (see the tolerance below), then
+        // an aliased requested_view on 5170 Hwy 60 — so the shape is the
+        // defect, not either field.
+        //
+        // A rejected artifact is dropped with its reason recorded rather than
+        // silently swallowed: the acceptance stage further down already works
+        // exactly this way, and its `rejected` list is surfaced to the
+        // operator. Nothing weaker is admitted; the survivors still face the
+        // full visual-evidence gate.
+        return raw.visual_artifacts.flatMap((entry, index): HermesLandPortalVisualArtifact[] => {
+          try {
+            return [parseVisualArtifact(entry, index)];
+          } catch (err) {
+            visualArtifactParseRejections.push({
+              index,
+              reason: err instanceof Error ? err.message : String(err),
+            });
+            return [];
+          }
+        });
+      })();
+
+  function parseVisualArtifact(entry: unknown, index: number): HermesLandPortalVisualArtifact {
           const artifact = asDict(entry, `Hermes visual artifact ${index + 1}`);
           const obstructionNarrative = typeof artifact.obstructions === 'string'
             ? artifact.obstructions.trim()
@@ -394,14 +458,14 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
           if (!Array.isArray(obstructionValues) || obstructionValues.some((item) => typeof item !== 'string')) {
             throw new Error(`Hermes JSON field "visual_artifacts[${index}].obstructions" must be a string array.`);
           }
-          const requestedView = enumText(artifact.requested_view, `visual_artifacts[${index}].requested_view`, HERMES_VISUAL_VIEWS);
+          const requestedView = enumText(canonicalVisualView(artifact.requested_view), `visual_artifacts[${index}].requested_view`, HERMES_VISUAL_VIEWS);
           const rawKind = text(artifact.kind);
           const kind = rawKind === 'screenshot'
             ? visualKindForView(requestedView)
             : enumText(artifact.kind, `visual_artifacts[${index}].kind`, HERMES_VISUAL_KINDS);
-          const activeView = rawKind === 'screenshot' && !HERMES_VISUAL_VIEWS.has(text(artifact.active_view) as LandPortalVisualView)
+          const activeView = rawKind === 'screenshot' && !HERMES_VISUAL_VIEWS.has(canonicalVisualView(artifact.active_view) as LandPortalVisualView)
             ? requestedView
-            : enumText(artifact.active_view, `visual_artifacts[${index}].active_view`, HERMES_VISUAL_VIEWS);
+            : enumText(canonicalVisualView(artifact.active_view), `visual_artifacts[${index}].active_view`, HERMES_VISUAL_VIEWS);
           const rawCameraScale = text(artifact.camera_scale) as HermesLandPortalVisualArtifact['camera_scale'];
           // A screenshot artifact whose camera_scale is descriptive free text
           // is not discarded wholesale: when the same handback swears the
@@ -438,8 +502,8 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
             note: [text(artifact.note), explicitlyNonObstructing ? obstructionNarrative : ''].filter(Boolean).join(' ') || null,
             overlay_rendered: typeof artifact.overlay_rendered === 'boolean' ? artifact.overlay_rendered : null,
           };
-        });
-      })();
+  }
+
   const streetViewObservations = raw.street_view_observations == null
     ? undefined
     : (() => {
@@ -481,6 +545,12 @@ export function parseHermesLandPortalSubject(value: unknown): HermesLandPortalSu
     specialist_category: specialistCategory,
     completed_categories: completedCategories,
     visual_artifacts: visualArtifacts,
+    // Artifacts dropped at parse time travel with the payload so the acceptance
+    // stage can report them alongside its own rejections. A capture that failed
+    // to parse is never invisible; it is simply no longer fatal to its siblings.
+    visual_artifact_parse_rejections: visualArtifactParseRejections.length
+      ? visualArtifactParseRejections
+      : undefined,
     street_view_available: typeof raw.street_view_available === 'boolean' ? raw.street_view_available : undefined,
     street_view_note: text(raw.street_view_note) || undefined,
     street_view_observations: streetViewObservations,
@@ -835,17 +905,33 @@ function sameOptionalNumber(a: number | null | undefined, b: number | null | und
   return a == null || b == null || Math.abs(a - b) <= tolerance;
 }
 
-function duplicateRegistryComp(comp: HermesLandPortalComp, rows: CompRow[]): CompRow | null {
-  return rows.find((row) => {
-    const hasSharedIdentity = (!!compactApn(comp.apn) && compactApn(comp.apn) === compactApn(row.apn))
-      || (!!compact(comp.address) && compact(comp.address) === compact(row.address_desc));
-    if (!hasSharedIdentity) return false;
-    return sameOptionalText(comp.apn, row.apn, compactApn)
-      && sameOptionalText(comp.address, row.address_desc, compact)
-      && sameOptionalNumber(comp.price, row.price, 0.01)
-      && sameOptionalNumber(comp.acres, row.acres, 0.0001)
-      && sameOptionalText(comp.sale_date, row.sale_or_list_date, (value) => text(value).slice(0, 10));
-  }) ?? null;
+/**
+ * The stored row this incoming comparable UPDATES, or null for a new parcel.
+ *
+ * Matched on parcel identity, never on the figures. The previous test required
+ * price and acreage to agree to within a cent and a ten-thousandth of an acre,
+ * so a re-read that disagreed about either — the only case where reconciliation
+ * has anything to do — was filed as a separate property. 5170 Hwy 60 ended up
+ * holding APN 044 068.01 twice, at $200,000/5.05 ac and $550,000/20.55 ac, and
+ * which one priced the subject came down to dedupe ordering downstream.
+ *
+ * When identity cannot be established the row is left alone: a comparable is
+ * never merged into another parcel on a resemblance.
+ */
+function identityMatchedRows(comp: HermesLandPortalComp, rows: CompRow[], county?: string | null): CompRow[] {
+  const incoming = {
+    apn: comp.apn ?? null,
+    county: county ?? null,
+    state: comp.state ?? null,
+    sourceUrl: comp.source_url ?? null,
+  };
+  return rows.filter((row) => sameCompParcel(incoming, {
+    apn: row.apn, county: row.county, state: row.state, sourceUrl: row.source_url,
+  }));
+}
+
+function duplicateRegistryComp(comp: HermesLandPortalComp, rows: CompRow[], county?: string | null): CompRow | null {
+  return identityMatchedRows(comp, rows, county)[0] ?? null;
 }
 
 function compEvidence(input: CanonicalPropertyInput, subject: HermesLandPortalSubject, retrievedAt: string): NormalizedPropertyEvidence[] {
@@ -1080,13 +1166,56 @@ function inspectionFacts(subject: HermesLandPortalSubject, retained: Record<stri
   return Object.fromEntries(Object.entries(candidates).filter(([label, value]) => !present(retained[label]) && present(value))) as Record<string, string>;
 }
 
-function enrichedHermesComp(comp: HermesLandPortalComp, subject: SubjectCard) {
+/** A comparable pair the capture already settled on the parcel's own deed. */
+export interface RetainedDeedPair {
+  price: number;
+  acres: number;
+  saleDate: string | null;
+  note: string | null;
+}
+
+/**
+ * Index the retained comparables the capture settled on a parcel deed record,
+ * keyed by parcel identity.
+ *
+ * Only a complete pair is carried: a price without the acreage it was paid over
+ * is exactly the half-fact this whole repair exists to prevent.
+ */
+export function deedPairsByParcel(
+  comparables: Array<Partial<LandPortalComparableRecord>>,
+  county?: string | null,
+): Map<string, RetainedDeedPair> {
+  const out = new Map<string, RetainedDeedPair>();
+  for (const row of comparables) {
+    if (row.pricingBasis !== 'parcel_deed_record') continue;
+    if (typeof row.price !== 'number' || typeof row.acres !== 'number' || !(row.acres > 0)) continue;
+    const key = compParcelRegistryKey({
+      apn: row.apn ?? null,
+      county: row.county ?? county ?? null,
+      state: row.state ?? null,
+      sourceUrl: row.detailUrl ?? row.sourceUrl ?? null,
+    });
+    if (!key || out.has(key)) continue;
+    out.set(key, {
+      price: row.price,
+      acres: row.acres,
+      saleDate: row.saleDate ?? null,
+      note: row.pricingBasisNote ?? null,
+    });
+  }
+  return out;
+}
+
+function enrichedHermesComp(comp: HermesLandPortalComp, subject: SubjectCard, deed: RetainedDeedPair | null = null) {
   const sidebar = {
     apn: comp.apn,
-    price: comp.price,
-    acres: comp.acres,
-    saleDate: comp.sale_date,
-    pricePerAcre: comp.price_per_acre,
+    // The settled deed pair replaces the handback's listing pair as a UNIT, and
+    // the per-acre rate is dropped so it is re-derived from the pair retained
+    // rather than carried across a corrected acreage.
+    price: deed ? deed.price : comp.price,
+    acres: deed ? deed.acres : comp.acres,
+    saleDate: deed ? deed.saleDate ?? comp.sale_date : comp.sale_date,
+    pricePerAcre: deed ? null : comp.price_per_acre,
     detailUrl: comp.source_url,
   };
   const hasDetailEvidence = comp.drilled_down === true || [
@@ -1099,10 +1228,12 @@ function enrichedHermesComp(comp: HermesLandPortalComp, subject: SubjectCard) {
     state: comp.state,
     zip: comp.zip,
     apn: comp.apn,
-    acres: comp.acres,
-    price: comp.price,
-    saleDate: comp.sale_date,
-    pricePerAcre: comp.price_per_acre,
+    // The detail surface carries the same listing pair, so the settled deed
+    // pair has to win here too or it is reinstated one line later.
+    acres: deed ? deed.acres : comp.acres,
+    price: deed ? deed.price : comp.price,
+    saleDate: deed ? deed.saleDate ?? comp.sale_date : comp.sale_date,
+    pricePerAcre: deed ? null : comp.price_per_acre,
     lat: comp.lat,
     lng: comp.lng,
     imageUrl: comp.image_url,
@@ -1111,21 +1242,30 @@ function enrichedHermesComp(comp: HermesLandPortalComp, subject: SubjectCard) {
   } : null, { lat: subject.lat, lng: subject.lng });
 }
 
-function projectedComparable(comp: HermesLandPortalComp, duplicate: CompRow | null, subjectUrl: string, capturedAt: string, subject: SubjectCard): LandPortalComparableRecord {
-  const enriched = enrichedHermesComp(comp, subject);
+function projectedComparable(comp: HermesLandPortalComp, duplicate: CompRow | null, subjectUrl: string, capturedAt: string, subject: SubjectCard, deed: RetainedDeedPair | null = null): LandPortalComparableRecord {
+  const enriched = enrichedHermesComp(comp, subject, deed);
   const isSale = duplicate?.status === 'verified_sale' || duplicate?.price_kind === 'sale';
   const address = enriched.address || text(duplicate?.address_desc) || null;
-  const saleDate = text(comp.sale_date) || text(duplicate?.sale_or_list_date) || '';
+  const price = deed ? deed.price : comp.price;
+  const acres = deed ? deed.acres : comp.acres;
+  // The projection is what the NEXT import reads back, so the settled basis has
+  // to be written here too — otherwise the pair survives one cycle and is lost
+  // on the following one.
+  const saleDate = (deed ? text(deed.saleDate) : '') || text(comp.sale_date) || text(duplicate?.sale_or_list_date) || '';
   return {
-    rawText: [address || comp.apn || 'LandPortal comp', money(comp.price), `${comp.acres} ac`].join(' | '),
+    rawText: [address || comp.apn || 'LandPortal comp', money(price), `${acres} ac`].join(' | '),
     sourceUrl: enriched.detailUrl || comp.source_url || subjectUrl,
     surface: enriched.drilledDown ? 'both' : 'sidebar',
     apn: text(comp.apn) || text(duplicate?.apn) || null,
     address,
     saleDate: saleDate || undefined,
-    acres: comp.acres,
-    price: comp.price,
-    pricePerAcre: enriched.pricePerAcre ?? duplicate?.price_per_acre ?? null,
+    acres,
+    price,
+    pricingBasis: deed ? 'parcel_deed_record' : null,
+    pricingBasisNote: deed?.note ?? null,
+    pricePerAcre: price != null && acres != null && acres > 0
+      ? price / acres
+      : enriched.pricePerAcre ?? duplicate?.price_per_acre ?? null,
     distanceMiles: enriched.locationResolution.distanceMiles,
     status: isSale ? 'sold' : 'unknown',
     saleListIndicator: isSale ? 'sale' : 'unknown',
@@ -1313,13 +1453,34 @@ export function importHermesLandPortalFile(
         const applied = getLandosDb().transaction(() => {
           const normalizedComps = compEvidence(property, subject, captured.value);
           const existingComps = listComps({ dealCardId: card.deal_card_id, limit: 500 });
-          const duplicates = subject.comps.map((comp) => duplicateRegistryComp(comp, existingComps));
+          const compCounty = text(subject.county) || card.county;
+          const duplicates = subject.comps.map((comp) => duplicateRegistryComp(comp, existingComps, compCounty));
           const persisted = new PropertyResearchStore().persistProviderResult(providerResult({
             runId: categoryId, laneId: 'hermes_landportal_comps', property, subject,
             evidence: normalizedComps, capturedAt: captured.value, persistedAt, checks: validation.checks,
           }));
           if (!persisted.persistence.persisted) throw new Error(persisted.persistence.reason || 'Canonical comp persistence rejected the Hermes import.');
           const retainedInspection = loadPropertyInspection(card.id);
+          // ── THE CAPTURE'S DEED PAIR OUTRANKS THE HANDBACK'S LISTING PAIR ──
+          //
+          // The capture reads each comparable's own parcel record and, where the
+          // `similars` feed's area contradicts it, settles the comparable on its
+          // recorded deed. The Hermes handback never sees that surface: it
+          // reports the feed's figures. Left alone this import overwrites the
+          // settled pair with the very listing pair it replaced — which is how
+          // APN 044 068.01 kept coming back as $200,000 over 20.55 acres, the
+          // figures belonging to the neighbouring parcel 043 042.
+          //
+          // A retained comparable already settled on `parcel_deed_record`
+          // therefore carries its pair forward WHOLE. Nothing else is taken from
+          // it, and a comparable the capture never settled is untouched.
+          const retainedDeedPairs = deedPairsByParcel(retainedInspection?.comparables ?? [], compCounty);
+          const deedPairFor = (comp: HermesLandPortalComp): RetainedDeedPair | null => {
+            const key = compParcelRegistryKey({
+              apn: comp.apn ?? null, county: compCounty, state: comp.state ?? null, sourceUrl: comp.source_url ?? null,
+            });
+            return key ? retainedDeedPairs.get(key) ?? null : null;
+          };
           savePropertyInspection(card.id, {
             parcelUrl: subject.subject_url,
             parcelUrlRecord: retainedInspection?.parcelUrlRecord ?? null,
@@ -1327,13 +1488,14 @@ export function importHermesLandPortalFile(
             comparablesUrl: retainedInspection?.comparablesUrl ?? subject.subject_url,
             comparablesCapturedAt: captured.value,
             parcelFacts: {}, assets: [], overlays: [], visualObservations: [],
-            comparables: subject.comps.map((comp, index) => projectedComparable(comp, duplicates[index], subject.subject_url, captured.value, card)),
+            comparables: subject.comps.map((comp, index) => projectedComparable(comp, duplicates[index], subject.subject_url, captured.value, card, deedPairFor(comp))),
             sources: [{ provider: 'LandPortal', stage: 'hermes_comps_import', status: 'used', resultKind: 'retrieved', attemptedAt: captured.value, confidence: 'high', url: subject.subject_url, note: `${subject.comps.length} comparable row(s) for ${subject.address} persisted independently after exact-subject validation.` }],
             evidence: [{ label: 'Hermes LandPortal comparable import', status: 'observed', detail: `${subject.comps.length} LandPortal comparable row(s) retained as context-only evidence for ${subject.address}.`, confidence: 'high', source: 'Hermes validated LandPortal incremental import', url: subject.subject_url }],
           });
           let created = 0;
+          let retired = 0;
           for (const [index, comp] of subject.comps.entries()) {
-            const enriched = enrichedHermesComp(comp, card);
+            const enriched = enrichedHermesComp(comp, card, deedPairFor(comp));
             const persistence = buildLandPortalCompPersistence(enriched);
             upsertNormalizedComp({
               entity: card.entity as LandosEntity, dealCardId: card.deal_card_id, cardId: card.id,
@@ -1347,11 +1509,36 @@ export function importHermesLandPortalFile(
               addedBy: 'hermes-landportal-import', status: duplicates[index] ? undefined : 'manual_unverified', propertyClass: 'land', classification: 'landportal_context',
               retrievedAt: captured.value, inclusionReason: `LandPortal comparable retained for exact subject ${subject.address}.`,
               sourceAttributions: [{ provider: 'Hermes / LandPortal', url: persistence.source_url || comp.source_url || subject.subject_url }],
-              canonicalKey: duplicates[index]?.canonical_key || hermesLandPortalCompKey(comp),
+              // Key the registry row on the PARCEL, so the next generation's
+              // figures update this row instead of forking a second one. The
+              // old key embedded price and acreage, which made a re-read at
+              // different figures look like a different property. An
+              // unidentifiable comparable keeps the legacy value key rather
+              // than being merged into anything on a guess.
+              pricingBasis: deedPairFor(comp) ? 'parcel_deed_record' : undefined,
+              canonicalKey: duplicates[index]?.canonical_key
+                || compParcelRegistryKey({
+                  apn: comp.apn ?? null,
+                  county: compCounty,
+                  state: comp.state ?? null,
+                  sourceUrl: persistence.source_url || comp.source_url || null,
+                })
+                || hermesLandPortalCompKey(comp),
             });
             if (!duplicates[index]) created += 1;
+            // Rows the value-keyed registry already forked for this same parcel
+            // are retired here. They are marked rejected, never deleted: the
+            // superseded figures stay visible in the ledger with the reason, and
+            // no operator data is destroyed. Only the row just reconciled above
+            // remains eligible to price the subject.
+            const survivor = duplicates[index];
+            for (const stale of identityMatchedRows(comp, existingComps, compCounty)) {
+              if (!survivor || stale.id === survivor.id || stale.status === 'rejected') continue;
+              retireForkedCompRow(stale, survivor);
+              retired += 1;
+            }
           }
-          attachCardActivity({ cardId: card.id, agentId: 'hermes-landportal-import', kind: 'hermes_landportal_comps_import', summary: `Persisted ${subject.comps.length} Hermes LandPortal comparable row(s) for ${subject.address}.`, ref: categoryId });
+          attachCardActivity({ cardId: card.id, agentId: 'hermes-landportal-import', kind: 'hermes_landportal_comps_import', summary: `Persisted ${subject.comps.length} Hermes LandPortal comparable row(s) for ${subject.address}.${retired ? ` Retired ${retired} forked duplicate row(s) for the same parcel.` : ''}`, ref: categoryId });
           return { created, retained: persisted.persistence.retainedEvidenceCount };
         })();
         createdCompCount = applied.created;
@@ -1378,7 +1565,11 @@ export function importHermesLandPortalFile(
     if (prior) categoryResults.push(prior);
     else {
       const prepared = prepareVisuals(subject, card, sourceFile);
-      rejectedVisualCount = prepared.rejected.length;
+      // Parse-time drops count as rejected visuals too. They are no longer
+      // fatal to their siblings, but they must still show up in the count the
+      // operator sees rather than vanishing between the two stages.
+      const parseRejections = subject.visual_artifact_parse_rejections ?? [];
+      rejectedVisualCount = prepared.rejected.length + parseRejections.length;
       const persistedAt = now();
       try {
         const applied = getLandosDb().transaction(() => {

@@ -2442,11 +2442,61 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           fieldsOut.fields = { ...(fieldsOut.fields ?? {}), ...apiFacts };
           const similars = landPortalSimilarsFrom(apiSubject.properties);
           apiCompCards = landPortalCompCardsFromApi(similars);
-          apiCompDetails = landPortalCompDetailsFromApi(similars);
+          // ── EACH COMPARABLE'S OWN RECORD ────────────────────────────────
+          //
+          // The `similars` feed states an MLS listing's price and area, and a
+          // listing is not a parcel. It handed APN 044 068.01 the figures that
+          // belong to the neighbouring parcel 043 042 — $200,000 over 20.55
+          // acres against its own $550,000 warranty deed over 5.05 — so a
+          // comparable priced from the feed alone can be priced on another
+          // property's sale.
+          //
+          // The same endpoint answers about the comparable itself. These reads
+          // are sequential and cheap (~1.5s each, one per comparable) and run
+          // INSIDE the page, exactly like the subject read above. A comparable
+          // whose record cannot be read simply keeps its feed figures; nothing
+          // here fails the capture.
+          const deedRecords = new Map<string, Record<string, unknown>>();
+          for (const similar of similars) {
+            const compPropertyId = similar.propertyid == null ? null : String(similar.propertyid);
+            const compFips = similar.fips == null ? '' : String(similar.fips);
+            if (!compPropertyId || !compFips) continue;
+            try {
+              const compBody = JSON.stringify({ property_id: Number(compPropertyId), fips: compFips });
+              const compRecord = await page.evaluate<{ properties: Record<string, unknown> } | null>(`(async () => {
+                const nonce = (() => {
+                  for (const k of ['wpApiSettings', 'lpInternal', 'lp_internal']) {
+                    const v = window[k] && window[k].nonce;
+                    if (typeof v === 'string' && v) return v;
+                  }
+                  const m = /"nonce"\\s*:\\s*"([A-Za-z0-9]+)"/.exec(document.documentElement.innerHTML);
+                  return m ? m[1] : null;
+                })();
+                const headers = { 'content-type': 'application/json' };
+                if (nonce) headers['X-WP-Nonce'] = nonce;
+                const res = await fetch('/wp-json/lp-internal/v1/single-property', {
+                  method: 'POST', credentials: 'include', headers, body: ${JSON.stringify(compBody)},
+                });
+                if (!res.ok) return null;
+                const body = await res.json();
+                const data = body && typeof body === 'object' && 'data' in body ? body.data : body;
+                return data && data.properties ? { properties: data.properties } : null;
+              })()`);
+              if (compRecord?.properties) deedRecords.set(compPropertyId, compRecord.properties);
+            } catch (error) {
+              logger.warn({
+                event: 'landportal_comp_record_read_failed',
+                propertyId: compPropertyId,
+                error: error instanceof Error ? error.message : String(error),
+              }, 'landportal_comp_record_read_failed');
+            }
+          }
+          apiCompDetails = landPortalCompDetailsFromApi(similars, deedRecords);
           logger.info({
             event: 'landportal_api_subject_read',
             factCount: Object.keys(apiFacts).length,
             comps: apiCompCards.length,
+            compDeedRecords: deedRecords.size,
           }, 'landportal_api_subject_read');
           // HAND THE SUBJECT OVER NOW. The parcel facts are complete at this
           // point; everything below is imagery, and the identity lane used to

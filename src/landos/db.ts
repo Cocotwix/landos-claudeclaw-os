@@ -1348,6 +1348,15 @@ function createLandosSchema(db: Database.Database): void {
   // capture is atomic — an image is never persisted without the reconciliation
   // that justified it. Empty string means the provider page was never visited.
   addColumn('landos_comp', 'listing_detail_json', `listing_detail_json TEXT NOT NULL DEFAULT ''`);
+  // Which PAIR this row is priced on: the provider's listing figures, or the
+  // parcel's OWN recorded deed. A price and the acreage it was paid over are one
+  // fact, and LandPortal states both pairs — its `similars` feed gave APN
+  // 044 068.01 the $200,000 over 20.55 acres belonging to the neighbouring
+  // parcel 043 042, against that parcel's own $550,000 warranty deed over 5.05.
+  // Recording the basis is what lets a row settled on the deed refuse to be
+  // rewritten by a later listing-pair import. Empty means the ordinary
+  // provider pair, which nothing here changes.
+  addColumn('landos_comp', 'pricing_basis', `pricing_basis TEXT NOT NULL DEFAULT ''`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_landos_comp_canonical
            ON landos_comp(deal_card_id, canonical_key)`);
   // Normalize provider-echoed county names to the LandOS bare-name convention

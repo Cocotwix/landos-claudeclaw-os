@@ -866,6 +866,17 @@ export interface LandPortalComparableRecord {
    * 574 acres). Such a row can never carry a price-per-acre.
    */
   acreageConflict?: boolean;
+  /**
+   * Which PAIR — price together with the acreage it was paid over — this row is
+   * priced on. `mls_listing` is the `similars` feed's listing figures;
+   * `parcel_deed_record` is the parcel's own recorded sale, adopted whole when
+   * the listing pair's area contradicts the parcel's own. The two are never
+   * mixed, because a price from one over an acreage from the other is a
+   * price-per-acre no source ever stated.
+   */
+  pricingBasis?: 'mls_listing' | 'parcel_deed_record' | null;
+  /** Operator-readable reason the deed pair replaced the listing pair. */
+  pricingBasisNote?: string | null;
   /** The comp's own LandPortal parcel URL — the second surface actually read. */
   detailUrl?: string | null;
   /**
@@ -1007,7 +1018,7 @@ function nonBlank(value: unknown): boolean {
  * "no address yet" with "address now known" while keeping genuinely distinct
  * properties apart.
  */
-function mergeComparableRows(rows: LandPortalComparableRecord[]): LandPortalComparableRecord[] {
+export function mergeComparableRows(rows: LandPortalComparableRecord[]): LandPortalComparableRecord[] {
   const normApn = (value: unknown): string => String(value ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
   const normAddress = (value: unknown): string => String(value ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
   const merged = new Map<string, LandPortalComparableRecord>();
@@ -1028,6 +1039,16 @@ function mergeComparableRows(rows: LandPortalComparableRecord[]): LandPortalComp
       key = `${row.sourceUrl ?? ''}|${row.address ?? ''}|${row.acres ?? ''}|${row.price ?? ''}`;
     }
     if (!key) continue;
+    // A comparable settled on the parcel's OWN recorded deed is not replaced by
+    // a later row that was not. This merge is otherwise last-writer-wins, and
+    // the Hermes comps import rewrites the comparable set from its own
+    // handback — which reports the `similars` feed. So the settled tuple was
+    // produced, persisted, and then clobbered one lane later, which is how APN
+    // 044 068.01 kept reverting to $200,000 over 20.55 acres (the figures
+    // belonging to the neighbouring parcel 043 042) after being corrected to
+    // its own $550,000 warranty deed over 5.05 acres.
+    const held = merged.get(key);
+    if (held?.pricingBasis === 'parcel_deed_record' && row.pricingBasis !== 'parcel_deed_record') continue;
     merged.set(key, row);
   }
   return [...merged.values()];

@@ -205,6 +205,64 @@ export function landPortalCompCardsFromApi(similars: LandPortalApiSimilar[]): st
   return cards;
 }
 
+/** A `YYYYMMDD` integer, as LandPortal states recording dates, to `YYYY-MM-DD`. */
+export function landPortalRecordingDateIso(value: unknown): string {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length !== 8) return '';
+  const [y, m, d] = [digits.slice(0, 4), digits.slice(4, 6), digits.slice(6, 8)];
+  const month = Number(m);
+  const day = Number(d);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return '';
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * The DEED PAIR a comparable's own parcel record states: what this parcel
+ * actually sold for, over its own acreage, on its own recording date.
+ *
+ * This is a different, stronger fact than the `similars` feed's MLS figures.
+ * The feed states an MLS listing's price and area, and a listing is not a
+ * parcel: on 5170 Hwy 60 the feed handed APN 044 068.01 the byte-identical
+ * `mls_price` 200000, `area_acres` 20.55 and `price_acres` 9732.3600973236 that
+ * belong to the neighbouring parcel 043 042, while 044 068.01's own record
+ * states a $550,000 warranty deed over 5.05 acres. Read against each other the
+ * two disagree fourfold on area, so they cannot both describe this parcel.
+ *
+ * Everything here is stated by LandPortal about the parcel being described.
+ * Nothing is derived from the subject, another comparable, or a listing.
+ */
+export function landPortalCompDeedFacts(properties: Record<string, unknown>): Record<string, string> {
+  const p = properties ?? {};
+  const facts: Record<string, string> = {};
+  const put = (k: string, v: string): void => { if (v) facts[k] = v; };
+  put('Parcel ID', text(p.apn));
+  put('Parcel Address', text(p.situsfullstreetaddress));
+  put('Parcel Address City', text(p.situscity));
+  put('Parcel Address State', text(p.situsstate));
+  put('Parcel Address County', text(p.situscounty));
+  put('Parcel Address Zip Code', text(p.situszip5));
+  put('Centroid Latitude', text(p.situslatitude));
+  put('Centroid Longitude', text(p.situslongitude));
+  const acres = num(p.lotsizeacres);
+  put('Deed Acres', acres == null ? '' : acres.toFixed(3));
+  const price = num(p.currentsalesprice);
+  put('Deed Sale Price', price == null ? '' : `$${Math.round(price).toLocaleString('en-US')}`);
+  put('Deed Sale Date', landPortalRecordingDateIso(p.currentsalerecordingdate));
+  put('Deed Document Type', text(p.currentsaledocumenttype));
+  // The improvement facts the `similars` feed cannot state. `bldg_count` there
+  // reads 0 for a parcel carrying a 2,452 sqft house built in 1995, so a
+  // comparable's land-versus-improvement standing has to come from its own
+  // record or not at all.
+  put('Building SqFt', text(num(p.sumbuildingsqft) ?? num(p.buildingarea)));
+  put('Structure Year Built', text(num(p.yearbuilt)));
+  put('Improvement Value', text(num(p.assdimprovementvalue) ?? num(p.marketvalueimprovement)));
+  put('Land Market Value', usd(p.marketvalueland));
+  put('Total Market Value', usd(p.markettotalvalue));
+  put('Parcel Use Code', text(p.landusecode));
+  put('Parcel Use Description', text(p.landusecodedescription));
+  return facts;
+}
+
 /**
  * Per-comparable detail in the same `{apn, propertyId, sourceUrl, facts}` shape
  * the drill-down produced — but assembled from the payload we already have,
@@ -212,8 +270,17 @@ export function landPortalCompCardsFromApi(similars: LandPortalApiSimilar[]): st
  *
  * These facts carry the coordinates the browser pass never obtained, which is
  * why every comp previously rendered "location unresolved (never guessed)".
+ *
+ * `deedRecords` maps a comparable's LandPortal property id onto that parcel's
+ * OWN record. When one is present its deed pair travels alongside the MLS
+ * figures under distinct labels, so the merge downstream can choose a whole
+ * consistent pair instead of mixing a price from one surface with an acreage
+ * from the other.
  */
-export function landPortalCompDetailsFromApi(similars: LandPortalApiSimilar[]): string[] {
+export function landPortalCompDetailsFromApi(
+  similars: LandPortalApiSimilar[],
+  deedRecords: Map<string, Record<string, unknown>> = new Map(),
+): string[] {
   const details: string[] = [];
   for (const s of similars ?? []) {
     const apn = text(s.apn).replace(/\s+/g, ' ').trim();
@@ -234,10 +301,16 @@ export function landPortalCompDetailsFromApi(similars: LandPortalApiSimilar[]): 
     put('Building SqFt', s.bldg_count === 0 ? '0' : '');
     const ppa = num(s.mls_priceperacre) ?? num(s.price_acres);
     put('Estimate PPA', ppa == null ? '' : `$${Math.round(ppa).toLocaleString('en-US')}`);
+    const propertyId = s.propertyid == null ? null : String(s.propertyid);
+    // The parcel's own record wins on every field it states. It is the same
+    // endpoint, read about THIS parcel rather than about a listing, so where
+    // both speak the record is the more direct source.
+    const deed = propertyId ? deedRecords.get(propertyId) : undefined;
+    if (deed) Object.assign(facts, landPortalCompDeedFacts(deed));
     const sourceUrl = s.fips && s.propertyid
       ? landPortalParcelUrl({ fips: text(s.fips), apn, propertyId: String(s.propertyid) })
       : undefined;
-    details.push(JSON.stringify({ apn, propertyId: s.propertyid == null ? null : String(s.propertyid), sourceUrl, facts }));
+    details.push(JSON.stringify({ apn, propertyId, sourceUrl, facts }));
   }
   return details;
 }

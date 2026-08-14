@@ -351,7 +351,7 @@ export function applyComparableDetail(
   // The comp's own page outranks the card attribute: the live set contains a row
   // whose card said "sold" while its parcel page shows an ACTIVE $5.95M listing.
   const status = statusFromDetail ?? row.status;
-  const saleDate = detailDateIso(f['Last Sold Date']) ?? detailDateIso(f['Last Sale Date']) ?? row.saleDate ?? undefined;
+  const mlsSaleDate = detailDateIso(f['Last Sold Date']) ?? detailDateIso(f['Last Sale Date']) ?? row.saleDate ?? undefined;
 
   // Improvement: material value or real living area means the price bought more
   // than dirt. A token assessor figure on a derelict structure does not.
@@ -370,10 +370,44 @@ export function applyComparableDetail(
   // Acreage: the row was priced on the MLS acreage. A parcel acreage that
   // disagrees by more than a rounding margin is a genuine conflict, not a
   // correction — neither figure may silently win.
+  const deedAcres = detailNumber(f['Deed Acres']);
+  const deedPrice = detailNumber(f['Deed Sale Price']);
+  const deedDate = detailDateIso(f['Deed Sale Date']);
+  // The parcel's OWN lot size outranks the `Acres` label here. On the API
+  // surface that label carries the `similars` feed's MLS listing area, which is
+  // the very figure under suspicion; `Deed Acres` is the parcel's `lotsizeacres`.
+  // Reading them the other way round let the MLS area validate itself and no
+  // conflict could ever be detected.
+  const parcelAcresStated = deedAcres ?? parcelAcres;
   const priced = row.acres ?? mlsAcres ?? null;
-  const acreageConflict = priced != null && parcelAcres != null && parcelAcres > 0
-    ? Math.abs(parcelAcres - priced) / Math.max(parcelAcres, priced) > 0.25
+  const acreageConflict = priced != null && parcelAcresStated != null && parcelAcresStated > 0
+    ? Math.abs(parcelAcresStated - priced) / Math.max(parcelAcresStated, priced) > 0.25
     : false;
+
+  // ── THE MLS PAIR AND THE DEED PAIR ARE NEVER MIXED ────────────────────────
+  //
+  // A priced comparable is a PAIR: some amount changed hands over some area.
+  // The `similars` feed states an MLS listing's pair; the parcel's own record
+  // states its deed pair. Taking the price from one and the acreage from the
+  // other invents a price-per-acre neither surface ever stated, and that is
+  // exactly what happened to APN 044 068.01 on 5170 Hwy 60 — one generation
+  // retained $550,000 over 20.55 acres, another $200,000 over 5.05, and each
+  // carried the OTHER pairing's dollars per acre.
+  //
+  // When the two pairs disagree on area beyond the conflict margin above, the
+  // MLS pair is not describing this parcel. 044 068.01's feed figures are the
+  // byte-identical $200,000 / 20.55 ac / $9,732.36 per acre that belong to the
+  // neighbouring parcel 043 042, against its own $550,000 warranty deed over
+  // 5.05 acres. The deed pair is adopted WHOLE — price, acreage and date
+  // together — or not at all. A partial deed record changes nothing, and with
+  // no conflict the priced row is left exactly as it was.
+  const deedPairComplete = deedPrice != null && deedAcres != null && deedAcres > 0;
+  const adoptDeedPair = acreageConflict && deedPairComplete;
+  const acres = adoptDeedPair ? deedAcres : row.acres ?? mlsAcres ?? null;
+  const price = adoptDeedPair ? deedPrice : row.price ?? null;
+  // The date belongs to the pair as well: a deed price carries its own
+  // recording date, never the MLS listing's.
+  const saleDate = adoptDeedPair ? deedDate ?? mlsSaleDate : mlsSaleDate;
 
   return {
     ...row,
@@ -383,8 +417,18 @@ export function applyComparableDetail(
     county: (f['Parcel Address County'] ?? '').trim() || null,
     lat: detailNumber(f['Centroid Latitude']),
     lng: detailNumber(f['Centroid Longitude']),
-    acres: row.acres ?? mlsAcres ?? null,
-    parcelAcres,
+    acres,
+    price,
+    // Dollars per acre always comes from the pair actually retained, never from
+    // a provider figure computed over a different acreage.
+    pricePerAcre: acres != null && acres > 0 && price != null ? price / acres : row.pricePerAcre ?? null,
+    pricingBasis: adoptDeedPair ? 'parcel_deed_record' : row.pricingBasis ?? null,
+    pricingBasisNote: adoptDeedPair
+      ? `MLS figures stated ${priced} ac against this parcel's own ${deedAcres} ac, so the listing pair does not describe it. `
+        + `Adopted the parcel's own record: $${Math.round(deedPrice!).toLocaleString('en-US')} over ${deedAcres} ac`
+        + `${deedDate ? ` recorded ${deedDate}` : ''}${f['Deed Document Type'] ? ` (${f['Deed Document Type']})` : ''}.`
+      : row.pricingBasisNote ?? null,
+    parcelAcres: parcelAcresStated,
     buildingSqft,
     improvementValue,
     landMarketValue,
