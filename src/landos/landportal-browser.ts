@@ -46,6 +46,7 @@ import {
   validateLandPortalVisualEvidence,
   type LandPortalVisualView,
 } from './landportal-evidence-validation.js';
+import { validateLandPortalSubjectUrl } from './landportal-operating-rules.js';
 // The SHARED LandPortal capability. Every consequential action in this workflow —
 // submitting a search, selecting a result, extracting facts, capturing a
 // screenshot — passes through its visual checkpoints. No LandPortal result is
@@ -802,6 +803,15 @@ function captureFrameFor(obs: PageObservation, apn: string | null, screenshotPat
   };
 }
 
+/** The method label a run records when it opened the retained parcel record
+ *  instead of searching for it. */
+const RETAINED_URL_METHOD = 'retained parcel URL';
+
+/** A LandPortal URL that addresses a parcel RECORD (never a search surface). */
+function isLandPortalParcelRecordUrl(url: string | null | undefined): boolean {
+  return !!url && /[?&]property=/.test(url);
+}
+
 async function runLandPortalAgentic(
   input: BrowserWorkflowInput,
   driver: BrowserDriver,
@@ -817,29 +827,96 @@ async function runLandPortalAgentic(
   const platform = platformKey(LANDPORTAL_BROWSER_BASE);
 
   try {
-    await driver.open(LANDPORTAL_BROWSER_BASE, t());
-    let obs = await obsv();
+    // The subject every visual checkpoint compares the screen against.
+    const subject = subjectFromKey(key);
+    // Every checkpoint the run performed, in order — the operator-visible record
+    // of what was actually looked at before each consequential action.
+    const checkpoints: VisualCheckpoint[] = [];
+    // The identifier of the parcel the parcel_selected checkpoint verified, as it
+    // read at verification time. Captures are compared against THIS, so drift to a
+    // different parcel between verification and capture is still caught.
+    let verifiedParcelApn: string | null = null;
+    // Every capture verdict, including the rejected ones. A rejected capture is
+    // retained as honest history and never presented as accepted evidence.
+    const captureVerdicts: Array<{ purpose: string; path: string | null; result: string; reason: string }> = [];
+    let picked: { index: number; score: number; matched: string[] } | null = null;
+    let usedMethod = '';
+    let verifiedReached = false;
+
+    // ── RETAINED PARCEL URL: ENTER THE RECORD DIRECTLY ───────────────────────
+    // The search sequence below exists to FIND the parcel record. When the
+    // subject already carries its own verified canonical LandPortal URL, running
+    // it again is pure cost: on a live 300-second run the surface hops plus the
+    // ranked search consumed the entire window and the deterministic capture —
+    // which reaches the same record in seconds when handed the URL — was never
+    // reached at all. Open the retained record, verify it visually exactly as the
+    // search path does, and hand it to the same capture. The search path is still
+    // there for a subject that has no retained URL, or whose retained URL no
+    // longer opens a parcel record that verifies as the subject.
+    const retainedParcelUrl = validateLandPortalSubjectUrl(key.landPortalParcelUrl).canonicalUrl;
+    let obs: PageObservation;
+    if (retainedParcelUrl) {
+      await driver.open(retainedParcelUrl, t());
+      obs = await obsv();
+      trace.push(`direct-entry:retained parcel URL→${classifySurface(obs)}`);
+    } else {
+      await driver.open(LANDPORTAL_BROWSER_BASE, t());
+      obs = await obsv();
+    }
     if (obs.loginLike) { ev.status = 'blocked'; ev.note = 'LandPortal requires login (operator action) — not authenticated.'; rememberPlatform(LANDPORTAL_BROWSER_BASE, { authRequired: true, used: true }); return ev; }
+    if (retainedParcelUrl) {
+      // A retained URL is a starting point, never a verdict. The record it opens
+      // is put through the SAME parcel checkpoint the search path uses before a
+      // single fact is read from it.
+      if (isLandPortalParcelRecordUrl(obs.url)) {
+        const detailShot = await driver.screenshot(LANDPORTAL_PARCEL_VERIFY_PURPOSE, t()).catch(() => null);
+        const detailFrame = parcelDetailFrame(obs, detailShot?.path ?? null, true);
+        const directCheck = verifyParcelSelected(detailFrame, subject);
+        checkpoints.push(directCheck);
+        if (directCheck.passed) {
+          if (detailFrame.apn) verifiedParcelApn = detailFrame.apn;
+          picked = { index: -1, score: 0, matched: ['retained_parcel_url'] };
+          usedMethod = RETAINED_URL_METHOD;
+          verifiedReached = true;
+          trace.push(`direct(parcel) OK:${directCheck.confirmed.length} confirmed${directCheck.unverified.length ? `, ${directCheck.unverified.length} not displayed` : ''}`);
+        } else {
+          trace.push(`direct(parcel) BLOCKED:${directCheck.blockers.join('; ')}`);
+        }
+      } else {
+        trace.push(`direct(parcel) NOT-A-RECORD:${obs.url || 'no url'}`);
+      }
+      if (!verifiedReached) {
+        // The retained URL did not open a record that verifies as the subject.
+        // Fall back to the ordinary search path from a clean surface.
+        await driver.open(LANDPORTAL_BROWSER_BASE, t());
+        obs = await obsv();
+        if (obs.loginLike) { ev.status = 'blocked'; ev.note = 'LandPortal requires login (operator action) — not authenticated.'; rememberPlatform(LANDPORTAL_BROWSER_BASE, { authRequired: true, used: true }); return ev; }
+      }
+    }
     const understanding = understandPlatform(obs);
     const taskBoundary = deriveTaskBoundary(obs);
 
-    // OBSERVE/REASON/ACT: reach the parcel-search surface (never a forbidden one).
-    for (let hop = 0; hop < 4 && !pageServesTask(obs, 'apn'); hop++) {
-      const nav = findWorkSurfaceNav(obs, 'apn');
-      if (!nav || isForbiddenTarget(nav.text) || !driver.clickByText) break;
-      await driver.clickByText(nav.text, t());
-      obs = await obsv();
-      trace.push(`surface→${nav.text}(${classifySurface(obs)})`);
+    // Identify the search box (search path only — the direct entry already holds
+    // a verified record and never touches a search surface).
+    let box: PageObservation['searchControls'][number] | null = null;
+    if (!verifiedReached) {
+      // OBSERVE/REASON/ACT: reach the parcel-search surface (never a forbidden one).
+      for (let hop = 0; hop < 4 && !pageServesTask(obs, 'apn'); hop++) {
+        const nav = findWorkSurfaceNav(obs, 'apn');
+        if (!nav || isForbiddenTarget(nav.text) || !driver.clickByText) break;
+        await driver.clickByText(nav.text, t());
+        obs = await obsv();
+        trace.push(`surface→${nav.text}(${classifySurface(obs)})`);
+      }
+      if (!pageServesTask(obs, 'apn')) {
+        ev.status = 'partial'; ev.note = `Could not reach the parcel-search surface (at ${classifySurface(obs)}). No forbidden surface touched.`;
+        rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, authRequired: true, taskBoundary, used: true, knownLimitations: ['could not reach search surface'] }); return ev;
+      }
+      box = obs.searchControls.find((c) => /search|address|parcel|apn|enter/i.test([c.label, c.placeholder, c.id, c.name].filter(Boolean).join(' ')))
+        ?? obs.searchControls.find((c) => (c.type ?? 'text') === 'text')
+        ?? null;
+      if (!box) { ev.status = 'partial'; ev.note = 'On the search surface but no search input found.'; return ev; }
     }
-    if (!pageServesTask(obs, 'apn')) {
-      ev.status = 'partial'; ev.note = `Could not reach the parcel-search surface (at ${classifySurface(obs)}). No forbidden surface touched.`;
-      rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, authRequired: true, taskBoundary, used: true, knownLimitations: ['could not reach search surface'] }); return ev;
-    }
-
-    // Identify the search box.
-    const box = obs.searchControls.find((c) => /search|address|parcel|apn|enter/i.test([c.label, c.placeholder, c.id, c.name].filter(Boolean).join(' ')))
-      ?? obs.searchControls.find((c) => (c.type ?? 'text') === 'text');
-    if (!box) { ev.status = 'partial'; ev.note = 'On the search surface but no search input found.'; return ev; }
 
     // REASON: EVIDENCE-DRIVEN method order (generic Website Intelligence — no fixed
     // chronological order). rankSearchMethods inspects the identifiers present and
@@ -880,27 +957,11 @@ async function runLandPortalAgentic(
       return streetTokens.some((tok) => hay.includes(tok));
     };
 
-    // The subject every visual checkpoint compares the screen against.
-    const subject = subjectFromKey(key);
-    // Every checkpoint the run performed, in order — the operator-visible record
-    // of what was actually looked at before each consequential action.
-    const checkpoints: VisualCheckpoint[] = [];
-    // The identifier of the parcel the parcel_selected checkpoint verified, as it
-    // read at verification time. Captures are compared against THIS, so drift to a
-    // different parcel between verification and capture is still caught.
-    let verifiedParcelApn: string | null = null;
-    // Every capture verdict, including the rejected ones. A rejected capture is
-    // retained as honest history and never presented as accepted evidence.
-    const captureVerdicts: Array<{ purpose: string; path: string | null; result: string; reason: string }> = [];
-
-    let picked: { index: number; score: number; matched: string[] } | null = null;
-    let usedMethod = '';
-    let verifiedReached = false;
-    let searchSel = box.selector;
+    let searchSel = box?.selector ?? '';
     // Records every failure-diagnosis recovery attempt so the final note reflects the
     // POST-recovery state (never re-reporting "option selected but search not submitted").
     const recoveryTrace: string[] = [];
-    for (let ai = 0; ai < attempts.length; ai++) {
+    for (let ai = 0; !verifiedReached && ai < attempts.length; ai++) {
       const a = attempts[ai];
       if (hooks.isCancelled?.()) break;
       // Reset to a CLEAN search surface before each attempt (a prior attempt may
@@ -1206,7 +1267,14 @@ async function runLandPortalAgentic(
           }
           trace.push(`lpVisuals: fields=${Object.keys(v.fields).length} comps=${v.compRows.length} mapReached=${v.mapReached}`);
         }
-      } catch { /* fall back below */ }
+      } catch (err) {
+        // NEVER swallow this. The capture failing because LandOS has no live
+        // dedicated browser is indistinguishable, downstream, from LandPortal
+        // simply having nothing — that is exactly how three runs reported a
+        // clean timeout with no diagnosis. The fallback below still runs; the
+        // reason now travels with the evidence the operator reads.
+        trace.push(`lpVisuals FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     if (!lpVisuals) {
       // Fallback (non-live/fake driver, or capture failed): working-tab parcel shot
@@ -1225,7 +1293,9 @@ async function runLandPortalAgentic(
     ev.fields = panelFields;
     const cleanedFields = cleanParcelFields(panelFields);
     const facts: BrowserFact[] = extractRecordFacts(panelFields, { sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, origin: 'landportal' })
-      .map((f) => ({ ...f, extractionMethod: `${usedMethod} search → typeahead select → verified parcel panel (full-panel read)` }));
+      .map((f) => ({ ...f, extractionMethod: usedMethod === RETAINED_URL_METHOD
+        ? 'retained canonical parcel URL → verified parcel panel (full-panel read)'
+        : `${usedMethod} search → typeahead select → verified parcel panel (full-panel read)` }));
 
     // IDENTIFIER MISMATCH: if the operator supplied an APN but the resolved parcel's
     // APN matches NONE of the provided APN/variants, flag it clearly
@@ -1440,7 +1510,12 @@ async function runLandPortalAgentic(
     };
 
     // LEARN: store the validated method + interaction strategy.
-    const validatedStrategy = { method: (usedMethod as SearchMethod), steps: [{ action: 'select_method' as const, text: usedMethod }, { action: 'fill' as const, selector: box.selector }, { action: 'click' as const, text: 'typeahead high-confidence match' }], reason: `${usedMethod} search → typeahead → high-confidence parcel` };
+    // A direct entry validates no SEARCH strategy — it never ran one. Recording
+    // the retained-URL path as a validated search method would teach the platform
+    // library a strategy no future run could follow.
+    const validatedStrategy = usedMethod === RETAINED_URL_METHOD || !box
+      ? undefined
+      : { method: (usedMethod as SearchMethod), steps: [{ action: 'select_method' as const, text: usedMethod }, { action: 'fill' as const, selector: box.selector }, { action: 'click' as const, text: 'typeahead high-confidence match' }], reason: `${usedMethod} search → typeahead → high-confidence parcel` };
     rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, validatedStrategy, navPatterns: trace.join(' | '), authRequired: true, confidence: 'high', taskBoundary, used: true, succeeded: ev.status === 'retrieved', validatedNow: ev.status === 'retrieved', knownLimitations: [] });
     // Operator transparency: name the visual checkpoints that were actually
     // passed and every capture that was rejected, so "verified" is a claim the
@@ -1449,7 +1524,7 @@ async function runLandPortalAgentic(
     const rejectedCaptures = captureVerdicts.filter((c) => c.result !== 'accepted');
     ev.visualCheckpoints = checkpoints;
     ev.captureVerdicts = captureVerdicts;
-    ev.note = `LandPortal (${understanding.platformClass}): ${usedMethod} search → visually verified [${passedCheckpoints.join(', ') || 'none'}] → selected high-confidence parcel → ${facts.length} verified fact(s) streamed with provenance.${rejectedCaptures.length ? ` ${rejectedCaptures.length} ineffective capture(s) rejected and not presented as evidence.` : ''} Trace: ${trace.join(' | ')}`;
+    ev.note = `LandPortal (${understanding.platformClass}): ${usedMethod === RETAINED_URL_METHOD ? 'opened the retained verified parcel URL' : `${usedMethod} search`} → visually verified [${passedCheckpoints.join(', ') || 'none'}] → ${usedMethod === RETAINED_URL_METHOD ? 'confirmed the parcel record' : 'selected high-confidence parcel'} → ${facts.length} verified fact(s) streamed with provenance.${rejectedCaptures.length ? ` ${rejectedCaptures.length} ineffective capture(s) rejected and not presented as evidence.` : ''} Trace: ${trace.join(' | ')}`;
     return ev;
   } catch (err) {
     ev.status = 'error';

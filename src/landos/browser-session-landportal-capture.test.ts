@@ -63,6 +63,40 @@ describe('LandPortal visual capture contract', () => {
     expect(capture).not.toContain('workingPageGate');
   });
 
+  it('recovers a dead dedicated browser and fails loudly instead of returning an empty capture', () => {
+    const captureStart = source.indexOf('async captureLandPortalVisuals');
+    const captureEnd = source.indexOf('// Full-panel read', captureStart);
+    const capture = source.slice(captureStart, captureEnd);
+    // Recovery first: the launching variant, not the connect-only one.
+    expect(capture).toContain('await ensureBrowserSessionReady(deps)');
+    // Then loud: an error log naming the endpoint, and a thrown error. The
+    // silent `if (!state.browser) return empty` is the defect and must not return.
+    expect(capture).toContain("event: 'landportal_capture_browser_unavailable'");
+    expect(capture).toContain('logger.error(');
+    expect(capture).toMatch(/if \(!state\.browser\) \{[\s\S]{0,600}throw new Error\(/);
+    expect(capture).not.toMatch(/if \(!state\.browser\) return empty;/);
+  });
+
+  it('releases the capture gate at the holder\'s own declared timeout so an abandoned run cannot queue the next one', () => {
+    const captureStart = source.indexOf('async captureLandPortalVisuals');
+    const captureEnd = source.indexOf('// Full-panel read', captureStart);
+    const capture = source.slice(captureStart, captureEnd);
+    // The successor waits on the run OR the holder's own budget, never on the
+    // run alone — that unbounded assignment is what queued a 4-second
+    // retrieval behind an already-abandoned capture for six minutes.
+    expect(capture).not.toMatch(/landportalCaptureGate = run\.then\(/);
+    expect(capture).toContain('const staleHoldMs = Math.max(1, opts.timeoutMs)');
+    expect(capture).toContain('landportalCaptureGate = Promise.race([');
+    expect(capture).toContain("event: 'landportal_capture_gate_released_stale'");
+    // Queue cost is measured from before the gate and reported on entry.
+    expect(capture.indexOf('const enqueuedAtMs = Date.now()')).toBeLessThan(capture.indexOf('const work = async ()'));
+    // Gate wait is measured on ENTRY to the gated work, so a cold browser
+    // launch is never reported as queueing.
+    expect(capture.indexOf('const queuedMs = Date.now() - enqueuedAtMs'))
+      .toBeLessThan(capture.indexOf('await ensureBrowserSessionReady(deps)'));
+    expect(capture).toContain("event: 'landportal_capture_entered', queuedMs");
+  });
+
   it('never raises a visible window: bringToFront is guarded to the LandOS-spawned offscreen instance', () => {
     const driverStart = source.indexOf('export function makeLiveBrowserDriver');
     const driverSource = source.slice(driverStart);

@@ -117,6 +117,11 @@ export interface BrowserSearchKey {
   county?: string;
   state?: string;
   zip?: string;
+  /** An already-retained, verified canonical LandPortal parcel URL for THIS
+   *  subject. When present the LandPortal workflow opens the parcel record
+   *  directly instead of hopping surfaces and re-running its ranked search; the
+   *  record is still visually verified before anything is extracted from it. */
+  landPortalParcelUrl?: string;
   /** Already-confirmed subject measures, when the caller holds them (e.g. from an
    *  official assessor record). They are never used to SEARCH — they are used to
    *  cross-check that the parcel a site opened is actually the subject. */

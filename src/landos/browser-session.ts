@@ -25,7 +25,13 @@ import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwner
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
 import { assessMapViewportFrame, contextZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
-import { evaluateThreeDCaptureEligibility } from './landportal-operating-rules.js';
+import { evaluateThreeDCaptureEligibility, landPortalIdentityFromUrl } from './landportal-operating-rules.js';
+import {
+  landPortalCompCardsFromApi,
+  landPortalCompDetailsFromApi,
+  landPortalFactsFromApi,
+  landPortalSimilarsFrom,
+} from './landportal-api.js';
 
 // The functions passed to page.evaluate() below execute INSIDE the operator's
 // browser (not Node), so the DOM globals are declared as `any` purely to satisfy
@@ -1474,7 +1480,18 @@ async function ensureLandPortalAuthenticatedInner(deps: EnsureReadyDeps = {}): P
 
   const ready = await ensureBrowserSessionReady(deps);
   if (ready.status !== 'live' && ready.status !== 'auth_needed') {
-    return base('session_unavailable', { sessionStatus: ready.status, reason: ready.error ?? 'Chrome/CDP session could not be started.', note: 'Browser session unavailable — see reason.' });
+    // The PRE-RUN check for every LandPortal lane. A launch was already
+    // attempted above; if the endpoint is still not answering, say so at error
+    // level with the endpoint and the operator's command, because every lane
+    // behind this point degrades into a silent timeout instead.
+    logger.error({
+      event: 'landportal_browser_unavailable_pre_run',
+      status: ready.status,
+      launchAttempted: ready.started,
+      cdpUrl: state.cdpUrl,
+      error: ready.error,
+    }, 'landportal_browser_unavailable_pre_run');
+    return base('session_unavailable', { sessionStatus: ready.status, reason: `${ready.error ?? 'Chrome/CDP session could not be started.'} Check \`npm run landos:browser status\` and start it with \`npm run landos:browser start\`.`, note: 'Browser session unavailable — see reason.' });
   }
 
   const page = await getWorkingPage();
@@ -2002,7 +2019,14 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       // dialogs and paint-gated screenshots cannot interleave on one Chrome
       // window, even though each capture runs on its own lane page. Ordinary
       // navigation/read operations on other lane pages stay concurrent.
+      // Stamped BEFORE the gate so `queuedMs` on entry states what queueing
+      // actually cost this capture — the number that made gap 2 visible.
+      const enqueuedAtMs = Date.now();
       const work = async () => {
+      // Gate wait ONLY. Measured here, before session readiness, because a cold
+      // browser launch is work this capture does for itself and queueing is
+      // time it spent doing nothing.
+      const queuedMs = Date.now() - enqueuedAtMs;
       const empty = {
         fields: {} as Record<string, string>,
         parcelShotPath: null as string | null,
@@ -2024,8 +2048,38 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         mapReached: false,
         capturedAtIso: now(),
       };
-      await ensureBrowserSession(deps);
-      if (!state.browser) return empty;
+      // ── GAP 1: A DEAD DEDICATED BROWSER MUST NEVER BE SILENT ────────────
+      // This used to be `ensureBrowserSession()` followed by
+      // `if (!state.browser) return empty`. With the dedicated browser's CDP
+      // endpoint not answering, three consecutive runs produced ZERO capture
+      // log lines and then a clean 300-second timeout, which reads exactly
+      // like "LandPortal had nothing" instead of "LandOS had no browser".
+      //
+      // Two changes, both narrow: RECOVER first (`ensureBrowserSessionReady`
+      // launches the dedicated LandOS Chrome — never the operator's — when the
+      // endpoint is not answering), and when recovery fails, FAIL LOUDLY: an
+      // error log naming the CDP endpoint and the operator's next command, and
+      // a thrown error rather than an empty payload the caller cannot tell
+      // apart from a genuinely empty parcel.
+      const readiness = await ensureBrowserSessionReady(deps);
+      if (!state.browser) {
+        const detail = `dedicated LandOS browser session is ${readiness.status}${readiness.error ? ` (${readiness.error})` : ''}`;
+        logger.error({
+          event: 'landportal_capture_browser_unavailable',
+          status: readiness.status,
+          launchAttempted: readiness.started,
+          cdpUrl: state.cdpUrl,
+          error: readiness.error,
+          url,
+        }, 'landportal_capture_browser_unavailable');
+        throw new Error(`LandPortal capture cannot run: ${detail}. Check \`npm run landos:browser status\` and start it with \`npm run landos:browser start\`.`);
+      }
+      logger.info({ event: 'landportal_capture_entered', queuedMs, sessionReadyMs: Date.now() - enqueuedAtMs - queuedMs }, 'landportal_capture_entered');
+      // Comparables retrieved directly from LandPortal's parcel endpoint. When
+      // these are present the sidebar scrape and the per-comparable drill-down
+      // are skipped entirely — that loop opened up to twelve pages in sequence.
+      let apiCompCards: string[] | null = null;
+      let apiCompDetails: string[] | null = null;
       // Always use this driver's registered lane page. A different Deal may
       // have an authenticated, fully rendered parcel page open concurrently;
       // scanning browser.pages() and borrowing whichever looked "ready" mixed
@@ -2035,6 +2089,46 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const dir = cfg.screenshotDir;
       try { (await import('fs')).mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      // ── WAIT FOR THE CONDITION, NOT FOR THE CLOCK ───────────────────────
+      // This capture used to spend 96 seconds of unconditional `sleep()` in a
+      // single linear pass, before the overlay loop multiplied several of them.
+      // Every one of those waits was sized for the worst case LandPortal has
+      // ever shown, so a page ready in a second still cost the full pessimistic
+      // pause. That is the reason a capture with a KNOWN parcel URL took about
+      // thirteen minutes on 5170 Hwy 60.
+      //
+      // The ceilings were not wrong, so they are kept exactly as they were:
+      // this returns as soon as the page proves it is ready and waits the full
+      // original duration when it never does. Strictly faster on the common
+      // path, never slower on the bad one.
+      // Each probe is itself bounded, and the cadence is deliberately unhurried.
+      // The first version polled every 400ms with no per-probe timeout, and that
+      // hung the capture outright: `ready()` here runs `page.evaluate` against a
+      // heavy SPA, so one probe that never resolves stalls the loop past every
+      // deadline, and probing that often can destroy the execution context on
+      // its own. A probe that does not answer within PROBE_TIMEOUT_MS is simply
+      // not-ready, exactly like one that answers false.
+      const PROBE_TIMEOUT_MS = 5_000;
+      const pollUntil = async (
+        ready: () => Promise<boolean>,
+        capMs: number,
+        intervalMs = 1_500,
+      ): Promise<boolean> => {
+        const deadline = Date.now() + capMs;
+        for (;;) {
+          try {
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            const bounded = await Promise.race([
+              ready(),
+              new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS); }),
+            ]);
+            if (timer) clearTimeout(timer);
+            if (bounded) return true;
+          } catch { /* a probe failure is not readiness */ }
+          if (Date.now() >= deadline) return false;
+          await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+        }
+      };
       const FIELDS = (): { fields: Record<string, string> } => {
         const fields: Record<string, string> = {};
         const add = (k: string, v: string) => { const key = (k || '').replace(/\s+/g, ' ').trim().replace(/[:#]+$/, ''); const val = (v || '').replace(/\s+/g, ' ').trim(); if (key && val && key.length <= 48 && !fields[key]) fields[key] = val; };
@@ -2228,7 +2322,11 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           // and painted-tile gates below decide whether the page is usable.
           logger.warn({ event: 'landportal_navigation_timeout_continuing', error: error instanceof Error ? error.message : String(error) }, 'landportal_navigation_timeout_continuing');
         }
-        await sleep(6500);
+        // The blind 6500ms settle that used to sit here is folded into the
+        // property-panel poll below, which waits for the same thing and is the
+        // only signal that actually decides whether the page is usable.
+        await sleep(250);
+        logger.info({ event: 'landportal_capture_navigated' }, 'landportal_capture_navigated');
         // The generic popup closer was intentionally skipped here because the
         // parcel-detail sidebar also has a Close button. That decision is the
         // root cause of the repeated skip-tracing ad in retained screenshots:
@@ -2249,11 +2347,13 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           const mapRendered = !!document.querySelector('canvas,.mapboxgl-canvas,.leaflet-container,[class*="map" i] canvas,[id*="map" i]');
           return { authenticated, propertyPanel, mapRendered, hasPropertyHeading, hasParcelField, hasOwnerField };
         }) as unknown as () => { authenticated: boolean; propertyPanel: boolean; mapRendered: boolean; hasPropertyHeading: boolean; hasParcelField: boolean; hasOwnerField: boolean });
+        // Same 22.5s ceiling as the previous 6500ms pre-wait plus 8x2000ms poll,
+        // but it exits the moment the authenticated property panel is present.
         let parcelSignals = await readParcelSignals();
-        for (let attempt = 0; attempt < 8 && !parcelSignals.propertyPanel; attempt++) {
-          await sleep(2000);
+        await pollUntil(async () => {
           parcelSignals = await readParcelSignals();
-        }
+          return parcelSignals.propertyPanel;
+        }, 22_500);
         // A newly opened authenticated LandPortal tab occasionally paints only
         // the account shell on its first deep-link navigation. Re-open the exact
         // parcel URL once before giving up; this is still read-only and avoids
@@ -2264,12 +2364,11 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           } catch (error) {
             logger.warn({ event: 'landportal_navigation_timeout_continuing', retry: true, error: error instanceof Error ? error.message : String(error) }, 'landportal_navigation_timeout_continuing');
           }
-          await sleep(9000);
-          parcelSignals = await readParcelSignals();
-          for (let attempt = 0; attempt < 8 && !parcelSignals.propertyPanel; attempt++) {
-            await sleep(2000);
+          // Same 25s ceiling as the previous 9000ms pre-wait plus 8x2000ms poll.
+          await pollUntil(async () => {
             parcelSignals = await readParcelSignals();
-          }
+            return parcelSignals.propertyPanel;
+          }, 25_000);
         }
         if (!parcelSignals.authenticated || !parcelSignals.propertyPanel || !parcelSignals.mapRendered) {
           logger.warn({ event: 'landportal_visual_rejected', reason: 'parcel_not_ready', ...parcelSignals }, 'landportal_visual_rejected');
@@ -2283,6 +2382,69 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         // former pre-readiness scrape could snapshot a partial SPA and its
         // generic two-span fallback could pair unrelated terrain values.
         const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+
+        // ── DIRECT RETRIEVAL: LandPortal's own parcel endpoint ──────────────
+        // The page we are already authenticated on serves itself from
+        // `POST /wp-json/lp-internal/v1/single-property` with `{property_id,
+        // fips}` — the identifiers already encoded in this URL. One ~1.5s call
+        // returns 144 subject fields AND the comparables, including comp
+        // coordinates the scrape never obtained (which is why every comp read
+        // "location unresolved"). The fetch runs INSIDE the page so the session
+        // cookie and REST nonce stay in the browser and are never handled here.
+        //
+        // This is retrieval only. Everything below it — the framed map,
+        // overlay, terrain and 3D captures — still happens on CDP, because
+        // there the rendered image IS the evidence.
+        const apiIdentity = landPortalIdentityFromUrl(url);
+        let apiSubject: { properties: Record<string, unknown> } | null = null;
+        if (apiIdentity?.propertyId && apiIdentity.fips) {
+          try {
+            // `PageLike.evaluate` takes no arguments, so the request body is
+            // embedded as JSON. Both values come from the parcel URL's own
+            // base64 identity triple and are serialized, never concatenated.
+            const requestBody = JSON.stringify({
+              property_id: Number(apiIdentity.propertyId),
+              fips: String(apiIdentity.fips),
+            });
+            apiSubject = await page.evaluate<{ properties: Record<string, unknown> } | null>(`(async () => {
+              const nonce = (() => {
+                for (const k of ['wpApiSettings', 'lpInternal', 'lp_internal']) {
+                  const v = window[k] && window[k].nonce;
+                  if (typeof v === 'string' && v) return v;
+                }
+                const m = /"nonce"\\s*:\\s*"([A-Za-z0-9]+)"/.exec(document.documentElement.innerHTML);
+                return m ? m[1] : null;
+              })();
+              const headers = { 'content-type': 'application/json' };
+              if (nonce) headers['X-WP-Nonce'] = nonce;
+              const res = await fetch('/wp-json/lp-internal/v1/single-property', {
+                method: 'POST', credentials: 'include', headers, body: ${JSON.stringify(requestBody)},
+              });
+              if (!res.ok) return null;
+              const body = await res.json();
+              const data = body && typeof body === 'object' && 'data' in body ? body.data : body;
+              // Without the nonce this endpoint answers 200 with geometry only.
+              // A payload with no 'properties' is not a usable subject read.
+              return data && data.properties ? { properties: data.properties } : null;
+            })()`);
+          } catch (error) {
+            logger.warn({ event: 'landportal_api_read_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_api_read_failed');
+          }
+        }
+        if (apiSubject?.properties) {
+          const apiFacts = landPortalFactsFromApi(apiSubject.properties);
+          // The API is the stronger surface, so it wins on conflict; anything
+          // only the panel stated is preserved rather than dropped.
+          fieldsOut.fields = { ...(fieldsOut.fields ?? {}), ...apiFacts };
+          const similars = landPortalSimilarsFrom(apiSubject.properties);
+          apiCompCards = landPortalCompCardsFromApi(similars);
+          apiCompDetails = landPortalCompDetailsFromApi(similars);
+          logger.info({
+            event: 'landportal_api_subject_read',
+            factCount: Object.keys(apiFacts).length,
+            comps: apiCompCards.length,
+          }, 'landportal_api_subject_read');
+        }
         // Capture only the painted map canvas, never the full LandPortal page.
         // Before every frame, remove visible ads/offers/modals/chat/banner UI
         // that overlaps the map. The parcel-detail sidebar is deliberately not
@@ -2625,15 +2787,24 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         logger.info({ event: 'landportal_visual_zoom', completed: zoomedOutSteps, requested: contextSteps }, 'landportal_visual_zoom');
         if (zoomedOutSteps !== contextSteps) return empty;
         // Mapbox re-fetches/repaints satellite tiles after every camera change;
-        // the former 900 ms pause routinely captured only the gray base canvas.
-        await sleep(16000);
+        // a 900 ms pause routinely captured only the gray base canvas.
+        //
+        // The old shape was a blind 16s wait, one capture, then a blind 10s wait
+        // and a second capture. But the code already KNOWS what a painted tile
+        // looks like: the size gate below. So capture on a short cadence and
+        // stop the instant the bytes prove the satellite tiles painted, within
+        // the same 26s total budget the two blind waits spent unconditionally.
         const parcelFile = path.join(dir, `landportal-parcel-${Date.now()}.png`);
-        if (!(await captureMapViewport(parcelFile, 'parcel_context'))) return empty;
-        // The parcel/sidebar chrome alone makes a gray map screenshot look like
-        // a non-empty PNG. At this viewport real satellite tiles are materially
-        // larger; retry once, then reject rather than promote an unpainted map.
-        if (fs.statSync(parcelFile).size < 500_000) {
-          await sleep(10000);
+        let parcelCaptureOk = false;
+        const painted = await pollUntil(async () => {
+          parcelCaptureOk = await captureMapViewport(parcelFile, 'parcel_context');
+          if (!parcelCaptureOk) return false;
+          try { return fs.statSync(parcelFile).size >= 500_000; } catch { return false; }
+        }, 26_000);
+        if (!parcelCaptureOk) return empty;
+        if (!painted) {
+          // Budget spent without a painted frame. Keep the original last-chance
+          // recapture so behaviour at the ceiling is unchanged.
           if (!(await captureMapViewport(parcelFile, 'parcel_context'))) return empty;
         }
         if (fs.statSync(parcelFile).size < 500_000) {
@@ -2947,8 +3118,10 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         //
         // Read-only, in a SEPARATE tab so the authenticated subject tab is never
         // navigated away from, and the tab is always closed again.
-        const compDetails: string[] = [];
-        if (compCards.length) {
+        // The direct endpoint already returned every one of these facts for
+        // every comparable, so the sequential drill-down is skipped outright.
+        const compDetails: string[] = apiCompDetails ?? [];
+        if (!apiCompDetails && compCards.length) {
           let detailPage: PageLike | null = null;
           try {
             // Background: this comp-detail tab is pure reading, and activating
@@ -2968,8 +3141,16 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
               const detailUrl = `https://landportal.com/?property=${token}`;
               try {
                 await detailPage.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(60_000, opts.timeoutMs) });
-                await sleep(7000);
-                const facts = await detailPage.evaluate<Record<string, string>>(COMP_DETAIL as unknown as () => Record<string, string>);
+                // Was a blind 7s per comparable, paid twelve times in sequence:
+                // ~2 minutes of the capture spent waiting on pages that are
+                // usually ready in well under a second. The read itself is the
+                // readiness signal, so run it on a short cadence and stop as
+                // soon as it yields facts, inside the same 7s ceiling.
+                let facts: Record<string, string> = {};
+                await pollUntil(async () => {
+                  facts = await detailPage!.evaluate<Record<string, string>>(COMP_DETAIL as unknown as () => Record<string, string>);
+                  return Object.keys(facts ?? {}).length > 0;
+                }, 7_000);
                 compDetails.push(JSON.stringify({ apn: card.apn, propertyId: card.propertyId, sourceUrl: detailUrl, facts }));
               } catch {
                 // One unreachable comp page never fails the capture; the row
@@ -2982,7 +3163,9 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             await releaseTempSessionPage(detailPage);
           }
         }
-        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, visualShots, overlayMisses, terrainShotPath, compRows: compRows ?? [], compCards: compCards ?? [], compDetails, mapRows: mapRows ?? [], mapReached, capturedAtIso: now() };
+        // API comparables are the stronger surface: they carry the MLS status,
+        // acreage, sale date and coordinates the sidebar row never stated.
+        return { fields: fieldsOut.fields ?? {}, parcelShotPath: parcelFile, compsMapShotPath, overlayShots, visualShots, overlayMisses, terrainShotPath, compRows: compRows ?? [], compCards: (apiCompCards?.length ? apiCompCards : compCards) ?? [], compDetails, mapRows: mapRows ?? [], mapReached, capturedAtIso: now() };
       } catch (error) {
         logger.warn({ event: 'landportal_visual_capture_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_visual_capture_failed');
         return empty;
@@ -2991,8 +3174,34 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         // read-only mission; the driver owns its lifecycle.
       }
       };
+      // ── GAP 2: THE GATE MAY NOT OUTLIVE THE RUN THAT HOLDS IT ───────────
+      // Serialization is still correct (see the header above): two captures
+      // interleaving on one Chrome window corrupt each other's framing. What
+      // was wrong is that the gate was held for as long as the browser work
+      // ran, with no relation to the budget its own caller had declared. A
+      // capture whose caller had ALREADY given up — timed out, result
+      // discarded — kept every later capture queued behind it. Measured: a run
+      // launched at 00:23:35 entered at 00:29:59, so its 300s identity window
+      // had expired before a single line of work began, for a retrieval that
+      // takes four seconds.
+      //
+      // The successor therefore waits on this capture OR on this capture's own
+      // declared timeout, whichever comes first. Nothing is cancelled and no
+      // work is abandoned: an overrunning capture still finishes and still
+      // returns to its caller, it simply stops being an unbounded queue for
+      // everyone behind it. The queue cost it did impose is logged on entry.
       const run = landportalCaptureGate.then(work, work);
-      landportalCaptureGate = run.then(() => undefined, () => undefined);
+      const staleHoldMs = Math.max(1, opts.timeoutMs);
+      landportalCaptureGate = Promise.race([
+        run.then(() => undefined, () => undefined),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            logger.warn({ event: 'landportal_capture_gate_released_stale', heldMs: staleHoldMs, url }, 'landportal_capture_gate_released_stale');
+            resolve();
+          }, staleHoldMs);
+          (timer as unknown as { unref?: () => void }).unref?.();
+        }),
+      ]);
       return run;
     },
     // Full-panel read: opens the parcel's canonical deep link in a FRESH tab (the

@@ -357,3 +357,43 @@ describe('Start Browser Intelligence (launch + connect, Chrome only)', () => {
     expect(needs.note).toMatch(/log into landportal/i);
   });
 });
+
+// A dead dedicated browser must be recovered, and when it cannot be, must fail
+// where someone can see it. The silent `return empty` this replaces is what made
+// three consecutive 5170 Hwy 60 runs produce a clean timeout and no diagnosis.
+describe('LandPortal capture with no reachable dedicated browser', () => {
+  beforeEach(() => _resetBrowserSession());
+
+  const PARCEL_URL = 'https://landportal.com/?property=abc';
+
+  it('attempts a launch, then throws a named error instead of returning an empty capture', async () => {
+    const spawnCalls: string[] = [];
+    const spawn: SpawnLike = (cmd) => { spawnCalls.push(cmd); };
+    // Chrome is never reachable: connect fails before AND after the launch.
+    const puppeteer: PuppeteerLike = { async connect() { throw new Error('not up'); } };
+    const driver = makeLiveBrowserDriver('capture-no-browser', {
+      config: { ...LIVE, chromePath: process.execPath }, puppeteer,
+      // startBrowserSession deps ride along at runtime; the driver's own type
+      // does not name them.
+      ...{ spawn, maxPolls: 1, pollMs: 1 },
+    } as Parameters<typeof makeLiveBrowserDriver>[1]);
+
+    await expect(driver.captureLandPortalVisuals!(PARCEL_URL, { timeoutMs: 50 }))
+      .rejects.toThrow(/LandPortal capture cannot run/i);
+    // Recovery was genuinely attempted, not just reported.
+    expect(spawnCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not hold the capture gate open for the next capture after it fails', async () => {
+    const puppeteer: PuppeteerLike = { async connect() { throw new Error('not up'); } };
+    const deps = {
+      config: { ...LIVE, chromePath: process.execPath }, puppeteer,
+      ...{ spawn: (() => undefined) as SpawnLike, maxPolls: 1, pollMs: 1 },
+    } as Parameters<typeof makeLiveBrowserDriver>[1];
+    const first = makeLiveBrowserDriver('capture-gate-a', deps);
+    const second = makeLiveBrowserDriver('capture-gate-b', deps);
+    await expect(first.captureLandPortalVisuals!(PARCEL_URL, { timeoutMs: 50 })).rejects.toThrow();
+    // The failed predecessor must not poison or block the queue.
+    await expect(second.captureLandPortalVisuals!(PARCEL_URL, { timeoutMs: 50 })).rejects.toThrow(/LandPortal capture cannot run/i);
+  });
+});

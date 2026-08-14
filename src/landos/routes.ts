@@ -7216,11 +7216,35 @@ export function registerLandosRoutes(app: Hono): void {
         .then((value) => ({ authenticated: value.authenticated, phase: String(value.phase), detail: value.note || value.reason || '' }))
         .catch((err) => ({ authenticated: false, phase: 'attach_failed', detail: (err as Error)?.message ?? String(err) }));
       if (!readiness.authenticated) {
+        // Pre-run gate. This lane cannot read a parcel page without a live
+        // dedicated browser, and returning ok:false quietly is what made a
+        // dead CDP endpoint look like an ordinary empty result.
+        logger.error({
+          event: 'landportal_capture_pre_run_blocked',
+          cardId,
+          phase: readiness.phase,
+          detail: readiness.detail,
+        }, 'landportal_capture_pre_run_blocked');
         return {
           ok: false,
           comparableCount: 0,
-          note: `LandPortal session is ${readiness.phase} (${readiness.detail || 'not authenticated'}). Start Browser Intelligence so the parcel page can be read.`,
+          note: `LandPortal session is ${readiness.phase} (${readiness.detail || 'not authenticated'}). Check \`npm run landos:browser status\`, then Start Browser Intelligence so the parcel page can be read.`,
         };
+      }
+      // A subject that already carries a verified canonical LandPortal parcel URL
+      // does not need to be searched for again. Hand the URL to the workflow so
+      // the deterministic capture opens the record directly: the surface hops and
+      // ranked search that precede it consumed the whole inspection window on a
+      // live run, and the capture never executed. The workflow still verifies the
+      // opened record against the subject, and falls back to searching when no
+      // usable URL is retained.
+      const retainedParcel = promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
+      if (retainedParcel?.url) {
+        logger.info({
+          event: 'landportal_capture_direct_entry',
+          cardId,
+          source: retainedParcel.source,
+        }, 'landportal_capture_direct_entry');
       }
       const result = await withBrowserMissionGate(() => runPropertyInspection({
         cardId,
@@ -7235,6 +7259,7 @@ export function registerLandosRoutes(app: Hono): void {
           state: searchKey.state ?? undefined,
           city: searchKey.city ?? undefined,
           owner: searchKey.owner ?? undefined,
+          landPortalParcelUrl: retainedParcel?.url ?? undefined,
         },
         // Discovery still attempts the practical county assessor/recorder
         // source after LandPortal establishes the subject. qPublic is
