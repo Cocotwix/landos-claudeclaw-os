@@ -53,6 +53,7 @@ import { validateLandPortalSubjectUrl } from './landportal-operating-rules.js';
 // accepted and no screenshot is persisted without them.
 import {
   verifySearchConfiguration, verifyResultSelection, verifyParcelSelected, assessScreenshotQuality,
+  apnIdentifiersEquivalent,
   type LandPortalSubject, type LandPortalSearchMode, type VisualCheckpoint,
   type SearchConfigurationFrame, type ParcelDetailFrame, type CaptureFrame, type CaptureIntent,
 } from './landportal-capability.js';
@@ -1349,7 +1350,18 @@ async function runLandPortalAgentic(
     const compactId = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const providedApnIds = [key.apn, ...(key.apnAlternates ?? [])].filter(Boolean).map((a) => compactId(a as string));
     const resolvedApn = facts.find((f) => f.key === 'apn')?.value;
-    const apnConflict = !!(key.apn && resolvedApn && providedApnIds.length > 0 && !providedApnIds.includes(compactId(resolvedApn)));
+    // ONE parcel, two spellings, is not a conflict. This check compared raw
+    // compacted strings, so Williamson County's `042 123.00` and LandPortal's
+    // own `042-123.00-000` read as different parcels — measured live: the
+    // visual parcel checkpoint two steps above had already RECONCILED them and
+    // passed, and this gate then threw the same parcel away as a wrong one.
+    // Two gates disagreeing about one parcel is the defect; both now ask the
+    // same jurisdiction-aware question. A genuinely different identifier still
+    // conflicts, which is what this gate exists for.
+    const providedApnForms = [key.apn, ...(key.apnAlternates ?? [])].filter((a): a is string => !!a);
+    const apnConflict = !!(key.apn && resolvedApn && providedApnIds.length > 0
+      && !providedApnIds.includes(compactId(resolvedApn))
+      && !providedApnForms.some((form) => apnIdentifiersEquivalent(form, resolvedApn)));
     if (apnConflict) {
       facts.push({ key: 'apnConflict', label: 'APN identifier mismatch — wrong parcel', value: `Requested APN "${key.apn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". These are DIFFERENT parcels. The resolved parcel is NOT accepted as the subject — the parcel stays unconfirmed and no downstream intelligence runs until the correct parcel is identified.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN)' });
       trace.push(`APN-CONFLICT: provided ${key.apn} ≠ resolved ${resolvedApn}`);

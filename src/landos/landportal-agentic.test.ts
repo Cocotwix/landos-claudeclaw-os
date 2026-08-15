@@ -66,6 +66,73 @@ describe('LandPortal agentic retrieval (Observe→Reason→Act→Verify→Learn)
     expect(streamed.every((fact) => fact.key === 'apnConflict')).toBe(true);
   });
 
+  // An APN-led LandPortal, as the live Williamson capture met it: the parcel
+  // panel spells the identifier in the county's full form.
+  const williamsonFake = (panelApn: string, panelAddress: string): BrowserDriver => {
+    let phase: 'search' | 'record' = 'search';
+    const searchObs = () => ({
+      url: 'https://landportal.com/', title: 'Land Portal | GIS Mapping Software', headings: ['Map Search'],
+      navItems: ['Map Search'], buttons: [], searchControls: [{ selector: '#main_search_input', placeholder: 'APN or Parcel ID' }],
+      links: [], hasMap: true, hasTable: false, fields: {}, loginLike: false, methodToggle: { current: 'APN' },
+    });
+    const recordObs = () => ({
+      url: 'https://landportal.com/?property=williamson-tn', title: 'Land Portal', headings: ['Property Overview'],
+      navItems: ['Map Search'], buttons: [], searchControls: [], links: [], hasMap: false, hasTable: false,
+      fields: {
+        'Owner Name': 'LANDSOUTH LLC', 'Parcel ID': panelApn, 'Parcel Address': panelAddress,
+        'County': 'Williamson', 'State': 'TN', 'Acres': '75.86',
+      },
+      loginLike: false,
+    });
+    return {
+      id: 'lp', configured: () => true,
+      async open() { phase = 'search'; return { url: 'https://landportal.com/', fields: {}, snippets: [] }; },
+      async search(q: string) { return { url: 'search:' + q, fields: {}, snippets: [] }; },
+      async readFields() { return { url: '', fields: phase === 'record' ? recordObs().fields : {}, snippets: [] }; },
+      async screenshot(purpose: string) { return { path: '/tmp/x.png', capturedAtIso: 't', purpose }; },
+      async observe() { return phase === 'record' ? recordObs() : searchObs(); },
+      async selectMethod() { /* APN is already the surface */ },
+      async setScope(scope: string[]) { return scope; },
+      async typeSearch() { /* value recorded by the workflow */ },
+      async readCandidates() {
+        return [{ index: 0, text: `${panelAddress}, FAIRVIEW, TN, 37062 | APN: ${panelApn} | LANDSOUTH LLC`, kind: 'row' }];
+      },
+      async clickCandidate() { phase = 'record'; },
+      async clickByText() { /* nav */ },
+    } as unknown as BrowserDriver;
+  };
+
+  // LIVE FAIRVIEW REGRESSION. The re-aimed capture opened LandPortal's own
+  // record for the subject — KINGWOOD BLVD, 042-123.00-000, Williamson TN —
+  // and the identifier cross-check discarded it, because it compared raw
+  // compacted strings while the visual parcel checkpoint one step earlier had
+  // already reconciled the same two spellings and passed. One parcel, two
+  // gates, opposite answers.
+  it('accepts the Williamson parcel when LandPortal spells the APN 042-123.00-000 and the lead says 042 123.00', async () => {
+    const lp = makeLandPortalBrowser({ driver: williamsonFake('042-123.00-000', 'KINGWOOD BLVD') });
+    const ev = await lp.runWorkflow(
+      { searchKey: { apn: '042 123.00', owner: 'LANDSOUTH LLC', county: 'Williamson', state: 'TN', city: 'Fairview' } },
+      { timeoutMs: 2000 },
+    );
+    expect(ev.facts.some((f) => f.key === 'apnConflict')).toBe(false);
+    expect(ev.status).toBe('retrieved');
+    expect(ev.facts.find((f) => f.key === 'apn')?.value).toBe('042-123.00-000');
+    expect(ev.facts.find((f) => f.key === 'owner')?.value).toBe('LANDSOUTH LLC');
+  });
+
+  // The repair must not blur neighbours: 042-124.00-000 is a different parcel.
+  it('still refuses the neighbouring Williamson parcel 042-124.00-000', async () => {
+    const lp = makeLandPortalBrowser({ driver: williamsonFake('042-124.00-000', 'FAIRVIEW BLVD') });
+    const ev = await lp.runWorkflow(
+      { searchKey: { apn: '042 123.00', owner: 'LANDSOUTH LLC', county: 'Williamson', state: 'TN', city: 'Fairview' } },
+      { timeoutMs: 2000 },
+    );
+    // Not accepted as the subject, by whichever gate sees it first, and no
+    // parcel fact from the wrong parcel is kept.
+    expect(ev.status).not.toBe('retrieved');
+    expect(ev.facts.some((f) => f.key === 'owner' || f.key === 'acreage')).toBe(false);
+  });
+
   it('ACCEPTANCE (Scott County TN): APN/Parcel-ID search is PRIMARY, scoped State→County, tries all variants', async () => {
     // Fake LandPortal where APN search returns the parcel ONLY for the county's
     // indexed variant ("094 02008 000"), not the pasted dashed form ("094-020.08").

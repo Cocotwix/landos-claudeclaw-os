@@ -638,10 +638,26 @@ export async function collectParcelIdentity(
           gained: upgradePackage.gainedOverIntake,
           strategies: upgradePackage.attempts.map((attempt) => attempt.strategy),
         }, 'landportal_subject_upgrade_started');
+        // A PARCEL NOTATION IS NOT A STREET ADDRESS.
+        //
+        // `buildLandPortalSearchPackage` already draws that line — it offers an
+        // `exact_address` attempt only for a house-numbered street address, and
+        // deliberately not for "Map 042 Parcel 123". Forwarding the raw address
+        // here threw that judgement away: measured live on Fairview, LandPortal
+        // reached the correct parcel by APN and by owner, and the parcel-detail
+        // check then blocked it because the situs on screen ("KINGWOOD BLVD")
+        // did not contain the operator's notation. It also spent a third search
+        // attempt on an address that cannot match.
+        //
+        // The notation still reaches LandPortal, as the identifier it actually
+        // is, through the APN and owner keys below.
+        const searchableAddress = upgradePackage.attempts.some((attempt) => attempt.strategy === 'exact_address')
+          ? upgradePackage.address
+          : null;
         await capture({
           cardId,
           searchKey: {
-            address: upgradePackage.address,
+            address: searchableAddress,
             apn: upgradePackage.apn,
             county: upgradePackage.county,
             state: upgradePackage.state,

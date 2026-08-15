@@ -271,6 +271,27 @@ describe('visual verification is required after a LandPortal parcel is selected'
     expect(apnIdentifiersEquivalent('073090 04200', '090 04200')).toBe(true);
   });
 
+  // LIVE FAIRVIEW REGRESSION. The re-aimed capture reached LandPortal's own
+  // record for the subject — fips=47187, apn=042-123.00-000, LANDSOUTH LLC on
+  // KINGWOOD BLVD — and rejected it, because the resolver's `042 123.00` and
+  // LandPortal's `042-123.00-000` reduced to different cores: one spelling
+  // carries one trailing all-zero group, the other carries two, and only one
+  // was ever stripped. Same parcel, refused as a different one.
+  it('reconciles the Williamson County spellings 042 123.00 and 042-123.00-000 as ONE parcel', () => {
+    expect(apnIdentifiersEquivalent('042 123.00', '042-123.00-000')).toBe(true);
+    expect(apnIdentifiersEquivalent('042-123.00-000', '042 123.00')).toBe(true);
+  });
+
+  // The repair must not blur neighbouring parcels: the whole point of the gate.
+  it('still refuses the neighbouring Williamson parcels as different identifiers', () => {
+    expect(apnIdentifiersEquivalent('042 123.00', '042-124.00-000')).toBe(false);
+    expect(apnIdentifiersEquivalent('042 123.00', '042-123.01-000')).toBe(false);
+    expect(apnIdentifiersEquivalent('042 123.00', '142-123.00-000')).toBe(false);
+    // A different Landsouth parcel in a different county, seen in the same live
+    // owner-search result list.
+    expect(apnIdentifiersEquivalent('042 123.00', '027-012.01-000')).toBe(false);
+  });
+
   it('does not reconcile the Nashville parcel identifier with the Roane parcel', () => {
     expect(apnIdentifiersEquivalent('073090 04200', '073-09-0-042-00')).toBe(false);
     const cp = verifyParcelSelected(detailFrame({

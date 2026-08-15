@@ -223,6 +223,48 @@ describe('Fairview sparse-input regression fixture', () => {
     expect(getPropertyCardRow(cardId)!.apn).toBe('042-123.00-000');
   });
 
+  // LIVE REGRESSION. The one bounded re-aim fires with the resolved identity,
+  // and it must NOT carry the operator's parcel notation in the address slot.
+  // Measured live: forwarded as an address, "Map 042 Parcel 123" became a road
+  // cross-check against the real situs on LandPortal's own record for this
+  // parcel ("KINGWOOD BLVD"), which blocked the correct parcel, and it spent a
+  // third search attempt that cannot match. The notation still reaches
+  // LandPortal as the identifier it is, through the APN and owner keys.
+  it('re-aims LandPortal once with the resolved identity and never as a street address', async () => {
+    const { dealCardId } = createLeadFromSparseInput();
+    const { fetchText } = transport();
+    const searchKeys: Array<Record<string, unknown>> = [];
+
+    await collectParcelIdentity(context(dealCardId), {
+      landPortalCaptureWaitMs: 60_000,
+      publicRefreshWaitMs: 60_000,
+      captureLandPortalInspection: async ({ searchKey }) => {
+        searchKeys.push({ ...searchKey });
+        await sleep(250);
+        return { ok: false, note: 'no LandPortal parcel matched this lead', comparableCount: 0 };
+      },
+      runPublicIntelligence: async () => { await sleep(250); return { ok: false, error: 'no adapter' }; },
+      indexedWebIdentity: { fetchText, maxQueries: 2, maxPages: 2, timeoutMs: 5_000 },
+      promoteSubjectIdentity: (id, actor) => reconcileSubjectIdentity(id, { actor, censusGeography: null }),
+    });
+    // The upgrade is deliberately fire-and-forget; it runs once the first
+    // capture settles.
+    await sleep(600);
+
+    // The weak first attempt started on the raw lead, as it always has.
+    expect(searchKeys[0]).toMatchObject({ address: 'Map 042 Parcel 123', apn: null, county: null });
+    // Exactly ONE re-aim, carrying what the resolver established.
+    expect(searchKeys).toHaveLength(2);
+    expect(searchKeys[1]).toMatchObject({
+      apn: '042-123.00-000',
+      county: 'Williamson',
+      state: 'TN',
+      owner: 'LANDSOUTH LLC',
+    });
+    // The parcel notation is not offered as a street address.
+    expect(searchKeys[1].address).toBeNull();
+  });
+
   it('does not resolve when the indexed record names a different parcel', async () => {
     const { dealCardId, cardId } = createLeadFromSparseInput();
     const fetchText: GovFetchText = async (url) => ({

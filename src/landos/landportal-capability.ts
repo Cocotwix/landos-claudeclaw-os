@@ -475,7 +475,17 @@ function apnCoreDigits(raw: string): string {
     const year = Number(last);
     if (last.length === 4 && year >= 1900 && year <= 2099) groups = groups.slice(0, -1);
   }
-  if (groups.length >= 3 && /^0+$/.test(groups[groups.length - 1])) groups = groups.slice(0, -1);
+  // EVERY trailing all-zero group, not just the last one. Tennessee files the
+  // same parcel as `042 123.00` and `042-123.00-000`: one spelling carries one
+  // all-zero group, the other carries two. Stripping a single group reduced
+  // them to `042123` and `04212300` — two different cores for ONE parcel, so
+  // the live Fairview capture reached the correct LandPortal parcel and then
+  // rejected it as a different one. The rule itself is unchanged; it is simply
+  // applied until it no longer applies, so both spellings reduce alike.
+  // The `>= 3` guard still holds two groups back, so a parcel can never be
+  // reduced to its map number alone and `042-124.00-000` stays a different
+  // parcel from `042-123.00-000`.
+  while (groups.length >= 3 && /^0+$/.test(groups[groups.length - 1])) groups = groups.slice(0, -1);
   return groups.join('');
 }
 
