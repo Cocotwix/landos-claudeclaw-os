@@ -5,14 +5,23 @@
 // full document navigation or refetch. These helpers are pure so the
 // URL/section contract stays testable in node.
 
-export type WorkspaceV2Section = 'Overview' | 'Property Intelligence' | 'Comps & Valuation';
+export type WorkspaceV2Section = 'Overview' | 'Property & Market' | 'Deal Activity';
+export type PropertyMarketView = 'property-intelligence' | 'comps-valuation';
 
-// Sections that exist today; the rest stay visible "Soon" placeholders.
+// Three operator workspaces. Property Intelligence, Comps & Valuation, Market
+// Intelligence and diligence are one top-level Property & Market workspace;
+// their legacy deep links remain valid as internal views.
 export const SECTION_SLUGS: Record<string, string> = {
   Overview: 'overview',
-  'Property Intelligence': 'property-intelligence',
-  'Comps & Valuation': 'comps-valuation',
+  'Property & Market': 'property-market',
+  'Deal Activity': 'deal-activity',
 };
+
+const VALID_STORED_SLUGS = new Set([
+  ...Object.values(SECTION_SLUGS),
+  'property-intelligence',
+  'comps-valuation',
+]);
 
 // ── Canonical workspace routing ────────────────────────────────────────
 //
@@ -60,17 +69,24 @@ export function dealWorkspaceHref(dealId: number, store: KVStore | null = sessio
   let slug: string | null = null;
   try { slug = store?.getItem(sectionKey(dealId)) ?? null; } catch { slug = null; }
   const base = `${WORKSPACE_V2_PATH}?deal=${dealId}`;
-  const valid = slug && slug !== 'overview' && Object.values(SECTION_SLUGS).includes(slug);
+  const valid = slug && slug !== 'overview' && VALID_STORED_SLUGS.has(slug);
   return valid ? `${base}&section=${slug}` : base;
 }
 
 /** Derive the active section from a location search string. */
 export function readSection(search: string): WorkspaceV2Section {
   const slug = new URLSearchParams(search).get('section');
-  for (const [label, sectionSlug] of Object.entries(SECTION_SLUGS)) {
-    if (slug === sectionSlug && label !== 'Overview') return label as WorkspaceV2Section;
-  }
+  if (slug === 'property-market' || slug === 'property-intelligence' || slug === 'comps-valuation') return 'Property & Market';
+  if (slug === 'deal-activity') return 'Deal Activity';
   return 'Overview';
+}
+
+/** Preserve the operator's internal Property & Market view while presenting
+ * one top-level workspace in the record navigation. */
+export function readPropertyMarketView(search: string): PropertyMarketView {
+  return new URLSearchParams(search).get('section') === 'comps-valuation'
+    ? 'comps-valuation'
+    : 'property-intelligence';
 }
 
 /**

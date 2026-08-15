@@ -1549,6 +1549,9 @@ body:has(.awv2) .awv2 {
   font-family: var(--awv2-mono); font-size: 19px; color: var(--awv2-bone);
   overflow-wrap: anywhere;
 }
+.awv2-cv-dec .s {
+  font-size: 10.5px; line-height: 1.35; color: var(--awv2-bone-faint); margin-top: 4px;
+}
 .awv2-cv-dec.primary { border-color: rgba(201, 164, 92, 0.55); background: var(--awv2-brass-soft); }
 .awv2-cv-dec.primary .v { font-size: 24px; color: var(--awv2-brass-bright); }
 .awv2-cv-dec.ceiling { border-color: rgba(217, 118, 98, 0.45); }
@@ -1737,6 +1740,10 @@ body:has(.awv2) .awv2 {
   border-bottom: 1px dotted var(--awv2-line-strong);
 }
 .awv2-cv-unresolvedrow:hover { color: var(--awv2-bone); }
+.awv2-cv-unresolvedwhy {
+  font-size: 11px; line-height: 1.5; color: var(--awv2-bone-dim);
+  opacity: 0.85; margin: 2px 0 6px;
+}
 
 /* Why-this-value evidence + full ledger */
 .awv2-cv-keyevidence { margin: 0 0 10px; padding-left: 18px; }
@@ -2400,3 +2407,166 @@ body:has(.awv2) .awv2 {
 .awv2-carousel-thumb:hover { opacity: 0.9; }
 .awv2-carousel-thumb.active { opacity: 1; border-color: var(--awv2-brass); box-shadow: 0 0 0 1px rgba(201, 164, 92, 0.4); }
 .awv2-carousel-thumb:focus-visible { outline: 2px solid var(--awv2-brass); outline-offset: 1px; }
+
+/* ── Property Intelligence run status ────────────────────────────────────
+   The live read on a mission that runs entirely server-side. Sits directly
+   under the workspace nav so it is visible from every section, because the
+   question it answers ("is research still gathering?") is not specific to
+   one tab. */
+.awv2-runstatus {
+  margin: 0 0 18px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 10px;
+  background: var(--awv2-panel);
+}
+.awv2-runstatus.is-running {
+  border-color: var(--awv2-brass);
+  background: linear-gradient(180deg, var(--awv2-brass-soft), transparent 60%), var(--awv2-panel);
+}
+.awv2-runstatus-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.awv2-runstatus-head-text { flex: 1 1 auto; min-width: 0; }
+.awv2-runstatus-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* Run-level indicator. Only a live run animates. */
+.awv2-runstatus-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  margin-top: 5px; flex: none;
+  background: var(--awv2-bone-faint);
+}
+.awv2-runstatus-dot.complete { background: var(--awv2-moss); }
+.awv2-runstatus-dot.complete_with_gaps { background: var(--awv2-amber); }
+.awv2-runstatus-dot.blocked_identity,
+.awv2-runstatus-dot.failed { background: var(--awv2-rust); }
+.awv2-runstatus-dot.live {
+  background: var(--awv2-brass-bright);
+  animation: awv2-pulse 2.4s ease-out infinite;
+}
+
+.awv2-runstatus-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--awv2-bone);
+  line-height: 1.3;
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+}
+.awv2-runstatus-elapsed {
+  font-family: var(--awv2-mono);
+  font-size: 11.5px;
+  color: var(--awv2-brass);
+  font-weight: 500;
+}
+.awv2-runstatus-current {
+  font-size: 12.5px;
+  color: var(--awv2-bone-dim);
+  line-height: 1.4;
+  margin-top: 3px;
+}
+.awv2-runstatus-error {
+  font-size: 12.5px;
+  color: var(--awv2-rust);
+  line-height: 1.4;
+  margin-top: 3px;
+}
+
+.awv2-runstatus-run,
+.awv2-runstatus-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--awv2-line-strong);
+  background: var(--awv2-panel-2);
+  color: var(--awv2-bone-dim);
+}
+.awv2-runstatus-toggle:hover { color: var(--awv2-bone); border-color: var(--awv2-bone-faint); }
+.awv2-runstatus-run {
+  border-color: var(--awv2-brass);
+  background: var(--awv2-brass-soft);
+  color: var(--awv2-brass-bright);
+}
+.awv2-runstatus-run:hover:not(:disabled) { background: rgba(201, 164, 92, 0.22); }
+.awv2-runstatus-run:disabled { opacity: 0.55; cursor: default; }
+.awv2-runstatus-run .spin { animation: awv2-spin 1s linear infinite; }
+@keyframes awv2-spin { to { transform: rotate(360deg); } }
+
+/* Lane detail */
+.awv2-runstatus-lanes {
+  list-style: none;
+  margin: 0;
+  padding: 4px 14px 12px;
+  border-top: 1px solid var(--awv2-line);
+}
+.awv2-runstatus-lane {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(38, 44, 39, 0.6);
+}
+.awv2-runstatus-lane:last-child { border-bottom: 0; }
+.awv2-runstatus-lanedot {
+  width: 7px; height: 7px; border-radius: 50%;
+  margin-top: 6px; flex: none;
+  background: var(--awv2-bone-faint);
+}
+.awv2-runstatus-lanedot.ok { background: var(--awv2-moss); }
+.awv2-runstatus-lanedot.partial { background: var(--awv2-amber); }
+.awv2-runstatus-lanedot.blocked,
+.awv2-runstatus-lanedot.failed { background: var(--awv2-rust); }
+.awv2-runstatus-lanedot.queued { background: var(--awv2-line-strong); }
+.awv2-runstatus-lanedot.skipped { background: var(--awv2-line-strong); opacity: 0.7; }
+.awv2-runstatus-lanedot.run,
+.awv2-runstatus-lanedot.live {
+  background: var(--awv2-brass-bright);
+  animation: awv2-pulse 2.4s ease-out infinite;
+}
+.awv2-runstatus-lanebody { flex: 1 1 auto; min-width: 0; }
+.awv2-runstatus-lanetop { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.awv2-runstatus-lanelabel { font-size: 13px; font-weight: 600; color: var(--awv2-bone); }
+.awv2-runstatus-lanestatus {
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+}
+.awv2-runstatus-lane.running .awv2-runstatus-lanestatus { color: var(--awv2-brass); }
+.awv2-runstatus-lane.blocked .awv2-runstatus-lanestatus,
+.awv2-runstatus-lane.failed .awv2-runstatus-lanestatus { color: var(--awv2-rust); }
+.awv2-runstatus-lane.completed .awv2-runstatus-lanestatus { color: var(--awv2-moss); }
+.awv2-runstatus-lanetime { font-family: var(--awv2-mono); font-size: 10.5px; color: var(--awv2-bone-faint); }
+.awv2-runstatus-lanesummary {
+  font-size: 12.5px;
+  color: var(--awv2-bone-dim);
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .awv2-runstatus-dot.live,
+  .awv2-runstatus-lanedot.run,
+  .awv2-runstatus-lanedot.live,
+  .awv2-runstatus-run .spin { animation: none; }
+}
+
+/* Content column: holds the run-status strip above whichever section is
+   showing, so one mount serves every tab. */
+.awv2-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.awv2-col > .awv2-main { padding-top: 0; }
+.awv2-runstatus-slot { padding: 22px 32px 0 10px; }
+.awv2-runstatus-slot .awv2-runstatus { margin-bottom: 0; }
+@media (max-width: 900px) {
+  .awv2-runstatus-slot { padding: 16px 20px 0; }
+}

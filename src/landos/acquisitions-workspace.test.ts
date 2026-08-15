@@ -123,15 +123,14 @@ describe('Acquisition Workspace V2 Overview is an executive dashboard', () => {
   });
 
   it('separates research delivery from diligence resolution', () => {
-    expect(V2).toMatch(/Research lanes/);
-    expect(V2).toMatch(/Diligence questions/);
-    expect(V2).toMatch(/questionsHeadline/);
-    expect(OVERVIEW).toMatch(/Diligence questions, not research-lane progress/);
+    expect(V2).not.toMatch(/class="awv2-statusbar"/);
+    expect(OVERVIEW).toMatch(/Diligence queue/);
+    expect(OVERVIEW).toMatch(/awv2-diligence-rows/);
   });
 
   it('keeps owner and seller identities separate and collapses canonical acreage display', () => {
     expect(V2).toMatch(/Owner of record <b>\{owner \|\| 'Unknown'\}/);
-    expect(OVERVIEW).toMatch(/<dt>Seller \/ lead<\/dt><dd>\{seller\?\.name \|\| 'Not collected'\}/);
+    expect(OVERVIEW).toMatch(/<small>Seller \/ lead<\/small><b>\{seller\?\.name \|\| 'Not collected'\}/);
     expect(V2.match(/\{acres\} AC/g)).toHaveLength(1);
     expect(OVERVIEW).not.toMatch(/acres\.toFixed|60\.00|60\.0/);
   });
@@ -146,19 +145,18 @@ describe('Acquisition Workspace V2 Overview is an executive dashboard', () => {
     expect(OVERVIEW).toMatch(/Physical evidence is not legal proof/);
   });
 
-  it('makes listing context and unavailable Zillow engagement explicit', () => {
-    expect(OVERVIEW).toMatch(/Current listing \/ public marketing/);
-    expect(OVERVIEW).toMatch(/Zillow views/);
-    expect(OVERVIEW).toMatch(/Zillow saves/);
-    expect(OVERVIEW).toMatch(/Not collected \(never shown as zero\)/);
-    expect(OVERVIEW).toMatch(/Open listing &amp; photos/);
-    expect(OVERVIEW).toMatch(/interest signal, not proof of value/);
+  it('keeps public marketing compact and sends listing evidence to the deeper workspace', () => {
+    expect(OVERVIEW).toMatch(/awv2-marketing-compact/);
+    expect(OVERVIEW).toMatch(/Off Market/);
+    expect(OVERVIEW).toMatch(/No verified public listing/);
+    expect(OVERVIEW).toMatch(/View listing evidence/);
+    expect(OVERVIEW).not.toMatch(/Zillow views|Zillow saves|browser cleanup|candidate-page/i);
   });
 
   it('visually separates land basis from the pending whole-property value', () => {
     expect(OVERVIEW).toMatch(/LAND-ONLY INDICATION/);
     expect(OVERVIEW).toMatch(/WHOLE-PROPERTY VALUE/);
-    expect(OVERVIEW).toMatch(/Land-basis opening reference/);
+    expect(OVERVIEW).toMatch(/Opening reference \(40% of land value, rounded\)/);
     expect(OVERVIEW).toMatch(/not completed whole-property offer recommendations/);
     expect(OVERVIEW_CSS).toMatch(/\.awv2-overview-valuation \.primary b/);
     expect(OVERVIEW_CSS).toMatch(/\.awv2-overview-valuation \.whole b/);

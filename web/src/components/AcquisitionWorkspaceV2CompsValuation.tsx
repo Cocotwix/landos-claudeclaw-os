@@ -176,6 +176,10 @@ export interface CvComp {
   locationSource: string | null;
   locationMethod: 'provider_map_point' | 'address_geocode' | 'none';
   locationResolvedAtIso: string | null;
+  /** The postal address this record's own capture states, once reconciled. */
+  locationAddress: string | null;
+  /** Why this record is not on the map, in the operator's words. */
+  locationUnresolvedReason: string | null;
   statusLabel: string;
   saleVerification?: 'independent' | 'source_stated';
   priceKind: 'sale' | 'list' | 'unknown';
@@ -425,7 +429,7 @@ export interface CompsValuationViewData {
   laneAccountability?: {
     lanes: Array<{
       lane: 'landportal' | 'zillow' | 'redfin' | 'realtor'; label: string;
-      status: 'not_run' | 'ran_no_results' | 'ran_results_filtered' | 'retained' | 'failed' | 'blocked' | 'disabled_by_policy';
+      status: 'not_run' | 'ran_no_results' | 'ran_no_verified_search' | 'ran_results_filtered' | 'retained' | 'failed' | 'blocked' | 'disabled_by_policy';
       candidates: number | null; retained: number | null; operatorLine: string; detail: string | null;
     }>;
     everyLaneAccountedFor: boolean;
@@ -522,8 +526,22 @@ const conciseReason = (c: CvComp): string => {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function CompsValuationSection({ dealId, initial }: { dealId: number; initial: CompsValuationViewData | null }) {
+export function CompsValuationSection({ dealId, initial, onViewChange }: {
+  dealId: number;
+  initial: CompsValuationViewData | null;
+  // Canonical-state contract: whenever an operator action refreshes this
+  // section's projection, the workspace boundary is told, so the other tabs
+  // read the same current valuation state without a reload.
+  onViewChange?: (view: CompsValuationViewData) => void;
+}) {
   const [view, setView] = useState<CompsValuationViewData | null>(initial);
+  const applyView = (next: (current: CompsValuationViewData | null) => CompsValuationViewData) => {
+    setView((current) => {
+      const merged = next(current);
+      onViewChange?.(merged);
+      return merged;
+    });
+  };
   const [filter, setFilter] = useState<FilterKey>('decision');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [hoverKey, setHoverKey] = useState<string | null>(null);
@@ -550,7 +568,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
         `/api/landos/deal-cards/${dealId}/comps-valuation/selection`,
         { compId: comp.compId, action, reason },
       );
-      setView((current) => ({ ...r.compsValuation, laneAccountability: r.compsValuation.laneAccountability ?? current?.laneAccountability }));
+      applyView((current) => ({ ...r.compsValuation, laneAccountability: r.compsValuation.laneAccountability ?? current?.laneAccountability }));
       setExcludingKey(null);
       setExcludeReason('');
     } catch (e) {
@@ -571,7 +589,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
       const r = await apiPost<{ resolution: { subjectResolved: boolean; compsEnriched: number; evidenceResolved: number; unresolved: number }; compsValuation: CompsValuationViewData }>(
         `/api/landos/deal-cards/${dealId}/comps-valuation/resolve-locations`,
       );
-      setView((current) => ({ ...r.compsValuation, laneAccountability: r.compsValuation.laneAccountability ?? current?.laneAccountability }));
+      applyView((current) => ({ ...r.compsValuation, laneAccountability: r.compsValuation.laneAccountability ?? current?.laneAccountability }));
       const res = r.resolution;
       setResolutionNote(`Location check finished: subject ${res.subjectResolved ? 'resolved' : 'unresolved'}, ${res.compsEnriched + res.evidenceResolved} listing location${res.compsEnriched + res.evidenceResolved === 1 ? '' : 's'} resolved, ${res.unresolved} still unresolved (left honestly unplaced).`);
     } catch (e) {
@@ -657,7 +675,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
   return (
     <>
       {/* ── 1. Decision strip ── */}
-      <section class={`awv2-panel awv2-cv-decisionpanel status-${summary.status}`} aria-label="Valuation decision">
+      <section data-domain="valuation" class={`awv2-panel awv2-cv-decisionpanel status-${summary.status}`} aria-label="Valuation decision" id="valuation-decision">
         <div class="awv2-panel-title">
           Comps &amp; Valuation <span class="awv2-src-tag">{summary.basisLabel}</span>
         </div>
@@ -692,9 +710,23 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
             <div class="k">{subjectImprovement?.improved ? 'Land-basis target reference' : 'Recommended target'}</div>
             <div class="v">{negotiation ? usd(negotiation.recommendedTarget) : '—'}</div>
           </div>
+          {/* Named "negotiation" ceiling: this is the negotiation hard stop,
+              a different figure from Overview's 60%-of-land-value ceiling
+              reference. The tile states its own basis and names the 60%
+              reference figure so the two ceilings cannot be read as one
+              measure across pages. */}
           <div class="awv2-cv-dec ceiling">
-            <div class="k">{subjectImprovement?.improved ? 'Land-basis ceiling reference' : 'Hard ceiling'}</div>
+            <div class="k">{subjectImprovement?.improved ? 'Land-basis negotiation ceiling' : 'Hard ceiling'}</div>
             <div class="v">{negotiation ? usd(negotiation.hardCeiling) : '—'}</div>
+            {negotiation && (
+              <div class="s" data-testid="cv-ceiling-basis">
+                {negotiation.ceilingBasis === 'technical_above_band'
+                  ? `Technical quick-flip max — above the 60% ceiling reference (${usd(negotiation.standardBand.pct60)})`
+                  : negotiation.ceilingBasis === 'technical_below_band'
+                    ? `Technical quick-flip max — below the 60% ceiling reference (${usd(negotiation.standardBand.pct60)})`
+                    : `Technical quick-flip max, inside the 40–60% reference band (60% = ${usd(negotiation.standardBand.pct60)})`}
+              </div>
+            )}
           </div>
           <div class={`awv2-cv-dec conf ${cleaned.confidence}`}>
             <div class="k">Confidence</div>
@@ -748,14 +780,14 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
           )}
         </div>
       </section>
-      <section class="awv2-panel" aria-label="Improvement valuation">
-        <div class="awv2-panel-title">Improvement Valuation</div>
+      <section data-domain="valuation" class="awv2-panel" aria-label="House valuation">
+        <div class="awv2-panel-title">House Valuation <span class="awv2-src-tag">$/sqft evidence for the residence</span></div>
         <div class="awv2-cv-methodgrid">
           <div class="awv2-cv-m"><span class="k">Subject building sqft</span><b>{improvementValuation.subjectBuildingSqft != null ? improvementValuation.subjectBuildingSqft.toLocaleString('en-US') : '—'}</b></div>
           <div class="awv2-cv-m"><span class="k">Qualifying sold improved comps</span><b>{improvementValuation.qualifyingSoldCompCount}</b><i>{improvementValuation.qualifyingSoldCompCount < 3 ? 'Small sample — interpret cautiously.' : 'Sold/closed only.'}</i></div>
           <div class="awv2-cv-m adopted"><span class="k">Median sold $/sqft · Redfin {improvementValuation.redfinZip ?? 'ZIP'}</span><b>{improvementValuation.redfinMedianSoldPricePerSqft != null ? usd(improvementValuation.redfinMedianSoldPricePerSqft) : '—'}</b><i>{improvementValuation.redfinSourceUrl ? 'Current Redfin benchmark' : 'No ZIP benchmark retained'}</i></div>
           <div class="awv2-cv-m"><span class="k">Large-acreage comps</span><b>{improvementValuation.largeAcreageCompCount}</b><i>More than 1.0 acre</i></div>
-          <div class="awv2-cv-m adopted"><span class="k">Estimated subject improvement value</span><b>{usdOrDash(improvementValuation.estimatedSubjectImprovementValue)}</b><i>{improvementValuation.redfinMedianSoldPricePerSqft != null && improvementValuation.subjectBuildingSqft != null ? `${improvementValuation.subjectBuildingSqft.toLocaleString('en-US')} sqft × ${usd(improvementValuation.redfinMedianSoldPricePerSqft)}/sqft` : ''}</i></div>
+          <div class="awv2-cv-m adopted"><span class="k">Estimated house value</span><b>{usdOrDash(improvementValuation.estimatedSubjectImprovementValue)}</b><i>{improvementValuation.redfinMedianSoldPricePerSqft != null && improvementValuation.subjectBuildingSqft != null ? `${improvementValuation.subjectBuildingSqft.toLocaleString('en-US')} sqft × ${usd(improvementValuation.redfinMedianSoldPricePerSqft)}/sqft` : ''}</i></div>
         </div>
         {improvementValuation.residentialOverlayApplies === false && improvementValuation.overlaySkippedReason && (
           <p class="awv2-pi-note" data-testid="cv-improvement-overlay-skipped">{improvementValuation.overlaySkippedReason}</p>
@@ -766,7 +798,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
         {improvementValuation.qualifyingSoldCompCount === 0
           && improvementValuation.estimatedSubjectImprovementValue == null
           && improvementValuation.residentialOverlayApplies !== false
-          && <p class="awv2-pi-note">No qualifying sold improved comp has both a reliable sold price and reliable building sqft greater than zero; no improvement value is fabricated.</p>}
+          && <p class="awv2-pi-note">No qualifying sold improved comp has both a reliable sold price and reliable building sqft greater than zero; no house value is fabricated.</p>}
         {improvementValuation.qualifyingComps.length > 0 && (
           <div class="awv2-cv-improvement-comps">
             {improvementValuation.qualifyingComps.map((c) => (
@@ -784,25 +816,25 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
           </div>
         )}
       </section>
-      <section class="awv2-panel" aria-label="Whole Property Value">
+      <section data-domain="valuation" class="awv2-panel" aria-label="Whole Property Value">
         <div class="awv2-panel-title">Whole Property Value</div>
         <div class="awv2-cv-methodrows">
           <div class="mrow"><span>Land Value</span><b>{usdOrDash(cleaned.adoptedFmv)}</b></div>
-          <div class="mrow"><span>+ Improvement Value</span><b>{usdOrDash(improvementValuation.estimatedSubjectImprovementValue)}</b></div>
+          <div class="mrow"><span>+ House Value</span><b>{usdOrDash(improvementValuation.estimatedSubjectImprovementValue)}</b></div>
           <div class="mrow total"><span>= Estimated Whole Property Value</span><b>{usdOrDash(improvementValuation.wholePropertyValue)}</b></div>
         </div>
         {improvementValuation.wholePropertyValue == null && (
           <p class="awv2-pi-note">
             {improvementValuation.residentialOverlayApplies === false && improvementValuation.overlaySkippedReason
               ? improvementValuation.overlaySkippedReason
-              : 'Whole-property value is unavailable until both the existing land value and a qualifying subject improvement value are present.'}
+              : 'Whole-property value is unavailable until both the existing land value and a qualifying house value are present.'}
           </p>
         )}
         {improvementValuation.redfinSourceUrl && <p class="awv2-pi-note">House overlay source: <a href={improvementValuation.redfinSourceUrl} target="_blank" rel="noreferrer">Redfin {improvementValuation.redfinZip} Housing Market</a> ({improvementValuation.redfinSourceRetrievedAt ?? 'current'}). The land value remains unchanged.</p>}
       </section>
 
       {/* ── 3. Valuation methods, compact ── */}
-      <section class="awv2-panel" aria-label="Valuation methods">
+      <section data-domain="valuation" class="awv2-panel" aria-label="Valuation methods" id="valuation-methodology">
         <div class="awv2-panel-title">
           Valuation methods <span class="awv2-src-tag">{subjectImprovement?.improved ? 'LAND BASIS ONLY · ' : ''}Average · median · weighted · active competition · offer methods</span>
         </div>
@@ -920,9 +952,9 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
 
       {/* ── 4. Market Research context, compact by default ── */}
       {marketContext && (
-        <section class="awv2-panel" aria-label="Market Research acreage band context">
+        <section data-domain="market" class="awv2-panel" aria-label="Market Intelligence acreage band context" id="valuation-market-intelligence">
           <div class="awv2-panel-title">
-            Market Research acreage-band context <span class="awv2-src-tag">{marketContext.source} — not LandPortal</span>
+            Market Intelligence — acreage-band context <span class="awv2-src-tag">{marketContext.source} — not LandPortal</span>
           </div>
           <div class="awv2-cv-bandsummary">
             {(() => {
@@ -979,7 +1011,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
       )}
 
       {/* ── 5. ONE comps workspace: filtered list + sticky map ── */}
-      <section class="awv2-panel" aria-label="Comparable workspace">
+      <section data-domain="evidence" class="awv2-panel" aria-label="Comparable workspace" id="comparable-sales">
         <div class="awv2-panel-title">
           Comparable workspace <span class="awv2-src-tag">One list · one map · same filtered records</span>
         </div>
@@ -1189,7 +1221,7 @@ export function CompsValuationSection({ dealId, initial }: { dealId: number; ini
       </section>
 
       {/* ── 6. Valuation explanation: the decisive evidence, not every record ── */}
-      <section class="awv2-panel" aria-label="Valuation explanation">
+      <section data-domain="valuation" class="awv2-panel" aria-label="Valuation explanation">
         <div class="awv2-panel-title">Why this value</div>
         <ul class="awv2-cv-keyevidence">
           {strongest.map((c, i) => evidenceLine(c, `Strongest comp ${i + 1}:`))}

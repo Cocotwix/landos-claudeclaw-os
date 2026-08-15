@@ -29,12 +29,14 @@ const CSS_SRC = `${read('web/src/styles/workspace-v2.css')}\n${read('web/src/sty
 
 describe('Comps & Valuation is a live V2 section', () => {
   it('has a real section slug so the URL round-trips and refresh restores it', () => {
-    expect(NAV_SRC).toMatch(/'Comps & Valuation': 'comps-valuation'/);
-    expect(NAV_SRC).toMatch(/'Overview' \| 'Property Intelligence' \| 'Comps & Valuation'/);
+    expect(NAV_SRC).toMatch(/'Property & Market': 'property-market'/);
+    expect(NAV_SRC).toMatch(/'Overview' \| 'Property & Market' \| 'Deal Activity'/);
+    expect(NAV_SRC).toMatch(/readPropertyMarketView/);
   });
 
   it('mounts from the page-level record with props — opening the tab fetches nothing', () => {
-    expect(PAGE_SRC).toMatch(/section === 'Comps & Valuation'/);
+    expect(PAGE_SRC).toMatch(/section === 'Property & Market'/);
+    expect(PAGE_SRC).toMatch(/propertyMarketView === 'comps-valuation'/);
     expect(PAGE_SRC).toMatch(/<CompsValuationSection dealId=\{dealId\} initial=\{compsValuation\}/);
     expect(PAGE_SRC).toMatch(/compsValuation \?\? null/);
     // The section component never refetches its record on mount.
@@ -101,22 +103,38 @@ describe('the decision strip leads the page', () => {
     expect(CV_SRC).toMatch(/Land-only indication/);
     expect(CV_SRC).toMatch(/Land-basis opening reference/);
     expect(CV_SRC).toMatch(/Land-basis target reference/);
-    expect(CV_SRC).toMatch(/Land-basis ceiling reference/);
+    expect(CV_SRC).toMatch(/Land-basis negotiation ceiling/);
     expect(CV_SRC).toMatch(/LAND BASIS ONLY/);
     expect(CV_SRC).toMatch(/Land-basis 40 \/ 50 \/ 60 references/);
     expect(CV_SRC).toMatch(/Whole-property value/);
     expect(CV_SRC).toMatch(/<div class="v">PENDING<\/div>/);
   });
-  it('renders separate improvement and whole-property valuation sections', () => {
-    expect(CV_SRC).toMatch(/Improvement Valuation/);
+  it('states the negotiation ceiling basis and names the 60% reference figure (ws4-f1)', () => {
+    // Overview shows "Ceiling reference (60% of land value)". The comps
+    // negotiation ceiling is a different measure (technical quick-flip max);
+    // its tile must state its own basis and cross-reference the 60% figure so
+    // the two ceilings can never be read as the same number across pages.
+    expect(CV_SRC).toMatch(/data-testid="cv-ceiling-basis"/);
+    expect(CV_SRC).toMatch(/Technical quick-flip max — above the 60% ceiling reference/);
+    expect(CV_SRC).toMatch(/Technical quick-flip max — below the 60% ceiling reference/);
+    expect(CV_SRC).toMatch(/inside the 40–60% reference band/);
+    expect(CV_SRC).toMatch(/negotiation\.standardBand\.pct60/);
+    expect(CSS_SRC).toMatch(/\.awv2-cv-dec \.s \{/);
+  });
+
+  it('renders separate house and whole-property valuation sections', () => {
+    expect(CV_SRC).toMatch(/House Valuation/);
+    // Operator rule (2026-08-14): the structure's worth is the House Value; the
+    // Improvement Value label must never return.
+    expect(CV_SRC).not.toMatch(/Improvement Valuation|\+ Improvement Value/);
     expect(CV_SRC).toMatch(/Subject building sqft/);
     expect(CV_SRC).toMatch(/Qualifying sold improved comps/);
     expect(CV_SRC).toMatch(/Median sold \$\/sqft/);
     expect(CV_SRC).toMatch(/Large-acreage comps/);
-    expect(CV_SRC).toMatch(/Estimated subject improvement value/);
+    expect(CV_SRC).toMatch(/Estimated house value/);
     expect(CV_SRC).toMatch(/Whole Property Value/);
     expect(CV_SRC).toMatch(/Land Value/);
-    expect(CV_SRC).toMatch(/\+ Improvement Value/);
+    expect(CV_SRC).toMatch(/\+ House Value/);
     expect(CV_SRC).toMatch(/= Estimated Whole Property Value/);
     expect(CV_SRC).toMatch(/Large-acreage improved comp/);
     expect(CV_SRC).toMatch(/may reflect the influence of additional land/);
@@ -159,7 +177,7 @@ describe('the decision strip leads the page', () => {
   });
 
   it('keeps Market Research context compact and subordinate to the valuation', () => {
-    expect(CV_SRC).toMatch(/Market Research acreage-band context/);
+    expect(CV_SRC).toMatch(/Market Intelligence — acreage-band context/);
     expect(CV_SRC).toMatch(/not LandPortal/);
     expect(CV_SRC).toMatch(/awv2-cv-bandsummary/);
     expect(CV_SRC).toMatch(/<summary>Full Market Research metrics<\/summary>/);
@@ -277,7 +295,10 @@ describe('the Overview mirrors the same numbers', () => {
   it('reads the Comps & Valuation summary and deep-links into it', () => {
     expect(PAGE_SRC).toMatch(/const cvSummary = compsValuation\?\.summary \?\? null/);
     expect(PAGE_SRC).toMatch(/cvSummary\.basisLabel/);
-    expect(PAGE_SRC).toMatch(/Open Comps &amp; Valuation →/);
+    // Plain "&", never "&amp;": JSX escapes strings, so the entity form
+    // renders literally to the operator (pattern ui-text-double-encoded-utf8).
+    expect(PAGE_SRC).toMatch(/Open Comps & Valuation →/);
+    expect(PAGE_SRC).not.toMatch(/Open Comps &amp; Valuation/);
     expect(PAGE_SRC).toMatch(/onOpenSection\('comps-valuation'\)/);
     expect(PAGE_SRC).toMatch(/cvSummary\?\.acquisitionLevels \? usd\(/);
   });

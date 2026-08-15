@@ -660,6 +660,13 @@ function MapSurface({
                   <MarkerGlyph identity={idOf(c)} size={10} />
                   {nameOf(c)} ({c.statusLabel}) — distance unavailable
                 </button>
+                {/* Every unresolved record says WHY it is unresolved. A missing
+                    pin with no explanation reads as a broken map; the reason is
+                    what makes "unresolved" an honest answer the operator can
+                    act on. */}
+                {c.locationUnresolvedReason && (
+                  <div class="awv2-cv-unresolvedwhy">{c.locationUnresolvedReason}</div>
+                )}
               </li>
             ))}
           </ul>

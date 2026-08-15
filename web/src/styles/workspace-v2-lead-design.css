@@ -1,0 +1,722 @@
+/* Acquisition Workspace V2 — lead-card design system (loaded LAST).
+   ═══════════════════════════════════════════════════════════════════════
+   The reusable layer every lead-card section inherits, current and future
+   (Market Intelligence, Seller & Communications, Strategy, Evidence &
+   Documents, Tasks & Timeline).
+
+   Identity: the surveyor's record rebuilt as a premium acquisition console.
+   Six functional domains, each with its own hue AND its own surface
+   treatment — composition, elevation, texture and scale — so Property,
+   Valuation, Market, Risk, Evidence and Action are tellable apart across
+   the room, not just by their border color.
+
+   Surface language:
+     action     brass glass    raised gradient card, glow, serif display
+     valuation  ledger green   green-cast glass, oversized serif numerals
+     market     heather        violet wash, chip/stat composition
+     risk       caution amber  warm wash, amber markers, urgent texture
+     evidence   darkroom       near-black photographic wells, mono captions
+     property   blueprint      blue-cast record sheet, hairline rules, mono
+
+   The signature element is the LEGEND: the section rail reads like a map
+   legend (a colored swatch per live section), and every surface on the page
+   carries the matching hue in its own treatment — nav and content share one
+   color language, exactly like a plat and its key.
+
+   Domain hues (constant across graphite/midnight/crimson themes — these are
+   recognition colors, like status colors):
+     property   #7f9ec4   valuation  #79b98a   market  #a08ec9
+     risk       #d9a13d   evidence   #6fb3ad   action  #c9a45c
+
+   Usage contract for sections:
+     <section class="awv2-panel" data-domain="valuation"> …
+       <div class="awv2-panel-title">…</div>
+   gets the full domain surface for free. `.awv2-dom-eyebrow` is the
+   standalone small-caps domain label. */
+
+.awv2 {
+  --awv2-dom-property: #7f9ec4;
+  --awv2-dom-property-soft: rgba(127, 158, 196, 0.11);
+  --awv2-dom-valuation: #79b98a;
+  --awv2-dom-valuation-soft: rgba(121, 185, 138, 0.11);
+  --awv2-dom-market: #a08ec9;
+  --awv2-dom-market-soft: rgba(160, 142, 201, 0.11);
+  --awv2-dom-risk: #d9a13d;
+  --awv2-dom-risk-soft: rgba(217, 161, 61, 0.10);
+  --awv2-dom-evidence: #6fb3ad;
+  --awv2-dom-evidence-soft: rgba(111, 179, 173, 0.10);
+  --awv2-dom-action: #c9a45c;
+  --awv2-dom-action-soft: rgba(201, 164, 92, 0.12);
+
+  /* Type scale for the lead card. Display = deed serif, data = ledger mono. */
+  --awv2-fs-display: 32px;   /* the address, the adopted value */
+  --awv2-fs-figure: 26px;    /* decision figures inside panels */
+  --awv2-fs-title: 15px;     /* panel titles */
+  --awv2-fs-body: 13.5px;
+  --awv2-fs-eyebrow: 10.5px; /* small-caps mono domain labels */
+
+  /* Elevation. */
+  --awv2-shadow-raised: 0 14px 34px rgba(0, 0, 0, 0.38), 0 2px 6px rgba(0, 0, 0, 0.28);
+  --awv2-shadow-card: 0 6px 18px rgba(0, 0, 0, 0.28);
+  --awv2-radius-card: 14px;
+  --awv2-radius-tight: 10px;
+}
+
+/* ── Base panel elevation: cards, not report rows ─────────────────────── */
+
+.awv2 .awv2-panel {
+  border-radius: var(--awv2-radius-card);
+  box-shadow: var(--awv2-shadow-card);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+/* ── Domain surfaces ─────────────────────────────────────────────────── */
+
+.awv2 [data-domain] { position: relative; }
+
+/* ACTION — brass glass: the surfaces the operator acts from. */
+.awv2 [data-domain="action"] {
+  background:
+    linear-gradient(160deg, rgba(201, 164, 92, 0.16), rgba(201, 164, 92, 0.028) 52%, transparent 78%),
+    var(--awv2-panel-2);
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-action) 42%, var(--awv2-line));
+  border-radius: var(--awv2-radius-card);
+  box-shadow: var(--awv2-shadow-raised);
+}
+
+/* VALUATION — the ledger: green-cast glass, money-first. */
+.awv2 [data-domain="valuation"] {
+  background:
+    linear-gradient(165deg, rgba(121, 185, 138, 0.14), rgba(121, 185, 138, 0.02) 48%, transparent 75%),
+    var(--awv2-panel-2);
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-valuation) 40%, var(--awv2-line));
+  border-radius: var(--awv2-radius-card);
+  box-shadow: var(--awv2-shadow-raised);
+}
+
+/* MARKET — heather wash with a violet top rule; stat-chip composition. */
+.awv2 [data-domain="market"] {
+  background:
+    radial-gradient(120% 90% at 12% 0%, rgba(160, 142, 201, 0.14), transparent 55%),
+    var(--awv2-panel);
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-market) 34%, var(--awv2-line));
+  border-top: 2px solid var(--awv2-dom-market);
+  border-radius: var(--awv2-radius-card);
+}
+
+/* RISK — warm caution wash; list items carry amber markers. */
+.awv2 [data-domain="risk"] {
+  background:
+    linear-gradient(180deg, rgba(217, 161, 61, 0.11), rgba(217, 161, 61, 0.02) 55%, transparent),
+    var(--awv2-panel);
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-risk) 36%, var(--awv2-line));
+  border-radius: var(--awv2-radius-card);
+}
+.awv2 [data-domain="risk"] li::marker { color: var(--awv2-dom-risk); }
+
+/* EVIDENCE — the darkroom: photographic wells, image-forward. */
+.awv2 [data-domain="evidence"] {
+  background: #101309;
+  background: linear-gradient(180deg, rgba(111, 179, 173, 0.06), transparent 40%), #0f1210;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-evidence) 26%, var(--awv2-line));
+  border-radius: var(--awv2-radius-tight);
+}
+.awv2 [data-domain="evidence"] figcaption,
+.awv2 [data-domain="evidence"] .cap {
+  font-family: var(--awv2-mono);
+  letter-spacing: 0.05em;
+}
+
+/* PROPERTY — the blueprint sheet: blue-cast record, hairline rules, mono. */
+.awv2 [data-domain="property"] {
+  background:
+    linear-gradient(180deg, rgba(127, 158, 196, 0.07), rgba(127, 158, 196, 0.015) 42%, transparent),
+    var(--awv2-panel);
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-property) 32%, var(--awv2-line));
+  border-radius: var(--awv2-radius-card);
+}
+.awv2 [data-domain="property"] dt,
+.awv2 [data-domain="property"] .k {
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* Legend tick before a domain panel's title. */
+.awv2 [data-domain] > .awv2-panel-title::before {
+  content: '';
+  display: inline-block;
+  width: 8px; height: 8px;
+  margin-right: 8px;
+  border-radius: 2px;
+  vertical-align: baseline;
+}
+.awv2 [data-domain="property"]  > .awv2-panel-title::before { background: var(--awv2-dom-property); }
+.awv2 [data-domain="valuation"] > .awv2-panel-title::before { background: var(--awv2-dom-valuation); }
+.awv2 [data-domain="market"]    > .awv2-panel-title::before { background: var(--awv2-dom-market); }
+.awv2 [data-domain="risk"]      > .awv2-panel-title::before { background: var(--awv2-dom-risk); }
+.awv2 [data-domain="evidence"]  > .awv2-panel-title::before { background: var(--awv2-dom-evidence); }
+.awv2 [data-domain="action"]    > .awv2-panel-title::before { background: var(--awv2-dom-action); }
+
+/* Domain panel titles pick up their hue, quietly. */
+.awv2 [data-domain="valuation"] > .awv2-panel-title { color: color-mix(in srgb, var(--awv2-dom-valuation) 70%, var(--awv2-bone)); }
+.awv2 [data-domain="market"]    > .awv2-panel-title { color: color-mix(in srgb, var(--awv2-dom-market) 62%, var(--awv2-bone)); }
+.awv2 [data-domain="risk"]      > .awv2-panel-title { color: color-mix(in srgb, var(--awv2-dom-risk) 66%, var(--awv2-bone)); }
+.awv2 [data-domain="evidence"]  > .awv2-panel-title { color: color-mix(in srgb, var(--awv2-dom-evidence) 62%, var(--awv2-bone)); }
+.awv2 [data-domain="property"]  > .awv2-panel-title { color: color-mix(in srgb, var(--awv2-dom-property) 62%, var(--awv2-bone)); }
+
+/* Standalone domain eyebrow: small-caps ledger-mono, letterspaced. */
+.awv2-dom-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--awv2-mono);
+  font-size: var(--awv2-fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+}
+.awv2-dom-eyebrow::before {
+  content: '';
+  width: 7px; height: 7px;
+  border-radius: 2px;
+  background: var(--awv2-bone-faint);
+}
+.awv2-dom-eyebrow[data-dom="property"]  { color: var(--awv2-dom-property); }
+.awv2-dom-eyebrow[data-dom="property"]::before  { background: var(--awv2-dom-property); }
+.awv2-dom-eyebrow[data-dom="valuation"] { color: var(--awv2-dom-valuation); }
+.awv2-dom-eyebrow[data-dom="valuation"]::before { background: var(--awv2-dom-valuation); }
+.awv2-dom-eyebrow[data-dom="market"]    { color: var(--awv2-dom-market); }
+.awv2-dom-eyebrow[data-dom="market"]::before    { background: var(--awv2-dom-market); }
+.awv2-dom-eyebrow[data-dom="risk"]      { color: var(--awv2-dom-risk); }
+.awv2-dom-eyebrow[data-dom="risk"]::before      { background: var(--awv2-dom-risk); }
+.awv2-dom-eyebrow[data-dom="evidence"]  { color: var(--awv2-dom-evidence); }
+.awv2-dom-eyebrow[data-dom="evidence"]::before  { background: var(--awv2-dom-evidence); }
+.awv2-dom-eyebrow[data-dom="action"]    { color: var(--awv2-dom-action); }
+.awv2-dom-eyebrow[data-dom="action"]::before    { background: var(--awv2-dom-action); }
+
+/* Decision figures: the numbers an operator prices from. Deed serif,
+   tabular, larger than everything around them. */
+.awv2-figure {
+  font-family: var(--awv2-serif);
+  font-size: var(--awv2-fs-figure);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--awv2-bone);
+  line-height: 1.15;
+}
+.awv2-figure.primary { font-size: var(--awv2-fs-display); color: var(--awv2-dom-valuation); }
+
+/* ── Shell: header ───────────────────────────────────────────────────── */
+
+.awv2-header {
+  padding-bottom: 18px;
+  background:
+    radial-gradient(900px 260px at 22% -30%, rgba(201, 164, 92, 0.09), transparent 65%),
+    linear-gradient(to bottom, rgba(201, 164, 92, 0.03), transparent 75%);
+}
+.awv2-address {
+  font-size: var(--awv2-fs-display);
+  letter-spacing: -0.012em;
+}
+/* Identity chips: parcel identity reads like a stamped record line. */
+.awv2-owner-line .mono {
+  background: var(--awv2-panel-2);
+  border: 1px solid var(--awv2-line);
+  border-radius: 4px;
+  padding: 2px 8px;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--awv2-dom-property) 55%, var(--awv2-bone-dim));
+}
+
+/* The status ribbon becomes its own recognizable surface, separated from
+   the identity block above it. */
+.awv2-statusbar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent), var(--awv2-panel);
+  border: 1px solid var(--awv2-line);
+  border-radius: var(--awv2-radius-card);
+  box-shadow: var(--awv2-shadow-card);
+  padding: 14px 18px;
+}
+.awv2-next-action {
+  border-left: 3px solid var(--awv2-dom-action);
+  background: linear-gradient(150deg, rgba(201, 164, 92, 0.16), rgba(201, 164, 92, 0.04));
+  border-radius: 0 10px 10px 0;
+  padding: 10px 14px;
+}
+
+/* Lifecycle ribbon: the current stage is a filled brass chip, not just a
+   brighter word. */
+.awv2-stage.current {
+  background: var(--awv2-brass-soft);
+  border: 1px solid var(--awv2-brass);
+  color: var(--awv2-brass-bright);
+  border-radius: 999px;
+  padding: 2px 10px;
+  box-shadow: 0 0 12px rgba(201, 164, 92, 0.18);
+}
+
+/* ── Shell: the legend rail ──────────────────────────────────────────── */
+
+.awv2-rail-title {
+  font-family: var(--awv2-mono);
+  font-size: var(--awv2-fs-eyebrow);
+  letter-spacing: 0.14em;
+}
+.awv2-rail a, .awv2-rail .soon {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-left: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
+  transition: background 140ms ease, color 140ms ease;
+}
+/* Legend swatch per section. */
+.awv2-rail .legend {
+  flex: none;
+  width: 9px; height: 9px;
+  border-radius: 2px;
+  background: var(--awv2-line-strong);
+}
+.awv2-rail a[data-domain="action"] .legend    { background: var(--awv2-dom-action); }
+.awv2-rail a[data-domain="property"] .legend  { background: var(--awv2-dom-property); }
+.awv2-rail a[data-domain="valuation"] .legend { background: var(--awv2-dom-valuation); }
+.awv2-rail a[data-domain="market"] .legend { background: var(--awv2-dom-market); }
+/* Soon sections: hollow swatches — on the legend but not yet on the map.
+   EVERY Soon row is hollow, including Market Intelligence; a filled swatch
+   is reserved for sections the operator can actually open. */
+.awv2-rail .soon .legend {
+  background: transparent !important;
+  border: 1px solid var(--awv2-line-strong);
+}
+.awv2-rail a.active {
+  border-left-color: var(--awv2-brass);
+  background: var(--awv2-brass-soft);
+}
+.awv2-rail a[data-domain="property"].active  { border-left-color: var(--awv2-dom-property); background: var(--awv2-dom-property-soft); }
+.awv2-rail a[data-domain="valuation"].active { border-left-color: var(--awv2-dom-valuation); background: var(--awv2-dom-valuation-soft); }
+.awv2-rail .soon .tag {
+  border: 1px solid var(--awv2-line);
+  border-radius: 999px;
+  padding: 0 6px;
+  margin-left: auto;
+}
+
+/* ── Overview: decision band ─────────────────────────────────────────── */
+
+.awv2-overview-decisionband {
+  padding: 22px 24px;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-action) 42%, var(--awv2-line));
+  border-radius: var(--awv2-radius-card);
+  background:
+    radial-gradient(900px 320px at 8% -40%, rgba(201, 164, 92, 0.16), transparent 60%),
+    linear-gradient(160deg, rgba(201, 164, 92, 0.10), rgba(201, 164, 92, 0.015) 55%, transparent),
+    var(--awv2-panel-2);
+  box-shadow: var(--awv2-shadow-raised);
+}
+.awv2-overview-decisionband .lede {
+  margin: 12px 0 18px;
+  max-width: 88ch;
+  color: var(--awv2-bone);
+  font-size: 16px;
+  line-height: 1.55;
+}
+.awv2-overview-decisionband .metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.awv2-overview-decisionband .metric {
+  padding: 13px 15px;
+  border: 1px solid var(--awv2-line);
+  border-radius: var(--awv2-radius-tight);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 60%), var(--awv2-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--awv2-shadow-card);
+}
+.awv2-overview-decisionband .metric small,
+.awv2-overview-decisionband .metric b,
+.awv2-overview-decisionband .metric span { display: block; }
+.awv2-overview-decisionband .metric small {
+  color: var(--awv2-bone-faint);
+  font: 600 10px var(--awv2-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.awv2-overview-decisionband .metric b {
+  margin-top: 5px;
+  font-family: var(--awv2-serif);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  color: var(--awv2-bone);
+}
+.awv2-overview-decisionband .metric span { margin-top: 2px; color: var(--awv2-bone-faint); font-size: 11px; }
+.awv2-overview-decisionband .metric.tone-valuation { border-color: color-mix(in srgb, var(--awv2-dom-valuation) 45%, var(--awv2-line)); background: linear-gradient(180deg, rgba(121, 185, 138, 0.10), transparent 65%), var(--awv2-panel); }
+.awv2-overview-decisionband .metric.tone-valuation b { color: var(--awv2-dom-valuation); }
+.awv2-overview-decisionband .metric.tone-property { border-color: color-mix(in srgb, var(--awv2-dom-property) 42%, var(--awv2-line)); background: linear-gradient(180deg, rgba(127, 158, 196, 0.09), transparent 65%), var(--awv2-panel); }
+.awv2-overview-decisionband .metric.tone-good { border-color: color-mix(in srgb, var(--awv2-moss) 45%, var(--awv2-line)); background: linear-gradient(180deg, rgba(143, 174, 124, 0.10), transparent 65%), var(--awv2-panel); }
+.awv2-overview-decisionband .metric.tone-good b { color: var(--awv2-moss); }
+.awv2-overview-decisionband .metric.tone-risk { border-color: color-mix(in srgb, var(--awv2-dom-risk) 45%, var(--awv2-line)); background: linear-gradient(180deg, rgba(217, 161, 61, 0.10), transparent 65%), var(--awv2-panel); }
+.awv2-overview-decisionband .metric.tone-risk b { color: var(--awv2-dom-risk); }
+
+/* ── Overview: section surfaces adopt the domain language ────────────── */
+
+.awv2-overview-hero[data-domain="property"],
+.awv2-overview-access[data-domain="property"] {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-property) 32%, var(--awv2-line));
+  background:
+    linear-gradient(180deg, rgba(127, 158, 196, 0.06), transparent 45%),
+    var(--awv2-panel);
+  box-shadow: var(--awv2-shadow-card);
+}
+.awv2-overview-valuation[data-domain="valuation"] {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-valuation) 40%, var(--awv2-line));
+  background:
+    linear-gradient(165deg, rgba(121, 185, 138, 0.13), rgba(121, 185, 138, 0.02) 50%, transparent),
+    var(--awv2-panel-2);
+  box-shadow: var(--awv2-shadow-raised);
+}
+.awv2-overview-valuation .valuation-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.awv2-overview-valuation .valuation-grid > div {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 55%), rgba(10, 12, 10, 0.35);
+  border-radius: var(--awv2-radius-tight);
+}
+.awv2-overview-valuation .primary b { color: var(--awv2-dom-valuation); font-family: var(--awv2-serif); font-size: 32px; }
+.awv2-overview-valuation .house b { margin: 5px 0; color: var(--awv2-bone); font: 700 32px var(--awv2-serif); font-variant-numeric: tabular-nums; }
+.awv2-overview-valuation .whole b { font-family: var(--awv2-serif); font-size: 32px; }
+.awv2-overview-valuation .house { border-style: dashed; }
+.awv2-overview-valuation .land-basis-references > div {
+  border-left: 2px solid var(--awv2-dom-valuation);
+  background: rgba(121, 185, 138, 0.05);
+  border-radius: 0 8px 8px 0;
+}
+
+.awv2-overview-decision[data-domain="risk"] > div,
+.awv2-overview-decision[data-domain="risk"] .awv2-overview-score {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-risk) 30%, var(--awv2-line));
+  background:
+    linear-gradient(180deg, rgba(217, 161, 61, 0.08), rgba(217, 161, 61, 0.015) 55%, transparent),
+    var(--awv2-panel);
+  border-radius: var(--awv2-radius-tight);
+  box-shadow: var(--awv2-shadow-card);
+}
+.awv2-overview-decision[data-domain="risk"] .risks li::marker { color: var(--awv2-dom-risk); }
+
+.awv2-overview-market {
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-market) 34%, var(--awv2-line));
+  border-top: 2px solid var(--awv2-dom-market);
+  border-radius: var(--awv2-radius-card);
+  background:
+    radial-gradient(120% 90% at 12% 0%, rgba(160, 142, 201, 0.14), transparent 55%),
+    var(--awv2-panel);
+}
+.awv2-overview-market > p { margin-top: 4px; color: var(--awv2-bone-dim); line-height: 1.5; max-width: 92ch; }
+
+.awv2-overview-listing[data-domain="evidence"] {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-evidence) 26%, var(--awv2-line));
+  background: linear-gradient(180deg, rgba(111, 179, 173, 0.05), transparent 40%), #0f1210;
+  border-radius: var(--awv2-radius-tight);
+}
+.awv2-overview-access[data-domain="evidence"] {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-evidence) 26%, var(--awv2-line));
+  background: linear-gradient(180deg, rgba(111, 179, 173, 0.05), transparent 40%), #10130f;
+}
+.awv2-overview-access[data-domain="risk"] {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-risk) 32%, var(--awv2-line));
+  background: linear-gradient(180deg, rgba(217, 161, 61, 0.09), transparent 50%), var(--awv2-panel);
+}
+.awv2-overview-closeout[data-domain="action"] {
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-action) 36%, var(--awv2-line));
+  background:
+    linear-gradient(160deg, rgba(201, 164, 92, 0.10), rgba(201, 164, 92, 0.015) 55%, transparent),
+    var(--awv2-panel-2);
+  box-shadow: var(--awv2-shadow-card);
+}
+
+/* Access ladder rungs read as instrument states, not warnings, once the
+   evidence establishes access. */
+.awv2-overview-access .rung { border-radius: 6px; }
+.awv2-overview-access .observed b { color: var(--awv2-dom-property); }
+
+/* â”€â”€ 2026 command-center recomposition â”€â”€
+   The record now has three workspaces, not a report index. Overview is a
+   twelve-column acquisition canvas; Property & Market owns its internal view
+   switch; Deal Activity is a CRM surface built from the data already loaded. */
+
+.awv2 {
+  --awv2-dom-property: #6ea8ff;
+  --awv2-dom-property-soft: rgba(110, 168, 255, 0.12);
+  --awv2-dom-valuation: #55d6a2;
+  --awv2-dom-valuation-soft: rgba(85, 214, 162, 0.12);
+  --awv2-dom-market: #b38cff;
+  --awv2-dom-market-soft: rgba(179, 140, 255, 0.12);
+  --awv2-dom-risk: #ff9b6a;
+  --awv2-dom-risk-soft: rgba(255, 155, 106, 0.12);
+  --awv2-dom-evidence: #58c7d9;
+  --awv2-dom-evidence-soft: rgba(88, 199, 217, 0.11);
+  --awv2-dom-action: #f1bd6b;
+  --awv2-dom-action-soft: rgba(241, 189, 107, 0.12);
+}
+
+/* Restrained luminous edges separate functional zones without turning the
+   workspace into a bright neon surface. The shadow is deliberately shallow
+   and sits behind the existing gradient language. */
+.awv2-main [data-domain],
+.awv2-deal-activity [data-domain] {
+  border-width: 1.5px !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.035),
+    0 0 0 1px color-mix(in srgb, var(--awv2-zone-color) 9%, transparent),
+    0 0 20px -11px var(--awv2-zone-color),
+    var(--awv2-shadow-card);
+}
+.awv2-main [data-domain="property"], .awv2-deal-activity [data-domain="property"] { --awv2-zone-color: var(--awv2-dom-property); }
+.awv2-main [data-domain="valuation"], .awv2-deal-activity [data-domain="valuation"] { --awv2-zone-color: var(--awv2-dom-valuation); }
+.awv2-main [data-domain="market"], .awv2-deal-activity [data-domain="market"] { --awv2-zone-color: var(--awv2-dom-market); }
+.awv2-main [data-domain="risk"], .awv2-deal-activity [data-domain="risk"] { --awv2-zone-color: var(--awv2-dom-risk); }
+.awv2-main [data-domain="evidence"], .awv2-deal-activity [data-domain="evidence"] { --awv2-zone-color: var(--awv2-dom-evidence); }
+.awv2-main [data-domain="action"], .awv2-deal-activity [data-domain="action"] { --awv2-zone-color: var(--awv2-dom-action); }
+
+.awv2-header { padding: 20px 26px 14px; }
+.awv2-header .awv2-eyebrow { margin-bottom: 5px; }
+.awv2-header .awv2-address { font-size: clamp(27px, 2.2vw, 38px); }
+.awv2-header .awv2-stage-track { margin-top: 12px; }
+.awv2-header .awv2-statusbar {
+  grid-template-columns: 1.05fr 1.05fr 1.35fr .8fr minmax(260px, 1.35fr);
+  margin-top: 12px;
+  padding: 11px 14px;
+}
+.awv2-header .awv2-status-sub { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.awv2-header .awv2-controls { margin-top: 10px; }
+
+.awv2-workspace-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 26px;
+  padding: 9px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 15px;
+  background: rgba(11, 14, 17, .86);
+  box-shadow: 0 10px 30px rgba(0,0,0,.26);
+}
+.awv2-workspace-nav a {
+  display: flex; align-items: center; gap: 11px;
+  min-width: 0; padding: 11px 14px;
+  color: var(--awv2-bone-dim); text-decoration: none;
+  border: 1px solid transparent; border-radius: 10px;
+  background: transparent !important; box-shadow: none !important;
+}
+.awv2-workspace-nav a > span { display: grid; min-width: 0; }
+.awv2-workspace-nav b { color: var(--awv2-bone); font-size: 13px; }
+.awv2-workspace-nav small { overflow: hidden; color: var(--awv2-bone-faint); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.awv2-workspace-nav a.active { border-color: color-mix(in srgb, var(--awv2-dom-action) 45%, var(--awv2-line)); background: linear-gradient(145deg, rgba(241,189,107,.16), rgba(241,189,107,.03)) !important; }
+.awv2-workspace-nav a[data-domain="property"].active { border-color: color-mix(in srgb, var(--awv2-dom-property) 50%, var(--awv2-line)); background: linear-gradient(145deg, rgba(110,168,255,.16), rgba(110,168,255,.03)) !important; }
+
+.awv2-body-composed { display: block; }
+.awv2-body-composed .awv2-col { width: 100%; max-width: none; }
+.awv2-body-composed .awv2-runstatus-slot { margin: 12px 26px 0; }
+.awv2-body-composed .awv2-main { padding: 14px 26px 28px; }
+
+.awv2-overview {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-auto-flow: dense;
+  gap: 14px;
+  align-items: stretch;
+}
+.awv2-overview > * { min-width: 0; }
+.awv2-overview-decisionband { grid-column: 8 / -1; grid-row: 1; padding: 20px; }
+.awv2-overview-hero { grid-column: 1 / 8; grid-row: 1; min-height: 460px; }
+.awv2-overview-valuation { grid-column: 1 / 8; grid-row: 2; }
+.awv2-overview-decision { grid-column: 8 / -1; grid-row: 2; }
+.awv2-overview-market { grid-column: 1 / 6; grid-row: 3; }
+.awv2-overview-listing { grid-column: 6 / 10; grid-row: 3; }
+.awv2-overview-access[data-domain="property"] { grid-column: 10 / -1; grid-row: 3; }
+.awv2-overview-access[data-domain="evidence"] { grid-column: 1 / 7; }
+.awv2-overview-access[data-domain="risk"] { grid-column: 7 / -1; }
+.awv2-overview-closeout, .awv2-overview-methodology { grid-column: 1 / -1; }
+
+.awv2-overview-hero { grid-template-columns: minmax(0, 1.45fr) minmax(285px, .85fr); }
+.awv2-overview-aerial { min-height: 460px; }
+.awv2-overview-aerial img { max-height: none; object-fit: contain; }
+.awv2-overview-facts { display: flex; flex-direction: column; padding: 22px; }
+.awv2-overview-facts h2 { font-size: 27px; line-height: 1.05; }
+.awv2-property-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 16px 0; }
+.awv2-property-chips span { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--awv2-line); border-radius: 999px; color: var(--awv2-bone-dim); background: rgba(255,255,255,.025); font-size: 10.5px; }
+.awv2-property-chips .good { color: var(--awv2-dom-valuation); border-color: rgba(85,214,162,.3); }
+.awv2-property-chips .warn { color: var(--awv2-dom-risk); }
+.awv2-property-fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 2px 0 10px; }
+.awv2-property-fact-grid > div { display: grid; grid-template-columns: auto 1fr; gap: 7px; min-width: 0; padding: 9px; border: 1px solid rgba(110,168,255,.2); border-radius: 9px; background: rgba(110,168,255,.045); }
+.awv2-property-fact-grid > div.wide { grid-column: 1 / -1; }
+.awv2-property-fact-grid svg { margin-top: 2px; color: var(--awv2-dom-property); }
+.awv2-property-fact-grid span, .awv2-property-fact-grid small, .awv2-property-fact-grid b, .awv2-property-fact-grid i { display: block; min-width: 0; }
+.awv2-property-fact-grid small { color: var(--awv2-bone-faint); font: 8px var(--awv2-mono); letter-spacing: .08em; text-transform: uppercase; }
+.awv2-property-fact-grid b { overflow: hidden; margin-top: 2px; color: var(--awv2-bone); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.awv2-property-fact-grid i { margin-top: 2px; color: var(--awv2-bone-faint); font-size: 9px; font-style: normal; }
+.awv2-seller-card { display: grid; grid-template-columns: auto 1fr; gap: 10px; margin-top: 2px; padding: 11px; border: 1px solid rgba(241,189,107,.28); border-radius: 12px; background: linear-gradient(145deg, rgba(241,189,107,.11), transparent); }
+.awv2-seller-card svg { color: var(--awv2-dom-action); }
+.awv2-seller-card small, .awv2-seller-card b, .awv2-seller-card span { display: block; }
+.awv2-seller-card small { color: var(--awv2-bone-faint); font: 9px var(--awv2-mono); text-transform: uppercase; letter-spacing: .1em; }
+.awv2-seller-card b { margin-top: 2px; color: var(--awv2-bone); }
+.awv2-seller-card span { margin-top: 2px; color: var(--awv2-bone-faint); font-size: 11px; }
+
+.awv2-command-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.awv2-command-head h2 { margin: 9px 0 0; max-width: 21ch; color: var(--awv2-bone); font: 700 25px/1.12 var(--awv2-serif); }
+.awv2-decision-state { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid rgba(241,189,107,.3); border-radius: 999px; color: var(--awv2-dom-action); font: 9px var(--awv2-mono); text-transform: uppercase; letter-spacing: .08em; }
+.awv2-overview-decisionband .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 16px; }
+.awv2-overview-decisionband .metric { min-height: 82px; }
+.awv2-decision-action { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; margin-top: 12px; padding: 12px; border-radius: 11px; color: var(--awv2-dom-action); background: rgba(241,189,107,.1); }
+.awv2-decision-action small, .awv2-decision-action b { display: block; }
+.awv2-decision-action small { font: 9px var(--awv2-mono); text-transform: uppercase; letter-spacing: .12em; }
+.awv2-decision-action b { margin-top: 3px; color: var(--awv2-bone); font-size: 13px; }
+.awv2-decision-rationale { margin-top: 9px; color: var(--awv2-bone-faint); font-size: 11px; }
+.awv2-decision-rationale p { margin-top: 7px; line-height: 1.45; }
+
+.awv2-overview-valuation .valuation-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.awv2-overview-valuation .valuation-grid > div { padding: 12px; }
+.awv2-overview-valuation .primary b, .awv2-overview-valuation .house b, .awv2-overview-valuation .whole b { font-size: 26px; }
+.awv2-overview-valuation .land-basis-references { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.awv2-overview-decision { grid-template-columns: .72fr 1.28fr; }
+.awv2-overview-decision .summary { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+.awv2-overview-decision .risks { padding: 16px; }
+.awv2-risk-count { display: inline-flex; align-items: center; gap: 7px; color: var(--awv2-dom-risk); }
+.awv2-risk-count b { font: 700 27px var(--awv2-serif); }
+.awv2-risk-count span { max-width: 8ch; color: var(--awv2-bone-faint); font-size: 10px; line-height: 1.1; }
+.awv2-overview-score { display: grid; place-items: center; padding: 14px !important; }
+.awv2-overview-score-number { display: grid; place-items: center; width: 96px; height: 96px; border: 9px solid rgba(255,155,106,.16); border-top-color: var(--awv2-dom-risk); border-radius: 50%; }
+.awv2-overview-score-number > span { line-height: 1; }
+.awv2-overview-score-number small { text-align: center; font-size: 9px; }
+.awv2-overview-score-drivers { grid-template-columns: 1fr; }
+.awv2-overview-score-drivers > div:not(:first-child) { display: none; }
+.awv2-risk-items { display: grid; gap: 7px; }
+.awv2-risk-item { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--awv2-line); border-radius: 9px; background: rgba(255,255,255,.018); }
+.awv2-risk-item svg { color: var(--awv2-bone-faint); }
+.awv2-risk-item span, .awv2-risk-item b, .awv2-risk-item small { display: block; min-width: 0; }
+.awv2-risk-item b { color: var(--awv2-bone); font-size: 11px; }
+.awv2-risk-item small { margin-top: 2px; color: var(--awv2-bone-faint); font-size: 9.5px; }
+.awv2-risk-item em { padding: 4px 6px; border-radius: 999px; color: var(--awv2-bone-faint); background: rgba(255,255,255,.04); font: 8px var(--awv2-mono); font-style: normal; letter-spacing: .07em; text-transform: uppercase; }
+.awv2-risk-item.blocker { border-color: rgba(255,155,106,.38); background: rgba(255,155,106,.075); }
+.awv2-risk-item.blocker svg, .awv2-risk-item.blocker em { color: var(--awv2-dom-risk); }
+.awv2-risk-item.caution { border-color: rgba(241,189,107,.25); }
+.awv2-risk-item.caution svg { color: var(--awv2-dom-action); }
+.awv2-risk-item.pending svg { color: var(--awv2-dom-evidence); }
+
+.awv2-overview-market { display: flex; flex-direction: column; }
+.awv2-market-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.awv2-market-tiles > div { position: relative; overflow: hidden; padding: 12px 10px 17px; border: 1px solid rgba(179,140,255,.22); border-radius: 10px; background: rgba(179,140,255,.055); }
+.awv2-market-tiles span, .awv2-market-tiles b { display: block; }
+.awv2-market-tiles span { color: var(--awv2-bone-faint); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.awv2-market-tiles b { margin-top: 5px; color: var(--awv2-bone); font: 700 20px var(--awv2-serif); }
+.awv2-market-tiles i { position: absolute; left: 10px; right: 10px; bottom: 8px; height: 3px; border-radius: 3px; background: linear-gradient(90deg, var(--awv2-dom-market) 68%, rgba(179,140,255,.14) 68%); }
+.awv2-market-detail { margin-top: 10px; color: var(--awv2-bone-faint); font-size: 11px; }
+.awv2-market-detail p { margin-top: 7px; }
+.awv2-market-empty { display: grid; gap: 3px; margin-top: auto; padding: 15px; border: 1px solid rgba(179,140,255,.22); border-radius: 11px; background: linear-gradient(135deg, rgba(179,140,255,.1), rgba(179,140,255,.025)); }
+.awv2-market-empty span { color: var(--awv2-dom-market); font: 9px var(--awv2-mono); letter-spacing: .1em; text-transform: uppercase; }
+.awv2-market-empty b { color: var(--awv2-bone); font: 700 20px var(--awv2-serif); }
+.awv2-market-empty small { color: var(--awv2-bone-faint); font-size: 10.5px; }
+
+.awv2-marketing-compact { display: flex !important; align-items: center; justify-content: space-between; gap: 18px; min-height: 0; padding: 18px 20px; }
+.awv2-marketing-state h2 { margin: 7px 0 2px; color: var(--awv2-bone); font: 700 24px var(--awv2-serif); }
+.awv2-marketing-state p { color: var(--awv2-bone-faint); font-size: 11px; }
+.awv2-marketing-compact button { flex: 0 0 auto; padding: 7px 9px; border: 1px solid rgba(88,199,217,.25); border-radius: 8px; color: var(--awv2-dom-evidence); background: rgba(88,199,217,.06); font-size: 10.5px; }
+
+.awv2-overview-closeout { gap: 18px; }
+.awv2-diligence-rows, .awv2-action-rows { display: grid; gap: 7px; margin-top: 12px; }
+.awv2-diligence-row { display: grid; grid-template-columns: auto minmax(0,1fr) minmax(70px,auto); align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid rgba(241,189,107,.18); border-radius: 9px; background: rgba(241,189,107,.035); }
+.awv2-diligence-row svg { color: var(--awv2-dom-action); }
+.awv2-diligence-row span, .awv2-diligence-row b, .awv2-diligence-row small { display: block; min-width: 0; }
+.awv2-diligence-row b { color: var(--awv2-bone); font-size: 11px; }
+.awv2-diligence-row small { overflow: hidden; margin-top: 2px; color: var(--awv2-bone-faint); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.awv2-diligence-row em { overflow: hidden; color: var(--awv2-dom-action); font-size: 9px; font-style: normal; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.awv2-action-row { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid rgba(241,189,107,.2); border-radius: 9px; background: rgba(241,189,107,.045); }
+.awv2-action-row > b { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; color: #17130b; background: var(--awv2-dom-action); font-size: 10px; }
+.awv2-action-row strong, .awv2-action-row small { display: block; }
+.awv2-action-row strong { color: var(--awv2-bone); font-size: 11px; }
+.awv2-action-row small { margin-top: 2px; color: var(--awv2-bone-faint); font-size: 9.5px; }
+.awv2-action-row svg { color: var(--awv2-dom-action); }
+
+.awv2-property-market-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 14px; padding: 17px 19px; border: 1px solid rgba(110,168,255,.25); border-radius: 14px; background: radial-gradient(700px 180px at 0 -30%, rgba(110,168,255,.17), transparent 65%), var(--awv2-panel); }
+.awv2-property-market-head h2 { margin: 6px 0 2px; color: var(--awv2-bone); font: 700 25px var(--awv2-serif); }
+.awv2-property-market-head p { margin: 0; color: var(--awv2-bone-faint); font-size: 12px; }
+.awv2-property-market-tabs { display: flex; padding: 4px; border: 1px solid var(--awv2-line); border-radius: 10px; background: rgba(0,0,0,.24); }
+.awv2-property-market-tabs a { padding: 8px 12px; border-radius: 7px; color: var(--awv2-bone-faint); text-decoration: none; font-size: 11.5px; }
+.awv2-property-market-tabs a.active { color: var(--awv2-bone); background: rgba(110,168,255,.16); box-shadow: inset 0 0 0 1px rgba(110,168,255,.28); }
+.awv2-zone-index { position: sticky; z-index: 5; top: 8px; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; padding: 8px; border: 1px solid rgba(110,168,255,.22); border-radius: 11px; background: rgba(10,13,16,.91); box-shadow: 0 8px 24px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
+.awv2-zone-index a { padding: 6px 9px; border: 1px solid transparent; border-radius: 999px; color: var(--awv2-bone-faint); text-decoration: none; font-size: 9.5px; }
+.awv2-zone-index a:hover, .awv2-zone-index a:focus-visible { border-color: rgba(110,168,255,.32); color: var(--awv2-bone); background: rgba(110,168,255,.08); }
+.awv2-property-market [id] { scroll-margin-top: 62px; }
+.awv2-property-market .awv2-pi-questions { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; }
+.awv2-property-market #pi-subject { grid-column: span 5; }
+.awv2-property-market #exact-address-listing-evidence { grid-column: span 7; }
+.awv2-property-market #listing-reported-intelligence { grid-column: span 5; }
+.awv2-property-market #listing-imagery { grid-column: span 7; }
+.awv2-property-market #access-road-frontage { grid-column: span 7; }
+.awv2-property-market .awv2-pi-questions > section:not([id]) { grid-column: span 5; }
+.awv2-property-market .awv2-cv-decisionpanel { position: relative; overflow: hidden; }
+.awv2-property-market .awv2-cv-decisionpanel::after { content: ''; position: absolute; width: 360px; height: 360px; top: -230px; right: -130px; border-radius: 50%; background: rgba(85,214,162,.09); pointer-events: none; }
+
+.awv2-deal-activity { display: grid; grid-template-columns: minmax(280px, .7fr) minmax(360px, 1.3fr); gap: 14px; }
+.awv2-deal-activity > section { padding: 22px; }
+.awv2-activity-seller { grid-row: span 2; text-align: center; }
+.awv2-activity-seller > svg { margin-top: 28px; color: var(--awv2-dom-action); }
+.awv2-activity-seller h2, .awv2-activity-next h2 { margin: 10px 0 5px; color: var(--awv2-bone); font: 700 26px var(--awv2-serif); }
+.awv2-activity-seller p, .awv2-activity-next p { color: var(--awv2-bone-faint); }
+.awv2-activity-actions { display: flex; justify-content: center; gap: 7px; margin-top: 20px; }
+.awv2-activity-actions button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid rgba(241,189,107,.3); border-radius: 8px; color: var(--awv2-bone); background: rgba(241,189,107,.08); }
+.awv2-activity-meta { display: flex; gap: 8px; margin-top: 18px; }
+.awv2-activity-meta span { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid var(--awv2-line); border-radius: 999px; color: var(--awv2-bone-dim); font-size: 11px; }
+.awv2-activity-timeline { grid-column: 2; }
+.awv2-timeline { margin-top: 18px; }
+.awv2-timeline-event { display: grid; grid-template-columns: 12px 1fr; gap: 11px; padding: 0 0 16px; }
+.awv2-timeline-event .dot { width: 9px; height: 9px; margin-top: 4px; border: 2px solid var(--awv2-dom-evidence); border-radius: 50%; box-shadow: 0 0 0 4px rgba(88,199,217,.08); }
+.awv2-timeline-event b, .awv2-timeline-event small { display: block; }
+.awv2-timeline-event b { color: var(--awv2-bone); font-size: 12px; }
+.awv2-timeline-event small { margin-top: 3px; color: var(--awv2-bone-faint); font-size: 10px; }
+
+@media (max-width: 1180px) {
+  .awv2-header .awv2-statusbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .awv2-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .awv2-overview > * { grid-column: auto !important; grid-row: auto !important; }
+  .awv2-overview-hero, .awv2-overview-valuation, .awv2-overview-closeout, .awv2-overview-methodology { grid-column: 1 / -1 !important; }
+  .awv2-overview-hero { min-height: 470px; }
+  .awv2-overview-aerial { min-height: 470px; }
+  .awv2-market-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .awv2-workspace-nav { grid-template-columns: 1fr; margin: 0 14px; }
+  .awv2-workspace-nav small { white-space: normal; }
+  .awv2-body-composed .awv2-runstatus-slot { margin-inline: 14px; }
+  .awv2-body-composed .awv2-main { padding-inline: 14px; }
+  .awv2-overview { grid-template-columns: 1fr; }
+  .awv2-overview > * { grid-column: 1 !important; }
+  .awv2-overview-hero { grid-template-columns: 1fr; min-height: 0; }
+  .awv2-overview-aerial { min-height: 360px; }
+  .awv2-property-fact-grid { grid-template-columns: 1fr; }
+  .awv2-property-fact-grid > div, .awv2-property-fact-grid > div.wide { grid-column: 1; }
+  .awv2-zone-index { flex-wrap: nowrap; overflow-x: auto; }
+  .awv2-zone-index a { flex: 0 0 auto; }
+  .awv2-overview-valuation .valuation-grid, .awv2-overview-valuation .land-basis-references, .awv2-market-tiles { grid-template-columns: 1fr 1fr; }
+  .awv2-property-market-head { align-items: stretch; flex-direction: column; }
+  .awv2-property-market-tabs { width: 100%; }
+  .awv2-property-market-tabs a { flex: 1; text-align: center; }
+  .awv2-property-market .awv2-pi-questions > * { grid-column: 1 / -1 !important; }
+  .awv2-deal-activity { grid-template-columns: 1fr; }
+  .awv2-activity-timeline { grid-column: 1; }
+}
+
+/* The PI access ladder renders its own numbered step badge; the legacy
+   counter pseudo-element (workspace-v2.css .awv2-access-rung::before) is
+   never reset inside the grouped markup and printed a stray "1" on every
+   rung. Retire it here, where this layer owns the ladder's presentation. */
+.awv2 .awv2-access-rung::before { content: none; counter-increment: none; }
+
+/* ── Quality floor ───────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .awv2 * { animation: none !important; transition: none !important; }
+}

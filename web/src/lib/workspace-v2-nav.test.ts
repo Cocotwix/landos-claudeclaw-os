@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  readSection, sectionHref, SECTION_SLUGS,
+  readSection, readPropertyMarketView, sectionHref, SECTION_SLUGS,
   dealWorkspaceHref, lastWorkspaceDealId, rememberWorkspaceDeal, WORKSPACE_V2_PATH,
 } from './workspace-v2-nav';
 
@@ -17,10 +17,17 @@ describe('workspace V2 section navigation', () => {
   it('derives the section from the URL, defaulting to Overview', () => {
     expect(readSection('')).toBe('Overview');
     expect(readSection('?deal=81')).toBe('Overview');
-    expect(readSection('?deal=81&section=property-intelligence')).toBe('Property Intelligence');
-    expect(readSection('?section=property-intelligence&deal=81')).toBe('Property Intelligence');
-    expect(readSection('?deal=81&section=comps-valuation')).toBe('Comps & Valuation');
+    expect(readSection('?deal=81&section=property-market')).toBe('Property & Market');
+    expect(readSection('?deal=81&section=property-intelligence')).toBe('Property & Market');
+    expect(readSection('?deal=81&section=comps-valuation')).toBe('Property & Market');
+    expect(readSection('?deal=81&section=deal-activity')).toBe('Deal Activity');
     expect(readSection('?deal=81&section=unknown-section')).toBe('Overview');
+  });
+
+  it('keeps the Property & Market internal view in the URL without creating another top-level workspace', () => {
+    expect(readPropertyMarketView('?section=property-intelligence')).toBe('property-intelligence');
+    expect(readPropertyMarketView('?section=comps-valuation')).toBe('comps-valuation');
+    expect(readPropertyMarketView('?section=property-market')).toBe('property-intelligence');
   });
 
   it('builds section hrefs that preserve every other query param', () => {

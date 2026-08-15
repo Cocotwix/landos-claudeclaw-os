@@ -103,7 +103,10 @@ describe('access terminology', () => {
     // Its fallback still says something from evidence rather than a blanket
     // unresolved claim, but never calls mapped frontage "Legal access".
     expect(PAGE_SRC).toMatch(/accessView\?\.established/);
-    expect(PAGE_SRC).toMatch(/Mapped road abutment: \$\{accessView\.legalAccess\}/);
+    // Operator rule (2026-08-14): a not-landlocked parcel with mapped road
+    // frontage displays access as ESTABLISHED, with the ladder as provenance,
+    // and still never calls mapped frontage "Legal access".
+    expect(PAGE_SRC).toMatch(/accessEstablished \? 'Access established'/);
     expect(PAGE_SRC).not.toMatch(/Legal access: \$\{accessView\.legalAccess\}/);
     // Each evidence type is surfaced on its own, never collapsed into one flag.
     expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.parcelFlagged/);
@@ -111,7 +114,7 @@ describe('access terminology', () => {
     expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.reportedLegalAccess/);
     expect(PAGE_SRC).toMatch(/accessView\?\.evidence\?\.verifiedLegalAccess/);
     // A recorded instrument stays outstanding diligence until one is read.
-    expect(PAGE_SRC).toMatch(/Recorded-instrument access remains separate diligence/);
+    expect(PAGE_SRC).toMatch(/Recorded-instrument access remains ordinary closing diligence/);
   });
 });
 
@@ -185,7 +188,7 @@ describe('operator-question hierarchy', () => {
   });
 
   it('separates research lane delivery from diligence-question resolution', () => {
-    expect(PI_SRC).toContain('Research lanes completed');
+    expect(PI_SRC).toContain('Research areas delivered');
     expect(PI_SRC).toContain('Diligence questions resolved');
     expect(PI_SRC).toContain('does not mean every diligence question is resolved');
   });
@@ -207,55 +210,30 @@ describe('operator-question hierarchy', () => {
 });
 
 describe('Overview listing card', () => {
-  it('tells the truth when the reconciled subject has a supported current listing', () => {
-    // The subject's reconciled listing state decides the card. Overview no
-    // longer re-derives one from whichever retained source sorted first.
+  it('uses the reconciled subject state for a compact marketing summary', () => {
     expect(OVERVIEW_SRC).toMatch(/exactAddressListings\?\.listingCard \?\? null/);
-    expect(OVERVIEW_SRC).not.toMatch(/No active public listing retained/);
-    expect(OVERVIEW_SRC).not.toMatch(/for\[\\s_-\]\?sale/);
-    // Summary-first listing facts: status, both prices, age, MLS, brokerage.
-    expect(OVERVIEW_SRC).toMatch(/\{listing\.statusLabel\}/);
-    expect(OVERVIEW_SRC).toMatch(/Current asking price/);
-    expect(OVERVIEW_SRC).toMatch(/Original list price/);
-    expect(OVERVIEW_SRC).toMatch(/Listing age/);
-    expect(OVERVIEW_SRC).toMatch(/listing\.mlsNumbers\.length \? listing\.mlsNumbers\.join/);
-    expect(OVERVIEW_SRC).toMatch(/listing\.brokerage \|\| listing\.listingAgent/);
-    expect(OVERVIEW_SRC).toMatch(/listingFacts\.join\(' · '\)/);
-    expect(OVERVIEW_SRC).toMatch(/latestPriceChange\(listing, formatUsd\)/);
-    // A way into the photos and the full evidence, without a research dump.
-    expect(OVERVIEW_SRC).toMatch(/Open listing &amp; photos/);
+    expect(OVERVIEW_SRC).toMatch(/listing\?\.onMarket \? listing\.statusLabel : 'Off Market'/);
+    expect(OVERVIEW_SRC).toMatch(/No verified public listing/);
+    expect(OVERVIEW_SRC).toMatch(/awv2-marketing-compact/);
     expect(OVERVIEW_SRC).toMatch(/openListingEvidence/);
     expect(OVERVIEW_SRC).toMatch(/exact-address-listing-evidence/);
   });
 
-  it('reads engagement from published availability and never renders it as zero', () => {
-    // Zillow keeps its two operator-familiar tiles, stated as uncollected when
-    // Zillow published nothing; every other provider appears only when it did.
-    expect(OVERVIEW_SRC).toMatch(/zillowEngagement\?\.viewsAvailability === 'available'/);
-    expect(OVERVIEW_SRC).toMatch(/zillowEngagement\?\.savesAvailability === 'available'/);
-    expect(OVERVIEW_SRC).toMatch(/Not collected \(never shown as zero\)/);
-    expect(OVERVIEW_SRC).toMatch(/signal\.viewsAvailability === 'available' && signal\.views != null/);
-    expect(OVERVIEW_SRC).toMatch(/signal\.savesAvailability === 'available' && signal\.saves != null/);
-    // No zero-filled engagement tile can be produced on this surface.
-    expect(OVERVIEW_SRC).not.toMatch(/views \?\? 0/);
-    expect(OVERVIEW_SRC).not.toMatch(/saves \?\? 0/);
+  it('keeps provider engagement and listing diagnostics out of Overview', () => {
+    expect(OVERVIEW_SRC).not.toMatch(/Zillow views|Zillow saves|viewsAvailability|savesAvailability/);
+    expect(OVERVIEW_SRC).not.toMatch(/browser cleanup|candidate-page|engagementByProvider/i);
   });
 
-  it('never renders the dedicated Zillow tiles alongside a per-provider Zillow tile', () => {
-    // "Zillow views 134" beside "zillow.com views 134" is one measure shown
-    // twice. Zillow is excluded from the per-provider tiles BY PROVIDER, so a
-    // second Zillow read can never re-render the same counter.
-    expect(OVERVIEW_SRC).toMatch(/engagementByProvider\.filter\(\(signal\) => signal\.provider !== 'zillow'\)/);
-    expect(OVERVIEW_SRC).not.toMatch(/signal !== zillowEngagement/);
-    // The dedicated tiles still exist, and still state an unpublished measure.
-    expect(OVERVIEW_SRC).toMatch(/<span>Zillow views<\/span>/);
-    expect(OVERVIEW_SRC).toMatch(/<span>Zillow saves<\/span>/);
+  it('retains detailed listing evidence in Property & Market', () => {
+    expect(PI_SRC).toMatch(/exactAddressListings\?\.listingCard/);
+    expect(PI_SRC).toMatch(/listingSources/);
+    expect(PI_SRC).toMatch(/Exact-address web discovery/);
   });
 
-  it('states an off-market subject as itself instead of claiming nothing was retained', () => {
-    expect(OVERVIEW_SRC).toMatch(/listing\.onMarket \? 'active' : 'retained'/);
-    expect(OVERVIEW_SRC).toMatch(/!listing\.onMarket && <p class="listing-price-change">\{listing\.statusNote\}<\/p>/);
-    expect(OVERVIEW_SRC).toMatch(/No public listing record retained/);
+  it('states an off-market subject plainly without a dead evidence panel', () => {
+    expect(OVERVIEW_SRC).toMatch(/'Off Market'/);
+    expect(OVERVIEW_SRC).toMatch(/'No verified public listing'/);
+    expect(OVERVIEW_SRC).not.toMatch(/No public listing record retained/);
   });
 
   it('carries no malformed JSX closing tags on any V2 surface', () => {

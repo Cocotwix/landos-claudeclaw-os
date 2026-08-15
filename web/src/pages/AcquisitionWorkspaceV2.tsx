@@ -15,10 +15,11 @@ import { useEffect, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
 import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
+  LayoutDashboard, Map, Activity, UserRound, CalendarClock,
 } from 'lucide-preact';
 import { apiGet, dashboardToken } from '@/lib/api';
 import {
-  readSection, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
+  readSection, readPropertyMarketView, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
   SECTION_SLUGS, type WorkspaceV2Section,
 } from '@/lib/workspace-v2-nav';
 import {
@@ -32,6 +33,7 @@ import {
 import {
   CompsValuationSection, type CompsValuationViewData,
 } from '../components/AcquisitionWorkspaceV2CompsValuation';
+import { PropertyIntelligenceRunStatus } from '../components/AcquisitionWorkspaceV2RunStatus';
 import {
   OverviewSection, type OverviewSnapshotView,
 } from '../components/AcquisitionWorkspaceV2Overview';
@@ -41,6 +43,9 @@ import '../styles/workspace-v2.css';
 // Loaded AFTER the base sheet: the comps identity + readability corrections
 // deliberately override base values on equal specificity.
 import '../styles/workspace-v2-comps.css';
+// Loaded LAST: the lead-card design system (domain color coding, legend rail,
+// type scale). Future sections inherit this layer.
+import '../styles/workspace-v2-lead-design.css';
 
 // ── Minimal read-model types (fields this view consumes) ───────────────
 
@@ -110,10 +115,15 @@ const matchNum = (s: string | undefined, re: RegExp): string | null => {
   return m ? m[1] : null;
 };
 
-const WORKSPACE_SECTIONS = [
-  'Overview', 'Property Intelligence', 'Comps & Valuation', 'Market Intelligence',
-  'Seller & Communications', 'Strategy', 'Evidence & Documents', 'Tasks & Timeline',
-];
+const WORKSPACE_SECTIONS = ['Overview', 'Property & Market', 'Deal Activity'] as const;
+
+// Legend rail: each section's swatch matches the domain hue its surfaces use,
+// so the nav reads as the legend for the page (see workspace-v2-lead-design.css).
+const SECTION_DOMAINS: Record<string, string> = {
+  'Overview': 'action',
+  'Property & Market': 'property',
+  'Deal Activity': 'action',
+};
 
 // The acquisition lifecycle this workspace will grow through. "New lead" is
 // what the record reports today; the ribbon shows where that sits.
@@ -153,6 +163,7 @@ export function AcquisitionWorkspaceV2() {
   // refetches the property record, or reruns research. pushState keeps the
   // URL shareable and back/forward working; popstate re-derives the section.
   const [section, setSection] = useState<WorkspaceV2Section>(() => readSection(window.location.search));
+  const propertyMarketView = readPropertyMarketView(window.location.search);
   useEffect(() => {
     const onPop = () => setSection(readSection(window.location.search));
     window.addEventListener('popstate', onPop);
@@ -172,7 +183,10 @@ export function AcquisitionWorkspaceV2() {
   // Remember the deal + section the operator is using so every "back to the
   // workspace" path this session restores this exact record and section.
   useEffect(() => {
-    if (dealId != null) rememberWorkspaceDeal(dealId, SECTION_SLUGS[section] ?? 'overview');
+    if (dealId != null) rememberWorkspaceDeal(
+      dealId,
+      new URLSearchParams(window.location.search).get('section') ?? 'overview',
+    );
   }, [section, dealId]);
 
   const [deal, setDeal] = useState<DealResp | null>(null);
@@ -194,6 +208,10 @@ export function AcquisitionWorkspaceV2() {
   const [compsValuation, setCompsValuation] = useState<CompsValuationViewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when a research run settles, so the workspace re-reads the records
+  // that run just rewrote instead of showing the operator a stale page next to
+  // a "research complete" indicator.
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
     if (dealId == null) return;
@@ -228,7 +246,7 @@ export function AcquisitionWorkspaceV2() {
       }
     })();
     return () => { dead = true; };
-  }, [dealId]);
+  }, [dealId, reloadNonce]);
 
   if (dealId == null) return null;
   if (loading) return <div class="awv2"><div class="awv2-state">Loading the workspace…</div></div>;
@@ -267,8 +285,13 @@ export function AcquisitionWorkspaceV2() {
   const owner = id.owner || deal?.dealCard?.propertyCards?.[0]?.owner || '';
   const acres = id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
 
+  // Hero preference: widest capture that still reads as the parcel. The tight
+  // close crop is LAST — it is the one most likely to clip a long/narrow
+  // boundary, and a clipped subject boundary is never an acceptable hero.
   const heroUrl = (snap.evidence || []).find((e) => e.id === 'inspection-landportal_overview')?.viewUrl
     ?? (snap.evidence || []).find((e) => e.id === 'inspection-parcel_context')?.viewUrl
+    ?? (snap.evidence || []).find((e) => e.id === 'inspection-clean_parcel_aerial')?.viewUrl
+    ?? (snap.evidence || []).find((e) => e.id === 'inspection-wider_context')?.viewUrl
     ?? (snap.evidence || []).find((e) => e.id === 'inspection-close_parcel_aerial')?.viewUrl;
   const visualCount = (snap.evidence || []).filter((e) => e.viewUrl).length;
 
@@ -280,18 +303,9 @@ export function AcquisitionWorkspaceV2() {
   const nextActionReason = acq?.nextAction?.reason || '';
   // Recomputed from current accepted research state (server re-derivation),
   // never a stale snapshot count; the exact incomplete area is named below.
-  const researchProgress = researchStatus
-    ? `${researchStatus.delivered} of ${researchStatus.total} research lanes delivered`
-    : (() => {
-        const m = snap.headline?.confidenceWhy?.match(/(\d+)\s+of\s+(\d+)/);
-        return m ? `${m[1]} of ${m[2]} research areas delivered` : (snap.status === 'complete_with_gaps' ? 'Complete with gaps' : '—');
-      })();
-  const incompleteArea = researchStatus?.incomplete?.[0] ?? null;
-  const researchQuestions = researchStatus as (ResearchStatusView & { questionsHeadline?: string }) | null;
-  const lastEvent = activity?.events?.[0];
-  const lastActivity = lastEvent
-    ? `${activityLabel(lastEvent.kind, lastEvent.summary)} · ${new Date(lastEvent.createdAt * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-    : 'None recorded';
+  // "Research areas" = the accepted canonical research state. The run-status
+  // strip separately reports lanes from the LAST RUN under its own distinct
+  // label; the two are different measures and must never share a name.
   const followUp = acq?.acquisition?.profile?.nextFollowUpDate || null;
 
   const seller = deal?.dealCard?.people?.[0] || null;
@@ -307,7 +321,9 @@ export function AcquisitionWorkspaceV2() {
   } : null;
   const visualBuyerSummaryLabel = 'Visual buyer summary';
   const visualBuyerAnalysisLabel = 'Open the full Visual Buyer Analysis';
-  const openCompsValuationLabel = 'Open Comps &amp; Valuation →';
+  // Plain text, not markup: JSX escapes strings, so an entity here renders
+  // literally as "&amp;" to the operator.
+  const openCompsValuationLabel = 'Open Comps & Valuation →';
   const onOpenSection = (slug: 'property-intelligence' | 'comps-valuation') => {
     const href = sectionHref(window.location.pathname, window.location.search, slug);
     if (href !== window.location.pathname + window.location.search) window.history.pushState(null, '', href);
@@ -316,7 +332,7 @@ export function AcquisitionWorkspaceV2() {
   const openCompsValuation = () => onOpenSection('comps-valuation');
 
   return (
-    <div class="awv2">
+    <div class="awv2" data-testid="acquisition-workspace-root">
       {/* ── CRM header ── */}
       <header class="awv2-header">
         <div class="awv2-eyebrow">
@@ -331,6 +347,7 @@ export function AcquisitionWorkspaceV2() {
         </h1>
         <div class="awv2-owner-line">
           <span>Owner of record <b>{owner || 'Unknown'}</b></span>
+          {(id.apn || card0?.apn) && <span class="mono">APN {id.apn || card0?.apn}</span>}
           {acres != null && <span class="mono">{acres} AC</span>}
           {id.county && <span class="mono">{id.county.toUpperCase()} COUNTY, {id.state_ || ''}</span>}
         </div>
@@ -354,40 +371,6 @@ export function AcquisitionWorkspaceV2() {
           })}
         </div>
 
-        <div class="awv2-statusbar">
-          <div class="awv2-status-item">
-            <div class="k">Research lanes</div>
-            <div class="v"><b>{researchProgress}</b></div>
-            {incompleteArea && (
-              <div class="awv2-status-sub">
-                Missing: <b>{incompleteArea.label}</b>{incompleteArea.reason ? ` — ${incompleteArea.reason}` : ''}{incompleteArea.nextAction ? ` Next: ${incompleteArea.nextAction}` : ''}
-              </div>
-            )}
-          </div>
-          <div class="awv2-status-item">
-            <div class="k">Diligence questions</div>
-            <div class="v"><b>{researchQuestions?.questionsHeadline || 'Resolution status not yet recorded'}</b></div>
-          </div>
-          <div class="awv2-status-item">
-            <div class="k">Last activity</div>
-            <div class="v">{lastActivity}</div>
-          </div>
-          <div class="awv2-status-item">
-            <div class="k">Follow-up</div>
-            <div class="v">{followUp || 'None scheduled'}</div>
-          </div>
-          {nextActionLabel && (
-            <div class="awv2-next-action">
-              <span class="pulse" />
-              <div>
-                <div class="label">Next action</div>
-                <div class="act">{nextActionLabel}</div>
-                {nextActionReason && <div class="why">{nextActionReason}</div>}
-              </div>
-            </div>
-          )}
-        </div>
-
         <div class="awv2-controls">
           <button type="button" class="awv2-ctl primary"><Phone size={14} /> Call</button>
           <button type="button" class="awv2-ctl"><MessageSquare size={14} /> Text</button>
@@ -409,32 +392,84 @@ export function AcquisitionWorkspaceV2() {
         </div>
       </header>
 
-      <div class="awv2-body">
+      <div class="awv2-body awv2-body-composed">
         {/* ── Workspace navigation ── */}
-        <nav class="awv2-rail" aria-label="Workspace sections">
-          <div class="awv2-rail-title">Workspace</div>
-          {WORKSPACE_SECTIONS.map((s) => (
-            SECTION_SLUGS[s]
-              ? (
-                <a
-                  href={sectionHref(window.location.pathname, window.location.search, SECTION_SLUGS[s])}
-                  class={section === s ? 'active' : ''}
-                  onClick={(e) => switchSection(e as unknown as MouseEvent, SECTION_SLUGS[s])}
-                >
-                  {s}
-                </a>
-              )
-              : <span class="soon">{s}<span class="tag">Soon</span></span>
-          ))}
+        <nav class="awv2-workspace-nav" aria-label="Lead workspace areas">
+          {WORKSPACE_SECTIONS.map((s, index) => {
+            const Icon = index === 0 ? LayoutDashboard : index === 1 ? Map : Activity;
+            return (
+              <a
+                href={sectionHref(window.location.pathname, window.location.search, SECTION_SLUGS[s])}
+                class={section === s ? 'active' : ''}
+                data-domain={SECTION_DOMAINS[s]}
+                onClick={(e) => switchSection(e as unknown as MouseEvent, SECTION_SLUGS[s])}
+              >
+                <Icon size={17} aria-hidden="true" />
+                <span>
+                  <b>{s}</b>
+                  <small>{index === 0 ? 'Decision command center' : index === 1 ? 'Property, valuation, comps & evidence' : 'Seller, next action & timeline'}</small>
+                </span>
+              </a>
+            );
+          })}
         </nav>
 
-        {section === 'Property Intelligence' ? (
-          <main class="awv2-main">
-            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} />
+        <div class="awv2-col">
+        {/* Research run status. Rendered outside the section switch because
+            "is research still gathering, and what is it retrieving right now?"
+            is a question about the lead, not about the tab being viewed. */}
+        <div class="awv2-runstatus-slot">
+          <PropertyIntelligenceRunStatus dealId={dealId} onRunSettled={() => setReloadNonce((n) => n + 1)} />
+        </div>
+        {section === 'Property & Market' ? (
+          <main class="awv2-main awv2-property-market" data-testid="property-market-workspace">
+            <div class="awv2-property-market-head">
+              <div>
+                <span class="awv2-dom-eyebrow" data-dom="property">Property &amp; Market</span>
+                <h2>One due-diligence workspace</h2>
+                <p>Parcel facts, physical evidence, market context and the valuation decision share one canonical record.</p>
+              </div>
+              <div class="awv2-property-market-tabs" role="tablist" aria-label="Property and market views">
+                <a role="tab" aria-selected={propertyMarketView === 'property-intelligence'} class={propertyMarketView === 'property-intelligence' ? 'active' : ''} href={sectionHref(window.location.pathname, window.location.search, 'property-intelligence')} onClick={(e) => switchSection(e as unknown as MouseEvent, 'property-intelligence')}>Property &amp; diligence</a>
+                <a role="tab" aria-selected={propertyMarketView === 'comps-valuation'} class={propertyMarketView === 'comps-valuation' ? 'active' : ''} href={sectionHref(window.location.pathname, window.location.search, 'comps-valuation')} onClick={(e) => switchSection(e as unknown as MouseEvent, 'comps-valuation')}>Valuation &amp; comps</a>
+              </div>
+            </div>
+            <nav class="awv2-zone-index" aria-label="Workspace zones">
+              {propertyMarketView === 'property-intelligence' ? <>
+                <a href="#pi-subject">Subject</a><a href="#access-road-frontage">Access</a><a href="#terrain-buildability">Terrain</a><a href="#environmental-soils">Environmental</a><a href="#zoning-land-use">Zoning</a><a href="#utilities-septic">Utilities</a><a href="#visual-evidence">Visual evidence</a><a href="#market-intelligence">Market</a><a href="#research-status">Diligence</a>
+              </> : <>
+                <a href="#valuation-decision">Valuation</a><a href="#comparable-sales">Comparable sales</a><a href="#valuation-market-intelligence">Market</a><a href="#valuation-methodology">Methodology</a>
+              </>}
+            </nav>
+            {propertyMarketView === 'comps-valuation' ? (
+              <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
+            ) : (
+              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} />
+            )}
           </main>
-        ) : section === 'Comps & Valuation' ? (
-          <main class="awv2-main">
-            <CompsValuationSection dealId={dealId} initial={compsValuation} />
+        ) : section === 'Deal Activity' ? (
+          <main class="awv2-main awv2-deal-activity" data-testid="deal-activity-workspace">
+            <section class="awv2-activity-seller" data-domain="action">
+              <div class="awv2-dom-eyebrow" data-dom="action">Seller</div>
+              <UserRound size={34} aria-hidden="true" />
+              <h2>{seller?.name || owner || 'Seller not collected'}</h2>
+              <p>{seller?.phone || 'No phone retained'}{seller?.email ? ` · ${seller.email}` : ''}</p>
+              <div class="awv2-activity-actions"><button type="button"><Phone size={15} /> Call</button><button type="button"><MessageSquare size={15} /> Text</button><button type="button"><Mail size={15} /> Email</button></div>
+            </section>
+            <section class="awv2-activity-next" data-domain="action">
+              <div class="awv2-dom-eyebrow" data-dom="action">Next action</div>
+              <h2>{nextActionLabel || 'Assign the next acquisition action'}</h2>
+              {nextActionReason && <p>{nextActionReason}</p>}
+              <div class="awv2-activity-meta"><span><CalendarClock size={15} /> {followUp || 'No follow-up scheduled'}</span><span>{stageLabel}</span></div>
+            </section>
+            <section class="awv2-activity-timeline" data-domain="evidence">
+              <div class="awv2-dom-eyebrow" data-dom="evidence">Recent activity</div>
+              <div class="awv2-timeline">
+                {(activity?.events?.length ? activity.events : [{ kind: 'status', summary: 'No activity has been recorded yet.', createdAt: 0 }]).slice(0, 8).map((event) => (
+                  <div class="awv2-timeline-event"><span class="dot" /><div><b>{activityLabel(event.kind, event.summary)}</b>{event.createdAt > 0 && <small>{new Date(event.createdAt * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</small>}</div></div>
+                ))}
+              </div>
+            </section>
           </main>
         ) : (
         <OverviewSection
@@ -454,6 +489,7 @@ export function AcquisitionWorkspaceV2() {
           visualBuyerAnalysisLabel={visualBuyerAnalysisLabel}
           onOpenVisualBuyerAnalysis={(e) => switchSection(e as unknown as MouseEvent, 'property-intelligence')}
           exactAddressListings={exactAddressListings}
+          market={market}
           compsValuation={compsValuation}
           valuationBasisLabel={valuationBasisLabel}
           landBasisOpeningReference={landBasisOpeningReference}
@@ -464,6 +500,7 @@ export function AcquisitionWorkspaceV2() {
           onOpenSection={onOpenSection}
         />
         )}
+        </div>
       </div>
     </div>
   );

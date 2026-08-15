@@ -650,7 +650,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     <>
       {/* ── Subject summary ── */}
       <div class="awv2-pi-questions">
-        <section class="awv2-panel awv2-pi-subject" id="pi-subject">
+        <section data-domain="property" class="awv2-panel awv2-pi-subject" id="pi-subject">
           <div class="awv2-panel-title">Subject</div>
           <div class="awv2-kv">
             <Kv k="Address" v={address} />
@@ -680,7 +680,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             the next panel, its photographs in the one after that, and its
             access wording only in the access ladder. Nothing is repeated. */}
         {exactAddressListings ? (
-          <section class="awv2-panel awv2-listing-card" id="exact-address-listing-evidence">
+          <section data-domain="evidence" class="awv2-panel awv2-listing-card" id="exact-address-listing-evidence">
             <div class="awv2-panel-title">
               Current public listing
               <span class="awv2-src-tag">Exact-address web discovery · {exactAddressListings.status}</span>
@@ -780,7 +780,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             </details>
           </section>
         ) : (
-          <section class="awv2-panel" id="exact-address-listing-evidence">
+          <section data-domain="evidence" class="awv2-panel" id="exact-address-listing-evidence">
             <div class="awv2-panel-title">Current public listing</div>
             <div class="awv2-pi-note">Exact-address discovery has not returned a retained public-property result yet.</div>
           </section>
@@ -790,7 +790,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             What the listing SAYS the property is, kept at listing weight. It is
             never promoted into an assessor, government or recorded fact. */}
         {listingCard && improvementFacts && (
-          <section class="awv2-panel" id="listing-reported-intelligence">
+          <section data-domain="evidence" class="awv2-panel" id="listing-reported-intelligence">
             <div class="awv2-panel-title">
               Listing-reported property intelligence
               <span class="awv2-src-tag">{listingCard.evidenceLabel} · never an assessor or recorded fact</span>
@@ -824,7 +824,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             Subject evidence, not decoration, rendered through the existing
             gallery. An absent photograph stays absent: no substitution. */}
         {listingCard && (
-          <section class="awv2-panel" id="listing-imagery">
+          <section data-domain="evidence" class="awv2-panel" id="listing-imagery">
             <div class="awv2-panel-title">
               Listing imagery
               <span class="awv2-src-tag">{listingCard.evidenceLabel} · {listingPhotos.length} retained photograph{listingPhotos.length === 1 ? '' : 's'}</span>
@@ -851,8 +851,17 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             questions, so an observed entrance can never be mistaken for a
             recorded right. Listing driveway and directions wording appears
             once, as tier-2 support, and nowhere else on this page. */}
-        <section class="awv2-panel" id="access-road-frontage">
+        <section data-domain="property" class="awv2-panel" id="access-road-frontage">
           <div class="awv2-panel-title">Access &amp; road frontage</div>
+          {/* Shared access rule (matches Overview): not flagged landlocked +
+              mapped road frontage = ESTABLISHED, stated first, no speculative
+              legal warning. The evidence ladder below stays as provenance. */}
+          {accessView?.established && !accessView?.evidence?.parcelFlagged && (
+            <div class="awv2-pi-note" data-testid="pi-access-established">
+              <b>Access established:</b> {accessView.legalAccess ?? 'Yes'}
+              {accessView.frontageFt != null ? ` — ${accessView.frontageFt} ft mapped road frontage` : ''}; not flagged landlocked.
+            </div>
+          )}
           <div class="awv2-kv">
             <Kv k="Road frontage" v={landPortalFrontage || (frontageFt ? `${Math.round(Number(frontageFt))} ft` : null)} empty="Not supplied by LandPortal" />
             <Kv k="Road" v={roadName ? `${roadName} (situs road)` : null} />
@@ -876,7 +885,12 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
               </div>
             ))}
           </div>
-          {accessView?.evidence?.operatorConclusion && <div class="awv2-pi-note"><b>Reconciled operator read:</b> {accessView.evidence.operatorConclusion}</div>}
+          {/* The evidence-ladder conclusion speaks for the operator read ONLY
+              while access is unresolved; once the parcel evidence establishes
+              access, an empty ladder must not contradict the established
+              headline above — it moves into the provenance details. */}
+          {accessView?.evidence?.operatorConclusion && !(accessView?.established && !accessView?.evidence?.parcelFlagged)
+            && <div class="awv2-pi-note"><b>Reconciled operator read:</b> {accessView.evidence.operatorConclusion}</div>}
           <details class="awv2-collapse awv2-access-details">
             <summary>Access sources and unresolved diligence</summary>
             {accessRungs.map((rung) => <div class="awv2-pi-note">{rung.sourceLabel || 'No source retained'}{rung.basis ? ` · ${rung.basis.replace(/_/g, ' ')}` : ''}{rung.sourceUrl ? <> · <a href={rung.sourceUrl} target="_blank" rel="noreferrer">source</a></> : null}</div>)}
@@ -891,7 +905,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
       {/* ── Terrain + Environmental ── */}
       <div class="awv2-grid cols-3-2">
-        <section class="awv2-panel">
+        <section data-domain="property" class="awv2-panel" id="terrain-buildability">
           <div class="awv2-panel-title">Terrain &amp; usable area</div>
           <div class="awv2-kv">
             <Kv k="Average slope" v={landPortalSlope || (slopePct ? `${slopePct}%` : null)} />
@@ -914,7 +928,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           </div>
         </section>
 
-        <section class="awv2-panel">
+        <section data-domain="property" class="awv2-panel" id="environmental-soils">
           <div class="awv2-panel-title">Environmental &amp; soils</div>
           <div class="awv2-kv">
             <Kv k="Wetlands" v={landPortalWetlands || (wetPct ? `${wetPct}% — parcel panel` : null)} />
@@ -949,10 +963,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           be divided by right. Every downstream valuation scenario depends on
           this being right, so it sits where the operator reads it in order. */}
       {dealId != null && (
-        <LandUsePanel dealId={dealId} initial={landUse ?? null} />
+        <div id="zoning-land-use"><LandUsePanel dealId={dealId} initial={landUse ?? null} /></div>
       )}
 
-      <section class="awv2-panel" id="utilities-septic">
+      <section data-domain="risk" class="awv2-panel" id="utilities-septic">
         <div class="awv2-panel-title">Utilities / septic</div>
         <div class="awv2-pi-question-read">
           <div><span>Utilities</span><b>{utilities?.headline || 'Not yet resolved'}</b></div>
@@ -965,7 +979,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       </section>
 
       {/* ── Soils & Preliminary Septic Outlook ── */}
-      <section class="awv2-panel" id="soils-septic">
+      <section data-domain="risk" class="awv2-panel" id="soils-septic">
         <div class="awv2-panel-title">
           Soils &amp; Preliminary Septic Outlook <span class="awv2-src-tag">{soilsSeptic?.source || 'LandPortal soil overlay'} · screening only</span>
         </div>
@@ -1023,7 +1037,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       <details class="awv2-collapse awv2-pi-diagnostics">
         <summary>LandPortal source facts and provenance</summary>
       <div class="awv2-grid cols-3">
-        <section class="awv2-panel">
+        <section data-domain="property" class="awv2-panel">
           <div class="awv2-panel-title">Zoning &amp; land use <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
             <Kv k="Zoning code" v={zoningCode} empty="Not supplied" />
@@ -1037,7 +1051,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           )}
         </section>
 
-        <section class="awv2-panel">
+        <section data-domain="property" class="awv2-panel">
           <div class="awv2-panel-title">Sale &amp; deed history <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
             <Kv k="Last sale price" v={lastSalePrice ? `${lastSalePriceUsd ? `${lastSalePriceUsd} · ` : ''}displayed “${lastSalePrice}”` : null} empty="Not supplied" />
@@ -1053,7 +1067,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           )}
         </section>
 
-        <section class="awv2-panel">
+        <section data-domain="valuation" class="awv2-panel">
           <div class="awv2-panel-title">Value &amp; assessment <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
             <Kv k="Assessed value" v={assessedValue} empty="Not supplied" />
@@ -1070,7 +1084,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       </details>
 
       {/* ── Visual evidence ── */}
-      <section class="awv2-panel">
+      <section data-domain="evidence" class="awv2-panel" id="visual-evidence">
         <div class="awv2-panel-title">Visual evidence <span class="awv2-src-tag">LandPortal · verified subject</span></div>
         {overview && (
           <figure class="awv2-gallery-item" style="margin:0 0 14px">
@@ -1102,7 +1116,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       </section>
 
       {/* ── Street View observations ── */}
-      <section class="awv2-panel">
+      <section data-domain="evidence" class="awv2-panel">
         <div class="awv2-panel-title">
           Street View observations <span class="awv2-src-tag">G Maps Street View via LandPortal</span>
         </div>
@@ -1132,7 +1146,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
       {/* ── Visual Buyer Analysis: concise buyer narrative by default; the
              detailed structured analysis stays available, collapsed. ── */}
-      <section class="awv2-panel" id="visual-buyer-analysis">
+      <section data-domain="evidence" class="awv2-panel" id="visual-buyer-analysis">
         <div class="awv2-panel-title">
           Visual Buyer Analysis <span class="awv2-src-tag">Multi-view · {vba?.basedOn?.length ?? 0} evidence categories</span>
         </div>
@@ -1186,9 +1200,9 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       </section>
 
       {/* ── Market context (LandOS Market Research) ── */}
-      <section class="awv2-panel">
+      <section data-domain="market" class="awv2-panel" id="market-intelligence">
         <div class="awv2-panel-title">
-          Market context <span class="awv2-src-tag">{market?.source || 'LandOS Market Research'} — not LandPortal</span>
+          Market Intelligence <span class="awv2-src-tag">{market?.source || 'LandOS Market Research'} — Market Pulse + Market Research, one connected read</span>
         </div>
         {market ? (
           <>
@@ -1215,19 +1229,27 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
       {/* ── Comparable research summary ── */}
       <div class="awv2-grid cols-3-2">
-        <section class="awv2-panel">
+        <section data-domain="valuation" class="awv2-panel">
           <div class="awv2-panel-title">Comparable evidence handoff</div>
-          <div class="awv2-pi-note">{comps.summaryLine || 'Current comparable state is maintained in Comps & Valuation.'}</div>
+          {/* The headline is the CANONICAL summary, never the snapshot's
+              collection-time prose: the snapshot line can carry a comp count
+              from before operator include/exclude actions. */}
+          <div class="awv2-pi-note">
+            {valuationSummary
+              ? `${valuationSummary.acceptedCount} accepted closed sale${valuationSummary.acceptedCount === 1 ? '' : 's'} currently support the ${valuationSummary.status} valuation.`
+              : comps.summaryLine || 'Current comparable state is maintained in Comps & Valuation.'}
+          </div>
           <div class="awv2-pi-note">Counts and valuation conclusions are not recomputed on this page; Comps &amp; Valuation is the canonical detailed surface.</div>
           <details class="awv2-collapse awv2-pi-diagnostics">
             <summary>Collection diagnostics</summary>
+            {valuationSummary && comps.summaryLine && <div>Collection-time note (may predate operator selections): {comps.summaryLine}</div>}
             <div>LandPortal rows seen: {comps.landPortalRowsSeen ?? 'not reported'}</div>
             <div>Total collected: {comps.totalCollected ?? 'not reported'}</div>
             <div>Duplicates merged: {comps.duplicatesMerged ?? 'not reported'}</div>
           </details>
         </section>
 
-        <section class="awv2-panel">
+        <section data-domain="evidence" class="awv2-panel">
           <div class="awv2-panel-title">Comparables map</div>
           {byId.has('inspection-comps_map') ? (
             <figure class="awv2-gallery-item awv2-comps-map" style="margin:0">
@@ -1249,10 +1271,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
       {/* Evidence / unresolved diligence: delivery is not the same as resolution. */}
       {researchStatus && (
-        <section class="awv2-panel awv2-research-status" id="research-status">
+        <section data-domain="action" class="awv2-panel awv2-research-status" id="research-status">
           <div class="awv2-panel-title">Research status</div>
           <div class="awv2-research-counts">
-            <div><span>Research lanes completed</span><b>{researchStatus.delivered} / {researchStatus.total}</b></div>
+            <div><span>Research areas delivered</span><b>{researchStatus.delivered} / {researchStatus.total}</b></div>
             <div><span>Diligence questions resolved</span><b>{researchStatus.questionsResolved != null ? `${researchStatus.questionsResolved}${researchStatus.questionsTotal != null ? ` / ${researchStatus.questionsTotal}` : ''}` : 'Tracked separately'}</b></div>
           </div>
           <div class="awv2-pi-note">Completed research means the lane delivered its current evidence; it does not mean every diligence question is resolved.</div>
@@ -1265,7 +1287,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
       {/* ── Missing diligence: reconciled operator checklist ── */}
       {missingDiligence ? (
-        <section class="awv2-missing">
+        <section data-domain="action" class="awv2-missing">
           <div class="awv2-panel-title">
             Missing diligence <span class="awv2-src-tag">Reconciled against accepted research</span>
           </div>
@@ -1273,7 +1295,18 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             {/* Compact, collapsed by default: name + status + short next action.
                 Expanding a row reveals the full reconciled record. The most
                 urgent items are visually prominent but stay collapsed. */}
-            {missingDiligence.items.map((item) => (
+            {missingDiligence.items.map((rawItem) => {
+              // Canonical reconciliation: the closed-sale-evidence row must
+              // never say "not priceable" while the canonical valuation state
+              // carries accepted sales; the live summary is authoritative.
+              const item = valuationSummary && valuationSummary.acceptedCount > 0 && /closed[- ]sale/i.test(rawItem.label)
+                ? {
+                    ...rawItem,
+                    urgent: false,
+                    shortStatus: `${valuationSummary.acceptedCount} accepted closed sale${valuationSummary.acceptedCount === 1 ? '' : 's'} · ${valuationSummary.status}`,
+                  }
+                : rawItem;
+              return (
               <details class={`awv2-md-row${item.urgent ? ' urgent' : ''}`}>
                 <summary>
                   <span class="t">{item.label}</span>
@@ -1287,7 +1320,8 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
                   <div class="row"><span class="k">Next source</span><span class="v">{item.nextSource}</span></div>
                 </div>
               </details>
-            ))}
+              );
+            })}
           </div>
           {missingDiligence.evidenceGaps.length > 0 && (
             <div class="awv2-missing-chips" style="margin-top:12px">
@@ -1305,7 +1339,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         const shortMissing = uniqueMissing.filter((m) => m.length <= 64);
         const longMissing = uniqueMissing.filter((m) => m.length > 64);
         return (
-          <section class="awv2-missing">
+          <section data-domain="action" class="awv2-missing">
             <div class="awv2-panel-title">Missing diligence</div>
             <div class="awv2-missing-chips">
               {shortMissing.map((m) => <span class="awv2-chip">{m}</span>)}
