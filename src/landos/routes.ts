@@ -148,7 +148,7 @@ import { makeCountyRecordsBrowser } from './county-records-browser.js';
 import { routeBrowserQuestion, type BrowserEvidence } from './browser-intelligence.js';
 import { containsRejectedParcelRecordDestination, isRejectedParcelRecordDestination } from './browser-navigator.js';
 import { makeLiveBrowserDriver, ensureBrowserSession, ensureBrowserSessionReady, browserSessionHealth, browserSessionStatus, startBrowserSession, openLandPortalInSession, withWorkingPage, ensureLandPortalAuthenticated, readLandPortalCreds, closeSurplusSessionPages, adoptAutomationControlPage } from './browser-session.js';
-import { reapOrphanAutomationTabs } from './automation-browser.js';
+import { reapOrphanAutomationTabs, reclaimStrandedAutomationTabs } from './automation-browser.js';
 import { getCountySources } from './county-source-map.js';
 import { officialDomainScore, searchEngineUrl, sourceContradictsRequestedState, unwrapSearchResults } from './netr-routing.js';
 // Exact-address discovery reads engines and listing pages through the dedicated
@@ -1765,6 +1765,29 @@ export function registerLandosRoutes(app: Hono): void {
       // was unverified and the pipeline was locked. Reconcile once at start so
       // no GET ever has to write to make the card consistent.
       try { reconcileAllPendingCanonicalIdentities(); } catch { /* recovery never blocks startup */ }
+
+      // RECLAIM TABS STRANDED BY A PREVIOUS LANDOS PROCESS.
+      //
+      // The automation Chrome outlives this runtime on purpose — LandPortal
+      // auth lives in its profile — so every restart leaves the last process's
+      // tabs (above all the cached LandPortal working tab) open with nothing
+      // left alive that knows it owned them. In-process cleanup can never see
+      // them, and they accumulated a restart at a time until an operator ran
+      // `npm run landos:browser reap` by hand.
+      //
+      // This is the one boundary where closing every page is provably correct:
+      // nothing in this process owns a tab yet, and the runtime PID lock means
+      // no other LandOS is running. The ownership guard still refuses anything
+      // that is not the LandOS profile, so the operator's Chrome is untouched.
+      if (process.env.NODE_ENV !== 'test') {
+        void reclaimStrandedAutomationTabs({
+          dashboardOrigin: `http://localhost:${process.env.PORT ?? 3141}`,
+        }).then((reclaim) => {
+          if (reclaim.ran && reclaim.closed > 0) {
+            logger.info({ closed: reclaim.closed, remaining: reclaim.remaining }, 'automation_browser_startup_reclaim');
+          }
+        }).catch(() => { /* reclaim never blocks startup */ });
+      }
     }, 0);
   }
   app.get('/api/landos/overview', (c) => {

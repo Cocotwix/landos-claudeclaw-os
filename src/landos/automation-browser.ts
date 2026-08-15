@@ -630,6 +630,19 @@ export function isReapableAutomationTarget(target: AutomationTarget, dashboardOr
 export interface ReapResult { inspected: number; closed: number; failed: number; remaining: number }
 
 /**
+ * What a reap is allowed to close.
+ *
+ * `automation-hosts` is the in-run default: work is still legitimately in
+ * flight elsewhere in the process, so only pages this module can PROVE are
+ * automation work product are touched.
+ *
+ * `all-pages` is for the process lifecycle boundary only. At startup nothing in
+ * this process owns a tab yet, so every page in the owned browser is by
+ * definition stranded and only one inert control page is retained.
+ */
+export type ReapScope = 'automation-hosts' | 'all-pages';
+
+/**
  * Close every orphan automation page in the owned browser.
  *
  * Runs against the CDP HTTP interface so it works even when no puppeteer
@@ -637,20 +650,38 @@ export interface ReapResult { inspected: number; closed: number; failed: number;
  * carries a token in its query string.
  */
 export async function reapOrphanAutomationTabs(
-  deps: { config?: AutomationBrowserConfig; dashboardOrigin?: string; fetchImpl?: typeof fetch } = {},
+  deps: {
+    config?: AutomationBrowserConfig;
+    dashboardOrigin?: string;
+    fetchImpl?: typeof fetch;
+    scope?: ReapScope;
+    /** Injectable ownership probe so tests can reap without a real browser. */
+    verifyOwnership?: (config: AutomationBrowserConfig) => Promise<AutomationOwnership>;
+  } = {},
 ): Promise<ReapResult> {
   const config = deps.config ?? automationBrowserConfig();
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const ownership = await verifyAutomationOwnership(config);
+  const scope: ReapScope = deps.scope ?? 'automation-hosts';
+  const ownership = await (deps.verifyOwnership ?? verifyAutomationOwnership)(config);
   if (!ownership.owned) throw new AutomationBrowserUnavailable(ownership.reason ?? 'Automation browser unavailable.');
 
   const list = await (await fetchImpl(`${config.endpoint}/json/list`)).json() as AutomationTarget[];
-  const reapable = list.filter((target) => isReapableAutomationTarget(target, deps.dashboardOrigin));
+  const pageTargets = list.filter((target) => target.type === 'page');
+  let reapable: AutomationTarget[];
+  if (scope === 'all-pages') {
+    // Prefer RETAINING an existing inert page over closing everything and
+    // minting a replacement: minting is a target creation this module avoids
+    // whenever an equivalent page already exists.
+    const keep = pageTargets.find((target) => target.url === CONTROL_PAGE_URL) ?? null;
+    reapable = pageTargets.filter((target) => target !== keep);
+  } else {
+    reapable = list.filter((target) => isReapableAutomationTarget(target, deps.dashboardOrigin));
+  }
 
   // Chrome exits with its last page. Guarantee a control page SURVIVES this
   // reap, or closing the final orphan takes the browser — and the live
   // authenticated session — down with it.
-  const survivors = list.filter((target) => target.type === 'page' && !reapable.includes(target));
+  const survivors = pageTargets.filter((target) => !reapable.includes(target));
   if (reapable.length > 0 && survivors.length === 0) {
     try {
       await fetchImpl(`${config.endpoint}/json/new?${encodeURIComponent(CONTROL_PAGE_URL)}`, { method: 'PUT' });
@@ -662,15 +693,93 @@ export async function reapOrphanAutomationTabs(
 
   let closed = 0;
   let failed = 0;
+  const closedIds = new Set<string>();
   for (const target of reapable) {
     try {
       const response = await fetchImpl(`${config.endpoint}/json/close/${encodeURIComponent(target.id)}`);
-      if (response.ok) closed += 1; else failed += 1;
+      if (response.ok) { closed += 1; closedIds.add(target.id); } else failed += 1;
     } catch { failed += 1; }
   }
+  // `/json/close` ACKNOWLEDGES a close; it does not wait for the target to be
+  // torn down, so a target just closed can still appear in the very next
+  // `/json/list`. Counting the raw re-read reported "remaining: 4" for a browser
+  // that had settled at one page — a false leak alarm on the one number that
+  // exists to say honestly whether anything survived. Targets confirmed closed
+  // are therefore excluded by id rather than trusted to have vanished, which
+  // needs no settle delay and leaves a genuinely surviving tab still counted.
   const after = await (await fetchImpl(`${config.endpoint}/json/list`)).json() as AutomationTarget[];
-  const remaining = after.filter((target) => isReapableAutomationTarget(target, deps.dashboardOrigin)).length;
+  const stillOpen = after.filter((target) => !closedIds.has(target.id));
+  const remaining = scope === 'all-pages'
+    // One retained control page is the intended end state, not a leftover.
+    ? Math.max(0, stillOpen.filter((target) => target.type === 'page').length - 1)
+    : stillOpen.filter((target) => isReapableAutomationTarget(target, deps.dashboardOrigin)).length;
   // Counts only — a leaked dashboard tab carries a token in its URL.
-  logger.info({ inspected: list.length, closed, failed, remaining }, 'automation_browser_orphans_reaped');
+  logger.info({ scope, inspected: list.length, closed, failed, remaining }, 'automation_browser_orphans_reaped');
   return { inspected: list.length, closed, failed, remaining };
+}
+
+export interface AutomationReclaim extends ReapResult {
+  /** False when there was no owned automation browser to reclaim from. */
+  ran: boolean;
+  note: string;
+}
+
+/**
+ * RECLAIM TABS STRANDED BY A PREVIOUS LANDOS PROCESS.
+ *
+ * ── The defect this closes ────────────────────────────────────────────────
+ *
+ * Every tab-cleanup path in LandOS is in-process: `closeSurplusSessionPages`
+ * walks `lanePageRegistry` and `state.workingPage`, and the post-run reap fires
+ * on one route's tail. All of it dies with the process.
+ *
+ * The automation Chrome does NOT die with the process — that is the whole point
+ * of it. It is persistent so LandPortal authentication survives restarts. So the
+ * two lifetimes diverge: the runtime restarts constantly while one Chrome runs
+ * for days, and every restart strands whatever tabs the dying process held.
+ *
+ * The reliable stranding is the shared working tab. `withWorkingPage` acquires a
+ * LandPortal tab and caches it for reuse across leads; nothing but
+ * `closeSurplusSessionPages` ever closes it, and the Market Research / playbook
+ * lanes that borrow it never call that. One restart mid-sweep = one permanently
+ * stranded LandPortal tab, each holding its own renderer process. Observed live:
+ * four stranded LandPortal tabs across sixteen Chrome processes and ~1.4 GB,
+ * reclaimable only by running `npm run landos:browser reap` by hand.
+ *
+ * ── Why this is safe here and only here ───────────────────────────────────
+ *
+ * At process start nothing in THIS process owns a tab, and the PID lock in
+ * `acquireLock` refuses to run a second LandOS, so no live run can own one
+ * either. Every page present is therefore stranded, which is what licenses
+ * `all-pages` — the in-run reap must stay conservative and does.
+ *
+ * The ownership guard still decides: it proves the port belongs to a Chrome
+ * running the LandOS profile before anything is closed, so the operator's own
+ * Chrome can never be reached. Best-effort by design — no automation browser
+ * running is the normal case, not a failure, and a reclaim must never block
+ * startup.
+ */
+export async function reclaimStrandedAutomationTabs(
+  deps: {
+    config?: AutomationBrowserConfig;
+    dashboardOrigin?: string;
+    fetchImpl?: typeof fetch;
+    verifyOwnership?: (config: AutomationBrowserConfig) => Promise<AutomationOwnership>;
+  } = {},
+): Promise<AutomationReclaim> {
+  const idle: ReapResult = { inspected: 0, closed: 0, failed: 0, remaining: 0 };
+  try {
+    const result = await reapOrphanAutomationTabs({ ...deps, scope: 'all-pages' });
+    return {
+      ...result,
+      ran: true,
+      note: result.closed === 0
+        ? 'The automation browser held no tab stranded by a previous LandOS process.'
+        : `Reclaimed ${result.closed} tab(s) stranded by a previous LandOS process; one inert control page was retained.`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.info({ reason: message }, 'automation_browser_reclaim_skipped');
+    return { ...idle, ran: false, note: `No owned automation browser to reclaim from (${message}).` };
+  }
 }
