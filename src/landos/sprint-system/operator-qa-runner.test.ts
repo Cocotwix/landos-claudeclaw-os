@@ -247,12 +247,14 @@ describe('journey execution', () => {
     expect(result.findings[0].liveUrl).not.toContain('test-token');
   });
 
-  it('runs canonical Deal Card semantic assertions through the Acquisitions deep link', async () => {
+  it('runs canonical record-view semantic assertions through the Acquisitions deep link', async () => {
+    // Re-baselined 2026-08-14 with the journey: Workspace V2 is the default
+    // composed Acquisitions record view (commit 00a89ac).
     const root = fixtureRoot();
     const log: string[] = [];
     const deps = baseDeps(root, {
-      browserFactory: fakeBrowser(() => 'Acquisitions canonical Deal Card', log, {
-        'deal-card-root': 1,
+      browserFactory: fakeBrowser(() => 'Acquisitions canonical record view', log, {
+        'acquisition-workspace-root': 1,
         'lead-workspace-root': 0,
       }),
       fetchImpl: fakeFetch({

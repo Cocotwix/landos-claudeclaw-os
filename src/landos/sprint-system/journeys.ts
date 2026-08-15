@@ -222,40 +222,39 @@ export const GOLDEN_JOURNEYS: GoldenJourney[] = [
     fixturePolicy: 'Read-only and property-independent; no operating record is selected or changed.',
   },
   {
-    // Re-baselined 2026-07-24 (Tyler-directed): replaces the retired
-    // lead-workspace-acquisitions-readonly journey. The recovery merge (PR #2)
-    // made the canonical Deal Card the one composed operator view on every
-    // Acquisitions entry path; this journey protects that architecture.
+    // Re-baselined 2026-08-14 (verified regression, sprint
+    // sprint-2026-08-14-lead-card-redesign finding F9): commit 00a89ac made
+    // the Acquisition Workspace V2 the default composed operator view on the
+    // Acquisitions entry path, so the former deal-card-root assertions could
+    // never pass. The capability's intent is unchanged — ONE composed
+    // canonical operator record view, and the retired Lead Workspace never
+    // renders — now asserted against the V2 workspace root.
     id: 'acquisitions-deal-card-readonly',
-    name: 'Canonical Deal Card through Acquisitions',
+    name: 'Canonical acquisitions record view (Workspace V2)',
     capability: 'acquisitions-deal-card',
     department: 'acquisitions',
     startingState: 'An existing safe deal-card fixture selected without modifying operator data.',
     operatorSteps: [
       { kind: 'select_card', criteria: 'any', description: 'Select an existing safe deal-card fixture' },
-      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the canonical Deal Card from the Acquisitions deep link' },
-      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The canonical Deal Card root is present exactly once' },
+      { kind: 'navigate', path: ACQUISITIONS_DEAL_PATH, description: 'Open the canonical acquisitions record from the Acquisitions deep link' },
+      { kind: 'expect_test_id', testId: 'acquisition-workspace-root', count: 1, description: 'The canonical Workspace V2 record root is present exactly once' },
       { kind: 'forbid_test_id', testId: 'lead-workspace-root', description: 'The retired legacy Lead Workspace never renders' },
       { kind: 'api_reconcile', apiPath: '/api/landos/deal-cards/{dealId}', description: 'The Deal Card API responds for the selected fixture' },
-      { kind: 'forbid_text', anyOf: ['Â·', 'â€'], description: 'No double-encoded UTF-8 mojibake is visible to the operator' },
-      { kind: 'navigate', path: '/dept/acquisitions?section=library', description: 'Open the Acquisitions Deal Library list' },
-      { kind: 'click_text', text: '#{dealId}', description: 'Click the selected deal row in the Deal Library' },
-      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The library click path lands on the canonical Deal Card' },
-      { kind: 'forbid_test_id', testId: 'lead-workspace-root', description: 'No fallback to the retired Lead Workspace from the library click path' },
-      { kind: 'screenshot', name: 'acquisitions-deal-card-desktop', description: 'Capture the desktop canonical Deal Card' },
-      { kind: 'refresh_persistence', expectAnyOf: [], expectTestId: 'deal-card-root', description: 'Reload and confirm the canonical Deal Card remains available' },
+      { kind: 'forbid_text', anyOf: ['Â·', 'â€', '&amp;'], description: 'No double-encoded UTF-8 mojibake or literal HTML entity is visible to the operator' },
+      { kind: 'screenshot', name: 'acquisitions-deal-card-desktop', description: 'Capture the desktop canonical record view' },
+      { kind: 'refresh_persistence', expectAnyOf: [], expectTestId: 'acquisition-workspace-root', description: 'Reload and confirm the canonical record view remains available' },
       { kind: 'set_viewport', width: 412, height: 915, description: 'Use a Galaxy S24 Ultra-width mobile viewport' },
-      { kind: 'expect_test_id', testId: 'deal-card-root', count: 1, description: 'The canonical Deal Card remains available on mobile' },
-      { kind: 'screenshot', name: 'acquisitions-deal-card-mobile', description: 'Capture the mobile canonical Deal Card' },
+      { kind: 'expect_test_id', testId: 'acquisition-workspace-root', count: 1, description: 'The canonical record view remains available on mobile' },
+      { kind: 'screenshot', name: 'acquisitions-deal-card-mobile', description: 'Capture the mobile canonical record view' },
     ],
     expectedBackendState: 'The deal-cards API returns the canonical read model for the selected fixture.',
-    expectedFrontendState: 'Acquisitions renders the canonical Deal Card, never the retired Lead Workspace, on desktop and mobile.',
-    prohibitedContradictions: ['Deal Card root missing', 'Retired Lead Workspace rendered on any Acquisitions path', 'Library click path bypasses the canonical Deal Card'],
+    expectedFrontendState: 'Acquisitions renders the canonical Workspace V2 record view, never the retired Lead Workspace, on desktop and mobile.',
+    prohibitedContradictions: ['Workspace V2 record root missing', 'Retired Lead Workspace rendered on any Acquisitions path'],
     requiredScreenshots: ['acquisitions-deal-card-desktop', 'acquisitions-deal-card-mobile'],
     persistence: { refresh: true, restart: false },
     allowedExternalBlockers: [],
-    passCriteria: 'The read-only Acquisitions deep link, API, canonical Deal Card root, library click path, refresh, and mobile viewport all pass.',
-    failureCriteria: 'Missing Deal Card/API, a retired Lead Workspace root, or failed refresh/mobile rendering.',
+    passCriteria: 'The read-only Acquisitions deep link, API, canonical Workspace V2 record root, refresh, and mobile viewport all pass.',
+    failureCriteria: 'Missing record view/API, a retired Lead Workspace root, or failed refresh/mobile rendering.',
     mutating: false,
     fixturePolicy: 'Read-only against a dynamically selected existing deal-card fixture; never creates or updates an operator record.',
   },

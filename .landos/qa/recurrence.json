@@ -211,9 +211,31 @@
           "findingId": "F2",
           "at": "2026-07-16T04:29:35.810Z",
           "summary": "The Lead Workspace opens (same surface as /dept/acquisitions?deal=19); no silent fallback to the quarantined legacy Deal Card."
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F9",
+          "at": "2026-08-14T21:01:27.304Z",
+          "summary": "Golden journey passes, or the capability contract is amended for the V2 default"
         }
       ],
-      "review": null
+      "review": {
+        "failurePattern": "legacy-deal-card-silent-fallback: an Acquisitions entry path silently renders a different composed record surface than the one the frozen capability's golden journey asserts, so the protected journey fails (or a retired surface could return) without any operator-visible error.",
+        "sharedRootCause": "The default Acquisitions record surface changed (commit 00a89ac made Workspace V2 the default) while the golden journey still asserted the prior surface's root testid; surface identity and journey assertions live in different places with no link forcing simultaneous update.",
+        "whyAutomatedTestsMissedIt": "The journey definition is exercised against fake browsers in unit tests, which were seeded with the old testid counts; nothing diffs the journey's asserted root against the live default route's actual root.",
+        "whyBrowserQaMissedIt": "The capability journey had not been rerun since the default-route change; this sprint's QA ran it and caught the drift.",
+        "missingInvariant": "The Acquisitions default record route and the acquisitions-deal-card golden journey must assert the same root testid; changing the default surface requires re-baselining the journey in the same change.",
+        "missingAcceptanceJourney": "Rerun acquisitions-deal-card-readonly on every change to the default Acquisitions route.",
+        "sharedRepair": "Journey re-baselined to acquisition-workspace-root (verified-regression reopen of acquisitions-deal-card); the V2 page root now carries the stable testid; runner unit test updated to the same contract.",
+        "newRegressionTest": "operator-qa-runner.test.ts re-baselined assertion set (acquisition-workspace-root 1, lead-workspace-root 0).",
+        "newBrowserAssertion": "expect_test_id acquisition-workspace-root count 1 + forbid_test_id lead-workspace-root on the Acquisitions deep link, refresh, and mobile viewport.",
+        "affectedCapabilities": [
+          "acquisitions-deal-card"
+        ],
+        "reopenAcceptedCapability": true,
+        "completedAt": "2026-08-14T21:09:30.560Z",
+        "coversOccurrences": 2
+      }
     },
     "ui-text-double-encoded-utf8": {
       "occurrences": [
@@ -222,9 +244,31 @@
           "findingId": "F3",
           "at": "2026-07-16T04:29:35.810Z",
           "summary": "Header reads 'LEAD WORKSPACE · V1.0' (clean middle dot)."
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F7",
+          "at": "2026-08-14T21:01:27.304Z",
+          "summary": "Open Comps & Valuation →"
         }
       ],
-      "review": null
+      "review": {
+        "failurePattern": "ui-text-double-encoded-utf8 / literal-entity-in-string: operator-visible text renders a serialized form ('&amp;', 'Â·', 'â€') instead of the character, because markup escaping was hand-applied inside a plain string that the framework escapes again.",
+        "sharedRootCause": "HTML entities belong only in JSX text nodes; a JS string literal passed as a child is escaped by the framework, so '&amp;' in a string renders literally. The label was authored as a string with an entity.",
+        "whyAutomatedTestsMissedIt": "Source-contract tests matched the label loosely enough that the entity form passed; no test forbids '&amp;' inside string literals.",
+        "whyBrowserQaMissedIt": "Earlier QA read section structure, not the exact glyphs of every control label; this sprint's QA did a full page-text sweep.",
+        "missingInvariant": "No operator-visible string literal may contain an HTML entity; entities are only valid directly inside JSX markup.",
+        "missingAcceptanceJourney": "Full page-text sweep forbidding '&amp;', 'Â·', 'â€' on every live section (now part of the rebaselined acquisitions-deal-card-readonly journey's forbid_text step).",
+        "sharedRepair": "ws2 F7 repair: label string corrected to plain 'Open Comps & Valuation →'; the golden journey now forbids '&amp;' page-wide.",
+        "newRegressionTest": "workspace-v2-lead-design.test.ts assertion that no operator-visible string literal in the workspace page carries '&amp;'.",
+        "newBrowserAssertion": "forbid_text ['Â·','â€','&amp;'] in acquisitions-deal-card-readonly.",
+        "affectedCapabilities": [
+          "acquisitions-deal-card"
+        ],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-08-14T21:09:29.658Z",
+        "coversOccurrences": 2
+      }
     },
     "resolution-state-label-not-run-after-attempt": {
       "occurrences": [
@@ -420,6 +464,126 @@
           "findingId": "F6",
           "at": "2026-07-24T08:23:38.516Z",
           "summary": "No LandOS page carrying the dashboard token remains open inside a third-party application's browser."
+        }
+      ],
+      "review": null
+    },
+    "canonical-state-partial-propagation": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F1",
+          "at": "2026-08-14T19:10:27.615Z",
+          "summary": "Every Overview comp-count reference reflects the post-action state (4 accepted) without reload"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F3",
+          "at": "2026-08-14T19:10:27.615Z",
+          "summary": "PI shows the same canonical comp counts and valuation state as Overview and Comps & Valuation (5 accepted, 17 active competitors, supported $414,500)"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F5",
+          "at": "2026-08-14T19:10:27.615Z",
+          "summary": "One canonical research-lane count in the redesigned shell"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F8",
+          "at": "2026-08-14T21:01:27.304Z",
+          "summary": "The three open diligence questions (Zoning; Legal access and road frontage; Utilities) each visible, with zoning sub-detail attached to the Zoning question"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F11",
+          "at": "2026-08-14T21:24:37.938Z",
+          "summary": "The three open diligence questions (Zoning; Legal access and road frontage; Utilities) each visible as list items, a subset of API openQuestions"
+        }
+      ],
+      "review": {
+        "failurePattern": "canonical-state-partial-propagation (5th occurrence, ws2 F11): the unresolved panel wired to the canonical openQuestions rendered three EMPTY bullets — the canonical objects {label, reason, nextAction} were rendered directly as JSX children under a wrong string[] prop type, so the canonical data arrived but its content was dropped.",
+        "sharedRootCause": "The projection's item shape is declared per-consumer instead of shared: the component re-declared openQuestions as string[] while the server sends objects, and TypeScript could not catch it because the local declaration overrode the truth.",
+        "whyAutomatedTestsMissedIt": "Source-contract tests asserted which projection feeds the list, not that the rendered child is a string; no type-level link exists between the route's question shape and the component prop.",
+        "whyBrowserQaMissedIt": "The prior recheck verified the projection preference; only this recheck counted and read the rendered <li> contents.",
+        "missingInvariant": "A canonical projection's item type is imported from one declaration, never re-declared per consumer; list renderers render extracted text lines, never raw objects.",
+        "missingAcceptanceJourney": "Read each rendered unresolved bullet's text and fail on any empty bullet.",
+        "sharedRepair": "ws2 F11 repair: openQuestionLines() extracts 'label — reason' per question (string accepted for older projections), drops empties; prop type corrected to the object union.",
+        "newRegressionTest": "workspace-v2-lead-design.test.ts F8/F11 assertions on openQuestionLines extraction.",
+        "newBrowserAssertion": "QA recheck: every STILL UNRESOLVED bullet is non-empty and a subset of the API's question labels.",
+        "affectedCapabilities": [],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-08-14T21:26:41.872Z",
+        "coversOccurrences": 5
+      }
+    },
+    "same-label-different-basis": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F2",
+          "at": "2026-08-14T19:10:27.615Z",
+          "summary": "The same label carries the same canonical value on both tabs"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F4",
+          "at": "2026-08-14T19:10:27.615Z",
+          "summary": "One canonical supported range, or clearly differentiated labels so the operator cannot read them as the same figure"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F10",
+          "at": "2026-08-14T21:01:27.304Z",
+          "summary": "Reference values equal the labeled percentage, or the label notes rounding"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F12",
+          "at": "2026-08-14T21:24:37.938Z",
+          "summary": "One consistent ceiling figure, or clearly distinguished labels"
+        },
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F14",
+          "at": "2026-08-14T22:31:13.170Z",
+          "summary": "One consistent ceiling basis across pages, or each ceiling tile states its own basis and cross-references the other figure so the two ceilings cannot be misread as one measure"
+        }
+      ],
+      "review": {
+        "coversOccurrences": 5,
+        "failurePattern": "same-label-different-basis (5th occurrence, ws4 F14): Overview 'Ceiling reference (60% of land value, rounded)' $248,500 next to Comps & Valuation 'Land-basis negotiation ceiling' $267,500 — the CV tile carried no basis on the tile itself, so two ceiling headwords carried different numbers across adjacent pages.",
+        "sharedRootCause": "Two genuinely different measures (60%-of-land-value acquisition reference vs the technical quick-flip negotiation hard stop) share the headword 'ceiling'; the prior repair made the full labels distinct but the CV tile did not state its own basis or cross-reference the 60% figure, leaving the numbers unreconciled at the point of reading.",
+        "whyAutomatedTestsMissedIt": "Existing tests enforced distinct label strings only; nothing required the CV ceiling tile to state its basis or name the 60% reference figure.",
+        "whyBrowserQaMissedIt": "Prior QA recorded it deferred at the 4th occurrence on the grounds the labels were distinct; the 5th-occurrence QA correctly re-raised it as an operator-misreading risk rather than accepting the deferral.",
+        "missingInvariant": "Any cross-page financial figure sharing a headword with a different-basis figure must state its own basis ON THE TILE and cross-reference the sibling figure's value, so the operator can reconcile the two numbers without switching pages.",
+        "missingAcceptanceJourney": "Cross-page ceiling reconciliation: read the CV negotiation ceiling tile and confirm it names its basis and the 60% reference figure that Overview shows.",
+        "sharedRepair": "The CV negotiation-ceiling tile now renders a basis sub-line (data-testid cv-ceiling-basis) derived from ceilingBasis, naming the technical quick-flip max and the 60% ceiling reference figure from negotiation.standardBand.pct60 — the exact number Overview displays.",
+        "newRegressionTest": "workspace-v2-comps-valuation-ui.test.ts: 'states the negotiation ceiling basis and names the 60% reference figure (ws4-f1)' — requires cv-ceiling-basis, the three basis-variant strings, negotiation.standardBand.pct60, and the .awv2-cv-dec .s style.",
+        "newBrowserAssertion": "ws4 recheck journey: the ceiling tile's sub-line must be visible and must contain the same dollar figure Overview's 'Ceiling reference (60% of land value, rounded)' row shows.",
+        "affectedCapabilities": [],
+        "reopenAcceptedCapability": false,
+        "completedAt": "2026-08-14T22:31:52.262Z"
+      }
+    },
+    "ws1-legend-soon-swatch-contract": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F6",
+          "at": "2026-08-14T19:10:27.615Z",
+          "summary": "Live sections carry filled domain-colored swatches; all five Soon sections carry hollow swatches per the design-system contract"
+        }
+      ],
+      "review": null
+    },
+    "legacy-css-collides-with-redesigned-markup": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-08-14-lead-card-redesign",
+          "findingId": "F13",
+          "at": "2026-08-14T21:49:37.651Z",
+          "summary": "Each ladder rung shows exactly one step number (1-4) in its numbered badge."
         }
       ],
       "review": null
