@@ -33,6 +33,7 @@ import {
   listCountyRef,
   type CountyDrilldownSnapshot,
 } from './market-matrix-store.js';
+import { mrBridgeCountyFips, mrBridgeCountyName } from './market-research-store-bridge.js';
 import {
   acreageBandForAcres,
   acreageBandsForAcres,
@@ -213,6 +214,11 @@ function resolveCountyFips(county: string | null, state: string | null): { fips:
     const wanted = countyNameKey(county);
     const ref = listCountyRef(state).find((c) => countyNameKey(c.countyName) === wanted);
     if (ref) return { fips: ref.fips, countyName: ref.countyName };
+    // The matrix county reference only carries ingested counties. The Market
+    // Research geography table carries every U.S. county, so a name that misses
+    // there still resolves. Locality scoping only — never parcel identity.
+    const bridged = mrBridgeCountyFips(county, state);
+    if (bridged) return { fips: bridged, countyName: mrBridgeCountyName(bridged) ?? county };
   }
   return { fips: null, countyName: county };
 }

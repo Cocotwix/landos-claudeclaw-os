@@ -121,6 +121,13 @@ import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
 import { fetchRedfinLandComps } from './redfin-land-comps.js';
 import { fetchRealtorLandComps } from './realtor-land-comps.js';
 import { runBrockovichDataCenterMap } from './brockovich-data-center.js';
+import {
+  createPlaceGeocoder,
+  resolveCandidateLocation,
+  runDataCenterProximityScreen,
+  DATA_CENTER_SCREEN_RADIUS_MILES,
+} from './data-center-proximity.js';
+import { composeScanSearch, hermesScanSearch } from './market-scan-search.js';
 import { extractPropertyArgs } from './duke-preflight.js';
 import { suggestAddresses } from './address-suggest.js';
 import { classifySmartIntake, listIntakeIntents, type ParsedIntakeFields } from './intake-router.js';
@@ -222,7 +229,7 @@ import {
   MR_METRIC_DICTIONARY,
 } from './market-research-snapshots.js';
 import { collectQuarterlyMarketSnapshot, collectMarketGapFill, collectMarketVerifySweep, isCollectionActive, getCollectionStatus } from './market-research-collector.js';
-import { getZipGeometries } from './market-research-geometry.js';
+import { getZipGeometries, zipCentroid } from './market-research-geometry.js';
 import { buildMarketMatrixReportSection, resolveMarketMatrix, resolveMarketMatrixSection } from './market-matrix-read.js';
 import { propertyMarketContextFor, type PropertyMarketContext } from './property-market-context.js';
 import { buildDealCardOwnerAnalysis } from './deal-card-owner-analysis.js';
@@ -3788,6 +3795,24 @@ export function registerLandosRoutes(app: Hono): void {
     // ConfirmedParcel capability, not the legacy card flag. A Candidate parcel still
     // gets honest, clearly-labeled AREA context (usable unresolved leads), never
     // parcel-attributed market data.
+    // The subject's own retained Market Research record. Market Pulse used only
+    // the Census key and retrieved comps, so a brand-new lead reported growth
+    // "unknown" and county $/acre "not established" while the quarterly
+    // collection already held both. This supplies them, attributed.
+    const pulseMarketContext = marketContextFor(deal);
+    const pulseRetained = pulseMarketContext.read.available
+      ? {
+        population: pulseMarketContext.county.metrics?.population
+          ?? pulseMarketContext.subjectBand.metrics?.population ?? null,
+        populationGrowth: pulseMarketContext.county.metrics?.populationGrowth
+          ?? pulseMarketContext.subjectBand.metrics?.populationGrowth ?? null,
+        medianPricePerAcre: pulseMarketContext.liquidity.medianPricePerAcre,
+        soldCount: pulseMarketContext.liquidity.soldCount,
+        period: pulseMarketContext.liquidity.period,
+        resolvedVia: pulseMarketContext.liquidity.resolvedVia,
+        provider: pulseMarketContext.county.provider ?? pulseMarketContext.subjectBand.provider,
+      }
+      : null;
     const areaInput = {
       city: str(subj?.city) || undefined,
       county: str(subj?.county) || dd.county || undefined,
@@ -3795,6 +3820,7 @@ export function registerLandosRoutes(app: Hono): void {
       zip: subjectZip,
       fips: str(subj?.fips) || undefined,
       comps,
+      retainedCounty: pulseRetained,
     };
     const confirmed = confirmParcelForDeal(id);
     const marketPulse = confirmed
@@ -3858,6 +3884,16 @@ export function registerLandosRoutes(app: Hono): void {
       return parsed.filter((f) => f && typeof f.title === 'string');
     };
   };
+
+  // The Market Scan's actual transport: the governed keyless Hermes free search
+  // AND the grounded Gemini search, merged and deduped. Either answering is a
+  // real answer; only both failing is honestly "unavailable". A rural county
+  // that Gemini grounding returns nothing for is exactly the case that used to
+  // read as "no market activity" when it was really "one transport was quiet".
+  const marketScanSearch = (): ScanSearchFn | null => composeScanSearch([
+    hermesScanSearch(createHermesFreeSearch()),
+    groundedScanSearch(),
+  ]);
 
   const internalCountySnapshotsForDeal = (deal: unknown): InternalCountyAcreageSnapshot[] => {
     const record = deal as { title?: string; propertyCards?: Array<Record<string, unknown>> };
@@ -3969,42 +4005,23 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'not found' }, 404);
-    const cards = (Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>;
-    const subj = (cards.find((x) => x.role === 'subject') ?? cards[0]) as Record<string, unknown> | undefined;
-    const dd = getDealCardDd(id);
-    const county = str(subj?.county) || dd.county || undefined;
-    const state = str(subj?.state) || dd.state || undefined;
-    const MAX_AGE_S = 7 * 24 * 3600;
     const cached = loadMarketScan<MarketScanResult>(id, 'market_scan');
     const refresh = c.req.query('refresh') === '1';
-    const isAnswered = (p?: MarketScanResult | null) =>
-      !!p && ['found', 'none_found'].some((s) => p.dataCenterWatch?.status === s || p.growthSignals?.status === s);
-    const fresh = !!cached && Math.floor(Date.now() / 1000) - cached.createdAt < MAX_AGE_S && isAnswered(cached.payload);
-    if (cached && fresh && !refresh) {
-      return c.json({ marketScan: rehydrateCachedAcreageMatrix(deal, cached.payload), cached: true });
-    }
-    let scan: MarketScanResult;
+    // ONE market scan for the whole product. This route used to run its own
+    // search-only scan, so the Market tab and the Deal Intelligence mission
+    // could report different data-center answers for the same subject — and the
+    // tab's answer never screened the 20-mile radius at all.
+    let scan: MarketScanResult | null;
     try {
-      scan = await runMarketScan({
-        county,
-        state,
-        search: groundedScanSearch(),
-        internalCountySnapshots: internalCountySnapshotsForDeal(deal),
-        subjectAcres: num(subj?.acres),
-      });
+      scan = await operatorMarketScanForDeal(id, deal, { force: refresh });
     } catch (err) {
       logger.warn({ err, dealCardId: id }, 'market_scan_failed');
       return c.json({ marketScan: cached?.payload ?? null, cached: !!cached, error: 'market scan failed' });
     }
-    // Persist ONLY real answers (found / none_found). An unavailable scan (e.g.
-    // search quota) is returned honestly but never cached — the next open
-    // retries instead of pinning "unavailable" for a week.
+    if (!scan) return c.json({ marketScan: cached?.payload ?? null, cached: !!cached });
     const answered = (s: string) => s === 'found' || s === 'none_found';
     const ran = answered(scan.dataCenterWatch.status) || answered(scan.growthSignals.status);
-    if (ran) {
-      saveMarketScan(id, 'market_scan', scan);
-      return c.json({ marketScan: scan, cached: false });
-    }
+    if (ran) return c.json({ marketScan: scan, cached: false });
     // Not answered this time — serve any prior REAL answer; else the honest
     // unavailable/not_run result (uncached).
     const cachedAnswered = cached && (answered((cached.payload as MarketScanResult).dataCenterWatch?.status) || answered((cached.payload as MarketScanResult).growthSignals?.status));
@@ -7438,14 +7455,38 @@ export function registerLandosRoutes(app: Hono): void {
   // ONE operator action creates ONE parent mission on the Phase 4 mission graph.
   // Its children reuse the collectors and research systems that already work;
   // its join is assembled and analysed into ONE current snapshot.
-  const operatorMarketScanForDeal = async (id: number, deal: ReturnType<typeof getDealCard>): Promise<MarketScanResult | null> => {
+  /** True once LandOS holds a real point for the subject parcel itself. */
+  const subjectHasCoordinates = (id: number, deal: ReturnType<typeof getDealCard>): boolean => {
+    const cards = (Array.isArray(deal?.propertyCards) ? deal!.propertyCards : []) as Array<Record<string, unknown>>;
+    const card = cards.find((row) => row.role === 'subject') ?? cards[0];
+    const inspection = Number.isInteger(Number(card?.id)) ? loadPropertyInspection(Number(card?.id)) : null;
+    const identity = propertyIntelligenceStore.primaryRun(id)?.snapshot?.identity.coordinates;
+    return (num(card?.lat) ?? num(card?.latitude)
+      ?? num(inspection?.parcelFacts['Centroid Latitude']) ?? num(inspection?.parcelFacts.Latitude)
+      ?? num(identity?.lat)) != null;
+  };
+
+  const operatorMarketScanForDeal = async (
+    id: number,
+    deal: ReturnType<typeof getDealCard>,
+    options: { force?: boolean } = {},
+  ): Promise<MarketScanResult | null> => {
     if (!deal) return null;
     const cached = loadMarketScan<MarketScanResult>(id, 'market_scan');
     const answered = (status: string | undefined): boolean => status === 'found' || status === 'none_found';
     const cacheAnswered = !!cached
       && (answered(cached.payload.dataCenterWatch?.status) || answered(cached.payload.growthSignals?.status));
-    const cacheFresh = cacheAnswered
-      && !!cached?.payload.dataCenterWatch?.browserMapEvidence
+    // Freshness requires a real 20-mile proximity answer, not merely a cached
+    // county search: a cached scan that never screened the radius must re-run.
+    // A screen taken from the ZIP centroid is also stale the moment the subject
+    // has real coordinates — the radius must be measured from the parcel.
+    const cachedRoutes = cached?.payload.dataCenterWatch?.routesAttempted ?? [];
+    const cachedScreenedRadius = cachedRoutes.some((route) => route.startsWith('brockovich'));
+    const cachedFromZipCentroid = cachedRoutes.some((route) => route.includes('subject zip centroid'));
+    const cacheFresh = !options.force
+      && cacheAnswered
+      && cachedScreenedRadius
+      && !(cachedFromZipCentroid && subjectHasCoordinates(id, deal))
       && Math.floor(Date.now() / 1000) - cached!.createdAt < 7 * 24 * 3600;
     if (cacheFresh) return rehydrateCachedAcreageMatrix(deal, cached!.payload);
     const cards = (Array.isArray(deal.propertyCards) ? deal.propertyCards : []) as Array<Record<string, unknown>>;
@@ -7457,22 +7498,167 @@ export function registerLandosRoutes(app: Hono): void {
     const scan = await runMarketScan({
       county: str(subject?.county) || dd.county || undefined,
       state: str(subject?.state) || dd.state || undefined,
-      search: groundedScanSearch(),
+      // Local coverage names the town, not the county, so the subject's own
+      // city and ZIP both widen the query and tighten the geographic screen.
+      city: str(subject?.city) || undefined,
+      zip: str(subject?.zip)
+        || extractZipCandidate(str(subject?.active_input_address) ?? '')
+        || undefined,
+      search: marketScanSearch(),
       internalCountySnapshots: internalCountySnapshotsForDeal(deal),
       subjectAcres: num(subject?.acres),
     });
-    if (!scan.dataCenterWatch.browserMapEvidence) {
-      const acceptedIdentityCoordinates = propertyIntelligenceStore.primaryRun(id)?.snapshot?.identity.coordinates;
-      const lat = num(subject?.lat)
-        ?? num(subject?.latitude)
-        ?? num(subjectInspection?.parcelFacts['Centroid Latitude'])
-        ?? num(subjectInspection?.parcelFacts.Latitude)
-        ?? num(acceptedIdentityCoordinates?.lat);
-      const lng = num(subject?.lng)
-        ?? num(subject?.longitude)
-        ?? num(subjectInspection?.parcelFacts['Centroid Longitude'])
-        ?? num(subjectInspection?.parcelFacts.Longitude)
-        ?? num(acceptedIdentityCoordinates?.lng);
+    // ── Brockovich AI Data Center Reporting: the 20-mile subject screen ──────
+    //
+    // Runs on EVERY lead, keyless and browserless, against the same published
+    // datasets the Brockovich map itself plots. It is the primary route because
+    // it is the only one that actually measures a radius; the county web search
+    // above contributes operating / under-construction / proposed activity that
+    // no community report would carry, and the browser map is attempted only as
+    // screenshot evidence once something is already known to be nearby.
+    // THE SUBJECT'S OWN COORDINATES ARE THE POINT OF MEASURE. Every place LandOS
+    // may hold one is tried — the card, the LandPortal parcel panel, the
+    // accepted identity, and the resolution snapshot — before any coarser
+    // stand-in is considered.
+    const acceptedIdentityCoordinates = propertyIntelligenceStore.primaryRun(id)?.snapshot?.identity.coordinates;
+    const resolutionCoordinates = (readResolutionSnapshot(id) as unknown as {
+      coordinates?: { lat?: unknown; lng?: unknown };
+      subject?: { coordinates?: { lat?: unknown; lng?: unknown } };
+    } | null);
+    const lat = num(subject?.lat)
+      ?? num(subject?.latitude)
+      ?? num(subjectInspection?.parcelFacts['Centroid Latitude'])
+      ?? num(subjectInspection?.parcelFacts.Latitude)
+      ?? num(acceptedIdentityCoordinates?.lat)
+      ?? num(resolutionCoordinates?.coordinates?.lat)
+      ?? num(resolutionCoordinates?.subject?.coordinates?.lat);
+    const lng = num(subject?.lng)
+      ?? num(subject?.longitude)
+      ?? num(subjectInspection?.parcelFacts['Centroid Longitude'])
+      ?? num(subjectInspection?.parcelFacts.Longitude)
+      ?? num(acceptedIdentityCoordinates?.lng)
+      ?? num(resolutionCoordinates?.coordinates?.lng)
+      ?? num(resolutionCoordinates?.subject?.coordinates?.lng);
+
+    // ONLY when the subject truly has no location: fall back to its ZIP's
+    // retained Census ZCTA centroid, and say which basis was used. Proximity
+    // only — per invariant 3 this never touches parcel identity.
+    const subjectZip = str(subject?.zip)
+      || extractZipCandidate(str(subject?.active_input_address) ?? '')
+      || null;
+    let fallbackPoint: { lat: number; lng: number } | null = null;
+    if (lat == null || lng == null) {
+      if (subjectZip) fallbackPoint = await zipCentroid(subjectZip).catch(() => null);
+    }
+    const proximity = await runDataCenterProximityScreen({
+      lat,
+      lng,
+      zip: subjectZip,
+      zipPoint: fallbackPoint,
+    });
+    logger.info({
+      dealCardId: id,
+      status: proximity.status,
+      basis: proximity.basis,
+      hits: proximity.hits.length,
+      unlocatedReports: proximity.unlocatedReports,
+    }, 'brockovich_data_center_proximity_screen');
+
+    // ── Resolve where the unnamed web candidates actually are ───────────────
+    //
+    // A search result that never names this county is not evidence the project
+    // is far away. When the subject has a point of measure, each candidate's
+    // stated place is geocoded and the REAL distance decides: inside the radius
+    // it becomes a measured hit, outside it is genuinely elsewhere, and a place
+    // that will not resolve stays unverified context rather than a counted hit.
+    const webItems = [...(scan.dataCenterWatch.items ?? [])];
+    const candidates = [...(scan.dataCenterWatch.unverifiedNearbyCandidates ?? [])];
+    const stillUnverified: typeof candidates = [];
+    let measuredElsewhere = 0;
+    if (proximity.subject && candidates.length) {
+      const geocode = createPlaceGeocoder();
+      // Bounded: this is a location check on a handful of candidates, not a
+      // geocoding sweep.
+      for (const candidate of candidates.slice(0, 6)) {
+        const resolved = await resolveCandidateLocation(
+          `${candidate.title} ${candidate.summary}`,
+          proximity.subject,
+          geocode,
+        ).catch(() => null);
+        if (!resolved) { stillUnverified.push(candidate); continue; }
+        if (resolved.distanceMiles <= DATA_CENTER_SCREEN_RADIUS_MILES) {
+          webItems.push({
+            ...candidate,
+            location: candidate.location ?? resolved.place,
+            distanceMiles: resolved.distanceMiles,
+            locationConfidence: 'distance_verified',
+          });
+        } else {
+          measuredElsewhere += 1;
+        }
+      }
+      stillUnverified.push(...candidates.slice(6));
+    } else {
+      stillUnverified.push(...candidates);
+    }
+    logger.info({
+      dealCardId: id,
+      candidates: candidates.length,
+      promoted: webItems.length - (scan.dataCenterWatch.items ?? []).length,
+      measuredElsewhere,
+      stillUnverified: stillUnverified.length,
+    }, 'data_center_candidate_location_resolution');
+
+    const proximityItems = proximity.hits.map((hit) => ({
+      title: hit.title,
+      operatorOrDeveloper: hit.operatorOrDeveloper,
+      location: hit.location,
+      distanceMiles: hit.distanceMiles,
+      status: 'community_opposition' as const,
+      summary: hit.summary,
+      whyItMatters: 'A community-reported data-center or energy-infrastructure project inside the subject’s 20-mile trade area can signal institutional land demand and utility investment ahead of price.',
+      url: hit.sourceUrl,
+      year: hit.reportedOn ? Number(hit.reportedOn.slice(0, 4)) || null : null,
+      source: 'brockovich_community_reports' as const,
+      corroboration: null,
+    }));
+    const routesAttempted = [
+      `brockovich_community_reports (${proximity.status}${proximity.basis ? `, from ${proximity.basis.replace(/_/g, ' ')}` : ''})`,
+      `web_search (${scan.dataCenterWatch.status})`,
+      `candidate_location_resolution (${candidates.length} candidate(s), ${measuredElsewhere} measured outside ${DATA_CENTER_SCREEN_RADIUS_MILES} mi, ${stillUnverified.length} unresolved)`,
+    ];
+    const combinedItems = [...proximityItems, ...webItems];
+    const combinedStatus = proximity.status === 'found' || combinedItems.length
+      ? 'found' as const
+      : proximity.status === 'none_found' || scan.dataCenterWatch.status === 'none_found'
+        ? 'none_found' as const
+        : proximity.status === 'unavailable' || scan.dataCenterWatch.status === 'unavailable'
+          ? 'unavailable' as const
+          : 'not_run' as const;
+    const candidateTail = stillUnverified.length
+      ? ` ${stillUnverified.length} topical result(s) could not be located and are carried as unverified context, not as nearby activity.`
+      : '';
+    const elsewhereTail = measuredElsewhere
+      ? ` ${measuredElsewhere} topical result(s) were geocoded and measured beyond ${DATA_CENTER_SCREEN_RADIUS_MILES} miles.`
+      : '';
+    // The web lane counted candidates BEFORE their locations were resolved.
+    // Drop that provisional sentence so the verdict states one set of numbers.
+    const webVerdict = (scan.dataCenterWatch.verdict ?? '')
+      .replace(/\s*\d+ topical result\(s\) did not name this market[^.]*\./, '')
+      .trim();
+    scan.dataCenterWatch = {
+      ...scan.dataCenterWatch,
+      status: combinedStatus,
+      items: combinedItems.slice(0, 12),
+      unverifiedNearbyCandidates: stillUnverified.slice(0, 6),
+      summary: `${proximity.verdict} ${scan.dataCenterWatch.summary}`.trim(),
+      verdict: `${proximity.verdict} ${webVerdict}${elsewhereTail}${candidateTail}`.trim(),
+      routesAttempted,
+    };
+
+    // Screenshot evidence only, and only when something is already known to be
+    // nearby. Its failure can no longer downgrade the answer above.
+    if (proximity.status === 'found' && !scan.dataCenterWatch.browserMapEvidence) {
       const browserState = await ensureBrowserSession().catch(() => 'unreachable' as const);
       const mapResult = await runBrockovichDataCenterMap({
         lat,
@@ -7487,38 +7673,17 @@ export function registerLandosRoutes(app: Hono): void {
         screenshotCaptured: !!mapResult.screenshotPath,
         note: mapResult.note,
       }, 'brockovich_data_center_map_result');
-      if (mapResult.status === 'found' || mapResult.status === 'none_found') {
-        scan.dataCenterWatch = {
-          ...scan.dataCenterWatch,
-          status: mapResult.status,
-          items: mapResult.projects.map((project) => ({
-            title: project.title,
-            operatorOrDeveloper: project.operatorOrDeveloper,
-            location: project.location,
-            distanceMiles: project.distanceMiles,
-            status: project.status === 'operational' ? 'mention'
-              : project.status === 'community_reported' ? 'community_opposition'
-                : project.status === 'unknown' ? 'mention'
-                  : project.status,
-            summary: project.summary,
-            whyItMatters: 'A mapped data-center project inside the subject’s 20-mile trade area can signal institutional land demand and utility investment.',
-            url: project.sourceUrl ?? mapResult.sourceUrl,
-            year: null,
-          })),
-          summary: mapResult.projects.length
-            ? `${mapResult.projects.length} Brockovich data-center project(s) are mapped within 20 miles of the subject.`
-            : 'No Brockovich data-center project with mappable coordinates was found within 20 miles of the subject.',
-          note: mapResult.note,
-          browserMapEvidence: {
-            sourceUrl: mapResult.sourceUrl,
-            subject: mapResult.subject!,
-            radiusMiles: mapResult.radiusMiles,
-            screenshotPath: mapResult.screenshotPath,
-            attemptedAt: mapResult.attemptedAt,
-          },
+      routesAttempted.push(`brockovich_map_screenshot (${mapResult.status})`);
+      if (mapResult.screenshotPath && mapResult.subject) {
+        scan.dataCenterWatch.browserMapEvidence = {
+          sourceUrl: mapResult.sourceUrl,
+          subject: mapResult.subject,
+          radiusMiles: mapResult.radiusMiles,
+          screenshotPath: mapResult.screenshotPath,
+          attemptedAt: mapResult.attemptedAt,
         };
       } else {
-        scan.dataCenterWatch.note = `${scan.dataCenterWatch.note} Brockovich map: ${mapResult.note}`;
+        scan.dataCenterWatch.note = `${scan.dataCenterWatch.note} Brockovich map screenshot: ${mapResult.note}`;
       }
     }
     if (answered(scan.dataCenterWatch.status) || answered(scan.growthSignals.status)) {

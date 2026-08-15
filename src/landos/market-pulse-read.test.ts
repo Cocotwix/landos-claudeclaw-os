@@ -123,3 +123,58 @@ describe('Market Pulse department gate (ConfirmedParcel)', () => {
     expect(true).toBe(true);
   });
 });
+
+describe('retained Market Research fallback', () => {
+  const retained = {
+    population: 35033,
+    populationGrowth: 1.11,
+    medianPricePerAcre: 7834.2,
+    soldCount: 18,
+    period: '2026-Q3',
+    resolvedVia: 'Barry County (20–50 acres)',
+    provider: 'LandPortal Market Research (Drill Deep)',
+  };
+
+  it('answers growth and county $/acre from the retained record when Census and comps are absent', () => {
+    const read = buildMarketPulseRead({
+      county: 'Barry', state: 'MO', parcelVerified: false, comps: [],
+      growth: buildGrowthRead({ recent: { year: 2023, population: null, status: 'not_configured' }, area: 'Barry County, MO', sourceUrl: 'https://data.census.gov', hasGeography: true }),
+      retainedCounty: retained,
+      nowIso: '2026-08-15T00:00:00.000Z',
+    });
+    expect(read.growth.status).toBe('measured');
+    expect(read.growth.pctChange).toBe(1.11);
+    expect(read.growth.source).toMatch(/LandOS Market Research \(2026-Q3\)/);
+    expect(read.countyPricePerAcre.medianPpa).toBe(7834);
+    expect(read.countyPricePerAcre.source).toMatch(/LandOS Market Research/);
+    expect(read.plainEnglish).toMatch(/Land is generally going for about \$7,834\/acre/);
+  });
+
+  it('never displaces a real Census measurement or real comps', () => {
+    const read = buildMarketPulseRead({
+      county: 'Barry', state: 'MO', parcelVerified: false,
+      comps: [{ pricePerAcre: 9000 }, { pricePerAcre: 9500 }, { pricePerAcre: 10000 }],
+      growth: buildGrowthRead({
+        recent: { year: 2023, population: 36000, status: 'verified' },
+        prior: { year: 2018, population: 34000, status: 'verified' },
+        area: 'Barry County, MO', sourceUrl: 'https://data.census.gov', hasGeography: true,
+      }),
+      retainedCounty: retained,
+      nowIso: '2026-08-15T00:00:00.000Z',
+    });
+    expect(read.growth.source).toBe('https://data.census.gov');
+    expect(read.countyPricePerAcre.medianPpa).toBe(9500);
+    expect(read.countyPricePerAcre.source).toBe('Retained land comps (pipeline)');
+  });
+
+  it('stays honest when the retained record carries nothing', () => {
+    const read = buildMarketPulseRead({
+      county: 'Barry', state: 'MO', parcelVerified: false, comps: [],
+      growth: buildGrowthRead({ recent: { year: 2023, population: null, status: 'not_configured' }, area: 'Barry County, MO', sourceUrl: 'https://data.census.gov', hasGeography: true }),
+      retainedCounty: { ...retained, populationGrowth: null, medianPricePerAcre: null },
+      nowIso: '2026-08-15T00:00:00.000Z',
+    });
+    expect(read.growth.status).toBe('not_configured');
+    expect(read.countyPricePerAcre.status).toBe('data_gap');
+  });
+});

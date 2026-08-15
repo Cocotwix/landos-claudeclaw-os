@@ -90,3 +90,43 @@ export async function getZipGeometries(zips: string[], fetcher: ZctaFetcher = fe
   }
   return { type: 'FeatureCollection', features, unavailable };
 }
+
+/** Every [lng, lat] vertex of the largest ring in a GeoJSON Polygon/MultiPolygon. */
+function largestRing(geometry: unknown): Array<[number, number]> {
+  const geo = geometry as { type?: string; coordinates?: unknown };
+  const rings: Array<Array<[number, number]>> = [];
+  if (geo?.type === 'Polygon') {
+    rings.push(...((geo.coordinates as Array<Array<[number, number]>>) ?? []));
+  } else if (geo?.type === 'MultiPolygon') {
+    for (const polygon of (geo.coordinates as Array<Array<Array<[number, number]>>>) ?? []) rings.push(...polygon);
+  }
+  return rings.sort((a, b) => b.length - a.length)[0] ?? [];
+}
+
+/**
+ * Approximate centroid of a ZIP's ZCTA boundary, from the same retained Census
+ * geometry the map renders. Null when no boundary exists for the ZIP — a ZCTA
+ * does not exist for every USPS ZIP, and nothing is invented.
+ *
+ * PROXIMITY ONLY. Per invariant 3, a ZIP centroid never verifies a parcel; it
+ * is a coarse point to measure a radius from, and callers must label it as one.
+ */
+export async function zipCentroid(
+  zip: string,
+  fetcher?: ZctaFetcher,
+): Promise<{ lat: number; lng: number } | null> {
+  if (!/^\d{5}$/.test(zip)) return null;
+  const result = await getZipGeometries([zip], fetcher).catch(() => null);
+  const ring = largestRing(result?.features[0]?.geometry);
+  if (ring.length < 3) return null;
+  let lng = 0;
+  let lat = 0;
+  let used = 0;
+  for (const point of ring) {
+    if (!Array.isArray(point) || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) continue;
+    lng += Number(point[0]);
+    lat += Number(point[1]);
+    used += 1;
+  }
+  return used ? { lat: lat / used, lng: lng / used } : null;
+}

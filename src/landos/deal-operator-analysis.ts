@@ -250,10 +250,27 @@ export interface OperatorMarketAnalysis {
     downside: string | null;
     sourceUrl: string | null;
   }>;
+  /**
+   * Sourced web evidence on the county land market at the subject's acreage
+   * range. The retained Market Research store carries a single quarter for most
+   * counties, so it states levels but cannot state DIRECTION; this carries the
+   * published claims about direction, attributed, next to those numbers. Never
+   * a LandOS measurement.
+   */
+  landMarketWeb: {
+    status: 'found' | 'none_found' | 'not_run' | 'unavailable';
+    acreageFocus: string | null;
+    summary: string;
+    items: Array<{ title: string; summary: string; url: string | null; year: number | null }>;
+  };
   dataCenters: {
     searchedWithinMiles: 20;
     status: 'found' | 'none_found' | 'not_run' | 'unavailable';
     summary: string;
+    /** The explicit one-line answer, including a clean "nothing within 20 miles". */
+    verdict: string;
+    /** Every retrieval route attempted, so a negative reads as searched, not skipped. */
+    routesAttempted: string[];
     sourceUrl: string | null;
     screenshotUrl: string | null;
     attemptedAt: string | null;
@@ -772,6 +789,7 @@ function marketAnalysis(pkg: DealIntelligenceInputPackage, context: DealOperator
   const scan = scanObject(context.marketScan ?? pkg.marketIntelligence?.marketScan);
   const growth = scanObject(scan.growthSignals);
   const dc = scanObject(scan.dataCenterWatch);
+  const landWeb = scanObject(scan.landMarketWeb);
   const practicalMatrix = scanObject(scan.acreageMatrix);
   const practicalBands = Array.isArray(practicalMatrix.bands)
     ? practicalMatrix.bands.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object')
@@ -950,6 +968,19 @@ function marketAnalysis(pkg: DealIntelligenceInputPackage, context: DealOperator
           : 'The retained set does not yet contain enough sold evidence in both the bulk and likely split acreage bands to quantify acreage-band arbitrage. This is a pricing gap, not evidence against subdivision.',
     },
     developmentAndInfrastructure: developments,
+    landMarketWeb: {
+      status: ['found', 'none_found', 'not_run', 'unavailable'].includes(String(landWeb.status))
+        ? landWeb.status as 'found' | 'none_found' | 'not_run' | 'unavailable'
+        : 'not_run',
+      acreageFocus: typeof landWeb.acreageFocus === 'string' ? landWeb.acreageFocus : null,
+      summary: typeof landWeb.summary === 'string' ? landWeb.summary : 'No land-market web read was retained for this run.',
+      items: (Array.isArray(landWeb.items) ? landWeb.items as Array<Record<string, unknown>> : []).map((item) => ({
+        title: String(item.title ?? 'Land market source'),
+        summary: String(item.summary ?? ''),
+        url: typeof item.url === 'string' ? item.url : null,
+        year: typeof item.year === 'number' ? item.year : null,
+      })),
+    },
     dataCenters: {
       searchedWithinMiles: 20,
       status: dcStatus,
@@ -958,6 +989,14 @@ function marketAnalysis(pkg: DealIntelligenceInputPackage, context: DealOperator
         : dcStatus === 'not_run'
           ? 'The required 20-mile data-center search did not return a retained answer in this run.'
           : 'No data-center summary was retained.',
+      verdict: typeof dc.verdict === 'string' && dc.verdict.trim()
+        ? dc.verdict.trim()
+        : dcStatus === 'not_run'
+          ? 'The 20-mile data-center screen did not run for this subject, so nothing is claimed either way.'
+          : 'No explicit data-center verdict was retained for this run.',
+      routesAttempted: Array.isArray(dc.routesAttempted)
+        ? (dc.routesAttempted as unknown[]).map((route) => String(route))
+        : [],
       sourceUrl: typeof dcMapEvidence.sourceUrl === 'string' ? dcMapEvidence.sourceUrl : null,
       screenshotUrl: typeof dcMapEvidence.screenshotPath === 'string' && dcMapEvidence.screenshotPath
         ? `/api/landos/deal-cards/${pkg.dealCardId}/data-center-map`

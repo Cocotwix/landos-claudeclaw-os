@@ -55,6 +55,25 @@ export interface MarketPulseRead {
   generatedAt: string;
 }
 
+/**
+ * The subject county's retained LandOS Market Research record. Market Pulse's
+ * two headline questions — is the area growing, and what is land going for —
+ * were answered ONLY from the Census ACS key and from retrieved comps, so a
+ * brand-new lead with neither read "unknown" and "not established" for figures
+ * LandOS already held. This is that retained record, used as the fallback and
+ * always attributed to Market Research rather than to comps or the Census.
+ */
+export interface RetainedCountyMarketRecord {
+  population: number | null;
+  populationGrowth: number | null;
+  medianPricePerAcre: number | null;
+  soldCount: number | null;
+  period: string | null;
+  /** Operator label for the geography and band that carried it. */
+  resolvedVia: string | null;
+  provider: string | null;
+}
+
 /** A comp the pulse can derive price-per-acre from (already retrieved upstream). */
 export interface PulseComp {
   pricePerAcre?: number | null;
@@ -147,6 +166,8 @@ export function buildMarketPulseRead(input: {
   parcelVerified: boolean;
   growth: GrowthRead;
   comps?: PulseComp[];
+  /** Retained Market Research fallback for growth and county $/acre. */
+  retainedCounty?: RetainedCountyMarketRecord | null;
   nowIso?: string;
 }): MarketPulseRead {
   const ctx = buildLocalAreaContext({ city: input.city, county: input.county, state: input.state });
@@ -155,8 +176,40 @@ export function buildMarketPulseRead(input: {
   const generatedAt = input.nowIso ?? new Date().toISOString();
   const label = input.parcelVerified ? 'Parcel Verified' : 'Local Area Context, Not Parcel Verified';
   const comps = input.comps ?? [];
+  const retained = input.retainedCounty ?? null;
 
-  const countyPpa = pricePerAcre(comps, county0(input.county) ?? 'County');
+  // Census measurement wins; the retained Market Research population/growth
+  // answers when it did not, rather than reporting "unknown" for a figure the
+  // quarterly collection already carries.
+  const growth: GrowthRead = input.growth.status === 'measured' || !retained || retained.populationGrowth == null
+    ? input.growth
+    : {
+      status: 'measured',
+      direction: directionOf(retained.populationGrowth),
+      populationRecent: retained.population,
+      populationPrior: null,
+      pctChange: retained.populationGrowth,
+      years: null,
+      source: `LandOS Market Research${retained.period ? ` (${retained.period})` : ''}${retained.provider ? ` · ${retained.provider}` : ''}`,
+      note: `${area} population growth ${retained.populationGrowth >= 0 ? '+' : ''}${retained.populationGrowth}%`
+        + `${retained.population != null ? ` on a population of ${Math.round(retained.population).toLocaleString()}` : ''}`
+        + `, from the retained LandOS Market Research county record${retained.period ? ` (${retained.period})` : ''}. Not a Census two-vintage measurement.`,
+    };
+
+  const compPpa = pricePerAcre(comps, county0(input.county) ?? 'County');
+  // Retained closed sales anchor the county price when no comp has been
+  // retrieved for this card yet. Sourced to Market Research, never to comps.
+  const countyPpa: PricePerAcreRead = compPpa.status === 'measured' || !retained || retained.medianPricePerAcre == null
+    ? compPpa
+    : {
+      status: 'measured',
+      medianPpa: Math.round(retained.medianPricePerAcre),
+      sampleSize: retained.soldCount ?? 0,
+      source: `LandOS Market Research${retained.resolvedVia ? ` · ${retained.resolvedVia}` : ''}`,
+      note: `${retained.resolvedVia ?? county0(input.county) ?? 'County'}: median $${Math.round(retained.medianPricePerAcre).toLocaleString()}/acre`
+        + `${retained.soldCount != null ? ` across ${retained.soldCount} recorded sale(s)` : ''}`
+        + `${retained.period ? ` in the ${retained.period} Market Research snapshot` : ''}. Market context only, not a valuation basis.`,
+    };
   const zipComps = input.zip ? comps.filter((c) => (c.zip ?? '').trim() === input.zip!.trim()) : [];
   const zipPpa = input.zip && zipComps.length >= 3 ? pricePerAcre(zipComps, `ZIP ${input.zip}`) : null;
 
@@ -166,7 +219,7 @@ export function buildMarketPulseRead(input: {
     note: `Scan ${area} for new development, subdivisions, major employers, and infrastructure. Confirm named signals before relying on them.`,
   };
 
-  const plainEnglish = buildPlainEnglish({ area, growth: input.growth, countyPpa, zipPpa, zip: input.zip, eligible });
+  const plainEnglish = buildPlainEnglish({ area, growth, countyPpa, zipPpa, zip: input.zip, eligible });
   const disclaimer = input.parcelVerified
     ? ''
     : 'Local area context only. It does not verify the parcel and carries no property-specific valuation or offer guidance.';
@@ -176,7 +229,7 @@ export function buildMarketPulseRead(input: {
     area: { city: input.city, county: input.county, state: input.state, zip: input.zip, descriptor: area },
     parcelVerified: input.parcelVerified,
     label,
-    growth: input.growth,
+    growth,
     countyPricePerAcre: countyPpa,
     zipPricePerAcre: zipPpa,
     developmentSignals,
@@ -231,6 +284,7 @@ export async function fetchMarketPulseRead(input: {
   fips?: string;
   parcelVerified: boolean;
   comps?: PulseComp[];
+  retainedCounty?: RetainedCountyMarketRecord | null;
   nowIso?: string;
 }, deps: { census?: CensusDeps } = {}): Promise<MarketPulseRead> {
   const ctx = buildLocalAreaContext({ city: input.city, county: input.county, state: input.state });
@@ -260,7 +314,8 @@ export async function fetchMarketPulseRead(input: {
 
   return buildMarketPulseRead({
     city: input.city, county: input.county, state: input.state, zip: input.zip,
-    parcelVerified: input.parcelVerified, growth, comps: input.comps, nowIso: input.nowIso,
+    parcelVerified: input.parcelVerified, growth, comps: input.comps,
+    retainedCounty: input.retainedCounty, nowIso: input.nowIso,
   });
 }
 
@@ -279,6 +334,7 @@ export interface MarketPulseAreaInput {
   zip?: string;
   fips?: string;
   comps?: PulseComp[];
+  retainedCounty?: RetainedCountyMarketRecord | null;
   nowIso?: string;
 }
 

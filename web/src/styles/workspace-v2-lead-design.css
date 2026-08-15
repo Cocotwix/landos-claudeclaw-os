@@ -615,6 +615,9 @@
 .awv2-market-tiles i { position: absolute; left: 10px; right: 10px; bottom: 8px; height: 3px; border-radius: 3px; background: linear-gradient(90deg, var(--awv2-dom-market) 68%, rgba(179,140,255,.14) 68%); }
 .awv2-market-detail { margin-top: 10px; color: var(--awv2-bone-faint); font-size: 11px; }
 .awv2-market-detail p { margin-top: 7px; }
+.awv2-market-dc-list { margin-top: 7px; padding-left: 14px; display: grid; gap: 4px; }
+.awv2-market-dc-list li { list-style: disc; line-height: 1.45; }
+.awv2-market-dc-routes { margin-top: 7px; opacity: 0.72; }
 .awv2-market-empty { display: grid; gap: 3px; margin-top: auto; padding: 15px; border: 1px solid rgba(179,140,255,.22); border-radius: 11px; background: linear-gradient(135deg, rgba(179,140,255,.1), rgba(179,140,255,.025)); }
 .awv2-market-empty span { color: var(--awv2-dom-market); font: 9px var(--awv2-mono); letter-spacing: .1em; text-transform: uppercase; }
 .awv2-market-empty b { color: var(--awv2-bone); font: 700 20px var(--awv2-serif); }

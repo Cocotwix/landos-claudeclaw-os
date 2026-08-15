@@ -61,7 +61,27 @@ export interface OverviewSnapshotView {
       nextBestActions?: string[];
     };
     methodology?: { assumptions?: string[]; notes?: string[] } | null;
+    market?: {
+      dataCenters?: OverviewDataCentersView;
+    };
   };
+}
+
+/** The 20-mile Brockovich data-center screen, as the snapshot carries it. */
+export interface OverviewDataCentersView {
+  searchedWithinMiles?: number;
+  status?: 'found' | 'none_found' | 'not_run' | 'unavailable';
+  summary?: string;
+  verdict?: string;
+  routesAttempted?: string[];
+  items?: Array<{
+    name?: string;
+    operatorOrDeveloper?: string | null;
+    location?: string | null;
+    distanceMiles?: number | null;
+    status?: string;
+    sourceUrl?: string | null;
+  }>;
 }
 
 type ResearchStatusDetail = ResearchStatusView & {
@@ -193,6 +213,8 @@ export function OverviewSection({
     acquisitionNextAction?.label ? `${acquisitionNextAction.label}${acquisitionNextAction.reason ? ` — ${acquisitionNextAction.reason}` : ''}` : null,
     ...canonicalActions,
   ]);
+  const dataCenters = snap.operatorAnalysis?.market?.dataCenters ?? null;
+  const dataCenterHits = dataCenters?.items ?? [];
   const marketRecord = [market?.subjectBand, market?.zip, market?.county]
     .find((record) => record?.available && record.metrics) ?? null;
   const marketMetrics = marketRecord?.metrics ?? null;
@@ -464,6 +486,41 @@ export function OverviewSection({
           ? <div class="awv2-market-tiles">{marketTiles.slice(0, 5).map((tile) => <div data-kind={tile.kind}><span>{tile.label}</span><b>{tile.value}</b><i /></div>)}</div>
           : <div class="awv2-market-empty"><span>No retained market pulse</span><b>Price from subject evidence</b><small>Market context remains compact until a supported record exists.</small></div>}
         {narrative?.overviewMarketLine && <details class="awv2-market-detail"><summary>Market interpretation</summary><p>{narrative.overviewMarketLine}</p></details>}
+        {/* The 20-mile data-center screen. Either the nearby project(s) with
+            status, distance and source, or an explicit "none found" — never a
+            silent absence. */}
+        {dataCenters && (
+          <details class="awv2-market-detail">
+            <summary>
+              {`Data centers within ${dataCenters.searchedWithinMiles ?? 20} miles — `}
+              {dataCenterHits.length
+                ? `${dataCenterHits.length} found`
+                : dataCenters.status === 'none_found' ? 'none found'
+                  : (dataCenters.status ?? 'not run').replace(/_/g, ' ')}
+            </summary>
+            <p>{dataCenters.verdict || dataCenters.summary || 'No data-center result was retained for this subject.'}</p>
+            {dataCenterHits.length > 0 && (
+              <ul class="awv2-market-dc-list">
+                {dataCenterHits.slice(0, 6).map((hit) => (
+                  <li>
+                    <b>{hit.name || 'Data center project'}</b>
+                    {' — '}
+                    {[
+                      (hit.status ?? '').replace(/_/g, ' ') || null,
+                      hit.distanceMiles != null ? `~${hit.distanceMiles} mi` : null,
+                      hit.location || null,
+                      hit.operatorOrDeveloper || null,
+                    ].filter(Boolean).join(' · ')}
+                    {hit.sourceUrl && <> · <a href={hit.sourceUrl} target="_blank" rel="noreferrer">source</a></>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {!!dataCenters.routesAttempted?.length && (
+              <p class="awv2-market-dc-routes">Routes attempted: {dataCenters.routesAttempted.join(' · ')}</p>
+            )}
+          </details>
+        )}
       </section>
 
       <section class={`awv2-overview-listing awv2-marketing-compact ${listing?.onMarket ? 'active' : 'inactive'}`} data-domain="evidence" aria-label="Public marketing status">

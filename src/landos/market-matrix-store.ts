@@ -14,6 +14,7 @@
 
 import { getLandosDb } from './db.js';
 import { SEED_COUNTY_REF, SEEDED_REF_STATES, type CountyRef } from './market-county-ref.js';
+import { mrBridgeCountyName, mrBridgeCountyRows } from './market-research-store-bridge.js';
 import {
   validateMarketSnapshot,
   executeMarketQuery,
@@ -457,16 +458,24 @@ export function getCountyDrilldown(fips: string): CountyDrilldown | undefined {
     `SELECT period, side, acreage_band, metrics_json, confidence, provider, source_ref, extraction_ts
      FROM landos_market_snapshot WHERE geo_level = 'county' AND fips = ? ORDER BY period DESC`,
   ).all(fips) as Array<{ period: string; side: string; acreage_band: string; metrics_json: string; confidence: string; provider: string; source_ref: string; extraction_ts: string }>;
-  if (!ref && rows.length === 0) return undefined;
-  const snapshots = rows.map((r) => ({
+  // The quarterly LandOS Market Research collection covers every U.S. county;
+  // the matrix table covers only the counties ingested into it. Complete the
+  // drilldown with retained collection bands the matrix does not already hold,
+  // so a county outside the matrix is not reported as having no research.
+  // Matrix rows always win their (period, side, band) slot.
+  const held = new Set(rows.map((r) => `${r.period}|${r.side}|${r.acreage_band}`));
+  const bridged = mrBridgeCountyRows(fips)
+    .filter((r) => !held.has(`${r.period}|${r.side}|${r.acreage_band}`));
+  if (!ref && rows.length === 0 && bridged.length === 0) return undefined;
+  const snapshots = [...rows, ...bridged].map((r) => ({
     period: r.period, side: r.side as MarketSide, acreageBand: r.acreage_band as AcreageBand,
     metrics: metricsFromJson(r.metrics_json), confidence: r.confidence as Confidence,
     provider: r.provider, sourceRef: r.source_ref, extractionTs: r.extraction_ts,
-  }));
+  })).sort((a, b) => comparePeriods(b.period, a.period));
   const state = ref?.state ?? FIPS_TO_STATE[fips.slice(0, 2)] ?? '';
   return {
     fips,
-    countyName: ref?.county_name ?? rows[0]?.period ?? fips,
+    countyName: ref?.county_name ?? mrBridgeCountyName(fips) ?? fips,
     state,
     snapshots,
     periods: [...new Set(snapshots.map((s) => s.period))],

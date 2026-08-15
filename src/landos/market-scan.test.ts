@@ -4,6 +4,7 @@ import {
   buildDataCenterWatch,
   buildMarketSignalScan,
   buildPracticalMarketMatrix,
+  mentionsSubjectArea,
   practicalAcreageBand,
   runMarketScan,
   DATA_CENTER_QUERY,
@@ -180,8 +181,8 @@ describe('buildDataCenterWatch — 2025+ existence check, never an investigation
 
   it('classifies found activity and explains why it matters', () => {
     const findings: ScanFinding[] = [
-      { title: 'Hyperscale data center approved in the county', summary: 'Rezoning approved for a 1,200-acre campus.', url: 'https://example.com/a', year: 2025 },
-      { title: 'Residents voice opposition to data center water use', summary: 'Public hearing drew protest.', url: 'https://example.com/b', year: 2026 },
+      { title: 'Hyperscale data center approved in Sevier County', summary: 'Rezoning approved for a 1,200-acre campus.', url: 'https://example.com/a', year: 2025 },
+      { title: 'Residents voice opposition to data center water use', summary: 'Public hearing in Sevier County drew protest.', url: 'https://example.com/b', year: 2026 },
     ];
     const w = buildDataCenterWatch({ ...area, findings });
     expect(w.status).toBe('found');
@@ -204,7 +205,7 @@ describe('buildMarketSignalScan — relevance filter with a dropped count', () =
     const s = buildMarketSignalScan({
       county: 'Sevier', state: 'AR',
       findings: [
-        { title: 'New subdivision platted', summary: '60 lots on the west side.', year: 2025 },
+        { title: 'New subdivision platted in Sevier County', summary: '60 lots on the west side.', year: 2025 },
         { title: 'Football team wins', summary: 'Great game.', year: 2025 },
       ],
     });
@@ -232,18 +233,134 @@ describe('runMarketScan — bounded, honest live wrapper', () => {
     expect(r.acreageMatrix?.bands[0].medianPricePerAcre).toBe(8_000);
   });
 
-  it('runs exactly two bounded queries and survives one failing', async () => {
+  it('runs exactly three bounded topic queries and survives the others failing', async () => {
     const queries: string[] = [];
     const search = async (q: string): Promise<ScanFinding[]> => {
       queries.push(q);
-      if (queries.length === 1) return [{ title: 'Data center under construction nearby', summary: 'Construction has begun.', year: 2025 }];
+      if (queries.length === 1) return [{ title: 'Data center under construction in Sevier County', summary: 'Construction has begun.', year: 2025 }];
       throw new Error('search quota');
     };
     const r = await runMarketScan({ county: 'Sevier', state: 'AR', search });
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
     expect(queries[0]).toBe(DATA_CENTER_QUERY('Sevier, AR'));
     expect(r.dataCenterWatch.status).toBe('found');
     expect(r.dataCenterWatch.items[0].status).toBe('under_construction');
     expect(r.growthSignals.status).toBe('unavailable');
+    expect(r.landMarketWeb?.status).toBe('unavailable');
+  });
+
+  it('carries an explicit verdict in every data-center status', async () => {
+    const notRun = await runMarketScan({ county: 'Sevier', state: 'AR', search: null });
+    expect(notRun.dataCenterWatch.verdict).toMatch(/has not run/i);
+
+    const clean = await runMarketScan({
+      county: 'Sevier', state: 'AR',
+      search: async () => [{ title: 'County fair returns', summary: 'Unrelated.', year: 2026 }],
+    });
+    expect(clean.dataCenterWatch.status).toBe('none_found');
+    expect(clean.dataCenterWatch.verdict).toMatch(/no operating, under-construction, proposed or rumored data-center activity/i);
+  });
+
+  it('corroborates a proposed data-center item with exactly one extra query', async () => {
+    const queries: string[] = [];
+    const search = async (q: string): Promise<ScanFinding[]> => {
+      queries.push(q);
+      if (queries.length === 1) {
+        return [{ title: 'Proposed data center campus', summary: 'Developer proposes a hyperscale data center in Sevier County.', url: 'https://a.example/one', year: 2026 }];
+      }
+      if (q.includes('Proposed data center campus')) {
+        return [{ title: 'Planning board hears data center proposal', summary: 'Sevier County hearing set for the proposed data center.', url: 'https://b.example/two', year: 2026 }];
+      }
+      return [];
+    };
+    const r = await runMarketScan({ county: 'Sevier', state: 'AR', search });
+    expect(queries).toHaveLength(4);
+    expect(r.dataCenterWatch.items[0].corroboration?.url).toBe('https://b.example/two');
+    expect(r.dataCenterWatch.verdict).toMatch(/corroborated by a second independent source/i);
+  });
+
+  it('reports an uncorroborated proposal as uncorroborated, never disproven', async () => {
+    const search = async (q: string): Promise<ScanFinding[]> =>
+      (q.includes('Proposed data center campus')
+        ? []
+        : [{ title: 'Proposed data center campus', summary: 'Developer proposes a hyperscale data center in Sevier County.', url: 'https://a.example/one', year: 2026 }]);
+    const r = await runMarketScan({ county: 'Sevier', state: 'AR', search });
+    expect(r.dataCenterWatch.items[0].corroboration).toBeNull();
+    expect(r.dataCenterWatch.verdict).toMatch(/uncorroborated, not disproven/i);
+  });
+
+  it('keeps topical news that does not name this market as unverified context, never as a local hit', async () => {
+    const r = await runMarketScan({
+      county: 'Barry', state: 'MO', city: 'Cassville', zip: '65625', corroborate: false,
+      search: async (q) => (q.includes('data center')
+        ? [
+          { title: 'Laramie County approves construction of large data center', summary: 'A county approves a hyperscale campus.', url: 'https://wyo.example/1', year: 2026 },
+          { title: '$100 Billion AI Data Center Campus Planned at DOE Paducah Site', summary: 'A site draws a hyperscale proposal.', url: 'https://ky.example/2', year: 2026 },
+        ]
+        : []),
+    });
+    // Not counted as nearby activity...
+    expect(r.dataCenterWatch.status).toBe('none_found');
+    expect(r.dataCenterWatch.items).toEqual([]);
+    // ...but not thrown away either: the caller can still resolve their location.
+    expect(r.dataCenterWatch.unverifiedNearbyCandidates).toHaveLength(2);
+    expect(r.dataCenterWatch.unverifiedNearbyCandidates?.every((i) => i.locationConfidence === 'unverified')).toBe(true);
+    expect(r.dataCenterWatch.verdict).toMatch(/carried as unverified context, not as nearby activity/i);
+  });
+
+  it('keeps data-center activity that names the subject county, city or ZIP', async () => {
+    const r = await runMarketScan({
+      county: 'Barry', state: 'MO', city: 'Cassville', zip: '65625', corroborate: false,
+      search: async (q) => (q.includes('data center')
+        ? [
+          { title: 'Data center proposed near Cassville', summary: 'A developer proposes a data center campus.', url: 'https://mo.example/1', year: 2026 },
+          { title: 'Laramie County approves a data center', summary: 'Wyoming approval.', url: 'https://wyo.example/2', year: 2026 },
+        ]
+        : []),
+    });
+    expect(r.dataCenterWatch.status).toBe('found');
+    expect(r.dataCenterWatch.items).toHaveLength(1);
+    expect(r.dataCenterWatch.items[0].url).toBe('https://mo.example/1');
+    expect(r.dataCenterWatch.items[0].source).toBe('web_search');
+    expect(r.dataCenterWatch.items[0].locationConfidence).toBe('subject_area_named');
+    expect(r.dataCenterWatch.unverifiedNearbyCandidates).toHaveLength(1);
+  });
+
+  it('applies the same geographic screen to growth signals', async () => {
+    const r = await runMarketScan({
+      county: 'Barry', state: 'MO', city: 'Cassville', corroborate: false,
+      search: async (q) => (q.includes('population growth')
+        ? [
+          { title: 'New subdivision breaks ground in Cassville', summary: 'Builders start a 40-lot subdivision.', url: 'https://mo.example/sub', year: 2026 },
+          { title: 'New subdivision breaks ground in Boise', summary: 'Idaho builders start a subdivision.', url: 'https://id.example/sub', year: 2026 },
+        ]
+        : []),
+    });
+    expect(r.growthSignals.items).toHaveLength(1);
+    expect(r.growthSignals.items[0].url).toBe('https://mo.example/sub');
+    expect(r.growthSignals.droppedIrrelevant).toBe(1);
+  });
+
+  it('screens nothing when the subject has no resolvable geography', () => {
+    expect(mentionsSubjectArea('Anything at all', {})).toBe(true);
+    expect(mentionsSubjectArea('Cassville, MO project', { state: 'MO' })).toBe(true);
+    expect(mentionsSubjectArea('A Missouri project', { state: 'MO' })).toBe(true);
+    expect(mentionsSubjectArea('A Wyoming project', { state: 'MO', county: 'Barry' })).toBe(false);
+  });
+
+  it('keeps only land-market-relevant findings in the land market web read', async () => {
+    const r = await runMarketScan({
+      county: 'Sevier', state: 'AR', subjectAcres: 32, corroborate: false,
+      search: async (q) => (q.includes('vacant land market')
+        ? [
+          { title: 'Sevier County land prices', summary: 'Median price per acre rose in 2026.', url: 'https://x.example/land', year: 2026 },
+          { title: 'Local bake sale', summary: 'Community event this weekend.', url: 'https://x.example/bake', year: 2026 },
+        ]
+        : []),
+    });
+    expect(r.landMarketWeb?.status).toBe('found');
+    expect(r.landMarketWeb?.acreageFocus).toBe('20-50');
+    expect(r.landMarketWeb?.items).toHaveLength(1);
+    expect(r.landMarketWeb?.items[0].url).toBe('https://x.example/land');
   });
 });

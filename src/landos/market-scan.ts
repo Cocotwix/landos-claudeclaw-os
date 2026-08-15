@@ -136,6 +136,21 @@ export interface DataCenterWatchItem {
   whyItMatters: string;
   url: string | null;
   year: number | null;
+  /** Which lane carried this item. Named so a ZIP-centroid community report is
+   *  never read as a confirmed sited project. */
+  source?: 'brockovich_community_reports' | 'web_search' | 'brockovich_map' | null;
+  /**
+   * How this item's LOCATION is known, which is a separate question from
+   * whether the project is real:
+   *   subject_area_named — the source names the subject's county/city/ZIP/state
+   *   distance_verified  — the place was resolved and measured to the subject
+   *   unverified         — topical and possibly nearby, location not established
+   * Only the first two may be counted as a within-radius hit.
+   */
+  locationConfidence?: 'subject_area_named' | 'distance_verified' | 'unverified';
+  /** A second, independent source that corroborates a proposed / rumored item,
+   *  when one was found. Null means uncorroborated, never disproven. */
+  corroboration?: { summary: string; url: string | null } | null;
 }
 
 export interface DataCenterWatch {
@@ -148,6 +163,24 @@ export interface DataCenterWatch {
   /** Existence check only — deeper research is a later, explicit task. */
   note: string;
   generatedAt: string;
+  /**
+   * The explicit answer to "is there a data center near this subject?" — always
+   * present, in every status. A hit names what, its status and its approximate
+   * distance; a clean screen says so plainly rather than leaving the operator to
+   * infer it from an empty list.
+   */
+  verdict?: string;
+  /** Every retrieval route actually attempted, named so a negative answer can be
+   *  read as "these routes found nothing", never as "LandOS did not look". */
+  routesAttempted?: string[];
+  /**
+   * Topical data-center activity that may or may not be near the subject: the
+   * source did not name the subject's geography and its location could not be
+   * established. Carried as context so a possibly-nearby project is never
+   * silently discarded, and kept OUT of `items` so it is never counted as a
+   * confirmed within-20-mile hit.
+   */
+  unverifiedNearbyCandidates?: DataCenterWatchItem[];
   browserMapEvidence?: {
     sourceUrl: string;
     subject: { lat: number; lng: number };
@@ -187,6 +220,66 @@ function classifyDataCenterStatus(text: string): DataCenterItemStatus {
 
 const DC_TOPIC = /\bdata ?center|hyperscale|colocation|ai (campus|factory|infrastructure|cluster)|gpu (cluster|farm)\b/i;
 
+// ── Geographic relevance ────────────────────────────────────────────────────
+//
+// Web search answers the QUESTION asked, not the GEOGRAPHY asked about. A
+// keyless query for "Barry, MO data center" returns national data-center news:
+// a Laramie County, Wyoming approval and a Paducah, Kentucky campus both come
+// back topical and both are about somewhere else. Passing those through told
+// the operator this county has data-center activity when it does not, which is
+// worse than saying nothing.
+//
+// So a finding must NAME the subject's own geography — its county, state, city
+// or ZIP — to be kept. Anything else is dropped and counted, never rendered.
+
+const STATE_NAME: Record<string, string> = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado',
+  CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho',
+  IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana',
+  ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota',
+  MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada',
+  NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina',
+  ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania',
+  RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas',
+  UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia',
+  WI: 'Wisconsin', WY: 'Wyoming', DC: 'District of Columbia',
+};
+
+export interface SubjectPlace {
+  county?: string;
+  state?: string;
+  city?: string;
+  zip?: string;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Does this finding actually name the subject's geography? PURE.
+ * With no resolvable place, nothing can be screened, so everything passes —
+ * an unknown geography must not silently empty the scan.
+ */
+export function mentionsSubjectArea(text: string, place: SubjectPlace): boolean {
+  const terms: string[] = [];
+  const county = (place.county ?? '').replace(/\s+county$/i, '').trim();
+  const city = (place.city ?? '').trim();
+  const zip = (place.zip ?? '').trim();
+  const state = (place.state ?? '').trim().toUpperCase();
+  if (county.length >= 3) terms.push(county);
+  if (city.length >= 3) terms.push(city);
+  if (/^\d{5}$/.test(zip)) terms.push(zip);
+  if (STATE_NAME[state]) terms.push(STATE_NAME[state]);
+  if (!terms.length) return true;
+  const haystack = text ?? '';
+  if (terms.some((term) => new RegExp(`\\b${escapeRegex(term)}\\b`, 'i').test(haystack))) return true;
+  // A bare two-letter state code only counts beside a place name ("Cassville,
+  // MO"), never on its own — "MO" appears inside too much unrelated text.
+  return /^[A-Z]{2}$/.test(state)
+    && new RegExp(`[A-Za-z]{3,},\\s*${state}\\b`).test(haystack);
+}
+
 /**
  * Build the Data Center Watch from search findings. PURE. Keeps only 2025+
  * (or undated) findings that are actually about data-center / AI-compute
@@ -196,6 +289,9 @@ const DC_TOPIC = /\bdata ?center|hyperscale|colocation|ai (campus|factory|infras
 export function buildDataCenterWatch(input: {
   county?: string;
   state?: string;
+  /** City and ZIP widen the geographic screen below; both are optional. */
+  city?: string;
+  zip?: string;
   findings: ScanFinding[] | null; // null = the search did not run
   searchFailed?: boolean;
   nowIso?: string;
@@ -205,19 +301,32 @@ export function buildDataCenterWatch(input: {
   const note = 'Existence check only (2025+). If this matters to the deal, queue deeper Jarvis research — this scan does not investigate.';
 
   if (input.searchFailed) {
-    return { status: 'unavailable', area, items: [], summary: `Data Center Watch could not complete for ${area} — the search source was unavailable.`, whyItMatters: '', note, generatedAt };
+    return {
+      status: 'unavailable', area, items: [],
+      summary: `Data Center Watch could not complete for ${area} — the search source was unavailable.`,
+      whyItMatters: '', note, generatedAt,
+      verdict: `Whether a data center sits near this subject is UNRESOLVED for ${area}: every search transport failed. This is a source outage, not evidence that nothing is nearby.`,
+    };
   }
   if (input.findings == null) {
-    return { status: 'not_run', area, items: [], summary: `Data Center Watch has not run for ${area} yet.`, whyItMatters: '', note, generatedAt };
+    return {
+      status: 'not_run', area, items: [],
+      summary: `Data Center Watch has not run for ${area} yet.`,
+      whyItMatters: '', note, generatedAt,
+      verdict: `The data-center check has not run for ${area} yet, so nothing is claimed either way.`,
+    };
   }
 
+  const place: SubjectPlace = { county: input.county, state: input.state, city: input.city, zip: input.zip };
   const items: DataCenterWatchItem[] = [];
+  const unverified: DataCenterWatchItem[] = [];
   for (const f of input.findings) {
     const text = `${f.title} ${f.summary}`;
     if (!DC_TOPIC.test(text)) continue;                       // not data-center activity
     if (f.year != null && f.year < 2025) continue;            // 2025+ only
     const status = classifyDataCenterStatus(text);
-    items.push({
+    const namesSubjectArea = mentionsSubjectArea(text, place);
+    const item: DataCenterWatchItem = {
       title: (f.title || '').trim() || 'Data center activity',
       location: f.location?.trim() || null,
       distanceMiles: typeof f.distanceMiles === 'number' && Number.isFinite(f.distanceMiles)
@@ -227,24 +336,128 @@ export function buildDataCenterWatch(input: {
       whyItMatters: DC_WHY[status],
       url: (f.url && f.url.trim()) || null,
       year: f.year ?? null,
-    });
+      source: 'web_search',
+      corroboration: null,
+      locationConfidence: namesSubjectArea ? 'subject_area_named' : 'unverified',
+    };
+    // A source that does not name the subject's geography is NOT evidence the
+    // project is far away — search returns national coverage. It is held as an
+    // unverified candidate whose location the caller may still resolve, and it
+    // never counts as a confirmed within-radius hit until a distance is
+    // actually measured.
+    if (namesSubjectArea) items.push(item); else unverified.push(item);
   }
 
   if (!items.length) {
+    const candidateNote = unverified.length
+      ? ` ${unverified.length} topical result(s) did not name this market and their locations were not established; they are carried as unverified context, not as nearby activity.`
+      : '';
     return {
       status: 'none_found', area, items: [],
-      summary: `No 2025+ data-center or AI-campus activity found for ${area}. That is a real answer, not a gap — this market shows no institutional compute demand signal right now.`,
+      unverifiedNearbyCandidates: unverified.slice(0, 6),
+      summary: `No 2025+ data-center or AI-campus activity confirmed for ${area}. That is a real answer, not a gap — this market shows no confirmed institutional compute demand signal right now.${candidateNote}`,
       whyItMatters: '', note, generatedAt,
+      verdict: `Indexed and grounded web search confirmed no operating, under-construction, proposed or rumored data-center activity in ${area}.${candidateNote} Search results are county-scoped, so this does not itself measure a 20-mile radius.`,
     };
   }
 
   const strongest = items.find((i) => i.status === 'under_construction') ?? items.find((i) => i.status === 'approved') ?? items[0];
   const statuses = Array.from(new Set(items.map((i) => i.status.replace(/_/g, ' '))));
+  const candidateTail = unverified.length
+    ? ` ${unverified.length} further topical result(s) are carried as unverified context, their locations unestablished.`
+    : '';
   return {
     status: 'found', area, items: items.slice(0, 6),
-    summary: `Data-center / AI-campus activity found near ${area}: ${items.length} signal(s) — ${statuses.join(', ')}. Strongest: ${strongest.title}.`,
+    unverifiedNearbyCandidates: unverified.slice(0, 6),
+    summary: `Data-center / AI-campus activity found near ${area}: ${items.length} signal(s) — ${statuses.join(', ')}. Strongest: ${strongest.title}.${candidateTail}`,
     whyItMatters: strongest.whyItMatters,
     note, generatedAt,
+    verdict: `Web search reports data-center activity in ${area}: ${items.length} signal(s) (${statuses.join(', ')}). Strongest: ${strongest.title}.${candidateTail} Search findings are county-scoped; distance from the subject is only established where a lane measured it.`,
+  };
+}
+
+// ── The county land-market web read (price direction, liquidity narrative) ───
+//
+// The retained Market Research store answers the NUMBERS — sold volume, median
+// $/acre, DOM, sell-through, absorption, months of supply — but currently holds
+// a single quarter for most counties, so it cannot state a price TREND. Rather
+// than leave the operator's "which way is pricing moving?" question unanswered,
+// this lane carries sourced web evidence about the subject county's land market
+// at the subject's acreage range, verbatim and attributed. It classifies
+// nothing and infers nothing: it is evidence, next to the numbers.
+
+export interface LandMarketWebItem {
+  title: string;
+  summary: string;
+  url: string | null;
+  year: number | null;
+}
+
+export interface LandMarketWebRead {
+  status: 'found' | 'none_found' | 'not_run' | 'unavailable';
+  area: string;
+  /** The acreage range the query targeted, when the subject's acreage is known. */
+  acreageFocus: string | null;
+  items: LandMarketWebItem[];
+  summary: string;
+  generatedAt: string;
+}
+
+export const LAND_MARKET_QUERY = (area: string, acreageFocus: string | null): string =>
+  `${area} vacant land market ${acreageFocus ? `${acreageFocus} acre tracts ` : ''}`
+  + 'price per acre trend days on market inventory absorption 2025 2026 land values rising or falling';
+
+/** The acreage range a subject belongs to, phrased the way a search would be. */
+export function acreageFocusLabel(acres: number | null | undefined): string | null {
+  if (typeof acres !== 'number' || !Number.isFinite(acres) || acres <= 0) return null;
+  const band = PRACTICAL_ACREAGE_BANDS.find((entry) => acres >= entry.min && (entry.max == null || acres < entry.max));
+  if (!band) return null;
+  return band.max == null ? `${band.min}+` : `${band.min}-${band.max}`;
+}
+
+/** PURE. Keeps web findings that actually speak to land pricing, liquidity or
+ *  market direction; anything else is dropped rather than padded in. */
+export function buildLandMarketWebRead(input: {
+  county?: string;
+  state?: string;
+  city?: string;
+  zip?: string;
+  acreageFocus?: string | null;
+  findings: ScanFinding[] | null;
+  searchFailed?: boolean;
+  nowIso?: string;
+}): LandMarketWebRead {
+  const area = [input.county, input.state].filter(Boolean).join(', ') || 'this area';
+  const generatedAt = input.nowIso ?? new Date().toISOString();
+  const acreageFocus = input.acreageFocus ?? null;
+  const base = { area, acreageFocus, generatedAt };
+  if (input.searchFailed) {
+    return { ...base, status: 'unavailable', items: [], summary: `The land-market web read could not complete for ${area} — every search transport failed.` };
+  }
+  if (input.findings == null) {
+    return { ...base, status: 'not_run', items: [], summary: `The land-market web read has not run for ${area} yet.` };
+  }
+  const MARKET_TOPIC = /\b(price per acre|\$\/acre|land (value|price|market|sales)|days on market|inventory|absorption|acre(age)? (lot|tract|parcel)s?|median (price|sale)|sell[- ]through|for sale)\b/i;
+  const place: SubjectPlace = { county: input.county, state: input.state, city: input.city, zip: input.zip };
+  const items = input.findings
+    .filter((finding) => MARKET_TOPIC.test(`${finding.title} ${finding.summary}`)
+      && mentionsSubjectArea(`${finding.title} ${finding.summary}`, place))
+    .map((finding) => ({
+      title: (finding.title || '').trim() || 'Land market source',
+      summary: (finding.summary || '').trim(),
+      url: (finding.url && finding.url.trim()) || null,
+      year: finding.year ?? null,
+    }))
+    .slice(0, 6);
+  if (!items.length) {
+    return { ...base, status: 'none_found', items: [], summary: `No sourced web evidence about the ${area} land market surfaced in this scan.` };
+  }
+  return {
+    ...base,
+    status: 'found',
+    items,
+    summary: `${items.length} sourced web reference(s) on the ${area} land market`
+      + `${acreageFocus ? ` at the subject's ${acreageFocus} acre range` : ''}. Read alongside the retained Market Research numbers; these are published claims, not LandOS measurements.`,
   };
 }
 
@@ -282,6 +495,8 @@ export interface MarketSignalScan {
 export function buildMarketSignalScan(input: {
   county?: string;
   state?: string;
+  city?: string;
+  zip?: string;
   findings: ScanFinding[] | null;
   searchFailed?: boolean;
   nowIso?: string;
@@ -294,12 +509,15 @@ export function buildMarketSignalScan(input: {
   if (input.findings == null) {
     return { status: 'not_run', area, items: [], droppedIrrelevant: 0, summary: `Growth-signal scan has not run for ${area} yet.`, generatedAt };
   }
+  const place: SubjectPlace = { county: input.county, state: input.state, city: input.city, zip: input.zip };
   const items: MarketSignalItem[] = [];
   let dropped = 0;
   for (const f of input.findings) {
     const text = `${f.title} ${f.summary}`;
     const rel = assessLandRelevance(text);
     if (!rel.relevant || !rel.category || !rel.whyItMatters) { dropped += 1; continue; }
+    // Land-relevant somewhere else is not a signal about THIS market.
+    if (!mentionsSubjectArea(text, place)) { dropped += 1; continue; }
     items.push({
       title: (f.title || '').trim() || 'Market signal',
       summary: (f.summary || '').trim(),
@@ -634,6 +852,8 @@ export interface MarketScanResult {
   area: { county?: string; state?: string; descriptor: string };
   dataCenterWatch: DataCenterWatch;
   growthSignals: MarketSignalScan;
+  /** Sourced web evidence on the county's land market at the subject acreage. */
+  landMarketWeb?: LandMarketWebRead;
   acreageMatrix?: PracticalMarketMatrix;
   generatedAt: string;
 }
@@ -644,72 +864,112 @@ export type ScanSearchFn = (query: string) => Promise<ScanFinding[]>;
 
 export const DATA_CENTER_QUERY = (area: string) =>
   `${area} data center OR "AI campus" OR hyperscale proposed OR approved OR "under construction" 2025 2026`;
+/** One bounded corroboration query for a proposed / rumored data-center item. */
+export const DATA_CENTER_CORROBORATION_QUERY = (area: string, subject: string): string =>
+  `"${subject.slice(0, 90)}" ${area} data center proposal approved OR rejected OR hearing OR rezoning status`;
 export const GROWTH_SIGNAL_QUERY = (area: string) =>
   `${area} population growth OR housing growth OR "new subdivision" OR "master planned" OR commercial development OR industrial project OR manufacturing plant OR "distribution center" OR road project OR transportation improvement OR "water line extension" OR "sewer extension" OR utility expansion OR annexation OR rezoning OR employer expansion OR employer closure OR "building permits" 2025 2026`;
 
+/** Items whose existence is claimed rather than built — worth a second source. */
+const CORROBORATE_STATUSES: ReadonlySet<DataCenterItemStatus> = new Set([
+  'proposed', 'planning_activity', 'community_opposition', 'mention',
+]);
+
 /**
- * Run the live market scan with an injected search function. Exactly two bounded
- * queries (one per scan) — never a runaway loop. Failure of one query degrades
- * that scan honestly; it never blocks the other.
+ * Run the live market scan with an injected search function. Bounded by
+ * construction: three topic queries (data centers, growth signals, land market)
+ * plus at most ONE corroboration query for a proposed/rumored data-center item —
+ * never a runaway loop. Failure of one query degrades that lane honestly; it
+ * never blocks the others.
  */
 export async function runMarketScan(input: {
   county?: string;
   state?: string;
+  /** Widen the geographic screen and the query with the subject's own locality. */
+  city?: string;
+  zip?: string;
   search: ScanSearchFn | null; // null = no search source configured
   marketObservations?: AcreageMarketObservation[];
   internalCountySnapshots?: InternalCountyAcreageSnapshot[];
   subjectAcres?: number | null;
+  /** Set false to skip the bounded corroboration query (tests, tight budgets). */
+  corroborate?: boolean;
   nowIso?: string;
 }): Promise<MarketScanResult> {
   const descriptor = [input.county, input.state].filter(Boolean).join(', ') || 'this area';
   const generatedAt = input.nowIso ?? new Date().toISOString();
+  const acreageFocus = acreageFocusLabel(input.subjectAcres);
+  // The subject's own town is what local coverage actually names, so it is part
+  // of the query as well as the screen.
+  const queryArea = input.city ? `${input.city} ${descriptor}` : descriptor;
+  const place = { county: input.county, state: input.state, city: input.city, zip: input.zip };
+  const matrix = (): PracticalMarketMatrix | undefined =>
+    (input.marketObservations || input.internalCountySnapshots
+      ? buildPracticalMarketMatrix({
+        observations: input.marketObservations ?? [],
+        internalCountySnapshots: input.internalCountySnapshots,
+        subjectAcres: input.subjectAcres,
+        nowIso: generatedAt,
+      })
+      : undefined);
 
   if (!input.search || descriptor === 'this area') {
     return {
       area: { county: input.county, state: input.state, descriptor },
-      dataCenterWatch: buildDataCenterWatch({ county: input.county, state: input.state, findings: null, nowIso: generatedAt }),
-      growthSignals: buildMarketSignalScan({ county: input.county, state: input.state, findings: null, nowIso: generatedAt }),
-      acreageMatrix: input.marketObservations
-        || input.internalCountySnapshots
-        ? buildPracticalMarketMatrix({
-            observations: input.marketObservations ?? [],
-            internalCountySnapshots: input.internalCountySnapshots,
-            subjectAcres: input.subjectAcres,
-            nowIso: generatedAt,
-          })
-        : undefined,
+      dataCenterWatch: buildDataCenterWatch({ ...place, findings: null, nowIso: generatedAt }),
+      growthSignals: buildMarketSignalScan({ ...place, findings: null, nowIso: generatedAt }),
+      landMarketWeb: buildLandMarketWebRead({ ...place, acreageFocus, findings: null, nowIso: generatedAt }),
+      acreageMatrix: matrix(),
       generatedAt,
     };
   }
 
-  let dcFindings: ScanFinding[] | null = null;
-  let dcFailed = false;
-  try {
-    dcFindings = await input.search(DATA_CENTER_QUERY(descriptor));
-  } catch {
-    dcFailed = true;
-  }
-  let gsFindings: ScanFinding[] | null = null;
-  let gsFailed = false;
-  try {
-    gsFindings = await input.search(GROWTH_SIGNAL_QUERY(descriptor));
-  } catch {
-    gsFailed = true;
+  const search = input.search;
+  const runQuery = async (query: string): Promise<{ findings: ScanFinding[] | null; failed: boolean }> => {
+    try {
+      return { findings: await search(query), failed: false };
+    } catch {
+      return { findings: null, failed: true };
+    }
+  };
+
+  // The three topic lanes are independent questions about the same market, so
+  // they run concurrently rather than making one lane wait on another's latency.
+  const [dc, gs, lm] = await Promise.all([
+    runQuery(DATA_CENTER_QUERY(queryArea)),
+    runQuery(GROWTH_SIGNAL_QUERY(queryArea)),
+    runQuery(LAND_MARKET_QUERY(queryArea, acreageFocus)),
+  ]);
+
+  const dataCenterWatch = buildDataCenterWatch({
+    ...place, findings: dc.findings, searchFailed: dc.failed, nowIso: generatedAt,
+  });
+
+  // Corroborate the strongest proposed / rumored item against a second query.
+  // Bounded to one: this is a corroboration pass, not an investigation.
+  if ((input.corroborate ?? true) && dataCenterWatch.status === 'found') {
+    const target = dataCenterWatch.items.find((item) => CORROBORATE_STATUSES.has(item.status));
+    if (target) {
+      const outcome = await runQuery(DATA_CENTER_CORROBORATION_QUERY(queryArea, target.title));
+      const support = (outcome.findings ?? []).find((finding) =>
+        DC_TOPIC.test(`${finding.title} ${finding.summary}`)
+        && mentionsSubjectArea(`${finding.title} ${finding.summary}`, place)
+        && (finding.url ?? '') !== (target.url ?? ''));
+      target.corroboration = support
+        ? { summary: `${(support.title || '').trim()} — ${(support.summary || '').trim()}`.trim(), url: (support.url && support.url.trim()) || null }
+        : null;
+      dataCenterWatch.verdict = `${dataCenterWatch.verdict ?? ''} ${target.corroboration
+        ? `The ${target.status.replace(/_/g, ' ')} item "${target.title}" is corroborated by a second independent source.`
+        : `The ${target.status.replace(/_/g, ' ')} item "${target.title}" could not be corroborated by a second source in this pass; it stays uncorroborated, not disproven.`}`.trim();
+    }
   }
 
   return {
     area: { county: input.county, state: input.state, descriptor },
-    dataCenterWatch: buildDataCenterWatch({ county: input.county, state: input.state, findings: dcFindings, searchFailed: dcFailed, nowIso: generatedAt }),
-    growthSignals: buildMarketSignalScan({ county: input.county, state: input.state, findings: gsFindings, searchFailed: gsFailed, nowIso: generatedAt }),
-    acreageMatrix: input.marketObservations
-      || input.internalCountySnapshots
-      ? buildPracticalMarketMatrix({
-          observations: input.marketObservations ?? [],
-          internalCountySnapshots: input.internalCountySnapshots,
-          subjectAcres: input.subjectAcres,
-          nowIso: generatedAt,
-        })
-      : undefined,
+    dataCenterWatch,
+    growthSignals: buildMarketSignalScan({ ...place, findings: gs.findings, searchFailed: gs.failed, nowIso: generatedAt }),
+    landMarketWeb: buildLandMarketWebRead({ ...place, acreageFocus, findings: lm.findings, searchFailed: lm.failed, nowIso: generatedAt }),
+    acreageMatrix: matrix(),
     generatedAt,
   };
 }
