@@ -69,6 +69,12 @@ import type { SpecialistId } from './property-intelligence-specialists.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import type { DealOperatorAnalysis, DealOperatorContext } from './deal-operator-analysis.js';
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
+import type { ControllingLandUseAuthority } from './controlling-land-use-authority.js';
+import type { CurrentZoningDetermination } from './current-zoning-determination.js';
+import type { PropertyBackstory } from './property-backstory.js';
+import type { SubdivisionRegulations } from './subdivision-regulations.js';
+import type { PropertySubdivisionRead } from './subdivision-property-read.js';
+import type { ZoningStandardsResult } from './zoning-standards-research.js';
 
 export const DEAL_INTELLIGENCE_KIND = 'deal_intelligence';
 export const DEAL_INTELLIGENCE_SCOPE = 'deal_card';
@@ -82,6 +88,9 @@ export const DEAL_INTELLIGENCE_GROUPS = {
   marketEvidence: 'market_evidence',
   retainedEvidence: 'retained_evidence',
   dealAnalysis: 'deal_analysis',
+  /** Post-resolution intelligence: what the parcel has already been through,
+   *  and what its controlling authority actually allows. */
+  propertyHistory: 'property_history',
 } as const;
 
 /** Child keys. They double as the snapshot's specialist ids, so the operator
@@ -95,6 +104,8 @@ export const DEAL_INTELLIGENCE_CHILD_KEYS = [
   'comparables',
   'market_intelligence',
   'evidence_visuals',
+  'property_backstory',
+  'subdivision_feasibility',
   'valuation',
   'strategy',
 ] as const;
@@ -179,6 +190,55 @@ export interface ZoningHandback {
   zoning: string | null;
   items: SnapshotDueDiligenceItem[];
   facts: SnapshotFact[];
+  summary: string;
+  /**
+   * WHICH GOVERNMENT controls zoning and subdivision for this parcel, from
+   * evidence. Null when the upgrade is not wired into this run.
+   *
+   * Deliberately part of the EXISTING zoning lane rather than a second zoning
+   * system: "whose zoning" and "what zoning" are one question asked in order,
+   * and splitting them across two lanes is how an operator ends up reading a
+   * district under the wrong government's name.
+   */
+  controllingAuthority: ControllingLandUseAuthority | null;
+  /**
+   * The CURRENT district for this parcel, verified against a current
+   * authoritative source — or honestly unestablished. Historical planning
+   * statements travel inside it as dated references and can never populate it.
+   */
+  currentZoning: CurrentZoningDetermination | null;
+  /** True when the district above was established from a current source. */
+  currentZoningEstablished: boolean;
+  /**
+   * Allowed uses and dimensional standards for the established district.
+   *
+   * Null when the district is unresolved — an ordinance read without a district
+   * produces whichever district the code printed first, which is worse than
+   * nothing.
+   */
+  zoningStandards: ZoningStandardsResult | null;
+}
+
+export interface PropertyBackstoryHandback {
+  dealCardId: number;
+  eventCount: number;
+  /** Documents answered from retained intelligence rather than re-fetched. */
+  documentsReused: number;
+  documentsRetrieved: number;
+  backstory: PropertyBackstory;
+  summary: string;
+}
+
+export interface SubdivisionHandback {
+  dealCardId: number;
+  /** Authority for the RULES, from evidence. Never assumed from geography. */
+  authorityName: string | null;
+  authorityDetermination: string;
+  ruleCount: number;
+  regulations: SubdivisionRegulations;
+  propertyRead: PropertySubdivisionRead;
+  /** Always false. A theoretical lot count is never an approved yield. */
+  approvedYieldAsserted: false;
   summary: string;
 }
 
@@ -288,6 +348,54 @@ export interface DealIntelligenceCapabilities {
     previousSnapshot: PropertyIntelligenceSnapshot | null;
     generatedAt: string;
   }) => Promise<DealOperatorAnalysis>;
+  /**
+   * Property Backstory for the CONFIRMED subject.
+   *
+   * Injected rather than added to `PropertyIntelligenceCollectors` so the
+   * existing collector contract — and every test double that implements it —
+   * is untouched. An unwired capability makes the lane report `blocked` with
+   * the reason stated, exactly as the Market Pulse lane already does.
+   */
+  propertyBackstory?: (input: {
+    dealCardId: number;
+    identity: SubjectResearchHandback;
+  }) => Promise<PropertyBackstory>;
+  /**
+   * WHO controls land use here, and what the CURRENT district is.
+   *
+   * Wired into the EXISTING zoning lane, which is why it takes no backstory:
+   * zoning is a required lane that valuation and strategy wait behind, and
+   * ordering it after a supporting history sweep would put the whole deal on
+   * hold for research that only enriches it.
+   */
+  landUseAuthorityAndZoning?: (input: {
+    dealCardId: number;
+    identity: SubjectResearchHandback;
+  }) => Promise<{
+    authority: ControllingLandUseAuthority;
+    zoning: CurrentZoningDetermination;
+    /** Null when the district is unresolved; nothing is researched then. */
+    zoningStandards: ZoningStandardsResult | null;
+  }>;
+  /**
+   * The subdivision rules and the property-specific read.
+   *
+   * Consumes the authority the zoning lane already established, so the
+   * jurisdiction is never rediscovered, plus whatever the backstory, the
+   * environmental screening and the access lane actually delivered.
+   */
+  subdivisionIntelligence?: (input: {
+    dealCardId: number;
+    identity: SubjectResearchHandback;
+    authority: ControllingLandUseAuthority | null;
+    zoning: CurrentZoningDetermination | null;
+    backstory: PropertyBackstory | null;
+    environmental: EnvironmentalHandback | null;
+    access: UtilitiesAccessHandback | null;
+  }) => Promise<{
+    regulations: SubdivisionRegulations;
+    propertyRead: PropertySubdivisionRead;
+  }>;
   now?: () => string;
 }
 
@@ -720,6 +828,156 @@ export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
     },
   },
   {
+    key: 'property_backstory',
+    label: 'Property backstory',
+    purpose: 'Assemble the public planning, development and governing-body history of THIS parcel from the official documents LandOS already holds, expanding only past what is already stored.',
+    // SUPPORTING, and nothing depends on it. That is deliberate: a history
+    // sweep enriches the read, and a property with no planning history is a
+    // perfectly normal property. Making it required would put a deal on hold
+    // over the absence of something that may simply not exist.
+    role: 'supporting',
+    dependsOn: ['parcel_identity'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.propertyHistory,
+    assignedRole: 'Public development and planning history of the subject parcel',
+    agentKey: 'research_bot',
+    contributionSlot: 'backstory',
+    provider: DETERMINISTIC('The subject parcel backstory'),
+    acceptance: {
+      requiredFields: ['eventCount'],
+      checks: [
+        SCOPE,
+        {
+          id: 'backstory_stated',
+          requirement: 'The lane states a backstory result, including when the record carries no history.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<PropertyBackstoryHandback>;
+            const stated = typeof row.eventCount === 'number' && !!row.backstory?.summary?.narrative;
+            return {
+              passed: stated,
+              detail: stated
+                ? `${row.eventCount} subject-specific event(s) retained.`
+                : 'The lane returned no backstory at all, so nothing is stated about this parcel\'s history.',
+            };
+          },
+        },
+        {
+          id: 'retained_intelligence_reused',
+          requirement: 'Official documents LandOS already mined were reused rather than re-fetched.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const row = handback as Partial<PropertyBackstoryHandback>;
+            const reused = Number(row.documentsReused ?? 0);
+            const retrieved = Number(row.documentsRetrieved ?? 0);
+            return {
+              passed: reused > 0 || retrieved === 0,
+              detail: reused > 0
+                ? `${reused} document(s) answered from retained LandOS intelligence; ${retrieved} newly retrieved.`
+                : retrieved > 0
+                  ? `No stored document intelligence existed, so ${retrieved} document(s) had to be retrieved.`
+                  : 'No official document intelligence exists for this parcel yet.',
+            };
+          },
+        },
+        {
+          id: 'history_found',
+          requirement: 'At least one subject-specific historical event was retained.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const count = Number((handback as Partial<PropertyBackstoryHandback>).eventCount ?? 0);
+            return {
+              passed: count > 0,
+              detail: count > 0
+                ? `${count} event(s) retained.`
+                : 'No public planning or development history was found for this parcel. That is an absence of record, not evidence that nothing happened.',
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
+    key: 'subdivision_feasibility',
+    label: 'Subdivision rules and feasibility',
+    purpose: 'Retrieve the controlling authority\'s current subdivision regulations with their ordinance sections, then state what THIS tract can plausibly do and what remains unresolved.',
+    role: 'supporting',
+    dependsOn: ['parcel_identity'],
+    // Waits, never requires. Zoning supplies the controlling authority and the
+    // district; the backstory supplies any prior lot concept; environmental and
+    // access supply the site facts. Every one of them may be missing, and the
+    // lane still produces a real read that names what it could not take into
+    // account — which is the whole point of `awaits` over `dependsOn`.
+    awaits: ['zoning_land_use', 'property_backstory', 'environmental_terrain', 'access_utilities'],
+    timeoutMs: 240_000,
+    group: DEAL_INTELLIGENCE_GROUPS.propertyHistory,
+    assignedRole: 'Subdivision regulations and property-specific feasibility',
+    agentKey: 'dd_bot',
+    contributionSlot: 'subdivision',
+    provider: DETERMINISTIC('The controlling subdivision regulations and the property-specific read'),
+    acceptance: {
+      requiredFields: ['ruleCount', 'approvedYieldAsserted'],
+      checks: [
+        SCOPE,
+        {
+          id: 'no_approved_yield_claimed',
+          requirement: 'A theoretical lot count is never presented as an approved yield.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<SubdivisionHandback>;
+            if (row.approvedYieldAsserted !== false) {
+              return {
+                passed: false,
+                detail: 'The lane reports that an approved yield was asserted. Lot yield is an entitlement decision no LandOS lane may make, so the result is not accepted.',
+              };
+            }
+            const theoretical = row.propertyRead?.theoreticalLotCount;
+            const clean = !theoretical || theoretical.approvedYield === false;
+            return {
+              passed: clean,
+              detail: clean
+                ? theoretical?.value != null
+                  ? `Theoretical count of ${theoretical.value} lot(s) is carried as arithmetic, explicitly not an approved yield.`
+                  : 'No theoretical lot count was computed, and none is asserted.'
+                : 'The property read marks its theoretical lot count as an approved yield, which no LandOS lane may do.',
+            };
+          },
+        },
+        {
+          id: 'subdivision_stated',
+          requirement: 'The lane states a subdivision read, including when the rules could not be retrieved.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as Partial<SubdivisionHandback>;
+            const stated = !!row.propertyRead?.likelyPath?.kind;
+            return {
+              passed: stated,
+              detail: stated
+                ? `Likely path: ${row.propertyRead!.likelyPath.kind.replace(/_/g, ' ')} (${row.propertyRead!.likelyPath.basis}).`
+                : 'The lane returned no property-specific subdivision read.',
+            };
+          },
+        },
+        {
+          id: 'rules_sourced',
+          requirement: 'The controlling subdivision rules were retrieved with their source.',
+          severity: 'expected',
+          evaluate: (handback) => {
+            const row = handback as Partial<SubdivisionHandback>;
+            const rules = row.regulations?.rules ?? [];
+            const sourced = rules.filter((rule) => !!rule.sourceUrl || !!rule.sourceLabel).length;
+            return {
+              passed: rules.length > 0 && sourced === rules.length,
+              detail: rules.length === 0
+                ? 'No subdivision rule was extracted, so nothing is asserted about what this tract may be divided into.'
+                : `${sourced} of ${rules.length} rule(s) carry a named source; ${rules.filter((rule) => rule.section).length} carry an ordinance section.`,
+            };
+          },
+        },
+      ],
+    },
+  },
+  {
     key: 'valuation',
     label: 'Valuation',
     purpose: 'Apply the comp source policy and produce a defensible value band, or state exactly why the property is not priceable.',
@@ -1016,23 +1274,235 @@ export function dealIntelligenceExecutors(
       return { status: childStatusFor(outcome), summary: outcome.summary, result: handback };
     },
 
-    // ── Zoning ────────────────────────────────────────────────────────────
+    // ── Zoning: whose, then what ──────────────────────────────────────────
+    //
+    // The existing collector still runs and still produces the operator's
+    // zoning cards; it is not replaced. What is added is the question that
+    // logically comes first — which government controls land use here — and a
+    // CURRENT district verified against a current authoritative source. The
+    // two run CONCURRENTLY because the retained-snapshot collector reads
+    // storage and the authority chain reads the government's own sources;
+    // neither needs the other's answer.
     zoning_land_use: async (ctx) => {
-      const outcome = await collectors.zoning_land_use(dealScoped(ctx));
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      const [outcome, upgrade] = await Promise.all([
+        collectors.zoning_land_use(dealScoped(ctx)),
+        capabilities.landUseAuthorityAndZoning && identity
+          ? capabilities.landUseAuthorityAndZoning({ dealCardId: ctx.scopeId, identity }).catch(() => null)
+          : Promise.resolve(null),
+      ]);
       const data = outcome.data;
+      const currentZoning = upgrade?.zoning ?? null;
+      const authority = upgrade?.authority ?? null;
+      const zoningStandards = upgrade?.zoningStandards ?? null;
+
+      // The upgraded determination may establish a district the retained
+      // snapshot never had. It may NOT erase one: a lane fills, it does not
+      // overwrite an accepted value, which is the same rule the resolver's
+      // `applyLaneEvidence` enforces on identity.
+      const zoning = data?.zoning ?? currentZoning?.districtCode ?? null;
+      const zoningKnown = (data?.zoningKnown ?? false) || currentZoning?.established === true;
+
+      const facts: SnapshotFact[] = [...(data?.facts ?? [])];
+      const now = capabilities.now?.() ?? new Date().toISOString();
+      if (authority?.zoningAuthority.name) {
+        facts.push({
+          key: 'controlling_zoning_authority',
+          label: 'Controlling zoning authority',
+          value: `${authority.zoningAuthority.name} (${authority.zoningAuthority.level.replace(/_/g, ' ')})`,
+          grade: authority.zoningAuthority.determination === 'confirmed' ? 'confirmed_fact' : 'likely_indication',
+          source: authority.zoningAuthority.sources[0]?.label ?? 'Official government source',
+          sourceUrl: authority.zoningAuthority.sources[0]?.url ?? null,
+          retrievedAt: authority.verifiedAt,
+          note: authority.zoningAuthority.basis,
+        });
+      }
+      if (authority?.subdivisionAuthority.name) {
+        facts.push({
+          key: 'controlling_subdivision_authority',
+          label: 'Controlling subdivision authority',
+          value: `${authority.subdivisionAuthority.name} (${authority.subdivisionAuthority.level.replace(/_/g, ' ')})`,
+          grade: authority.subdivisionAuthority.determination === 'confirmed' ? 'confirmed_fact' : 'likely_indication',
+          source: authority.subdivisionAuthority.sources[0]?.label ?? 'Official government source',
+          sourceUrl: authority.subdivisionAuthority.sources[0]?.url ?? null,
+          retrievedAt: authority.verifiedAt,
+          note: authority.subdivisionAuthority.basis,
+        });
+      }
+      if (currentZoning?.established && currentZoning.districtCode) {
+        facts.push({
+          key: 'current_zoning_district',
+          label: 'Current zoning district',
+          value: [currentZoning.districtCode, currentZoning.districtName].filter(Boolean).join(' — '),
+          grade: currentZoning.confidence === 'confirmed' ? 'confirmed_fact' : 'likely_indication',
+          source: currentZoning.sourceLabel ?? 'Official zoning source',
+          sourceUrl: currentZoning.sourceUrl,
+          retrievedAt: currentZoning.verifiedAt,
+          note: `Matched to this parcel by ${currentZoning.parcelMatchBasis}.`,
+        });
+      }
+      if (zoningStandards?.established) {
+        for (const [label, value] of [
+          ['Minimum lot size', zoningStandards.standards.minimumLotSize],
+          ['Minimum frontage', zoningStandards.standards.frontage],
+          ['Density', zoningStandards.standards.density],
+        ] as const) {
+          if (!value) continue;
+          const source = zoningStandards.standards.sources[0];
+          facts.push({
+            key: `zoning_standard_${label.toLowerCase().replace(/\s+/g, '_')}`,
+            label: `${label} (${zoningStandards.districtCode})`,
+            value,
+            grade: 'confirmed_fact',
+            source: source?.label ?? 'Adopted zoning ordinance',
+            sourceUrl: source?.url ?? null,
+            retrievedAt: zoningStandards.retrievedAt,
+            note: source?.section ? `Per ${source.section}.` : null,
+          });
+        }
+        const permitted = zoningStandards.allowedUses.filter((use) => use.status === 'permitted');
+        if (permitted.length) {
+          facts.push({
+            key: 'zoning_permitted_uses',
+            label: `Permitted uses (${zoningStandards.districtCode})`,
+            value: permitted[0].use.slice(0, 240),
+            grade: 'confirmed_fact',
+            source: permitted[0].sourceLabel,
+            sourceUrl: permitted[0].sourceUrl,
+            retrievedAt: zoningStandards.retrievedAt,
+            note: permitted[0].section ? `Per ${permitted[0].section}.` : null,
+          });
+        }
+      }
+      // Historical zoning is stated as history, never folded into the fact
+      // above. A 2024 packet's "current zoning" is a 2024 statement.
+      for (const reference of currentZoning?.historicalReferences ?? []) {
+        if (!reference.value) continue;
+        facts.push({
+          key: `historical_zoning_${reference.asOf ?? 'undated'}`,
+          label: 'Zoning stated in the historical planning record',
+          value: reference.value,
+          grade: 'likely_indication',
+          source: 'Official planning document (historical)',
+          sourceUrl: reference.sourceUrl,
+          retrievedAt: now,
+          note: `Stated as of ${reference.asOf ?? 'an undated document'}. This does NOT establish the current zoning district.`,
+        });
+      }
+
+      const items = [...(data?.items ?? [])];
+      if (currentZoning && !currentZoning.established) {
+        items.push({
+          key: 'current_zoning_verification',
+          label: 'Current zoning verification',
+          verdict: 'unknown',
+          headline: 'The current zoning district is not established from a current authoritative source.',
+          grade: 'unresolved_question',
+          detail: currentZoning.limitations.join(' ') || null,
+          sourceUrl: null,
+          missing: [
+            'A current, parcel-specific official zoning source has not been read for this parcel.',
+            ...(currentZoning.historicalReferences.length
+              ? ['Historical planning statements exist and were deliberately NOT used to establish current zoning.']
+              : []),
+          ],
+        });
+      }
+
       const handback: ZoningHandback = {
         dealCardId: ctx.scopeId,
-        zoningKnown: data?.zoningKnown ?? false,
-        zoning: data?.zoning ?? null,
-        items: data?.items ?? [],
-        facts: data?.facts ?? [],
-        summary: outcome.summary,
+        zoningKnown,
+        zoning,
+        items,
+        facts,
+        summary: upgrade
+          ? `${outcome.summary} ${authority?.zoningAuthority.name
+            ? `Controlling zoning authority: ${authority.zoningAuthority.name}.`
+            : 'Controlling zoning authority is unresolved.'} ${currentZoning?.established
+              ? `Current district ${currentZoning.districtCode} verified from ${currentZoning.evidenceKind?.replace(/_/g, ' ')}.`
+              : 'Current district not verified from a current authoritative source.'}`.trim()
+          : outcome.summary,
+        controllingAuthority: authority,
+        currentZoning,
+        currentZoningEstablished: currentZoning?.established === true,
+        zoningStandards,
       };
       // A lane that established nothing but SAID so has still delivered a real
       // discovery-stage finding. It contributes as `partial` so the gap travels
       // into the snapshot instead of the whole zoning contribution vanishing.
       const status = outcome.status === 'blocked' && handback.items.length > 0 ? 'partial' : childStatusFor(outcome);
-      return { status, summary: outcome.summary, result: handback };
+      return { status, summary: handback.summary, result: handback };
+    },
+
+    // ── Property backstory ────────────────────────────────────────────────
+    property_backstory: async (ctx) => {
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      if (!identity) {
+        return { status: 'blocked', summary: 'No confirmed subject was handed to the backstory lane, so there is no parcel to research the history of.' };
+      }
+      if (!capabilities.propertyBackstory) {
+        return { status: 'blocked', summary: 'No Property Backstory capability is wired into this run, so no planning or development history was assembled.' };
+      }
+      const backstory = await capabilities.propertyBackstory({ dealCardId: ctx.scopeId, identity });
+      const handback: PropertyBackstoryHandback = {
+        dealCardId: ctx.scopeId,
+        eventCount: backstory.events.length,
+        documentsReused: backstory.documentsReused.length,
+        documentsRetrieved: backstory.documentsRetrieved.length,
+        backstory,
+        summary: backstory.events.length
+          ? `${backstory.events.length} subject-specific planning/development event(s) retained from ${backstory.documentsReused.length + backstory.documentsRetrieved.length} official document(s); ${backstory.documentsReused.length} answered from retained LandOS intelligence.`
+          : 'No public planning or development history was found for this parcel in the retained official record.',
+      };
+      // No history is a real finding, not a failure. It contributes as
+      // `partial` so the absence travels rather than the lane reading as a gap
+      // the operator has to chase.
+      return { status: backstory.events.length ? 'completed' : 'partial', summary: handback.summary, result: handback };
+    },
+
+    // ── Subdivision rules and property-specific feasibility ───────────────
+    subdivision_feasibility: async (ctx) => {
+      const identity = upstream<SubjectResearchHandback>(ctx, 'parcel_identity');
+      if (!identity) {
+        return { status: 'blocked', summary: 'No confirmed subject was handed to the subdivision lane, so no parcel-specific read is possible.' };
+      }
+      if (!capabilities.subdivisionIntelligence) {
+        return { status: 'blocked', summary: 'No subdivision intelligence capability is wired into this run, so no subdivision rules were retrieved.' };
+      }
+      const zoningHandback = upstream<ZoningHandback>(ctx, 'zoning_land_use');
+      const backstoryHandback = upstream<PropertyBackstoryHandback>(ctx, 'property_backstory');
+      const environmental = upstream<EnvironmentalHandback>(ctx, 'environmental_terrain');
+      const access = upstream<UtilitiesAccessHandback>(ctx, 'access_utilities');
+
+      const result = await capabilities.subdivisionIntelligence({
+        dealCardId: ctx.scopeId,
+        identity,
+        authority: zoningHandback?.controllingAuthority ?? null,
+        zoning: zoningHandback?.currentZoning ?? null,
+        backstory: backstoryHandback?.backstory ?? null,
+        environmental,
+        access,
+      });
+
+      const handback: SubdivisionHandback = {
+        dealCardId: ctx.scopeId,
+        authorityName: result.regulations.authorityName,
+        authorityDetermination: String(result.regulations.authorityDetermination),
+        ruleCount: result.regulations.rules.length,
+        regulations: result.regulations,
+        propertyRead: result.propertyRead,
+        approvedYieldAsserted: false,
+        summary: `${result.regulations.rules.length} subdivision rule(s) from ${result.regulations.documents.length} document(s)`
+          + `${result.regulations.authorityName ? ` for ${result.regulations.authorityName}` : ' (controlling authority unresolved)'}. `
+          + `Likely path: ${result.propertyRead.likelyPath.kind.replace(/_/g, ' ')} (${result.propertyRead.likelyPath.basis}). `
+          + `${result.propertyRead.theoreticalLotCount.value != null
+            ? `Theoretical lot count ${result.propertyRead.theoreticalLotCount.value} — arithmetic only, not an approved yield.`
+            : 'No theoretical lot count could be computed.'}`,
+      };
+      // A read that names what it could not establish is a real answer, and it
+      // is reported as partial so the qualification travels with it.
+      const complete = result.regulations.rules.length > 0 && result.propertyRead.likelyPath.basis !== 'unknown';
+      return { status: complete ? 'completed' : 'partial', summary: handback.summary, result: handback };
     },
 
     // ── Environmental screening ───────────────────────────────────────────

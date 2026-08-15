@@ -185,6 +185,8 @@ import {
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
 import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
 import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
+import { livePostResolutionCapabilities } from './post-resolution-capabilities.js';
+import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
 import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors, type ExactAddressWebResult } from './property-intelligence-live.js';
@@ -4062,6 +4064,20 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({ parcelIdentity: identity, snapshot, confirmed });
   });
 
+  // Pre-Call Intelligence handoff — the backend read model for the seller call.
+  //
+  // A pure SELECT over the durable post-resolution snapshots: property
+  // backstory, controlling land-use authority, current zoning, subdivision
+  // rules and the property-specific read, plus the property-specific seller
+  // questions derived from them. It retrieves nothing, so it is safe to call
+  // repeatedly and it answers identically after a restart.
+  app.get('/api/landos/deal-cards/:id/pre-call-intelligence', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'not found' }, 404);
+    return c.json(readPreCallIntelligenceHandoff(id));
+  });
+
   // Public-records research plan — the prioritized official county sources to
   // check (GIS / assessor / appraisal district / tax / NETR) + the next
   // verification action. Sources to CHECK, never facts.
@@ -7646,6 +7662,10 @@ export function registerLandosRoutes(app: Hono): void {
 
   const dealIntelligenceCapabilities = (dealCardId: number): DealIntelligenceCapabilities => ({
     collectors: propertyIntelligenceCollectors(dealCardId),
+    // Post-resolution intelligence: property backstory, controlling land-use
+    // authority, current zoning, and subdivision rules + feasibility. Keyless,
+    // browserless, no paid provider. Each lane runs beside the existing ones.
+    ...livePostResolutionCapabilities(),
     // The existing LandPortal + county subject-research system, reused as a
     // child-mission capability. Phase 5 does not rebuild it.
     // Market Matrix + Market Pulse, read through the same code the Market tab uses.

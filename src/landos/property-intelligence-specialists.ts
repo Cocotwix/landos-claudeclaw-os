@@ -24,7 +24,12 @@ export type SpecialistId =
   // status. The catalog below is unchanged; these ids belong to the Deal
   // Intelligence mission definition, which declares its own lanes.
   | 'valuation'
-  | 'strategy';
+  | 'strategy'
+  // Post-resolution intelligence lanes. Like `valuation` and `strategy` above,
+  // these belong to the Deal Intelligence mission definition and are not part
+  // of the catalog below; the catalog is the older single-mission workflow.
+  | 'property_backstory'
+  | 'subdivision_feasibility';
 
 export type SpecialistStatus =
   | 'queued'

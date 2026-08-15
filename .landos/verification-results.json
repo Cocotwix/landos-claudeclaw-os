@@ -1,39 +1,42 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-15T05:20:00.0000000Z",
-  "headUnderReview": "4189142",
-  "commitState": "Integration merge 4189142 = origin/main f962d95 + sprint/universal-property-resolution fe26644. Merged in the clean worktree claudeclaw-os-integrate; no conflicts; the primary worktree's dirty paths were never touched.",
+  "recordedAt": "2026-08-15T13:10:00.0000000Z",
+  "headUnderReview": "a53b25b",
+  "commitState": "Sprint committed on sprint/property-backstory-zoning-subdivision in the clean worktree claudeclaw-os-landintel: 21 new modules and suites, 3 modified source files. Not merged to main. The primary worktree was never touched.",
   "tests": {
-    "status": "PASS for the integration; a large pre-existing main-side breakage remains",
-    "timestamp": "2026-08-15T05:05:00.0000000Z",
-    "summary": "Focused Universal Resolver suites 96/96. Merge full suite: 409 files / 5699 tests pass, 54 files fail to load, 4 tests fail. Measured origin/main f962d95 baseline: 400 / 5602 pass, 55 files fail, same 4 tests. Zero new failures."
+    "status": "PASS on the focused and adjacent suites",
+    "timestamp": "2026-08-15T13:08:45.0000000Z",
+    "summary": "Land-use suites 103/103 (14 ordinance-text, 39 source-racing, 50 backstory/zoning/subdivision). Adjacent suites 76/76 (Universal Property Resolution, Fairview sparse-input, LandPortal re-aim, document intelligence, mission). The last full-suite run, at 07:58 before the source-racing closeout, was 409 files / 5752 pass against a stash-measured baseline of 408 / 5702 on the same HEAD: zero new failures. No full run since, by instruction"
   },
   "typecheck": {
-    "status": "FAIL on pre-existing main-side breakage, not on the integration",
-    "timestamp": "2026-08-15T05:05:00.0000000Z",
-    "summary": "Fails only in retained-comp code identical to origin/main: comps-valuation.ts syntax splice from 1b699d8, comps.ts imports ./comp-location-reconciliation.js which was never committed. No merged file errors."
+    "status": "FAIL only on the pre-existing retained-comp break",
+    "timestamp": "2026-08-15T13:08:45.0000000Z",
+    "summary": "With the committed comps-valuation.ts splice bypassed locally, tsc reports zero errors in any new or modified file; the 4 remaining errors are the known comps-valuation.ts and comps.ts breakage on main"
   },
   "build": {
-    "status": "WEB PASS, SERVER FAIL on the same pre-existing breakage",
-    "timestamp": "2026-08-15T05:18:00.0000000Z",
-    "summary": "vite build clean, 2001 modules, chunk-size advisory only. The tsc server half stops on the same comps-valuation.ts splice."
+    "status": "WEB PASS, SERVER FAIL on the same pre-existing break",
+    "timestamp": "2026-08-15T07:57:00.0000000Z",
+    "summary": "vite build clean in 10.6s. The tsc server half stops on the same comps-valuation.ts splice, unchanged by this sprint. Not re-run after the source-racing closeout, which touched no web asset"
   },
   "runtime": {
-    "status": "NOT EXERCISED by this integration session",
-    "timestamp": "2026-08-15T05:20:00.0000000Z",
+    "status": "NOT EXERCISED; no server, no browser, no CDP, no port 3141 traffic",
+    "timestamp": "2026-08-15T13:10:00.0000000Z",
     "pid": 0,
-    "url": "http://localhost:3141"
+    "url": "not started"
   },
   "operatorAcceptance": {
     "status": "PASS",
-    "workflow": "Improved-property overlay correction on deal 83 (9490 Elk Lake Rd, Grand Traverse County MI). Primary agent read the live Comps & Valuation section twice: once with the subject classified agricultural, once after the classification fix.",
-    "url": "http://localhost:3141/dept/acquisitions/v2?deal=83&section=comps-valuation",
+    "workflow": "LIVE Fairview acceptance, sparse two-line lead through the full post-resolution chain, keyless and browserless: LANDOS_LIVE_SEARCH=1 vitest run src/landos/fairview-post-resolution.live.test.ts",
+    "url": "no server; the production code paths were exercised directly",
     "evidence": {
-      "residentialGate": "With the subject typed agricultural_improvements, Improvement Valuation and Whole Property Value both rendered the skip reason and no figure; no residential $/sqft was applied.",
-      "classificationFix": "After off-parcel observations stopped classifying the subject, the live page reads existing residence, improvement value $523,908 (1,701 sqft x $308/sqft Redfin 49690 benchmark) and whole property $1,148,908, with 11 off-parcel observations reported as excluded.",
-      "landValueUnchanged": "Adopted cleaned land value $625,000, cleaned average $624,500, median $600,000, weighted $637,500, retail range $600,000-$637,500 and the 40/50/60 references were identical before and after both changes.",
-      "staleTextRemoved": "The PENDING chip and the 'improvement value unavailable' line no longer render alongside a calculated overlay.",
-      "note": "No screenshots recorded as evidence artifacts: capture activates the operator's Chrome. Evidence is the live page read of the Comps & Valuation section."
+      "resolution": "Map 042 Parcel 123 / Fairview, Tennessee resolved to Williamson County TN, APN 042 123.00, LANDSOUTH LLC, 75.86 ac, winner indexed_web, released while the LandPortal lane was still running.",
+      "sourceRacing": "Authority released at 11ms via retained_evidence with the network lanes never started; subdivision released at 9.3s via indexed_web_search; current zoning not released, with every method attempted and its refusal recorded.",
+      "backstory": "Subject-specific events from the City of Fairview planning packet, reused from retained intelligence with no re-fetch; 119-lot Kingwood master development plan.",
+      "authority": "Zoning and subdivision authority both CONFIRMED as Fairview from the city's own published documents.",
+      "currentZoning": "UNRESOLVED and reported as such. Historical and requested statements retained as dated references, explicitly refused as the current district.",
+      "subdivision": "Fairview's adopted regulations retrieved from the city domain; rules complete with sections; statedMaxMinorLots 3; property read concludes major subdivision from 3 vs 119 lots.",
+      "passageSelection": "A contents line and a cross-reference that had been released as controlling rules are now refused; minimum_lot_size returns UNKNOWN rather than a wrong value.",
+      "note": "No screenshots: no UI was built or changed in this backend sprint. Evidence is the recorded live-run logs and the durable SQLite reads after clearing all in-process caches."
     }
   }
 }

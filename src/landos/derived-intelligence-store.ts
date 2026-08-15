@@ -1,0 +1,291 @@
+// LandOS — the shared durable seam for DERIVED post-resolution intelligence.
+//
+// Property Backstory, controlling land-use authority, current zoning and
+// subdivision regulations are all the same shape of thing:
+//
+//   • append-only EVIDENCE about an identified property, and
+//   • ONE current DERIVED read composed from that evidence, superseded rather
+//     than overwritten when the evidence changes.
+//
+// LandOS already has both tables, and `official-document-intelligence-store.ts`
+// already proved the pattern on official documents. This module is that pattern
+// extracted so three more capabilities can reach it without a fourth copy of
+// the SQL, and without a second intelligence database — which the sprint brief
+// forbids and which would immediately drift from the evidence model.
+//
+//   evidence  →  landos_property_evidence_item
+//                domain: caller's, evidence_kind: caller's
+//                append-only by trigger; UNIQUE(idempotency_key) is the dedup
+//
+//   read      →  landos_deal_intelligence_snapshot
+//                snapshot_type: caller's
+//                UNIQUE(deal_card_id, input_hash) is the dedup; one `current`
+//                row per type, priors superseded and retained
+//
+// Nothing here can move canonical identity. It reads the current property
+// identity version to attach evidence to, and writes only to these two tables.
+
+import { createHash } from 'node:crypto';
+
+import { getLandosDb, landosAudit } from './db.js';
+import { readCurrentPropertyIdentity } from './property-summary-slice.js';
+
+export const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
+export const stableJson = (value: unknown): string => JSON.stringify(value ?? null);
+
+export interface DerivedEvidenceInput {
+  /** Free-text domain, e.g. 'land_use_authority'. */
+  domain: string;
+  evidenceKind: string;
+  /** The fact this row carries, e.g. 'zoning_authority'. */
+  factKey: string;
+  raw: unknown;
+  normalized: unknown;
+  sourceName: string;
+  sourceUrl: string | null;
+  /** How the source speaks: 'official_government_source', 'reputable_secondary', … */
+  sourceTier: string;
+  confidence: string;
+  retrievedAt: string;
+  /** What makes this row distinct. Hashed into the idempotency key. */
+  dedupeOn: string;
+}
+
+export interface DerivedEvidenceResult {
+  evidenceIds: number[];
+  duplicates: number;
+  propertyIdentityVersionId: number | null;
+  skippedReason: string | null;
+}
+
+/**
+ * Append evidence rows for an identified property.
+ *
+ * Requires a current identity version: evidence in LandOS is always evidence
+ * ABOUT an identified parcel, and that FK is what stops a zoning finding from
+ * floating free of the property it describes. Without one nothing is written
+ * and the reason is returned rather than swallowed.
+ */
+export function appendDerivedEvidence(input: {
+  dealCardId: number;
+  collectorKey: string;
+  rows: readonly DerivedEvidenceInput[];
+  actor?: string;
+}): DerivedEvidenceResult {
+  const identity = readCurrentPropertyIdentity(input.dealCardId);
+  if (!identity) {
+    return {
+      evidenceIds: [],
+      duplicates: 0,
+      propertyIdentityVersionId: null,
+      skippedReason: 'No current property identity version exists for this Deal Card, so derived evidence has nothing to attach to.',
+    };
+  }
+  if (!input.rows.length) {
+    return { evidenceIds: [], duplicates: 0, propertyIdentityVersionId: identity.id, skippedReason: null };
+  }
+
+  const db = getLandosDb();
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO landos_property_evidence_item (
+      deal_card_id, property_identity_version_id, domain, evidence_kind, fact_key,
+      raw_value_json, normalized_value_json, source_name, source_url, source_tier,
+      verification_status, confidence, collector_key, retrieved_at, effective_at,
+      artifact_ref, idempotency_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const findExisting = db.prepare('SELECT id FROM landos_property_evidence_item WHERE idempotency_key=?');
+
+  const evidenceIds: number[] = [];
+  let duplicates = 0;
+  const write = db.transaction((rows: readonly DerivedEvidenceInput[]) => {
+    for (const row of rows) {
+      const idempotencyKey = `${row.domain}:${identity.id}:${row.factKey}:${sha256(row.dedupeOn).slice(0, 24)}`;
+      const outcome = insert.run(
+        input.dealCardId,
+        identity.id,
+        row.domain,
+        row.evidenceKind,
+        row.factKey,
+        stableJson(row.raw),
+        stableJson(row.normalized),
+        row.sourceName.slice(0, 300),
+        row.sourceUrl,
+        row.sourceTier,
+        // Derived intelligence is retained evidence ABOUT an identified
+        // property. It never verifies which property this is.
+        'retained_not_identity_verifying',
+        row.confidence,
+        input.collectorKey,
+        row.retrievedAt,
+        row.retrievedAt,
+        null,
+        idempotencyKey,
+      );
+      if (outcome.changes > 0) evidenceIds.push(outcome.lastInsertRowid as number);
+      else {
+        duplicates += 1;
+        const existing = findExisting.get(idempotencyKey) as { id: number } | undefined;
+        if (existing) evidenceIds.push(existing.id);
+      }
+    }
+  });
+  write(input.rows);
+  return { evidenceIds, duplicates, propertyIdentityVersionId: identity.id, skippedReason: null };
+}
+
+export interface DerivedSnapshotResult {
+  snapshotId: number | null;
+  reused: boolean;
+  propertyIdentityVersionId: number | null;
+  skippedReason: string | null;
+}
+
+/**
+ * Write ONE current derived read, superseding the prior one.
+ *
+ * The same input produces the same `input_hash` and reuses the existing row, so
+ * a re-run over unchanged evidence writes nothing and the read keeps its
+ * original provenance. A genuinely changed read supersedes its predecessor and
+ * the predecessor stays queryable as history.
+ */
+export function writeDerivedSnapshot(input: {
+  dealCardId: number;
+  snapshotType: string;
+  payload: unknown;
+  completeness: unknown;
+  evidenceIds?: readonly number[];
+  changeReason: string;
+  actor: string;
+  auditEvent?: string;
+}): DerivedSnapshotResult {
+  const identity = readCurrentPropertyIdentity(input.dealCardId);
+  if (!identity) {
+    return {
+      snapshotId: null,
+      reused: false,
+      propertyIdentityVersionId: null,
+      skippedReason: 'No current property identity version exists for this Deal Card, so the derived read has nothing to attach to.',
+    };
+  }
+  const db = getLandosDb();
+  const inputHash = sha256(stableJson({
+    identityVersionId: identity.id,
+    snapshotType: input.snapshotType,
+    payload: input.payload,
+  }));
+
+  const existing = db.prepare(
+    'SELECT id FROM landos_deal_intelligence_snapshot WHERE deal_card_id=? AND input_hash=?',
+  ).get(input.dealCardId, inputHash) as { id: number } | undefined;
+  if (existing) {
+    return { snapshotId: existing.id, reused: true, propertyIdentityVersionId: identity.id, skippedReason: null };
+  }
+
+  const snapshotId = db.transaction(() => {
+    const prior = db.prepare(`
+      SELECT id FROM landos_deal_intelligence_snapshot
+      WHERE deal_card_id=? AND snapshot_type=? AND status='current' LIMIT 1
+    `).get(input.dealCardId, input.snapshotType) as { id: number } | undefined;
+    const nextVersion = (db.prepare(`
+      SELECT COALESCE(MAX(version), 0) + 1 AS version FROM landos_deal_intelligence_snapshot WHERE deal_card_id=?
+    `).get(input.dealCardId) as { version: number }).version;
+    if (prior) db.prepare("UPDATE landos_deal_intelligence_snapshot SET status='superseded' WHERE id=?").run(prior.id);
+    const evidenceIds = input.evidenceIds ?? [];
+    const result = db.prepare(`
+      INSERT INTO landos_deal_intelligence_snapshot (
+        deal_card_id, version, property_identity_version_id, prior_snapshot_id,
+        snapshot_type, status, input_hash, evidence_max_id, completeness_json,
+        summary_json, change_reason, generated_by
+      ) VALUES (?, ?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.dealCardId,
+      nextVersion,
+      identity.id,
+      prior?.id ?? null,
+      input.snapshotType,
+      inputHash,
+      evidenceIds.length ? Math.max(...evidenceIds) : null,
+      stableJson(input.completeness),
+      stableJson(input.payload),
+      input.changeReason,
+      input.actor,
+    );
+    return result.lastInsertRowid as number;
+  })();
+
+  if (input.auditEvent) {
+    landosAudit(input.actor, input.auditEvent, `deal ${input.dealCardId}: ${input.snapshotType}`, {
+      refTable: 'landos_deal_intelligence_snapshot',
+      refId: snapshotId,
+    });
+  }
+  return { snapshotId, reused: false, propertyIdentityVersionId: identity.id, skippedReason: null };
+}
+
+/** The one CURRENT derived read of this type, or null. A pure SELECT. */
+export function readDerivedSnapshot<T>(dealCardId: number, snapshotType: string): T | null {
+  const row = getLandosDb().prepare(`
+    SELECT summary_json FROM landos_deal_intelligence_snapshot
+    WHERE deal_card_id=? AND snapshot_type=? AND status='current' LIMIT 1
+  `).get(dealCardId, snapshotType) as { summary_json: string } | undefined;
+  if (!row) return null;
+  try { return JSON.parse(row.summary_json) as T; } catch { return null; }
+}
+
+/** Superseded reads of this type, oldest first. Retained as history. */
+export function readDerivedSnapshotHistory<T>(dealCardId: number, snapshotType: string): T[] {
+  const rows = getLandosDb().prepare(`
+    SELECT summary_json FROM landos_deal_intelligence_snapshot
+    WHERE deal_card_id=? AND snapshot_type=? AND status='superseded'
+    ORDER BY version
+  `).all(dealCardId, snapshotType) as Array<{ summary_json: string }>;
+  return rows
+    .map((row) => { try { return JSON.parse(row.summary_json) as T; } catch { return null; } })
+    .filter((row): row is T => row != null);
+}
+
+export interface DerivedEvidenceRow {
+  evidenceId: number;
+  factKey: string;
+  raw: unknown;
+  normalized: unknown;
+  sourceName: string;
+  sourceUrl: string | null;
+  sourceTier: string;
+  confidence: string;
+  retrievedAt: string;
+}
+
+/** Every retained evidence row in one domain for this Deal Card. */
+export function readDerivedEvidence(dealCardId: number, domain: string, collectorKey?: string): DerivedEvidenceRow[] {
+  const db = getLandosDb();
+  const rows = collectorKey
+    ? db.prepare(`
+        SELECT id, fact_key, raw_value_json, normalized_value_json, source_name, source_url,
+               source_tier, confidence, retrieved_at
+        FROM landos_property_evidence_item
+        WHERE deal_card_id=? AND domain=? AND collector_key=? ORDER BY id
+      `).all(dealCardId, domain, collectorKey)
+    : db.prepare(`
+        SELECT id, fact_key, raw_value_json, normalized_value_json, source_name, source_url,
+               source_tier, confidence, retrieved_at
+        FROM landos_property_evidence_item
+        WHERE deal_card_id=? AND domain=? ORDER BY id
+      `).all(dealCardId, domain);
+  return (rows as Array<Record<string, unknown>>).map((row) => ({
+    evidenceId: Number(row.id),
+    factKey: String(row.fact_key ?? ''),
+    raw: safeParse(String(row.raw_value_json ?? 'null')),
+    normalized: safeParse(String(row.normalized_value_json ?? 'null')),
+    sourceName: String(row.source_name ?? ''),
+    sourceUrl: row.source_url == null ? null : String(row.source_url),
+    sourceTier: String(row.source_tier ?? ''),
+    confidence: String(row.confidence ?? ''),
+    retrievedAt: String(row.retrieved_at ?? ''),
+  }));
+}
+
+function safeParse(value: string): unknown {
+  try { return JSON.parse(value); } catch { return null; }
+}

@@ -1,66 +1,63 @@
 # Current Active Task
-Universal Property Resolution is integrated into the current `main` UI baseline. Merge `4189142` joins `origin/main` `f962d95` (accepted lead-workspace frontend, devloop build-runner) with `sprint/universal-property-resolution` `fe26644` (resolver, raw parcel-notation intake, governed keyless search, jurisdiction resolution, official PDF identity, document evidence and summaries, LandPortal subject upgrade). Disjoint file sets, no conflicts. Await Tyler's acceptance; do not begin another sprint.
+Property Backstory, controlling land-use authority, current zoning, allowed uses and subdivision intelligence, with SOURCE RACING as the retrieval doctrine. Committed and pushed on `sprint/property-backstory-zoning-subdivision`. NOT merged to `main`. Await Tyler's direction; do not begin another sprint.
 
 # Exact Operator Outcome
-A raw lead resolves before any single provider finishes. `Map 042 Parcel 123` / `Fairview, Tennessee`, with no address, county or APN, resolves to Williamson County TN, owner `LANDSOUTH LLC`, 75.9 acres, APN `042-123.00-000`, verified, and the subject is released while the LandPortal capture and public refresh still run; both reconcile into the same property afterwards and cannot overwrite it with weaker evidence. The three-workspace lead UI is unchanged.
+After one confirmed parcel, every land-use question races retained evidence, indexed web search, direct GIS/API and official documents concurrently, browser held as escalation; the first sufficiently authoritative answer releases and slower lanes corroborate. Fairview: authority Confirmed from retained evidence in ~11ms with no network call, current zoning honestly UNRESOLVED with the 2024 packet refused as current, adopted subdivision regulations with sections, and `minor review at 3 lots or fewer vs 119 indicated → major subdivision`.
 
 # Current State
 
 <!-- DERIVED:START -->
-- **Generated:** 2026-08-15T05:11:12.999Z
-- **HEAD at generation:** `4189142`
-- **Worktree:** DIRTY; 2 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS for the integration; a large pre-existing main-side breakage remains at 2026-08-15T05:05:00.0000000Z; Focused Universal Resolver suites 96/96. Merge full suite: 409 files / 5699 tests pass, 54 files fail to load, 4 tests fail. Measured origin/main f962d95 baseline: 400 / 5602 pass, 55 files fail, same 4 tests. Zero new failures..
-- **Latest typecheck:** FAIL on pre-existing main-side breakage, not on the integration at 2026-08-15T05:05:00.0000000Z; Fails only in retained-comp code identical to origin/main: comps-valuation.ts syntax splice from 1b699d8, comps.ts imports ./comp-location-reconciliation.js which was never committed. No merged file errors..
-- **Latest production build:** WEB PASS, SERVER FAIL on the same pre-existing breakage at 2026-08-15T05:18:00.0000000Z; vite build clean, 2001 modules, chunk-size advisory only. The tsc server half stops on the same comps-valuation.ts splice..
-- **Managed runtime:** NOT EXERCISED by this integration session at 2026-08-15T05:20:00.0000000Z; PID 0; http://localhost:3141.
+- **Generated:** 2026-08-15T17:20:44.447Z
+- **HEAD at generation:** `a53b25b`
+- **Worktree:** DIRTY; 26 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS on the focused and adjacent suites at 2026-08-15T13:08:45.0000000Z; Land-use suites 103/103 (14 ordinance-text, 39 source-racing, 50 backstory/zoning/subdivision). Adjacent suites 76/76 (Universal Property Resolution, Fairview sparse-input, LandPortal re-aim, document intelligence, mission). The last full-suite run, at 07:58 before the source-racing closeout, was 409 files / 5752 pass against a stash-measured baseline of 408 / 5702 on the same HEAD: zero new failures. No full run since, by instruction.
+- **Latest typecheck:** FAIL only on the pre-existing retained-comp break at 2026-08-15T13:08:45.0000000Z; With the committed comps-valuation.ts splice bypassed locally, tsc reports zero errors in any new or modified file; the 4 remaining errors are the known comps-valuation.ts and comps.ts breakage on main.
+- **Latest production build:** WEB PASS, SERVER FAIL on the same pre-existing break at 2026-08-15T07:57:00.0000000Z; vite build clean in 10.6s. The tsc server half stops on the same comps-valuation.ts splice, unchanged by this sprint. Not re-run after the source-racing closeout, which touched no web asset.
+- **Managed runtime:** NOT EXERCISED; no server, no browser, no CDP, no port 3141 traffic at 2026-08-15T13:10:00.0000000Z; PID 0; not started.
 - **Prior tracked sprint:** sprint-2026-08-04-pi-workflow-finish (complete); it is not the Current Active Task.
 - **Sprint ledger:** .landos/sprints/sprint-2026-08-04-pi-workflow-finish/ledger.json; proof report .landos/sprints/sprint-2026-08-04-pi-workflow-finish/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
-- Integration worktree `claudeclaw-os-integrate`, branch `integrate/universal-property-resolution`, clean.
-- Merge is strictly additive versus `origin/main`: 21 files, +6932/-18, zero deletions or renames. Only `routes.ts`, `property-intelligence-live.ts`, `conversational-lead-intake.ts` and `landportal-subject-handoff.test.ts` are modifications.
-- `collectParcelIdentity` no longer joins the LandPortal capture and public refresh with `Promise.all`. It races them, re-reads the one shared property after each lane settles, and returns on the first sufficient identity. Per-lane bounds are unchanged.
-- The indexed-web lane is keyless and browserless: pinned `ddgs` via `createHermesFreeSearch`, pages read with the transport `official-source-discovery` uses, 3 queries / 3 pages / 20s. Jurisdiction enrichment uses the Census geography service, 15s.
-- The LandPortal subject upgrade fires at most once, only after the first capture finishes, only when the resolved subject is materially stronger and the capture did not already land the right parcel.
-- No browser, CDP, paid API or port 3141 activity was used.
+
+- `land-use-source-race.ts` is the retrieval engine: lanes run concurrently, a gate decides sufficiency, losers corroborate or raise a conflict, re-aim is bounded, browser is an `escalation` lane. Retained lanes get a one-tick fast path, so a question storage answers costs no network call.
+- Four subsystems race on it: authority, current zoning, allowed uses/standards, subdivision rules. Each carries a `race` record naming every method attempted, the winner, and what was still running at release.
+- Allowed uses and dimensional standards are NEW; the prior pass declared an `ordinanceText` dependency no caller supplied, so those fields were always null.
+- `ordinance-text.ts` answers "where does a rule end" and "which district's block is this": flattens PDF wrapping, completes a value to its sentence end, refuses contents lines and unmeasured passages.
+- New `supporting` lanes `property_backstory` and `subdivision_feasibility`; nothing `dependsOn` either. `zoning_land_use` is upgraded in place.
+- Persistence reuses the two existing tables via `derived-intelligence-store.ts`; no new table. GEOGRAPHY IS NOT AUTHORITY, and history can never establish current zoning: both enforced in code.
 
 # Completed and Proven
-- Focused suites 96/96: parcel notation, resolver, Fairview resolution, search transport, jurisdiction/PDF identity, document context, document persistence and summaries, LandPortal handoff and upgrade.
-- The Fairview fixture proves the sparse case end to end and proves the negative: it refuses to resolve when the indexed record names a different parcel. The live harness stays gated behind `LANDOS_LIVE_SEARCH=1` and did not run.
-- Measured, not asserted: `origin/main` alone fails 55 files and 4 tests; the merge fails 54 and the same 4. It adds 97 passing tests and repairs `landportal-subject-handoff.test.ts`.
-- The accepted lead-workspace frontend is carried through untouched; `vite build` is clean.
+- Focused suites 103/103: 14 ordinance-text, 39 source-racing, 50 backstory/zoning/subdivision. Adjacent 76/76 (Universal Property Resolution, Fairview sparse-input, LandPortal re-aim, document intelligence, mission).
+- Six live-run defects are now permanent regressions: a 2024 packet establishing current zoning; a packet mined as subdivision regs; a zoning ordinance accepted as subdivision regs; `"street frontage"` released as a frontage standard; a contents line released as a road rule; a cross-reference released as a minimum lot size.
+- Live Fairview passes end to end, keyless and browserless; durability proven by clearing in-process caches and re-reading from SQLite.
 
 # Remaining Work
-BLOCKING AND PRE-EXISTING ON `main`, not caused by this integration: the committed retained-comp code does not compile. `src/landos/comps.ts` imports `./comp-location-reconciliation.js`, which exists only in the primary dirty worktree and was never committed on any branch. `src/landos/comps-valuation.ts` carries a `subjectIdentity: { ... }` object fragment spliced into the middle of a comment at lines 2069-2075 (commit `1b699d8`, before the merge base), plus `SubjectParcelIdentity` used as a value at line 716 and `subjectIdentity` missing from `ClassifyContext`. That single missing import is what makes 54 test files fail to load. Fixing it means committing the retained-comp work from the primary worktree; it was deliberately not touched here.
+1. Some non-numeric subdivision rules return thin prose fragments (`public_private_road_rule`). Verbatim and sourced, so not wrong, but not a useful statement of the rule. A normative-verb gate would sharpen it at the cost of more unknowns.
+2. Allowed-use/standards retrieval depends on keyless search surfacing the city's zoning ordinance, which varies run to run. The truncation and passage-selection fixes are unit-proven; the standards path was not re-confirmed live.
+3. Fairview publishes no queryable zoning layer or parcel-level lookup, so current zoning stays UNRESOLVED; the race records every route attempted.
+4. No lane establishes road frontage, so the frontage ceiling is always UNKNOWN and lands on the diligence list.
 
-OPEN COMP DATA QUALITY, untouched: duplicate persisted rows for one parcel carry conflicting prices, so the price depends on which duplicate dedupe picks. `044 068.01` holds $550,000 and $200,000 for the same 20.55 ac; `058I A 042.03` holds $325,000 and $599,900 (rows 960, 968).
-
-Gap 3: Terrain reads "Not supplied" while the card holds `Slope Avg`. Gap 4: map comps land `unknown` not `sold`; `landPortalCompCardsFromApi` sets `sectionLabel: ''`. The gap-2 unbounded-chain pattern remains in `withBrowserMissionGate` (`routes.ts`). Lower priority: Hermes comps specialist identity conflict; the Hermes visuals payload the importer cannot read, do NOT patch; Gemini 429s on market scans.
+BLOCKING AND PRE-EXISTING ON `main`, untouched: `comps.ts` imports `./comp-location-reconciliation.js`, never committed, and `comps-valuation.ts` carries a `subjectIdentity` fragment spliced into a comment at lines 2070-2075 (`1b699d8`). That missing import makes 55 test files fail to load.
 
 # Exact Next Action
-Stop. Await Tyler's decision on the pre-existing retained-comp compile break, which is the one thing standing between `main` and a green `tsc`. Do not start another sprint.
+Stop. Branch pushed, unmerged. Await Tyler's decision on merging to `main` and on Remaining Work item 1.
 
 # Relevant Files
-- `src/landos/universal-property-resolution.ts`, `parcel-notation.ts`, `jurisdiction-resolution.ts`
-- `src/landos/official-pdf-identity.ts`, `official-document-context.ts`, `official-document-summary.ts`, `official-document-intelligence-store.ts`
-- `src/landos/hermes-free-search.ts`, `landportal-subject-upgrade.ts`
-- `src/landos/property-intelligence-live.ts`, `routes.ts`, `conversational-lead-intake.ts`
-- `src/landos/comps.ts`, `comps-valuation.ts` (broken on `main`, do not repair here)
+All under `src/landos/`. Engine: `src/landos/land-use-source-race.ts`, `land-use-lanes.ts`, `land-use-source-authority.ts`, `ordinance-text.ts`. Research: `property-backstory{,-run,-store}.ts`, `controlling-land-use-authority.ts`, `current-zoning-determination.ts`, `zoning-standards-research.ts`, `zoning-layer-discovery.ts`, `subdivision-regulations.ts`, `subdivision-property-read.ts`. Persist/handoff: `derived-intelligence-store.ts`, `land-use-intelligence-store.ts`, `pre-call-intelligence-handoff.ts`, `post-resolution-capabilities.ts`. Modified: `deal-intelligence-mission.ts`, `property-intelligence-specialists.ts`, `routes.ts`. Tests: `ordinance-text`, `land-use-source-racing`, `property-backstory-zoning-subdivision`, `fairview-post-resolution.live` (gated on `LANDOS_LIVE_SEARCH=1`).
 
 # Relevant Records
-Fairview sparse-input fixture: `Map 042 Parcel 123`, Fairview TN, Williamson County, `042-123.00-000`, LANDSOUTH LLC, 75.9 ac. UI proof records unchanged: 5170 Hwy 60, Birchwood TN 37308 (APN 023 003.02) and 1500 E Medical Center Dr, Ann Arbor MI 48109.
+Fairview: `Map 042 Parcel 123`, Williamson County TN, APN `042 123.00`, LANDSOUTH LLC, 75.86 ac, Kingwood Subdivision. Snapshots `*_v1`: property_backstory, land_use_authority, current_zoning, zoning_standards, subdivision_regulations, subdivision_property_read. Route: `GET /api/landos/deal-cards/:id/pre-call-intelligence`.
 
 # Known Blockers
-The pre-existing retained-comp compile break above blocks a green `tsc --noEmit` and the `tsc` half of `npm run build` on `main` itself. It blocks nothing in the integration. No blocker to the Universal Resolver outcome.
+The pre-existing retained-comp break blocks a green `tsc --noEmit` and the `tsc` half of `npm run build` on `main`. It blocks nothing in this sprint.
 
 # Do Not Inspect or Modify
-The primary worktree `claudeclaw-os` and its dirty paths, the stash `landos-duke-overarchitecture-hold`, `.env`, secrets, `claudeclaw-os-latest`, the live Codex processes and operator Chrome. Do not repair retained-comp code from here.
+The primary worktree `claudeclaw-os` and its dirty paths, the stash `landos-duke-overarchitecture-hold`, `.env`, secrets, `claudeclaw-os-latest`, live Codex processes, operator Chrome. Do not repair retained-comp code here.
 
 # Runtime State
-Not exercised by this session, by instruction: no managed start, stop, restart or health call, no port 3141 traffic, no browser or CDP. What the primary worktree left running is untouched.
+Not exercised: no managed start/stop/restart/health, no port 3141 or 3142 traffic, no browser, no CDP, no paid API. The live acceptance ran the production code paths directly.
 
 # Verification Required
-None for the integration. Re-verify only after the retained-comp compile break is repaired: rerun `tsc --noEmit` and the full suite and expect the 54 load failures to clear.
+None. Re-verify only after the retained-comp break is repaired: rerun `tsc --noEmit` and the full suite; expect the 55 load failures to clear.
 
 # Completed and Protected
-The accepted 9490 Elk Lake Rd valuation behavior, the resolved 5170 Hwy 60 canonical identity, the three-workspace lead UI, and all prior LandPortal, comp and valuation behavior remain unchanged. Parcel-identity invariants 2-4 are unchanged: the resolver gates on evidence and refuses a conflicting parcel.
+Universal Property Resolution, LandPortal subject re-aim, official document intelligence, the 9490 Elk Lake Rd valuation behaviour, the 5170 Hwy 60 identity and the three-workspace lead UI are unchanged. Invariants 2-4 hold: nothing here moves canonical identity, and every retained finding was anchored to the subject parcel first.
