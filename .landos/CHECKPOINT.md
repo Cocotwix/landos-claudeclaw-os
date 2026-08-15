@@ -1,68 +1,66 @@
 # Current Active Task
-The system-wide lead-workspace frontend refinement is complete on the existing dirty tree. Every record uses the shared three-workspace structure — Overview, Property & Market, and Deal Activity — with compact visual facts, semantic luminous borders, scannable risk/diligence/action rows, and one consolidated deeper property/market workspace. No backend, research, LandPortal capture, comp methodology, or valuation methodology was changed. Await Tyler's acceptance; do not continue polishing automatically.
+Universal Property Resolution is integrated into the current `main` UI baseline. Merge `4189142` joins `origin/main` `f962d95` (accepted lead-workspace frontend, devloop build-runner) with `sprint/universal-property-resolution` `fe26644` (resolver, raw parcel-notation intake, governed keyless search, jurisdiction resolution, official PDF identity, document evidence and summaries, LandPortal subject upgrade). Disjoint file sets, no conflicts. Await Tyler's acceptance; do not begin another sprint.
 
 # Exact Operator Outcome
-At `5170 Hwy 60, Birchwood, TN 37308`, the Overview now reads as an acquisition command center: House • 40.5 AC, fully framed parcel, seller, stage, valuation, score, access, compact market/listing state, visual risks, diligence and next actions. Road frontage, FEMA, wetlands, water feature, slope and buildability are compact canonical facts. Property & Market has a sticky zone index and two internal views; Deal Activity remains the CRM surface. Deal 86 proves the same shared UI renders another record's own address, seller, imagery, valuation, risks and actions.
+A raw lead resolves before any single provider finishes. `Map 042 Parcel 123` / `Fairview, Tennessee`, with no address, county or APN, resolves to Williamson County TN, owner `LANDSOUTH LLC`, 75.9 acres, APN `042-123.00-000`, verified, and the subject is released while the LandPortal capture and public refresh still run; both reconcile into the same property afterwards and cannot overwrite it with weaker evidence. The three-workspace lead UI is unchanged.
 
 # Current State
 
-
 <!-- DERIVED:START -->
-- **Generated:** 2026-08-15T03:24:51.638Z
-- **HEAD at generation:** `7e7de50`
-- **Worktree:** DIRTY; 183 modified/untracked paths at refresh time. Preserve unrelated changes.
-- **Latest tests:** PASS with one pre-existing unrelated failure at 2026-08-14T05:39:00.0000000Z; 6400 passed; the comps-valuation duplicatesMerged case fails identically without this session's changes..
-- **Latest typecheck:** PASS at 2026-08-14T05:39:00.0000000Z; tsc --noEmit clean..
-- **Latest production build:** PASS at 2026-08-14T05:39:00.0000000Z; vite + tsc server build clean; pre-existing chunk-size warnings only..
-- **Managed runtime:** RUNNING healthy at 2026-08-14T05:40:00.0000000Z; PID 177320; http://localhost:3141.
-- **Prior tracked sprint:** sprint-2026-08-14-lead-card-redesign (complete); it is not the Current Active Task.
-- **Sprint ledger:** .landos/sprints/sprint-2026-08-14-lead-card-redesign/ledger.json; proof report .landos/sprints/sprint-2026-08-14-lead-card-redesign/report.md; frozen capabilities: 3 (.landos/capabilities.json).
+- **Generated:** 2026-08-15T05:11:12.999Z
+- **HEAD at generation:** `4189142`
+- **Worktree:** DIRTY; 2 modified/untracked paths at refresh time. Preserve unrelated changes.
+- **Latest tests:** PASS for the integration; a large pre-existing main-side breakage remains at 2026-08-15T05:05:00.0000000Z; Focused Universal Resolver suites 96/96. Merge full suite: 409 files / 5699 tests pass, 54 files fail to load, 4 tests fail. Measured origin/main f962d95 baseline: 400 / 5602 pass, 55 files fail, same 4 tests. Zero new failures..
+- **Latest typecheck:** FAIL on pre-existing main-side breakage, not on the integration at 2026-08-15T05:05:00.0000000Z; Fails only in retained-comp code identical to origin/main: comps-valuation.ts syntax splice from 1b699d8, comps.ts imports ./comp-location-reconciliation.js which was never committed. No merged file errors..
+- **Latest production build:** WEB PASS, SERVER FAIL on the same pre-existing breakage at 2026-08-15T05:18:00.0000000Z; vite build clean, 2001 modules, chunk-size advisory only. The tsc server half stops on the same comps-valuation.ts splice..
+- **Managed runtime:** NOT EXERCISED by this integration session at 2026-08-15T05:20:00.0000000Z; PID 0; http://localhost:3141.
+- **Prior tracked sprint:** sprint-2026-08-04-pi-workflow-finish (complete); it is not the Current Active Task.
+- **Sprint ledger:** .landos/sprints/sprint-2026-08-04-pi-workflow-finish/ledger.json; proof report .landos/sprints/sprint-2026-08-04-pi-workflow-finish/report.md; frozen capabilities: 3 (.landos/capabilities.json).
 <!-- DERIVED:END -->
-Final refinement completed on 2026-08-14 without backend or data-pipeline changes.
-- Deal 87 live QA: exactly three top-level workspaces; House • 40.5 AC; 258.87 ft Hwy 60 frontage; FEMA 0% / 0 ac; wetlands 3.57% / 1.45 ac; slope 8.74%; buildability 79.4% / 32.16 ac; Off Market; compact risk, diligence and action rows; no removed status strip or operator-facing technical diagnostics.
-- Deal 86 live QA: the same three-workspace system rendered `1500 E Medical Center Dr, Ann Arbor, MI 48109` with its own pending structure, seller, imagery, valuation, risk and action state. Production frontend contains no 5170/Birchwood/deal-87/APN-specific design logic.
-- Targeted frontend contracts: 118/118 pass. Typecheck and production build pass; only the existing Vite chunk-size advisory remains. `git diff --check` is clean apart from line-ending notices on the pre-existing mixed tree.
-- Managed runtime HEALTHY at http://localhost:3141, PID 50836, HTTP 200. Dedicated browser remains available at PID 167532 with its original single page. No temporary QA page, runner or watcher remains.
-- Final evidence: `.landos/qa/system-wide-redesign-2026-08-14/deal-87-overview.png`, `deal-87-property-market.png`, `deal-87-deal-activity.png`, and `deal-86-overview.png`.
+- Integration worktree `claudeclaw-os-integrate`, branch `integrate/universal-property-resolution`, clean.
+- Merge is strictly additive versus `origin/main`: 21 files, +6932/-18, zero deletions or renames. Only `routes.ts`, `property-intelligence-live.ts`, `conversational-lead-intake.ts` and `landportal-subject-handoff.test.ts` are modifications.
+- `collectParcelIdentity` no longer joins the LandPortal capture and public refresh with `Promise.all`. It races them, re-reads the one shared property after each lane settles, and returns on the first sufficient identity. Per-lane bounds are unchanged.
+- The indexed-web lane is keyless and browserless: pinned `ddgs` via `createHermesFreeSearch`, pages read with the transport `official-source-discovery` uses, 3 queries / 3 pages / 20s. Jurisdiction enrichment uses the Census geography service, 15s.
+- The LandPortal subject upgrade fires at most once, only after the first capture finishes, only when the resolved subject is materially stronger and the capture did not already land the right parcel.
+- No browser, CDP, paid API or port 3141 activity was used.
 
 # Completed and Proven
-- The shared lead-workspace components and styles now apply the three-workspace composition, semantic gradient/glow system, compact marketing state, visual property facts, risk scan, diligence/actions, and Property & Market zone index to every record.
-- Sprint `sprint-2026-08-14-lead-card-redesign` remains complete and valid; this continuation preserves its canonical-state contract.
-- Earlier LandPortal fixes remain protected by commits `f178eb7`, `3edda7b`, `e77d552`, and `1b699d8`; this continuation did not touch them.
+- Focused suites 96/96: parcel notation, resolver, Fairview resolution, search transport, jurisdiction/PDF identity, document context, document persistence and summaries, LandPortal handoff and upgrade.
+- The Fairview fixture proves the sparse case end to end and proves the negative: it refuses to resolve when the indexed record names a different parcel. The live harness stays gated behind `LANDOS_LIVE_SEARCH=1` and did not run.
+- Measured, not asserted: `origin/main` alone fails 55 files and 4 tests; the merge fails 54 and the same 4. It adds 97 passing tests and repairs `landportal-subject-handoff.test.ts`.
+- The accepted lead-workspace frontend is carried through untouched; `vite build` is clean.
 
 # Remaining Work
-OPEN COMP DATA QUALITY, untouched and the strongest candidate to price correctly before trusting any indication: duplicate persisted rows for one parcel carry conflicting prices, so which value prices the subject depends on which duplicate the dedupe picks. `044 068.01` holds $550,000 and $200,000 for the same 20.55 ac; `058I A 042.03` holds $325,000 and $599,900 (rows 960, 968).
+BLOCKING AND PRE-EXISTING ON `main`, not caused by this integration: the committed retained-comp code does not compile. `src/landos/comps.ts` imports `./comp-location-reconciliation.js`, which exists only in the primary dirty worktree and was never committed on any branch. `src/landos/comps-valuation.ts` carries a `subjectIdentity: { ... }` object fragment spliced into the middle of a comment at lines 2069-2075 (commit `1b699d8`, before the merge base), plus `SubjectParcelIdentity` used as a value at line 716 and `subjectIdentity` missing from `ClassifyContext`. That single missing import is what makes 54 test files fail to load. Fixing it means committing the retained-comp work from the primary worktree; it was deliberately not touched here.
 
-Gap 3: Terrain reads "Not supplied" while the card holds `Slope Avg`. Gap 4: map-surface comps land `unknown` not `sold`, `landPortalCompCardsFromApi` sets `sectionLabel: ''`. The gap-2 unbounded-chain pattern still exists in `withBrowserMissionGate` (`routes.ts`), serializing whole inspection missions with no relation to a caller's budget. Lower priority: Hermes comps specialist identity conflict; the Hermes visuals payload the importer cannot read, do NOT patch; Gemini 429s on market scans.
+OPEN COMP DATA QUALITY, untouched: duplicate persisted rows for one parcel carry conflicting prices, so the price depends on which duplicate dedupe picks. `044 068.01` holds $550,000 and $200,000 for the same 20.55 ac; `058I A 042.03` holds $325,000 and $599,900 (rows 960, 968).
+
+Gap 3: Terrain reads "Not supplied" while the card holds `Slope Avg`. Gap 4: map comps land `unknown` not `sold`; `landPortalCompCardsFromApi` sets `sectionLabel: ''`. The gap-2 unbounded-chain pattern remains in `withBrowserMissionGate` (`routes.ts`). Lower priority: Hermes comps specialist identity conflict; the Hermes visuals payload the importer cannot read, do NOT patch; Gemini 429s on market scans.
 
 # Exact Next Action
-Stop. Await Tyler's acceptance or a specific follow-up. If asked to commit, first isolate the frontend recomposition with explicit path/hunk staging because the index already contains unrelated staged deletions and several modified files mix other work. Do not continue polishing or begin another sprint automatically.
+Stop. Await Tyler's decision on the pre-existing retained-comp compile break, which is the one thing standing between `main` and a green `tsc`. Do not start another sprint.
 
 # Relevant Files
-- `.landos/CODING_SESSION_PROTOCOL.md` section 11, the committed closeout rule
-- `web/src/pages/AcquisitionWorkspaceV2.tsx`
-- `web/src/components/AcquisitionWorkspaceV2Overview.tsx`
-- `web/src/lib/workspace-v2-nav.ts`
-- `web/src/styles/workspace-v2-lead-design.css`
-- `src/landos/workspace-v2-lead-design.test.ts`
-- `src/landos/comp-subject-identity.ts`, `comps-valuation.ts`, `comp-recency-window.ts`
-- `src/landos/landportal-browser.ts`, `browser-session.ts`, `landportal-api.ts`
-- `src/landos/routes.ts`, `property-intelligence-live.ts`, `property-inspection.ts`
+- `src/landos/universal-property-resolution.ts`, `parcel-notation.ts`, `jurisdiction-resolution.ts`
+- `src/landos/official-pdf-identity.ts`, `official-document-context.ts`, `official-document-summary.ts`, `official-document-intelligence-store.ts`
+- `src/landos/hermes-free-search.ts`, `landportal-subject-upgrade.ts`
+- `src/landos/property-intelligence-live.ts`, `routes.ts`, `conversational-lead-intake.ts`
+- `src/landos/comps.ts`, `comps-valuation.ts` (broken on `main`, do not repair here)
 
 # Relevant Records
-Primary proof: 5170 Hwy 60, Birchwood TN 37308 (deal 87, APN 023 003.02). System-wide proof: 1500 E Medical Center Dr, Ann Arbor MI 48109 (deal 86).
+Fairview sparse-input fixture: `Map 042 Parcel 123`, Fairview TN, Williamson County, `042-123.00-000`, LANDSOUTH LLC, 75.9 ac. UI proof records unchanged: 5170 Hwy 60, Birchwood TN 37308 (APN 023 003.02) and 1500 E Medical Center Dr, Ann Arbor MI 48109.
 
 # Known Blockers
-No blocker to the accepted UI outcome. One unrelated test failure remains: retained-comp `duplicatesMerged`. A blanket commit is blocked by the mixed index/worktree; surgical staging is required if Tyler requests a commit.
+The pre-existing retained-comp compile break above blocks a green `tsc --noEmit` and the `tsc` half of `npm run build` on `main` itself. It blocks nothing in the integration. No blocker to the Universal Resolver outcome.
 
 # Do Not Inspect or Modify
-Runner/harness experiment under `scripts/devloop/`, staged deletions, package.json experiment state, stash, unrelated dirty work, `.env`, secrets, `claudeclaw-os-latest`. The live Codex app processes and operator Chrome.
+The primary worktree `claudeclaw-os` and its dirty paths, the stash `landos-duke-overarchitecture-hold`, `.env`, secrets, `claudeclaw-os-latest`, the live Codex processes and operator Chrome. Do not repair retained-comp code from here.
 
 # Runtime State
-Managed runtime healthy at http://localhost:3141, PID 50836, HTTP 200. Dedicated browser up on 127.0.0.1:9224, PID 167532, one pre-existing page. Leave both running and clean.
+Not exercised by this session, by instruction: no managed start, stop, restart or health call, no port 3141 traffic, no browser or CDP. What the primary worktree left running is untouched.
 
 # Verification Required
-None for this completed closeout. Reverify only if a later change alters product code; otherwise preserve the final Deal 87 screenshots and do not rerun operator journeys.
+None for the integration. Re-verify only after the retained-comp compile break is repaired: rerun `tsc --noEmit` and the full suite and expect the 54 load failures to clear.
 
 # Completed and Protected
-The accepted 9490 Elk Lake Rd valuation behavior and the resolved 5170 Hwy 60 canonical identity remain unchanged. Preserve all existing backend, LandPortal, comp, and valuation behavior.
+The accepted 9490 Elk Lake Rd valuation behavior, the resolved 5170 Hwy 60 canonical identity, the three-workspace lead UI, and all prior LandPortal, comp and valuation behavior remain unchanged. Parcel-identity invariants 2-4 are unchanged: the resolver gates on evidence and refuses a conflicting parcel.
