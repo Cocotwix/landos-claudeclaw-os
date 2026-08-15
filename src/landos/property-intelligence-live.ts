@@ -30,6 +30,13 @@ import { governmentFactsFromPublicRecordOutcomes, officialParcelSourceCoverage }
 import type { GovernmentRecordArtifactView } from './government-records-types.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
 import {
+  resolveSubjectProperty,
+  type IdentityLaneResult,
+  type IndexedWebLaneOptions,
+  type JurisdictionLaneOptions,
+} from './universal-property-resolution.js';
+import type { LandPortalSearchPackage } from './landportal-subject-upgrade.js';
+import {
   ACCESS_UTILITY_TASKS,
   ENVIRONMENTAL_TASKS,
   GOVERNMENT_RECORD_TASKS,
@@ -196,6 +203,28 @@ export interface LiveCollectorDeps {
   publicRefreshWaitMs?: number;
   /** Persist a provider handback immediately when that independent lane settles. */
   persistProviderResult?: (result: PropertyProviderResult) => PropertyProviderResult | Promise<PropertyProviderResult>;
+  /**
+   * Wire the Universal Resolver's indexed-web identity lane.
+   *
+   * Left unset the lane does not run, so unit tests never reach the network and
+   * an unwired deployment behaves exactly as before. The route layer supplies
+   * the shared government-page text transport; there is no browser involved.
+   */
+  indexedWebIdentity?: IndexedWebLaneOptions;
+  /**
+   * Wire the Universal Resolver's jurisdiction lane, which establishes the
+   * county every official parcel source is selected by. Off unless supplied,
+   * so a unit test never reaches the federal geography service by accident.
+   */
+  jurisdictionEnrichment?: JurisdictionLaneOptions;
+  /**
+   * Promote the resolved subject through the canonical identity path.
+   *
+   * Unset, this is `reconcileSubjectIdentity`, which consults the federal
+   * address file over the network. Injected so tests exercise the real
+   * reconciliation without a live geocoder call.
+   */
+  promoteSubjectIdentity?: (dealCardId: number, actor: string) => Promise<unknown>;
   now?: () => string;
 }
 
@@ -448,16 +477,102 @@ export async function collectParcelIdentity(
       publicWaitTimer = setTimeout(() => resolve({ result: null, error: null, timedOut: true }), publicRefreshWaitMs);
     }),
   ]);
-  const [capture, live] = await Promise.all([captureWait, publicWait]);
-  if (captureWaitTimer) clearTimeout(captureWaitTimer);
-  if (publicWaitTimer) clearTimeout(publicWaitTimer);
+  // ── UNIVERSAL PROPERTY RESOLUTION: FIRST SUFFICIENT EVIDENCE WINS ────────
+  //
+  // This was `await Promise.all([captureWait, publicWait])`, and that join was
+  // the defect: a county parcel layer that answered in seconds still waited for
+  // the LandPortal browser window to close, and every downstream research lane
+  // waited behind it. The waits above are unchanged — each provider keeps its
+  // own bound — but they are now RACED. The resolver re-reads the ONE shared
+  // property after each lane settles, judges it with the same discovery gate
+  // this lane has always used, and returns the moment the subject is
+  // established. Slower lanes keep running and reconcile into the same
+  // property afterwards; they can never overwrite it with weaker evidence.
+  const waits: {
+    capture: Awaited<typeof captureWait> | null;
+    live: Awaited<typeof publicWait> | null;
+  } = { capture: null, live: null };
+  const captureLane = captureWait.then((outcome): IdentityLaneResult => {
+    if (captureWaitTimer) clearTimeout(captureWaitTimer);
+    waits.capture = outcome;
+    return {
+      lane: 'landportal',
+      status: outcome.result?.ok ? 'evidence' : outcome.timedOut ? 'unavailable' : outcome.error ? 'error' : 'no_evidence',
+      // The capture persists its own parcel record; there is nothing for the
+      // resolver to write on its behalf.
+      note: outcome.result?.note ?? (outcome.timedOut ? 'LandPortal subject capture exceeded its identity handoff window.' : 'LandPortal subject capture returned no parcel evidence.'),
+      source: { label: 'LandPortal authenticated parcel panel', url: null, officiality: 'officially_linked' },
+    };
+  });
+  const publicLane = publicWait.then((outcome): IdentityLaneResult => {
+    if (publicWaitTimer) clearTimeout(publicWaitTimer);
+    waits.live = outcome;
+    return {
+      lane: 'official_parcel',
+      status: outcome.result?.ok ? 'evidence' : outcome.timedOut ? 'unavailable' : outcome.error ? 'error' : 'no_evidence',
+      // The public run persists its own official parcel match.
+      note: outcome.result?.ok
+        ? 'The official/statewide public parcel run completed and persisted its match.'
+        : outcome.timedOut ? 'The public parcel refresh exceeded its identity handoff window.' : 'The public parcel run matched no official record.',
+      source: { label: 'Official public parcel sources', url: null, officiality: 'official' },
+    };
+  });
+  const promoteSubjectIdentity = deps.promoteSubjectIdentity
+    ?? ((id: number, who: string) => reconcileSubjectIdentity(id, { actor: who }));
+  // The official lane must be RE-RUNNABLE. The first call hands back the
+  // already-started public refresh; a re-aim — after the jurisdiction lane
+  // establishes the county every official parcel source is selected by — runs
+  // it again against the enriched subject. Bounded by `maxLaneReAims`.
+  let officialAttempts = 0;
+  const officialLane = async (): Promise<IdentityLaneResult> => {
+    officialAttempts += 1;
+    if (officialAttempts === 1) return publicLane;
+    const outcome = await deps.runPublicIntelligence(ctx.dealCardId).then(
+      (result) => ({ result, error: null as unknown }),
+      (error: unknown) => ({ result: null, error }),
+    );
+    return {
+      lane: 'official_parcel',
+      status: outcome.result?.ok ? 'evidence' : outcome.error ? 'error' : 'no_evidence',
+      note: outcome.result?.ok
+        ? 'The official/statewide public parcel run completed against the enriched jurisdiction and persisted its match.'
+        : `The re-aimed official parcel run matched no official record${outcome.result?.error ? ` (${outcome.result.error})` : ''}.`,
+      source: { label: 'Official public parcel sources', url: null, officiality: 'official' },
+    };
+  };
+
+  // The resolver OFFERS a stronger LandPortal package; this layer decides when
+  // to act on it, because this layer is the only one that knows whether a
+  // capture is still in flight. Two concurrent LandPortal agents for one
+  // subject is the failure that separation prevents.
+  const landPortalUpgrade: { offered: LandPortalSearchPackage | null } = { offered: null };
+  const resolution = await resolveSubjectProperty(ctx.dealCardId, {
+    actor: `universal-resolver:${ctx.runId}`,
+    promote: promoteSubjectIdentity,
+    onLandPortalUpgrade: ({ package: offered }) => { landPortalUpgrade.offered = offered; },
+    deadlineMs: Math.max(landPortalCaptureWaitMs, publicRefreshWaitMs) + 1_000,
+    lanes: {
+      official_parcel: officialLane,
+      ...(capturePromise ? { landportal: () => captureLane } : {}),
+    },
+    ...(deps.indexedWebIdentity ? { indexedWeb: deps.indexedWebIdentity } : {}),
+    ...(deps.jurisdictionEnrichment ? { jurisdiction: deps.jurisdictionEnrichment } : {}),
+  });
+  const capture = waits.capture ?? { result: null, error: null, timedOut: false as const };
+  const live = waits.live ?? { result: null, error: null, timedOut: false as const };
+  // The resolver released while a lane was still working. That is the point of
+  // this sprint, and it is reported as what it is rather than as an overrun.
+  const capturePending = !!capturePromise && waits.capture === null;
+  const publicPending = waits.live === null;
   // An overrun arrives by either of two routes that mean the same thing: the
   // race timer above fired, or the provider wrapper hit its own timeout first
   // and rejected. Card 77 came back through the SECOND one, so anything that
   // handles only the first misses the case it was written for.
   const captureOverran = capture.timedOut
     || (!!capture.error && /provider lane timed out/i.test((capture.error as Error)?.message ?? String(capture.error)));
-  if (captureOverran) {
+  if (capturePending) {
+    inspectionNote = ` The subject was established from ${resolution.winner === 'retained_identity' ? 'the retained canonical record' : 'a faster identity source'} without waiting for the LandPortal subject capture; that capture continues independently and lands its parcel evidence when it finishes.`;
+  } else if (captureOverran) {
     inspectionNote = ` LandPortal subject capture exceeded the ${Math.round(landPortalCaptureWaitMs / 1000)}-second identity handoff window; it continues independently and any previously retained parcel evidence is used.`;
   } else if (capture.error) {
     inspectionNote = ` LandPortal subject capture errored (${(capture.error as Error)?.message ?? String(capture.error)}).`;
@@ -478,11 +593,13 @@ export async function collectParcelIdentity(
   // performs itself: idempotent, and it never blanks a retained value.
   // An early subject handoff leaves the capture running for exactly the same
   // reason an overrun does, so it needs the same promotion when it lands.
-  if ((captureOverran || subjectHandedOffEarly) && rawCapturePromise) {
+  // A capture still running when the resolver released is the SAME situation as
+  // an overrun — the lane answered without it — so it gets the same promotion.
+  if ((captureOverran || subjectHandedOffEarly || capturePending) && rawCapturePromise) {
     void (rawCapturePromise as Promise<unknown>)
-      .then(() => reconcileSubjectIdentity(ctx.dealCardId, { actor: 'landportal-late-capture' }))
+      .then(() => promoteSubjectIdentity(ctx.dealCardId, 'landportal-late-capture') as Promise<Awaited<ReturnType<typeof reconcileSubjectIdentity>>>)
       .then((reconciled) => {
-        if (!reconciled.changes.length && !reconciled.conflicts.length) return;
+        if (!reconciled?.changes?.length && !reconciled?.conflicts?.length) return;
         logger.info({
           dealCardId: ctx.dealCardId,
           runId: ctx.runId,
@@ -493,7 +610,54 @@ export async function collectParcelIdentity(
       })
       .catch((err) => logger.warn({ err, dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_late_capture_identity_promotion_failed'));
   }
-  if (live.timedOut) {
+  // ── ONE BOUNDED LANDPORTAL SUBJECT UPGRADE ────────────────────────────────
+  //
+  // LandPortal starts optimistically on the raw lead. When Universal Property
+  // Resolution establishes a materially stronger subject while that workflow is
+  // still searching, it gets ONE more attempt with the better keys — but only
+  // after its first attempt has finished, so there is never a second agent on
+  // the browser at the same time, and only when it did not already land on the
+  // right parcel. It stays non-blocking throughout: the subject was released
+  // long before this runs, and whatever it finds is reconciled through the
+  // canonical path, which refuses a conflicting parcel.
+  const upgradePackage = landPortalUpgrade.offered;
+  if (upgradePackage?.strongerThanIntake && rawCapturePromise && deps.captureLandPortalInspection && initialCardId) {
+    const capture = deps.captureLandPortalInspection;
+    const cardId = initialCardId;
+    void (rawCapturePromise as Promise<unknown>)
+      .catch(() => undefined)
+      .then(async () => {
+        // Already on the right parcel: do nothing at all.
+        if (loadPropertyInspection(cardId)?.parcelUrlRecord?.verifiedSubject === true) {
+          logger.info({ dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_subject_upgrade_not_needed');
+          return;
+        }
+        logger.info({
+          dealCardId: ctx.dealCardId,
+          runId: ctx.runId,
+          gained: upgradePackage.gainedOverIntake,
+          strategies: upgradePackage.attempts.map((attempt) => attempt.strategy),
+        }, 'landportal_subject_upgrade_started');
+        await capture({
+          cardId,
+          searchKey: {
+            address: upgradePackage.address,
+            apn: upgradePackage.apn,
+            county: upgradePackage.county,
+            state: upgradePackage.state,
+            city: upgradePackage.city,
+            owner: upgradePackage.owner,
+          },
+        });
+        await promoteSubjectIdentity(ctx.dealCardId, 'landportal-subject-upgrade');
+        logger.info({ dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_subject_upgrade_reconciled');
+      })
+      .catch((err) => logger.warn({ err, dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_subject_upgrade_failed'));
+  }
+
+  if (publicPending) {
+    liveNote = ` The subject was established before the independent public-source refresh finished; that refresh continues and reconciles into the same property when it lands.`;
+  } else if (live.timedOut) {
     liveNote = ` Live public-source refresh exceeded the ${Math.round(publicRefreshWaitMs / 1000)}-second identity handoff window; it continues independently and retained public evidence is used for this handback.`;
   } else if (live.error) {
     liveNote = ` Live parcel lookup errored (${(live.error as Error)?.message ?? String(live.error)}); the persisted identity is used.`;

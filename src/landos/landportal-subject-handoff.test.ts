@@ -8,24 +8,45 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// PRE-EXISTING BLOCKER, unrelated to the identity lane: `comps.ts` at this
+// branch's HEAD imports `./comp-location-reconciliation.js`, which is not
+// committed, so this suite could not load at all. The identity lane reads no
+// comparable rows; the retained-comp work is out of scope here.
+vi.mock('./comps.js', () => ({
+  listComps: () => [],
+  addComp: () => ({}),
+  getComp: () => undefined,
+  deleteComp: () => false,
+  upsertNormalizedComp: () => ({}),
+  retireForkedCompRow: () => undefined,
+  enrichCompCoordinates: async () => [],
+  geocodeAddressesToCache: async () => [],
+  extractListingCoordinates: () => null,
+  recommendCompSources: () => [],
+  evaluateCompRecency: () => ({ stale: false, note: '' }),
+  isPaidCompAllowed: () => false,
+  assertPaidCompAllowed: () => undefined,
+  PAID_COMP_TOOLS: [],
+}));
+
 import { _initTestLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
 import { collectParcelIdentity } from './property-intelligence-live.js';
 import type { MissionContext } from './property-intelligence-collector-types.js';
 
-function seedCard(): number {
+function seedCard(resolved = true): number {
   const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'LandPortal subject handoff' });
   const { card } = upsertPropertyCard({
     entity: 'TY_LAND_BIZ',
     activeInputAddress: '5170 HIGHWAY 60',
     county: 'Hamilton',
     state: 'TN',
-    apn: '023 003.02',
+    // An UNRESOLVED lead carries no parcel identifier, which is the state the
+    // capture is actually needed in.
+    ...(resolved ? { apn: '023 003.02', verified: true, verificationSource: 'test' } : {}),
     owner: 'CAMERON NATHANIEL JOSEPH',
     acres: 40.5,
-    verified: true,
-    verificationSource: 'test',
     agentId: 'test',
   } as Parameters<typeof upsertPropertyCard>[0]);
   linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' } as Parameters<typeof linkPropertyToDeal>[0]);
@@ -83,8 +104,8 @@ describe('LandPortal subject handoff', () => {
     releaseCapture();
   });
 
-  it('still waits for the whole capture when no early handoff is made', async () => {
-    const dealCardId = seedCard();
+  it('still waits for the whole capture when no early handoff is made and the subject is unresolved', async () => {
+    const dealCardId = seedCard(false);
     let releaseCapture!: () => void;
     const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
     let captureFinished = false;
@@ -98,13 +119,40 @@ describe('LandPortal subject handoff', () => {
         return { ok: true, note: 'full capture complete', comparableCount: 7 };
       },
       runPublicIntelligence: async () => ({ ok: true }),
+      promoteSubjectIdentity: async () => undefined,
     }).then((outcome) => { settled = true; return outcome; });
 
-    // Nothing handed the subject over, so the lane is still waiting.
+    // Nothing handed the subject over and no other lane established the parcel,
+    // so the lane is still waiting for the capture that can.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(settled).toBe(false);
     releaseCapture();
-    await expect(pending).resolves.toMatchObject({ status: 'completed' });
+    await expect(pending).resolves.toMatchObject({ status: 'partial' });
+    expect(captureFinished).toBe(true);
+  });
+
+  it('does NOT wait for the capture when the subject is already resolved', async () => {
+    // The Universal Resolver's retained fast path. Re-establishing an identity
+    // LandOS already holds is exactly the wait this sprint removed: the capture
+    // still runs for its visuals and comp anchor, but nothing gates on it.
+    const dealCardId = seedCard();
+    let captureFinished = false;
+    const outcome = await collectParcelIdentity(context(dealCardId), {
+      landPortalCaptureWaitMs: 300_000,
+      captureLandPortalInspection: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        captureFinished = true;
+        return { ok: true, note: 'full capture complete', comparableCount: 7 };
+      },
+      runPublicIntelligence: async () => ({ ok: true }),
+      promoteSubjectIdentity: async () => undefined,
+    });
+
+    expect(captureFinished).toBe(false);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.summary).toContain('without waiting for the LandPortal subject capture');
+    // The capture is still running and lands its evidence afterwards.
+    await new Promise((resolve) => setTimeout(resolve, 400));
     expect(captureFinished).toBe(true);
   });
 });
